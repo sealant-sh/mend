@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import {
   InstanceRolesRepo,
   AgentConversationRepo,
+  AgentTurnNotFoundError,
   type AgentRequestAlreadyResolvedError,
   AgentRequestNotFoundError,
   CheckpointsRepo,
@@ -124,6 +125,7 @@ import {
   type AgentInputAnswers,
   type AgentRequest,
   type AgentTurn,
+  type AgentTurnSteer,
   EFFORT_LEVELS,
   HARNESS_EFFORTS,
   type EffortLevel,
@@ -576,8 +578,10 @@ import {
   ProtocolHost,
   type ProtocolHostHooks,
   ProtocolHostNotLiveError,
-  type ProtocolSteering,
+  type ProtocolSharedControl,
   type RehydrateProtocolProcessInput,
+  type SteerTurnInput,
+  type TurnSteerError,
 } from "./protocol-host.ts";
 import {
   mergeRecipes,
@@ -2581,6 +2585,9 @@ export class SessionEngine extends Context.Service<
      * the refusal, or null. Read where a turn would resume the session (Slack).
      */
     readonly steeringRefusal: (session: Session, sender: string) => Effect.Effect<string | null>;
+    readonly steerTurn: (
+      input: SteerTurnInput,
+    ) => Effect.Effect<AgentTurnSteer, TurnSteerError | SessionTurnRefusedError>;
     /** Interrupt the running protocol turn. */
     readonly interruptTurn: (turnId: AgentTurnId) => Effect.Effect<void, ProtocolHostNotLiveError>;
     /** Route and record one human response to a live provider request. */
@@ -18954,7 +18961,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * asks for the neutral context of a conversation not moved yet, hands the conversation to a
        * new process once this one's own work has finished. Same-person turns pay nothing more.
        */
-      const steeringFor = (agentProcess: SessionProcess): ProtocolSteering | undefined => {
+      const sharedControlFor = (
+        agentProcess: SessionProcess,
+      ): ProtocolSharedControl | undefined => {
         const runsAs = agentProcess.runsAs;
         if (!isConversationHarness(agentProcess.harness)) return undefined;
         if (runsAs === null) {
@@ -19302,9 +19311,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
       const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => {
-        const steering = steeringFor(agentProcess);
+        const steering = sharedControlFor(agentProcess);
         return {
-          ...(steering === undefined ? {} : { steering }),
+          ...(steering === undefined ? {} : { sharedControl: steering }),
           onRequestChanged: (changedSessionId) =>
             reconcileSession(changedSessionId, { sweep: false }).pipe(
               Effect.catchTag("SessionNotFoundError", () => Effect.void),
@@ -19611,6 +19620,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.forEach(sessionIds, (sessionId) =>
           cancelQueued(sessionId, (turn) => turn.author === userId),
         ).pipe(Effect.map((counts) => counts.reduce((sum, count) => sum + count, 0)));
+
+      const steerTurn = Effect.fn("SessionEngine.steerTurn")(function* (input: SteerTurnInput) {
+        const turn = yield* conversations.byTurnId(input.turnId);
+        if (turn === null) return yield* new AgentTurnNotFoundError({ turnId: input.turnId });
+        return yield* owned(turn.sessionId)(
+          Effect.gen(function* () {
+            const session = yield* sessions
+              .byId(turn.sessionId)
+              .pipe(Effect.mapError(() => new AgentTurnNotFoundError({ turnId: turn.id })));
+            if (!canSteerSession(session, input.sender))
+              return yield* new SessionTurnRefusedError({
+                sessionId: session.id,
+                message: "Shared control is off. Only the session's owner may steer it.",
+              });
+            const retired = yield* retirementRefusalFor(session.sealantWorkspaceId, input.sender);
+            if (retired !== null)
+              return yield* new SessionTurnRefusedError({
+                sessionId: session.id,
+                message: retired,
+              });
+            return yield* protocolHost.steerTurn(input);
+          }),
+        );
+      });
 
       const interruptTurn = (turnId: AgentTurnId) => protocolHost.interruptTurn(turnId);
 
@@ -25443,6 +25476,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         submitTurn: (sessionId, input, author) =>
           owned(sessionId)(submitTurn(sessionId, input, author)),
+        steerTurn,
         interruptTurn,
         respondRequest,
         conversationWait,

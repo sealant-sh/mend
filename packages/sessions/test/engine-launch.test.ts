@@ -2070,6 +2070,7 @@ describe("SessionEngine", () => {
           );
         }),
       submitTurn: () => Effect.die("not in test"),
+      steerTurn: () => Effect.die("not in test"),
       interruptTurn: () => Effect.die("not in test"),
       respondRequest: () => Effect.die("not in test"),
       detach: () => Effect.void,

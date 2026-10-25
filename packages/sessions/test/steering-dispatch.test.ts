@@ -20,9 +20,10 @@ import {
   ProtocolHost,
   ProtocolHostLive,
   type ProtocolHostHooks,
-  type SteeringDecision,
+  type SharedControlDecision,
   waitedOut,
 } from "../src/protocol-host.ts";
+import { makeSteerStore } from "./support/steer-store.ts";
 
 /**
  * Shared steering's dispatch (docs/adr/0016, decision 6, Delivery 18), through the real protocol
@@ -77,6 +78,8 @@ const conversationWorld = () => {
   };
   const ordered = () => [...turns.values()].toSorted((a, b) => a.ordinal - b.ordinal);
   const layer = Layer.mock(AgentConversationRepo, {
+    ...makeSteerStore(turns),
+    listTurns: () => Effect.sync(ordered),
     submitTurn: (_session, processId, input, author) =>
       Effect.sync(() => {
         const turn = new AgentTurn({
@@ -100,7 +103,6 @@ const conversationWorld = () => {
     byTurnId: (id) => Effect.succeed(turns.get(id) ?? null),
     byProviderTurnId: (_session, providerTurnId) =>
       Effect.succeed(ordered().find((turn) => turn.providerTurnId === providerTurnId) ?? null),
-    listTurns: () => Effect.sync(ordered),
     openTurns: () =>
       Effect.sync(() =>
         ordered().filter((turn) => turn.status === "queued" || turn.status === "running"),
@@ -370,7 +372,9 @@ const steeredWorld = (harness: "claude" | "codex") => {
   const pipes: Record<string, Harnessed> = {};
   const live = new Set<string>([processA.id]);
   /** What the engine would decide instead, once something changed (control off, say). */
-  const decision: { override: ((turn: AgentTurn) => SteeringDecision) | null } = { override: null };
+  const decision: { override: ((turn: AgentTurn) => SharedControlDecision) | null } = {
+    override: null,
+  };
   /**
    * The engine's preparation before the stop (the login, the user, the take), run before it asks
    * the host its last question; what the host answers decides whether anything stops.
@@ -399,9 +403,9 @@ const steeredWorld = (harness: "claude" | "codex") => {
   const hooksFor = (runsAs: string, attachB: Effect.Effect<void>): ProtocolHostHooks => ({
     onRequestChanged: () => Effect.void,
     onTurnCompleted: () => Effect.void,
-    steering: {
+    sharedControl: {
       decide: (turn) =>
-        Effect.succeed<SteeringDecision>(
+        Effect.succeed<SharedControlDecision>(
           decision.override !== null
             ? decision.override(turn)
             : (turn.author ?? ALICE) === runsAs
@@ -1197,4 +1201,50 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
       }).pipe(Effect.scoped, Effect.provide(steered.host));
     },
   );
+  for (const layout of ["person", "shared"] as const) {
+    for (const authorless of [false, true])
+      it.effect(
+        `${layout}: only the ${authorless ? "recorded payer" : "author"} steers; ownership gives no exception`,
+        () => {
+          const steered = steeredWorld("claude");
+          const peer = claudePipe("pipe-a");
+          const process = new SessionProcess({
+            ...steered.processA,
+            runsAs: layout === "person" ? BOB : null,
+          });
+          return Effect.gen(function* () {
+            const host = yield* ProtocolHost;
+            yield* attachAs(process, peer.pipe, {
+              onRequestChanged: () => Effect.void,
+              onTurnCompleted: () => Effect.void,
+            });
+            const submitted = yield* host.submitTurn(sessionId, "Bob's turn", BOB);
+            if (authorless) steered.world.update(submitted.id, { author: null });
+            const payer = layout === "person" ? BOB : ALICE;
+            const sender = authorless ? payer : BOB;
+            const other = sender === ALICE ? BOB : ALICE;
+            const refused = yield* host
+              .steerTurn({ turnId: submitted.id, input: "wrong sender", sender: other })
+              .pipe(Effect.flip);
+            expect(refused).toMatchObject({
+              _tag: "TurnSteerForbiddenError",
+              reason: "not-sender",
+            });
+            expect(peer.userTurns()).toHaveLength(1);
+            const receipt = yield* host.steerTurn({
+              turnId: submitted.id,
+              input: "same turn",
+              sender,
+            });
+            expect(receipt.delivery).toEqual({ _tag: "Accepted", evidence: "transport-written" });
+            expect(steered.world.turns.get(submitted.id)).toMatchObject({
+              billedUserId: payer,
+              author: authorless ? null : BOB,
+            });
+            expect(peer.userTurns()).toHaveLength(2);
+            yield* host.detach(process.id);
+          }).pipe(Effect.scoped, Effect.provide(steered.host));
+        },
+      );
+  }
 });

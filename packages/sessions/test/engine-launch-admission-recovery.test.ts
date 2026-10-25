@@ -52,6 +52,7 @@ const unrecoverableHost = (attached: Array<SessionProcess>) =>
         }),
       ),
     submitTurn: () => Effect.die("not in test"),
+    steerTurn: () => Effect.die("not in test"),
     interruptTurn: () => Effect.void,
     respondRequest: () => Effect.die("not in test"),
     detach: () => Effect.void,

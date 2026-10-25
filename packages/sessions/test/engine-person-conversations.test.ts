@@ -433,6 +433,7 @@ const resumingHost = (
       }),
     rehydrate: () => Effect.void,
     submitTurn: () => Effect.die("not in test"),
+    steerTurn: () => Effect.die("not in test"),
     interruptTurn: () => Effect.void,
     respondRequest: () => Effect.die("not in test"),
     detach: () => Effect.void,
@@ -1085,7 +1086,7 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
           );
           takesAtStart = state.conversationHolders.get(session.id)?.fence ?? 0;
           // Maria's turn waits, and its hand-over takes the conversation first.
-          const steering = attached[0]?.hooks.steering;
+          const steering = attached[0]?.hooks.sharedControl;
           if (steering === undefined) return yield* Effect.die("no steering");
           yield* steering.waiting({
             sessionId: session.id,
@@ -1197,6 +1198,7 @@ const steeringHost = (
       }),
     rehydrate: () => Effect.void,
     submitTurn: () => Effect.die("not in test"),
+    steerTurn: () => Effect.die("not in test"),
     interruptTurn: () => Effect.void,
     respondRequest: () => Effect.die("not in test"),
     detach: () => Effect.void,
@@ -1289,7 +1291,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           const alice = attached[0];
           if (alice === undefined) return yield* Effect.die("no process attached");
           expect(alice.process.runsAs).toBe("user-fixture");
-          const steering = alice.hooks.steering;
+          const steering = alice.hooks.sharedControl;
           if (steering === undefined)
             return yield* Effect.die("no steering for a person's process");
           // The conversation holds a transcript now, as its first turn leaves it.
@@ -1361,7 +1363,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           ]);
 
           // And back to Alice: the hand-over's budget, with both people already made here.
-          const steeringOfMaria = maria?.hooks.steering;
+          const steeringOfMaria = maria?.hooks.sharedControl;
           if (steeringOfMaria === undefined || maria === undefined) {
             return yield* Effect.die("no steering for Maria's process");
           }
@@ -1521,7 +1523,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             );
             yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
             const alice = attached[0];
-            const steering = alice?.hooks.steering;
+            const steering = alice?.hooks.sharedControl;
             if (alice === undefined || steering === undefined) {
               return yield* Effect.die("no steering for the owner's process");
             }
@@ -1676,7 +1678,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           after: (gap) =>
             Effect.gen(function* () {
               const maria = gap.attached.at(-1);
-              const steering = maria?.hooks.steering;
+              const steering = maria?.hooks.sharedControl;
               if (maria === undefined || steering === undefined) {
                 return yield* Effect.die("no steering for Maria's process");
               }
@@ -1815,7 +1817,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             );
             yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
             const alice = attached[0];
-            const steering = alice?.hooks.steering;
+            const steering = alice?.hooks.sharedControl;
             if (alice === undefined || steering === undefined) {
               return yield* Effect.die("no steering for the owner's process");
             }
@@ -1832,7 +1834,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             if (options.again === true) {
               result.stopsBeforeSecond = stops.length;
               const restarted = attached.at(-1);
-              const again = yield* (restarted?.hooks.steering ?? steering)
+              const again = yield* (restarted?.hooks.sharedControl ?? steering)
                 .handOver(MARIA, AgentTurnId.make("turn-maria-2"), atTheStop())
                 .pipe(Effect.result);
               if (again._tag === "Failure") {
@@ -2217,6 +2219,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             }),
           rehydrate: () => Effect.void,
           submitTurn: () => Effect.die("not in test"),
+          steerTurn: () => Effect.die("not in test"),
           interruptTurn: () => Effect.void,
           respondRequest: (request, _response, decidedBy) =>
             Effect.sync(() => {
@@ -2371,6 +2374,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
               restored.push({ process: input.process, hooks: input.hooks });
             }).pipe(Effect.andThen(Deferred.succeed(restoredOnce, undefined))),
           submitTurn: () => Effect.die("not in test"),
+          steerTurn: () => Effect.die("not in test"),
           interruptTurn: () => Effect.void,
           respondRequest: () => Effect.die("not in test"),
           detach: () => Effect.void,
@@ -2384,7 +2388,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           (world) =>
             Effect.gen(function* () {
               yield* Deferred.await(restoredOnce);
-              const steering = restored[0]?.hooks.steering;
+              const steering = restored[0]?.hooks.sharedControl;
               if (steering === undefined) return yield* Effect.die("no steering for the process");
               const processId = SessionProcessId.make("agent-boot");
               expect(yield* steering.decide(turnBy(MARIA, processId, sessionId))).toEqual({
