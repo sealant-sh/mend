@@ -7,6 +7,8 @@ import { nitro } from "nitro/vite";
 import { defineConfig, esmExternalRequirePlugin } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 
+import { devProxyRoutes } from "./src/entry/proxy-headers.ts";
+
 // Dev runs two processes: this vite server for the app, and the Mend API
 // server (apps/api) on 3101. The proxy keeps them one origin — the same
 // shape production has, where the web server proxies /api to the API.
@@ -59,9 +61,7 @@ const config = defineConfig({
     nitro({
       // Nitro handles extensionless requests before Vite's HTTP proxy runs.
       // Without this, auth and SSE requests fall into the app's HTML 404.
-      devProxy: {
-        "/api/**": { target: apiTarget },
-      },
+      devProxy: devProxyRoutes(apiTarget),
     }),
     viteReact(),
   ],
