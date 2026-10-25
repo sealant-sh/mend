@@ -92,11 +92,13 @@ tailnet.
   starts at once (`MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT`) and preview starts per minute
   (`MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_PER_MINUTE`, with a `Retry-After`). See
   [Budgets](budgets.md). The gateway's own ceilings bound this process rather than an account: open
-  requests for one preview (64), open requests across previews (256) and open forwards (128).
-  A `503` from the gateway always means the preview is not available.
+  requests for one preview (64), open requests across previews (256) and open forwards (128). A
+  `503` from the gateway always means the preview is not available.
 - A request held for a stopped preview that does not start in time gets `503` and one line, such as
   `preview · web · did not start in 3 min · start timed out · your request was not delivered`. The
   gateway never read the body, so Mend holds none of it.
-- A preview its owner stopped answers `503` with
-  `preview · web · the owner stopped the preview · your request was not delivered`, and a request
-  never starts it.
+- A preview a person stopped with **Stop**, its owner or a steerer, answers `503` with
+  `preview · web · Maria stopped the preview · your request was not delivered`, and a request never
+  starts it. The page names the person as Mend names people to others: their name, or `a member`. A
+  person's **Start** or restart lets requests start it again. The agent stopping its own Service
+  does not count.

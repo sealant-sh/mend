@@ -575,9 +575,9 @@ export const previewGrants = pgTable(
 );
 
 /**
- * A preview's control (ADR 0017, Decision log 6): whether its owner stopped it. No row is
+ * A preview's control (ADR 0017, Decision log 6): whether a person stopped it. No row is
  * automatic at revision 0; the revision moves only when the state does. The stop facts are set
- * exactly when the state is `owner-stopped` (a CHECK in the migration).
+ * exactly when the state is `stopped` (a CHECK in the migration).
  */
 export const previewControls = pgTable("preview_controls", {
   previewId: text()
@@ -585,7 +585,7 @@ export const previewControls = pgTable("preview_controls", {
     .primaryKey()
     .references(() => previews.id, { onDelete: "cascade" }),
   revision: integer().notNull().default(0),
-  state: text().$type<"automatic" | "owner-stopped">().notNull(),
+  state: text().$type<"automatic" | "stopped">().notNull(),
   stoppedBy: text(),
   stoppedAt: timestamp({ mode: "date", withTimezone: true }),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
@@ -1873,7 +1873,6 @@ export const serviceObservations = pgTable(
     state: text().$type<ServiceTargetState>().notNull(),
     source: text().$type<ServiceObservationSource>().notNull(),
     error: text(),
-    /** The attempt a probe observed (0139), so readiness names it across a kept forward. */
     attemptId: text()
       .$type<SessionProcessId>()
       .references(() => sessionProcesses.id, { onDelete: "set null" }),

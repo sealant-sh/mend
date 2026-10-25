@@ -217,8 +217,8 @@ export interface PreviewSignIn {
   /** The `/__mend/auth` URL that signs `userId` in to the Service's preview, then opens `path`. */
   readonly authUrl: (userId: string, key: ServiceKey, path?: string) => Promise<string>;
   readonly originOf: (previewId: PreviewId) => string;
-  /** Applies an owner's Stop to the Service's preview, as the API's route would. */
-  readonly ownerStop: (key: ServiceKey) => Promise<void>;
+  /** Applies `userId`'s Stop to the Service's preview, as the engine records a person's Stop. */
+  readonly stop: (key: ServiceKey, userId: string) => Promise<void>;
   readonly run: <A, E>(
     effect: Effect.Effect<A, E, SqlClient.SqlClient | PreviewsRepo>,
   ) => Promise<A>;
@@ -257,10 +257,10 @@ export const previewSignIn = (
         }),
       ),
     originOf,
-    ownerStop: (key) =>
+    stop: (key, userId) =>
       runtime.runPromise(
         Effect.flatMap(PreviewsRepo, (repo) =>
-          repo.changeControl(previews[key].id, { _tag: "OwnerStop", by: "alice", at: new Date() }),
+          repo.changeControl(previews[key].id, { _tag: "Stop", by: userId, at: new Date() }),
         ).pipe(Effect.asVoid),
       ),
     run: (effect) => runtime.runPromise(effect),

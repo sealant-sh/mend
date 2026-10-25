@@ -28,7 +28,6 @@ const appRunning = Effect.acquireRelease(
   (app) => Effect.promise(app.stop),
 );
 
-/** A world whose web preview's workspace port is the digest-and-friends fixture. */
 const worldWithApp = (options: Omit<GatewayWorldOptions, "forwards"> = {}) =>
   Effect.gen(function* () {
     const app = yield* appRunning;
@@ -39,7 +38,6 @@ const worldWithApp = (options: Omit<GatewayWorldOptions, "forwards"> = {}) =>
     return { world, forwards };
   });
 
-/** Starts that never end until `release`, so a test decides when the preview is up. */
 const gatedStarts = (world: Effect.Success<ReturnType<typeof gatewayWorld>>) =>
   Effect.gen(function* () {
     const asked = yield* Deferred.make<void>();
@@ -205,13 +203,45 @@ describe("refusals before anything starts", () => {
     ),
   );
 
-  it.live("answers a preview the owner stopped with its page and never starts it", () =>
+  it.live("names the person whose Stop won the race against a request's start", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { world } = yield* worldWithApp();
+        world.targets.resolutions.set(PREVIEWS.web.id, dormant());
+        world.targets.ensureRunning = () =>
+          Effect.suspend(() => {
+            world.targets.resolutions.set(PREVIEWS.web.id, {
+              _tag: "Stopped",
+              control: {
+                _tag: "Stopped",
+                revision: 1,
+                by: "maria",
+                at: new Date(0),
+                byName: "Maria",
+              },
+            });
+            return Effect.fail(new PreviewStartFailed({ reason: "stopped" }));
+          });
+        const reply = yield* fetchAt(
+          world.port,
+          world.hostOf("web"),
+          world.cookieFor("carol", "web"),
+        );
+        expect(reply.status, "the request was held, then not delivered").toBe(503);
+        expect(reply.body, "and the page says who stopped the preview").toContain(
+          "preview · web · Maria stopped the preview · your request was not delivered",
+        );
+      }),
+    ),
+  );
+
+  it.live("answers a preview a person stopped with a page naming them, and never starts it", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { world, forwards } = yield* worldWithApp();
         world.targets.resolutions.set(PREVIEWS.web.id, {
-          _tag: "OwnerStopped",
-          control: { _tag: "OwnerStopped", revision: 3, by: "alice", at: new Date(0) },
+          _tag: "Stopped",
+          control: { _tag: "Stopped", revision: 3, by: "maria", at: new Date(0), byName: "Maria" },
         });
         const reply = yield* Effect.promise(() =>
           send(world.port, {
@@ -222,9 +252,9 @@ describe("refusals before anything starts", () => {
             body: "field=1",
           }),
         );
-        expect(reply.status, "the owner's Stop stands").toBe(503);
-        expect(reply.body, "the page names the owner's Stop").toContain(
-          "preview · web · the owner stopped the preview · your request was not delivered",
+        expect(reply.status, "the Stop stands").toBe(503);
+        expect(reply.body, "the page says who stopped it").toContain(
+          "preview · web · Maria stopped the preview · your request was not delivered",
         );
         expect(reply.headers["cache-control"], "the page is never cached").toBe(
           "no-store, private",
@@ -728,38 +758,46 @@ describe("a held request ends when its viewer's access does", () => {
 });
 
 describe("an account's preview start window", () => {
-  it.effect("refuses a start past the account's window 429 with a Retry-After, and admits one a minute later", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { world } = yield* worldWithApp({ budgets: { accountPreviewStartsPerMinute: 2 } });
-        world.targets.ensureRunning = () =>
-          Effect.succeed(SessionProcessId.make("attempt-0")).pipe(
-            Effect.tap(() => Effect.sync(() => world.targets.resolutions.set(PREVIEWS.web.id, dormant()))),
+  it.effect(
+    "refuses a start past the account's window 429 with a Retry-After, and admits one a minute later",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { world } = yield* worldWithApp({ budgets: { accountPreviewStartsPerMinute: 2 } });
+          world.targets.ensureRunning = () =>
+            Effect.succeed(SessionProcessId.make("attempt-0")).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => world.targets.resolutions.set(PREVIEWS.web.id, dormant())),
+              ),
+            );
+          const startOnce = Effect.gen(function* () {
+            world.targets.resolutions.set(PREVIEWS.web.id, dormant());
+            return yield* fetchAt(world.port, world.hostOf("web"), world.cookieFor("carol", "web"));
+          });
+          for (const turn of [1, 2]) {
+            const reply = yield* startOnce;
+            expect(reply.status, `start ${turn} ran and did not bind`).toBe(503);
+          }
+          expect(world.targets.starts.length, "two starts reached the engine").toBe(2);
+          const refused = yield* startOnce;
+          expect(refused.status, "the third start in a minute is refused as a budget").toBe(429);
+          expect(refused.body, "with the window's words").toContain(
+            "budget reached · 2 preview starts per minute for one account · nothing running was stopped",
           );
-        const startOnce = Effect.gen(function* () {
-          world.targets.resolutions.set(PREVIEWS.web.id, dormant());
-          return yield* fetchAt(world.port, world.hostOf("web"), world.cookieFor("carol", "web"));
-        });
-        for (const turn of [1, 2]) {
-          const reply = yield* startOnce;
-          expect(reply.status, `start ${turn} ran and did not bind`).toBe(503);
-        }
-        expect(world.targets.starts.length, "two starts reached the engine").toBe(2);
-        const refused = yield* startOnce;
-        expect(refused.status, "the third start in a minute is refused as a budget").toBe(429);
-        expect(refused.body, "with the window's words").toContain(
-          "budget reached · 2 preview starts per minute for one account · nothing running was stopped",
-        );
-        expect(refused.headers["retry-after"], "and when to try again").toBe("60");
-        expect(world.targets.starts.length, "the refused start never reached the engine").toBe(2);
-        const dave = yield* fetchAt(world.port, world.hostOf("web"), world.cookieFor("dave", "web"));
-        expect(dave.status, "another account has its own window").toBe(503);
-        expect(world.targets.starts.length, "and its start ran").toBe(3);
-        yield* TestClock.adjust("61 seconds");
-        expect((yield* startOnce).status, "a minute later carol may start again").toBe(503);
-        expect(world.targets.starts.length, "and her start ran").toBe(4);
-      }),
-    ),
+          expect(refused.headers["retry-after"], "and when to try again").toBe("60");
+          expect(world.targets.starts.length, "the refused start never reached the engine").toBe(2);
+          const dave = yield* fetchAt(
+            world.port,
+            world.hostOf("web"),
+            world.cookieFor("dave", "web"),
+          );
+          expect(dave.status, "another account has its own window").toBe(503);
+          expect(world.targets.starts.length, "and its start ran").toBe(3);
+          yield* TestClock.adjust("61 seconds");
+          expect((yield* startOnce).status, "a minute later carol may start again").toBe(503);
+          expect(world.targets.starts.length, "and her start ran").toBe(4);
+        }),
+      ),
   );
 });
 

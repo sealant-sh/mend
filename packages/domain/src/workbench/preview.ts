@@ -60,7 +60,6 @@ export interface PreviewTarget {
   readonly recordedCommand: boolean;
 }
 
-/** The Service a preview's rule picks, with the binding it gives: the live attempt when bound. */
 export type PreviewSelection =
   | { readonly _tag: "Bound"; readonly service: Service; readonly attempt: SessionProcess }
   | {
@@ -123,7 +122,7 @@ export const resolvePreviewBinding = (
  */
 export const PreviewControl = Schema.Union([
   Schema.TaggedStruct("Automatic", { revision: Schema.Int }),
-  Schema.TaggedStruct("OwnerStopped", {
+  Schema.TaggedStruct("Stopped", {
     revision: Schema.Int,
     by: Schema.String,
     at: Schema.Date,
@@ -131,64 +130,65 @@ export const PreviewControl = Schema.Union([
 ]);
 export type PreviewControl = typeof PreviewControl.Type;
 
-/** A preview with no control row: requests may start it. */
-export const PREVIEW_CONTROL_INITIAL: PreviewControl = { _tag: "Automatic", revision: 0 };
+export type PreviewStoppedRead = Extract<PreviewControl, { readonly _tag: "Stopped" }> & {
+  readonly byName: string;
+};
+export type PreviewControlRead =
+  | Extract<PreviewControl, { readonly _tag: "Automatic" }>
+  | PreviewStoppedRead;
 
-/** What a person who decides a preview's control asked of it. */
+export const PREVIEW_CONTROL_INITIAL: Extract<PreviewControl, { readonly _tag: "Automatic" }> = {
+  _tag: "Automatic",
+  revision: 0,
+};
+
 export type PreviewControlIntent =
-  | { readonly _tag: "OwnerStop"; readonly by: string; readonly at: Date }
-  | { readonly _tag: "OwnerStart" };
+  | { readonly _tag: "Stop"; readonly by: string; readonly at: Date }
+  | { readonly _tag: "Start" };
 
-/**
- * The control once `intent` is applied. A Stop of a stopped preview, or a Start of an automatic
- * one, changes nothing: the revision moves only with the state.
- */
 export const changePreviewControl = (
   current: PreviewControl,
   intent: PreviewControlIntent,
 ): PreviewControl => {
   switch (intent._tag) {
-    case "OwnerStop":
-      return current._tag === "OwnerStopped"
+    case "Stop":
+      return current._tag === "Stopped"
         ? current
-        : { _tag: "OwnerStopped", revision: current.revision + 1, by: intent.by, at: intent.at };
-    case "OwnerStart":
+        : { _tag: "Stopped", revision: current.revision + 1, by: intent.by, at: intent.at };
+    case "Start":
       return current._tag === "Automatic"
         ? current
         : { _tag: "Automatic", revision: current.revision + 1 };
   }
 };
 
-/** Why a Service stopped. Only a person's Stop can be an owner's choice. */
 export type ServiceStopCause =
   | { readonly kind: "person"; readonly userId: string }
   | { readonly kind: "system"; readonly reason: "session-ended" | "removal" | "idle" };
 
-/** Why a Service started. Only a person's Start can clear an owner's Stop. */
 export type ServiceStartCause =
   | { readonly kind: "person"; readonly userId: string }
   | { readonly kind: "preview-request" }
   | { readonly kind: "system" };
 
 /**
- * Whether `person` decides the preview's control: its Service session's owner, as ADR 0017
- * Decision log 6 is written. Pending Yiannis: "any person's Stop" makes this `true`.
+ * The person whose Stop or Start of a Service decides its preview's control, or null when the cause
+ * decides nothing (ADR 0017, Decision log 6, decided by Yiannis, 2026-10-25): any person's, the
+ * owner's or a steerer's, and never the session's own workspace, which is its agent.
  */
-export const decidesPreviewControl = (person: string, sessionOwner: string | null): boolean =>
-  sessionOwner !== null && person === sessionOwner;
+export const previewControlDecider = (
+  cause: ServiceStopCause | ServiceStartCause | { readonly kind: "workspace" },
+): string | null => (cause.kind === "person" ? cause.userId : null);
 
-/** An attempt the gateway may deliver to: every field read from the Service and the attempt. */
 export interface PreviewBoundAttempt {
   readonly serviceId: ServiceId;
   readonly attemptId: SessionProcessId;
   readonly sessionId: SessionId;
   readonly workspaceId: SealantWorkspaceId;
   readonly port: number;
-  /** The platform session the process runs in: the forward is bound to it. */
   readonly platformSessionId: string;
 }
 
-/** The last attempt seen to answer: what a request-triggered start runs again. */
 export interface PreviewResumeSource {
   readonly serviceId: ServiceId;
   readonly sourceAttemptId: SessionProcessId;
@@ -203,11 +203,10 @@ export const PreviewGatewayRefusal = Schema.Literals([
 ]);
 export type PreviewGatewayRefusal = typeof PreviewGatewayRefusal.Type;
 
-/** What the gateway does with one request to a kept preview, read in one snapshot. */
 export type PreviewGatewayResolution =
   | {
-      readonly _tag: "OwnerStopped";
-      readonly control: Extract<PreviewControl, { readonly _tag: "OwnerStopped" }>;
+      readonly _tag: "Stopped";
+      readonly control: PreviewStoppedRead;
     }
   | {
       readonly _tag: "Bound";
@@ -215,10 +214,6 @@ export type PreviewGatewayResolution =
       readonly attempt: PreviewBoundAttempt;
     }
   | {
-      /**
-       * A live attempt not yet seen to answer, its process handle perhaps not recorded yet: a
-       * request waits for it, and nothing is delivered to it.
-       */
       readonly _tag: "Starting";
       readonly revision: number;
       readonly attemptId: SessionProcessId;
@@ -230,7 +225,6 @@ export type PreviewGatewayResolution =
     }
   | { readonly _tag: "Refused"; readonly reason: PreviewGatewayRefusal };
 
-/** A request-triggered start, once per (preview, revision, source). */
 export interface PreviewStartRequest {
   readonly previewId: PreviewId;
   readonly revision: number;
@@ -241,16 +235,10 @@ export interface PreviewStartRequest {
 
 const PREVIEW_START = "preview-start:";
 
-/**
- * The start id a request-triggered start runs under. Its attempt carries
- * `serviceStartCorrelation(serviceId, previewStartId(request))`, so a second start under the same
- * intent finds that attempt instead of starting another process.
- */
 export const previewStartId = (
   request: Pick<PreviewStartRequest, "previewId" | "revision" | "sourceAttemptId">,
 ): string => `${PREVIEW_START}${request.previewId}:${request.revision}:${request.sourceAttemptId}`;
 
-/** Whether a request to the preview started this attempt of `serviceId`, not a person. */
 export const startedByPreviewRequest = (
   serviceId: string,
   launchCorrelationId: string | null,
@@ -258,21 +246,15 @@ export const startedByPreviewRequest = (
   launchCorrelationId !== null &&
   launchCorrelationId.startsWith(serviceStartCorrelation(serviceId, PREVIEW_START));
 
-/** One recorded attempt of a Service, and whether a probe saw that attempt answer. */
 export interface PreviewAttemptEvidence {
   readonly attempt: SessionProcess;
   readonly reachable: boolean;
 }
 
-/** The Service whose attempt history decides a dormant preview's resume source, if any. */
 export const previewResumeCandidate = (selected: PreviewSelection): Service | null =>
   selected._tag === "Unbound" && selected.reason === "no-live-attempt" ? selected.service : null;
 
-/**
- * The attempt a request-triggered start runs again: the newest with a command that either answered
- * or was not itself started by a request. A request's start that never answered keeps its source,
- * and attempts recorded before attempt-tied readiness still qualify.
- */
+/** Attempts recorded before attempt-tied readiness (0139) still qualify as a source. */
 export const previewResumeSourceOf = (
   service: Service,
   history: ReadonlyArray<PreviewAttemptEvidence>,
@@ -290,17 +272,16 @@ export const previewResumeSourceOf = (
 };
 
 /**
- * What the gateway does with a request to `selected`'s preview. A removed preview is refused (the
- * gateway answers it as removed), an owner's Stop wins over a live attempt, and a dormant preview
- * resumes only its own Service. `history` is `previewResumeCandidate`'s attempts.
+ * A removed preview resolves to `service-missing`: the gateway answers it as removed. `history` is
+ * the attempts of `previewResumeCandidate(selected)`.
  */
 export const previewGatewayResolution = (
-  control: PreviewControl,
+  control: PreviewControlRead,
   selected: PreviewSelection,
   history: ReadonlyArray<PreviewAttemptEvidence>,
 ): PreviewGatewayResolution => {
   const removed = selected._tag === "Unbound" && selected.reason === "removed";
-  if (!removed && control._tag === "OwnerStopped") return { _tag: "OwnerStopped", control };
+  if (!removed && control._tag === "Stopped") return { _tag: "Stopped", control };
   if (selected._tag === "Unbound") {
     switch (selected.reason) {
       case "removed":
@@ -338,7 +319,7 @@ export const previewGatewayResolution = (
 };
 
 export const PreviewStartRefusal = Schema.Literals([
-  "owner-stopped",
+  "stopped",
   "control-changed",
   "preview-gone",
   "workspace-not-live",
@@ -352,7 +333,6 @@ export const PreviewStartRefusal = Schema.Literals([
 ]);
 export type PreviewStartRefusal = typeof PreviewStartRefusal.Type;
 
-/** Why a held request was not delivered, in the words of the page that says so. */
 export type PreviewStartReason =
   | "start timed out"
   | "workspace is not live"
@@ -367,7 +347,7 @@ export type PreviewStartReason =
   | "preview is unavailable";
 
 const START_REFUSAL_REASON = {
-  "owner-stopped": "preview is unavailable",
+  stopped: "preview is unavailable",
   "control-changed": "preview is unavailable",
   "preview-gone": "preview is unavailable",
   "workspace-not-live": "workspace is not live",
@@ -383,7 +363,6 @@ const START_REFUSAL_REASON = {
 export const previewStartReasonOf = (refusal: PreviewStartRefusal): PreviewStartReason =>
   START_REFUSAL_REASON[refusal];
 
-/** A request the gateway answered without delivering it. */
 export type PreviewUndelivered =
   | {
       readonly _tag: "DidNotStart";
@@ -391,17 +370,16 @@ export type PreviewUndelivered =
       readonly holdMs: number;
       readonly reason: PreviewStartReason;
     }
-  | { readonly _tag: "StoppedByOwner"; readonly serviceName: string };
+  | { readonly _tag: "Stopped"; readonly serviceName: string; readonly by: string };
 
 const holdText = (ms: number): string =>
   ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.round(ms / 1000)} s`;
 
-/** The page's one line: what happened, and that the request did not reach the app. */
 export const previewUndeliveredLine = (fact: PreviewUndelivered): string => {
   switch (fact._tag) {
     case "DidNotStart":
       return `preview · ${fact.serviceName} · did not start in ${holdText(fact.holdMs)} · ${fact.reason} · your request was not delivered`;
-    case "StoppedByOwner":
-      return `preview · ${fact.serviceName} · the owner stopped the preview · your request was not delivered`;
+    case "Stopped":
+      return `preview · ${fact.serviceName} · ${fact.by} stopped the preview · your request was not delivered`;
   }
 };

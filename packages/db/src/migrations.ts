@@ -3647,12 +3647,12 @@ const previewControlsMigration = Effect.gen(function* () {
   yield* sql`CREATE TABLE preview_controls (
     preview_id text PRIMARY KEY REFERENCES previews(id) ON DELETE CASCADE,
     revision integer NOT NULL DEFAULT 0 CHECK (revision >= 0),
-    state text NOT NULL CHECK (state IN ('automatic', 'owner-stopped')),
+    state text NOT NULL CHECK (state IN ('automatic', 'stopped')),
     stopped_by text,
     stopped_at timestamptz,
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT preview_controls_stop_facts CHECK (
-      CASE WHEN state = 'owner-stopped'
+      CASE WHEN state = 'stopped'
         THEN stopped_by IS NOT NULL AND stopped_at IS NOT NULL
         ELSE stopped_by IS NULL AND stopped_at IS NULL
       END

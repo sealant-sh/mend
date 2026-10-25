@@ -11,6 +11,7 @@ import {
   PREVIEW_CONTROL_INITIAL,
   PreviewControl,
   type PreviewControlIntent,
+  type PreviewControlRead,
   type PreviewGatewayResolution,
   previewGatewayResolution,
   previewResumeCandidate,
@@ -148,8 +149,8 @@ const controlOfRow = (row: typeof previewControls.$inferSelect | undefined) =>
   row === undefined
     ? Effect.succeed(PREVIEW_CONTROL_INITIAL)
     : Schema.decodeUnknownEffect(PreviewControl)(
-        row.state === "owner-stopped"
-          ? { _tag: "OwnerStopped", revision: row.revision, by: row.stoppedBy, at: row.stoppedAt }
+        row.state === "stopped"
+          ? { _tag: "Stopped", revision: row.revision, by: row.stoppedBy, at: row.stoppedAt }
           : { _tag: "Automatic", revision: row.revision },
       ).pipe(Effect.orDie);
 
@@ -160,7 +161,6 @@ const readControl = (tx: Reader, id: PreviewId) =>
     .where(eq(previewControls.previewId, id))
     .pipe(Effect.flatMap(([row]) => controlOfRow(row)));
 
-/** The Service's attempts newest first, each with whether a probe saw that attempt answer. */
 const historyOf = (tx: Reader, service: Service) =>
   tx
     .select({
@@ -187,13 +187,34 @@ const historyOf = (tx: Reader, service: Service) =>
       ),
     );
 
+const readControlRead = (tx: Reader, id: PreviewId) =>
+  tx
+    .select({
+      control: previewControls,
+      byName: sql<string>`coalesce(nullif((select u.name from "user" u
+        where u.id = ${previewControls.stoppedBy}), ''), 'a member')`,
+    })
+    .from(previewControls)
+    .where(eq(previewControls.previewId, id))
+    .pipe(
+      Effect.flatMap(([row]) =>
+        Effect.map(
+          controlOfRow(row?.control),
+          (control): PreviewControlRead =>
+            control._tag === "Stopped"
+              ? { ...control, byName: row?.byName ?? "a member" }
+              : control,
+        ),
+      ),
+    );
+
 const readGatewaySnapshot = (tx: Reader, id: PreviewId) =>
   Effect.gen(function* () {
     const [row] = yield* tx.select().from(previews).where(eq(previews.id, id)).limit(1);
     if (row === undefined) return null;
     const preview = yield* decodePreview(row);
     const targets = preview.worktreeId === null ? [] : yield* targetsOf(tx, preview.worktreeId);
-    const control = yield* readControl(tx, id);
+    const control = yield* readControlRead(tx, id);
     const selected = selectPreviewTarget(preview, targets);
     const candidate = previewResumeCandidate(selected);
     const history = candidate === null ? [] : yield* historyOf(tx, candidate);
@@ -333,8 +354,8 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
               .update(previewControls)
               .set({
                 revision: next.revision,
-                ...(next._tag === "OwnerStopped"
-                  ? { state: "owner-stopped", stoppedBy: next.by, stoppedAt: next.at }
+                ...(next._tag === "Stopped"
+                  ? { state: "stopped", stoppedBy: next.by, stoppedAt: next.at }
                   : { state: "automatic", stoppedBy: null, stoppedAt: null }),
                 updatedAt: yield* DateTime.nowAsDate,
               })

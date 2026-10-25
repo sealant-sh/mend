@@ -69,13 +69,6 @@ import {
 import { cookiePolicyOf } from "./preview-routing.ts";
 import { PreviewTargets } from "./preview-targets.ts";
 
-/**
- * The preview gateway (ADR 0017, delivery 7): a raw `node:http` listener that admits each request
- * through step 6's `servePreviewRequest` and relays it, as a stream, to the preview's dev server
- * over a forward lent for that viewer. A stopped preview is started once for every request that
- * reaches it, and each request is held, its body unread, until the start ends.
- */
-
 /** The gateway's own ceilings. They are not ADR 0004 budgets, whose `0` opens the exposure gate. */
 export interface PreviewGatewayLimits {
   /** Requests and upgrades one preview holds open, a held one included. */
@@ -93,9 +86,7 @@ export type PreviewBodyCap =
 export interface PreviewGatewaySettings {
   readonly bind: string;
   readonly port: number;
-  /** How long a held request waits for a stopped preview to start. */
   readonly startHoldMs: number;
-  /** A streaming cap on one request body. */
   readonly bodyCap: PreviewBodyCap;
   readonly limits: PreviewGatewayLimits;
 }
@@ -117,9 +108,8 @@ export class PreviewListenFailed extends Schema.TaggedError<PreviewListenFailed>
   { address: Schema.String, message: Schema.String },
 ) {}
 
-/** One viewer's pool: dev servers close idle keep-alive connections after about 5 s. */
+/** Dev servers close idle keep-alive connections after about 5 s (Node's `keepAliveTimeout`). */
 const POOL = { maxSockets: 6, maxFreeSockets: 2, freeSocketMs: 4_000, idleMs: 10_000 } as const;
-/** How long an answered socket that may still be uploading stays open before it is destroyed. */
 const UNREAD_LINGER_MS = 2_000;
 const REFRESH_EVERY = "1 second";
 const LENDING_SWEEP_EVERY = "50 seconds";
@@ -141,11 +131,9 @@ type Downstream =
 interface Exchange {
   readonly head: PreviewRequestHead;
   readonly downstream: Downstream;
-  /** Something of an answer reached the browser: a response head, a 101, or a whole answer. */
   committed: boolean;
 }
 
-/** An immutable attempt under one control revision: what a pool and its sockets belong to. */
 interface Generation {
   readonly key: string;
   readonly attempt: PreviewBoundAttempt;
@@ -155,11 +143,10 @@ interface Pool {
   readonly key: string;
   readonly viewerId: string;
   readonly generation: Generation;
-  /** A forward of the pool's own, outside its Agent: dialled for this viewer, counted, dropped with it. */
   readonly open: () => ForwardSocket;
   readonly agent: ForwardAgent;
   readonly requests: Set<ClientRequest>;
-  /** Both sockets of each upgraded pair. An Agent forgets a socket once it is upgraded. */
+  /** A Node `Agent` forgets a socket once it is upgraded. */
   readonly upgraded: Set<Duplex>;
   closed: boolean;
   idle: NodeJS.Timeout | null;
@@ -174,7 +161,6 @@ interface StartFrom {
   readonly sourceAttemptId: PreviewBoundAttempt["attemptId"];
 }
 
-/** One start for every request that reaches a stopped preview, published before it runs. */
 interface Wave {
   readonly deadline: number;
   readonly done: Deferred.Deferred<Outcome>;
@@ -191,7 +177,6 @@ interface Cell {
 
 const DONE: Effect.Effect<undefined> = Effect.succeed(undefined);
 
-/** Ends one exchange once, with a page when nothing of the app's answer went out yet. */
 type End = (page?: PreviewAnswer) => void;
 
 const pairsOf = (raw: ReadonlyArray<string>): Array<HeaderPair> => {
@@ -216,7 +201,6 @@ const declaredLength = (head: PreviewRequestHead): number | null => {
   return length === undefined ? null : Number(length);
 };
 
-/** Methods a gateway may send twice: the first may have reached nothing but a closing socket. */
 const IDEMPOTENT = new Set(["GET", "HEAD", "OPTIONS"]);
 
 const mayCarryBody = (head: PreviewRequestHead): boolean =>
@@ -312,7 +296,6 @@ const undelivered = (status: 502 | 503 | 504, fact: string): DialDisposition => 
 });
 const NOT_LENT: DialDisposition = { _tag: "NotLent" };
 
-/** What a refused dial answers. A dial refusal always comes before any byte reached the app. */
 const DIAL_DISPOSITION = {
   "connection-refused": undelivered(502, "nothing listens"),
   "name-unresolved": undelivered(502, "nothing listens"),
@@ -345,7 +328,6 @@ const DIAL_DISPOSITION = {
   cancelled: undelivered(503, "the forward was given up"),
 } as const satisfies Record<ForwardIssueReason, DialDisposition>;
 
-/** A dial the gateway refused itself, at its forward ceiling. */
 class ForwardCeilingReached extends Error {}
 
 const generationOf = (bound: Extract<PreviewGatewayResolution, { _tag: "Bound" }>): Generation => ({
@@ -357,12 +339,13 @@ const refusedWith = (reply: PreviewAnswer): Outcome => ({ _tag: "Refused", answe
 
 type Route = Outcome | { readonly _tag: "Start"; readonly from: StartFrom };
 
-/** What one resolution means for a request: deliver, refuse, or start the preview first. */
 const routeOf = (serviceName: string, resolution: PreviewGatewayResolution | null): Route => {
   if (resolution === null) return refusedWith(NOT_FOUND);
   switch (resolution._tag) {
-    case "OwnerStopped":
-      return refusedWith(undeliveredAnswer({ _tag: "StoppedByOwner", serviceName }));
+    case "Stopped":
+      return refusedWith(
+        undeliveredAnswer({ _tag: "Stopped", serviceName, by: resolution.control.byName }),
+      );
     case "Refused": {
       const refused = REFUSED[resolution.reason];
       return refusedWith(gatewayPage(refused.status, notDelivered(serviceName, refused.fact)));
@@ -409,13 +392,9 @@ export const makePreviewGatewayLayer = (
       const run = Effect.runCallbackWith(yield* Effect.context<PreviewIdentity | PreviewConfig>());
       const forwarding = yield* Effect.context<ForwardAdapter>();
 
-      /** Only occupied previews: a cell goes once nothing of it is open. */
       const cells = new Map<PreviewId, Cell>();
-      /** The latest admitted delivery per preview, in ms on the gateway's Clock, for step 12. */
-      const latestActivity = new Map<PreviewId, number>();
       /** Sockets Node stops tracking once it hands them over: upgrades and CONNECTs. */
       const rawSockets = new Set<Duplex>();
-      /** Sockets with an exchange outstanding: a pipelined request beyond it is refused. */
       const busy = new WeakSet<object>();
       let openExchanges = 0;
       let openForwards = 0;
@@ -441,7 +420,6 @@ export const makePreviewGatewayLayer = (
         return cell;
       };
 
-      /** Pre-delivery answers never call `ServerResponse.end` on a body that may still arrive. */
       const respond = (exchange: Exchange, reply: PreviewAnswer): void => {
         const { downstream } = exchange;
         if (exchange.committed) return destroyDownstream(downstream);
@@ -563,8 +541,6 @@ export const makePreviewGatewayLayer = (
       };
 
       /**
-       * One upstream request through the pool. Nothing reaches the app until its forward is open and
-       * the generation is still current; only then does Continue go out and the body start to flow.
        * A `retryable` request whose reused forward closed before any answer is sent once more, on a
        * forward of its own: the app may have closed that keep-alive socket as the request went out.
        */
@@ -606,10 +582,11 @@ export const makePreviewGatewayLayer = (
               if (ended) return;
               if (pool.closed) {
                 sent.destroy();
-                return end(gatewayPage(503, notDelivered(cell.serviceName, "the preview restarted")));
+                return end(
+                  gatewayPage(503, notDelivered(cell.serviceName, "the preview restarted")),
+                );
               }
               delivered = true;
-              latestActivity.set(cell.previewId, clock.currentTimeMillisUnsafe());
               handlers.deliver(sent, end);
             };
             sent.once("socket", (socket) => {
@@ -620,8 +597,6 @@ export const makePreviewGatewayLayer = (
               responded = true;
             });
             handlers.answered(sent, end);
-            // After the app's head went out a page may not say "not delivered", and after the
-            // browser's head went out `respond` destroys instead.
             sent.on("error", (error) => {
               if (ended) return;
               if (handlers.retryable && !fresh && delivered && !responded && sent.reusedSocket) {
@@ -636,7 +611,6 @@ export const makePreviewGatewayLayer = (
             });
           };
           send(false);
-          // Interrupted: the listener answers, so the destroyed request's own error must not.
           return Effect.sync(() => {
             ended = true;
             upstream.destroy();
@@ -719,7 +693,6 @@ export const makePreviewGatewayLayer = (
           deliver: (upstream) => upstream.end(),
           answered: (upstream, end) => {
             upstream.once("upgrade", (answered, app, appHead) => {
-              // The browser's socket destroys itself on error (`accept`); its close ends the app's.
               app.on("error", () => browser.destroy());
               if (pool.closed || browser.destroyed) {
                 app.destroy();
@@ -805,13 +778,9 @@ export const makePreviewGatewayLayer = (
           return startedOutcome(cell, yield* targets.snapshot(cell.previewId));
         }).pipe(
           Effect.catchTag("PreviewStartFailed", (failed) =>
-            Effect.succeed(
-              failed.reason === "owner-stopped"
-                ? refusedWith(
-                    undeliveredAnswer({ _tag: "StoppedByOwner", serviceName: cell.serviceName }),
-                  )
-                : didNotStart(cell, previewStartReasonOf(failed.reason)),
-            ),
+            failed.reason === "stopped"
+              ? Effect.map(targets.snapshot(cell.previewId), (read) => startedOutcome(cell, read))
+              : Effect.succeed(didNotStart(cell, previewStartReasonOf(failed.reason))),
           ),
         );
         const bounded = Effect.suspend(() =>
@@ -867,7 +836,6 @@ export const makePreviewGatewayLayer = (
         );
       };
 
-      /** The first waiter publishes the wave and pays for it; a waiter leaving leaves it running. */
       const joinWave = (cell: Cell, from: StartFrom, viewerId: string): Effect.Effect<Outcome> =>
         Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
@@ -1065,7 +1033,6 @@ export const makePreviewGatewayLayer = (
           }
         });
 
-      /** Closes each selected pool whose viewer the workspace no longer lends to. */
       const recheckLending = (selected: (pool: Pool) => boolean): Effect.Effect<void> =>
         Effect.suspend(() =>
           Effect.forEach(
@@ -1073,9 +1040,9 @@ export const makePreviewGatewayLayer = (
               [...cell.pools.values()].filter(selected).map((pool) => ({ cell, pool })),
             ),
             ({ cell, pool }) =>
-              asSealantUser(pool.viewerId)(
-                caller.mayAct(pool.generation.attempt.workspaceId),
-              ).pipe(Effect.catch(() => Effect.sync(() => closePool(cell, pool)))),
+              asSealantUser(pool.viewerId)(caller.mayAct(pool.generation.attempt.workspaceId)).pipe(
+                Effect.catch(() => Effect.sync(() => closePool(cell, pool))),
+              ),
             { concurrency: 4, discard: true },
           ),
         );
@@ -1087,9 +1054,7 @@ export const makePreviewGatewayLayer = (
           case "worktree":
           case "project": {
             const { projectId } = event;
-            return refreshCells(
-              [...cells.values()].filter((cell) => cell.projectId === projectId),
-            );
+            return refreshCells([...cells.values()].filter((cell) => cell.projectId === projectId));
           }
           case "user": {
             const { userId } = event;
@@ -1128,7 +1093,7 @@ export const makePreviewGatewayLayer = (
       server.on("upgrade", (request, socket, head) =>
         accept({ kind: "raw", request, socket, head }),
       );
-      // Node emits CONNECT apart from `request`; admission answers it 405.
+      // Node emits CONNECT apart from `request`.
       server.on("connect", (request, socket, head) =>
         accept({ kind: "raw", request, socket, head }),
       );
@@ -1190,10 +1155,7 @@ export const makePreviewGatewayLayer = (
       yield* supervised(
         "preview gateway: a lending sweep failed",
         recheckLending(() => true),
-      ).pipe(
-        Effect.repeat(Schedule.spaced(LENDING_SWEEP_EVERY)),
-        Effect.forkScoped,
-      );
+      ).pipe(Effect.repeat(Schedule.spaced(LENDING_SWEEP_EVERY)), Effect.forkScoped);
       yield* Effect.logInfo("preview gateway listening").pipe(
         Effect.annotateLogs({ bind: settings.bind, port: settings.port }),
       );

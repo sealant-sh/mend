@@ -15,25 +15,28 @@ import type { CreateOptions } from "@sealant/sdk";
 import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { now, sealantLaunchLayer, setup, withEngine, type World } from "./engine/fixture.ts";
+import {
+  now,
+  sealantLaunchLayer,
+  servedSocketApis,
+  setup,
+  withEngine,
+  type World,
+} from "./engine/fixture.ts";
 import { adapterLayer, echo, fakeForward, refusal, scriptedSealant } from "./forward-fixture.ts";
 
 const OWNER = "user-fixture";
 const STEERER = "user-maria";
 const byOwner: ServiceStopCause = { kind: "person", userId: OWNER };
 const bySteerer: ServiceStopCause = { kind: "person", userId: STEERER };
+const idle: ServiceStopCause = { kind: "system", reason: "idle" };
 
 const isService = (argv: ReadonlyArray<string>) => argv[0] === "pnpm";
 
-/**
- * The platform these worlds start Services on: each open can be held on a gate or answer a
- * process that has already exited, and every close is logged.
- */
 const servicePlatform = () => {
   const gate: { current: Deferred.Deferred<void> | null } = { current: null };
   const opened: Array<ReadonlyArray<string>> = [];
   const closed: string[] = [];
-  /** Processes that exited as they started: nothing of theirs ever listens. */
   const dead = new Set<string>();
   const control = { exitOnOpen: false, failClose: false };
   const layer = Layer.effect(
@@ -69,7 +72,6 @@ const servicePlatform = () => {
   return { layer, gate, opened, closed, control, dead };
 };
 
-/** A workspace port answers while a Service process with a handle runs, or when forced to. */
 const listeningPort = (dead: ReadonlySet<string>) => {
   const state: { world: World | null; forced: boolean } = { world: null, forced: false };
   const listening = () =>
@@ -88,12 +90,7 @@ const listeningPort = (dead: ReadonlySet<string>) => {
   return { state, layer: adapterLayer(scripted.layer) };
 };
 
-const preparePreview = (
-  world: World,
-  tmp: string,
-  /** The executor's creator is on record from its launch on (a person executor's rule applies). */
-  creatorRecorded = false,
-) =>
+const preparePreview = (world: World, tmp: string, creatorRecorded = false) =>
   Effect.gen(function* () {
     const project = yield* setup(tmp, world);
     const engine = yield* SessionEngine;
@@ -166,7 +163,7 @@ const until = (condition: () => boolean, what: string) =>
   });
 
 describe("a preview's control", () => {
-  it("an owner's Stop latches, after a crash and when the close fails too; a steerer's does not", async () => {
+  it("a person's Stop latches, a steerer's too, after a crash and when the close fails; the agent's own does not", async () => {
     const platform = servicePlatform();
     const port = listeningPort(platform.dead);
     await withEngine(
@@ -174,10 +171,13 @@ describe("a preview's control", () => {
         Effect.gen(function* () {
           port.state.world = world;
           const { engine, service, preview, session } = yield* preparePreview(world, tmp);
-          yield* engine.stopService(service.id, bySteerer);
-          expect(world.previewControls.get(preview.id) ?? PREVIEW_CONTROL_INITIAL).toEqual(
-            PREVIEW_CONTROL_INITIAL,
-          );
+          const agent = servedSocketApis.get(session.id);
+          if (agent === undefined) return yield* Effect.die("the session serves no socket");
+          yield* agent.stopService(service.id);
+          expect(
+            world.previewControls.get(preview.id) ?? PREVIEW_CONTROL_INITIAL,
+            "the agent's own Stop, over its socket",
+          ).toEqual(PREVIEW_CONTROL_INITIAL);
 
           const crashed = yield* engine.runService(
             session.id,
@@ -193,11 +193,14 @@ describe("a preview's control", () => {
             crashedAttempt.id,
             new SessionProcess({ ...crashedAttempt, exitedAt: now(), status: "exited" }),
           );
-          yield* engine.stopService(service.id, byOwner);
-          expect(world.previewControls.get(preview.id), "a Stop after a crash").toMatchObject({
-            _tag: "OwnerStopped",
+          yield* engine.stopService(service.id, bySteerer);
+          expect(
+            world.previewControls.get(preview.id),
+            "a steerer's Stop after a crash",
+          ).toMatchObject({
+            _tag: "Stopped",
             revision: 1,
-            by: OWNER,
+            by: STEERER,
           });
 
           yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
@@ -212,8 +215,9 @@ describe("a preview's control", () => {
             "the process is still recorded live",
           ).toBeNull();
           expect(world.previewControls.get(preview.id)).toMatchObject({
-            _tag: "OwnerStopped",
+            _tag: "Stopped",
             revision: 3,
+            by: OWNER,
           });
           platform.control.failClose = false;
           yield* engine.stopService(service.id, byOwner);
@@ -223,7 +227,7 @@ describe("a preview's control", () => {
     );
   });
 
-  it("an owner's start or restart clears the latch; a steerer's does not", async () => {
+  it("a person's start or restart clears the latch, a steerer's too; the agent's own does not", async () => {
     const platform = servicePlatform();
     const port = listeningPort(platform.dead);
     await withEngine(
@@ -233,24 +237,28 @@ describe("a preview's control", () => {
           const { engine, service, preview, session } = yield* preparePreview(world, tmp);
           yield* engine.stopService(service.id, byOwner);
           const stopped = world.previewControls.get(preview.id);
-          expect(stopped).toMatchObject({ _tag: "OwnerStopped", revision: 1 });
+          expect(stopped).toMatchObject({ _tag: "Stopped", revision: 1 });
 
-          yield* engine.runService(
-            session.id,
-            ["pnpm", "dev"],
-            3000,
-            "web",
-            "tcp",
-            "http",
-            STEERER,
-          );
+          const agent = servedSocketApis.get(session.id);
+          if (agent === undefined) return yield* Effect.die("the session serves no socket");
+          yield* agent.runService(["pnpm", "dev"], 3000, "web", "tcp", "http");
+          yield* agent.restartService(service.id);
+          expect(
+            world.previewControls.get(preview.id),
+            "the agent's own start and restart",
+          ).toEqual(stopped);
+
           yield* engine.restartService(service.id, STEERER);
-          expect(world.previewControls.get(preview.id), "a steerer's start").toEqual(stopped);
-
-          yield* engine.restartService(service.id, OWNER);
-          expect(world.previewControls.get(preview.id)).toEqual({
+          expect(world.previewControls.get(preview.id), "a steerer's restart").toEqual({
             _tag: "Automatic",
             revision: 2,
+          });
+
+          yield* engine.stopService(service.id, bySteerer);
+          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
+          expect(world.previewControls.get(preview.id), "the owner's start").toEqual({
+            _tag: "Automatic",
+            revision: 4,
           });
         }),
       { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
@@ -296,7 +304,7 @@ describe("a preview's control between two same-named Services in one worktree", 
 
           yield* engine.stopService(service.id, byOwner);
           expect(world.previewControls.get(preview.id), "the selected one's owner").toMatchObject({
-            _tag: "OwnerStopped",
+            _tag: "Stopped",
             revision: 1,
           });
           yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
@@ -319,7 +327,7 @@ describe("ensurePreviewRunning", () => {
         Effect.gen(function* () {
           port.state.world = world;
           const { engine, service, preview, source } = yield* preparePreview(world, tmp);
-          yield* engine.stopService(service.id, bySteerer);
+          yield* engine.stopService(service.id, idle);
           const before = platform.opened.length;
           const request = requestFor(world, preview, source);
           const [first, second] = yield* Effect.all(
@@ -355,7 +363,7 @@ describe("ensurePreviewRunning", () => {
         Effect.gen(function* () {
           port.state.world = world;
           const { engine, service, preview, session } = yield* preparePreview(world, tmp);
-          yield* engine.stopService(service.id, bySteerer);
+          yield* engine.stopService(service.id, idle);
           const known = new Set(serviceAttempts(world, service.id).map((attempt) => attempt.id));
           const gate = yield* Deferred.make<void>();
           platform.gate.current = gate;
@@ -390,7 +398,7 @@ describe("ensurePreviewRunning", () => {
         Effect.gen(function* () {
           port.state.world = world;
           const { engine, service, preview, source } = yield* preparePreview(world, tmp);
-          yield* engine.stopService(service.id, bySteerer);
+          yield* engine.stopService(service.id, idle);
           platform.control.exitOnOpen = true;
           const before = platform.opened.length;
           expect(
@@ -414,7 +422,7 @@ describe("ensurePreviewRunning", () => {
         Effect.gen(function* () {
           port.state.world = world;
           const { engine, service, preview, source } = yield* preparePreview(world, tmp);
-          yield* engine.stopService(service.id, bySteerer);
+          yield* engine.stopService(service.id, idle);
           const request = requestFor(world, preview, source);
           const sourceRow = world.processes.get(source);
           if (sourceRow === undefined) return yield* Effect.die("missing source row");
@@ -441,7 +449,7 @@ describe("ensurePreviewRunning", () => {
     );
   });
 
-  it("an owner's Stop committed while the start is under way ends the process it started", async () => {
+  it("a person's Stop committed while the start is under way ends the process it started", async () => {
     const platform = servicePlatform();
     const port = listeningPort(platform.dead);
     await withEngine(
@@ -449,7 +457,7 @@ describe("ensurePreviewRunning", () => {
         Effect.gen(function* () {
           port.state.world = world;
           const { engine, service, preview, source } = yield* preparePreview(world, tmp);
-          yield* engine.stopService(service.id, bySteerer);
+          yield* engine.stopService(service.id, idle);
           const known = new Set(serviceAttempts(world, service.id).map((attempt) => attempt.id));
           const gate = yield* Deferred.make<void>();
           platform.gate.current = gate;
@@ -462,11 +470,11 @@ describe("ensurePreviewRunning", () => {
           );
           const stop = yield* Effect.forkChild(engine.stopService(service.id, byOwner));
           yield* until(
-            () => world.previewControls.get(preview.id)?._tag === "OwnerStopped",
+            () => world.previewControls.get(preview.id)?._tag === "Stopped",
             "the owner's Stop recorded before its turn",
           );
           yield* Deferred.succeed(gate, undefined);
-          expect(yield* Fiber.join(start)).toBe("owner-stopped");
+          expect(yield* Fiber.join(start)).toBe("stopped");
           yield* Fiber.join(stop);
           const started = serviceAttempts(world, service.id).find(
             (attempt) => !known.has(attempt.id),
@@ -486,7 +494,7 @@ describe("ensurePreviewRunning", () => {
         Effect.gen(function* () {
           port.state.world = world;
           const { engine, service, preview, source } = yield* preparePreview(world, tmp);
-          yield* engine.stopService(service.id, bySteerer);
+          yield* engine.stopService(service.id, idle);
           const known = new Set(serviceAttempts(world, service.id).map((attempt) => attempt.id));
           const gate = yield* Deferred.make<void>();
           platform.gate.current = gate;
@@ -505,7 +513,7 @@ describe("ensurePreviewRunning", () => {
     );
   });
 
-  it("refuses an owner-stopped preview, a stale request, a busy port, and a workspace that is not live", async () => {
+  it("refuses a stopped preview, a stale request, a busy port, and a workspace that is not live", async () => {
     const platform = servicePlatform();
     const port = listeningPort(platform.dead);
     await withEngine(
@@ -516,10 +524,10 @@ describe("ensurePreviewRunning", () => {
           yield* engine.stopService(service.id, byOwner);
           expect(
             yield* refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, source))),
-          ).toBe("owner-stopped");
+          ).toBe("stopped");
 
           yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
-          yield* engine.stopService(service.id, bySteerer);
+          yield* engine.stopService(service.id, idle);
           const stale = { ...requestFor(world, preview, source), revision: 0 };
           expect(yield* refusalOf(engine.ensurePreviewRunning(stale))).toBe("control-changed");
           const latest = serviceAttempts(world, service.id).at(-1)?.id;
@@ -537,7 +545,6 @@ describe("ensurePreviewRunning", () => {
           expect(platform.opened.length).toBe(before);
           port.state.forced = false;
 
-          // What a session whose workspace ended reads as.
           const row = world.sessions.get(session.id);
           if (row === undefined) return yield* Effect.die("missing session row");
           world.sessions.set(session.id, new Session({ ...row, sealantWorkspaceId: null }));
@@ -563,8 +570,7 @@ describe("ensurePreviewRunning", () => {
             true,
           );
           expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
-          yield* engine.stopService(service.id, bySteerer);
-          // The Service's last starter is no longer a member of the project's organization.
+          yield* engine.stopService(service.id, idle);
           world.serviceStarters.set(service.id, "user-carol");
           const before = platform.opened.length;
           const refused = yield* Effect.result(

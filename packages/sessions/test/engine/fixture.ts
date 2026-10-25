@@ -107,6 +107,7 @@ import {
   type Preview,
   PREVIEW_CONTROL_INITIAL,
   type PreviewControl,
+  type PreviewControlRead,
   previewGatewayResolution,
   previewResumeCandidate,
   type PreviewTarget,
@@ -1387,11 +1388,8 @@ export interface World {
   readonly serviceStarters: Map<string, string>;
   readonly serviceForwards: Map<string, ServiceForward>;
   readonly serviceObservations: Map<string, ServiceObservation>;
-  /** The attempt each probe observation names (0139), by observation id. */
   readonly observationAttempts: Map<string, SessionProcessId>;
-  /** Previews by id, as a test allocates them (`PreviewsRepo.ensureForWorktree` is not faked). */
   readonly previews: Map<string, Preview>;
-  /** Each preview's control row; absent is `PREVIEW_CONTROL_INITIAL`. */
   readonly previewControls: Map<string, PreviewControl>;
   readonly changes: Map<string, Change>;
   readonly checkpoints: Array<Checkpoint>;
@@ -2001,7 +1999,6 @@ const serviceAttemptsIn = (world: World, service: Service) =>
       process.kind === "service",
   );
 
-/** The repository's reads over the world's rows, decided by the domain's own rules. */
 const previewsLayer = (world: World) => {
   const targetsOf = (worktreeId: string): ReadonlyArray<PreviewTarget> => {
     const sessionIds = new Set(
@@ -2036,7 +2033,9 @@ const previewsLayer = (world: World) => {
             reachable: attemptReachedIn(world, attempt.id),
           }));
     const control = world.previewControls.get(id) ?? PREVIEW_CONTROL_INITIAL;
-    return { preview, resolution: previewGatewayResolution(control, selected, history) };
+    const read: PreviewControlRead =
+      control._tag === "Stopped" ? { ...control, byName: control.by } : control;
+    return { preview, resolution: previewGatewayResolution(read, selected, history) };
   };
   return Layer.mock(PreviewsRepo, {
     controlOf: (id) => Effect.sync(() => world.previewControls.get(id) ?? PREVIEW_CONTROL_INITIAL),

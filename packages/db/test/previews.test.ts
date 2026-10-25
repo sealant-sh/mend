@@ -440,14 +440,14 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         const { preview } = yield* live("control");
         const previews = yield* PreviewsRepo;
         expect(yield* previews.controlOf(preview.id)).toEqual(PREVIEW_CONTROL_INITIAL);
-        expect(yield* previews.changeControl(preview.id, { _tag: "OwnerStart" })).toEqual(
+        expect(yield* previews.changeControl(preview.id, { _tag: "Start" })).toEqual(
           PREVIEW_CONTROL_INITIAL,
         );
         const at = new Date("2026-10-25T08:00:00Z");
         const stops = yield* Effect.all(
           Array.from({ length: 8 }, (_, index) =>
             previews.changeControl(preview.id, {
-              _tag: "OwnerStop",
+              _tag: "Stop",
               by: "alice",
               at: new Date(at.getTime() + index),
             }),
@@ -455,14 +455,14 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           { concurrency: "unbounded" },
         );
         for (const stopped of stops)
-          expect(stopped).toMatchObject({ _tag: "OwnerStopped", revision: 1 });
+          expect(stopped).toMatchObject({ _tag: "Stopped", revision: 1 });
         const stopped = yield* previews.controlOf(preview.id);
         expect(stops).toContainEqual(stopped);
-        expect(yield* previews.changeControl(preview.id, { _tag: "OwnerStart" })).toEqual({
+        expect(yield* previews.changeControl(preview.id, { _tag: "Start" })).toEqual({
           _tag: "Automatic",
           revision: 2,
         });
-        expect(yield* previews.changeControl(preview.id, { _tag: "OwnerStart" })).toEqual({
+        expect(yield* previews.changeControl(preview.id, { _tag: "Start" })).toEqual({
           _tag: "Automatic",
           revision: 2,
         });
@@ -477,8 +477,8 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
             ),
           );
         for (const [state, by, stoppedAt, constraint] of [
-          ["owner-stopped", null, at, "preview_controls_stop_facts"],
-          ["owner-stopped", "alice", null, "preview_controls_stop_facts"],
+          ["stopped", null, at, "preview_controls_stop_facts"],
+          ["stopped", "alice", null, "preview_controls_stop_facts"],
           ["automatic", "alice", at, "preview_controls_stop_facts"],
           ["paused", null, null, "preview_controls_state_check"],
         ] as const) {
@@ -524,7 +524,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
     );
   });
 
-  it("binds the oldest live attempt with its workspace, port and platform session, and an owner's Stop wins", async () => {
+  it("binds the oldest live attempt with its workspace, port and platform session, and a person's Stop wins, named", async () => {
     await run(
       Effect.gen(function* () {
         const { preview } = yield* live("bound");
@@ -555,15 +555,21 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         yield* sql`UPDATE session_processes SET status = 'running', sealant_session_id = 'pty-att-bound-1'
           WHERE id = 'att-bound-1'`;
         const stopped = yield* previews.changeControl(preview.id, {
-          _tag: "OwnerStop",
+          _tag: "Stop",
           by: "alice",
           at: new Date("2026-10-25T08:00:00Z"),
         });
         expect((yield* previews.gatewaySnapshot(preview.id))?.resolution).toEqual({
-          _tag: "OwnerStopped",
-          control: stopped,
+          _tag: "Stopped",
+          control: { ...stopped, byName: "Alice" },
         });
-        yield* previews.changeControl(preview.id, { _tag: "OwnerStart" });
+        yield* previews.changeControl(preview.id, { _tag: "Start" });
+        yield* previews.changeControl(preview.id, { _tag: "Stop", by: "gone", at: new Date() });
+        expect(
+          (yield* previews.gatewaySnapshot(preview.id))?.resolution,
+          "a person with no name, or no row, reads as a member",
+        ).toMatchObject({ _tag: "Stopped", control: { by: "gone", byName: "a member" } });
+        yield* previews.changeControl(preview.id, { _tag: "Start" });
         yield* sql`UPDATE session_processes SET sealant_session_id = NULL WHERE id = 'att-bound-1'`;
         expect((yield* previews.gatewaySnapshot(preview.id))?.resolution).toEqual({
           _tag: "Refused",

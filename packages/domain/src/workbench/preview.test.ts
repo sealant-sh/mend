@@ -16,10 +16,10 @@ import {
 } from "../ids.ts";
 import {
   changePreviewControl,
-  decidesPreviewControl,
+  previewControlDecider,
   Preview,
   PREVIEW_CONTROL_INITIAL,
-  type PreviewControl,
+  type PreviewControlRead,
   previewGatewayResolution,
   previewResumeCandidate,
   previewStartId,
@@ -281,31 +281,33 @@ describe("previewUndeliveredLine", () => {
     );
   });
 
-  it("says the owner stopped it", () => {
-    expect(previewUndeliveredLine({ _tag: "StoppedByOwner", serviceName: "web" })).toBe(
-      "preview · web · the owner stopped the preview · your request was not delivered",
+  it("says who stopped it", () => {
+    expect(previewUndeliveredLine({ _tag: "Stopped", serviceName: "web", by: "Carol" })).toBe(
+      "preview · web · Carol stopped the preview · your request was not delivered",
     );
   });
 });
 
-describe("decidesPreviewControl", () => {
-  it("is the Service session's owner, and nobody else, while Decision log 6 stands as written", () => {
-    expect(decidesPreviewControl("owner", "owner")).toBe(true);
-    expect(decidesPreviewControl("steerer", "owner")).toBe(false);
-    expect(decidesPreviewControl("owner", null)).toBe(false);
+describe("previewControlDecider", () => {
+  it("is any person, owner or steerer, and never the session's own workspace or Mend", () => {
+    expect(previewControlDecider({ kind: "person", userId: "owner" })).toBe("owner");
+    expect(previewControlDecider({ kind: "person", userId: "steerer" })).toBe("steerer");
+    expect(previewControlDecider({ kind: "workspace" })).toBe(null);
+    expect(previewControlDecider({ kind: "system", reason: "idle" })).toBe(null);
+    expect(previewControlDecider({ kind: "preview-request" })).toBe(null);
   });
 });
 
 describe("changePreviewControl", () => {
-  const stop = { _tag: "OwnerStop", by: "owner", at } as const;
+  const stop = { _tag: "Stop", by: "owner", at } as const;
   it("moves the revision on each change of state, and on nothing else", () => {
     const stopped = changePreviewControl(PREVIEW_CONTROL_INITIAL, stop);
-    expect(stopped).toEqual({ _tag: "OwnerStopped", revision: 1, by: "owner", at });
+    expect(stopped).toEqual({ _tag: "Stopped", revision: 1, by: "owner", at });
     expect(changePreviewControl(stopped, { ...stop, by: "again", at: new Date(0) })).toBe(stopped);
-    const started = changePreviewControl(stopped, { _tag: "OwnerStart" });
+    const started = changePreviewControl(stopped, { _tag: "Start" });
     expect(started).toEqual({ _tag: "Automatic", revision: 2 });
-    expect(changePreviewControl(started, { _tag: "OwnerStart" })).toBe(started);
-    expect(changePreviewControl(PREVIEW_CONTROL_INITIAL, { _tag: "OwnerStart" })).toBe(
+    expect(changePreviewControl(started, { _tag: "Start" })).toBe(started);
+    expect(changePreviewControl(PREVIEW_CONTROL_INITIAL, { _tag: "Start" })).toBe(
       PREVIEW_CONTROL_INITIAL,
     );
   });
@@ -349,7 +351,13 @@ describe("gateway resolution", () => {
       }),
     );
   const dormant = selectPreviewTarget(preview, [idle(web, true)]);
-  const stopped: PreviewControl = { _tag: "OwnerStopped", revision: 1, by: "owner", at };
+  const stopped: PreviewControlRead = {
+    _tag: "Stopped",
+    revision: 1,
+    by: "steerer",
+    at,
+    byName: "Steerer",
+  };
 
   it("refuses a removed preview whatever its control", () => {
     const removed = selectPreviewTarget({ ...preview, state: "removed", worktreeId: null }, []);
@@ -358,10 +366,10 @@ describe("gateway resolution", () => {
       reason: "service-missing",
     });
   });
-  it("an owner's Stop wins over a live attempt", () => {
+  it("a person's Stop wins over a live attempt", () => {
     const bound = selectPreviewTarget(preview, [live(web)]);
     expect(previewGatewayResolution(stopped, bound, [])).toEqual({
-      _tag: "OwnerStopped",
+      _tag: "Stopped",
       control: stopped,
     });
   });

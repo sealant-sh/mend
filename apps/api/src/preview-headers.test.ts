@@ -271,7 +271,7 @@ describe("the page for a request the gateway did not deliver", () => {
       holdMs: 180_000,
       reason: "start timed out",
     },
-    { _tag: "StoppedByOwner", serviceName: "api's" },
+    { _tag: "Stopped", serviceName: "api's", by: "<Maria>" },
   ];
 
   it.each(facts)("says $_tag in one escaped line, uncached and unindexed", (fact) => {
@@ -291,7 +291,7 @@ describe("the page for a request the gateway did not deliver", () => {
     expect(visible).toBe(
       fact._tag === "DidNotStart"
         ? 'preview · web <dev> & "docs" · did not start in 3 min · start timed out · your request was not delivered'
-        : "preview · api's · the owner stopped the preview · your request was not delivered",
+        : "preview · api's · <Maria> stopped the preview · your request was not delivered",
     );
     expect(page.body).not.toContain("<dev>");
   });
