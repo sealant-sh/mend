@@ -232,6 +232,8 @@ export const createTenancyApi = async (
       readonly store?: Layer.PartialEffectful<Store["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
+      readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
+      readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
       readonly harnessModels?: Layer.PartialEffectful<HarnessModelsRepo["Service"]>;
       /** Each account's workspace SSH keys on the platform, and the gateway it reports. */
       readonly sshKeys?: SealantClients["Service"]["sshKeys"];
@@ -298,7 +300,7 @@ export const createTenancyApi = async (
       recording(IssuesRepo, "issues", {}, calls),
       recording(OrganizationSettingsRepo, "organizationSettings", {}, calls),
       recording(ProjectClusterBindingsRepo, "clusterBindings", {}, calls),
-      recording(ProjectEnvironmentRepo, "environment", {}, calls),
+      recording(ProjectEnvironmentRepo, "environment", options.implement?.environment ?? {}, calls),
       recording(ProjectLinksRepo, "links", {}, calls),
       // A session's repositories (docs/adr/0010): none in these worlds, so the detail lists none.
       recording(
@@ -313,7 +315,7 @@ export const createTenancyApi = async (
         calls,
       ),
       recording(ProjectMountsRepo, "mounts", {}, calls),
-      recording(ProjectSecretsRepo, "secrets", {}, calls),
+      recording(ProjectSecretsRepo, "secrets", options.implement?.secrets ?? {}, calls),
       recording(ProjectServiceRecipesRepo, "recipes", {}, calls),
       recording(
         PushDevicesRepo,
