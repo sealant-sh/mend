@@ -250,8 +250,21 @@ What the overlay does, and what it states on your behalf:
 - `MEND_EXPOSURE` (default `private`), `MEND_URL_BEARERS` (default `accept`),
   `MEND_EXPOSURE_REASSESSED` and `MEND_EXPOSURE_DECLARED` pass through from your `.env`. On the
   Docker install, `--exposure` writes the first two.
-- The edge's access log replaces the value of `ticket`, `token` and `code` in every URL and drops
-  the `Referer` header. Caddy already redacts `Authorization`, `Cookie` and `Set-Cookie`.
+- The edge's log keeps a request's path on Mend's origin and nothing else of its URL, on any route.
+  From the first `?` or `#` on, the URL reads `?REDACTED` or `#REDACTED`, so no line holds a
+  socket's single-use ticket, a pairing code or any other query value. The userinfo of an
+  absolute-form, opaque or `CONNECT` target reads `REDACTED`. A `Location` response header, such as
+  the port-80 redirect's, is cut the same way. This holds for the access line and for Caddy's error
+  line about a request, such as a failed dial. The cost is that an access line no longer shows an
+  ordinary query.
+- Every other line holds no URL and no `Location`. That covers the t3code gateway's origin
+  (`--t3-gateway-origin`), where an image's URL path is its token and file name. It covers a request
+  whose `Host` spells a site's name in another case or with a trailing dot, since Caddy names a
+  line's log by the exact `Host`, and the port-80 redirect for one. It covers Caddy's line for a
+  response cut short (`aborting with incomplete response`), which Caddy names for the proxy rather
+  than the site; on Mend's origin the access line from the same `remote_port` holds the path.
+- The edge drops the `Referer` header, and Caddy redacts `Authorization`, `Cookie` and `Set-Cookie`.
+  The other request and response headers are logged as Caddy writes them.
 
 What was checked: the merged files render, and the Caddyfile validates with Caddy. What was not: a
 certificate issued and a browser session through it, end to end. Workspace SSH on port 2222 stays on

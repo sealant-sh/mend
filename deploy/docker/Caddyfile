@@ -3,6 +3,43 @@
 # Everything goes to Mend's web tier, which proxies /api, the event stream and every WebSocket on
 # this one origin. Nothing else is routed: not the API, not Sealant, not the session channel, not
 # the bucket.
+#
+# What a log line about a request holds. Mend's site names its log `mend`, and only that log keeps
+# a path: never a query or a fragment, whatever route it names (sockets and the phone's embed carry
+# a single-use ticket there, pairing a code), nor a target's userinfo, in the uri or a Location.
+# Every other line holds no uri and no Location: the t3code gateway's (an asset URL's path is its
+# token and file name), and every line Caddy does not name for Mend's site. Caddy names a line's
+# log by the exact Host, so a Host in another case or with a trailing dot, the port-80 redirect for
+# it, and a module's own lines (reverse_proxy's for a response cut short) fall to `default`.
+# Caddy already redacts Authorization, Cookie and Set-Cookie; Referer is dropped.
+(uri-free) {
+	format filter {
+		fields {
+			request>uri replace REDACTED
+			resp_headers>Location delete
+			request>headers>Referer delete
+		}
+	}
+}
+
+{
+	log default {
+		output stdout
+		import uri-free
+	}
+	log mend {
+		include http.log.access.mend http.log.error.mend
+		output stdout
+		format filter {
+			fields {
+				request>uri regexp "(^|[A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*(@)|([?#])[\s\S]*" "${1}${3}REDACTED${2}"
+				resp_headers>Location regexp "(^|[A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*(@)|([?#])[\s\S]*" "${1}${3}REDACTED${2}"
+				request>headers>Referer delete
+			}
+		}
+	}
+}
+
 {$MEND_EDGE_HOST} {
 	encode zstd gzip
 
@@ -14,31 +51,7 @@
 		flush_interval -1
 	}
 
-	log {
-		output stdout
-		# The terminal, tunnel and key bridge sockets and the phone's embed carry a single-use
-		# ticket in the query, and pairing carries a code. A log holds none of them. Caddy already
-		# redacts Authorization, Cookie and Set-Cookie.
-		format filter {
-			# Absolute-form request URLs can carry userinfo before the host. Filter that separately
-			# from query parameters, retaining the scheme, host, path and ordinary query values.
-			wrap filter {
-				wrap json
-				fields {
-					# The query filter forwards the selected uri as a leaf to this wrapped encoder.
-					uri regexp "^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@" "${1}REDACTED@"
-				}
-			}
-			fields {
-				request>uri query {
-					replace ticket REDACTED
-					replace token REDACTED
-					replace code REDACTED
-				}
-				request>headers>Referer delete
-			}
-		}
-	}
+	log mend
 }
 
 # Sites beside Mend's own origin, one file each. `mend server setup --t3-gateway-origin <host>`

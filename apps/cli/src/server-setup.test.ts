@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
 import { parseDockerInfo } from "./docker-shutdown.ts";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
+import { T3_GATEWAY_CADDYFILE } from "./server-edge.ts";
 import {
   HOST_HELPER_IMAGE,
   instanceIdOf,
@@ -2990,9 +2991,7 @@ describe("mend server setup", () => {
     expect(fs.readdirSync(served)).toContain("Caddyfile.t3");
     expect(modeOf(path.join(served, "Caddyfile.t3"))).toBe(0o644);
     const site = fs.readFileSync(path.join(served, "Caddyfile.t3"), "utf8");
-    expect(site).toContain("{$MEND_T3_GATEWAY_EDGE_HOST} {");
-    expect(site).toContain("reverse_proxy mend:3120 {");
-    expect(site).toContain("replace wsTicket REDACTED");
+    expect(site).toBe(T3_GATEWAY_CADDYFILE);
     const overlay = fs.readFileSync(path.join(served, "compose.t3.yaml"), "utf8");
     expect(overlay).toContain("\n  edge:\n");
     expect(overlay).toContain("      - ./Caddyfile.t3:/etc/caddy/sites/t3code-gateway.caddy:ro");

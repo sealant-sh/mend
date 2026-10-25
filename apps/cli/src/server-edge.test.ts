@@ -27,6 +27,11 @@ const repositoryFile = (name: string): string =>
 /** What a status line must never say: the report is facts beside a declaration, not a verdict. */
 const VERDICTS = /\bsafe\b|gate passed|passed\b|ready to expose|fit to expose|✓/i;
 
+const logsOf = (file: string) =>
+  [...file.matchAll(/^\t(?:log (\S+) \{|log (\S+)$)\n?((?:\t\t.*\n)*)/gm)].map(
+    ([, block, bare, body = ""]) => ({ name: block ?? bare, body }),
+  );
+
 describe("the edge the CLI carries", () => {
   it("is the repository's overlay and Caddyfile, byte for byte", () => {
     // Regenerate with: node apps/cli/scripts/edge-files.mjs
@@ -410,13 +415,84 @@ describe("where the t3code gateway is published (ADR 0012, ADR 0004)", () => {
     ).toBeUndefined();
   });
 
-  it("the edge's site proxies to the gateway on its own origin, unbuffered, with its ticket out of the log", () => {
+  it("the edge's site proxies to the gateway on its own origin, unbuffered", () => {
     expect(EDGE_CADDYFILE).toContain("import /etc/caddy/sites/*.caddy");
     expect(T3_GATEWAY_CADDYFILE).toContain("{$MEND_T3_GATEWAY_EDGE_HOST} {");
     expect(T3_GATEWAY_CADDYFILE).toContain("\treverse_proxy mend:3120 {\n");
     expect(T3_GATEWAY_CADDYFILE).toContain("\t\tflush_interval -1\n");
-    expect(T3_GATEWAY_CADDYFILE).toContain("replace wsTicket REDACTED");
     for (const line of declaredPostureLines({ bind: "100.94.101.28", t3GatewayPort: 3120 }))
       expect(line).not.toMatch(VERDICTS);
+  });
+});
+
+describe("what the edge logs (ADR 0004)", () => {
+  // What a client can send, in spellings that clean to a route of their own or to none, and what
+  // Mend's log may hold of it: its path, and never its query, its fragment or a target's userinfo.
+  const requests: ReadonlyArray<readonly [sent: string, logged: string]> = [
+    ["/api/projects", "/api/projects"],
+    ["/api/projects?raw=1", "/api/projects?REDACTED"],
+    ["/api/worktrees/w1/raw?path=private-dir%2Fprivate-name.png", "/api/worktrees/w1/raw?REDACTED"],
+    [
+      "/API//worktrees/w1/r%61w/;v=1?path=private-name.png",
+      "/API//worktrees/w1/r%61w/;v=1?REDACTED",
+    ],
+    ["/api/x/%2e%2e/pair?%63ode=SYN_CODE", "/api/x/%2e%2e/pair?REDACTED"],
+    ["/api/x/../../pair?code=SYN_CODE", "/api/x/../../pair?REDACTED"],
+    ["/?wsTicket=SYN_TICKET&token=SYN_TOKEN", "/?REDACTED"],
+    ["/api/projects?raw=SYN_RAW#SYN_FRAGMENT", "/api/projects?REDACTED"],
+    ["/api/projects#SYN_FRAGMENT?raw=SYN_RAW", "/api/projects#REDACTED"],
+    [
+      "http://SYN_USER:SYN_PASSWORD@mend.example.com/userinfo?ticket=SYN_TICKET",
+      "http://REDACTED@mend.example.com/userinfo?REDACTED",
+    ],
+    [
+      "http://mend.example.com/path@ordinary?visible=a%40b",
+      "http://mend.example.com/path@ordinary?REDACTED",
+    ],
+    ["//ordinary:label@path/nested?visible=SYN_PLAIN", "//ordinary:label@path/nested?REDACTED"],
+    // A CONNECT target, and an opaque one.
+    ["SYN_USER:SYN_PASSWORD@mend.example.com:443", "REDACTED@mend.example.com:443"],
+    ["http:SYN_OPAQUE@mend.example.com/x", "REDACTED@mend.example.com/x"],
+    // A Location: Caddy's port-80 redirect, which holds the request's own URL, and an app's.
+    [
+      "https://mend.example.com/api/pair?code=SYN_CODE",
+      "https://mend.example.com/api/pair?REDACTED",
+    ],
+    [
+      "https://SYN_USER:SYN_PASSWORD@mend.example.com/x?ticket=SYN_TICKET",
+      "https://REDACTED@mend.example.com/x?REDACTED",
+    ],
+    ["/login?redirect=%2Fapi%2Fpair%3Fcode%3DSYN_CODE", "/login?REDACTED"],
+  ];
+
+  it("keeps a path in Mend's log and never a query, in a line's uri and in its Location", () => {
+    const mend = EDGE_CADDYFILE.match(/^\tlog mend \{\n[\s\S]*?^\t\}$/m)?.[0] ?? "";
+    const filters = [...mend.matchAll(/^\t+(\S+) regexp "(.+)" "(.+)"$/gm)];
+    expect(filters.map(([, field]) => field).toSorted()).toEqual([
+      "request>uri",
+      "resp_headers>Location",
+    ]);
+    for (const [, , pattern = "", replacement = ""] of filters) {
+      // Go's ${1} is JavaScript's $1; the pattern reads the same in both. The real-Caddy test
+      // (scripts/edge-overlay.test.mjs) runs it through Go.
+      const filter = (uri: string) =>
+        uri.replace(new RegExp(pattern, "g"), replacement.replaceAll(/\$\{(\d)\}/g, "$$$1"));
+      expect(requests.map(([sent]) => filter(sent))).toEqual(requests.map(([, logged]) => logged));
+    }
+  });
+
+  it("holds no uri and no Location in every other log, the t3code gateway's among them", () => {
+    const uriFree = EDGE_CADDYFILE.match(/^\(uri-free\) \{\n([\s\S]*?)^\}$/m)?.[1] ?? "";
+    expect(uriFree).toContain("\t\t\trequest>uri replace REDACTED\n");
+    expect(uriFree).toContain("\t\t\tresp_headers>Location delete\n");
+    const all = [...logsOf(EDGE_CADDYFILE), ...logsOf(T3_GATEWAY_CADDYFILE)];
+    expect(all.map(({ name }) => name).toSorted()).toEqual([
+      "default",
+      "mend",
+      "mend",
+      "t3code-gateway",
+    ]);
+    for (const { name, body } of all.filter((log) => log.name !== "mend"))
+      expect(body, name).toContain("\t\timport uri-free\n");
   });
 });
