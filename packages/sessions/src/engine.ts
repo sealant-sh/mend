@@ -8491,7 +8491,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * The preview whose control a Stop or Start of `serviceId` decides, and the person deciding
-       * it: only one for whom `decidesPreviewControl` holds; null otherwise.
+       * it: only a preview that selects this Service, and only one for whom `decidesPreviewControl`
+       * holds; null otherwise.
        */
       const controlledPreview = Effect.fn("SessionEngine.controlledPreview")(function* (
         serviceId: ServiceId,
@@ -22706,7 +22707,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             message: "This start id was used by an earlier start of this Service; send a new one.",
           });
         }
-        yield* clearOwnerStop(service.id, cause);
         const attemptOrdinal =
           attempts.reduce((largest, attempt) => Math.max(largest, attempt.attemptOrdinal ?? 0), 0) +
           1;
@@ -22724,6 +22724,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           launchCorrelationId,
         });
         yield* services.setCurrentAttempt(service.id, attempt.id);
+        // Once its attempt is live: the preview's rule decides whether it selects this Service.
+        yield* clearOwnerStop(service.id, cause);
         const pty = yield* startAsPerson(session, workspace, Effect.succeed(runsAs), "shell").pipe(
           // Remembered only where it decides anything: a person executor's restart runs as them.
           Effect.tap((startAs) =>
@@ -22885,7 +22887,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Resolve the retained workspace before committing a new live-attempt row. A failed
         // lookup therefore leaves nothing for boot recovery or the one-live-attempt index.
         const workspace = yield* sealant.getWorkspace(previous.sealantWorkspaceId);
-        yield* clearOwnerStop(service.id, cause);
         yield* serviceHost.sever(service.id, "service-restarting");
         if (previous.exitedAt === null && previous.sealantSessionId !== null) {
           if (!(yield* closeProcessPty(previous.sealantWorkspaceId, previous.sealantSessionId))) {
@@ -22915,6 +22916,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           status: "starting",
         });
         yield* services.setCurrentAttempt(service.id, attempt.id);
+        yield* clearOwnerStop(service.id, cause);
         const pty = yield* sessions.byId(service.sessionId).pipe(
           Effect.mapError(
             () => new ServiceStartError({ message: "The Service's session no longer exists." }),

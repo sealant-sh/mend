@@ -497,23 +497,29 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
     );
   });
 
-  it("finds a Service's kept preview by its worktree and name, and allocates none", async () => {
+  it("finds the kept preview that selects a Service, by its worktree and name, and allocates none", async () => {
     await run(
       Effect.gen(function* () {
         const { worktree } = yield* seed("of-service");
         const previews = yield* PreviewsRepo;
-        expect(yield* previews.previewOfService(ServiceId.make("svc-of-service-2"))).toBeNull();
+        expect(yield* previews.previewOfService(ServiceId.make("svc-of-service-1"))).toBeNull();
         const [web] = yield* previews.ensureForWorktree(worktree);
-        for (const id of ["svc-of-service-1", "svc-of-service-2"]) {
-          expect(yield* previews.previewOfService(ServiceId.make(id))).toBe(web?.preview.id);
-        }
+        const of = (id: string) => previews.previewOfService(ServiceId.make(id));
+        expect(yield* of("svc-of-service-1"), "the oldest live attempt's Service").toBe(
+          web?.preview.id,
+        );
+        expect(yield* of("svc-of-service-2"), "a same-named Service it does not select").toBeNull();
         const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE session_processes SET exited_at = now(), status = 'stopped'
+          WHERE id = 'att-of-service-1'`;
+        expect(yield* of("svc-of-service-2"), "now the only live one").toBe(web?.preview.id);
+        expect(yield* of("svc-of-service-1")).toBeNull();
         yield* sql`INSERT INTO services (id, session_id, name, declaration_source, workspace_port, browser_scheme)
           VALUES ('of-service-docs', 's-of-service-1', 'docs', 'explicit-run', 3001, 'http')`;
         expect(yield* previews.previewOfService(ServiceId.make("of-service-docs"))).toBeNull();
         expect(yield* previews.previewOfService(ServiceId.make("missing"))).toBeNull();
         yield* sql`DELETE FROM worktrees WHERE id = ${worktree}`;
-        expect(yield* previews.previewOfService(ServiceId.make("svc-of-service-1"))).toBeNull();
+        expect(yield* previews.previewOfService(ServiceId.make("svc-of-service-2"))).toBeNull();
       }),
     );
   });

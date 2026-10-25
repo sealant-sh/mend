@@ -258,6 +258,58 @@ describe("a preview's control", () => {
   });
 });
 
+describe("a preview's control between two same-named Services in one worktree", () => {
+  it("only a Stop or Start of the Service the preview selects decides it", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview, session } = yield* preparePreview(world, tmp);
+          const joined = yield* engine.provision({
+            projectId: session.projectId,
+            harness: "codex",
+            label: null,
+            name: session.worktree,
+            start: { kind: "base", base: null },
+            ownerUserId: STEERER,
+          });
+          expect(joined.worktreeId, "the second session joins the first's worktree").toBe(
+            session.worktreeId,
+          );
+          yield* engine.launch(joined.id, ["codex"]);
+          const theirs = yield* engine.runService(
+            joined.id,
+            ["pnpm", "dev"],
+            3000,
+            "web",
+            "tcp",
+            "http",
+            STEERER,
+          );
+          yield* engine.stopService(theirs.service.id, bySteerer);
+          expect(
+            world.previewControls.get(preview.id) ?? PREVIEW_CONTROL_INITIAL,
+            "the owner of the Service the preview does not select stopped theirs",
+          ).toEqual(PREVIEW_CONTROL_INITIAL);
+
+          yield* engine.stopService(service.id, byOwner);
+          expect(world.previewControls.get(preview.id), "the selected one's owner").toMatchObject({
+            _tag: "OwnerStopped",
+            revision: 1,
+          });
+          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
+          expect(world.previewControls.get(preview.id)).toEqual({
+            _tag: "Automatic",
+            revision: 2,
+          });
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+});
+
 describe("ensurePreviewRunning", () => {
   it("two concurrent requests start one process, and a later one joins it", async () => {
     const platform = servicePlatform();

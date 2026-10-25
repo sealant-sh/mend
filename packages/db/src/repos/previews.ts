@@ -53,7 +53,10 @@ export class PreviewsRepo extends Context.Service<
       id: PreviewId,
       intent: PreviewControlIntent,
     ) => Effect.Effect<PreviewControl>;
-    /** The kept preview of the Service's name in its session's worktree; never allocates one. */
+    /**
+     * The kept preview of the Service's name in its session's worktree, only while its rule selects
+     * this Service (binds it, or would resume it); never allocates one.
+     */
     readonly previewOfService: (serviceId: ServiceId) => Effect.Effect<PreviewId | null>;
     /** What the gateway does with a request to the preview, read in one snapshot. */
     readonly gatewaySnapshot: (id: PreviewId) => Effect.Effect<PreviewGatewaySnapshot | null>;
@@ -344,22 +347,29 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
       const previewOfService = Effect.fn("PreviewsRepo.previewOfService")(function* (
         serviceId: ServiceId,
       ) {
-        const [row] = yield* db
-          .select({ id: previews.id })
-          .from(services)
-          .innerJoin(agentSessions, eq(agentSessions.id, services.sessionId))
-          .innerJoin(
-            previews,
-            and(
-              eq(previews.worktreeId, agentSessions.worktreeId),
-              eq(previews.serviceName, services.name),
-            ),
-          )
-          .where(eq(services.id, serviceId))
-          .limit(1)
-          .pipe(Effect.orDie);
-        return row?.id ?? null;
-      });
+        return yield* snapshot((tx) =>
+          Effect.gen(function* () {
+            const [row] = yield* tx
+              .select({ preview: previews })
+              .from(services)
+              .innerJoin(agentSessions, eq(agentSessions.id, services.sessionId))
+              .innerJoin(
+                previews,
+                and(
+                  eq(previews.worktreeId, agentSessions.worktreeId),
+                  eq(previews.serviceName, services.name),
+                ),
+              )
+              .where(eq(services.id, serviceId))
+              .limit(1);
+            if (row === undefined) return null;
+            const preview = yield* decodePreview(row.preview);
+            if (preview.worktreeId === null) return null;
+            const selected = selectPreviewTarget(preview, yield* targetsOf(tx, preview.worktreeId));
+            return selected.service?.id === serviceId ? preview.id : null;
+          }),
+        );
+      }, Effect.catchTags(queryErrorsDie));
 
       const gatewaySnapshot = Effect.fn("PreviewsRepo.gatewaySnapshot")(function* (id: PreviewId) {
         return yield* snapshot((tx) => readGatewaySnapshot(tx, id));

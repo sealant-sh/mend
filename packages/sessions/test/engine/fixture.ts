@@ -2059,7 +2059,9 @@ const previewsLayer = (world: World) => {
           (preview) =>
             preview.worktreeId === session.worktreeId && preview.serviceName === service.name,
         );
-        return kept?.id ?? null;
+        if (kept === undefined) return null;
+        const selected = selectPreviewTarget(kept, targetsOf(session.worktreeId));
+        return selected.service?.id === serviceId ? kept.id : null;
       }),
     gatewaySnapshot: (id) => Effect.sync(() => snapshotOf(id)),
     gatewaySnapshots: (ids) =>
