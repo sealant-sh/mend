@@ -257,6 +257,37 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("still delivers a secret stored under a provider login name before the rule refused it", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          expect(created[0]?.secretEnv).toEqual({
+            OPENAI_API_KEY: "fake-codex-key",
+            STRIPE_API_KEY: "fake-stripe-key",
+          });
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        secrets: () => ({
+          revision: 1,
+          secrets: { OPENAI_API_KEY: "fake-codex-key", STRIPE_API_KEY: "fake-stripe-key" },
+        }),
+      },
+    );
+  });
+
   it("passes only the harnesses' update switches and no pager as env when the project store is empty", async () => {
     const created: CreateOptions[] = [];
     await withEngine(

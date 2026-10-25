@@ -108,15 +108,18 @@ export class ProjectSecretsRepo extends Context.Service<
 
 type Tx = Pick<MendDatabase, "select" | "insert" | "update" | "delete">;
 
-const toSecret = (row: typeof projectSecrets.$inferSelect): ProjectSecret =>
-  new ProjectSecret({
+const toSecret = (row: typeof projectSecrets.$inferSelect): ProjectSecret => {
+  const nameIssue = validateProjectSecretName(row.name);
+  return new ProjectSecret({
     id: row.id,
     projectId: row.projectId,
     name: row.name,
     revision: row.revision,
+    nameRefusal: nameIssue === null ? null : formatProjectEnvironmentIssue(nameIssue),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   });
+};
 
 const validateName = (name: string): Effect.Effect<void, ProjectEnvironmentInvalidInputError> => {
   const issue = validateProjectSecretName(name);

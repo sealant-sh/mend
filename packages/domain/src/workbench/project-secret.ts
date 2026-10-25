@@ -29,6 +29,7 @@ export class ProjectSecret extends Schema.Class<ProjectSecret>("ProjectSecret")(
   name: Schema.String,
   /** Integer row revision; stale-write checks compare against it. The value never appears. */
   revision: Schema.Int,
+  nameRefusal: Schema.NullOr(Schema.String),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}
