@@ -1,0 +1,8 @@
+{
+  "name": "mend-upgrade-from-0.36.0",
+  "private": true,
+  "description": "The CLI of Mend 0.36.0, installed by npm ci against the lockfile beside this file (scripts/check-previous-upgrade.mjs). Written once with: npm install --package-lock-only --ignore-scripts --before=2026-10-24T14:50:19Z",
+  "dependencies": {
+    "@sealant/mend": "0.36.0"
+  }
+}
