@@ -3,5 +3,5 @@
   "compilerOptions": {
     "erasableSyntaxOnly": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "bench/**/*.ts"]
 }
