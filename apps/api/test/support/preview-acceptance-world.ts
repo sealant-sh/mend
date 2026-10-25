@@ -42,15 +42,7 @@ import {
 import { localForwards } from "./preview-forward.ts";
 import { type SampledChild, spawnSampled } from "./preview-memory.ts";
 
-/**
- * The preview gateway for acceptance tests, built as production builds it (`servePreviews` with
- * `PreviewIdentityLive`, `PreviewTargetsLive`, the real event bus, connection registry and
- * repositories over a seeded Postgres, and `ForwardAdapterLive` over TCP forwards), in this
- * process or in a child (`preview-gateway-child.ts`). Two parts stand in for what needs a live
- * Sealant workspace: the engine's request-triggered start, which spawns the Service's fixture on
- * its local port after a delay and records its attempt as the engine would, and the lending check,
- * which lends every act. Nothing here imports vitest, so a child Node can load it.
- */
+/** Nothing here imports vitest, so a child Node can load it. */
 
 export const APP_URL = "https://mend.acceptance.test";
 
@@ -75,16 +67,11 @@ const Routing = Schema.Union([
 export const AcceptanceGatewayOptions = Schema.Struct({
   databaseUrl: Schema.String,
   routing: Routing,
-  /** The gateway's listen port on 127.0.0.1. */
   port: Schema.Number,
   startHoldMs: Schema.optional(Schema.Number),
-  /** A streaming cap on one body; absent is none. */
   bodyCapBytes: Schema.optional(Schema.Number),
-  /** Each Service's workspace port, as this local port on 127.0.0.1. */
   localPorts: Schema.Struct({ web: Schema.Number, docs: Schema.Number }),
-  /** The negative control: forwards that read their TCP socket eagerly into memory. */
   unbounded: Schema.optional(Schema.Boolean),
-  /** What a request-triggered start of each Service does; absent refuses `no-recorded-command`. */
   starts: Schema.optional(
     Schema.Struct({ web: Schema.optional(Start), docs: Schema.optional(Start) }),
   ),
@@ -105,9 +92,7 @@ const lendingToEveryone = Layer.mock(WorkspaceCaller, {
 
 export interface AcceptanceGateway {
   readonly port: number;
-  /** Every start the gateway asked of the engine, in order. */
   readonly starts: ReadonlyArray<PreviewStartRequest>;
-  /** The opens the forward adapter made, per (workspace, port). */
   readonly opens: () => number;
 }
 
@@ -127,7 +112,6 @@ const recordAttempt = (key: ServiceKey, request: PreviewStartRequest) =>
     return attemptId;
   }).pipe(Effect.orDie);
 
-/** Builds the gateway in the current scope; it listens until the scope closes. */
 export const acceptanceGateway = (
   options: AcceptanceGatewayOptions,
   onStart: (request: PreviewStartRequest) => void = () => undefined,
@@ -212,12 +196,9 @@ export const acceptanceGateway = (
     return { port: options.port, starts: asked, opens: () => forwards.opens.length };
   });
 
-/** Mints sign-in tickets as `/api/preview-auth` does, over the same database. */
 export interface PreviewSignIn {
-  /** The `/__mend/auth` URL that signs `userId` in to the Service's preview, then opens `path`. */
   readonly authUrl: (userId: string, key: ServiceKey, path?: string) => Promise<string>;
   readonly originOf: (previewId: PreviewId) => string;
-  /** Applies `userId`'s Stop to the Service's preview, as the engine records a person's Stop. */
   readonly stop: (key: ServiceKey, userId: string) => Promise<void>;
   readonly run: <A, E>(
     effect: Effect.Effect<A, E, SqlClient.SqlClient | PreviewsRepo>,
@@ -274,10 +255,6 @@ const NAVIGATION = {
   "sec-fetch-dest": "document",
 } as const;
 
-/**
- * Follows `authUrl` on the gateway at 127.0.0.1:`port` as a browser's navigation would, and
- * answers the grant cookie it set, as a `Cookie` header pair.
- */
 export const grantCookieAt = (port: number, authUrl: string): Promise<string> =>
   new Promise((resolve, reject) => {
     const url = new URL(authUrl);
@@ -303,7 +280,6 @@ const CHILD = fileURLToPath(new URL("./preview-gateway-child.ts", import.meta.ur
 
 export interface GatewayChild {
   readonly sampled: SampledChild;
-  /** Every start the child's gateway asked of the engine, as the child reported it. */
   readonly starts: () => ReadonlyArray<PreviewStartRequest>;
 }
 
@@ -319,15 +295,11 @@ const StartLine = Schema.fromJsonString(
 );
 const startOf = Schema.decodeUnknownOption(StartLine);
 
-/**
- * The same gateway in a child Node whose memory `spawnSampled` samples every `intervalMs`: the
- * child is the API process the memory tests bound. Resolves once it listens.
- */
 export const spawnGateway = async (
   options: AcceptanceGatewayOptions,
-  intervalMs = 100,
+  sampling: { readonly intervalMs?: number; readonly collect?: boolean } = {},
 ): Promise<GatewayChild> => {
-  const sampled = spawnSampled(CHILD, [JSON.stringify(options)], { intervalMs });
+  const sampled = spawnSampled(CHILD, [JSON.stringify(options)], sampling);
   const starts: Array<PreviewStartRequest> = [];
   let partial = "";
   sampled.child.stdout?.on("data", (text: string) => {
@@ -355,7 +327,6 @@ export const spawnGateway = async (
   return { sampled, starts: () => starts };
 };
 
-/** The same gateway in this process, until `close`. */
 export const startGateway = async (
   options: AcceptanceGatewayOptions,
 ): Promise<AcceptanceGateway & { readonly close: () => Promise<void> }> => {

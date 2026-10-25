@@ -4,9 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const PROBE = fileURLToPath(new URL("./preview-memory-probe.ts", import.meta.url));
 
-/** One sample, in bytes: `rss` is VmRSS from `/proc/<pid>/status`, the rest `memoryUsage()`. */
 export interface MemorySample {
-  /** Milliseconds since the child was spawned, when the child took the sample. */
   readonly t: number;
   readonly rss: number;
   readonly heapUsed: number;
@@ -15,24 +13,19 @@ export interface MemorySample {
 }
 
 export interface SampledChild {
-  /** stderr is inherited; stdout is read by `line`. */
   readonly child: ChildProcess;
-  /** The first stdout line (from spawn on) that `matches`: a server's port, say. */
   readonly line: (matches: (line: string) => boolean) => Promise<string>;
   readonly samples: () => ReadonlyArray<MemorySample>;
-  /** Waits for a fresh sample, makes it the baseline, and starts a new peak window from it. */
   readonly baseline: () => Promise<MemorySample>;
-  /** The field-wise maximum since the last baseline (or since spawn). */
   readonly peak: () => MemorySample;
-  /** `process.version` as the child reported it, once it has. */
   readonly nodeVersion: () => string | null;
-  /** SIGTERM, then SIGKILL after five seconds; resolves once it exited. */
   readonly stop: () => Promise<void>;
 }
 
 export interface SampledOptions {
   readonly intervalMs?: number;
   readonly env?: NodeJS.ProcessEnv;
+  readonly collect?: boolean;
 }
 
 interface ProbeSample {
@@ -71,23 +64,20 @@ const fieldwiseMax = (samples: ReadonlyArray<MemorySample>): MemorySample =>
     arrayBuffers: Math.max(peak.arrayBuffers, sample.arrayBuffers),
   }));
 
-/**
- * Runs `modulePath` in a child Node (this process's `execPath`, which runs TypeScript directly)
- * with a preloaded probe that samples the child's VmRSS and `memoryUsage()` every `intervalMs`
- * (100 by default) on the child's own timer and sends each sample over IPC. The module needs no
- * cooperation.
- */
 export const spawnSampled = (
   modulePath: string,
   args: ReadonlyArray<string>,
   options: SampledOptions = {},
 ): SampledChild => {
   const spawnedAt = Date.now();
-  const child = spawn(process.execPath, ["--import", PROBE, modulePath, ...args], {
+  const collect = options.collect === true;
+  const flags = collect ? ["--expose-gc"] : [];
+  const child = spawn(process.execPath, [...flags, "--import", PROBE, modulePath, ...args], {
     stdio: ["ignore", "pipe", "inherit", "ipc"],
     env: {
       ...(options.env ?? process.env),
       MEND_PREVIEW_MEMORY_INTERVAL_MS: String(options.intervalMs ?? 100),
+      MEND_PREVIEW_MEMORY_COLLECT: collect ? "1" : "0",
     },
   });
   const exited = once(child, "exit");
