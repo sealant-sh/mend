@@ -1,4 +1,7 @@
 {
   "extends": "@mend/typescript/core.json",
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "compilerOptions": {
+    "erasableSyntaxOnly": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "bench/**/*.ts"]
 }

@@ -50,6 +50,7 @@ import { ConnectedAccount, type ConnectAccountInput } from "./accounts.ts";
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
+import { type ForwardDestination, type OpenedForward, openWorkspaceForward } from "./forward.ts";
 import { SealantIdentityStore } from "./identity.ts";
 import {
   type PersonExecOptions,
@@ -685,19 +686,27 @@ export interface SealantClientShape {
     options?: PersonSessionOptions,
   ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
   /**
-   * A raw TCP byte pipe — or a UDP datagram pipe, where one WS frame is
-   * exactly one datagram — into the workspace (host option 0.15.0) —
-   * one held WebSocket per pipe. The target is a closed workspace-private
-   * set: loopback (default) or `docker`, the workspace-scoped Docker
-   * sidecar where inner compose publishes its ports. Fails when nothing
-   * listens, which doubles as the reachability probe for Services.
+   * A UDP datagram pipe into the workspace, where one WS frame is exactly one datagram: one held
+   * WebSocket per pipe. The target is loopback or `docker`, the workspace-scoped Docker sidecar
+   * where inner compose publishes its ports. TCP goes through `openForward`.
    */
-  readonly forward: (
+  readonly forwardUdp: (
     workspace: Workspace,
     port: number,
-    host?: "127.0.0.1" | "docker",
-    protocol?: "tcp" | "udp",
+    host: "127.0.0.1" | "docker",
   ) => Effect.Effect<WorkspaceForward, SealantPlatformError>;
+  /**
+   * One bounded TCP forward (`flow: "bounded"`), open in the caller's scope until it closes.
+   * Resolves only once Core and the workspace runtime opened it; a session-bound destination
+   * resolves only with that session's binding. `signal` gives up the open, and resets the forward
+   * once it is open. `deadlineMs` bounds the open. UDP stays on `forward`.
+   */
+  readonly openForward: (
+    workspace: Workspace,
+    port: number,
+    destination: ForwardDestination,
+    options: { readonly signal: AbortSignal; readonly deadlineMs: number },
+  ) => Effect.Effect<OpenedForward, SealantPlatformError, Scope.Scope>;
   /**
    * Ask the platform to stop the workspace, and say what it observed (`WorkspaceStopState`). Only
    * `stopped` is a termination; anything else is watched until the platform reports one.
@@ -985,19 +994,18 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
         ).pipe(Effect.mapError(personProcessRefusal)),
     );
 
-    const forward = Effect.fn("SealantClient.forward")(
+    const forwardUdp = Effect.fn("SealantClient.forwardUdp")(
+      (workspace: Workspace, port: number, host: "127.0.0.1" | "docker") =>
+        wrap(() => workspace.forward(port, { host, protocol: "udp" })),
+    );
+
+    const openForward = Effect.fn("SealantClient.openForward")(
       (
         workspace: Workspace,
         port: number,
-        host?: "127.0.0.1" | "docker",
-        protocol?: "tcp" | "udp",
-      ) =>
-        wrap(() =>
-          workspace.forward(port, {
-            ...(host === undefined ? {} : { host }),
-            ...(protocol === "udp" ? { protocol } : {}),
-          }),
-        ),
+        destination: ForwardDestination,
+        options: { readonly signal: AbortSignal; readonly deadlineMs: number },
+      ) => openWorkspaceForward(workspace, port, destination, options, toPlatformError),
     );
 
     // SDK 0.37.2 resolves `stop()` with nothing; Core's next SDK resolves what it observed. Both
@@ -1269,7 +1277,8 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       startHarnessInWorkspace,
       waitRun,
       openSession,
-      forward,
+      forwardUdp,
+      openForward,
       stopWorkspace,
       captureFlush,
       captureStatus,
@@ -1732,9 +1741,9 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
   Effect.gen(function* () {
     const clients = yield* SealantClients;
     const current = clients.forPrincipal();
-    const via = <A>(
-      call: (client: SealantClientShape) => Effect.Effect<A, SealantPlatformError>,
-    ): Effect.Effect<A, SealantPlatformError> => Effect.flatMap(current, call);
+    const via = <A, R = never>(
+      call: (client: SealantClientShape) => Effect.Effect<A, SealantPlatformError, R>,
+    ): Effect.Effect<A, SealantPlatformError, R> => Effect.flatMap(current, call);
     const viaStream = <A>(
       call: (client: SealantClientShape) => Stream.Stream<A, SealantPlatformError>,
     ): Stream.Stream<A, SealantPlatformError> => Stream.unwrap(Effect.map(current, call));
@@ -1755,8 +1764,9 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       waitRun: (run) => via((c) => c.waitRun(run)),
       openSession: (workspace, argv, options) =>
         via((c) => c.openSession(workspace, argv, options)),
-      forward: (workspace, port, host, protocol) =>
-        via((c) => c.forward(workspace, port, host, protocol)),
+      forwardUdp: (workspace, port, host) => via((c) => c.forwardUdp(workspace, port, host)),
+      openForward: (workspace, port, destination, options) =>
+        via((c) => c.openForward(workspace, port, destination, options)),
       stopWorkspace: (workspace, options) => via((c) => c.stopWorkspace(workspace, options)),
       captureFlush: (workspace, kind) => via((c) => c.captureFlush(workspace, kind)),
       captureStatus: (workspace) => via((c) => c.captureStatus(workspace)),

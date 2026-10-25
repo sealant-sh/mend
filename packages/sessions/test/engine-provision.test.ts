@@ -80,6 +80,7 @@ import {
   secretCipherStubLayer,
   secretFilesLayerOf,
   serviceHostStubLayer,
+  forwardAdapterReadyLayer,
   serviceStateLayer,
   sessionProcessesLayer,
   sessionRunsLayer,
@@ -1034,7 +1035,7 @@ describe("SessionEngine", () => {
       Layer.provide(
         Layer.mergeAll(agentConversationStubLayer, protocolHostStubLayer, serviceStateLayer(world)),
       ),
-      Layer.provide(serviceHostStubLayer),
+      Layer.provide(Layer.merge(serviceHostStubLayer, forwardAdapterReadyLayer)),
       Layer.provide(sessionSocketStubLayer),
       Layer.provide(SessionChannelTokensRepoMemory),
       Layer.provide(DeploymentConfigColocated),

@@ -189,11 +189,11 @@ export const workspacesPerOwner = (
         calls.push(`${method} ${entry}`);
         return found;
       };
-      const guarded = <A>(
+      const guarded = <A, R = never>(
         method: string,
         ownerOf: () => string | undefined,
-        call: () => Effect.Effect<A, SealantPlatformError>,
-      ): Effect.Effect<A, SealantPlatformError> =>
+        call: () => Effect.Effect<A, SealantPlatformError, R>,
+      ): Effect.Effect<A, SealantPlatformError, R> =>
         Effect.flatMap(SealantPrincipal, (principal) =>
           judge(method, ownerOf(), principal) ? call() : Effect.fail(notFound),
         );
@@ -251,9 +251,13 @@ export const workspacesPerOwner = (
               ),
             ),
           ),
-        forward: (workspace, port, host, protocol) =>
-          guarded("forward", ofWorkspace(workspace.id), () =>
-            client.forward(workspace, port, host, protocol),
+        forwardUdp: (workspace, port, host) =>
+          guarded("forwardUdp", ofWorkspace(workspace.id), () =>
+            client.forwardUdp(workspace, port, host),
+          ),
+        openForward: (workspace, port, destination, options) =>
+          guarded("openForward", ofWorkspace(workspace.id), () =>
+            client.openForward(workspace, port, destination, options),
           ),
         stopWorkspace: (workspace, options) =>
           guarded("stopWorkspace", ofWorkspace(workspace.id), () =>

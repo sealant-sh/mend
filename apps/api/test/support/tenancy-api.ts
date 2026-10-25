@@ -64,6 +64,8 @@ import {
   CaptureRuntime,
   DotfilesCloner,
   FollowUpDelivery,
+  ForwardAdapter,
+  ServiceHost,
   SessionEngine,
   WorkspaceCaller,
   WorktreeReads,
@@ -357,6 +359,8 @@ export const createTenancyApi = async (
       recording(UsersRepo, "users", {}, calls),
       recording(JobRunner, "jobs", options.implement?.jobs ?? {}, calls),
       recording(SealantClient, "sealant", {}, calls),
+      recording(ForwardAdapter, "forwards", {}, calls),
+      recording(ServiceHost, "serviceHost", { hold: () => Effect.void }, calls),
       recording(
         SealantClients,
         "sealantClients",

@@ -148,6 +148,7 @@ import {
   makeDotfilesClonerLayer,
   HARNESS_HOME_MOUNT_PATH,
   ProtocolHost,
+  ForwardAdapter,
   ServiceHost,
   SessionEngine,
   SessionEngineLive,
@@ -201,6 +202,7 @@ import { Clock, Duration, Effect, Fiber, Layer, Logger, Stream, type Scope } fro
 import { HarnessLayoutConfig } from "../../src/harness-layout-steps.ts";
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { memoryStoreRefs } from ".././capture-world.ts";
+import { adapterLayer, echo, fakeForward, scriptedSealant } from "../forward-fixture.ts";
 
 /** What a daemon that reports snapshot health says when every path read (sealantd `Some(0)`). */
 const readEverything: object = { unreadable: 0, carried: 0 };
@@ -239,7 +241,8 @@ export const sealantDeadLayer = Layer.succeed(SealantClient, {
   startHarnessInWorkspace: () => Effect.die("not in test"),
   waitRun: () => Effect.die("not in test"),
   openSession: () => Effect.die("not in test"),
-  forward: () => Effect.die("not in test"),
+  forwardUdp: () => Effect.die("not in test"),
+  openForward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
   captureFlush: () => Effect.die("not in test"),
   captureStatus: () => Effect.succeed(null),
@@ -686,7 +689,8 @@ export const sealantLaunchLayer = (
               }),
             ),
           ),
-    forward: () => Effect.die("not in test"),
+    forwardUdp: () => Effect.die("not in test"),
+    openForward: () => Effect.die("not in test"),
     stopWorkspace: (target, options) =>
       (captureOps?.aroundStop?.() ?? Effect.void).pipe(
         Effect.andThen(
@@ -966,9 +970,15 @@ export const recordingProtocolHostLayer = (
 export const serviceHostStubLayer = Layer.succeed(ServiceHost, {
   bindAddresses: () => Effect.succeed(["127.0.0.1"]),
   start: () => Effect.succeed({ hostPort: 43127, boundAddresses: ["127.0.0.1"] }),
+  hold: () => Effect.void,
+  sever: () => Effect.void,
   stop: () => Effect.void,
-  probe: () => Effect.succeed(true),
 });
+
+export const forwardAdapterReadyLayer: Layer.Layer<ForwardAdapter> = adapterLayer(
+  scriptedSealant(async () => fakeForward(echo).forward).layer,
+  "refuse",
+);
 
 /**
  * Session sockets bind nothing in these worlds; the api each session would serve is kept so a
@@ -3316,6 +3326,8 @@ interface EngineOptions {
   readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
   /** Where session sockets go; kept in `servedSocketApis` unless a test says. */
   readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
+  readonly forwardAdapterLayer?: Layer.Layer<ForwardAdapter>;
+  readonly serviceHostLayer?: Layer.Layer<ServiceHost>;
   /** Every account's Mend key; one shared stub path unless a test says. */
   readonly instanceRolesLayer?: Layer.Layer<InstanceRolesRepo>;
   readonly mendKeysLayer?: Layer.Layer<MendKeys>;
@@ -3516,7 +3528,12 @@ export const withPreparedEngineEffect = <B, A, E>(
           serviceStateLayer(world),
         ),
       ),
-      Layer.provide(serviceHostStubLayer),
+      Layer.provide(
+        Layer.merge(
+          options.serviceHostLayer ?? serviceHostStubLayer,
+          options.forwardAdapterLayer ?? forwardAdapterReadyLayer,
+        ),
+      ),
       Layer.provide(options.socketHostLayer ?? sessionSocketStubLayer),
       Layer.provide(
         options.tokensLayer ??

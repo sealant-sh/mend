@@ -1,5 +1,4 @@
 import * as dgram from "node:dgram";
-import { once } from "node:events";
 import * as net from "node:net";
 import * as os from "node:os";
 
@@ -8,24 +7,17 @@ import type { SealantWorkspaceId, ServiceForwardId, ServiceId } from "@mend/doma
 import type { ServiceObservationSource } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import type { WorkspaceForward } from "@sealant/sdk";
-import {
-  Clock,
-  Duration,
-  Effect,
-  type Fiber,
-  Layer,
-  Option,
-  Schedule,
-  Schema,
-  Scope,
-} from "effect";
+import { Clock, Duration, Effect, type Fiber, Layer, Schedule, Schema, Scope } from "effect";
 import * as Context from "effect/Context";
+
+import { forwardSockets, relayForwardSocket } from "./forward-node.ts";
+import { ForwardAdapter, type ForwardDialRecord, portTarget } from "./forward.ts";
 
 /**
  * The host side of a Service (docs/SESSION-SERVICES.md): one ordinary TCP
  * listener per Service on the machine's private interfaces, and per accepted
- * connection one `workspace.forward(port)` byte pipe into the workspace —
- * accept, dial, pump, nothing protocol-aware anywhere.
+ * connection one bounded forward into the workspace, through the forward
+ * adapter (forward.ts) — accept, dial, relay, nothing protocol-aware anywhere.
  *
  * UDP Services bind a datagram socket instead. Each source address is one
  * flow: its first datagram dials the workspace (loopback AND the docker
@@ -80,22 +72,32 @@ export interface ServiceHostBinding {
   readonly boundAddresses: ReadonlyArray<string>;
 }
 
+export type ServiceSeverReason = "service-stopping" | "service-restarting";
+
 export class ServiceHost extends Context.Service<
   ServiceHost,
   {
     /** Resolve and validate the operator-selected policy before persisting a Service. */
     readonly bindAddresses: () => Effect.Effect<ReadonlyArray<string>, ServiceBindError>;
-    /** Bind the listener(s) and start pumping; resolves with the exact host binding. */
+    /** Bind the listener(s) and start relaying; resolves with the exact host binding. */
     readonly start: (
       input: ServiceStartInput,
     ) => Effect.Effect<ServiceHostBinding, ServiceBindError>;
-    /** Close the listener(s) and drop live pumps. Idempotent. */
+    /**
+     * Hold a connection to a Service that is not the listener's (a tunnel) while the scope is
+     * open: `sever` resets it when the Service stops or restarts.
+     */
+    readonly hold: (
+      serviceId: ServiceId,
+      sever: (reason: ServiceSeverReason) => Effect.Effect<void>,
+    ) => Effect.Effect<void, never, Scope.Scope>;
+    /**
+     * Reset every open connection to a Service, the listener's and every held one, and keep the
+     * listener.
+     */
+    readonly sever: (serviceId: ServiceId, reason: ServiceSeverReason) => Effect.Effect<void>;
+    /** Reset every open connection and close the listener(s). Idempotent. */
     readonly stop: (serviceId: ServiceId) => Effect.Effect<void>;
-    /** One dial through the forward: does anything answer on the workspace port? */
-    readonly probe: (
-      workspaceId: SealantWorkspaceId,
-      workspacePort: number,
-    ) => Effect.Effect<boolean>;
   }
 >()("@mend/sessions/ServiceHost") {}
 
@@ -200,7 +202,8 @@ const portRange = (): { readonly min: number; readonly max: number } => {
 
 const listenOnce = (host: string, port: number): Promise<net.Server> =>
   new Promise((resolve, reject) => {
-    const server = net.createServer();
+    // Half-open: a client's FIN is forwarded as one, and the answer after it still arrives.
+    const server = net.createServer({ allowHalfOpen: true });
     server.once("error", reject);
     server.listen(port, host, () => {
       server.removeListener("error", reject);
@@ -229,30 +232,6 @@ const serverAddress = (server: net.Server): string | null => {
 
 const datagramAddress = (socket: dgram.Socket): string => socket.address().address;
 
-/** Copy bytes both ways between an accepted socket and a forward pipe until either side ends. */
-const pump = (socket: net.Socket, forward: WorkspaceForward): void => {
-  socket.setNoDelay(true);
-  socket.on("data", (bytes) => forward.send(bytes));
-  // Client half-close: no more outbound; the response keeps flowing.
-  socket.on("end", () => forward.eof());
-  socket.on("error", () => forward.close());
-  socket.on("close", () => forward.close());
-  void (async () => {
-    try {
-      for await (const chunk of forward.output) {
-        // Honor the client socket's backpressure — a slow phone must slow
-        // the workspace read, not grow this process.
-        if (!socket.write(chunk)) {
-          await once(socket, "drain");
-        }
-      }
-    } catch {
-      // The forward died mid-stream; the socket teardown below is the signal.
-    }
-    socket.end();
-  })();
-};
-
 /** One UDP peer's relay: the dialed forwards, pinned to whichever answered. */
 interface UdpFlow {
   forwards: WorkspaceForward[];
@@ -272,10 +251,18 @@ interface ActiveService {
   readonly dgrams: ReadonlyArray<dgram.Socket>;
   readonly flows: Map<string, UdpFlow>;
   readonly timer: Fiber.Fiber<void>;
-  /** Live pump sockets — a shutdown must sever these or the process never exits. */
+  /** Live relayed sockets — a shutdown must sever these or the process never exits. */
   readonly sockets: Set<net.Socket>;
-  lastStatus: "reachable" | "unreachable" | null;
+  /** The last observation written, so a connection that says nothing new writes nothing. */
+  last: { readonly state: "reachable" | "unreachable"; readonly error: string | null } | null;
 }
+
+const resetSockets = (entry: ActiveService): void => {
+  for (const socket of entry.sockets) {
+    socket.resetAndDestroy();
+  }
+  entry.sockets.clear();
+};
 
 const PROBE_INTERVAL_MS = 20_000;
 
@@ -285,16 +272,18 @@ const UDP_FLOW_IDLE_MS = 120_000;
 export const ServiceHostLive: Layer.Layer<
   ServiceHost,
   never,
-  SealantClient | ServiceForwardsRepo | ServiceObservationsRepo
+  ForwardAdapter | SealantClient | ServiceForwardsRepo | ServiceObservationsRepo
 > = Layer.effect(
   ServiceHost,
   Effect.gen(function* () {
     const sealant = yield* SealantClient;
+    const adapter = yield* ForwardAdapter;
     const forwards = yield* ServiceForwardsRepo;
     const observations = yield* ServiceObservationsRepo;
     const clock = yield* Clock.Clock;
     const scope = yield* Scope.Scope;
     const active = new Map<ServiceId, ActiveService>();
+    const held = new Map<ServiceId, Set<(reason: ServiceSeverReason) => Effect.Effect<void>>>();
 
     // Schedule.fixed uses epoch milliseconds. Native intervals were independent of
     // wall-clock corrections, so keep these boundaries on the monotonic clock.
@@ -327,7 +316,7 @@ export const ServiceHostLive: Layer.Layer<
         scope,
       );
 
-    // Graceful shutdown: close every listener and sever every pump, or the
+    // Graceful shutdown: close every listener and sever every relay, or the
     // open handles keep the process alive and `pnpm dev` restarts wedge into
     // a half-dead server (HTTP gone, Service ports still held).
     yield* Effect.addFinalizer(() =>
@@ -339,42 +328,36 @@ export const ServiceHostLive: Layer.Layer<
     );
 
     /**
-     * "The workspace's port" is one namespace to the user, two to Docker: a
-     * native process listens on the container loopback, while an inner
-     * `docker compose` publishes on the workspace-scoped dind sidecar
-     * (alias `docker`). Dial loopback first — deterministic when both
-     * answer — then fall back to the sidecar. A fixed two-element chain,
-     * not discovery.
+     * Persist target-state episodes, but only when the state or its reason changes — not per
+     * connection. A refused dial's reason is the observation's error.
      */
-    const dial = (workspaceId: SealantWorkspaceId, workspacePort: number) =>
-      Effect.gen(function* () {
-        const workspace = yield* sealant.getWorkspace(workspaceId);
-        return yield* sealant
-          .forward(workspace, workspacePort, "127.0.0.1")
-          .pipe(Effect.catch(() => sealant.forward(workspace, workspacePort, "docker")));
-      });
-
-    /** Persist target-state episodes, but only on transitions — not per connection. */
     const observe = (
       input: ServiceStartInput,
-      status: "reachable" | "unreachable",
+      state: "reachable" | "unreachable",
       source: ServiceObservationSource,
+      error: string | null = null,
     ): Promise<void> => {
       const entry = active.get(input.serviceId);
-      if (entry === undefined || entry.lastStatus === status) {
+      if (entry === undefined || (entry.last?.state === state && entry.last.error === error)) {
         return Promise.resolve();
       }
-      entry.lastStatus = status;
+      entry.last = { state, error };
       return Effect.runPromise(
         observations
-          .record({
-            serviceId: input.serviceId,
-            forwardId: input.forwardId,
-            state: status,
-            source,
-          })
+          .record({ serviceId: input.serviceId, forwardId: input.forwardId, state, source, error })
           .pipe(Effect.ignore),
       );
+    };
+
+    const observeDial = (
+      input: ServiceStartInput,
+      record: ForwardDialRecord,
+      source: ServiceObservationSource,
+    ): Promise<void> => {
+      if (record.kind === "ready") return observe(input, "reachable", source);
+      // A dial given up because the client left says nothing about the Service.
+      if (record.issue.reason === "cancelled") return Promise.resolve();
+      return observe(input, "unreachable", source, record.issue.reason);
     };
 
     const stopSync = (serviceId: ServiceId): void => {
@@ -396,24 +379,39 @@ export const ServiceHostLive: Layer.Layer<
         }
       }
       entry.flows.clear();
-      // server.close() only stops accepting; established pumps must be
+      // server.close() only stops accepting; established relays must be
       // severed or they hold the event loop (and a graceful shutdown) open.
-      for (const socket of entry.sockets) {
-        socket.destroy();
-      }
-      entry.sockets.clear();
+      resetSockets(entry);
     };
 
-    const probe = (workspaceId: SealantWorkspaceId, workspacePort: number) =>
-      dial(workspaceId, workspacePort).pipe(
-        Effect.flatMap((forward) =>
+    const hold = (
+      serviceId: ServiceId,
+      sever: (reason: ServiceSeverReason) => Effect.Effect<void>,
+    ) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const severs = held.get(serviceId) ?? new Set();
+          severs.add(sever);
+          held.set(serviceId, severs);
+        }),
+        () =>
           Effect.sync(() => {
-            forward.close();
-            return true;
+            const severs = held.get(serviceId);
+            severs?.delete(sever);
+            if (severs?.size === 0) held.delete(serviceId);
           }),
-        ),
-        Effect.catch(() => Effect.succeed(false)),
       );
+
+    const sever = Effect.fn("ServiceHost.sever")(function* (
+      serviceId: ServiceId,
+      reason: ServiceSeverReason,
+    ) {
+      const entry = active.get(serviceId);
+      if (entry !== undefined) resetSockets(entry);
+      yield* Effect.forEach([...(held.get(serviceId) ?? [])], (close) => close(reason), {
+        discard: true,
+      });
+    });
 
     const bindAddresses = Effect.fn("ServiceHost.bindAddresses")(function* () {
       return yield* configuredBindAddresses();
@@ -432,29 +430,22 @@ export const ServiceHostLive: Layer.Layer<
         }
       }
 
+      // Every connection dials as the Service's owner: detached from any request.
+      const connect = yield* forwardSockets.pipe(
+        Effect.provideService(ForwardAdapter, adapter),
+        asSealantUser(input.ownerUserId),
+      );
+      const target = portTarget(input.workspaceId, input.workspacePort);
       const onConnection = (socket: net.Socket): void => {
         const entry = active.get(input.serviceId);
         if (entry !== undefined) {
           entry.sockets.add(socket);
           socket.once("close", () => entry.sockets.delete(socket));
         }
-        void Effect.runPromise(
-          dial(input.workspaceId, input.workspacePort).pipe(
-            Effect.option,
-            asSealantUser(input.ownerUserId),
-          ),
-        )
-          .then((forward) => {
-            if (Option.isNone(forward)) {
-              void observe(input, "unreachable", "connection");
-              socket.destroy();
-              return undefined;
-            }
-            void observe(input, "reachable", "connection");
-            pump(socket, forward.value);
-            return undefined;
-          })
-          .catch(() => socket.destroy());
+        relayForwardSocket(socket, connect, target, {
+          purpose: "service",
+          observe: (record) => void observeDial(input, record, "connection"),
+        });
       };
 
       // All configured interfaces bind the SAME port, so one URL works from
@@ -499,10 +490,8 @@ export const ServiceHostLive: Layer.Layer<
               stopSync(input.serviceId);
               return;
             }
-            const reachable = yield* probe(input.workspaceId, input.workspacePort);
-            yield* Effect.promise(() =>
-              observe(input, reachable ? "reachable" : "unreachable", "probe"),
-            );
+            const record = yield* adapter.probe(target, { purpose: "readiness" });
+            yield* Effect.promise(() => observeDial(input, record, "probe"));
           }).pipe(asSealantUser(input.ownerUserId), Effect.ignore),
         );
         active.set(input.serviceId, {
@@ -511,7 +500,7 @@ export const ServiceHostLive: Layer.Layer<
           flows: new Map(),
           timer,
           sockets: new Set(),
-          lastStatus: null,
+          last: null,
         });
         return {
           hostPort: port,
@@ -534,7 +523,7 @@ export const ServiceHostLive: Layer.Layer<
       Effect.runPromise(
         Effect.gen(function* () {
           const workspace = yield* sealant.getWorkspace(workspaceId);
-          return yield* sealant.forward(workspace, workspacePort, host, "udp");
+          return yield* sealant.forwardUdp(workspace, workspacePort, host);
         }).pipe(
           asSealantUser(ownerUserId),
           Effect.map((forward): WorkspaceForward | null => forward),
@@ -708,7 +697,7 @@ export const ServiceHostLive: Layer.Layer<
           flows: new Map(),
           timer,
           sockets: new Set(),
-          lastStatus: null,
+          last: null,
         });
         return { hostPort: port, boundAddresses: sockets.map(datagramAddress) };
       }
@@ -719,9 +708,10 @@ export const ServiceHostLive: Layer.Layer<
     });
 
     const stop = Effect.fn("ServiceHost.stop")(function* (serviceId: ServiceId) {
+      yield* sever(serviceId, "service-stopping");
       yield* Effect.sync(() => stopSync(serviceId));
     });
 
-    return { bindAddresses, start, stop, probe };
+    return { bindAddresses, start, hold, sever, stop };
   }),
 );

@@ -3,7 +3,6 @@ import { spawn, spawnSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
-import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -24,6 +23,7 @@ import {
   validatePiProfile,
 } from "@mend/domain/workbench";
 import { type AgentShareHandle, shareAgent, startAgentShare } from "@mend/local-git/agent-share";
+import { tunnelListener } from "@mend/network/tunnel-client";
 
 import { agentLoginsLine, parseAgentLoginsArgs, type AgentLoginsDto } from "./agent-logins.ts";
 import {
@@ -154,7 +154,6 @@ import {
 import {
   createServiceTunnels,
   listenLocal,
-  pumpConnection,
   serverEvents,
   type ServiceTunnels,
 } from "./service-tunnels.ts";
@@ -2929,9 +2928,13 @@ const tunnelServices = async (
   for (const service of services) {
     const port = portOverride ?? service.hostPort ?? service.workspacePort;
     // One ticket per local connection: a ticket opens one tunnel once.
-    const server = net.createServer((socket) =>
-      pumpConnection(socket, tunnelUrlFor(config, service.id)),
-    );
+    const label = service.label ?? service.id.slice(0, 8);
+    const server = tunnelListener(() => tunnelUrlFor(config, service.id), {
+      onClosed: (code, reason) =>
+        say(
+          `${amber("●")} ${label} ${dim(`connection closed · ${code} ${reason || "no reason"}`)}`,
+        ),
+    });
     await listenLocal(server, port, false).catch((error: NodeJS.ErrnoException) =>
       fail(
         error.code === "EADDRINUSE"
@@ -2939,9 +2942,7 @@ const tunnelServices = async (
           : error.message,
       ),
     );
-    say(
-      `${green("●")} ${service.label ?? service.id.slice(0, 8)} → 127.0.0.1:${port} ${dim(`(tunnel to ${config.url})`)}`,
-    );
+    say(`${green("●")} ${label} → 127.0.0.1:${port} ${dim(`(tunnel to ${config.url})`)}`);
   }
   say(dim("  connections are authenticated as you · Ctrl-C stops"));
   // The listeners keep the process alive until the user stops it.
