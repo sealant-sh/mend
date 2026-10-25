@@ -20,7 +20,13 @@ import {
   type FileListing,
   type FileRead,
   type OpenRawFile,
+  RawBlobCache,
+  type RawBlobTarget,
+  RawCacheLimits,
+  type RawTreeSource,
   RawReadError,
+  RawPreparationWait,
+  parseImmutableTree,
   type GrepQuery,
   type GrepResult,
   type GitError,
@@ -30,10 +36,11 @@ import {
   type RunnerCache,
   sha256Hex,
   Store,
+  rawTreeOf,
   worktreePathOf,
   worktreeTreeOf,
 } from "@mend/store";
-import { Effect, Layer, Schema, type Scope } from "effect";
+import { Deferred, Duration, Effect, Layer, Schema, Scope, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -107,6 +114,73 @@ export interface Stamped<A> {
   readonly stamp: ReadStamp;
 }
 
+/** The API resolves checkpoint membership before supplying its immutable commit and provenance. */
+export type RawView =
+  | { readonly kind: "current" }
+  | { readonly kind: "capture"; readonly captureId: string }
+  | { readonly kind: "checkpoint"; readonly commit: string; readonly captureId: string | null };
+
+export interface RawFileObservation extends OpenRawFile {
+  readonly stamp?: ReadStamp;
+}
+
+/**
+ * A prepared file opens at once, with no Git or capture. A miss starts one preparation per file
+ * (`source`, then the unpack) in `lifetime`, so it outlives a read that stops waiting, and the
+ * read waits `RawPreparationWait` for it. A later miss joins the preparation in flight; past
+ * `inFlight` of them a miss is refused as busy, and each ends at `preparationMillis`.
+ */
+const rawFilesOf = Effect.gen(function* () {
+  const lifetime = yield* Scope.Scope;
+  const cache = yield* RawBlobCache;
+  const limits = yield* RawCacheLimits;
+  const inFlight = new Map<string, Deferred.Deferred<void, RawReadError>>();
+  const start = (
+    key: string,
+    file: RawBlobTarget,
+    source: Effect.Effect<RawTreeSource, RawReadError>,
+  ) =>
+    Effect.gen(function* () {
+      const done = Deferred.makeUnsafe<void, RawReadError>();
+      inFlight.set(key, done);
+      yield* Effect.flatMap(source, (tree) => cache.prepare(file, tree)).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(limits.preparationMillis),
+          orElse: () => Effect.fail(new RawReadError({ reason: "io" })),
+        }),
+        Effect.exit,
+        Effect.flatMap((exit) => Deferred.done(done, exit)),
+        Effect.ensuring(
+          Effect.sync(() => {
+            inFlight.delete(key);
+          }),
+        ),
+        Effect.forkIn(lifetime),
+      );
+      return done;
+    });
+  return (
+    file: RawBlobTarget,
+    source: Effect.Effect<RawTreeSource, RawReadError>,
+  ): Effect.Effect<OpenRawFile, RawReadError, Scope.Scope> =>
+    Effect.gen(function* () {
+      const ready = yield* cache.open(file);
+      if (ready !== null) return ready;
+      const key = JSON.stringify([file.project, file.name, file.path, file.within]);
+      const joined = inFlight.get(key);
+      if (joined === undefined && inFlight.size >= limits.inFlight)
+        return yield* new RawReadError({ reason: "busy" });
+      const done = joined ?? (yield* start(key, file, source));
+      yield* Deferred.await(done).pipe(
+        Effect.timeoutOrElse({
+          duration: yield* RawPreparationWait,
+          orElse: () => Effect.fail(new RawReadError({ reason: "preparing" })),
+        }),
+      );
+      return (yield* cache.open(file)) ?? (yield* new RawReadError({ reason: "preparing" }));
+    });
+});
+
 export class WorktreeReads extends Context.Service<
   WorktreeReads,
   {
@@ -154,12 +228,12 @@ export class WorktreeReads extends Context.Service<
       worktreeId: WorktreeId,
       limit: number,
     ) => Effect.Effect<Stamped<FileListing>, WorktreeReadError>;
-    /** A scoped current-file descriptor; captured reads are refused without preparing a tree. */
+    /** Bytes and the selected observation, held by the caller through body consumption. */
     readonly openRawFile: (
       projectId: ProjectId,
       worktreeId: WorktreeId,
-      target: { readonly path: string; readonly within: string },
-    ) => Effect.Effect<OpenRawFile, RawReadError, Scope.Scope>;
+      target: { readonly path: string; readonly within: string; readonly view?: RawView },
+    ) => Effect.Effect<RawFileObservation, RawReadError, Scope.Scope>;
     /**
      * The start of one file, at most `maxBytes`: in the worktree as it stands (`at` null), or in a
      * commit's tree (a checkpoint's sha). Null when nothing readable is there, or the path leaves
@@ -196,13 +270,14 @@ export class WorktreeReads extends Context.Service<
 export const WorktreeReadsColocatedLive: Layer.Layer<
   WorktreeReads,
   never,
-  Store | ProjectsRepo | WorktreesRepo
+  Store | ProjectsRepo | WorktreesRepo | RawBlobCache
 > = Layer.effect(
   WorktreeReads,
   Effect.gen(function* () {
     const store = yield* Store;
     const projects = yield* ProjectsRepo;
     const worktrees = yield* WorktreesRepo;
+    const rawFiles = yield* rawFilesOf;
     const pathOf = (projectId: ProjectId, worktreeId: WorktreeId) =>
       Effect.gen(function* () {
         const project = yield* projects.byId(projectId);
@@ -247,10 +322,30 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
           Effect.map(stamped),
         ),
       openRawFile: (projectId, worktreeId, target) =>
-        pathOf(projectId, worktreeId).pipe(
-          Effect.mapError(() => new RawReadError({ reason: "missing" })),
-          Effect.flatMap((dir) => store.openRawWorktreeFile(dir, target.path, target.within)),
-        ),
+        Effect.gen(function* () {
+          const view = target.view;
+          if (view?.kind === "capture") return yield* new RawReadError({ reason: "missing" });
+          if (view?.kind === "checkpoint") {
+            const project = yield* projects
+              .byId(projectId)
+              .pipe(Effect.mapError(() => new RawReadError({ reason: "missing" })));
+            const commit = yield* parseImmutableTree(view.commit);
+            const file: RawBlobTarget = {
+              project: projectId,
+              name: { kind: "commit", commit },
+              path: target.path,
+              within: target.within,
+            };
+            return yield* rawFiles(
+              file,
+              Effect.succeed({ repository: project.storePath, tree: commit }),
+            );
+          }
+          const dir = yield* pathOf(projectId, worktreeId).pipe(
+            Effect.mapError(() => new RawReadError({ reason: "missing" })),
+          );
+          return yield* store.openRawWorktreeFile(dir, target.path, target.within);
+        }),
       readFile: (projectId, worktreeId, relative, at, maxBytes) =>
         pathOf(projectId, worktreeId).pipe(
           Effect.flatMap((dir) =>
@@ -284,6 +379,96 @@ export interface CaptureCache {
 /** Mend-made packs for a worktree live under the project prefix, never an epoch's. */
 export const derivedPackPrefix = (projectId: ProjectId) => `projects/${projectId}/packs/`;
 
+const selectedCapture = (worktreeId: WorktreeId, historical?: { readonly captureId: string }) =>
+  Effect.gen(function* () {
+    const repo = yield* CaptureStoreRepo;
+    const unavailable = (reason: string) =>
+      new WorktreeNotCapturedError({
+        worktreeId,
+        message: `the checkpoint's historical Git evidence is unavailable · ${reason}`,
+      });
+    const chainHead =
+      historical === undefined
+        ? ((yield* repo.headOf(worktreeId))?.head ?? null)
+        : yield* repo.captureById(historical.captureId);
+    if (historical !== undefined && (chainHead === null || chainHead.worktreeId !== worktreeId)) {
+      return yield* unavailable("its recorded capture is not retained for this worktree");
+    }
+    if (chainHead === null) {
+      return yield* new WorktreeNotCapturedError({
+        worktreeId,
+        message: "the worktree has no registered capture yet",
+      });
+    }
+    // A head whose git section failed verification (a pack that omits a tree it names) is not
+    // read: the newest capture below it that verified is, and the stamp says so. An unverified
+    // head is read as is — the failure, if any, surfaces with git's own words.
+    if (historical !== undefined && chainHead.gitFsck === "failed") {
+      return yield* unavailable("its capture failed Git verification");
+    }
+    const head =
+      historical === undefined && chainHead.gitFsck === "failed"
+        ? ((yield* repo.listChain(worktreeId))
+            .filter((row) => row.n < chainHead.n && row.gitFsck === "verified")
+            .at(-1) ?? chainHead)
+        : chainHead;
+    if (head.id !== chainHead.id) {
+      yield* Effect.logInfo(
+        "capture reads: the head's git section failed verification · reading the newest verified capture",
+      ).pipe(
+        Effect.annotateLogs({
+          worktreeId,
+          headN: chainHead.n,
+          headCaptureId: chainHead.id,
+          readN: head.n,
+          readCaptureId: head.id,
+        }),
+      );
+    }
+    return head;
+  });
+
+/**
+ * A capture a read named after a current read returned it: still retained for this worktree, and
+ * one `selectedCapture` could have chosen. A failed capture is chosen only while no capture below
+ * it verified, so a pin to it stands under the same condition.
+ */
+const pinnedCapture = (worktreeId: WorktreeId, captureId: string) =>
+  Effect.gen(function* () {
+    const repo = yield* CaptureStoreRepo;
+    const row = yield* repo.captureById(captureId);
+    if (row === null || row.worktreeId !== worktreeId)
+      return yield* new WorktreeNotCapturedError({
+        worktreeId,
+        message: "the pinned capture is not retained for this worktree",
+      });
+    if (
+      row.gitFsck === "failed" &&
+      (yield* repo.listChain(worktreeId)).some(
+        (below) => below.n < row.n && below.gitFsck === "verified",
+      )
+    )
+      return yield* new WorktreeNotCapturedError({
+        worktreeId,
+        message: "the pinned capture failed Git verification under a verified one",
+      });
+    return row;
+  });
+
+/** The capture a raw read observes: the one a JSON read selects, a pinned one, or a checkpoint's. */
+const rawCapture = (
+  worktreeId: WorktreeId,
+  view: RawView,
+): Effect.Effect<CaptureRow, RawReadError | WorktreeNotCapturedError, CaptureStoreRepo> => {
+  if (view.kind === "current") return selectedCapture(worktreeId);
+  const captureId = view.captureId;
+  if (captureId === null || !/^[a-f0-9]{64}$/.test(captureId))
+    return Effect.fail(new RawReadError({ reason: "missing" }));
+  return view.kind === "capture"
+    ? pinnedCapture(worktreeId, captureId)
+    : selectedCapture(worktreeId, { captureId });
+};
+
 /**
  * Prepare the runner cache for a worktree's chain head: fetch and decode the head manifest,
  * write the refs (store refs, the manifest's own, Mend's derived checkpoint packs) and hand
@@ -296,53 +481,30 @@ export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
   worktreeId: WorktreeId,
   historical?: { readonly captureId: string },
 ) {
+  const head = yield* selectedCapture(worktreeId, historical);
+  return yield* restoreCapture(projectId, worktreeId, head, historical !== undefined);
+});
+
+/**
+ * The runner cache over exactly `head`. A strict restore refuses evidence that does not match its
+ * row, where a lenient one (the chain head's) dies on it or answers git's own error.
+ */
+const restoreCapture = Effect.fnUntraced(function* (
+  projectId: ProjectId,
+  worktreeId: WorktreeId,
+  head: CaptureRow,
+  strict: boolean,
+) {
   const repo = yield* CaptureStoreRepo;
   const blobs = yield* BlobStore;
   const runner = yield* GitOpsRunner;
   const refs = yield* StoreRefsRepo;
+  const historical = strict ? { captureId: head.id } : undefined;
   const unavailable = (reason: string) =>
     new WorktreeNotCapturedError({
       worktreeId,
       message: `the checkpoint's historical Git evidence is unavailable · ${reason}`,
     });
-  const chainHead =
-    historical === undefined
-      ? ((yield* repo.headOf(worktreeId))?.head ?? null)
-      : yield* repo.captureById(historical.captureId);
-  if (historical !== undefined && (chainHead === null || chainHead.worktreeId !== worktreeId)) {
-    return yield* unavailable("its recorded capture is not retained for this worktree");
-  }
-  if (chainHead === null) {
-    return yield* new WorktreeNotCapturedError({
-      worktreeId,
-      message: "the worktree has no registered capture yet",
-    });
-  }
-  // A head whose git section failed verification (a pack that omits a tree it names) is not
-  // read: the newest capture below it that verified is, and the stamp says so. An unverified
-  // head is read as is — the failure, if any, surfaces with git's own words.
-  if (historical !== undefined && chainHead.gitFsck === "failed") {
-    return yield* unavailable("its capture failed Git verification");
-  }
-  const head =
-    historical === undefined && chainHead.gitFsck === "failed"
-      ? ((yield* repo.listChain(worktreeId))
-          .filter((row) => row.n < chainHead.n && row.gitFsck === "verified")
-          .at(-1) ?? chainHead)
-      : chainHead;
-  if (head.id !== chainHead.id) {
-    yield* Effect.logInfo(
-      "capture reads: the head's git section failed verification · reading the newest verified capture",
-    ).pipe(
-      Effect.annotateLogs({
-        worktreeId,
-        headN: chainHead.n,
-        headCaptureId: chainHead.id,
-        readN: head.n,
-        readCaptureId: head.id,
-      }),
-    );
-  }
   const bytes = yield* blobs
     .get(head.manifestKey)
     .pipe(
@@ -402,7 +564,7 @@ export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
 export const WorktreeReadsCapturedLive: Layer.Layer<
   WorktreeReads,
   never,
-  CaptureStoreRepo | BlobStore | GitOpsRunner | StoreRefsRepo
+  CaptureStoreRepo | BlobStore | GitOpsRunner | StoreRefsRepo | RawBlobCache
 > = Layer.effect(
   WorktreeReads,
   Effect.gen(function* () {
@@ -419,6 +581,36 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
         Effect.provideService(BlobStore, blobs),
         Effect.provideService(GitOpsRunner, runner),
         Effect.provideService(StoreRefsRepo, refs),
+      );
+    const rawFiles = yield* rawFilesOf;
+    const restores = yield* Semaphore.make((yield* RawCacheLimits).restores);
+    /**
+     * Where Git finds `file`. The runner cache is restored on every preparation, never kept: the
+     * runner prunes a project's repository when others need the room.
+     */
+    const rawSource = (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+      head: CaptureRow,
+      file: RawBlobTarget,
+    ): Effect.Effect<RawTreeSource, RawReadError> =>
+      Effect.gen(function* () {
+        const ready = yield* restoreCapture(projectId, worktreeId, head, true);
+        if (file.name.kind === "commit")
+          return { repository: ready.cache.path, tree: file.name.commit };
+        // The files' bytes as they stood, before clean, LFS and line-ending filters.
+        const tree = yield* runner.resolve(
+          ready.cache,
+          rawTreeOf(ready.manifest.sections.git) ?? ready.manifest.sections.git.head,
+        );
+        return { repository: ready.cache.path, tree: yield* parseImmutableTree(tree) };
+      }).pipe(
+        Effect.provideService(CaptureStoreRepo, repo),
+        Effect.provideService(BlobStore, blobs),
+        Effect.provideService(GitOpsRunner, runner),
+        Effect.provideService(StoreRefsRepo, refs),
+        Effect.mapError(() => new RawReadError({ reason: "missing" })),
+        restores.withPermits(1),
       );
     return {
       diffWorktree: (projectId, worktreeId, base) =>
@@ -483,7 +675,26 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
               .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
           ),
         ),
-      openRawFile: () => Effect.fail(new RawReadError({ reason: "captured" })),
+      openRawFile: (projectId, worktreeId, target) =>
+        Effect.gen(function* () {
+          const view = target.view ?? { kind: "current" };
+          // Selected before any open, so a capture no longer retained is never served from the cache.
+          const head = yield* rawCapture(worktreeId, view).pipe(
+            Effect.provideService(CaptureStoreRepo, repo),
+            Effect.mapError(() => new RawReadError({ reason: "missing" })),
+          );
+          const file: RawBlobTarget = {
+            project: projectId,
+            name:
+              view.kind === "checkpoint"
+                ? { kind: "commit", commit: yield* parseImmutableTree(view.commit) }
+                : { kind: "capture", captureId: head.id },
+            path: target.path,
+            within: target.within,
+          };
+          const opened = yield* rawFiles(file, rawSource(projectId, worktreeId, head, file));
+          return { ...opened, stamp: stampOf(head) };
+        }),
       // The worktree as it stands is the head capture's tree.
       readFile: (projectId, worktreeId, relative, at, maxBytes) =>
         prepared(projectId, worktreeId).pipe(

@@ -78,8 +78,11 @@ a checkout beside a Mend server.
 - `t3-assets` answers `assets.createUrl` for a worktree's files (`workspace-file`, `media-file`) and
   a message's images (`attachment`) with a device-bound URL, `/api/assets/<token>/<file name>`, for
   at most an hour; every fetch confirms the device and reads the file through Mend's
-  `GET|HEAD /api/worktrees/:id/raw`, which serves a co-located server's current files only
-  (`apps/t3-gateway/src/assets.ts`, `apps/api/src/routes/worktrees.ts`). A project favicon answers
+  `GET|HEAD /api/worktrees/:id/raw`: a co-located server's current files, or in the default captured
+  store a capture's raw bytes (before eol and clean filters) or a checkpoint's, unpacked into a
+  per-process disk cache while the URL is minted (at most 2 GiB a file, 8 GiB a process;
+  `apps/t3-gateway/src/assets.ts`, `apps/api/src/routes/worktrees.ts`,
+  `packages/store/src/raw-blob-cache.ts`). A project favicon answers
   `/api/assets/project-favicon-missing`.
 - `t3-find` answers `orchestration.searchThread` and its streaming form over the hub's projection of
   the thread (`apps/t3-gateway/src/thread-find.ts`).
@@ -316,12 +319,14 @@ with the gateway as a remote environment. Driven on 2026-10-24 on a local verify
 login (evidence `st-verify-1024-t3pv-41b9/t3-client/`). Every step below is an `ok ·` line of the
 recipe's `steps.log`; `observed ·` lines record what was seen where the outcome is not fixed in
 advance, and `rpc ·` lines the client's own calls, read from its WebSocket frames (the gateway logs
-HTTP only). The previews, the pasted chat image and the revoke (from **Previews need a co-located
-Mend**, below) were added and driven the same day on a local verify stack (Mend at `6342958bc`,
-served as `faa121b10`), its inner Mend restarted with `MEND_SESSION_STORE=colocated` (evidence
-`st-verify-1024-raw1a-70e2/t3-client/`, `web-attempt4/` and `web-variant/`); `net ·` lines are the
-asset requests the browser made, and `curl ·` lines the minted URLs fetched with `curl` (each token
-read from its frames into the registry, its config on stdin).
+HTTP only). The previews, the pasted chat image and the revoke were driven on 2026-10-25 on a local
+verify stack in Mend's default captured store, with no restart (Mend at `eee24ae1c`, served as
+`6d7f63e9e`; `sessionStore: 'captured'` in the inner Mend's start line; evidence
+`st-verify-1025-1537-raw1b-1e7c/t3-client/`, the whole recipe in `web-3/`, and `web-variant-3/`
+without the snooze and settle). `net ·` lines are the asset requests the browser made, `curl ·`
+lines the minted URLs fetched with `curl` (each token read from its frames into the registry, its
+config on stdin), `raw ·` lines Mend's raw route read as the stack's account, and `window ·` lines
+bracket the opens and seeks that must reach Mend's disk cache only.
 
 Build the client once, outside this repository. The tag is `packages/t3-contracts/t3code.pin.json`'s
 `tag` (`v0.1.2`, commit `044f07257c96`); use the pnpm version t3code's `packageManager` names
@@ -407,39 +412,40 @@ machine's `PATH`, and the run ends by revoking every `t3code · T3 Code Web` dev
   `verify-terminal.txt`; `README.md` opens with `# Verify fixture`, under the line
   `Read-only connection. Unsaved edits are kept until write access returns.` **Add panel surface** →
   **Diff**: `Changes` against `main`, `1 additions, 0 deletions`, `verify-terminal.txt +1`.
-- **Previews need a co-located Mend.** The verify stack runs the capture store (the default), and
-  Mend answers every raw read there with `409` `{"_tag":"RawFileUnavailable","mode":"captured"}`:
-  `assets.createUrl` fails with `AssetWorkspaceAssetNotFoundError` and the panel reads
-  `Unable to load workspace image.` (observed 2026-10-24, `captured/`). So the run recreates the
-  inner `mend-mend-1` from setup's own Compose files (its labels name them and `server.env`) with
-  one more file setting `MEND_SESSION_STORE=colocated`, through a sibling `mend run` on the
-  session's Docker; Mend then logs `sessionStore: 'colocated'` and its deprecation warning. The
-  sibling's command, with `<label>` read by `docker inspect mend-mend-1` from
-  `com.docker.compose.project.<label>` and `<cli>` the image of `verify-stack-relay`:
-
-  ```sh
-  docker run --rm -v verify-stack-state:<mountpoint> -v <docker socket>:/var/run/docker.sock \
-    --workdir <working_dir> --entrypoint sh <cli> -c "printf 'services:\n  mend:\n    environment:\n      MEND_SESSION_STORE: colocated\n' > <mountpoint>/server/st-verify-session-store.yaml \
-    && docker compose -p mend --project-directory <working_dir> --env-file <environment_file> \
-       -f <each of config_files> -f <mountpoint>/server/st-verify-session-store.yaml up -d --no-deps mend"
-  ```
-
-  `<mountpoint>` is `docker volume inspect -f '{{.Mountpoint}}' verify-stack-state`, and
-  `<docker socket>` the source of `mend-mend-1`'s `/var/run/docker.sock` mount. Threads launched
-  before the restart keep answering `subscribeVcsStatus` with
-  `Mend answered GET /api/changes/:id/stats with 422.` A captured or checkpoint raw read past that
-  refusal is part 1b; nothing more of it is drivable here.
-
-- **The fixtures, pasted into the terminal.** The recipe makes a PNG (64 × 64), an SVG, a one-page
-  PDF, a 10-second VP9 MP4 (Playwright's Chromium decodes no H.264), `site/index.html` with a
-  relative `site/style.css`, a `secret.css` beside `site/`, and 4 KiB of binary, then pastes one
-  script (820 KB of base64) into Mend's shell behind `stty -echo; cat > /tmp/preview-fixtures.sh`,
-  16 KiB a paste event: it took about 5 s. The script links `site/escape.css` to `../secret.css` and
-  prints each file's `sha256sum`, which match the recipe's.
+- **Captured previews.** Mend's default captured store, no restart. The Files panel lists a file
+  once a capture holding it is registered, so the recipe refreshes until it does: the terminal's
+  file and the fixtures were listed 2 to 4 s after the wait began, the 300 MiB `big.mp4` 17 s, the 2
+  GiB `huge.mp4` 34 to 39 s. A file's first mint prepares its bytes on Mend, bounded at about ten
+  seconds; past the bound the client shows it unavailable and the recipe reopens it (Retry video, or
+  a reload). Every first mint observed took 43 to 565 ms, so the unavailable-then-reopen path was
+  not reached. Each Mend API process keeps its own cache, emptied when it restarts.
+- **A process log of the inner Mend.** Beside the recipe, a watcher inside `mend-mend-1` (run with
+  `docker exec` through a sibling `mend run`) logs every pid the namespace allocates, each new
+  process's argv with paths redacted, and every 5 s the entries of `/var/lib/mend/store/_cache/raw/`
+  with their byte totals (`procs.jsonl`). `windows.mjs` reads it against the recipe's `window ·`
+  lines (`windows-3.jsonl`, `windows-summary.txt`). A raw preparation shows as
+  `git --literal-pathspecs ls-tree` and `git cat-file blob <oid>`; a capture restore as `git fetch`,
+  `index-pack` or `pack-objects`. Mend's own polling also runs inside the container every few
+  seconds (`docker inspect`, `git diff --numstat`, and a file read's
+  `git cat-file blob <rev>:<path>`), so a window is read by these names, not by a zero count.
 - **Image and SVG.** **Files** → `preview` → `pixel.png`: the `img` decodes at 64 × 64, from
   `GET /api/assets/<token>/pixel.png` `200` `image/png`, `cache-control: private, no-store`.
   `logo.svg` decodes at 96 × 96, served `image/svg+xml` with
   `content-security-policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`.
+- **The fixtures, pasted into the terminal.** The recipe makes a PNG (64 × 64), an SVG, an SVG with
+  CRLF line ends and the `preview/.gitattributes` that normalizes it, a one-page PDF, a 10-second
+  VP9 MP4 (Playwright's Chromium decodes no H.264), `site/index.html` with a relative
+  `site/style.css`, a `secret.css` beside `site/`, 4 KiB of binary and `version.txt`, then pastes
+  one script (820 KB of base64) into Mend's shell behind
+  `stty -echo; cat > /tmp/preview-fixtures.sh`, 16 KiB a paste event: it took about 5 s. The script
+  links `site/escape.css` to `../secret.css` and prints each file's `sha256sum`, which match the
+  recipe's. Later scripts, pasted the same way, write version two, the gitignored file, `big.mp4`
+  and `huge.mp4` in the workspace.
+- **Raw bytes, before the eol filter.** `crlf.svg` has CRLF line ends and `preview/.gitattributes`
+  reads `crlf.svg text eol=lf`; in the worktree `git hash-object` gives `5fc0f40080ca` with the
+  filter and `b54d6a0b436a` with `--no-filters`. It previews at 96 × 96, and `curl` on its minted
+  URL answers `200`, 140 bytes, sha256 `595ca701277d`: the worktree's CRLF bytes, not the
+  LF-normalized blob.
 - **PDF.** `doc.pdf` previews as an `embed` of type `application/pdf` on a minted URL. Playwright's
   headless Chromium has no PDF viewer (`navigator.pdfViewerEnabled` `false`), so the embed fetches
   nothing; `curl` on the minted URL answers `200` `application/pdf`, the file byte for byte. A
@@ -457,6 +463,28 @@ machine's `PATH`, and the run ends by revoking every `t3code · T3 Code Web` dev
   `<token>/%2e%2e/secret.css`, `<token>/..%2fsecret.css` and `<token>/escape.css` (the symlink)
   answer `404` `Not Found`; `<token>/style.css` answers `200`. `pixel.png`'s token with `logo.svg`
   in place of its file name answers `404`.
+- **Captured and checkpoint reads (via api).** Mend's raw route answers `preview/pixel.png` with
+  `x-mend-capture-id` and `x-mend-observation` `observed at capture 7 · seq 6 · partial`, and
+  `preview/version.txt` with version one. The recipe marks a checkpoint (`POST` checkpoints,
+  `user-mark`, ordinal 6); `at=<checkpoint>` answers version one from capture 8. After the shell
+  writes version two, the current read answers version two from capture 9, `at=<checkpoint>` still
+  version one from capture 8, and `at=` checkpoint 0 (before the fixtures) answers `404`.
+- **Gitignored.** `preview/ignored.png`, a copy of `pixel.png` listed in `.gitignore`
+  (`git check-ignore -v` names the rule), is not listed in the Files panel, and the raw route
+  answers `404`.
+- **A 300 MiB video, from the cache.** `big.mp4` is the clip's chunks spread through 300 MiB of
+  random bytes (315,166,494 bytes; it plays as the clip does). Its first mint took 426 ms (565 ms in
+  `web-variant-3/`), and the process log shows one `git cat-file blob <oid>` for it; the cache grew
+  by 315 MB. Three seeks then answered `206` (`bytes=1310720-`), and a reload reopened it with two
+  new mints of 11 and 18 ms and `206` reads. In both windows the process log shows no raw
+  preparation and no restore git, only Mend's polling.
+- **Over the 2 GiB cap.** `huge.mp4` (the clip and a 2 GiB sparse `free` box, 2,148,077,358 bytes)
+  reads `Video unavailable`, and again after **Retry video**: each mint fails
+  (`AssetWorkspaceAssetNotFoundError`), and the raw route answers `413`.
+- **The cache directory.** While Mend runs, `_cache/raw/` holds one process directory
+  (`<boot>-<host>-<id>`) and its `<id>.sock` beacon, in every one of 197 samples. Its largest was
+  946,102,252 bytes (three runs' `big.mp4` and the small fixtures, one file per distinct blob),
+  under the 8 GiB cap; eviction was not reached (`cache-summary.txt`, `logs-mend-grep.stdout`).
 - **Binary.** `data.bin` reads `The file is binary and cannot be displayed as text.`; no asset URL
   is fetched. `projects.readFile` of `pixel.png`, `clip.mp4` and `data.bin` fails (`binary_file`),
   and the client previews the media files anyway.
@@ -468,10 +496,12 @@ machine's `PATH`, and the run ends by revoking every `t3code · T3 Code Web` dev
   revoke** on each, they already answered `404` 49 to 124 ms later (observed), and 6 s later all six
   (`pasted.png`, `pixel.png`, `logo.svg`, `doc.pdf`, `clip.mp4`, `index.html`) answer `404`,
   `private, no-store`.
-- **No path or token in the logs.** The gateway's log (3,389 lines) and the inner Mend's since its
-  restart (441,304 lines) hold no `ast_`, no `/api/assets/`, no `/raw`, no `preview/` and none of
-  the fixtures' file names (`logs-gateway-grep.txt`, `logs-mend-grep.stdout`). Mend logs
-  `/api/worktrees/<id>`, `/contents` and `/diff` by path without the query, and no raw read.
+- **No path or token in the logs.** The gateway's log (1,593 lines) and the inner Mend's (142,875
+  lines, the whole run) hold no `ast_`, no `/api/assets/`, no `/raw`, no `preview/` and none of the
+  fixtures' file names (`logs-gateway-grep.txt`, `logs-mend-grep.stdout`). Mend logged no
+  `raw cache` or `capture reads` line. A store path does reach the client: every refused
+  `projects.readFile` (`t3.json`, and each binary or media file the client tries as text) names the
+  worktree's or repository's directory under `/var/lib/mend/store/`, in the client's frames only.
 - **What the client calls that the gateway refuses.** On every connect:
   `server.discoverSourceControl`
   (`Mend's t3code gateway does not offer server.discoverSourceControl.`) and `projects.readFile` of
@@ -494,14 +524,14 @@ machine's `PATH`, and the run ends by revoking every `t3code · T3 Code Web` dev
   logos (`svg[viewBox="0 0 256 257"]`), and says how many: those screenshots are kept. A view with a
   `video`, an `embed` or an `iframe` (the video, PDF and HTML previews) is withheld whole, and
   Mend's Settings → Devices was withheld as a credential field; their ARIA snapshots stay.
-- **Flakes seen on 2026-10-24.** Of eight full runs with the previews, one passed (`web-attempt4/`),
-  one failed in a preview step since fixed, and six failed earlier, in steps that predate the
-  previews: three times `settledAt` did not arrive within 15 s of **Settle thread** (the thread
-  still read `Snoozed, 59m left`), three times the opening message was refused with
+- **Flakes seen on 2026-10-24 and 2026-10-25.** On 2026-10-24, of eight full runs with the previews,
+  six failed before them: three times `settledAt` did not arrive within 15 s of **Settle thread**
+  (the thread still read `Snoozed, 59m left`), three times the opening message was refused with
   `Select a base branch before sending in New worktree mode.` while the combobox read
-  `From main (remote)`. The stack's sidebar then held the threads of every earlier run. A copy of
-  the recipe without the snooze and settle steps, waiting 3 s before the opening message, with the
-  preview steps unchanged, passed (`web-variant/`).
+  `From main (remote)`. On 2026-10-25 the settle failed the same way in the first two of three full
+  runs; the third passed whole (`web-3/`). A copy of the recipe without the snooze and settle steps,
+  waiting 3 s before the opening message, with the preview steps unchanged, passed
+  (`web-variant-3/`).
 
 ## Gotchas
 

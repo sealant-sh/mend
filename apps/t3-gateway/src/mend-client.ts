@@ -1,5 +1,6 @@
 import { isChosenDefault } from "@mend/domain/default-login";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
@@ -48,8 +49,16 @@ import {
  * beta.93); it decodes only the fields it reads, so Mend can add fields freely.
  */
 
+/**
+ * A second more than Mend's ten-second wait to prepare a captured or checkpoint file
+ * (`RawPreparationWait` in @mend/store), so a cold file usually gets Mend's `RawFilePreparing`
+ * rather than this deadline. Either one shows the preview as unavailable.
+ */
+const RAW_HEADERS_DEADLINE = Duration.seconds(11);
+
 /** A scoped response from Mend's raw endpoint; no upstream request or cause escapes. */
 export interface MendRawFile {
+  readonly captureId: string | null;
   readonly status: 200 | 206 | 416;
   readonly canonicalPath: Redacted.Redacted<string>;
   readonly revision: string;
@@ -61,6 +70,8 @@ export interface MendRawFile {
 }
 
 export interface MendRawFileRequest {
+  /** The capture a grant is pinned to (null: none); absent when minting accepts any. */
+  readonly captureId?: string | null;
   readonly path: Redacted.Redacted<string>;
   readonly within: Redacted.Redacted<string>;
   readonly method: "GET" | "HEAD";
@@ -383,7 +394,7 @@ export class MendClient extends Context.Service<
         readonly ignoreWhitespace: boolean;
       },
     ) => MendRead<MendRangeDiff>;
-    /** `GET|HEAD /api/worktrees/:id/raw`: one current file's bytes, whole or one range. */
+    /** `GET|HEAD /api/worktrees/:id/raw`: one file's bytes, current or at a pinned capture, whole or one range. */
     readonly openRawFile: (
       deviceToken: Redacted.Redacted<string>,
       worktreeId: string,
@@ -929,6 +940,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             path: Redacted.value(input.path),
             within: Redacted.value(input.within),
           });
+          if (input.captureId !== undefined && input.captureId !== null)
+            query.set("capture", input.captureId);
           const request = HttpClientRequest.make(input.method)(
             url(`/api/worktrees/${encodeURIComponent(worktreeId)}/raw?${query}`),
           ).pipe(
@@ -941,7 +954,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
               Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
               Effect.mapError(() => new MendRawFileUnavailable({ status: null })),
               Effect.timeoutOrElse({
-                duration: "10 seconds",
+                duration: RAW_HEADERS_DEADLINE,
                 orElse: () => Effect.fail(new MendRawFileUnavailable({ status: null })),
               }),
             );
@@ -958,7 +971,10 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           const revision = response.headers["x-mend-file-revision"] ?? "";
           const identity = response.headers["x-mend-file-identity"] ?? "";
           const contentRange = response.headers["content-range"];
+          const captureId = response.headers["x-mend-capture-id"] ?? null;
           if (
+            (captureId !== null && !/^[a-f0-9]{64}$/.test(captureId)) ||
+            (input.captureId !== undefined && captureId !== input.captureId) ||
             !/^\d+$/.test(lengthText) ||
             !Number.isSafeInteger(length) ||
             length < 0 ||
@@ -972,6 +988,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           return {
             status,
             canonicalPath: Redacted.make(canonicalPath),
+            captureId,
             revision,
             identity,
             length,

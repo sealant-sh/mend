@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { Agent, get as httpGet } from "node:http";
 import { tmpdir } from "node:os";
@@ -5,8 +6,16 @@ import { join } from "node:path";
 
 import { CheckpointId, SequenceNumber, Sha } from "@mend/domain";
 import { Checkpoint } from "@mend/domain/workbench";
-import { RawReadError, Store, StoreConfig } from "@mend/store";
-import { Duration, Effect, Layer, type Tracer } from "effect";
+import {
+  parseImmutableTree,
+  RawBlobCache,
+  RawBlobCacheLive,
+  type RawBlobTarget,
+  RawReadError,
+  Store,
+  StoreConfig,
+} from "@mend/store";
+import { Duration, Effect, Layer, ManagedRuntime, type Tracer } from "effect";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -16,22 +25,53 @@ const worktree = ids("private-alice").worktree;
 let api: TenancyApi;
 let root: string;
 let store: Store["Service"];
+let raw: RawBlobCache["Service"];
+let storeRuntime: ManagedRuntime.ManagedRuntime<Store | RawBlobCache, never>;
 const bytes = Uint8Array.from({ length: 256 }, (_, i) => i);
+const checkpointFile = (
+  commit: string,
+  target: { readonly path: string; readonly within: string },
+) =>
+  Effect.gen(function* () {
+    const tree = yield* parseImmutableTree(commit);
+    const file: RawBlobTarget = {
+      project: "project",
+      name: { kind: "commit", commit: tree },
+      path: target.path,
+      within: target.within,
+    };
+    yield* raw.prepare(file, { repository: root, tree });
+    return (yield* raw.open(file)) ?? (yield* new RawReadError({ reason: "preparing" }));
+  });
 beforeAll(async () => {
   root = fs.mkdtempSync(join(tmpdir(), "mend-raw-http-"));
   fs.writeFileSync(join(root, "data.bin"), bytes);
   fs.writeFileSync(join(root, "empty.bin"), "");
   fs.symlinkSync("/etc/passwd", join(root, "escape.bin"));
-  store = await Effect.runPromise(
-    Effect.provide(Store, Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root)))),
+  storeRuntime = ManagedRuntime.make(
+    Layer.merge(Store.layer, RawBlobCacheLive).pipe(Layer.provide(StoreConfig.layerFor(root))),
   );
+  store = await storeRuntime.runPromise(Store);
+  raw = await storeRuntime.runPromise(RawBlobCache);
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@localhost", ...args], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    }).trim();
+  git("init", "-q");
+  fs.writeFileSync(join(root, "data.bin"), Uint8Array.of(17, 0, 255));
+  git("add", "data.bin");
+  git("commit", "-qm", "checkpoint");
+  const checkpointSha = git("rev-parse", "HEAD");
+  fs.writeFileSync(join(root, "data.bin"), bytes);
   const checkpoint = new Checkpoint({
     id: CheckpointId.make("checkpoint-raw"),
     worktreeId: worktree,
     sessionId: null,
     ordinal: 0,
     ref: "refs/mend/test",
-    sha: Sha.make("a".repeat(40)),
+    sha: Sha.make(checkpointSha),
     sealantRunId: null,
     seq: SequenceNumber.make(0n),
     trigger: "session-start",
@@ -42,13 +82,15 @@ beforeAll(async () => {
     {
       sessionStore: "colocated",
       browserHeaders: true,
-      node: true,
       implement: {
         reads: {
           openRawFile: (_project, _worktree, target) =>
-            store.openRawWorktreeFile(root, target.path, target.within),
+            target.view?.kind === "checkpoint"
+              ? checkpointFile(target.view.commit, target)
+              : store.openRawWorktreeFile(root, target.path, target.within),
         },
         checkpoints: {
+          captureIdOf: () => Effect.succeed(null),
           listForWorktree: () =>
             Effect.succeed([
               checkpoint,
@@ -65,6 +107,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await api?.dispose();
+  await storeRuntime?.dispose();
   fs.rmSync(root, { recursive: true, force: true });
 });
 const get = (query = "path=data.bin", headers = {}, method = "GET") =>
@@ -157,31 +200,95 @@ it("hides inaccessible files and refuses traversal and symlink escapes", async (
   expect(shared.status).toBe(200);
   expect(new Uint8Array(await shared.arrayBuffer())).toEqual(bytes);
 });
-it("refuses a known checkpoint with typed 409 and hides unknown or foreign checkpoints", async () => {
+it("serves checkpoint bytes instead of current bytes and hides unknown or foreign checkpoints", async () => {
   const known = await get("path=data.bin&at=checkpoint-raw");
-  expect(known.status).toBe(409);
-  expect(await known.json()).toMatchObject({ _tag: "RawFileUnavailable", mode: "checkpoint" });
+  expect(known.status).toBe(200);
+  expect(new Uint8Array(await known.arrayBuffer())).toEqual(Uint8Array.of(17, 0, 255));
   expect((await get("path=data.bin&at=unknown")).status).toBe(404);
   expect((await get("path=data.bin&at=checkpoint-foreign")).status).toBe(404);
 });
-it("answers the captured layer's refusal as a typed 409", async () => {
+it("answers preparation, a full or busy cache, and oversize refusals with typed 503 and 413", async () => {
+  for (const [reason, status, body] of [
+    ["preparing", 503, { _tag: "RawFilePreparing" }],
+    ["full", 503, { _tag: "RawFileBusy", reason: "full" }],
+    ["busy", 503, { _tag: "RawFileBusy", reason: "busy" }],
+    ["too-large", 413, { _tag: "RawFileTooLarge" }],
+  ] as const) {
+    const captured = await createTenancyApi(
+      {},
+      {
+        sessionStore: "captured",
+        implement: { reads: { openRawFile: () => Effect.fail(new RawReadError({ reason })) } },
+      },
+    );
+    try {
+      const response = await captured.request(
+        "alice",
+        "GET",
+        `/api/worktrees/${worktree}/raw?path=data.bin`,
+      );
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject(body);
+    } finally {
+      await captured.dispose();
+    }
+  }
+});
+
+it("returns the selected capture observation and checks access again on warm requests", async () => {
+  let calls = 0;
   const captured = await createTenancyApi(
     {},
     {
       sessionStore: "captured",
       implement: {
-        reads: { openRawFile: () => Effect.fail(new RawReadError({ reason: "captured" })) },
+        reads: {
+          openRawFile: (_project, _worktree, target) =>
+            store.openRawWorktreeFile(root, target.path, target.within).pipe(
+              Effect.map((file) => {
+                calls++;
+                return {
+                  ...file,
+                  stamp: {
+                    source: "capture" as const,
+                    captureId: "a".repeat(64),
+                    captureN: 7,
+                    seq: "42",
+                    kind: "auto",
+                    partial: true,
+                    observedAt: "2026-10-24T00:00:00.000Z",
+                  },
+                };
+              }),
+            ),
+        },
       },
     },
   );
   try {
-    const response = await captured.request(
-      "alice",
-      "GET",
-      `/api/worktrees/${worktree}/raw?path=data.bin`,
-    );
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ _tag: "RawFileUnavailable", mode: "captured" });
+    for (const method of ["HEAD", "GET"]) {
+      const response = await captured.request(
+        "alice",
+        method,
+        `/api/worktrees/${worktree}/raw?path=data.bin&capture=${"a".repeat(64)}`,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-mend-capture-id")).toBe("a".repeat(64));
+      expect(response.headers.get("x-mend-observation")).toBe(
+        "observed at capture 7 · seq 42 · partial",
+      );
+      await response.arrayBuffer();
+      expect(
+        (
+          await captured.request(
+            "carol",
+            method,
+            `/api/worktrees/${worktree}/raw?path=data.bin&capture=${"a".repeat(64)}`,
+          )
+        ).status,
+      ).toBe(404);
+    }
+    expect(calls).toBe(2);
   } finally {
     await captured.dispose();
   }
@@ -330,24 +437,41 @@ const readOverSocket = (url: string, onFirstChunk: () => void) => {
 };
 
 it("resets the socket when the file stops short after the headers went out", async () => {
-  const size = 64 * 1024 * 1024;
-  const shrinking = join(root, "shrinking.bin");
-  fs.writeFileSync(shrinking, "");
-  fs.truncateSync(shrinking, size);
-  const seen = await readOverSocket(
-    `${api.nodeOrigin}/api/worktrees/${worktree}/raw?path=shrinking.bin`,
-    () => fs.truncateSync(shrinking, 0),
+  const socketApi = await createTenancyApi(
+    {},
+    {
+      node: true,
+      sessionStore: "colocated",
+      implement: {
+        reads: {
+          openRawFile: (_project, _worktree, target) =>
+            store.openRawWorktreeFile(root, target.path, target.within),
+        },
+      },
+    },
   );
-  expect(seen.status).toBe(200);
-  expect(seen.length).toBe(size);
-  expect(seen.received).toBeLessThan(size);
-  expect(seen.outcome).toBe("reset");
-  const whole = await readOverSocket(
-    `${api.nodeOrigin}/api/worktrees/${worktree}/raw?path=data.bin`,
-    () => undefined,
-  );
-  expect(whole).toEqual({ status: 200, length: 256, received: 256, outcome: "end" });
-  fs.rmSync(shrinking);
+  try {
+    const size = 64 * 1024 * 1024;
+    const shrinking = join(root, "shrinking.bin");
+    fs.writeFileSync(shrinking, "");
+    fs.truncateSync(shrinking, size);
+    const seen = await readOverSocket(
+      `${socketApi.nodeOrigin}/api/worktrees/${worktree}/raw?path=shrinking.bin`,
+      () => fs.truncateSync(shrinking, 0),
+    );
+    expect(seen.status).toBe(200);
+    expect(seen.length).toBe(size);
+    expect(seen.received).toBeLessThan(size);
+    expect(seen.outcome).toBe("reset");
+    const whole = await readOverSocket(
+      `${socketApi.nodeOrigin}/api/worktrees/${worktree}/raw?path=data.bin`,
+      () => undefined,
+    );
+    expect(whole).toEqual({ status: 200, length: 256, received: 256, outcome: "end" });
+    fs.rmSync(shrinking);
+  } finally {
+    await socketApi.dispose();
+  }
 });
 
 it("bounds open raw reads per account and in all, and frees a slot when its reader goes", async () => {

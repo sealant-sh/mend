@@ -98,6 +98,11 @@ describe("typed HTTP error contracts", () => {
       expect(codes.has(404), `${name} should preserve not-found`).toBe(true);
       expect(codes.has(500), `${name} should not collapse its typed errors`).toBe(false);
     }
+    for (const name of ["raw", "rawHead"]) {
+      expect(statuses.get(name)?.has(503)).toBe(true);
+      expect(statuses.get(name)?.has(413)).toBe(true);
+      expect(statuses.get(name)?.has(409)).toBe(false);
+    }
     expect(statuses.get("create")?.has(409), "create should preserve WorktreeNameTaken").toBe(true);
     expect(statuses.get("remove")?.has(409), "remove should preserve WorktreeActive").toBe(true);
     expect(statuses.get("remove")?.has(422), "remove should preserve StoreFailure").toBe(true);

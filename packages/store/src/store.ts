@@ -5,7 +5,7 @@ import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
 import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench";
-import { Clock, Effect, Fiber, Layer, Result, Schema, type Scope, Stream } from "effect";
+import { Clock, Effect, Fiber, Layer, Result, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
 
 import { noSignerGitEnv } from "./git-auth.ts";
@@ -50,7 +50,12 @@ import {
   writeLandingCommit,
 } from "./landing.ts";
 import { mendHome } from "./paths.ts";
-import { RawReadError, type OpenRawFile } from "./raw-file.ts";
+import {
+  RawReadError,
+  type OpenRawFile,
+  readRawDescriptor,
+  revisionFingerprint,
+} from "./raw-file.ts";
 import { refuseRemoteCredentials } from "./remote-credentials.ts";
 import { gitRemoteEnvironment, type GitRemoteEnvironment } from "./remote-operation-env.ts";
 
@@ -457,39 +462,16 @@ const openRawWorktreeFile = (
     if (stat.size > BigInt(Number.MAX_SAFE_INTEGER))
       return yield* new RawReadError({ reason: "too-large" });
     const size = Number(stat.size);
-    const revision = createHash("sha256")
-      .update(`${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`)
-      .digest("hex");
+    const revision = revisionFingerprint({
+      kind: "disk",
+      fingerprint: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`,
+    });
     return {
       canonicalPath,
       size,
       revision,
       identity: createHash("sha256").update(`${stat.dev}:${stat.ino}`).digest("hex"),
-      read: (offset, length) => {
-        if (
-          !Number.isSafeInteger(offset) ||
-          !Number.isSafeInteger(length) ||
-          offset < 0 ||
-          length < 0 ||
-          offset + length > size
-        ) {
-          return Stream.fail(new RawReadError({ reason: "io" }));
-        }
-        return Stream.unfold(offset, (position) => {
-          if (position >= offset + length) return Effect.succeed(undefined);
-          // Node cannot cancel fs.read; its callback must settle before the scope closes this fd.
-          return Effect.callback<readonly [Uint8Array, number], RawReadError>((resume) => {
-            const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, offset + length - position));
-            fs.read(file.fd, buffer, 0, buffer.length, position, (error, count) => {
-              resume(
-                error !== null || count === 0
-                  ? Effect.fail(new RawReadError({ reason: "io" }))
-                  : Effect.succeed([buffer.subarray(0, count), position + count] as const),
-              );
-            });
-          }).pipe(Effect.uninterruptible);
-        });
-      },
+      read: readRawDescriptor(file.fd, size),
     };
   });
 

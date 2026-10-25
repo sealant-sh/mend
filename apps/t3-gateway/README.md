@@ -532,12 +532,23 @@ the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reac
 
 ## Current worktree previews
 
-`assets.createUrl` supports `workspace-file` and `media-file` in a visible thread's current,
-co-located worktree. Images, HTML, PDF, video and audio use Mend's authenticated raw file route.
-`projects.readFile` retains its existing text and binary-file response. Captured worktrees and
-checkpoint raw reads return typed 409 refusals from Mend and unavailable previews in t3code. Project
-favicons return t3code's `project-favicon-missing` marker until a default-branch worktree exists.
-Draft files, tool-output images, native app icons and GitHub media remain unavailable.
+`assets.createUrl` supports `workspace-file` and `media-file` in a visible thread's worktree,
+including the default captured store. Images, HTML, PDF, video and audio use Mend's authenticated
+raw file route. A captured mint selects the capture the JSON read selects, including the
+verified-head fallback; a head that failed verification with no verified capture below it is read as
+it is. The mint pins that capture for every fetch, seek and document dependency, and the gateway
+refuses an answer from any other capture. Mend returns its capture ID and an "observed at capture n"
+stamp. Files omitted by the capture, including gitignored files, return 404. Raw reads serve regular
+files only: a captured or checkpoint Git symlink entry returns 404, though `projects.readFile`
+returns its target text. `projects.readFile` retains its existing text and binary-file response.
+Project favicons return t3code's `project-favicon-missing` marker until a default-branch worktree
+exists.
+
+`GET|HEAD /api/worktrees/:id/raw?path=&within=&at=` also reads checkpoints. Captured checkpoints
+require their retained historical capture; missing evidence never selects current bytes. The
+`capture` selector pins a registered capture of this worktree and cannot be combined with `at`.
+Unknown or foreign checkpoints and unavailable historical evidence return 404. Draft files,
+tool-output images, native app icons and GitHub media remain unavailable.
 
 `src/assets.ts` owns both these URLs and chat-image URLs under ADR 0004's decision A of 2026-10-24.
 Every mint returns a fresh random `ast_` token with the real filename as its last segment. Tokens
@@ -572,9 +583,39 @@ body whose reader takes no chunk for 30 seconds, such as a paused video, has its
 which stops Mend's read and frees the slot; a player that resumes asks for its range again. A
 device's session keeps the three newest URLs of each file or image, and a newer mint retires the
 oldest, so a thread's re-mints never fill the device's 4,096 grants (16,384 in all, 16 MiB of grant
-records). Raw worktree bytes stream with backpressure, without a whole-file buffer. There is no
-raw-file size cap, disk cache or cumulative byte budget in this change. Mend bounds raw reads on its
-side too (`accountRawReads`, `rawReads`, docs/operations/budgets.md).
+records). Raw worktree bytes stream with backpressure, without a whole-file buffer. There is no byte
+budget. Mend bounds raw reads on its side too (`accountRawReads`, `rawReads`,
+docs/operations/budgets.md).
+
+For captured and checkpoint files, Mend serves the bytes as the capture recorded them, before clean,
+LFS and line-ending filters (the capture's `raw_tree`); a checkpoint serves its commit's files. Only
+the API process serves raw reads, and each API process keeps its own cache in its own directory,
+`<MEND_STORE_ROOT>/_cache/raw/<boot>-<host>-<id>/`. Its limits are per API process: at most 2 GiB
+per file and 8 GiB in all. A default install runs one API process, so that is 8 GiB on the machine;
+an install that runs several API processes on one store uses up to 8 GiB for each. A process decides
+everything about its cache in memory, with no lock files and no shared clock: one unpack per blob,
+two slots for files over 16 MiB and four for smaller ones, so a small preview never waits behind a
+large unpack, and room counted only once an unpack starts. It evicts the least recently used files
+that no stream holds open, and refuses with `RawFileBusy` (503, `full`) when every file is held. At
+most 32 preparations run at once; past that a new one is refused as `busy`. Each Git step has a
+deadline, and a preparation ends after ten minutes. Later opens and seeks use the cached file
+without Git, capture restoration or a project lock. A worker-only process (`MEND_MODE=worker`) keeps
+no cache.
+
+A process removes its directory when it stops. A crash leaves the directory behind, so each process
+also removes, as it starts, the directories of processes that are provably gone: on this kernel
+boot, one whose Unix-socket beacon (`<id>.sock`, bound before the directory is made) refuses
+connections; on an earlier boot of this machine, any. A directory of another machine, or one whose
+beacon answers or cannot be probed, is left alone, so machines that share one store must have
+distinct host names or machine ids. A restarted process starts with an empty cache and prepares
+files again.
+
+Minting waits about ten seconds for preparation. Mend then answers `RawFilePreparing` with 503, and
+t3code shows an unavailable preview while preparation continues. A `RawFileBusy` refusal starts
+nothing, and t3code shows it as unavailable too. Opening again once ready succeeds without repeating
+the unpack. Oversized files answer `RawFileTooLarge` with 413. Neither refusal changes the gateway's
+plain 404 response for failed asset fetches. Co-located current files retain their live descriptor
+reads without an unpacked-file size cap.
 
 `test/raw-assets.test.ts` exercises the RPC handlers and HTTP routes in process, with real device
 authentication, SQLite grant ownership and Mend response decoding. It covers exact binary bytes,
@@ -646,8 +687,8 @@ Mend's device list as `t3code · <client label>`; revoking it there ends the bea
 - **Mend not answering.** A ticket or snapshot read Mend could not confirm is answered
   `503 Service Unavailable` with `retry-after: 5`, which t3code retries: nothing is served from the
   hub's memory on the gateway's word alone. Ordinary calls to Mend give up after two minutes without
-  a response. Raw file reads allow ten seconds for headers and stream the body for as long as the
-  client consumes it.
+  a response. Raw file reads allow eleven seconds for headers, a second more than Mend's preparation
+  wait, and stream the body for as long as the client consumes it.
 
 Mend allows ten failed pairing claims a minute per client address. The gateway sends each claim with
 `x-forwarded-for`: the client's own header, if any, then the address the gateway saw. Mend believes
