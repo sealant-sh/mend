@@ -67,6 +67,38 @@ const relayWorld = (routing: keyof typeof ROUTINGS = "domain") =>
     return { forwards, world };
   });
 
+/**
+ * A dev server that answers the first request on each connection and drops the connection on any
+ * later one without a byte of answer: a keep-alive socket it closed just as the next request came.
+ */
+const closesReusedConnections = Effect.acquireRelease(
+  Effect.promise(async () => {
+    const dropped: Array<string> = [];
+    const served = new WeakSet<object>();
+    const server = http.createServer((request, response) => {
+      const line = `${request.method} ${request.url}`;
+      if (served.has(request.socket)) {
+        dropped.push(line);
+        request.socket.destroy();
+        return;
+      }
+      served.add(request.socket);
+      request.resume();
+      request.on("end", () => response.end(line));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no TCP address");
+    return { port: address.port, dropped, server };
+  }),
+  ({ server }) =>
+    Effect.promise(() => {
+      server.closeAllConnections();
+      return new Promise((done) => server.close(done));
+    }),
+);
+
 const getAs = (
   world: GatewayWorld,
   cookie: string,
@@ -712,6 +744,58 @@ describe("the preview gateway relays to the app", () => {
         }),
       ),
     10_000,
+  );
+
+  it.live(
+    "retries a bodiless GET once on a fresh forward when a reused one closes before answering",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const app = yield* closesReusedConnections;
+          const forwards = localForwards([
+            { workspaceId: WORKSPACE, port: APP_PORT, entry: { kind: "listen", localPort: app.port } },
+          ]);
+          const world = yield* gatewayWorld({ forwards: forwards.layer });
+          const cookie = world.cookieFor("carol", "web");
+          expect((yield* getAs(world, cookie, "/first")).status, "the first request").toBe(200);
+          const second = yield* getAs(world, cookie, "/second");
+          expect(second.status, "the GET the app dropped arrived on a fresh forward").toBe(200);
+          expect(second.body, "and the app answered it").toBe("GET /second");
+          expect(forwards.dials.length, "one dial more than the pooled one").toBe(2);
+          expect(app.dropped, "the app dropped the GET on the reused connection").toEqual([
+            "GET /second",
+          ]);
+        }),
+      ),
+  );
+
+  it.live("never retries a request that carried a body; it answers 502", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const app = yield* closesReusedConnections;
+        const forwards = localForwards([
+          { workspaceId: WORKSPACE, port: APP_PORT, entry: { kind: "listen", localPort: app.port } },
+        ]);
+        const world = yield* gatewayWorld({ forwards: forwards.layer });
+        const cookie = world.cookieFor("carol", "web");
+        expect((yield* getAs(world, cookie, "/first")).status, "the first request").toBe(200);
+        const posted = yield* Effect.promise(() =>
+          send(world.port, {
+            host: world.hostOf("web"),
+            path: "/form",
+            method: "POST",
+            headers: { cookie, origin: world.originOf("web") },
+            body: "field=1",
+          }),
+        );
+        expect(posted.status, "a dropped POST is not sent twice").toBe(502);
+        expect(posted.body, "and the page says the app did not answer").toContain(
+          "the app did not answer",
+        );
+        expect(forwards.dials.length, "no second dial").toBe(1);
+        expect(app.dropped, "the app saw the POST once").toEqual(["POST /form"]);
+      }),
+    ),
   );
 
   it.live(

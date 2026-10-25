@@ -155,6 +155,8 @@ interface Pool {
   readonly key: string;
   readonly viewerId: string;
   readonly generation: Generation;
+  /** A forward of the pool's own, outside its Agent: dialled for this viewer, counted, dropped with it. */
+  readonly open: () => ForwardSocket;
   readonly agent: ForwardAgent;
   readonly requests: Set<ClientRequest>;
   /** Both sockets of each upgraded pair. An Agent forgets a socket once it is upgraded. */
@@ -213,6 +215,9 @@ const declaredLength = (head: PreviewRequestHead): number | null => {
   const [length] = membersOf(head.headers, "content-length");
   return length === undefined ? null : Number(length);
 };
+
+/** Methods a gateway may send twice: the first may have reached nothing but a closing socket. */
+const IDEMPOTENT = new Set(["GET", "HEAD", "OPTIONS"]);
 
 const mayCarryBody = (head: PreviewRequestHead): boolean =>
   membersOf(head.headers, "transfer-encoding").length > 0 || (declaredLength(head) ?? 0) > 0;
@@ -501,13 +506,15 @@ export const makePreviewGatewayLayer = (
         // The viewer is the asker: the adapter lends each dial as the workspace's creator only
         // while this person may act there.
         const connect = Effect.runSyncWith(forwarding)(asSealantUser(viewerId)(forwardSockets));
+        const open = () => dial(pool, connect, target);
         const pool: Pool = {
           key,
           viewerId,
           generation,
+          open,
           // The Agent's timeout destroys a socket only while it is free: an active SSE stream
           // in a long gap keeps its forward.
-          agent: new ForwardAgent(() => dial(pool, connect, target), {
+          agent: new ForwardAgent(open, {
             maxSockets: POOL.maxSockets,
             maxFreeSockets: POOL.maxFreeSockets,
             timeout: POOL.freeSocketMs,
@@ -547,6 +554,8 @@ export const makePreviewGatewayLayer = (
       /**
        * One upstream request through the pool. Nothing reaches the app until its forward is open and
        * the generation is still current; only then does Continue go out and the body start to flow.
+       * A `retryable` request whose reused forward closed before any answer is sent once more, on a
+       * forward of its own: the app may have closed that keep-alive socket as the request went out.
        */
       const sendUpstream = (
         exchange: Exchange,
@@ -554,22 +563,15 @@ export const makePreviewGatewayLayer = (
         pool: Pool,
         forward: ForwardRequest,
         handlers: {
+          readonly retryable: boolean;
           readonly deliver: (upstream: ClientRequest, end: End) => void;
           readonly answered: (upstream: ClientRequest, end: End) => void;
           readonly cleanup?: () => void;
         },
       ) =>
         Effect.callback<undefined>((resume) => {
-          let delivered = false;
           let ended = false;
-          const upstream = httpRequest({
-            agent: pool.agent,
-            method: exchange.head.method,
-            path: exchange.head.target,
-            headers: flatten(forwardRequestHead(exchange.head.headers, forward)),
-            setHost: false,
-          });
-          useRequest(pool, upstream);
+          let upstream: ClientRequest;
           const end: End = (page) => {
             if (ended) return;
             ended = true;
@@ -577,30 +579,52 @@ export const makePreviewGatewayLayer = (
             if (page !== undefined) respond(exchange, page);
             resume(DONE);
           };
-          const deliver = () => {
-            if (ended) return;
-            if (pool.closed) {
-              upstream.destroy();
-              return end(gatewayPage(503, notDelivered(cell.serviceName, "the preview restarted")));
-            }
-            delivered = true;
-            latestActivity.set(cell.previewId, clock.currentTimeMillisUnsafe());
-            handlers.deliver(upstream, end);
+          const send = (fresh: boolean) => {
+            let delivered = false;
+            let responded = false;
+            const sent = httpRequest({
+              method: exchange.head.method,
+              path: exchange.head.target,
+              headers: flatten(forwardRequestHead(exchange.head.headers, forward)),
+              setHost: false,
+              ...(fresh ? { createConnection: pool.open } : { agent: pool.agent }),
+            });
+            upstream = sent;
+            useRequest(pool, sent);
+            const deliver = () => {
+              if (ended) return;
+              if (pool.closed) {
+                sent.destroy();
+                return end(gatewayPage(503, notDelivered(cell.serviceName, "the preview restarted")));
+              }
+              delivered = true;
+              latestActivity.set(cell.previewId, clock.currentTimeMillisUnsafe());
+              handlers.deliver(sent, end);
+            };
+            sent.once("socket", (socket) => {
+              if (socket.connecting) socket.once("connect", deliver);
+              else deliver();
+            });
+            sent.once("response", () => {
+              responded = true;
+            });
+            handlers.answered(sent, end);
+            // After the app's head went out a page may not say "not delivered", and after the
+            // browser's head went out `respond` destroys instead.
+            sent.on("error", (error) => {
+              if (ended) return;
+              if (handlers.retryable && !fresh && delivered && !responded && sent.reusedSocket) {
+                releaseRequest(cell, pool, sent);
+                return send(true);
+              }
+              end(
+                delivered
+                  ? gatewayPage(502, stated(cell.serviceName, "the app did not answer"))
+                  : dialAnswer(cell, pool, error),
+              );
+            });
           };
-          upstream.once("socket", (socket) => {
-            if (socket.connecting) socket.once("connect", deliver);
-            else deliver();
-          });
-          handlers.answered(upstream, end);
-          // After the app's head went out a page may not say "not delivered", and after the
-          // browser's head went out `respond` destroys instead.
-          upstream.on("error", (error) =>
-            end(
-              delivered
-                ? gatewayPage(502, stated(cell.serviceName, "the app did not answer"))
-                : dialAnswer(cell, pool, error),
-            ),
-          );
+          send(false);
           // Interrupted: the listener answers, so the destroyed request's own error must not.
           return Effect.sync(() => {
             ended = true;
@@ -645,6 +669,7 @@ export const makePreviewGatewayLayer = (
       ) => {
         const { request, response } = downstream;
         return sendUpstream(exchange, cell, pool, forward, {
+          retryable: IDEMPOTENT.has(exchange.head.method) && !mayCarryBody(exchange.head),
           deliver: (upstream, end) => {
             if (downstream.expectsContinue) response.writeContinue();
             if (mayCarryBody(exchange.head)) streamBody(request, upstream, cell, end);
@@ -679,6 +704,7 @@ export const makePreviewGatewayLayer = (
         const browser = downstream.socket;
         const pair: Array<Duplex> = [];
         return sendUpstream(exchange, cell, pool, forward, {
+          retryable: false,
           deliver: (upstream) => upstream.end(),
           answered: (upstream, end) => {
             upstream.once("upgrade", (answered, app, appHead) => {
