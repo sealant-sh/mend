@@ -410,11 +410,12 @@ machine's `PATH`, and the run ends by revoking every `t3code · T3 Code Web` dev
 - **Captured previews.** Use the default captured store. Wait until the fixture files appear in a
   registered capture, then open each preview below. The first mint prepares its bytes on Mend; if it
   takes longer than ten seconds the preview is unavailable. Reopen after preparation finishes. Later
-  opens and media seeks use the disk cache. Record the raw HEAD response's `x-mend-capture-id` and
-  `x-mend-observation`. After a newer capture changes a file, the old URL and its document children
-  must still return the old bytes; a new mint selects the new capture. A raw read with
-  `at=<checkpoint id>` must return that checkpoint's bytes. A foreign checkpoint or missing
-  historical evidence returns 404. There is no co-located restart in this procedure.
+  opens and media seeks use the disk cache. Each Mend API process keeps its own cache, emptied when
+  it restarts, so the first open after a restart prepares again. Record the raw HEAD response's
+  `x-mend-capture-id` and `x-mend-observation`. After a newer capture changes a file, the old URL
+  and its document children must still return the old bytes; a new mint selects the new capture. A
+  raw read with `at=<checkpoint id>` must return that checkpoint's bytes. A foreign checkpoint or
+  missing historical evidence returns 404. There is no co-located restart in this procedure.
 
 - **The fixtures, pasted into the terminal.** The recipe makes a PNG (64 × 64), an SVG, a one-page
   PDF, a 10-second VP9 MP4 (Playwright's Chromium decodes no H.264), `site/index.html` with a

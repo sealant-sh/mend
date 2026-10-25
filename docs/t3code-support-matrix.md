@@ -227,12 +227,12 @@ group may size its own slice smaller.
 **Files, worktrees and git**
 
 - **Raw bytes of a worktree file (S).** Co-located, captured and checkpoint files stream through
-  `GET|HEAD /api/worktrees/:id/raw` with single-range support. Captured grants pin their
-  observation; preparation waits about ten seconds, with a 2 GiB file cap and 8 GiB disk cache
-  shared by every Mend process. Raw reads serve regular files only, so a Git symlink entry is
-  refused. Remaining core work is the project default-branch read for favicons and draft images; the
-  gateway still lacks other image resource kinds. Decision 6, part 1b, source regraded 2026-10-24.
-  Rows: A.123, E3.34, E3.NP4 (3).
+  `GET|HEAD /api/worktrees/:id/raw` with single-range support. Captured grants pin their observation
+  and serve the capture's raw bytes, before line-ending and LFS filters; preparation waits about ten
+  seconds, with a 2 GiB file cap and an 8 GiB disk cache per API process (one on a default install).
+  Raw reads serve regular files only, so a Git symlink entry is refused. Remaining core work is the
+  project default-branch read for favicons and draft images; the gateway still lacks other image
+  resource kinds. Decision 6, part 1b, source regraded 2026-10-24. Rows: A.123, E3.34, E3.NP4 (3).
 - **Reads at the project's default branch (S).** A file read and a content search over the bare
   store, for draft threads and the project root. Rows: A.111, A.112, E3.27 (3).
 - **Listing pages (S).** Paging and directory-scoped listing in `GET /api/projects/:id/files`. Rows:

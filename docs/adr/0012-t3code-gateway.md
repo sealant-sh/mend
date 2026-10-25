@@ -180,9 +180,12 @@ Three additive read endpoints:
   observation and is mutually exclusive with `at`; checkpoints use their retained historical
   capture. Unknown or foreign checkpoints, and missing historical evidence, return 404. Response
   headers identify the capture and its observation. Minting waits about ten seconds, then
-  `RawFilePreparing` returns 503 while preparation continues. Unpacked files are capped at 2 GiB,
-  with an 8 GiB cache that never evicts open files. No byte budget is added. The gateway owns asset
-  grants under ADR 0004's dated decision A, including chat images.
+  `RawFilePreparing` returns 503 while preparation continues; `RawFileBusy` (503) says the cache
+  started nothing. Captured reads serve the capture's raw tree, the bytes before clean, LFS and
+  line-ending filters. Unpacked files are capped at 2 GiB, with an 8 GiB cache that never evicts
+  open files; both limits are per API process, each with its own cache directory, and a default
+  install runs one. No byte budget is added. The gateway owns asset grants under ADR 0004's dated
+  decision A, including chat images.
 
 Checkpoints stay unlinked to turns; the gateway correlates them by session and time, and says so
 when sessions share a worktree.

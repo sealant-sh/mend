@@ -587,22 +587,35 @@ records). Raw worktree bytes stream with backpressure, without a whole-file buff
 budget. Mend bounds raw reads on its side too (`accountRawReads`, `rawReads`,
 docs/operations/budgets.md).
 
-For captured and checkpoint files, Mend unpacks at most 2 GiB per file into
-`<MEND_STORE_ROOT>/_cache/raw`, one directory every Mend process on the store shares. The cache
-holds at most 8 GiB, counted from the directory itself, write reservations included. It evicts the
-least recently used files that no process has read for a minute; a process refreshes the lease of
-every file a stream holds open. Each process admits two unpackers at a time, each blob is unpacked
-once across processes, files are shared by project and blob ID, and verified bytes are published by
-atomic rename from unique temporary files. Files a crashed process left behind go stale and are
-removed. Preparation records which blob a capture or checkpoint holds at each path, so later opens
-and seeks, in any process, use the cached file without Git, capture restoration or a project lock. A
-cached file another process removed is prepared again.
+For captured and checkpoint files, Mend serves the bytes as the capture recorded them, before clean,
+LFS and line-ending filters (the capture's `raw_tree`); a checkpoint serves its commit's files. Only
+the API process serves raw reads, and each API process keeps its own cache in its own directory,
+`<MEND_STORE_ROOT>/_cache/raw/<boot>-<host>-<id>/`. Its limits are per API process: at most 2 GiB
+per file and 8 GiB in all. A default install runs one API process, so that is 8 GiB on the machine;
+an install that runs several API processes on one store uses up to 8 GiB for each. A process decides
+everything about its cache in memory, with no lock files and no shared clock: one unpack per blob,
+two slots for files over 16 MiB and four for smaller ones, so a small preview never waits behind a
+large unpack, and room counted only once an unpack starts. It evicts the least recently used files
+that no stream holds open, and refuses with `RawFileBusy` (503, `full`) when every file is held. At
+most 32 preparations run at once; past that a new one is refused as `busy`. Each Git step has a
+deadline, and a preparation ends after ten minutes. Later opens and seeks use the cached file
+without Git, capture restoration or a project lock. A worker-only process (`MEND_MODE=worker`) keeps
+no cache.
+
+A process removes its directory when it stops. A crash leaves the directory behind, so each process
+also removes, as it starts, the directories of processes that are provably gone: on this kernel
+boot, one whose Unix-socket beacon (`<id>.sock`, bound before the directory is made) refuses
+connections; on an earlier boot of this machine, any. A directory of another machine, or one whose
+beacon answers or cannot be probed, is left alone, so machines that share one store must have
+distinct host names or machine ids. A restarted process starts with an empty cache and prepares
+files again.
 
 Minting waits about ten seconds for preparation. Mend then answers `RawFilePreparing` with 503, and
-t3code shows an unavailable preview while preparation continues. Opening again once ready succeeds
-without repeating the unpack. Oversized files answer `RawFileTooLarge` with 413. Neither refusal
-changes the gateway's plain 404 response for failed asset fetches. Co-located current files retain
-their live descriptor reads without an unpacked-file size cap.
+t3code shows an unavailable preview while preparation continues. A `RawFileBusy` refusal starts
+nothing, and t3code shows it as unavailable too. Opening again once ready succeeds without repeating
+the unpack. Oversized files answer `RawFileTooLarge` with 413. Neither refusal changes the gateway's
+plain 404 response for failed asset fetches. Co-located current files retain their live descriptor
+reads without an unpacked-file size cap.
 
 `test/raw-assets.test.ts` exercises the RPC handlers and HTTP routes in process, with real device
 authentication, SQLite grant ownership and Mend response decoding. It covers exact binary bytes,
@@ -674,8 +687,8 @@ Mend's device list as `t3code · <client label>`; revoking it there ends the bea
 - **Mend not answering.** A ticket or snapshot read Mend could not confirm is answered
   `503 Service Unavailable` with `retry-after: 5`, which t3code retries: nothing is served from the
   hub's memory on the gateway's word alone. Ordinary calls to Mend give up after two minutes without
-  a response. Raw file reads allow ten seconds for headers and stream the body for as long as the
-  client consumes it.
+  a response. Raw file reads allow eleven seconds for headers, a second more than Mend's preparation
+  wait, and stream the body for as long as the client consumes it.
 
 Mend allows ten failed pairing claims a minute per client address. The gateway sends each claim with
 `x-forwarded-for`: the client's own header, if any, then the address the gateway saw. Mend believes
