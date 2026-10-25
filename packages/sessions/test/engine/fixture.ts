@@ -18,6 +18,7 @@ import {
   ProjectLinksRepo,
   OrganizationsRepo,
   FoldersRepo,
+  PreviewsRepo,
   ProjectLinkNotFoundError,
   SessionRepositoriesRepoMemory,
   ProjectSecretsRepo,
@@ -72,6 +73,7 @@ import {
   ProjectEnvironmentVariableId,
   OrganizationId,
   ProjectId,
+  type PreviewId,
   ServiceForwardId,
   ServiceId,
   ServiceObservationId,
@@ -100,6 +102,14 @@ import {
   RepositoryCloneUrl,
   ResolvedGitAuthor,
   AgentLogins,
+  changePreviewControl,
+  type Preview,
+  PREVIEW_CONTROL_INITIAL,
+  type PreviewControl,
+  previewGatewayResolution,
+  previewResumeCandidate,
+  type PreviewTarget,
+  selectPreviewTarget,
   Service,
   ServiceForward,
   ServiceObservation,
@@ -1377,6 +1387,12 @@ export interface World {
   readonly serviceStarters: Map<string, string>;
   readonly serviceForwards: Map<string, ServiceForward>;
   readonly serviceObservations: Map<string, ServiceObservation>;
+  /** The attempt each probe observation names (0139), by observation id. */
+  readonly observationAttempts: Map<string, SessionProcessId>;
+  /** Previews by id, as a test allocates them (`PreviewsRepo.ensureForWorktree` is not faked). */
+  readonly previews: Map<string, Preview>;
+  /** Each preview's control row; absent is `PREVIEW_CONTROL_INITIAL`. */
+  readonly previewControls: Map<string, PreviewControl>;
   readonly changes: Map<string, Change>;
   readonly checkpoints: Array<Checkpoint>;
   /** What `CheckpointsRepo.create` was given as the capture each row was observed from. */
@@ -1471,6 +1487,9 @@ export const makeWorld = (): World => ({
   serviceStarters: new Map(),
   serviceForwards: new Map(),
   serviceObservations: new Map(),
+  observationAttempts: new Map(),
+  previews: new Map(),
+  previewControls: new Map(),
   changes: new Map(),
   checkpoints: [],
   checkpointCaptureIds: new Map(),
@@ -1938,7 +1957,7 @@ const serviceForwardsLayer = (world: World) =>
 
 const serviceObservationsLayer = (world: World) =>
   Layer.succeed(ServiceObservationsRepo, {
-    record: (input) =>
+    record: ({ attemptId, ...input }) =>
       Effect.sync(() => {
         const observation = new ServiceObservation({
           id: ServiceObservationId.make(crypto.randomUUID()),
@@ -1948,8 +1967,12 @@ const serviceObservationsLayer = (world: World) =>
           lastObservedAt: world.clock.now(),
         });
         world.serviceObservations.set(observation.id, observation);
+        if (attemptId !== undefined && attemptId !== null) {
+          world.observationAttempts.set(observation.id, attemptId);
+        }
         return observation;
       }),
+    attemptReached: (attemptId) => Effect.sync(() => attemptReachedIn(world, attemptId)),
     latestForService: (serviceId) =>
       Effect.succeed(
         [...world.serviceObservations.values()]
@@ -1964,12 +1987,100 @@ const serviceObservationsLayer = (world: World) =>
       ),
   });
 
+const attemptReachedIn = (world: World, attemptId: string) =>
+  [...world.observationAttempts].some(
+    ([observationId, observed]) =>
+      observed === attemptId && world.serviceObservations.get(observationId)?.state === "reachable",
+  );
+
+const serviceAttemptsIn = (world: World, service: Service) =>
+  [...world.processes.values()].filter(
+    (process) =>
+      process.serviceId === service.id &&
+      process.sessionId === service.sessionId &&
+      process.kind === "service",
+  );
+
+/** The repository's reads over the world's rows, decided by the domain's own rules. */
+const previewsLayer = (world: World) => {
+  const targetsOf = (worktreeId: string): ReadonlyArray<PreviewTarget> => {
+    const sessionIds = new Set(
+      [...world.sessions.values()]
+        .filter((session) => session.worktreeId === worktreeId)
+        .map((session) => session.id),
+    );
+    return [...world.services.values()]
+      .filter((service) => sessionIds.has(service.sessionId))
+      .map((service) => {
+        const attempts = serviceAttemptsIn(world, service);
+        return {
+          service,
+          liveAttempt: attempts.find((attempt) => attempt.exitedAt === null) ?? null,
+          recordedCommand: attempts.some((attempt) => attempt.argv.length > 0),
+        };
+      });
+  };
+  const snapshotOf = (id: PreviewId) => {
+    const preview = world.previews.get(id);
+    if (preview === undefined) return null;
+    const selected = selectPreviewTarget(
+      preview,
+      preview.worktreeId === null ? [] : targetsOf(preview.worktreeId),
+    );
+    const candidate = previewResumeCandidate(selected);
+    const history =
+      candidate === null
+        ? []
+        : serviceAttemptsIn(world, candidate).map((attempt) => ({
+            attempt,
+            reachable: attemptReachedIn(world, attempt.id),
+          }));
+    const control = world.previewControls.get(id) ?? PREVIEW_CONTROL_INITIAL;
+    return { preview, resolution: previewGatewayResolution(control, selected, history) };
+  };
+  return Layer.mock(PreviewsRepo, {
+    controlOf: (id) => Effect.sync(() => world.previewControls.get(id) ?? PREVIEW_CONTROL_INITIAL),
+    changeControl: (id, intent) =>
+      Effect.sync(() => {
+        const next = changePreviewControl(
+          world.previewControls.get(id) ?? PREVIEW_CONTROL_INITIAL,
+          intent,
+        );
+        world.previewControls.set(id, next);
+        return next;
+      }),
+    previewOfService: (serviceId) =>
+      Effect.sync(() => {
+        const service = world.services.get(serviceId);
+        const session = service === undefined ? undefined : world.sessions.get(service.sessionId);
+        if (service === undefined || session === undefined) return null;
+        const kept = [...world.previews.values()].find(
+          (preview) =>
+            preview.worktreeId === session.worktreeId && preview.serviceName === service.name,
+        );
+        return kept?.id ?? null;
+      }),
+    gatewaySnapshot: (id) => Effect.sync(() => snapshotOf(id)),
+    gatewaySnapshots: (ids) =>
+      Effect.sync(
+        () =>
+          new Map(
+            ids.flatMap((id) => {
+              const read = snapshotOf(id);
+              return read === null ? [] : [[id, read] as const];
+            }),
+          ),
+      ),
+  });
+};
+
 /** Shared serviceStateLayer fixture for engine scenarios. */
 export const serviceStateLayer = (world: World) =>
   Layer.mergeAll(
     servicesLayer(world),
     serviceForwardsLayer(world),
     serviceObservationsLayer(world),
+    previewsLayer(world),
   );
 
 /** Every remote in these worlds is public: the policy's own tests cover refusals and pinning. */

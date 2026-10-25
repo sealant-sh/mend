@@ -181,6 +181,7 @@ const observationsStubLayer = Layer.succeed(ServiceObservationsRepo, {
     ),
   latestForService: () => Effect.succeed(null),
   listForService: () => Effect.succeed([]),
+  attemptReached: () => Effect.succeed(false),
 });
 
 /** ServiceHost over the real forward adapter; a test provides the platform and the repositories. */
@@ -292,6 +293,7 @@ describe("ServiceHost", () => {
         }),
       latestForService: () => Effect.succeed(null),
       listForService: () => Effect.succeed([]),
+      attemptReached: () => Effect.succeed(false),
     });
     const answers: Array<"refuse" | "hang" | "open"> = ["refuse", "hang", "open"];
     const hanging: { signal: AbortSignal | null } = { signal: null };

@@ -3637,6 +3637,33 @@ const kubernetesPersonLayoutMigration = Effect.gen(function* () {
     WHERE c.image_key = s.image_key AND c.runtime = s.runtime AND s.kept <> '[]'::jsonb`;
 });
 
+/**
+ * 0139 (docs/adr/0017, Decision log 6): a preview's control, one row per preview, absent while
+ * automatic at revision 0. A Service probe names the attempt it observed, so a request-triggered
+ * start can tell an attempt that answered from one that never did, even across a kept forward.
+ */
+const previewControlsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE preview_controls (
+    preview_id text PRIMARY KEY REFERENCES previews(id) ON DELETE CASCADE,
+    revision integer NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    state text NOT NULL CHECK (state IN ('automatic', 'owner-stopped')),
+    stopped_by text,
+    stopped_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT preview_controls_stop_facts CHECK (
+      CASE WHEN state = 'owner-stopped'
+        THEN stopped_by IS NOT NULL AND stopped_at IS NOT NULL
+        ELSE stopped_by IS NULL AND stopped_at IS NULL
+      END
+    )
+  )`;
+  yield* sql`ALTER TABLE service_observations
+    ADD COLUMN attempt_id text REFERENCES session_processes(id) ON DELETE SET NULL`;
+  yield* sql`CREATE INDEX service_observations_attempt_idx ON service_observations (attempt_id)
+    WHERE attempt_id IS NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3777,4 +3804,5 @@ export const migrations = {
   "0136_previews": previewsMigration,
   "0137_preview_grants": previewGrantsMigration,
   "0138_kubernetes_person_layout": kubernetesPersonLayoutMigration,
+  "0139_preview_controls": previewControlsMigration,
 };

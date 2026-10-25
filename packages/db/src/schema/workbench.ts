@@ -575,6 +575,23 @@ export const previewGrants = pgTable(
 );
 
 /**
+ * A preview's control (ADR 0017, Decision log 6): whether its owner stopped it. No row is
+ * automatic at revision 0; the revision moves only when the state does. The stop facts are set
+ * exactly when the state is `owner-stopped` (a CHECK in the migration).
+ */
+export const previewControls = pgTable("preview_controls", {
+  previewId: text()
+    .$type<PreviewId>()
+    .primaryKey()
+    .references(() => previews.id, { onDelete: "cascade" }),
+  revision: integer().notNull().default(0),
+  state: text().$type<"automatic" | "owner-stopped">().notNull(),
+  stoppedBy: text(),
+  stoppedAt: timestamp({ mode: "date", withTimezone: true }),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * Pre-provisioned session skeletons kept ready for instant session starts. `id` is the session id
  * the claiming session adopts; the session socket dir derives from it. The skeleton's worktree is
  * a real `worktrees` row (a legal zero-session worktree) adopted at claim time. Claimable only
@@ -1856,12 +1873,19 @@ export const serviceObservations = pgTable(
     state: text().$type<ServiceTargetState>().notNull(),
     source: text().$type<ServiceObservationSource>().notNull(),
     error: text(),
+    /** The attempt a probe observed (0139), so readiness names it across a kept forward. */
+    attemptId: text()
+      .$type<SessionProcessId>()
+      .references(() => sessionProcesses.id, { onDelete: "set null" }),
     firstObservedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     lastObservedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("service_observations_service_observed_idx").on(table.serviceId, table.lastObservedAt),
     index("service_observations_forward_observed_idx").on(table.forwardId, table.lastObservedAt),
+    index("service_observations_attempt_idx")
+      .on(table.attemptId)
+      .where(sql`${table.attemptId} IS NOT NULL`),
   ],
 );
 

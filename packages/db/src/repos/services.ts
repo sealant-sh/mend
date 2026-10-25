@@ -125,6 +125,8 @@ export interface NewServiceObservation {
   readonly state: ServiceTargetState;
   readonly source: ServiceObservationSource;
   readonly error?: string | null;
+  /** The attempt a probe observed; an episode extends only within one attempt. */
+  readonly attemptId?: SessionProcessId | null;
 }
 
 /** Timestamped target facts; every transition is retained. */
@@ -136,6 +138,8 @@ export class ServiceObservationsRepo extends Context.Service<
     readonly listForService: (
       serviceId: ServiceId,
     ) => Effect.Effect<ReadonlyArray<ServiceObservation>>;
+    /** Whether a probe ever saw this attempt answer. */
+    readonly attemptReached: (attemptId: SessionProcessId) => Effect.Effect<boolean>;
   }
 >()("@mend/db/ServiceObservationsRepo") {}
 
@@ -145,8 +149,10 @@ export const toService = ({
 }: typeof services.$inferSelect): Service => new Service(row);
 const toForward = (row: typeof serviceForwards.$inferSelect): ServiceForward =>
   new ServiceForward(row);
-const toObservation = (row: typeof serviceObservations.$inferSelect): ServiceObservation =>
-  new ServiceObservation(row);
+const toObservation = ({
+  attemptId: _attemptId,
+  ...row
+}: typeof serviceObservations.$inferSelect): ServiceObservation => new ServiceObservation(row);
 
 export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClient.PgClient> =
   Layer.effect(
@@ -626,11 +632,13 @@ export const ServiceObservationsRepoLive: Layer.Layer<
         .limit(1)
         .pipe(Effect.orDie);
       const error = input.error ?? null;
+      const attemptId = input.attemptId ?? null;
       if (
         latest !== undefined &&
         latest.state === input.state &&
         latest.source === input.source &&
-        latest.error === error
+        latest.error === error &&
+        latest.attemptId === attemptId
       ) {
         const [extended] = yield* db
           .update(serviceObservations)
@@ -653,6 +661,7 @@ export const ServiceObservationsRepoLive: Layer.Layer<
           state: input.state,
           source: input.source,
           error,
+          attemptId,
         })
         .returning()
         .pipe(Effect.orDie);
@@ -686,6 +695,23 @@ export const ServiceObservationsRepoLive: Layer.Layer<
       return rows.map(toObservation);
     });
 
-    return { record, latestForService, listForService };
+    const attemptReached = Effect.fn("ServiceObservationsRepo.attemptReached")(function* (
+      attemptId: SessionProcessId,
+    ) {
+      const [row] = yield* db
+        .select({ id: serviceObservations.id })
+        .from(serviceObservations)
+        .where(
+          and(
+            eq(serviceObservations.attemptId, attemptId),
+            eq(serviceObservations.state, "reachable"),
+          ),
+        )
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row !== undefined;
+    });
+
+    return { record, latestForService, listForService, attemptReached };
   }),
 );

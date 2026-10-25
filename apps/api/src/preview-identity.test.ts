@@ -161,6 +161,11 @@ const makeWorld = () => {
         reads.byId += 1;
         return id === PREVIEW ? kept : id === NEXT.id ? NEXT : null;
       }),
+    controlOf: () => Effect.die("unused"),
+    changeControl: () => Effect.die("unused"),
+    previewOfService: () => Effect.die("unused"),
+    gatewaySnapshot: () => Effect.die("unused"),
+    gatewaySnapshots: () => Effect.die("unused"),
   };
 
   const access = Layer.mock(ProjectAccess, {
