@@ -8,6 +8,23 @@
 
 import { sortedCopy } from "./order.ts";
 
+export type AgentSteerDeliveryDto =
+  | { readonly _tag: "Sending" }
+  | { readonly _tag: "Accepted"; readonly evidence: "provider-acknowledged" | "transport-written" }
+  | { readonly _tag: "Queued"; readonly turnId: string; readonly reason: string }
+  | { readonly _tag: "Unknown"; readonly reason: string }
+  | { readonly _tag: "NotSent"; readonly reason: string; readonly message: string };
+
+export interface AgentTurnSteerDto {
+  readonly id: string;
+  readonly turnId: string;
+  readonly ordinal: number;
+  readonly author: string;
+  readonly input: string;
+  readonly createdAt: string;
+  readonly delivery: AgentSteerDeliveryDto;
+}
+
 export interface AgentTurnDto {
   readonly id: string;
   readonly ordinal: number;
@@ -18,6 +35,9 @@ export interface AgentTurnDto {
   /** Whose login it ran on (docs/adr/0013); absent from older servers. See `turnPayerWords`. */
   readonly billedUserId?: string | null;
   readonly billedAccountName?: string | null;
+  readonly steerSender?: string | null;
+  readonly steers?: ReadonlyArray<AgentTurnSteerDto>;
+  readonly fromSteer?: string | null;
   readonly input: string;
   readonly status: string;
   readonly error: string | null;
@@ -83,6 +103,7 @@ export type AgentConversationEntry<
   R extends AgentRequestDto = AgentRequestDto,
 > =
   | { readonly kind: "turn"; readonly key: string; readonly turn: T }
+  | { readonly kind: "steer"; readonly key: string; readonly steer: AgentTurnSteerDto }
   | { readonly kind: "item"; readonly key: string; readonly item: I }
   | { readonly kind: "request"; readonly key: string; readonly request: R };
 
@@ -135,6 +156,14 @@ export const buildAgentConversation = <
   for (const turn of turns) {
     entries.push({ kind: "turn", key: `turn:${turn.id}`, turn });
     const children = [
+      ...(turn.steers ?? [])
+        .filter((steer) => steer.delivery._tag !== "Queued")
+        .map((steer) => ({
+          kind: "steer" as const,
+          at: steer.createdAt,
+          id: steer.id,
+          steer,
+        })),
       ...conversation.items
         .filter((item) => item.turnId === turn.id && item.kind !== "user-message")
         .map((item) => ({ kind: "item" as const, at: item.createdAt, id: item.id, item })),
@@ -156,6 +185,8 @@ export const buildAgentConversation = <
       if (child.kind === "item") {
         seenItems.add(child.item.id);
         entries.push({ kind: "item", key: `item:${child.item.id}`, item: child.item });
+      } else if (child.kind === "steer") {
+        entries.push({ kind: "steer", key: `steer:${child.steer.id}`, steer: child.steer });
       } else {
         seenRequests.add(child.request.id);
         entries.push({
