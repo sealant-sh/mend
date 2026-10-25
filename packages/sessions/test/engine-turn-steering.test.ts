@@ -20,7 +20,7 @@ import { agentConversationStub, withEngineEffect } from "./engine/fixture.ts";
 import { MARIA, personPlatform } from "./engine/person-fixture.ts";
 
 describe("SessionEngine native steering admission", () => {
-  it.effect.each(["allowed", "retiring", "control-off"] as const)(
+  it.effect.each(["allowed", "retiring", "control-off", "login-missing"] as const)(
     "%s keeps the sender's existing payer",
     (condition) => {
       const sessionId = SessionId.make("session-steer");
@@ -106,7 +106,9 @@ describe("SessionEngine native steering admission", () => {
               });
               expect(sent).toEqual([]);
             }
-            expect(loginReads).toEqual([]);
+            expect(loginReads).toEqual(
+              condition === "allowed" || condition === "login-missing" ? [MARIA] : [],
+            );
             expect(turn.billedAccountId).toBe("existing-login");
           }),
         {
@@ -139,7 +141,7 @@ describe("SessionEngine native steering admission", () => {
             state,
             platform: personPlatform([], { person: true }, undefined, (accountId) => {
               loginReads.push(accountId);
-              return { _tag: "missing" };
+              return condition === "login-missing" ? { _tag: "missing" } : { _tag: "active" };
             }),
           },
         },

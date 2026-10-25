@@ -19548,21 +19548,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * replacement's check that starts meanwhile sees it (review of mend#575, P2-B). With the flag
        * off, nothing is counted.
        */
+      const queueingTurn =
+        (sessionId: SessionId) =>
+        <A, E>(queue: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+          capture === null || harnessLayoutConfig.flag !== "person"
+            ? queue
+            : Effect.acquireUseRelease(
+                Effect.sync(() =>
+                  turnsBeingQueued.set(sessionId, (turnsBeingQueued.get(sessionId) ?? 0) + 1),
+                ),
+                () => queue,
+                () =>
+                  Effect.sync(() => {
+                    const left = (turnsBeingQueued.get(sessionId) ?? 1) - 1;
+                    if (left <= 0) turnsBeingQueued.delete(sessionId);
+                    else turnsBeingQueued.set(sessionId, left);
+                  }),
+              );
+
       const submitTurn = (sessionId: SessionId, input: string, author: string | null) =>
-        capture === null || harnessLayoutConfig.flag !== "person"
-          ? submitTurnChecked(sessionId, input, author)
-          : Effect.acquireUseRelease(
-              Effect.sync(() =>
-                turnsBeingQueued.set(sessionId, (turnsBeingQueued.get(sessionId) ?? 0) + 1),
-              ),
-              () => submitTurnChecked(sessionId, input, author),
-              () =>
-                Effect.sync(() => {
-                  const left = (turnsBeingQueued.get(sessionId) ?? 1) - 1;
-                  if (left <= 0) turnsBeingQueued.delete(sessionId);
-                  else turnsBeingQueued.set(sessionId, left);
-                }),
-            );
+        queueingTurn(sessionId)(submitTurnChecked(sessionId, input, author));
 
       /** The waiting line of a conversation (decision 6), as both people see it. */
       const conversationWait = (sessionId: SessionId) =>
@@ -19640,8 +19645,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sessionId: session.id,
                 message: retired,
               });
+            // Words the harness does not take become the sender's next turn, so they are refused
+            // as such a turn would be.
+            const refusal = yield* steeringRefusal(session, input.sender);
+            if (refusal !== null)
+              return yield* new SessionTurnRefusedError({ sessionId: session.id, message: refusal });
             return yield* protocolHost.steerTurn(input);
-          }),
+          }).pipe(queueingTurn(turn.sessionId)),
         );
       });
 
