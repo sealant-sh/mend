@@ -19,6 +19,7 @@ import {
   narrowCredential,
   repositoryCloneUrlIssue,
   sameGrant,
+  storedSecretNameRefusal,
   unchosenLoginSummary,
   validatePiProfile,
 } from "@mend/domain/workbench";
@@ -4299,6 +4300,8 @@ const envShow = async (config: CliConfig, args: ReadonlyArray<string>) => {
   }
   for (const secret of secrets.secrets) {
     say(`  ${secret.name.padEnd(width)}  secret ${dim("· value set, never shown")}`);
+    const nameRefusal = storedSecretNameRefusal(secret.name);
+    if (nameRefusal !== null) say(amber(`  ${" ".repeat(width)}  ${nameRefusal}`));
   }
   for (const name of bindingNames) {
     say(

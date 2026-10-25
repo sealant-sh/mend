@@ -127,7 +127,9 @@ opencode session starts with no ChatGPT login, and in a per-person workspace its
 instead.
 
 A Claude subscription cannot be used this way: Anthropic does not allow a Claude Pro or Max login in
-third-party agents. Use an Anthropic API key with pi or opencode instead.
+third-party agents. Use an Anthropic API key with pi or opencode instead, typed into the tool's own
+`/login`. A project secret cannot carry it: Mend refuses `ANTHROPIC_API_KEY` and the other provider
+login names as [secret names](/guides/environment-variables/#reserved-names).
 
 ## What a session never saves
 

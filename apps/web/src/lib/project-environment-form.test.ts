@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectEnvironmentVariableView } from "./project-environment";
 import {
   clientIssues,
+  clientSecretIssues,
   initialProjectEnvironmentForm,
   issuesFor,
   projectEnvironmentFormReducer,
@@ -136,5 +137,19 @@ describe("clientIssues", () => {
     expect(issuesFor(issues, "name")).toHaveLength(1);
     expect(issuesFor(issues, "value")).toHaveLength(1);
     expect(issuesFor(issues, null)).toHaveLength(0);
+  });
+});
+
+describe("clientSecretIssues", () => {
+  const codexWords =
+    "OPENAI_API_KEY is a Codex login, not a project secret. Connect your Codex login in Settings → Connected accounts.";
+
+  it("refuses a provider login name, for a new secret or a replaced value, pointing to Connected accounts", () => {
+    expect(clientSecretIssues({ name: "OPENAI_API_KEY", value: "fake" })).toEqual([
+      { field: "name", rule: "name-provider-login", message: codexWords },
+    ]);
+    expect(clientSecretIssues({ name: "OPENAI_API_KEY", value: null })).toEqual([
+      { field: "name", rule: "name-provider-login", message: codexWords },
+    ]);
   });
 });

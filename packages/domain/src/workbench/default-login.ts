@@ -36,7 +36,7 @@ export const isChosenDefault = (account: {
 export const isCredentialProvider = (value: string): value is CredentialProvider =>
   value === "claude" || value === "codex" || value === "github";
 
-const PROVIDER_LABELS: Readonly<Record<CredentialProvider, string>> = {
+export const CREDENTIAL_PROVIDER_LABELS: Readonly<Record<CredentialProvider, string>> = {
   claude: "Claude",
   codex: "Codex",
   github: "GitHub",
@@ -54,7 +54,7 @@ export const unchosenLoginSummary = (
   provider: CredentialProvider,
   heldUnchosen: number,
 ): UnchosenLoginSummary => {
-  const label = PROVIDER_LABELS[provider];
+  const label = CREDENTIAL_PROVIDER_LABELS[provider];
   const words = `No ${label} login chosen`;
   const wordsAndSessionUse = `${words}: Mend holds ${heldUnchosen} of yours, and sessions use only the chosen one.`;
   if (heldUnchosen === 1) {

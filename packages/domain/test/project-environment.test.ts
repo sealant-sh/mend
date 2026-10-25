@@ -8,7 +8,11 @@ import {
   validateProjectEnvironmentName,
   validateProjectEnvironmentValue,
 } from "../src/workbench/project-environment.ts";
-import { routeDotenvName, validateProjectSecretName } from "../src/workbench/project-secret.ts";
+import {
+  routeDotenvName,
+  storedSecretNameRefusal,
+  validateProjectSecretName,
+} from "../src/workbench/project-secret.ts";
 
 describe("validateProjectEnvironmentName", () => {
   it.each(["APP_MODE", "_LEADING_UNDERSCORE", "lower_case", "MIXED_case_9"])(
@@ -110,7 +114,6 @@ describe("validateProjectSecretName (the secret lane)", () => {
 
   it.each([
     ["GITHUB_TOKEN", "account-lookup"],
-    ["CLAUDE_CODE_OAUTH_TOKEN", "account-lookup"],
     ["SEALANT_X", "platform-prefix"],
     ["PATH", "process-identity"],
     ["NODE_OPTIONS", "runtime-injection"],
@@ -124,6 +127,79 @@ describe("validateProjectSecretName (the secret lane)", () => {
     expect(validateProjectSecretName("MEND_SECRET")?.rule).toBe("name-mend-prefix");
     expect(validateProjectSecretName("BAD NAME")?.rule).toBe("name-grammar");
   });
+});
+
+const providerLoginWords = (name: string, label: string) =>
+  `${name} is a ${label} login, not a project secret. Connect your ${label} login in Settings → Connected accounts.`;
+
+const providerLoginNames = [
+  ["ANTHROPIC_API_KEY", "Claude"],
+  ["ANTHROPIC_AUTH_TOKEN", "Claude"],
+  ["CLAUDE_CODE_OAUTH_TOKEN", "Claude"],
+  ["OPENAI_API_KEY", "Codex"],
+  ["CODEX_API_KEY", "Codex"],
+] as const;
+
+describe("provider login names in the secret lane", () => {
+  it.each(providerLoginNames)("refuses %s as a %s login", (name, label) => {
+    const issue = validateProjectSecretName(name);
+    expect(issue === null ? null : formatProjectEnvironmentIssue(issue)).toBe(
+      providerLoginWords(name, label),
+    );
+  });
+
+  it("matches any case and quotes the name as it was written", () => {
+    const issue = validateProjectSecretName("openai_api_key");
+    expect(issue === null ? null : formatProjectEnvironmentIssue(issue)).toBe(
+      providerLoginWords("openai_api_key", "Codex"),
+    );
+  });
+
+  it.each(providerLoginNames)(
+    "refuses %s in a dotenv import with the same words",
+    (name, label) => {
+      const route = routeDotenvName(name);
+      expect(route.lane === "rejected" && formatProjectEnvironmentIssue(route.issue)).toBe(
+        providerLoginWords(name, label),
+      );
+    },
+  );
+
+  it.each(["ANTHROPIC_BASE_URL", "OPENAI_ORG_ID", "MY_OPENAI_API_KEY", "STRIPE_API_KEY"])(
+    "leaves %s to the rules it had",
+    (name) => {
+      expect(validateProjectSecretName(name)?.rule).not.toBe("name-provider-login");
+    },
+  );
+
+  it("leaves the plain lane's rules as they were", () => {
+    expect(validateProjectEnvironmentName("OPENAI_API_KEY")).toEqual({
+      rule: "name-reserved",
+      reservedRule: "secret-marker",
+    });
+    expect(validateProjectEnvironmentName("CLAUDE_CODE_OAUTH_TOKEN")).toEqual({
+      rule: "name-reserved",
+      reservedRule: "account-lookup",
+    });
+  });
+});
+
+describe("storedSecretNameRefusal", () => {
+  it("asks for a secret stored under a provider login name to be renamed or removed", () => {
+    expect(storedSecretNameRefusal("OPENAI_API_KEY")).toBe(
+      "OPENAI_API_KEY is a Codex login, and Mend no longer takes it as a project secret. This one was stored before; rename or remove it, and connect your Codex login in Settings → Connected accounts.",
+    );
+    expect(storedSecretNameRefusal("anthropic_api_key")).toBe(
+      "anthropic_api_key is a Claude login, and Mend no longer takes it as a project secret. This one was stored before; rename or remove it, and connect your Claude login in Settings → Connected accounts.",
+    );
+  });
+
+  it.each(["STRIPE_API_KEY", "LEGACY_OPENAI_KEY", "PORT"])(
+    "has nothing to say about %s",
+    (name) => {
+      expect(storedSecretNameRefusal(name)).toBeNull();
+    },
+  );
 });
 
 describe("routeDotenvName", () => {
