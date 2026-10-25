@@ -37,13 +37,13 @@ export const CODEX_EVENTS = [
   "UserPromptSubmit",
   "PostToolUse",
 ];
-/** The replies a real xterm sends on attach: DA1, DA2, a cursor report, kitty flags, focus in. */
 export const XTERM_ATTACH_REPLIES = [
   "\x1b[?1;2c",
   "\x1b[>0;276;0c",
   "\x1b[24;1R",
   "\x1b[?0u",
   "\x1b[I",
+  "\x1b[?997;1n",
 ];
 const NOTIFICATION_TYPES = [
   "permission_prompt",

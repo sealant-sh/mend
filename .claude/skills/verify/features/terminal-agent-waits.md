@@ -109,8 +109,8 @@ every state must be read within it. Each step is one line of `steps.jsonl` with 
 - **Attached, nothing typed.** The agent's own terminal attached at `/api/tty?process=<agentId>`
   with an upgrade ticket, a resize, then the replies a real xterm sends on attach (DA1
   `ESC [ ? 1 ; 2 c`, DA2 `ESC [ > 0 ; 276 ; 0 c`, a cursor report `ESC [ 24 ; 1 R`, kitty flags
-  `ESC [ ? 0 u`, focus in `ESC [ I`): 3 s of reads keep the wait with the same `since`, no
-  `session-process` frame.
+  `ESC [ ? 0 u`, focus in `ESC [ I`, and VS Code's colour-scheme report `ESC [ ? 997 ; 1 n`): 3 s of
+  reads keep the wait with the same `since`, no `session-process` frame.
 - **One key.** `\r` in the agent's terminal (the real claude sits at its sign-in screen, so nothing
   of value is at stake): the session reads `running` with `waiting` null, and both pointer frames
   arrive. Then one more `PermissionRequest` re-arms the wait, so the stop below ends a live one.

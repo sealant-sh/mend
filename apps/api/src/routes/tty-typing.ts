@@ -15,6 +15,7 @@ const EMULATOR_REPLIES = new RegExp(
     String.raw`\x1bP>\|[^\x1b]*\x1b\\`,
     String.raw`\x1b\[\??\d+;\d+(?:;\d+)?R`,
     String.raw`\x1b\[[03]n`,
+    String.raw`\x1b\[\?[\d;]+n`,
     String.raw`\x1b\[\??[\d;]*\$y`,
     String.raw`\x1b\[\?\d*u`,
     String.raw`\x1b\[[IO]`,
