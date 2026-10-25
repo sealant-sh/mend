@@ -20,6 +20,7 @@ export * from "./harness-state.ts";
 export * from "./pasted-images.ts";
 export * from "./pickup-tickets.ts";
 export * from "./secret-files.ts";
+export * from "./forward.ts";
 export * from "./service-host.ts";
 export * from "./recipes.ts";
 export * from "./session-socket.ts";

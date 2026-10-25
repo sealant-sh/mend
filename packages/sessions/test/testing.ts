@@ -4,3 +4,4 @@
  */
 export * from "./capture-store-memory.ts";
 export * from "./capture-world.ts";
+export * from "./forward-fixture.ts";
