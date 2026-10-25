@@ -481,6 +481,11 @@ describe("what the edge logs (ADR 0004)", () => {
     }
   });
 
+  it("strips the raw route's file headers from every response that leaves the edge", () => {
+    for (const caddyfile of [EDGE_CADDYFILE, T3_GATEWAY_CADDYFILE])
+      expect(caddyfile).toContain("\theader -X-Mend-File-*\n");
+  });
+
   it("holds no uri and no Location in every other log, the t3code gateway's among them", () => {
     const uriFree = EDGE_CADDYFILE.match(/^\(uri-free\) \{\n([\s\S]*?)^\}$/m)?.[1] ?? "";
     expect(uriFree).toContain("\t\t\trequest>uri replace REDACTED\n");
