@@ -2224,8 +2224,8 @@ const previewRefused = (reason: PreviewStartRefusal, detail?: string) =>
   });
 
 /** The session's own workspace (its socket, or its launch's own token), which acts as its owner. */
-const WORKSPACE_ITSELF = { kind: "workspace" } as const;
-type WorkspaceItself = typeof WORKSPACE_ITSELF;
+type WorkspaceItself = { readonly kind: "workspace" };
+const WORKSPACE_ITSELF: WorkspaceItself = { kind: "workspace" };
 type StopCause = ServiceStopCause | WorkspaceItself;
 type StartCause = ServiceStartCause | WorkspaceItself;
 

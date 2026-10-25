@@ -179,7 +179,6 @@ describe("a preview's control", () => {
             PREVIEW_CONTROL_INITIAL,
           );
 
-          // Crashed: the attempt ended on its own and the Stop has nothing to close.
           const crashed = yield* engine.runService(
             session.id,
             ["pnpm", "dev"],
@@ -195,13 +194,12 @@ describe("a preview's control", () => {
             new SessionProcess({ ...crashedAttempt, exitedAt: now(), status: "exited" }),
           );
           yield* engine.stopService(service.id, byOwner);
-          expect(world.previewControls.get(preview.id)).toMatchObject({
+          expect(world.previewControls.get(preview.id), "a Stop after a crash").toMatchObject({
             _tag: "OwnerStopped",
             revision: 1,
             by: OWNER,
           });
 
-          // The owner starts it again, then stops it while the platform refuses every close.
           yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
           expect(world.previewControls.get(preview.id)).toEqual({
             _tag: "Automatic",
@@ -452,7 +450,7 @@ describe("ensurePreviewRunning", () => {
           expect(platform.opened.length).toBe(before);
           port.state.forced = false;
 
-          // The session's workspace ended: nothing records one for it any longer.
+          // What a session whose workspace ended reads as.
           const row = world.sessions.get(session.id);
           if (row === undefined) return yield* Effect.die("missing session row");
           world.sessions.set(session.id, new Session({ ...row, sealantWorkspaceId: null }));

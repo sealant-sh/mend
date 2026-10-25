@@ -18,6 +18,7 @@ import {
   ProjectLinksRepo,
   OrganizationsRepo,
   FoldersRepo,
+  type PreviewGatewaySnapshot,
   PreviewsRepo,
   ProjectLinkNotFoundError,
   SessionRepositoriesRepoMemory,
@@ -2020,7 +2021,7 @@ const previewsLayer = (world: World) => {
         };
       });
   };
-  const snapshotOf = (id: PreviewId) => {
+  const snapshotOf = (id: PreviewId): PreviewGatewaySnapshot | null => {
     const preview = world.previews.get(id);
     if (preview === undefined) return null;
     const selected = selectPreviewTarget(
@@ -2062,15 +2063,14 @@ const previewsLayer = (world: World) => {
       }),
     gatewaySnapshot: (id) => Effect.sync(() => snapshotOf(id)),
     gatewaySnapshots: (ids) =>
-      Effect.sync(
-        () =>
-          new Map(
-            ids.flatMap((id) => {
-              const read = snapshotOf(id);
-              return read === null ? [] : [[id, read] as const];
-            }),
-          ),
-      ),
+      Effect.sync(() => {
+        const read = new Map<PreviewId, PreviewGatewaySnapshot>();
+        for (const id of ids) {
+          const found = snapshotOf(id);
+          if (found !== null) read.set(id, found);
+        }
+        return read;
+      }),
   });
 };
 
