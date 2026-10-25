@@ -1,7 +1,8 @@
-# Forward adapter cold dial, local Docker, 2026-10-25
+# Forward adapter cold dial, local Docker and the box, 2026-10-25
 
 ADR 0017 delivery step 5 asks for the cost of a cold dial on Docker and on Firecracker. This page
-records the local Docker series. The box (VM 130) and Firecracker series are still to run.
+records the local Docker series and an end-to-end series on the box (VM 130). Firecracker is not
+verified live.
 
 A dial here is one `ForwardAdapter` dial: one workspace lookup (`getWorkspace`, a control-plane
 GET), the loopback open, and a Docker sidecar open only after a loopback connection refusal.
@@ -82,11 +83,63 @@ dial failed for any other reason.
   not measured apart, is the first HTTP request of a new SDK client paying its connection setup,
   which a running Mend server would pay once.
 
+## The box, end to end
+
+The box series measures what a person sees, not the adapter alone: a GET through
+`mend service connect` from a laptop, where each new local connection pays a ticket, a WebSocket and
+a dial, against GETs on one kept-alive local connection, which dial once.
+
+### Setup
+
+- Server and CLI: Mend `0.37.0-next.1096` (it contains #1147, the adapter), alpha.mend.run on the
+  box, a Docker install. The CLI ran on a laptop outside the box, from the npm package of the same
+  version.
+- Project: `octocat/Hello-World`, adopted private as `lp-step5-dial`, and one session that wrote
+  `mend.toml` and a one-line Node server (`step5 <path>` on 127.0.0.1:3000), then slept.
+- `mend service run <session> web --wait --no-connect`, then
+  `mend service connect web --port 43872`. The tunnel dials port-scoped, after the upgrade
+  (`apps/api/src/routes/service-tunnel.ts`).
+- One warm-up GET, then the series, one request at a time. The box was serving other sessions at the
+  same time, which this series does not control for.
+
+### Results
+
+Milliseconds, measured by curl on the laptop.
+
+| Series                                                     |   N | median |   p90 | worst |
+| ---------------------------------------------------------- | --: | -----: | ----: | ----: |
+| TCP connect to alpha.mend.run (one network round trip)     |  30 |   44.8 |  45.1 |  45.2 |
+| `GET /api/health` on a new HTTPS connection, first byte    |  30 |  140.6 | 141.7 | 142.2 |
+| tunnel GET, a new local connection each (cold), first byte |  30 |  255.0 | 299.2 | 365.6 |
+| tunnel GET on one kept-alive local connection (warm)       |  30 |   46.0 |  46.4 |  48.1 |
+| the warm series' first GET, which dialled                  |   1 |  367.0 |       |       |
+
+Every request answered 200.
+
+### What the numbers say
+
+- A warm tunnel GET costs one network round trip (46.0 against 44.8 ms). The tunnel and the forward
+  add about 1 ms on top.
+- A cold tunnel GET costs about 210 ms more than a warm one. The CLI mints a ticket, opens a new
+  WebSocket (TCP and TLS), upgrades, and the server dials before the request crosses. That is five
+  round trips, or about 224 ms at 44.8 ms each, if the ticket request reuses the CLI's kept-alive
+  HTTPS connection. It must: seven round trips (314 ms) is more than the median.
+- What is left, about 31 ms at the median, is the server's share of a new connection: minting and
+  spending the ticket, authorizing the caller, and the adapter's dial. A cold dial on the box costs
+  at most that. This series cannot split it further. The adapter logs a ready dial's trace only at
+  debug level, and reading the server's logs needs access to the box beyond the CLI.
+- For a person, network round trips dominate a cold connection here, and the dial does not. The
+  preview gateway in delivery step 7 keeps each viewer's forwards alive, so a page pays a dial once
+  per pooled socket, not once per request.
+
+The project, its worktree and its session were removed afterwards.
+
 ## What this does not cover
 
-- The box and Firecracker. On the box Core is in the Mend image; on Firecracker the daemon
-  connection is a WebSocket through the VM's authenticated endpoint, so each open adds a remote TLS
-  handshake. Both series stay open for delivery 5.
+- Firecracker, which is not verified live. There the daemon connection is a WebSocket through the
+  VM's authenticated endpoint, so each open adds a remote TLS handshake.
+- The adapter's own phases on the box (lookup against open). The box series bounds the server's
+  whole share of a new connection, and does not split it.
 - The Docker exec/socat daemon transport, which spawns a process per dial.
 - Load: one dial at a time, on loopback, on an idle stack. These numbers bound nothing under
   contention.
@@ -102,6 +155,6 @@ dial failed for any other reason.
 
 ## Raw results
 
-The JSON lines are kept on the machine that ran them, outside the repository, in the step's audit
-directory (`.audit/step5/bench-results/`). The Core stack and its workspace were removed after the
-run.
+The JSON lines and the box series' curl timings are kept on the machine that ran them, outside the
+repository, in the step's audit directory (`.audit/step5/bench-results/`). The Core stack and its
+workspace were removed after the run.
