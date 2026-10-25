@@ -476,6 +476,11 @@ Shared control lets Bob send turns to Alice's conversation. The conversation sta
 people drive. When the sender changes, Mend hands the conversation to an agent process running as
 the new sender's user, on their login.
 
+Only the running turn's author may add a mid-turn steer. An author-less turn uses its recorded
+billed user; the session owner gets no exception. The payer never changes during a steer, including
+in a shared home. Definite non-delivery queues the words as the sender's next turn; uncertain
+delivery stays visible and is never resent automatically.
+
 - **The conversation moves into `C` when shared control is turned on.** At the conversation's next
   quiescent point (below), Mend moves its files from Alice's saved directory into
   `C = P_alice/conversations/<session id>/`, never overwriting: Claude's transcript, its `<id>/`

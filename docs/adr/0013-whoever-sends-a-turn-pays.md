@@ -195,8 +195,9 @@ Core (`sealant-sh/sealant`), its own stack:
   restart. Owner decision, 2026-10-03.
 - **The owner's login for everything, with consent (the old rule, replaced).** Consent from the
   owner does not make lending a login permitted.
-- **Steers join the running turn (rejected).** A second person's message mid-turn queues as their
-  own turn, so every turn has exactly one payer.
+- **Another person's steer joins the running turn (rejected).** Only the turn's author may steer it;
+  an author-less turn uses its recorded billed user. The owner gets no exception. A steer never
+  changes the running turn's payer. Another person's message queues as their own turn.
 - **Update the spec on a switch (rejected).** A restart would then land on whoever spoke last;
   landing on the owner's and switching again at dispatch is simpler and never strands a steerer's
   login.
