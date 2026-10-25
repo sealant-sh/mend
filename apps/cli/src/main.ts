@@ -19,6 +19,7 @@ import {
   narrowCredential,
   repositoryCloneUrlIssue,
   sameGrant,
+  storedSecretNameRefusal,
   unchosenLoginSummary,
   validatePiProfile,
 } from "@mend/domain/workbench";
@@ -4181,11 +4182,7 @@ interface ProjectEnvironmentDto {
 }
 interface ProjectSecretsDto {
   readonly revision: number;
-  readonly secrets: ReadonlyArray<{
-    readonly name: string;
-    readonly updatedAt: string;
-    readonly nameRefusal?: string | null;
-  }>;
+  readonly secrets: ReadonlyArray<{ readonly name: string; readonly updatedAt: string }>;
 }
 interface ProjectClusterBindingsDto {
   readonly revision: number;
@@ -4303,7 +4300,7 @@ const envShow = async (config: CliConfig, args: ReadonlyArray<string>) => {
   }
   for (const secret of secrets.secrets) {
     say(`  ${secret.name.padEnd(width)}  secret ${dim("· value set, never shown")}`);
-    const nameRefusal = secret.nameRefusal ?? null;
+    const nameRefusal = storedSecretNameRefusal(secret.name);
     if (nameRefusal !== null) say(amber(`  ${" ".repeat(width)}  ${nameRefusal}`));
   }
   for (const name of bindingNames) {

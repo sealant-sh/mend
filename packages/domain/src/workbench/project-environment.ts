@@ -110,8 +110,10 @@ export const formatProjectEnvironmentIssue = (issue: ProjectEnvironmentIssue): s
       return `Names must be at most ${PROJECT_ENV_MAX_NAME_LENGTH} characters.`;
     case "name-mend-prefix":
       return "The MEND_ prefix is reserved for Mend itself.";
-    case "name-provider-login":
-      return `${issue.name} is a ${CREDENTIAL_PROVIDER_LABELS[issue.provider]} login. Connect it in Settings → Connected accounts, or with mend connect ${issue.provider}; a project secret never decides which login a session spends.`;
+    case "name-provider-login": {
+      const label = CREDENTIAL_PROVIDER_LABELS[issue.provider];
+      return `${issue.name} is a ${label} login, not a project secret. Connect your ${label} login in Settings → Connected accounts.`;
+    }
     case "name-reserved":
       return issue.reservedRule === "secret-marker"
         ? "Secret-looking names (containing TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL, or APIKEY, ending in _KEY, or exactly KEY) are not supported: the workspace runtime filters them out, so the variable would silently never reach any process. Environment variables here are for ordinary non-secret configuration."

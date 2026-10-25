@@ -6,6 +6,7 @@ import { Record, Schema } from "effect";
 
 import { ProjectId, ProjectSecretId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { CREDENTIAL_PROVIDER_LABELS } from "./default-login.ts";
 import {
   PROJECT_ENV_MAX_NAME_LENGTH,
   PROJECT_ENV_NAME_PATTERN,
@@ -29,7 +30,6 @@ export class ProjectSecret extends Schema.Class<ProjectSecret>("ProjectSecret")(
   name: Schema.String,
   /** Integer row revision; stale-write checks compare against it. The value never appears. */
   revision: Schema.Int,
-  nameRefusal: Schema.NullOr(Schema.String),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}
@@ -59,7 +59,7 @@ export const validateProjectSecretName = (name: string): ProjectEnvironmentIssue
   const upper = name.toUpperCase();
   if (upper.startsWith("MEND_")) return { rule: "name-mend-prefix" };
   const provider = providerLoginByName.get(upper);
-  if (provider !== undefined) return { rule: "name-provider-login", name: upper, provider };
+  if (provider !== undefined) return { rule: "name-provider-login", name, provider };
   const reservedRule = findWorkspaceSecretEnvReservedRule(name);
   if (reservedRule !== undefined) return { rule: "name-reserved", reservedRule };
   return null;
@@ -82,4 +82,15 @@ export const routeDotenvName = (name: string): DotenvRoute => {
   if (validateProjectEnvironmentName(name) === null) return { lane: "configuration" };
   const issue = validateProjectSecretName(name);
   return issue === null ? { lane: "secret" } : { lane: "rejected", issue };
+};
+
+/**
+ * Words for a secret stored under a provider login name before Mend refused those names, or null.
+ * The row stays as it was; the words ask its owner to rename or remove it.
+ */
+export const storedSecretNameRefusal = (name: string): string | null => {
+  const issue = validateProjectSecretName(name);
+  if (issue === null || issue.rule !== "name-provider-login") return null;
+  const label = CREDENTIAL_PROVIDER_LABELS[issue.provider];
+  return `${issue.name} is a ${label} login, and Mend no longer takes it as a project secret. This one was stored before; rename or remove it, and connect your ${label} login in Settings → Connected accounts.`;
 };

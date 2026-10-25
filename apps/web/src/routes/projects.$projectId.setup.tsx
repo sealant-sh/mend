@@ -1,4 +1,5 @@
 import { ProjectEnvironmentVariableId } from "@mend/domain";
+import { storedSecretNameRefusal } from "@mend/domain/workbench";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useId, useReducer, useRef, useState } from "react";
@@ -1116,6 +1117,7 @@ function SecretRow({
 }) {
   const [removing, setRemoving] = useState<"idle" | "armed" | "working">("idle");
   const [error, setError] = useState<string | null>(null);
+  const nameRefusal = storedSecretNameRefusal(secret.name);
 
   const remove = () => {
     if (removing === "idle") {
@@ -1151,8 +1153,8 @@ function SecretRow({
         <p className="mt-0.5 font-mono text-[12px] text-faint">
           value set · updated {new Date(secret.updatedAt).toLocaleString()}
         </p>
-        {secret.nameRefusal === null ? null : (
-          <p className="mt-1 text-xs leading-relaxed text-warning">{secret.nameRefusal}</p>
+        {nameRefusal === null ? null : (
+          <p className="mt-1 text-xs leading-relaxed text-warning">{nameRefusal}</p>
         )}
         {error === null ? null : (
           <p className="mt-1 text-xs leading-relaxed text-danger" aria-live="polite">

@@ -142,7 +142,7 @@ describe("clientIssues", () => {
 
 describe("clientSecretIssues", () => {
   const codexWords =
-    "OPENAI_API_KEY is a Codex login. Connect it in Settings → Connected accounts, or with mend connect codex; a project secret never decides which login a session spends.";
+    "OPENAI_API_KEY is a Codex login, not a project secret. Connect your Codex login in Settings → Connected accounts.";
 
   it("refuses a provider login name, for a new secret or a replaced value, pointing to Connected accounts", () => {
     expect(clientSecretIssues({ name: "OPENAI_API_KEY", value: "fake" })).toEqual([
@@ -151,9 +151,5 @@ describe("clientSecretIssues", () => {
     expect(clientSecretIssues({ name: "OPENAI_API_KEY", value: null })).toEqual([
       { field: "name", rule: "name-provider-login", message: codexWords },
     ]);
-  });
-
-  it("lets a stored provider login be renamed away", () => {
-    expect(clientSecretIssues({ name: "LEGACY_OPENAI_KEY", value: null })).toEqual([]);
   });
 });

@@ -795,7 +795,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "load a .env into the project",
     synopsis: ["[file] [--project <p>] [--secret [A,B]]"],
     description: [
-      "Ordinary names become configuration. Secret-shaped names (KEY, TOKEN, PASSWORD, and the like) become secrets, which Mend stores encrypted and never shows again. Sessions receive both at launch. A provider's login name, such as ANTHROPIC_API_KEY or OPENAI_API_KEY, is refused: connect the login with mend connect claude or mend connect codex. Default file: .env in the current directory.",
+      "Ordinary names become configuration. Secret-shaped names (KEY, TOKEN, PASSWORD, and the like) become secrets, which Mend stores encrypted and never shows again. Sessions receive both at launch. A provider's login name, such as ANTHROPIC_API_KEY or OPENAI_API_KEY, is refused: it is a Claude or Codex login, which you connect in Settings → Connected accounts. Default file: .env in the current directory.",
     ],
     options: [
       project(),

@@ -5,20 +5,19 @@ import { mainTestFixtures } from "./main-test-fixtures.ts";
 const { json, spawning, startCli, startFakeMend } = mainTestFixtures();
 
 const codexWords =
-  "OPENAI_API_KEY is a Codex login. Connect it in Settings → Connected accounts, or with mend connect codex; a project secret never decides which login a session spends.";
+  "OPENAI_API_KEY is a Codex login, and Mend no longer takes it as a project secret. This one was stored before; rename or remove it, and connect your Codex login in Settings → Connected accounts.";
 
-const secret = (name: string, nameRefusal: string | null) => ({
+const secret = (name: string) => ({
   id: `secret-${name}`,
   projectId: "project-web",
   name,
   revision: 1,
-  nameRefusal,
   createdAt: "2026-10-01T00:00:00.000Z",
   updatedAt: "2026-10-01T00:00:00.000Z",
 });
 
 describe("mend env show", spawning, () => {
-  it("lists a secret stored under a provider login name with the words that point to Connected accounts", async () => {
+  it("lists a secret stored under a provider login name with words to rename or remove it", async () => {
     const fake = await startFakeMend((request, response) => {
       switch (request.url) {
         case "/api/projects":
@@ -39,7 +38,7 @@ describe("mend env show", spawning, () => {
         case "/api/projects/project-web/secrets":
           json(response, {
             revision: 2,
-            secrets: [secret("OPENAI_API_KEY", codexWords), secret("STRIPE_API_KEY", null)],
+            secrets: [secret("OPENAI_API_KEY"), secret("STRIPE_API_KEY")],
           });
           return;
         case "/api/projects/project-web/cluster-bindings":

@@ -13,15 +13,15 @@ import { ids } from "../../test/support/tenancy-harness.ts";
 
 const project = ids("private-alice").project;
 
-const loginWords = (name: string, label: string, provider: string) =>
-  `${name} is a ${label} login. Connect it in Settings → Connected accounts, or with mend connect ${provider}; a project secret never decides which login a session spends.`;
+const loginWords = (name: string, label: string) =>
+  `${name} is a ${label} login, not a project secret. Connect your ${label} login in Settings → Connected accounts.`;
 
 const providerLoginNames = [
-  ["ANTHROPIC_API_KEY", "Claude", "claude"],
-  ["ANTHROPIC_AUTH_TOKEN", "Claude", "claude"],
-  ["CLAUDE_CODE_OAUTH_TOKEN", "Claude", "claude"],
-  ["OPENAI_API_KEY", "Codex", "codex"],
-  ["CODEX_API_KEY", "Codex", "codex"],
+  ["ANTHROPIC_API_KEY", "Claude"],
+  ["ANTHROPIC_AUTH_TOKEN", "Claude"],
+  ["CLAUDE_CODE_OAUTH_TOKEN", "Claude"],
+  ["OPENAI_API_KEY", "Codex"],
+  ["CODEX_API_KEY", "Codex"],
 ] as const;
 
 describe("loading a .env that names a provider login", () => {
@@ -64,7 +64,6 @@ describe("loading a .env that names a provider login", () => {
                   projectId,
                   name: input.name,
                   revision: 1,
-                  nameRefusal: null,
                   createdAt: new Date(0),
                   updatedAt: new Date(0),
                 }),
@@ -99,9 +98,9 @@ describe("loading a .env that names a provider login", () => {
         { name: "STRIPE_API_KEY", lane: "secret", action: "created" },
         { name: "PORT", lane: "configuration", action: "created" },
       ],
-      rejected: providerLoginNames.map(([name, label, provider]) => ({
+      rejected: providerLoginNames.map(([name, label]) => ({
         name,
-        reason: loginWords(name, label, provider),
+        reason: loginWords(name, label),
       })),
     });
     expect(stored).toEqual(["secret:STRIPE_API_KEY", "configuration:PORT"]);

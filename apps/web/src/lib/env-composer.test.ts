@@ -131,7 +131,7 @@ describe("rowLane", () => {
     expect(rowLane(keyOnly("ANTHROPIC_API_KEY"), true)).toEqual({
       kind: "rejected",
       reason:
-        "ANTHROPIC_API_KEY is a Claude login. Connect it in Settings → Connected accounts, or with mend connect claude; a project secret never decides which login a session spends.",
+        "ANTHROPIC_API_KEY is a Claude login, not a project secret. Connect your Claude login in Settings → Connected accounts.",
     });
   });
 });
