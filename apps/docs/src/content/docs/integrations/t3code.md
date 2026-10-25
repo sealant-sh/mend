@@ -264,8 +264,8 @@ published, so who may use it does not change with where it listens.
   Caddy gets its certificate once the name resolves to the server and ports 80 and 443 answer; setup
   says where it resolved. T3 Code's Remote link then takes `https://t3.mend.example.com`, which also
   works from T3 Code's hosted web app. `--no-t3-gateway-origin` stops the edge serving it. The
-  edge's lines about requests to that origin hold no URL, because an image's URL path is its token
-  and file name ([what the edge logs](/operate/exposure/)).
+  edge's lines about requests to that origin hold no URL and no `Location` header, because an
+  image's URL path is its token and file name ([what the edge logs](/operate/exposure/)).
 
   On a public install that is also on a tailnet, Tailscale Serve reaches the gateway from the
   tailnet, with or without an origin: `tailscale serve --bg --https=3120 http://127.0.0.1:3120`, and

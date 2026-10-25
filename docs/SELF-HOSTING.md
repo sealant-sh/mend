@@ -181,10 +181,12 @@ What the overlay does, and what it states on your behalf:
   supervisor sets it); the overlay repeats it for a Compose project run by hand. Every capture
   launch carries it to the daemon as `source.transport.plaintext`, which the daemon in Sealant 0.34
   requires before it dials plain HTTP. Mend reports it as declared.
-- The edge's logs keep a URL's path on Mend's origin and never its query, on any route
-  (`?REDACTED`). The terminal, tunnel and key bridge sockets carry a single-use ticket there, and
-  pairing carries a code. An access line no longer shows an ordinary query either. On the t3code
-  gateway's origin no line holds the URL, since an image's URL path is its token and file name.
+- The edge's log keeps a URL's path on Mend's origin and never its query or fragment, on any route
+  (`?REDACTED`), nor a target's userinfo, in the URL or in a `Location` header. The terminal, tunnel
+  and key bridge sockets carry a single-use ticket there, and pairing carries a code. An access line
+  no longer shows an ordinary query either. Lines about the t3code gateway's origin, about a `Host`
+  in another case or with a trailing dot, and about a response cut short hold no URL and no
+  `Location`, since an image's URL path is its token and file name.
 
 If you run your own reverse proxy instead, it must do the same five things: terminate TLS for
 exactly the `APP_URL` origin, forward to web only, pass WebSocket upgrades and never buffer
