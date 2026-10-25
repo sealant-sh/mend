@@ -1,6 +1,7 @@
 import {
   formatProjectEnvironmentIssue,
   parseDotenv,
+  PROJECT_ENV_NAME_PATTERN,
   routeDotenvName,
 } from "@mend/domain/workbench";
 
@@ -166,6 +167,24 @@ export const rowLane = (row: ComposerRow, allSecret: boolean): RowLane => {
 /** Rows worth saving: a non-empty key. Blank rows are ignored, not errors. */
 export const savableRows = (state: ComposerState): ReadonlyArray<ComposerRow> =>
   state.rows.filter((row) => row.key !== "");
+
+export interface ComposerSubmission {
+  /**
+   * Rows Save posts: refused names go too, so the endpoint reports them beside what it loaded. A
+   * key outside the dotenv grammar stays here, since it would not read back as the same name.
+   */
+  readonly rows: ReadonlyArray<ComposerRow>;
+  /** Rows no rule refuses by name. Save needs one. */
+  readonly accepted: number;
+}
+
+export const composerSubmission = (state: ComposerState): ComposerSubmission => {
+  const keyed = savableRows(state);
+  return {
+    rows: keyed.filter((row) => PROJECT_ENV_NAME_PATTERN.test(row.key)),
+    accepted: keyed.filter((row) => rowLane(row, state.allSecret).kind !== "rejected").length,
+  };
+};
 
 /**
  * Serialize rows for the load endpoint — the same dotenv the server parses for `mend env load`,

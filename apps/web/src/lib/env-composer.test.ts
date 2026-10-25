@@ -1,8 +1,9 @@
-import { parseDotenv } from "@mend/domain/workbench";
+import { parseDotenv, routeDotenvName } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
   composerReducer,
+  composerSubmission,
   initialComposer,
   looksLikeDotenv,
   rowLane,
@@ -134,6 +135,43 @@ describe("rowLane", () => {
         "ANTHROPIC_API_KEY is a Claude login, not a project secret. Connect your Claude login in Settings → Connected accounts.",
     });
   });
+});
+
+describe("saving an imported .env that names a provider login", () => {
+  const fromFile = reduce(initialComposer, {
+    type: "text-expanded",
+    intoId: 1,
+    text: "OPENAI_API_KEY=fake-login\nSTRIPE_API_KEY=fake-stripe\nPORT=3000",
+  });
+  const imported = reduce(
+    fromFile,
+    { type: "row-added" },
+    { type: "key-changed", id: fromFile.nextId, key: "bad name" },
+  );
+
+  it.each([true, false])(
+    "posts the refused name beside the rest and keeps it in the composer (Sensitive %s)",
+    (sensitive) => {
+      const state = sensitive ? imported : reduce(imported, { type: "all-secret-toggled" });
+      const submission = composerSubmission(state);
+      expect(submission.accepted).toBe(2);
+
+      const posted = parseDotenv(serializeRows(submission.rows)).entries;
+      expect(posted.map((entry) => [entry.name, routeDotenvName(entry.name).lane])).toEqual([
+        ["OPENAI_API_KEY", "rejected"],
+        ["STRIPE_API_KEY", "secret"],
+        ["PORT", "configuration"],
+      ]);
+
+      const loaded = new Set(["STRIPE_API_KEY", "PORT"]);
+      const after = reduce(state, {
+        type: "rows-cleared",
+        ids: submission.rows.filter((row) => loaded.has(row.key)).map((row) => row.id),
+      });
+      expect(after.rows.map((row) => row.key)).toEqual(["OPENAI_API_KEY", "bad name"]);
+      expect(composerSubmission(after).accepted).toBe(0);
+    },
+  );
 });
 
 describe("serializeRows", () => {

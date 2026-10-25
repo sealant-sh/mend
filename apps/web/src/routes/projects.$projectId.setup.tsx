@@ -29,10 +29,10 @@ import {
 } from "#/lib/api";
 import {
   composerReducer,
+  composerSubmission,
   initialComposer,
   looksLikeDotenv,
   rowLane,
-  savableRows,
   serializeRows,
 } from "#/lib/env-composer";
 import {
@@ -1494,8 +1494,8 @@ const rowInputClass =
  * The one way to add entries: Key/Value rows with "Add another", a Sensitive toggle, and paste
  * detection — dropping a whole `.env` (comments and all) into ANY field turns it into rows, one
  * per key. Each row shows live where it will land (Configuration, Secrets, or why it is refused).
- * Save posts every row through the same endpoint `mend env load` uses; existing names are
- * replaced; the report renders under the composer and both panels refresh.
+ * Save posts the rows through the same endpoint `mend env load` uses, which loads the accepted
+ * ones and reports the refused; existing names are replaced; refused rows stay in the composer.
  */
 function VariablesComposer({ projectId }: { readonly projectId: string }) {
   const trpc = useTRPC();
@@ -1507,12 +1507,13 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
 
-  const rows = savableRows(state);
+  const submission = composerSubmission(state);
   const lanes = state.rows.map((row) => rowLane(row, state.allSecret));
   const anyValue = state.rows.some((row) => row.value !== "");
   const allRevealed = state.rows.filter((row) => row.value !== "").every((row) => row.revealed);
   const rejectedCount = lanes.filter((lane) => lane.kind === "rejected").length;
-  const canSave = phase === "idle" && rows.length > 0 && rejectedCount === 0;
+  const rejectedRows = rejectedCount === 1 ? "row" : `${rejectedCount} rows`;
+  const canSave = phase === "idle" && submission.accepted > 0;
 
   const expandFrom = (intoId: number, text: string) =>
     dispatch({ type: "text-expanded", intoId, text });
@@ -1538,7 +1539,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
     setPhase("saving");
     setError(null);
     void loadProjectEnvironment(projectId, {
-      contents: serializeRows(rows),
+      contents: serializeRows(submission.rows),
       allSecret: state.allSecret,
       secretNames: [],
     })
@@ -1547,7 +1548,7 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
         const loadedNames = new Set(result.loaded.map((entry) => entry.name));
         dispatch({
           type: "rows-cleared",
-          ids: rows.filter((row) => loadedNames.has(row.key)).map((row) => row.id),
+          ids: submission.rows.filter((row) => loadedNames.has(row.key)).map((row) => row.id),
         });
         await queryClient.invalidateQueries(trpc.environment.pathFilter());
         return undefined;
@@ -1721,7 +1722,11 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
           onClick={save}
           className="rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash px-3.5 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-colors disabled:opacity-50"
         >
-          {phase === "saving" ? "Saving…" : rows.length > 1 ? `Save ${rows.length}` : "Save"}
+          {phase === "saving"
+            ? "Saving…"
+            : submission.accepted > 1
+              ? `Save ${submission.accepted}`
+              : "Save"}
         </button>
       </div>
       {state.skippedLines === 0 ? null : (
@@ -1732,8 +1737,9 @@ function VariablesComposer({ projectId }: { readonly projectId: string }) {
       )}
       {rejectedCount === 0 ? null : (
         <p className="mt-2 text-xs text-danger" aria-live="polite">
-          Fix or remove the {rejectedCount === 1 ? "row" : `${rejectedCount} rows`} marked above to
-          save.
+          {submission.accepted === 0
+            ? `Fix or remove the ${rejectedRows} marked above to save.`
+            : `Save leaves the ${rejectedRows} marked above here and loads the rest.`}
         </p>
       )}
       {error === null ? null : (
