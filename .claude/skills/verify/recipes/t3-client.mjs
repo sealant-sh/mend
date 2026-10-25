@@ -3,9 +3,11 @@
 // driven the way a person uses it. Pair, launch a thread in a new worktree, a turn, a queue held by
 // an interrupt and sent from with Send now (and Send now again from a second tab while that turn
 // runs), snooze then settle, the terminal stopped and the page reloaded, the files and diff panels,
-// the Files tab's previews of a worktree's raw files (an image, an SVG, a PDF, a video and its
-// seeks, an HTML page and its stylesheet, a binary file), a pasted chat image, and the minted asset
-// URLs refused once the client's device is revoked in Mend's web.
+// the Files tab's previews of a worktree's raw files (an image, an SVG, an SVG with CRLF line ends
+// that `.gitattributes` normalizes, a PDF, a video and its seeks, an HTML page and its stylesheet, a
+// binary file), a checkpoint's earlier bytes, a gitignored file, a 300 MiB video and one over Mend's
+// 2 GiB cap, a pasted chat image, and the minted asset URLs refused once the client's device is
+// revoked in Mend's web.
 //
 //   node .claude/skills/verify/scripts/serve-t3-client.mjs --dist <t3code>/apps/web/dist \
 //     --port <client port> --gw <gateway> &
@@ -16,17 +18,21 @@
 // stack: the skill's fake one (`mend connect claude --from-stdin` with FAKES.claude), on which each
 // turn starts and ends at once with Claude's own refusal. The browser starts empty: the client keeps
 // its environments in IndexedDB, which --state does not carry, so the recipe pairs every run, and
-// each run is a new `t3code · …` device in Mend. Previews use the default captured store; the Files
-// refresh below waits for the fixtures to reach a capture. A cold mint that exceeds ten seconds
-// must be reopened after preparation finishes. Fixtures are made here (ffmpeg on PATH for the MP4)
-// and pasted into Mend's shell in the worktree. Revoking the device ends the run:
-// every `t3code · T3 Code Web` device in Settings → Devices is revoked.
+// each run is a new `t3code · …` device in Mend. Previews read Mend's default captured store: the
+// Files panel lists a file once a capture holding it is registered, so the recipe refreshes until
+// it does. A file's first mint unpacks it on Mend, bounded at about ten seconds; past that the
+// client shows it unavailable, and the recipe reopens it as a person would (Retry video, or a
+// reload) until it previews. Fixtures are made here (ffmpeg on PATH for the MP4) and pasted into
+// Mend's shell in the worktree; the large ones are written there by the shell. Revoking the device
+// ends the run: every `t3code · T3 Code Web` device in Settings → Devices is revoked.
 //
 // Every `ok ·` line in steps.log is a step's observed end state; a line that does not hold fails
 // the drive. `observed ·` lines record what was seen where the outcome is not fixed in advance
 // (a race between two tabs, the client's own rendering). `rpc ·` lines are the client's own calls
 // over /ws, read from its WebSocket frames: the gateway logs HTTP, not RPC. Mend's side is read
-// through its API as the stack's account (`via api`), never acted on.
+// through its API as the stack's account (`via api`), never acted on, except one checkpoint marked
+// as setup for the checkpoint read. `window ·` lines bracket the opens and seeks that must reach
+// Mend's disk cache only, for a process log of the inner Mend to be read against.
 
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -39,6 +45,8 @@ const P = process.env.MEND_VERIFY_PRIVATE;
 const REFUSAL = "A queued user message can only be sent now while the thread is stopped.";
 const SVG_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 const HTML_POLICY = "sandbox allow-scripts allow-forms allow-popups allow-downloads";
+const VERSION_ONE = "version one, at the checkpoint\n";
+const VERSION_TWO = "version two, after the checkpoint\n";
 
 export default async ({ page, web, capture, note, typeSecret, registerSecret }) => {
   const record = JSON.parse(readFileSync(join(P, "t3-client.json"), "utf8"));
@@ -77,6 +85,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     threads: new Map(),
     terminals: [],
     transcript: "",
+    mints: [],
   };
   const watchSocket = (target, tab) =>
     target.on("websocket", (socket) => {
@@ -93,6 +102,15 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
         if (frame?._tag !== "Request") return;
         rpc.calls.set(`${tab}:${frame.id}`, frame.tag);
         rpc.open.set(`${tab}:${frame.id}`, frame.tag);
+        if (frame.tag === "assets.createUrl") {
+          const resource = frame.payload?.resource ?? {};
+          const named = resource.absolutePath ?? resource.path ?? resource._tag ?? "";
+          rpc.mints.push({
+            key: `${tab}:${frame.id}`,
+            name: String(named).split("/").at(-1),
+            sentAt: Date.now(),
+          });
+        }
         if (frame.tag.startsWith("terminal."))
           rpc.terminals.push({
             tab,
@@ -106,6 +124,14 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
         const frame = parse(payload);
         const tag = rpc.calls.get(`${tab}:${frame?.requestId}`);
         if (frame?._tag === "Exit") rpc.open.delete(`${tab}:${frame.requestId}`);
+        if (tag === "assets.createUrl" && frame?._tag === "Exit") {
+          const mint = rpc.mints.find((entry) => entry.key === `${tab}:${frame.requestId}`);
+          if (mint !== undefined) {
+            mint.ms = Date.now() - mint.sentAt;
+            mint.ok = frame.exit?._tag === "Success";
+            if (!mint.ok) mint.message = failureMessage(frame.exit?.cause);
+          }
+        }
         if (frame?._tag === "Exit" && frame.exit?._tag === "Failure")
           rpc.failures.push({ tab, tag, message: failureMessage(frame.exit.cause) });
         if (tag === "assets.createUrl" && frame?.exit?._tag === "Success") {
@@ -166,14 +192,17 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   /** curl on a minted URL, its config on stdin so the token is in no argv: status, headers, body digest. */
   const curl = (url, headers = [], { pathAsIs = false } = {}) => {
     const headerFile = join(headerDir, "headers");
+    const bodyFile = join(headerDir, "body");
     const config = [`url = "${url}"`, ...headers.map((header) => `header = "${header}"`)];
-    const result = spawnSync(
+    spawnSync(
       "curl",
-      ["-sS", "-o", "-", "-D", headerFile, ...(pathAsIs ? ["--path-as-is"] : []), "-K", "-"],
-      { input: `${config.join("\n")}\n`, maxBuffer: 64 * 1024 * 1024 },
+      ["-sS", "-o", bodyFile, "-D", headerFile, ...(pathAsIs ? ["--path-as-is"] : []), "-K", "-"],
+      { input: `${config.join("\n")}\n` },
     );
     const lines = readFileSync(headerFile, "latin1").split(/\r?\n/);
+    const body = readFileSync(bodyFile);
     rmSync(headerFile, { force: true });
+    rmSync(bodyFile, { force: true });
     const header = (name) =>
       lines
         .find((line) => line.toLowerCase().startsWith(`${name}:`))
@@ -185,7 +214,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       contentRange: header("content-range"),
       contentLength: header("content-length"),
       cacheControl: header("cache-control"),
-      sha256: result.stdout.length === 0 ? null : sha256(result.stdout),
+      sha256: body.length === 0 ? null : sha256(body),
     };
   };
 
@@ -472,9 +501,24 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   }
   const tree = main.getByRole("tree");
   await tree.getByRole("treeitem", { name: "README.md" }).waitFor();
-  await main.getByRole("button", { name: "Refresh workspace files" }).click();
-  await page.waitForTimeout(1500);
-  await tree.getByRole("treeitem", { name: "verify-terminal.txt" }).waitFor();
+  // The default captured store lists the worktree as its newest registered capture holds it, so a
+  // file the terminal wrote shows once a capture after it is registered.
+  const listed = async (name, ms = 300_000) => {
+    const since = Date.now();
+    await until(
+      `the Files panel lists ${name}`,
+      async () => {
+        await main.getByRole("button", { name: "Refresh workspace files" }).click();
+        await page.waitForTimeout(1500);
+        return (await tree.getByRole("treeitem", { name, exact: true }).count()) > 0;
+      },
+      ms,
+    );
+    note(
+      `observed · ${name} listed ${Math.round((Date.now() - since) / 1000)} s after the wait began`,
+    );
+  };
+  await listed("verify-terminal.txt");
   ok(true, "the Files panel lists the worktree's README.md and the terminal's verify-terminal.txt");
   await tree.getByRole("treeitem", { name: "README.md" }).click();
   await main.getByRole("code").filter({ hasText: "# Verify fixture" }).waitFor();
@@ -494,60 +538,125 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const fixtures = previewFixtures();
   const written = new Map([...fixtures].map(([path, bytes]) => [path, sha256(bytes)]));
   const toggleTerminal = main.getByRole("button", { name: "Toggle terminal drawer" });
-  await toggleTerminal.click();
-  await page.waitForTimeout(1500);
-  if ((await terminalInput.count()) === 0) await toggleTerminal.click();
-  await terminalInput.waitFor();
-  await page.waitForTimeout(2000);
   const prompts = () => rpc.transcript.split("\u001b[?2004h").length;
-  await terminalInput.focus();
-  await page.keyboard.type("stty -echo; cat > /tmp/preview-fixtures.sh");
-  await page.keyboard.press("Enter");
-  await page.waitForTimeout(500);
-  const script = fixtureScript(fixtures);
-  for (let at = 0; at < script.length; at += 16_384)
-    await terminalInput.evaluate(
-      (input, text) => {
-        const data = new DataTransfer();
-        data.setData("text/plain", text);
-        input.dispatchEvent(
-          new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
-        );
-      },
-      script.slice(at, at + 16_384),
-    );
-  const shown = prompts();
-  await page.keyboard.press("Control+d");
-  await until("the shell's prompt after the pasted script", () => prompts() > shown, 120_000);
-  await page.keyboard.type("stty echo; sh /tmp/preview-fixtures.sh");
-  await page.keyboard.press("Enter");
-  await until("the fixture script's end", () =>
-    rpc.transcript.includes("preview-fixtures-written"),
+  /** Pastes `script` into Mend's shell in the worktree, runs it, and waits for its last line. */
+  const pasteAndRun = async (file, script, marker, ms = 120_000) => {
+    await toggleTerminal.click();
+    await page.waitForTimeout(1500);
+    if ((await terminalInput.count()) === 0) await toggleTerminal.click();
+    // The drawer opened again keeps the shell it ran before beside a new one.
+    const input = terminalInput.filter({ visible: true }).last();
+    await input.waitFor();
+    await page.waitForTimeout(2000);
+    await input.focus();
+    await page.keyboard.type(`stty -echo; cat > ${file}`);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(500);
+    for (let at = 0; at < script.length; at += 16_384)
+      await input.evaluate(
+        (input, text) => {
+          const data = new DataTransfer();
+          data.setData("text/plain", text);
+          input.dispatchEvent(
+            new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+          );
+        },
+        script.slice(at, at + 16_384),
+      );
+    const shown = prompts();
+    await page.keyboard.press("Control+d");
+    await until("the shell's prompt after the pasted script", () => prompts() > shown, 120_000);
+    const from = rpc.transcript.length;
+    await page.keyboard.type(`stty echo; sh ${file}`);
+    await page.keyboard.press("Enter");
+    await until(`${file}'s end`, () => rpc.transcript.slice(from).includes(marker), ms);
+    await toggleTerminal.click();
+    return stripAnsi(rpc.transcript.slice(from));
+  };
+  const digestsShown = await pasteAndRun(
+    "/tmp/preview-fixtures.sh",
+    fixtureScript(fixtures),
+    "preview-fixtures-written",
   );
-  const digestsShown = rpc.transcript.replace(/\r/g, "");
   for (const [path, digest] of written)
     ok(
       digestsShown.includes(`${digest}  ${path}`),
       `${path} pasted through the terminal byte for byte (sha256 ${digest.slice(0, 12)})`,
     );
-  await toggleTerminal.click();
 
-  if (await files.isVisible()) await files.click();
-  else {
-    await main.getByRole("button", { name: "Add panel surface" }).click();
-    await page.getByRole("menuitem", { name: /^Files/ }).click();
-  }
-  const folder = tree.getByRole("treeitem", { name: "preview" });
-  await until("the Files panel lists preview/", async () => {
-    await main.getByRole("button", { name: "Refresh workspace files" }).click();
-    await page.waitForTimeout(1500);
-    return (await folder.count()) > 0;
-  });
-  await folder.click();
+  const showFiles = async () => {
+    if ((await rightPanel.getAttribute("aria-pressed")) !== "true") await rightPanel.click();
+    if (await files.isVisible()) await files.click();
+    else {
+      await main.getByRole("button", { name: "Add panel surface" }).click();
+      await page.getByRole("menuitem", { name: /^Files/ }).click();
+    }
+    await tree.getByRole("treeitem", { name: "README.md" }).waitFor();
+  };
+  /** The tree's rows down to `trail`'s last folder, each folder opened that does not show its child. */
+  const reveal = async (...trail) => {
+    for (const [index, name] of trail.entries()) {
+      const child = trail[index + 1];
+      if (child === undefined) break;
+      if ((await tree.getByRole("treeitem", { name: child, exact: true }).count()) === 0)
+        await tree.getByRole("treeitem", { name, exact: true }).click();
+    }
+  };
+  await showFiles();
+  await listed("preview");
+  await reveal("preview", "version.txt");
+  await listed("version.txt");
   const open = async (name) => {
     const from = assets.length;
-    await tree.getByRole("treeitem", { name }).click();
+    await tree.getByRole("treeitem", { name, exact: true }).click();
     return () => assets.slice(from).filter((entry) => entry.path.endsWith(`/${name}`));
+  };
+  const unavailable = main.getByText(
+    /^(Unable to load workspace image\.|Unable to load file preview\.|Video unavailable)/,
+  );
+  // A captured file's first mint unpacks it on Mend, bounded at about ten seconds; past that the
+  // client shows it unavailable, and opening it again once it is ready previews it. A person
+  // reopens a video with its Retry video, and anything else by reloading the page.
+  const reopenByReload =
+    (...trail) =>
+    async () => {
+      await page.reload();
+      await main.getByRole("heading", { name: opening, level: 2 }).waitFor();
+      await showFiles();
+      await reveal(...trail);
+      return open(trail.at(-1));
+    };
+  const reopenByRetry = (name) => async () => {
+    const from = assets.length;
+    await main.getByRole("button", { name: "Retry video" }).click();
+    return () => assets.slice(from).filter((entry) => entry.path.endsWith(`/${name}`));
+  };
+  const mintsOf = (name, from) =>
+    rpc.mints
+      .slice(from)
+      .filter((mint) => mint.name === name)
+      .map(({ ms, ok, message }) => ({ ms, ok, ...(message ? { message } : {}) }));
+  /** Opens a file until it previews, reopening while the client reads it unavailable. */
+  const previewed = async (trail, rendered, reopen, attempts = 4) => {
+    const name = trail.at(-1);
+    let served;
+    for (let attempt = 1; ; attempt += 1) {
+      const mintsFrom = rpc.mints.length;
+      served = attempt === 1 ? await open(name) : await reopen();
+      const outcome = await until(
+        `${name} previews or reads unavailable`,
+        async () =>
+          (await rendered()) ? "previews" : (await unavailable.count()) > 0 ? "unavailable" : null,
+        90_000,
+      );
+      note(
+        `observed · ${name} · open ${attempt} · ${outcome} · its mints: ${JSON.stringify(mintsOf(name, mintsFrom))}`,
+      );
+      if (outcome === "previews") return { served, attempt };
+      if (attempt === attempts)
+        throw new Error(`does not hold · ${name} still unavailable after ${attempt} opens`);
+      await page.waitForTimeout(10_000);
+    }
   };
   // The driver withholds a screenshot with an SVG path over 1500 characters (a QR code). Here
   // those are the client's hidden file-icon sprite and Claude's logo, so a preview's capture
@@ -567,14 +676,20 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     );
     await shot(name);
   };
+  const decoded = (image, width) => async () =>
+    (await image.count()) > 0 &&
+    (await image.evaluate((element, w) => element.complete && element.naturalWidth === w, width));
   const decodes = (image, width) =>
     until(`the image decodes at ${width} px`, () =>
       image.evaluate((element, w) => element.complete && element.naturalWidth === w, width),
     );
 
-  let served = await open("pixel.png");
   const png = main.locator('img[alt="preview/pixel.png"]');
-  await decodes(png, 64);
+  let { served } = await previewed(
+    ["preview", "pixel.png"],
+    decoded(png, 64),
+    reopenByReload("preview", "pixel.png"),
+  );
   ok(
     served().some(
       (entry) =>
@@ -586,8 +701,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   );
   await previewShot("15-preview-png");
 
-  served = await open("logo.svg");
-  await decodes(main.locator('img[alt="preview/logo.svg"]'), 96);
+  ({ served } = await previewed(
+    ["preview", "logo.svg"],
+    decoded(main.locator('img[alt="preview/logo.svg"]'), 96),
+    reopenByReload("preview", "logo.svg"),
+  ));
   ok(
     served().some(
       (entry) =>
@@ -597,9 +715,28 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   );
   await previewShot("16-preview-svg");
 
-  served = await open("doc.pdf");
+  ({ served } = await previewed(
+    ["preview", "crlf.svg"],
+    decoded(main.locator('img[alt="preview/crlf.svg"]'), 96),
+    reopenByReload("preview", "crlf.svg"),
+  ));
+  ok(
+    served().some((entry) => entry.status === 200 && entry.contentType === "image/svg+xml"),
+    `crlf.svg (CRLF line ends, \`text eol=lf\` in preview/.gitattributes) previews: ${JSON.stringify(served())}`,
+  );
+  const crlfFiltered = /filtered ([0-9a-f]{40})/.exec(digestsShown)?.[1];
+  const crlfRaw = /unfiltered ([0-9a-f]{40})/.exec(digestsShown)?.[1];
+  ok(
+    crlfFiltered !== undefined && crlfRaw !== undefined && crlfFiltered !== crlfRaw,
+    `git in the worktree stores crlf.svg normalized: hash-object ${crlfFiltered?.slice(0, 12)} with the eol filter, ${crlfRaw?.slice(0, 12)} without`,
+  );
+
   const embed = main.locator("embed");
-  await embed.waitFor({ state: "attached" });
+  ({ served } = await previewed(
+    ["preview", "doc.pdf"],
+    async () => (await embed.count()) > 0,
+    reopenByReload("preview", "doc.pdf"),
+  ));
   await page.waitForTimeout(3000);
   ok(
     (await embed.getAttribute("type")) === "application/pdf" && minted.has("doc.pdf"),
@@ -610,13 +747,14 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   );
   await shot("17-preview-pdf");
 
-  served = await open("clip.mp4");
   const video = main.locator("video");
-  await until(
-    "clip.mp4 loads its metadata",
-    () => video.evaluate((element) => element.readyState >= 1 && element.duration > 9),
-    30_000,
-  );
+  const playable = (seconds) => async () =>
+    (await video.count()) > 0 &&
+    (await video.evaluate(
+      (element, s) => element.readyState >= 1 && element.duration > s,
+      seconds,
+    ));
+  ({ served } = await previewed(["preview", "clip.mp4"], playable(9), reopenByRetry("clip.mp4")));
   const beforeSeek = served().length;
   await video.evaluate((element) => {
     element.muted = true;
@@ -653,10 +791,13 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   note(`observed · clip.mp4 · the seek's requests: ${JSON.stringify(served().slice(beforeSeek))}`);
   await shot("18-preview-video");
 
-  await open("site");
-  const htmlServed = await open("index.html");
+  await reveal("preview", "site", "index.html");
   const frameElement = main.locator("iframe");
-  await frameElement.waitFor({ state: "attached" });
+  const { served: htmlServed } = await previewed(
+    ["preview", "site", "index.html"],
+    async () => (await frameElement.count()) > 0,
+    reopenByReload("preview", "site", "index.html"),
+  );
   const frame = await (await frameElement.elementHandle()).contentFrame();
   await frame.locator("#styled").waitFor();
   const color = await frame
@@ -695,6 +836,14 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       `curl · ${name} · the minted URL answers the file byte for byte · ${JSON.stringify(result)}`,
     );
   }
+  const crlfBytes = fixtures.get("preview/crlf.svg");
+  const crlfServed = curl(minted.get("crlf.svg"));
+  ok(
+    crlfServed.sha256 === sha256(crlfBytes) &&
+      crlfServed.sha256 !== sha256(Buffer.from(crlfBytes.toString().replace(/\r\n/g, "\n"))) &&
+      crlfServed.contentLength === String(crlfBytes.length),
+    `curl · crlf.svg · the worktree's CRLF bytes (${crlfBytes.length} B, sha256 ${sha256(crlfBytes).slice(0, 12)}), not the LF-normalized blob · ${JSON.stringify(crlfServed)}`,
+  );
   const pngUrl = minted.get("pixel.png");
   const pngRange = curl(pngUrl, ["Range: bytes=0-9"]);
   ok(
@@ -734,6 +883,155 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       `curl · index.html's token, ${what} (<token>${suffix}) · ${JSON.stringify(result)}`,
     );
   }
+
+  // Mend's side of a captured read, as the gateway asks it (via api, read only): the raw route's
+  // status, the capture it read and its observation, and the body's digest for a GET.
+  const worktreeId = session.worktreeId;
+  const raw = async (path, { method = "HEAD", at } = {}) => {
+    const query = new URLSearchParams({ path, ...(at === undefined ? {} : { at }) });
+    const res = await fetch(`${mend}/api/worktrees/${worktreeId}/raw?${query}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, origin: mend },
+    });
+    const body = method === "GET" ? Buffer.from(await res.arrayBuffer()) : null;
+    return {
+      status: res.status,
+      contentLength: res.headers.get("content-length"),
+      captureId: res.headers.get("x-mend-capture-id")?.slice(0, 12) ?? null,
+      observation: res.headers.get("x-mend-observation"),
+      ...(body !== null && res.status === 200
+        ? { sha256: sha256(body).slice(0, 12), text: body.length <= 64 ? body.toString() : null }
+        : {}),
+    };
+  };
+  const pixelRead = await raw("preview/pixel.png");
+  ok(
+    pixelRead.status === 200 && pixelRead.captureId !== null,
+    `raw HEAD · preview/pixel.png · Mend read it from a capture · ${JSON.stringify(pixelRead)}`,
+  );
+  const versionOne = await raw("preview/version.txt", { method: "GET" });
+  ok(
+    versionOne.status === 200 && versionOne.text === VERSION_ONE,
+    `raw GET · preview/version.txt · the captured version one · ${JSON.stringify(versionOne)}`,
+  );
+  const marked = await api(`/api/worktrees/${worktreeId}/checkpoints`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ trigger: "user-mark" }),
+  });
+  ok(
+    marked.status === 200 && typeof marked.body?.id === "string",
+    `a checkpoint marked (via api, setup) · HTTP ${marked.status} · ordinal ${marked.body?.ordinal}`,
+  );
+  const checkpoint = marked.body.id;
+  const atCheckpoint = await until(
+    "the marked checkpoint's raw read",
+    async () => {
+      const read = await raw("preview/version.txt", { method: "GET", at: checkpoint });
+      return read.status === 200 ? read : null;
+    },
+    120_000,
+  );
+  ok(
+    atCheckpoint.text === VERSION_ONE,
+    `raw GET at the checkpoint · preview/version.txt · ${JSON.stringify(atCheckpoint)}`,
+  );
+  const largeShown = await pasteAndRun(
+    "/tmp/large-fixtures.sh",
+    largeScript(),
+    "large-fixtures-written",
+    300_000,
+  );
+  note(`observed · the large fixtures in the worktree: ${JSON.stringify(largeShown.trim())}`);
+  await listed("big.mp4", 900_000);
+  await listed("ignored.png", 5_000).then(
+    () => ok(false, "ignored.png, gitignored, is listed"),
+    () => ok(true, "ignored.png, gitignored, is not listed in the Files panel"),
+  );
+  const ignored = await raw("preview/ignored.png");
+  ok(ignored.status === 404, `raw HEAD · preview/ignored.png · ${JSON.stringify(ignored)}`);
+  const versionTwo = await raw("preview/version.txt", { method: "GET" });
+  ok(
+    versionTwo.status === 200 && versionTwo.text === VERSION_TWO,
+    `raw GET · preview/version.txt · now version two, from a newer capture · ${JSON.stringify(versionTwo)}`,
+  );
+  const stillOne = await raw("preview/version.txt", { method: "GET", at: checkpoint });
+  ok(
+    stillOne.status === 200 && stillOne.text === VERSION_ONE,
+    `raw GET at the checkpoint · preview/version.txt · still the checkpoint's version one · ${JSON.stringify(stillOne)}`,
+  );
+  const before = (await api(`/api/worktrees/${worktreeId}`)).body?.checkpoints ?? [];
+  const earliest = before.find((item) => item.ordinal === 0);
+  if (earliest !== undefined) {
+    const absent = await raw("preview/version.txt", { at: earliest.id });
+    ok(
+      absent.status === 404,
+      `raw HEAD at checkpoint 0, before the fixtures · preview/version.txt · ${JSON.stringify(absent)}`,
+    );
+  }
+
+  note("observed · big.mp4 · the first open begins");
+  const big = await previewed(["preview", "big.mp4"], playable(9), reopenByRetry("big.mp4"), 12);
+  ok(
+    big.served().some((entry) => entry.status === 206 && entry.contentType === "video/mp4"),
+    `big.mp4 (the clip and 300 MiB) previews after ${big.attempt} open(s): ${JSON.stringify(big.served())}`,
+  );
+  await page.waitForTimeout(3000);
+  const seekFrom = assets.length;
+  note("window · big.mp4 · seeks · begins");
+  for (const at of [5, 9.2, 2])
+    await video.evaluate(
+      (element, seconds) =>
+        new Promise((resolve) => {
+          element.addEventListener("seeked", resolve, { once: true });
+          element.currentTime = seconds;
+        }),
+      at,
+    );
+  await page.waitForTimeout(2000);
+  note("window · big.mp4 · seeks · ends");
+  const seeks = assets.slice(seekFrom).filter((entry) => entry.path.endsWith("/big.mp4"));
+  ok(
+    seeks.length > 0 && seeks.every((entry) => entry.status === 206 && entry.range !== null),
+    `big.mp4 · the seeks' requests each answered 206: ${JSON.stringify(seeks)}`,
+  );
+  await shot("19b-preview-big-video");
+  const mintsFrom = rpc.mints.length;
+  note("window · big.mp4 · reopened after a reload · begins");
+  await reopenByReload("preview", "big.mp4")();
+  await until("big.mp4 previews again after a reload", playable(9), 60_000);
+  await page.waitForTimeout(1500);
+  note("window · big.mp4 · reopened after a reload · ends");
+  ok(
+    mintsOf("big.mp4", mintsFrom).some((mint) => mint.ok),
+    `big.mp4 · opened again after a reload, a new mint · ${JSON.stringify(mintsOf("big.mp4", mintsFrom))}`,
+  );
+
+  const hugeShown = await pasteAndRun(
+    "/tmp/huge-fixture.sh",
+    hugeScript(),
+    "huge-fixture-written",
+    300_000,
+  );
+  note(`observed · the huge fixture in the worktree: ${JSON.stringify(hugeShown.trim())}`);
+  await showFiles();
+  await reveal("preview", "big.mp4");
+  await listed("huge.mp4", 900_000);
+  const hugeFrom = rpc.mints.length;
+  await open("huge.mp4");
+  await unavailable.waitFor({ timeout: 60_000 });
+  await page.waitForTimeout(12_000);
+  await main.getByRole("button", { name: "Retry video" }).click();
+  await page.waitForTimeout(5000);
+  ok(
+    (await unavailable.count()) > 0 &&
+      mintsOf("huge.mp4", hugeFrom).length > 0 &&
+      mintsOf("huge.mp4", hugeFrom).every((mint) => mint.ok === false),
+    `huge.mp4 (the clip and 2 GiB) reads Video unavailable, and again after Retry video: ${JSON.stringify(mintsOf("huge.mp4", hugeFrom))}`,
+  );
+  await shot("19c-preview-huge-unavailable");
+  const huge = await raw("preview/huge.mp4");
+  ok(huge.status === 413, `raw HEAD · preview/huge.mp4 · ${JSON.stringify(huge)}`);
 
   if ((await rightPanel.getAttribute("aria-pressed")) === "true") await rightPanel.click();
   const pasted = fixtures.get("preview/pixel.png").toString("base64");
@@ -930,6 +1228,14 @@ const previewFixtures = () => {
       Buffer.from("/* outside the page's directory */\nbody { color: red; }\n"),
     ],
     ["preview/data.bin", Buffer.concat([Buffer.from([0, 1, 2, 0, 255]), randomBytes(4091)])],
+    ["preview/version.txt", Buffer.from(VERSION_ONE)],
+    [
+      "preview/crlf.svg",
+      Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">\r\n<rect width="96" height="96" fill="#15803d"/>\r\n</svg>\r\n',
+      ),
+    ],
+    ["preview/.gitattributes", Buffer.from("crlf.svg text eol=lf\n")],
   ]);
 };
 
@@ -945,9 +1251,113 @@ const fixtureScript = (fixtures) =>
     ]),
     "ln -sfn ../secret.css preview/site/escape.css",
     `sha256sum ${[...fixtures.keys()].join(" ")}`,
+    'echo "filtered $(git hash-object preview/crlf.svg)"',
+    'echo "unfiltered $(git hash-object --no-filters preview/crlf.svg)"',
     "echo preview-fixtures-written",
     "",
   ].join("\n");
+
+const FREE_BOX =
+  'const free = (n) => { const h = Buffer.alloc(16); h.writeUInt32BE(1, 0); h.write("free", 4); h.writeBigUInt64BE(BigInt(n + 16), 8); return h; };';
+
+/**
+ * big.mp4 in the worktree: the clip's chunks spread through a 300 MiB `mdat`, random bytes between
+ * them, each chunk offset moved to match. It plays as the clip does, and a seek lands far into the
+ * file, past what the browser has read. Runs in the workspace's Node, from its source text.
+ */
+function writeBig(fs, crypto, bytes) {
+  const clip = fs.readFileSync("preview/clip.mp4");
+  const top = {};
+  for (let at = 0; at < clip.length; at += clip.readUInt32BE(at))
+    top[clip.toString("latin1", at + 4, at + 8)] = { at, size: clip.readUInt32BE(at) };
+  const moov = Buffer.from(clip.subarray(top.moov.at, top.moov.at + top.moov.size));
+  const table = {};
+  const walk = (from, to) => {
+    for (let at = from; at < to; at += moov.readUInt32BE(at)) {
+      const type = moov.toString("latin1", at + 4, at + 8);
+      if (["moov", "trak", "mdia", "minf", "stbl"].includes(type))
+        walk(at + 8, at + moov.readUInt32BE(at));
+      if (["stsz", "stsc", "stco"].includes(type)) table[type] = at;
+    }
+  };
+  walk(8, moov.length);
+  const sizes = [];
+  const uniform = moov.readUInt32BE(table.stsz + 12);
+  for (let i = 0; i < moov.readUInt32BE(table.stsz + 16); i += 1)
+    sizes.push(uniform || moov.readUInt32BE(table.stsz + 20 + 4 * i));
+  const chunks = moov.readUInt32BE(table.stco + 12);
+  const runs = [];
+  for (let i = 0; i < moov.readUInt32BE(table.stsc + 12); i += 1)
+    runs.push([
+      moov.readUInt32BE(table.stsc + 16 + 12 * i),
+      moov.readUInt32BE(table.stsc + 20 + 12 * i),
+    ]);
+  const pad = Math.floor(bytes / chunks);
+  const out = fs.openSync("preview/big.mp4", "w");
+  let position = top.ftyp.size + moov.length + 16;
+  let sample = 0;
+  const body = [];
+  for (let chunk = 0; chunk < chunks; chunk += 1) {
+    const perChunk = runs.filter(([first]) => first <= chunk + 1).at(-1)[1];
+    const length = sizes.slice(sample, sample + perChunk).reduce((sum, size) => sum + size, 0);
+    sample += perChunk;
+    const from = moov.readUInt32BE(table.stco + 16 + 4 * chunk);
+    moov.writeUInt32BE(position, table.stco + 16 + 4 * chunk);
+    body.push([from, length]);
+    position += length + pad;
+  }
+  const mdat = Buffer.alloc(16);
+  mdat.writeUInt32BE(1, 0);
+  mdat.write("mdat", 4);
+  mdat.writeBigUInt64BE(BigInt(position - top.ftyp.size - moov.length), 8);
+  fs.writeSync(out, clip.subarray(0, top.ftyp.size));
+  fs.writeSync(out, moov);
+  fs.writeSync(out, mdat);
+  for (const [from, length] of body) {
+    fs.writeSync(out, clip.subarray(from, from + length));
+    for (let left = pad; left > 0; left -= 2 ** 20)
+      fs.writeSync(out, crypto.randomBytes(Math.min(left, 2 ** 20)));
+  }
+  fs.closeSync(out);
+}
+
+/**
+ * A script for Mend's shell, after the checkpoint: version.txt changed, a gitignored copy of
+ * pixel.png, and big.mp4 (the clip spread through 300 MiB of random bytes, still playable).
+ */
+const largeScript = () =>
+  [
+    "set -e",
+    `printf '${VERSION_TWO.replace("\n", "\\n")}' > preview/version.txt`,
+    "printf 'preview/ignored.png\\n' >> .gitignore",
+    "cp preview/pixel.png preview/ignored.png",
+    "cat > /tmp/write-big.js <<'JS'",
+    `(${writeBig})(require("fs"), require("crypto"), 300 * 2 ** 20);`,
+    "JS",
+    "node /tmp/write-big.js",
+    "ls -ls preview/big.mp4 preview/ignored.png",
+    "git check-ignore -v preview/ignored.png",
+    "echo large-fixtures-written",
+    "",
+  ].join("\n");
+
+/** huge.mp4: the clip and a 2 GiB sparse `free` box, over Mend's 2 GiB raw preview cap. */
+const hugeScript = () => {
+  const write = [
+    'const fs = require("fs");',
+    'const clip = fs.readFileSync("preview/clip.mp4");',
+    FREE_BOX,
+    'const f = fs.openSync("preview/huge.mp4", "w"); fs.writeSync(f, clip); fs.writeSync(f, free(2 ** 31));',
+    "fs.ftruncateSync(f, clip.length + 16 + 2 ** 31); fs.closeSync(f);",
+  ].join(" ");
+  return [
+    "set -e",
+    `node -e '${write}'`,
+    "ls -ls preview/huge.mp4",
+    "echo huge-fixture-written",
+    "",
+  ].join("\n");
+};
 
 /** Every terminal status a terminal call or the metadata stream carries, with its thread. */
 const terminalStatesOf = (value) => {
