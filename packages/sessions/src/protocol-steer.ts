@@ -200,7 +200,9 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
         turnId: turn.id,
         reason: sender === null ? "no-sender" : "not-sender",
         message:
-          sender === null ? "This turn has no recorded sender." : "Only this turn's sender may steer it.",
+          sender === null
+            ? "This turn has no recorded sender."
+            : "Only this turn's sender may steer it.",
       });
     const clientSteerId = input.clientSteerId?.toLowerCase() ?? null;
     /** A retry gets its first receipt; the same key for another turn or other words is refused. */

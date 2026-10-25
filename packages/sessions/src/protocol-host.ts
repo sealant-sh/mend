@@ -982,8 +982,7 @@ export const ProtocolHostLive: Layer.Layer<
         openSteerGate(
           steerGate,
           () =>
-            projectedOutputSequence !== null &&
-            projectedOutputSequence >= rehydrateInput.highWater,
+            projectedOutputSequence !== null && projectedOutputSequence >= rehydrateInput.highWater,
           () => hosted.get(input.process.id) === entry,
         ),
         scope,

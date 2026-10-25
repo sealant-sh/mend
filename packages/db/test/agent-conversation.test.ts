@@ -643,9 +643,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           delivery: { _tag: "NotSent", reason: "turn-ended" },
           queuedTurnId: null,
         });
-        expect((yield* repo.byTurnId(stranded.queuedTurnId ?? turn.id))?.status).toBe(
-          "cancelled",
-        );
+        expect((yield* repo.byTurnId(stranded.queuedTurnId ?? turn.id))?.status).toBe("cancelled");
         expect(yield* repo.withdrawTurnSteer(stranded.id)).toEqual(withdrawn);
         yield* repo.completeTurn("native", session, "completed", null, null);
         const taken = yield* repo.queueTurnSteer((yield* admit("taken")).id, process, "turn-ended");

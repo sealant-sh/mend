@@ -19649,7 +19649,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // as such a turn would be.
             const refusal = yield* steeringRefusal(session, input.sender);
             if (refusal !== null)
-              return yield* new SessionTurnRefusedError({ sessionId: session.id, message: refusal });
+              return yield* new SessionTurnRefusedError({
+                sessionId: session.id,
+                message: refusal,
+              });
             return yield* protocolHost.steerTurn(input);
           }).pipe(queueingTurn(turn.sessionId)),
         );
