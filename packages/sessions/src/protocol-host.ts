@@ -36,7 +36,19 @@ import {
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
-import { Clock, Deferred, Effect, Fiber, Layer, Option, Schema, Scope, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -1274,7 +1286,18 @@ export const ProtocolHostLive: Layer.Layer<
           input: input.input,
           clientSteerId: input.clientSteerId ?? null,
         });
-        return admitted.created ? yield* deliverSteer(admitted.steer, entry) : admitted.steer;
+        if (!admitted.created) return admitted.steer;
+        // A delivery that fails or dies may have written its words: never left Sending on a live
+        // server. An interrupt is a shutdown, which the next start's recovery settles.
+        return yield* deliverSteer(admitted.steer, entry).pipe(
+          Effect.onExit((exit) =>
+            Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
+              ? conversations
+                  .settleTurnSteer(admitted.steer.id, { _tag: "Unknown", reason: "failed" })
+                  .pipe(Effect.exit, Effect.asVoid)
+              : Effect.void,
+          ),
+        );
       });
       const fiber = yield* Effect.forkIn(
         entry === undefined ? attempt : entry.steerPermit.withPermit(attempt),

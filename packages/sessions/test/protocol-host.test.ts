@@ -1151,6 +1151,29 @@ describe("ProtocolHost", () => {
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
+  it.effect("settles a delivery that dies as Unknown, never leaving it Sending", () => {
+    const world = makeConversationWorld();
+    const ended = world.seed("ended");
+    world.turns.set(ended.id, new AgentTurn({ ...ended, status: "completed", endedAt: now() }));
+    world.admission.beforeSteerQueue = Effect.die("database went away");
+    const peer = makePipe([]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const attempt = yield* host
+        .steerTurn({ turnId: ended.id, sender: "user-1", input: "lost in delivery" })
+        .pipe(Effect.exit);
+      expect(attempt._tag).toBe("Failure");
+      const steers = (yield* world.steerStore.listConversationTurns(sessionId)).flatMap(
+        (row) => row.steers,
+      );
+      expect(steers.map((row) => [row.input, row.delivery])).toEqual([
+        ["lost in delivery", { _tag: "Unknown", reason: "failed" }],
+      ]);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
   it.effect("keeps an uncertain delivery and never queues or resends it", () => {
     const world = makeConversationWorld();
     const turn = world.seed("start");
