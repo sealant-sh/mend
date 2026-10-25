@@ -8,13 +8,16 @@ import { Sha, type WorktreeId } from "@mend/domain";
 import { Worktree } from "@mend/domain/workbench";
 import {
   BlobStore,
+  captureKeys,
   decodeManifest,
   GitOpsRunner,
+  packIdxKeyOf,
   RawBlobCache,
   RawBlobCacheLive,
   RawPreparationWait,
   Store,
   StoreConfig,
+  sha256Hex,
   WORKTREE_TREE_REF,
   worktreePathOf,
 } from "@mend/store";
@@ -36,8 +39,62 @@ import {
   newWorktreeId,
   packEditedTree,
   projectFor,
+  sh,
   worktreeRowFor,
 } from "./capture-world.ts";
+
+/** `tree` with `name`'s blob replaced by the bytes on disk, unfiltered: a capture's `raw_tree`. */
+const rawTreeOver = (work: string, tree: string, name: string) => {
+  const blob = sh(work, ["hash-object", "-w", "--no-filters", name]);
+  const index = path.join(work, ".git", "raw-tree-index");
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: work, env, encoding: "utf8" }).trim();
+  git("read-tree", tree);
+  git("update-index", "--cacheinfo", `100644,${blob},${name}`);
+  const raw = git("write-tree");
+  fs.rmSync(index, { force: true });
+  return raw;
+};
+
+/** A pack of `tree`'s objects beyond `baseSha`, through a commit of it. */
+const packCommit = (
+  work: string,
+  worktreeId: string,
+  epoch: number,
+  baseSha: string,
+  tree: string,
+) => {
+  const commit = sh(work, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@localhost",
+    "commit-tree",
+    tree,
+    "-p",
+    baseSha,
+    "-m",
+    "raw",
+  ]);
+  const out = fs.mkdtempSync(path.join(tmpdir(), "mend-raw-pack-"));
+  const name = sh(
+    work,
+    ["pack-objects", "--revs", path.join(out, "p")],
+    `${commit}\n^${baseSha}\n`,
+  );
+  const pack = new Uint8Array(fs.readFileSync(path.join(out, `p-${name}.pack`)));
+  const idx = new Uint8Array(fs.readFileSync(path.join(out, `p-${name}.idx`)));
+  fs.rmSync(out, { recursive: true, force: true });
+  const key = captureKeys(worktreeId, epoch).pack(sha256Hex(pack));
+  return {
+    key,
+    objects: new Map<string, Uint8Array>([
+      [key, pack],
+      [packIdxKeyOf(key), idx],
+    ]),
+  };
+};
 
 /**
  * Raw reads of a capture-mode worktree (the default store), over the production runner: a file of
@@ -403,6 +460,69 @@ describe("raw reads of captured worktrees", () => {
     expect(current.bytes).toEqual(clip.slice(0, 600));
     const pinned = await read({ kind: "capture", captureId: head }, "head.bin", undefined, failing);
     expect(pinned.bytes).toEqual(clip.slice(0, 600));
+  });
+
+  it("serves a captured file's bytes before its eol filter, as the raw tree holds them", async () => {
+    const crlf = "one\r\ntwo\r\n";
+    const raw = newWorktreeId();
+    await attach(raw);
+    const captureId = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const parent = world.memory.chains.get(raw)?.headCapture ?? null;
+        const { epoch } = yield* repo.claim(raw, "executor-1");
+        const filtered = packEditedTree(world.work, raw, epoch, world.baseSha, (dir) => {
+          fs.writeFileSync(path.join(dir, ".gitattributes"), "*.txt text\n");
+          fs.writeFileSync(path.join(dir, "notes.txt"), crlf);
+        });
+        const rawTree = rawTreeOver(world.work, filtered.tree, "notes.txt");
+        const unfiltered = packCommit(world.work, raw, epoch, world.baseSha, rawTree);
+        const parentKey = world.memory.captures.get(parent ?? "")?.manifestKey ?? "";
+        const base = yield* decodeManifest(parentKey, yield* (yield* BlobStore).get(parentKey));
+        const built = buildManifest({
+          worktreeId: raw,
+          n: 1,
+          parent,
+          epoch,
+          seq: 10,
+          kind: "auto",
+          git: {
+            packs: [...base.sections.git.packs.slice(0, 1), filtered.key, unfiltered.key],
+            refs: { [`refs/heads/mend/wt/${raw}`]: world.baseSha },
+            head: `refs/heads/mend/wt/${raw}`,
+            worktree_tree: filtered.tree,
+            raw_tree: rawTree,
+            fsck: "verified",
+          },
+        });
+        yield* uploadObjects(
+          new Map([...filtered.objects, ...unfiltered.objects, [built.key, built.bytes]]),
+        );
+        yield* repo.register({
+          worktreeId: raw,
+          id: built.id,
+          n: 1,
+          parent,
+          epoch,
+          seq: 10n,
+          kind: "auto",
+          manifestKey: built.key,
+          sections: built.manifest.sections,
+          gitFsck: "verified",
+        });
+        return built.id;
+      }),
+    );
+    const json = await run(
+      Effect.flatMap(WorktreeReads, (reads) =>
+        reads.readFile(world.project.id, raw, "notes.txt", null, 10_000),
+      ),
+    );
+    expect(Buffer.from(json.value?.bytes ?? []).toString()).toBe("one\ntwo\n");
+    for (const view of [{ kind: "current" }, { kind: "capture", captureId }] as const)
+      expect(Buffer.from((await read(view, "notes.txt", undefined, raw)).bytes).toString()).toBe(
+        crlf,
+      );
   });
 
   it("says nothing of a file's path in logs or traces", () => {

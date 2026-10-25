@@ -35,6 +35,7 @@ import {
   type RunnerCache,
   sha256Hex,
   Store,
+  rawTreeOf,
   worktreePathOf,
   worktreeTreeOf,
 } from "@mend/store";
@@ -563,8 +564,12 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
           const row = yield* repo.captureById(key.captureId);
           if (row === null) return yield* new RawReadError({ reason: "missing" });
           const ready = yield* restoreCapture(key.projectId, key.worktreeId, row, true);
-          const tree = yield* runner.resolve(ready.cache, ready.worktreeTree);
-          return { ...ready, worktreeTree: tree };
+          // The files' bytes as they stood, before clean, LFS and line-ending filters.
+          const rawTree = yield* runner.resolve(
+            ready.cache,
+            rawTreeOf(ready.manifest.sections.git) ?? ready.manifest.sections.git.head,
+          );
+          return { cache: ready.cache, rawTree };
         }).pipe(
           Effect.provideService(CaptureStoreRepo, repo),
           Effect.provideService(BlobStore, blobs),
@@ -668,7 +673,7 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
                 tree:
                   file.name.kind === "commit"
                     ? file.name.commit
-                    : yield* parseImmutableTree(ready.worktreeTree),
+                    : yield* parseImmutableTree(ready.rawTree),
               };
             }),
           );
