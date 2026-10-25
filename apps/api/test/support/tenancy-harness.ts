@@ -44,6 +44,7 @@ import {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
+import { ConversationTurn, turnSteerSender } from "@mend/domain/workbench";
 import {
   AgentRequest,
   AgentTurn,
@@ -853,6 +854,12 @@ export const createTenancyWorld = async (
       {
         byTurnId: (id) => Effect.succeed(turns.get(id) ?? null),
         byRequestId: (id) => Effect.succeed(requests.get(id) ?? null),
+        listConversationTurns: (sessionId) =>
+          Effect.sync(() =>
+            [...turns.values()]
+              .filter((turn) => turn.sessionId === sessionId)
+              .map((turn) => new ConversationTurn({ ...turn, steerSender: turnSteerSender(turn) })),
+          ),
         listTurns: (sessionId) =>
           Effect.sync(() => [...turns.values()].filter((turn) => turn.sessionId === sessionId)),
       },

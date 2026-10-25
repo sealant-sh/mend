@@ -1,7 +1,13 @@
 import { MendApi } from "@mend/api-contracts";
 import { pageRefOf } from "@mend/db";
 import { defaultSettings, defaultWorkspaceImage, MendSettings, WorkspaceImage } from "@mend/domain";
-import { AgentTurn, PageRef, Session, SessionProcess } from "@mend/domain/workbench";
+import {
+  ConversationTurn,
+  PageRef,
+  Session,
+  SessionProcess,
+  turnSteerSender,
+} from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { HttpApi } from "effect/http-api";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -502,6 +508,9 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("steer", "POST", "/turns", { input: "Continue" })("sessions.submitTurn"),
   session("steer", "POST", "/images", { contentsBase64: "iVBORw0KGgo=" })("sessions.pasteImage"),
   child("steer", "turn", "POST", "/api/turns", "/interrupt")("sessions.interruptTurn"),
+  child("steer", "turn", "POST", "/api/turns", "/steer", { input: "Keep the shape" })(
+    "sessions.steerTurn",
+  ),
   session("project-read", "GET", "/waiting")("sessions.conversationWait"),
   // docs/adr/0016, decision 14: anyone who sees the session reads it; the engine lets only the
   // change's owner replace the workspace.
@@ -856,6 +865,7 @@ const ADMITTED: Readonly<
   "sessions.submitTurn": { status: 500, calls: ["engine.submitTurn"] },
   "sessions.pasteImage": { status: 500, calls: ["engine.storePastedImage"] },
   "sessions.interruptTurn": { status: 500, calls: ["engine.interruptTurn"] },
+  "sessions.steerTurn": { status: 500, calls: ["engine.steerTurn"] },
   "sessions.conversationWait": { status: 500, calls: ["engine.conversationWait"] },
   "sessions.workspaceRetirement": {
     status: 200,
@@ -864,7 +874,7 @@ const ADMITTED: Readonly<
   },
   "sessions.replaceWorkspace": { status: 500, calls: ["engine.replaceWorkspaceNow"] },
   "sessions.endBackgroundWork": { status: 500, calls: ["engine.endBackgroundWork"] },
-  "sessions.listTurns": { status: 200, calls: ["conversation.listTurns"] },
+  "sessions.listTurns": { status: 200, calls: ["conversation.listConversationTurns"] },
   "sessions.listItems": { status: 500, calls: ["conversation.listItems"] },
   "pages.listForSession": { status: 200, calls: ["pages.listForSession"] },
   "pages.frame": { status: 200, calls: [] },
@@ -1104,7 +1114,9 @@ const admittedBody = (endpoint: string, target: Target): unknown => {
   if (endpoint === "sessions.listTurns") {
     const turn = api.world.turns.get(ids(target).turn);
     if (turn === undefined) throw new Error("missing target turn fixture");
-    return Schema.encodeSync(Schema.Array(AgentTurn))([turn]);
+    return Schema.encodeSync(Schema.Array(ConversationTurn))([
+      new ConversationTurn({ ...turn, steerSender: turnSteerSender(turn) }),
+    ]);
   }
   if (endpoint === "sessions.listProcesses") {
     const keys =
