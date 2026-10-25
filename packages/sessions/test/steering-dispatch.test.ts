@@ -537,7 +537,7 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
         processId: steered.processB.id,
         status: "running",
         billedUserId: BOB,
-        billedAccountName: "default",
+        billedAccountName: null,
       });
       // Alice's process never got Bob's words, and her own turn ran on hers.
       expect(JSON.stringify(alice.sent)).not.toContain("Bob's request");
@@ -1172,7 +1172,7 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
           processId: steered.processB.id,
           status: "running",
           billedUserId: BOB,
-          billedAccountName: "default",
+          billedAccountName: null,
         });
         // The turn behind it waited on the conversation too, and runs next, on Bob's login.
         const second = between.turn;
