@@ -1,18 +1,14 @@
-import {
-  notInWorkspace,
-  type InstallMemory,
-  type InstallResult,
-  type LocalExtensions,
-  type RemoteExtensions,
-} from "./editor-extensions.js";
+import { isPresent, type InstallResult, type Presence } from "./editor-extensions.js";
+import type { Wanted } from "./editor-picks.js";
 
 export type EditorSyncState =
   | { readonly kind: "inactive" }
   | { readonly kind: "checking" }
   | { readonly kind: "sharedHome" }
-  | { readonly kind: "noLocalList" }
+  /** Signed out, or no session this person can see: Mend cannot tell the window's project. */
+  | { readonly kind: "noProject" }
   | { readonly kind: "installing"; readonly current: number; readonly total: number }
-  | { readonly kind: "inSync"; readonly installed: number; readonly staysLocal: number }
+  | { readonly kind: "inSync"; readonly carried: number; readonly installed: number }
   | { readonly kind: "notSynced"; readonly reason: string };
 
 export const LOG_COMMAND = "mend.showWorkspaceEditorLog";
@@ -34,18 +30,27 @@ export const notInWorkspaceReason = (ids: ReadonlyArray<string>): string => {
 };
 
 export const settledState = (
-  local: LocalExtensions,
-  remote: RemoteExtensions,
-  memory: InstallMemory,
-  editor: string,
+  wanted: ReadonlyArray<Wanted>,
+  presence: Presence,
   results: ReadonlyArray<InstallResult>,
 ): EditorSyncState => {
-  const absent = notInWorkspace(local, remote, memory, editor);
-  const count = (kind: InstallResult["kind"]) =>
-    results.filter((result) => result.kind === kind).length;
+  const absent = wanted.filter((ref) => !isPresent(presence, ref.id)).map((ref) => ref.id);
   return absent.length === 0
-    ? { kind: "inSync", installed: count("installed"), staysLocal: count("staysLocal") }
+    ? {
+        kind: "inSync",
+        carried: wanted.length,
+        installed: results.filter((result) => result.kind === "installed").length,
+      }
     : { kind: "notSynced", reason: notInWorkspaceReason(absent) };
+};
+
+const inSyncTooltip = (carried: number, installed: number): string => {
+  if (carried === 0) {
+    return "The extensions you install here are carried to later sessions of this project.";
+  }
+  return installed === 0
+    ? `This workspace has the ${plural(carried, "extension")} this project carries.`
+    : `Mend installed ${plural(installed, "extension")} this project carries.`;
 };
 
 export const statusView = (state: EditorSyncState): StatusView | null => {
@@ -55,41 +60,32 @@ export const statusView = (state: EditorSyncState): StatusView | null => {
     case "checking":
       return {
         text: "checking extensions",
-        tooltip: "Mend is comparing your local extensions with this workspace.",
+        tooltip: "Mend is comparing this project's extensions with this workspace.",
         command: LOG_COMMAND,
       };
     case "sharedHome":
       return {
         text: "editor stays local · shared home",
-        tooltip:
-          "This workspace runs in a shared home, so Mend installs none of your extensions here.",
+        tooltip: "This workspace runs in a shared home, so Mend installs no extensions here.",
         command: LOG_COMMAND,
       };
-    case "noLocalList":
+    case "noProject":
       return {
-        text: "extensions not synced · no local list",
-        tooltip: "Open a local VS Code window once, so Mend can read your extensions.",
+        text: "extensions not carried · not signed in",
+        tooltip:
+          "Mend cannot tell this window's project. Sign in to Mend; the extensions you install here are carried once it can.",
         command: LOG_COMMAND,
       };
     case "installing":
       return {
         text: `installing extensions ${state.current}/${state.total}`,
-        tooltip: "Mend is installing your extensions in this workspace, one at a time.",
+        tooltip: "Mend is installing this project's extensions in this workspace, one at a time.",
         command: LOG_COMMAND,
       };
     case "inSync":
       return {
         text: "extensions in sync",
-        tooltip: [
-          state.installed === 0
-            ? "This workspace has your extensions."
-            : `Mend installed ${plural(state.installed, "extension")} in this workspace.`,
-          ...(state.staysLocal === 0
-            ? []
-            : [
-                `${plural(state.staysLocal, "extension")} ${state.staysLocal === 1 ? "runs" : "run"} in your local window only.`,
-              ]),
-        ].join(" "),
+        tooltip: inSyncTooltip(state.carried, state.installed),
         command: LOG_COMMAND,
       };
     case "notSynced":

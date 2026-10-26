@@ -13,7 +13,8 @@ const complete = {
   review: { pageStatus: 200 },
   stopped: { sessions: ["session-1", "session-2"] },
   remoteSsh: { window: {} },
-  remoteEditor: { uid: 40001, settled: { kind: "inSync" } },
+  remoteEditor: { uid: 40001, settled: { kind: "inSync" }, picked: { carried: ["a.one"] } },
+  carriedEditor: { uid: 40002, settled: { kind: "inSync" }, planned: ["a.one"] },
   sessionSeesEdit: { terminal: "edited in VS Code over Remote-SSH" },
   completed: { runId: "run-current", remoteSsh: true },
 };
@@ -45,6 +46,7 @@ test("requires each observed step independently of the completion marker", () =>
     "stopped",
     "remoteSsh",
     "remoteEditor",
+    "carriedEditor",
     "sessionSeesEdit",
   ]) {
     const partial = { ...complete };
@@ -73,7 +75,13 @@ test("rejects another run, a skipped required mode and swallowed editor errors",
 });
 
 test("explicitly disabled Remote-SSH does not require its optional steps", () => {
-  const { remoteSsh: _remote, remoteEditor: _editor, sessionSeesEdit: _edit, ...core } = complete;
+  const {
+    remoteSsh: _remote,
+    remoteEditor: _editor,
+    carriedEditor: _carried,
+    sessionSeesEdit: _edit,
+    ...core
+  } = complete;
   assert.doesNotThrow(() =>
     assertEditorEvidence(
       { ...core, completed: { runId: "run-current", remoteSsh: false } },

@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  editorIdentity,
   emptyInstallMemory,
-  planExtensions,
+  planReinstall,
   type InstallMemory,
-  type LocalExtensions,
+  type Listed,
+  type Presence,
+  type WorkspaceList,
 } from "./editor-extensions.js";
+import { extensionId, type ExtensionId, type Wanted } from "./editor-picks.js";
 import {
   notInWorkspaceReason,
   settledState,
@@ -14,23 +16,41 @@ import {
   type EditorSyncState,
 } from "./editor-status.js";
 
+const id = (raw: string): ExtensionId => {
+  const parsed = extensionId(raw);
+  if (parsed === null) throw new Error(`not an extension id: ${raw}`);
+  return parsed;
+};
+const wanted = (raw: string): Wanted => ({ id: id(raw), preRelease: false });
+const listOf = (...raws: ReadonlyArray<string>): WorkspaceList =>
+  new Map(
+    raws.map((raw): [ExtensionId, Listed] => [
+      id(raw),
+      { id: id(raw), source: "gallery", preRelease: false },
+    ]),
+  );
+const listing = (...raws: ReadonlyArray<string>): Presence => ({
+  list: listOf(...raws),
+  inUiHost: new Set(),
+});
+
 describe("statusView", () => {
   it.each<[EditorSyncState, string | null, string | null]>([
     [{ kind: "inactive" }, null, null],
     [{ kind: "checking" }, "checking extensions", "mend.showWorkspaceEditorLog"],
     [{ kind: "sharedHome" }, "editor stays local · shared home", "mend.showWorkspaceEditorLog"],
     [
-      { kind: "noLocalList" },
-      "extensions not synced · no local list",
+      { kind: "noProject" },
+      "extensions not carried · not signed in",
       "mend.showWorkspaceEditorLog",
     ],
     [
-      { kind: "installing", current: 12, total: 41 },
-      "installing extensions 12/41",
+      { kind: "installing", current: 1, total: 1 },
+      "installing extensions 1/1",
       "mend.showWorkspaceEditorLog",
     ],
     [
-      { kind: "inSync", installed: 0, staysLocal: 0 },
+      { kind: "inSync", carried: 0, installed: 0 },
       "extensions in sync",
       "mend.showWorkspaceEditorLog",
     ],
@@ -45,13 +65,17 @@ describe("statusView", () => {
     expect(view?.command ?? null).toBe(command);
   });
 
-  it("says what a pass did and why it did not sync", () => {
-    expect(statusView({ kind: "inSync", installed: 1, staysLocal: 2 })?.tooltip).toBe(
-      "Mend installed 1 extension in this workspace. 2 extensions run in your local window only.",
+  it("says what a pass did, what the project carries and why it did not sync", () => {
+    expect(statusView({ kind: "inSync", carried: 3, installed: 1 })?.tooltip).toBe(
+      "Mend installed 1 extension this project carries.",
     );
-    expect(statusView({ kind: "inSync", installed: 0, staysLocal: 0 })?.tooltip).toBe(
-      "This workspace has your extensions.",
+    expect(statusView({ kind: "inSync", carried: 1, installed: 0 })?.tooltip).toBe(
+      "This workspace has the 1 extension this project carries.",
     );
+    expect(statusView({ kind: "inSync", carried: 0, installed: 0 })?.tooltip).toBe(
+      "The extensions you install here are carried to later sessions of this project.",
+    );
+    expect(statusView({ kind: "noProject" })?.tooltip).toContain("Sign in to Mend");
     expect(statusView({ kind: "notSynced", reason: "2 extensions failed." })?.tooltip).toBe(
       "2 extensions failed. Click to try again; the log names each extension.",
     );
@@ -70,47 +94,35 @@ describe("notInWorkspaceReason", () => {
 });
 
 describe("settledState", () => {
-  const EDITOR = editorIdentity("Visual Studio Code", "1.139.1", "d41d8cd9");
   const NOW = 1_792_270_215_287;
-  const list: LocalExtensions = {
-    version: 1,
-    capturedAt: NOW,
-    extensions: [
-      { id: "a.one", version: "1.0.0", gallery: null },
-      {
-        id: "c.three",
-        version: "1.0.0",
-        gallery: { uuid: "u3", extensionsFolder: "/home/me/.vscode/extensions" },
-      },
-    ],
-    fromFile: [],
-  };
-  const remote = new Map([["a.one", null]]);
+
+  it("is in sync when the workspace lists every id the project carries", () => {
+    expect(
+      settledState([wanted("a.one"), wanted("b.two")], listing("a.one", "b.two", "c.three"), [
+        { id: id("b.two"), kind: "installed" },
+      ]),
+    ).toEqual({ kind: "inSync", carried: 2, installed: 1 });
+    expect(settledState([], listing(), [])).toEqual({ kind: "inSync", carried: 0, installed: 0 });
+  });
+
+  it("is in sync when the window runs a pick in its UI host instead", () => {
+    expect(
+      settledState([wanted("a.one")], { list: listOf(), inUiHost: new Set([id("a.one")]) }, []),
+    ).toEqual({ kind: "inSync", carried: 1, installed: 0 });
+  });
 
   it("a gallery miss remembered within the day plans nothing and settles not synced, naming it", () => {
     const memory: InstallMemory = { ...emptyInstallMemory, missing: { "c.three": NOW - 1_000 } };
-    expect(planExtensions(list, remote, memory, EDITOR, NOW)).toEqual({
+    const project = [wanted("a.one"), wanted("c.three")];
+    expect(planReinstall(project, listing("a.one"), new Set(), memory, NOW)).toEqual({
       install: [],
       recentlyMissing: ["c.three"],
     });
-    const state = settledState(list, remote, memory, EDITOR, []);
+    const state = settledState(project, listing("a.one"), []);
     expect(state).toEqual({
       kind: "notSynced",
       reason: "1 extension is not in this workspace: c.three.",
     });
     expect(statusView(state)?.text).toBe("extensions not synced · Sync");
-  });
-
-  it("counts what a pass installed and what stays local once nothing is absent", () => {
-    const memory: InstallMemory = {
-      ...emptyInstallMemory,
-      staysLocal: { [`${EDITOR}@c.three@1.0.0`]: NOW },
-    };
-    expect(
-      settledState(list, remote, memory, EDITOR, [
-        { id: "a.one", kind: "installed" },
-        { id: "c.three", kind: "staysLocal" },
-      ]),
-    ).toEqual({ kind: "inSync", installed: 1, staysLocal: 1 });
   });
 });

@@ -145,3 +145,59 @@ describe("a workspace window that starts as it gains focus", () => {
     window.dispose();
   });
 });
+
+describe("a workspace window that could not find its session at activation", () => {
+  it("finds it after a sign-in, says so once, and does not look again once found", async () => {
+    let signedIn = false;
+    let listings = 0;
+    const offline = {
+      get: async () => ({ url: "http://mend.test", token: null }),
+      refused: async () => undefined,
+      held: async () => ({
+        connection: { url: "http://mend.test", token: null },
+        current: () => true,
+      }),
+    };
+    const live = session("live", "2026-10-19T10:00:00.000Z");
+    const client = Object.assign(new MendClient(offline), {
+      listProjects: async () => {
+        listings += 1;
+        if (!signedIn) throw new Error("not signed in");
+        return [project];
+      },
+      projectDetail: async () => ({ project, sessions: [live] }),
+      viewerId: async () => "dana",
+      sessionDetail: async (): Promise<SessionDetail> => ({
+        session: live,
+        processes: [terminal(live.id)],
+        currentAgent: null,
+        changeId: null,
+        launchAdmission: null,
+      }),
+    });
+    const window = new WorkspaceWindow(
+      client,
+      { kind: "workspace", workspaceId: WORKSPACE },
+      { take: async () => null },
+      () => undefined,
+    );
+    let located = 0;
+    window.onDidLocate(() => {
+      located += 1;
+    });
+    window.start();
+    await vi.waitFor(() => expect(listings).toBe(1));
+    await wait(10);
+    expect(window.session()).toBeNull();
+
+    signedIn = true;
+    await window.locateAgain();
+    expect(window.session()?.session.id).toBe("live");
+    expect(located).toBe(1);
+
+    await window.locateAgain();
+    expect(listings).toBe(2);
+    expect(located).toBe(1);
+    window.dispose();
+  });
+});

@@ -12,9 +12,11 @@
  * /api/tty, opens review, and (MEND_E2E_REMOTE_SSH=1, the default) opens the workspace with the
  * real Remote-SSH extension: the owner's own story, in that window. It edits a file, runs a command
  * in the workspace's integrated terminal, forwards a port the workspace serves on its loopback and
- * opens it from this machine; Mend installs the seeded local extension that runs in a workspace
- * there and leaves the seeded theme local, with Settings Sync on and no question asked;
- * then Mend's terminal into the session reads the edited file and the change review lists it.
+ * opens it from this machine. It installs an extension in that workspace the way the Extensions
+ * panel does, and Mend carries it: a second session of the project, in a fresh worktree, opens in
+ * its own Remote-SSH window, where Mend installs that extension, with Settings Sync on and no
+ * question asked. A theme installed only locally reaches neither workspace. Then Mend's terminal
+ * into the first session reads the edited file and the change review lists it.
  * Before the editor starts, a session in a fresh worktree must run: it builds the image, so the
  * editor's workbench session boots with an owner map and Remote-SSH lands as the person.
  *
@@ -30,7 +32,7 @@
  *   MEND_E2E_REMOTE_SSH 0 skips the real Remote-SSH window (step 8)
  *   MEND_E2E_KEEP       1 leaves the server and scratch directory up for inspection
  *   MEND_E2E_EDITOR     off runs with mend.workspaces.bringMyEditor off (the before/after timing)
- *   MEND_E2E_EVIDENCE   a directory to copy result.json and the remote window's report into
+ *   MEND_E2E_EVIDENCE   a directory to copy result.json and the remote windows' reports into
  *
  * The world (the daemon, the scratch HOME, the editor's install and display) is
  * scripts/vscode-remote-world.mjs, shared with the verify skill's drive-vscode.mjs. Nothing touches
@@ -75,7 +77,9 @@ const remoteSsh = process.env.MEND_E2E_REMOTE_SSH !== "0";
 const keep = process.env.MEND_E2E_KEEP === "1";
 const editorOff = process.env.MEND_E2E_EDITOR === "off";
 const evidenceDir = process.env.MEND_E2E_EVIDENCE;
-const seedWorkspace = "editorconfig.editorconfig";
+// A trusted publisher (product.json `trustedExtensionPublishers`): a test host refuses the publisher
+// trust question a person answers once for any other.
+const picked = "github.vscode-pull-request-github";
 const seedUi = "dracula-theme.theme-dracula";
 const id = runId("st-vscode");
 
@@ -171,35 +175,17 @@ const main = async () => {
     `Remote-SSH installed: ${await installExtension(code, { userData, extensions, id: "ms-vscode-remote.remote-ssh", env: vscodeEnv })}`,
   );
 
-  for (const [seed, wantsMain] of [
-    [seedWorkspace, true],
-    [seedUi, false],
-  ]) {
-    await installExtension(code, { userData, extensions, id: seed, env: vscodeEnv });
-    const folder = fs
-      .readdirSync(extensions)
-      .find((name) => name.toLowerCase().startsWith(`${seed}-`));
-    const manifest = folder
-      ? JSON.parse(fs.readFileSync(path.join(extensions, folder, "package.json"), "utf8"))
-      : null;
-    if (manifest === null || (typeof manifest.main === "string") !== wantsMain) {
-      throw new Error(
-        `${seed} is no longer the ${wantsMain ? "workspace" : "declarative"} fixture`,
-      );
-    }
-    log(`seeded ${folder}`);
+  await installExtension(code, { userData, extensions, id: seedUi, env: vscodeEnv });
+  const seeded = fs
+    .readdirSync(extensions)
+    .find((name) => name.toLowerCase().startsWith(`${seedUi}-`));
+  const manifest = seeded
+    ? JSON.parse(fs.readFileSync(path.join(extensions, seeded, "package.json"), "utf8"))
+    : null;
+  if (manifest === null || typeof manifest.main === "string") {
+    throw new Error(`${seedUi} is no longer the declarative fixture`);
   }
-  const listed = JSON.parse(fs.readFileSync(path.join(extensions, "extensions.json"), "utf8"));
-  const seededEntry = listed.find(
-    (entry) => String(entry?.identifier?.id).toLowerCase() === seedWorkspace,
-  );
-  if (
-    seededEntry?.metadata?.source !== "gallery" ||
-    typeof seededEntry.identifier.uuid !== "string"
-  ) {
-    throw new Error(`${seedWorkspace} is not recorded as installed from the gallery`);
-  }
-  log(`${seedWorkspace} is from the gallery (${seededEntry.identifier.uuid})`);
+  log(`seeded ${seeded} locally; no workspace may get it`);
 
   const resultFile = path.join(scratch, "result.json");
   const testEnv = {
@@ -211,9 +197,8 @@ const main = async () => {
     MEND_E2E_RUN_ID: id,
     MEND_E2E_REMOTE_SSH: remoteSsh ? "1" : "0",
     MEND_E2E_EDITOR: editorOff ? "off" : "on",
-    MEND_E2E_SEED_WORKSPACE: seedWorkspace,
+    MEND_E2E_PICK: picked,
     MEND_E2E_SEED_UI: seedUi,
-    MEND_E2E_SEED_UUID: seededEntry.identifier.uuid,
     MEND_E2E_PRIOR_SESSION: freshWorktreeSession,
   };
   log(
@@ -288,7 +273,7 @@ try {
 } finally {
   if (evidenceDir) {
     fs.mkdirSync(evidenceDir, { recursive: true });
-    for (const name of ["result.json", "result.json.remote.json"]) {
+    for (const name of ["result.json", "result.json.remote.json", "result.json.second.json"]) {
       const from = path.join(scratch, name);
       if (fs.existsSync(from)) fs.copyFileSync(from, path.join(evidenceDir, name));
     }

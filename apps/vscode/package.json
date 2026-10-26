@@ -792,17 +792,15 @@
           "type": "string",
           "enum": [
             "off",
-            "extensions",
-            "extensionsAndSettings"
+            "picked"
           ],
           "enumDescriptions": [
             "Leave Mend workspaces as VS Code makes them.",
-            "Install your local extensions that run in a workspace into each Mend workspace you open.",
-            "Extensions, and your remote machine settings. Machine settings are not in this build yet, so this behaves like extensions."
+            "Carry the extensions you install in a project's Mend workspace window to that project's later sessions."
           ],
-          "default": "extensionsAndSettings",
+          "default": "picked",
           "scope": "application",
-          "description": "Bring your editor into Mend workspaces: when a Mend workspace window opens in your own home, Mend installs the extensions from your local VS Code that run in a workspace, in the background. Machine settings are not in this build yet. Shared and root homes get nothing."
+          "description": "Bring your editor into Mend workspaces: the extensions you install from the Extensions panel in a project's Mend workspace window are installed again, in the background, in that project's later sessions. Uninstalling one there stops it. Your settings already apply through VS Code. Shared and root homes get nothing."
         }
       }
     },

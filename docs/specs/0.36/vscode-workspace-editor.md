@@ -1,121 +1,201 @@
-# Bring my editor into Mend workspaces: extensions
+# Bring my editor into Mend workspaces: the extensions you install
 
-- **Release:** 0.36
-- **Status:** in review. PR 1 (extensions) is built and verified; PR 2 (machine settings) is
-  designed, not built.
-- **PRs:** mend#1078 (PR 1). Linear: SLNT-78.
-- **Decision records:** none. Decisions D1 to D6 are below, approved 2026-10-17; Yiannis chose D5
-  option A.
-- **Written:** 2026-10-18, against mend main `e30572a21`. The feature touches only the VS Code
-  extension and its acceptance harness. The measured facts come from the DinD spike: five Remote-SSH
-  runs on VS Code 1.139.1, with evidence in `~/.cache/mend-evidence/vscode-settings-sync-spike/`.
+- **Release:** 0.36.x, a patch of the VS Code extension.
+- **Status:** PR 1 (mend#1156, no Settings Sync question) is merged. PR 2 (picked extensions per
+  project) is in review.
+- **PRs:** mend#1078 (the first design, superseded here), mend#1156, and PR 2. Linear: SLNT-78,
+  SLNT-328; the server-side list is SLNT-329 (0.37).
+- **Decisions:** Yiannis, 2026-10-26, on SLNT-328 (below). D5 from 2026-10-17 still holds.
+- **Written:** 2026-10-26, against mend main `c03fb393e`. This rewrite replaces the 2026-10-18
+  design, which installed every local extension and planned to copy machine settings. That design is
+  in git history at mend#1078.
 
 ## Why it exists
 
-A Mend workspace window is a fresh Remote-SSH home every time. Nothing in `~/.vscode-server`
-survives an executor, and one executor serves one worktree. The person's workspace-kind extensions
-and remote machine settings must reach that home on every open. That has to happen without a prompt
-and without slowing the window.
+A Mend workspace window gets a fresh Remote-SSH home in every session. Nothing in `~/.vscode-server`
+reaches a new worktree. An extension a person installs inside one session of a project is gone in
+the next one.
 
-The facts that fix the shape:
+The first design answered this by installing every local workspace-kind extension on every open.
+With Settings Sync on, each install asked "Would you like to install and synchronize '<X>' extension
+across your devices?". Nick, a 0.36 user, got about 30 of these dialogs on 2026-10-25, and said:
+"don't automate installing extensions please, just sync what I choose to install." He agreed with
+Yiannis's summary of the ask:
 
-- **Where Mend runs.** Mend runs in the LOCAL UI host, even in a remote window. Every remote read
-  and write goes through `workspace.fs` on `vscode-remote://<authority>/…`, or through the install
-  command.
-- **What a remote window can see.** It cannot list the local workspace-kind extensions:
-  `extensions.all` there shows only UI-host extensions (spike 2). The local list is therefore
-  captured in local windows and handed over through `globalState`, the way `claimPendingTakeover`
-  already hands over intents.
-- **What a remote window can read.** It reads `/proc/self/status` and `/proc/self/environ` (uid,
-  HOME, `VSCODE_AGENT_FOLDER`) and the remote `extensions.json`, at 76 to 216 ms per read (spike 1
-  and 4).
-- **How installs behave.** `workbench.extensions.installExtension <id>` installs a workspace-kind id
-  on the remote in 1.2 to 2.3 s. It routes a UI-kind id locally as a silent no-op costing 0.2 to 0.7
-  s. It does not retry a transient `Failed to fetch` (spike 3). Only the remote `extensions.json`
-  says where an install landed.
-- **Machine settings.** A Machine `settings.json` written through `workspace.fs` takes effect in
-  about 300 ms. `onDidChangeConfiguration` fires 0.35 to 0.7 s after the file changes, and sometimes
-  names unrelated keys (spike 4).
-- **D5.** Act only in a Mend alias window whose remote server runs as a person uid (40001 to 49999)
-  with HOME `/home/m*`. A shared or root home syncs nothing and shows
-  `editor stays local · shared home`.
+1. It asked about every single extension, where all he wanted was for it to do nothing and let him
+   install them himself from the panel.
+2. It should remember which extensions he installed in any given session, and carry those to all
+   future sessions.
 
 ## Decisions
 
-- **D1 Source of truth.** Extensions come from the person's local VS Code: every local window
-  records the installed, enabled, workspace-kind extensions into `globalState`. Machine settings
-  (PR 2) are one copy per person in `globalState` with `setKeysForSync`, captured from Mend
-  workspace windows. No server change.
-- **D2 Install.** By id, through `workbench.extensions.installExtension`, from the editor's own
-  gallery, at the latest version. Ids that gallery lacks are skipped and named. No VSIX copy in
-  0.36.
-- **D3 Excluded.** Secret-looking keys and token-shaped values are dropped before a setting is
-  stored (PR 2). The rule is one table with unit tests.
-- **D4 When.** Every activation of a Mend workspace window. In sync costs a few remote reads; an
-  executor's first open installs in the background behind a status item. The setting
-  `mend.workspaces.bringMyEditor` takes `off | extensions | extensionsAndSettings` and is on by
-  default.
-- **D5 Isolation, option A.** Act only in a Mend alias window whose remote server runs as a person
-  uid (40001 to 49999) with HOME `/home/m*`, and keeps its folder inside that HOME. Root and shared
-  homes are refused, which turns the feature off for Kubernetes, nix, the first launch on an image
-  and the root fallback. Yiannis chose this.
-- **D6 Organization switch.** None in 0.36.
+Yiannis decided these on 2026-10-26. Build exactly this, nothing more.
 
-## What it does
+- **Pick.** What a person installs from the Extensions panel in a Mend workspace window joins that
+  project's set, including VS Code's own **Install in SSH: …** on a local extension. Uninstalling it
+  there removes it. There is no checklist and no Mend picker.
+- **Where.** The set lives in the Mend extension's `globalState` on the person's machine, keyed by
+  project id, and listed in `setKeysForSync`, so Settings Sync carries it to their other machines.
+  On each open of a workspace window of the project, Mend reinstalls the set silently in the
+  background with `donotSync`. A server-side list that follows the person without Settings Sync is
+  SLNT-329, for 0.37. A per-project `~/.vscode-server` would need the SDK, which has no per-project
+  storage for capture workspaces; `PLATFORM-FEEDBACK.md` records it.
+- **Settings.** Mend copies no settings. VS Code applies the person's local User settings in a
+  remote window already, except settings of scope `machine` and `machine-overridable`
+  (`src/vs/workbench/services/configuration/common/configuration.ts`, lines 30 to 32, VS Code
+  `30ca50fe7`). Those are mostly local paths, such as a Mac interpreter path, that would point at
+  nothing in a Linux workspace. The machine settings half of the first design is dropped.
+- **Setting.** `mend.workspaces.bringMyEditor` takes `off | picked`, default `picked`. `off` is off.
+  Every other value reads as `picked`: unset, and the old `extensions` and `extensionsAndSettings`.
+  Nothing installs every local extension any more.
+- **D5, kept.** Mend acts only in a Mend alias window whose remote server runs as a person uid
+  (40001 to 49999) with HOME `/home/m*`, and keeps its folder inside that HOME. A shared or root
+  home does nothing and shows `editor stays local · shared home`.
 
-`activate()` in `extension.ts` gains one line beside `claimPendingTakeover(context)`, and the API
-object gains one field:
+## What the person sees
 
-```ts
-const editor = startWorkspaceEditor(context); // owns its disposables, item, channel, commands
-claimPendingTakeover(context);
-return { projects: …, workspaceEditor: () => editor.settled() };
-```
-
-`startWorkspaceEditor` decides everything else from the window it finds itself in:
-
-- **A local window** captures the extension list now and on `extensions.onDidChange`.
-- **A Mend workspace window** checks the remote, plans and installs in the background. In PR 2 it
-  also restores and captures machine settings.
-- **Any other window** does nothing and shows no item.
-
-The acceptance suite, in the remote window, awaits `api.workspaceEditor()` before it writes
-`remote.json`. The palette command `mend.bringMyEditor` re-runs the pass. Clicking the status item
-opens the output channel **Mend: workspace editor**.
+- **Session 1.** The status item reads `extensions in sync`. The person installs GitLens from the
+  Extensions panel. With Settings Sync on, VS Code asks its own question once, because this is the
+  person's own install. The log then says
+  `eamodio.gitlens: carried to later sessions of this project`.
+- **Session 2, same project.** The item reads `installing extensions 1/1`, then
+  `extensions in sync`. Mend asks nothing. The window is usable throughout.
+- **Uninstall.** Uninstalling GitLens in any session logs `eamodio.gitlens: no longer carried`.
+  Later sessions do not get it.
+- **A file install.** An extension installed from a VSIX logs
+  `<id>: installed from a file, not carried`.
+- **No project.** While Mend cannot tell the window's project (signed out, or no session this person
+  can see), the item reads `extensions not carried · not signed in`. Picks seen meanwhile wait in
+  memory and are written once the window finds its project.
 
 ## How it works
 
+Mend runs in the local UI host, even in a remote window. It reads the workspace through
+`vscode.workspace.fs` on `vscode-remote://<authority>/…`. The only file it reads for this feature is
+the remote server's `<agentFolder>/extensions/extensions.json`, which lists every extension
+installed in the workspace with its source (`gallery`, `vsix` or `resource`).
+
 ### Data
 
-There are three `globalState` records. Each has a `version: 1` field and is parsed on read, and a
-malformed record reads as absent. Each record has one writer role.
+| Store                                      | Content                                                                       | Scope                       | Synced                |
+| ------------------------------------------ | ----------------------------------------------------------------------------- | --------------------------- | --------------------- |
+| `globalState["mend.editor.picks"]`         | per project id, per extension id: `picked {at, preRelease}` or `removed {at}` | every window, every machine | yes, `setKeysForSync` |
+| `globalState["mend.editor.installMemory"]` | `missing[id]`: when the gallery last had no such extension                    | this machine                | no                    |
+| the window's memory                        | the observer: the `previous` read, each restore's state, the window's journal | this window only            | no                    |
 
-| Key                                  | Content                                                                                                                                                     | Written by             | Synced                |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- | --------------------- |
-| `mend.editor.localExtensions`        | `{id, version}` per local extension that could go remote                                                                                                    | local windows only     | no                    |
-| `mend.editor.installMemory`          | `staysLocal["<editor>@<id>@<version>"]` (editor = `appName` + version + a digest of the person's `remote.extensionKind`), `missing["id"]` with a time stamp | Mend workspace windows | no                    |
-| `mend.editor.machineSettings` (PR 2) | filtered settings map                                                                                                                                       | Mend workspace windows | yes, `setKeysForSync` |
+- **The book.** `mend.editor.picks` is one key, because Settings Sync applies only the keys a
+  machine lists, and a machine that never opened a project must still receive it. Per (project, id)
+  the entry with the later `at` wins, and `picked` wins a tie. A removal stays as a tombstone, so a
+  stale replay cannot bring it back. Merging is commutative and idempotent.
+- **Old keys.** `mend.editor.localExtensions` is no longer read. Mend clears it once. An install
+  memory from the first design keeps only its `missing` entries.
+- **Branded ids.** `ExtensionId` and `ProjectId` are parsed once, at `extensions.json` and at the
+  window's located session. A book that does not parse (a newer version from another machine) is
+  `unreadable`, and Mend never writes over it.
 
-- **Capture filter.** Capture drops built-ins (the extension path is under `env.appRoot`),
-  `NEVER_INSTALL` (Remote-SSH's family and Mend itself), declarative extensions (no `main`) and
-  extensions that declare `ui` first. It does not filter by the runtime `extensionKind`, because in
-  a local window that is `ui` for every extension.
-- **Product overrides.** VS Code's product.json overrides are not reimplemented. The install memory
-  learns them instead: an id that installed "successfully" but never reached the remote
-  `extensions.json` is recorded as `staysLocal` for that version and skipped afterwards.
-- **Remote state is never cached.** It is read every pass, so there is no second copy to drift.
-- **`RemoteProcess`** is `{uids, home, agentFolder}`, parsed from the two `/proc` files.
-  `agentFolder` is `VSCODE_AGENT_FOLDER` as the server declares it, or absent. D5 decides whether it
-  is usable (see Implementation reconciliation, fix round 1). The adapter discards every other
-  environment variable and never logs `/proc` contents or setting values.
-- **`EditorHome`** is the D5 result. Only the `person` variant carries the paths Mend may write, so
-  code that holds a `shared` home has nothing to write to.
-- **`MendWorkspace` and `PersonHome`** are classes with a private constructor _and_ an ES private
-  field (`#brand`), which makes them nominal. TypeScript then rejects a structurally matching object
-  literal. Only `MendWorkspace.parse` and `editorHomeOf` build them, so the alias rule can't be
-  skipped, and no `as` cast is needed.
-- **`EditorSyncState`** is a union with one variant per thing the person can see. `statusView` maps
-  it to text, tooltip and command, so the redesign restyles one pure function.
+### The one rule that makes a pick
+
+`observe(observer, event)` in `editor-observer.ts` is a pure reducer, and the only place that makes
+a pick or a removal. Its state is the window's last successful read (`previous`), the state of each
+restore Mend asked for, and the window's journal. Its events are a read (a list, a missing file, or
+a read that did not parse), a restore that started, a restore that settled, and the setting turned
+off. Each step returns the new state and the book entries the event observed. Its table tests are in
+`editor-observer.test.ts`.
+
+A read compares the new list with `previous`:
+
+- An id that appears, from the gallery, is **picked**.
+- An id listed both times, from the gallery, whose pre-release choice changed, is **picked** with
+  the new choice. A version change alone is no change.
+- An id in the previous read and absent now is **removed**, whoever installed it.
+- An id that appears from a file is `fromFile`: logged, never carried.
+- Remote-SSH's own extensions and Mend itself are never picks. An id in VS Code's
+  `remote.defaultExtensionsIfInstalledLocally` (by default Copilot, Copilot Chat and GitHub Pull
+  Requests) can be a pick. VS Code installs those in a remote only when they are installed locally,
+  which a remote window cannot see, and a person who installs GitHub Pull Requests in a workspace
+  wants it carried. When VS Code installs one by itself after Mend's first read, it becomes a pick
+  too, which costs nothing: VS Code installs it in every later session anyway.
+
+The first read of an enabled period is a baseline and yields nothing. So the extensions an older
+Mend installed in bulk are never adopted, and a person who upgrades starts with an empty set. Only
+what they install from now on is carried.
+
+A read that does not parse is no observation at all, so it can never read as "everything was
+uninstalled". A missing `extensions.json` at the baseline means an empty list, because a fresh home
+has none until its first install. A missing file after that is no observation.
+
+Each restore has a state, `inFlight` and then `settled`:
+
+- Mend marks an id `inFlight` as it sends VS Code's install command, and keeps it there until that
+  command settles. The 120 s report deadline ends only Mend's wait. VS Code's install runs on, so a
+  restore that arrives after the deadline is still Mend's.
+- While an id is marked, its appearance is not a pick and its disappearance is not a removal. VS
+  Code lists an extension while its dependencies still install, and takes it out again when one
+  fails. So a restore that appears and is rolled back leaves the book as it was.
+- When the command reports success and the read lists the id, the id is absorbed into `previous` and
+  the mark ends. A failed command, or a success the list does not show, keeps its mark for 3 s, the
+  propagation wait, and the first read after that drops it.
+- While any restore is marked, an id that appears and whose entry in the book or the journal is
+  `removed` is not a pick. Pack members and dependencies arrive with a restore, and they must not
+  undo a removal. Every other appearance stays a pick, so a person's own install is never lost.
+
+After the mark ends, the id is the person's like any other. If they uninstall it and install it
+again by hand in the same window, that install is a pick again.
+
+### Observing the panel
+
+Every trigger runs one observation: read, parse, step the observer, then `flush`. At most one read
+is in flight and at most one waits.
+
+- `vscode.extensions.onDidChange` fires in the UI host when an extension is installed or uninstalled
+  in the remote. The workbench sends each extension delta to every host, and the local host's
+  registry fires on every delta
+  (`src/vs/workbench/services/extensions/common/abstractExtensionService.ts`, lines 182 to 208 and
+  345 to 362; `src/vs/workbench/api/common/extHostExtensionService.ts`, lines 1050 to 1060;
+  `src/vs/workbench/services/extensions/common/extensionDescriptionRegistry.ts`, lines 93 to 97).
+- The uninstall of an extension that has already activated sends no delta
+  (`abstractExtensionService.ts`, lines 289 to 292). A `FileSystemWatcher` on
+  `RelativePattern(<agentFolder>/extensions, "extensions.json")` covers it. VS Code supports a
+  non-recursive watch outside the workspace on a remote URI
+  (`src/vs/workbench/api/common/extHostFileSystemEventService.ts`, lines 134 to 231). Delivery over
+  Remote-SSH is checked by the live run.
+- Window focus regained, and a read every 10 s while the window is focused, back both up.
+- Every pass observes before it plans and after it installs.
+
+`flush` writes `withEntries(book, project, journal)` unless `holds(book, project, journal)` says the
+book already reflects the journal. It runs after every observation, whether or not the list changed,
+so a book that Settings Sync or another window replaces later is written again while the window is
+open. A write that fails is tried again on the next observation. Two seconds after a write it checks
+again, and writes again if another window's whole-memento write lost it.
+
+Turning the setting `off` drops the observer's baseline and its restores, and keeps its journal.
+Turning it back on starts a fresh baseline, so nothing installed or uninstalled while it was off is
+recorded.
+
+### The pass
+
+1. Read the mode. `off` stops here and shows no item. Turning the setting off during a pass stops
+   the pass at its next await, and it shows nothing.
+2. Run `MendWorkspace.ofWindow`. A non-Mend window stops here, with no remote read.
+3. Read `/proc/self/status` and `/proc/self/environ`, then apply D5. A shared home stops here.
+4. Observe, which sets the baseline on the first pass.
+5. Take the project id from the window's located session (`WorkspaceWindow.session()`, or wait up to
+   30 s for `onDidLocate`). No project means no plan and no write. A window that found no session
+   looks again when the person signs in or the connection changes (`WorkspaceWindow.locateAgain()`),
+   which fires `onDidLocate` and starts a pass.
+6. Observe again, because the person may have installed something while Mend located the session.
+7. Plan against that read: the project's wanted ids that are not present, skipping an id the gallery
+   did not have within 24 h and an id whose earlier restore is still in flight. An id counts as
+   present when the workspace lists it, or when `vscode.extensions.getExtension(id)` finds it in
+   this window's UI host. VS Code's install command would only update that local copy, so Mend never
+   asks for it.
+8. Install in the background, one at a time, with `runInstalls`: `donotSync`, retries on transient
+   failures after 1 s and 4 s, and a pre-release pick installed with `installPreReleaseVersion`.
+9. Observe again, polling up to 3 s for ids that reported success. Then settle `in sync`, or
+   `not synced` with each missing id named in the log. An id that reported success but is not listed
+   is retried on the next open. Nothing is learned from it.
+
+`activate` never awaits the pass.
 
 ### The D5 predicate
 
@@ -132,392 +212,155 @@ There is one more guard, outside the predicate. If Mend itself is running in the
 (`context.extension.extensionKind === Workspace`, because someone forced it there), the feature
 stays off. In that case its local reads would be the remote's.
 
-### The pass, in a Mend workspace window
-
-1. Parse the mode from `mend.workspaces.bringMyEditor` (application scope, so a repository can't
-   turn it on). `off` stops here and shows no item.
-2. Run `MendWorkspace.parse(windowRemoteAuthority())`. A non-Mend window stops here, with zero
-   remote reads.
-3. Read the two `/proc` files, then run `editorHomeOf`. A `shared` result shows
-   `editor stays local · shared home` and stops.
-4. Read `extensions.json`, then `planExtensions(local, remote, memory, now)`:
-   - The plan installs local ids that are not on the remote, not `staysLocal` for that version, and
-     not `missing` within 24 h.
-   - A missing local record shows `no local list` ("open a local VS Code window once").
-   - An in-sync open ends here, after three remote reads and no writes.
-5. Install in the background, one at a time, with `runInstalls(plan, {install, sleep, signal})`:
-   - The status item shows `installing extensions 3/12`.
-   - Only transient failures are retried, after 1 s and then 4 s. A failure is classified by
-     `classifyInstallFailure`, whose message matching sits in one function.
-   - Other failures are named, and the remaining ids continue.
-   - The run stops between ids when the setting turns off or the window closes.
-6. After the run, read `extensions.json` again, polling for up to 3 s while ids that reported
-   success are still absent. Then call `learn(memory, outcomes, remoteAfter, uiHost, now)`. That
-   ends in `in sync` or in `not synced`, with each failure named in the channel. `learn` records
-   `staysLocal` only with positive evidence:
-   - the id is absent from the remote `extensions.json`; **and**
-   - `vscode.extensions.getExtension(id)` is present in this window's UI host. The spike showed that
-     the UI host of a remote window lists exactly the UI-routed extensions.
-
-   An id that is absent but not in the UI host is `unresolved`. Nothing is cached for it, and it is
-   retried on the next open.
-
-`activate` never awaits the pass. The spike measured no change to window-ready or to the first
-terminal.
-
-### Machine settings (PR 2)
-
-- **Restore only when the file is absent.** Every fresh executor has no Machine `settings.json`. The
-  adapter writes the stored map to a sibling temporary file and renames it with `overwrite: false`,
-  so the file is either whole or absent. An existing file is never replaced, and an unreadable one
-  (invalid JSONC) is reported and left as it is.
-- **PR 1 says what it lacks.** In PR 1, `extensionsAndSettings` behaves like `extensions`. The
-  setting's description and the settled report state `machine settings: not in this build`.
-- **Capture this window's deltas.** The baseline is the file as it stands after restore. On any
-  `onDidChangeConfiguration` the adapter waits 1.5 s, re-reads the file, computes
-  `deltaOf(baseline, now)`, folds it into the stored record with `applyDelta`, and moves the
-  baseline. Event key names are ignored, because the spike saw unrelated keys.
-- **Why deltas.** No window writes a snapshot, so two open workspaces never erase each other's keys.
-  The restore's own write produces an empty delta.
-- **The secret filter.** `SECRET_RULES` is one table, and every row carries the examples it must
-  drop and the examples it must keep. The tests iterate the table. A secret-looking key, or a
-  token-shaped nested string, turns the key into a removal, so an earlier clean value can't linger.
-  Dropped key names, never values, go to the channel. The filter also runs when a synced record is
-  read. Claude Opus reviews this table.
-- **Parsing.** `jsonc-parser` parses the file, because VS Code writes comments and trailing commas.
-
-### Interface depth
-
-- **Public surface.** One function, `startWorkspaceEditor(context)`, which returns
-  `{settled, dispose}`. Plus one setting, two commands (`mend.bringMyEditor` and
-  `mend.showWorkspaceEditorLog`) and one API field.
-- **Hidden behind it.** Authority parsing, `/proc` parsing, D5, the capture filter, the plan,
-  retries, learning, JSONC, the secret filter, the status item and the channel.
-- **Pure modules.** They take plain data and are unit-tested without a `vscode` mock.
-- **Call chain.** `extension.ts` → `workspace-editor.ts` → one pure module.
-
-### Module map
-
-| File under `apps/vscode/src` | Kind                                                                                                                           | PR                     |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------- |
-| `editor-home.ts`             | pure: `MendWorkspace`, `parseRemoteProcess`, `editorHomeOf` (D5)                                                               | 1                      |
-| `editor-extensions.ts`       | pure: records and parsers, capture filter, `NEVER_INSTALL`, `planExtensions`, `classifyInstallFailure`, `runInstalls`, `learn` | 1                      |
-| `editor-status.ts`           | pure: `EditorSyncState`, `statusView`                                                                                          | 1 (PR 2 adds variants) |
-| `workspace-editor.ts`        | the only file that imports `vscode`: capture, remote reads, the pass, item, channel, commands                                  | 1, extended in 2       |
-| `editor-settings.ts`         | pure: `SECRET_RULES`, `parseMachineSettings`, `deltaOf`, `applyDelta`, `restoreText`                                           | 2                      |
-
-Changes outside these files:
-
-- `extension.ts`: the one line in `activate`, `workspaceEditor` on `MendExtensionApi`, and
-  `windowRemoteAuthority` exported for reuse.
-- `package.json`: the setting (enum `off | extensions | extensionsAndSettings`, default
-  `extensionsAndSettings`, application scope) and the two commands. PR 2 adds `jsonc-parser`.
-
 ## Idempotence and races
 
-- **The window closes mid-install.** Nothing records progress. The next pass reads the remote list
-  and installs only what is still missing. `learn` runs only after a completed loop, so a cut-off
-  run teaches nothing false.
-- **Two Mend windows at once.** Different workspaces have different homes, so their plans are
-  independent. The same workspace twice means two installs of one id, and VS Code treats the second
-  as a no-op.
-- **Concurrent `globalState` writers.** VS Code sends an extension's whole memento on each update,
-  so two windows writing at the same instant can lose one update. The worst cases:
-  - for `installMemory`, one extra no-op install later;
-  - for `localExtensions`, nothing, because the next local activation recaptures it;
-  - for `machineSettings`, one human-paced delta.
-
-  This is accepted (see Tradeoffs). For machine settings, PR 2 adds one cheap repair: about 2 s
-  after a capture write, the window checks that the stored record still holds its delta, and writes
-  it again if not.
-
-- **The local list changes.** The next pass replans. Plans only add, so Mend never uninstalls on the
-  remote.
-- **Capture races restore.** They can't interleave in one window, because capture is armed only
-  after restore sets the baseline. Across windows, restore never overwrites and capture never
-  snapshots.
+- **A window closes mid-install.** Installs change no book entry, because the ids are picks already.
+  The next open plans again from the book.
+- **A window closes within a second of a panel install.** The observation never runs, so that pick
+  is lost. The extension stays installed in that session, and the person installs it again from the
+  panel in a later one. This is accepted, in exchange for no shutdown I/O.
+- **Two windows of one project.** They are two workspaces with their own reads and journals, and
+  each merges into the book. If window A uninstalls X while window B restores X, B's copy is not a
+  pick, because B is restoring it. That holds when B's install outlasts the 120 s report deadline,
+  because B keeps X marked until VS Code's command settles. A removal never uninstalls anything in
+  another window.
+- **A restore that brings company.** A pack or a dependency that VS Code installs with a restore is
+  not a pick when the book says it was removed. One the book has never seen is a pick.
+- **The setting turned off and on.** Each enabled period has its own generation. A read or a restore
+  that began before the setting went off is dropped when it lands. An observation queued before it
+  went off does nothing when its turn comes.
+- **Concurrent `globalState` writes.** VS Code sends an extension's whole memento on each update
+  (`src/vs/workbench/api/common/extHostMemento.ts`, lines 35 to 47), so two windows writing in the
+  same instant can lose one write. The window that lost it writes again on its 2 s check. A window
+  that closes inside those 2 s, right after such a race, loses that write. This is accepted. Its
+  cost is one reinstall from the panel.
+- **Two machines.** Settings Sync carries the book. A pick made on two machines within one sync
+  interval can lose one side, unless a window that saw it is still open to write it again. Entry
+  order uses each machine's clock, so a large clock skew can order two changes wrongly.
 
 ## How to verify
 
 **Unit tests** (vitest, pure modules):
 
-- **`editor-home`:**
-  - authorities: local, foreign host, Mend alias, a suffix after the alias;
-  - `/proc` fixtures from the spike: uid 0 with `/root`, and 40001 with `/home/mm7l6bfej`;
-  - environments with the agent folder absent and present, and one that escapes HOME;
-  - uid edges at 40000, 40001, 49999 and 50000, unequal uid fields, and HOME `/home/other`.
-- **`editor-extensions`:**
-  - the capture filter table (built-in, declarative, declared `ui` first, `NEVER_INSTALL`);
-  - the plan skips `staysLocal` for that version and a fresh `missing`, retries a `missing` older
-    than 24 h, and gives the same plan for the same inputs;
-  - `classifyInstallFailure` on the spike's `Failed to fetch` text;
-  - `runInstalls` with a fake install and sleep: the retry sequence, giving up, abort between ids,
-    and progress counts;
-  - `learn` turns success-but-absent into `staysLocal` only with UI-host evidence, and otherwise
-    into `unresolved`.
-- **`editor-status`:** one `statusView` case per variant, including the two approved strings.
-- **`editor-settings` (PR 2):**
-  - every `SECRET_RULES` row's fixtures;
-  - restore only when the file is absent;
-  - `deltaOf` and `applyDelta`, including a removal, a secret turning into a removal, and two
-    windows converging.
+- `editor-picks`: parse and round-trip; the later entry wins per id, and `picked` wins a tie;
+  merging is commutative, associative and idempotent; an old pick loses to a newer tombstone; two
+  windows' journals merged in either order give the same book; `holds` is true exactly when a merge
+  changes nothing; `wantedBy` lists only that project's picks.
+- `editor-observer`: a table of reads (a gallery pick, a file install, a removal, Remote-SSH and
+  Mend, VS Code's default remote extensions, a missing or unparsable file, a version change, a
+  switch to and from pre-release); a table of restores (absorbed then uninstalled and installed
+  again, appeared and rolled back, failed while still listed, timed out and arriving after a removal
+  elsewhere, reported but never listed, already listed, a pack member whose entry is `removed`, an
+  id this window removed, a removed id installed by hand with no restore running); and the setting
+  turned off (fresh baseline, journal kept, stale reads and restores dropped).
+- `editor-extensions`: `parseEditorMode`; `parseWorkspaceList` on torn JSON, `[]`, and each source;
+  `planReinstall`, with an id in the UI host and an id in flight; `parseInstallMemory` on a
+  first-design record; `runInstalls` and `classifyInstallFailure` as before.
+- `editor-status`: `settledState`, an id in the UI host included, and each `statusView` variant,
+  `noProject` included.
+- `workspace-window`: a window that activated signed out finds its session after a sign-in, and does
+  not look again once found.
 
-**Harness** (`scripts/vscode-remote-acceptance.mjs` and `apps/vscode/test/e2e/suite.ts`):
+**Live** (`.claude/skills/verify/` drive-vscode, and `scripts/vscode-remote-acceptance.mjs`):
 
-- **Person layout.** Apply the spike's patch: the fresh-worktree session runs before the editor
-  suite, and step 3 ignores stopped sessions. The step 8 window then lands as `m<8>`.
-- **Seeding.** Next to the Remote-SSH install, seed a workspace-kind id with a `main`
-  (`editorconfig.editorconfig`) and a declarative UI id (a theme).
-- **New step `remoteEditor`,** written before `remote.json`. It records `settled` state and
-  `syncMs`. Then `sshIn cat <agentFolder>/extensions/extensions.json` must list the workspace id,
-  and must not list the theme, `ms-vscode-remote.*` or `sealant-sh.mend`.
-- **Warm pass.** A second `mend.bringMyEditor` must install nothing.
-- **Timing.** `openStarted` before the open and `enteredAt` in the remote window give `firstOpenMs`.
-  `terminal.ms` must stay under `FIRST_TERMINAL_BUDGET_MS`. Window-ready and first terminal are
-  compared between main and the branch, with the same server version.
-- **Evidence gate.** `remoteEditor` is added to `assertEditorEvidence` and its CI fixture.
-- **PR 2.** The remote window writes a plain machine key and a `ghp_…`-valued key to its Machine
-  file. A second person-layout window, on a fresh worktree, must hold the plain key and lack the
-  secret key.
+- Session 1 of a project: install an extension from the Extensions panel by its button, and set one
+  of its settings in the local User settings.
+- Session 2 of the same project, in a new worktree: the extension is installed with no dialog
+  (`recipes/vscode-editor-dialogs.mjs` counts 0), and the setting reads the local value there.
+- Uninstall it in session 2: session 3 does not get it.
+- A local extension never installed in a workspace never reaches one.
 
 ## Synthesis decision
 
-There were four runners: Opus, Fable, Sonnet and Codex (GPT-6.1 Sol xhigh). The cross-judge was
-Codex (see the appended verdict).
+Three runners designed PR 2: Claude Opus, Codex GPT-6.1 Sol and Codex GPT-6-Astra. The cross-judge
+was Codex GPT-6.1 Sol, which scored Sol's candidate highest and recommended it as the base.
 
-- **Base: Opus.** It had the clearest module map, the private-constructor `MendWorkspace`, an
-  `EditorHome` whose shared variant carries no paths, `statusView`, install memory with a 24 h
-  "missing" window, and the delta capture.
-- **From Fable:**
-  - `VSCODE_AGENT_FOLDER` instead of guessing the server path;
-  - restore only when the file is absent, with a temporary file plus rename;
-  - learning routing from a re-read instead of reimplementing VS Code's product.json kind table
-    (Opus's `routeOf` precedence chain was dropped);
-  - `settled()` as the suite's hook.
-- **From Sonnet:**
-  - `runInstalls` with the install function and sleep injected, so the retry policy is unit-tested;
-  - `SECRET_RULES` rows that carry their own drop and keep examples;
-  - the activation that returns before installs.
-- **From Codex:**
-  - all four uid fields must be equal;
-  - an exact HOME pattern;
-  - an agent folder confined to HOME;
-  - never logging the environment or setting values;
-  - application scope for the setting;
-  - capture must not filter by runtime `extensionKind`;
-  - the guard that keeps the feature off when Mend runs in the remote host;
-  - the whole-memento race named as a risk.
-- **Rejected from Codex:** the immutable capture-batch outbox with logical clocks, and moving
-  takeover storage. They answer the narrow whole-memento race at the price of a new storage layer
-  and a takeover rewrite, outside this feature.
-
-### Cross-judge verdict and how it was used
-
-The Codex judge scored the candidates Codex 22, Sonnet 20, Opus 19 and Fable 19 out of 30, and
-recommended Codex as the base. I kept the Opus-based synthesis. The judge itself scored Codex 2/5 on
-interface depth. Its immutable outbox, logical clocks, compaction and takeover migration roughly
-double PR 1 to answer a millisecond-scale race whose worst case here is one extra no-op install, or
-one lost machine-settings delta.
-
-These judge findings were valid and are folded in above:
-
-- learning `staysLocal` needs positive UI-host evidence and a propagation wait;
-- private constructors need a private field to be nominal;
-- the remote create must be `overwrite: false`;
-- PR 1 must report `machine settings: not in this build`;
-- the whole-memento race must be named, not denied.
-
-The judge also found a factual error, in Sonnet's design: reopening a window against a live executor
-keeps its files. This design re-reads remote state on every pass, so it is not affected.
+- **Base: Opus.** It has the smallest surface: one synced last-writer-wins book, a pure
+  `changesBetween` that alone decides picks and removals, a first read that only sets the baseline,
+  and the project id taken from the session the window already locates. It deletes the whole local
+  capture.
+- **Rejected from Sol and Astra:** per-window recovery journals on disk, under `globalStorageUri`,
+  written with fsync and rename and never deleted, with observed-remove sets of unique tokens. They
+  answer a race of milliseconds, a whole-memento write lost by a window that then closes within 2 s.
+  Its worst case is one reinstall from the panel. The first design rejected the same outbox for the
+  same reason.
+- **Rejected from Sol:** adopting gallery extensions already listed at the first read. A live
+  executor reopened after the upgrade would adopt every bulk install of the first design.
+- **Grafted from Sol and Astra:** the restoring mark clears once the id appears, so a later
+  uninstall and manual reinstall in the same window still counts. The judge found this gap in Opus.
+- **Grafted from Astra:** a missing `extensions.json` at the first read is an empty list, and later
+  it is no observation. A 10 s read while the window is focused backs up the watcher.
+- **Settled by the judge, from source:** the UI host's `extensions.onDidChange` does fire for remote
+  installs, as Opus and Astra said and Sol denied.
 
 ## Known limits
 
-- **Machine settings are not in this build.** PR 1 ships extensions only. With
-  `extensionsAndSettings` (the default) it behaves like `extensions`, and the setting's description,
-  the settled report and the channel say `machine settings: not in this build`. PR 2 adds them.
-- **Files are not copied.** An extension installed from a VSIX or another file is not synced; the
-  channel names it `installed from a file, not synced` (D2).
-- **Installs are sequential.** 41 ids take roughly 50 to 95 s, in the background.
-
-Tradeoffs accepted:
-
-- We accept learning routing (one 0.2 to 0.7 s no-op per UI-routed id, per version, per machine) in
-  exchange for not copying VS Code's private routing table.
-- We accept additive-only plans, so an extension removed locally stays on the remote until the
-  executor ends. In exchange, no race can ever uninstall anything.
-- We accept that a concurrent `globalState` write can lose one update (an extra no-op, or one
-  machine-settings delta) in exchange for no new storage layer.
-- We accept "restore only when absent", so a Machine file that already exists wins for that
-  executor, in exchange for never overwriting what the person sees.
-- We accept a `no local list` state for someone who never opened a local window.
-- We accept that D5 turns the feature off for shared, root, Kubernetes, nix and first-launch homes.
-  Yiannis chose this.
+- An upgraded person starts with an empty set.
+- A pick made less than about a second before the window closes is lost.
+- Extension-pack members and dependencies that VS Code installs with a pick become picks too.
+- The set follows the person to their other machines only through Settings Sync (SLNT-329 moves it
+  to the server).
+- Install by id at the latest version or the latest pre-release, from the editor's own gallery. A
+  pinned version is not kept.
+- A named VS Code profile keeps its remote extensions in another `extensions.json`, under the
+  profile's folder. Mend reads only the default profile's file, so for a person on a named profile
+  nothing is carried in this build. VS Code has no API that names the current profile.
+- On a machine that never trusted an extension's publisher, VS Code asks its publisher trust
+  question once when Mend restores that extension. Trusted publishers are stored per machine and
+  Settings Sync does not carry them, while the book is synced. The install command cannot skip the
+  question.
 
 ## Alternatives considered
 
-- **`remote.defaultExtensionsIfInstalledLocally` written by Mend.** VS Code would install on
-  connect, but with no progress, no retry, no skip names, and the id list exposed as a setting the
-  person edits. It also acts on every remote, not just Mend's. That interface is shallower and
-  leakier.
-- **Reading the local extensions folder from the remote window.** That folder can't show enablement,
-  so disabled extensions would install. It would also add a second capture path.
-- **Snapshot capture of settings.** Two open workspaces would erase each other's keys, and a stale
-  window would bring back deleted keys.
-- **Syncing in `openNamedWorkspace` before the window opens.** Opens from the recent list, a reload,
-  or the harness bypass that path, and the remote is not connected yet.
+- **Mark local extensions in a Mend picker.** No new UI was wanted; VS Code's **Install in SSH: …**
+  already covers a local extension.
+- **Keep the set on the Mend server (2B).** It follows the person without Settings Sync, but needs a
+  server release and a migration. SLNT-329, 0.37.
+- **A persistent per-project `~/.vscode-server`.** The SDK has no per-project storage for capture
+  workspaces, and two live sessions of a project would share one directory.
+- **Copy machine-scoped settings.** They are mostly local paths. VS Code carries every other scope.
+- **`isMachineScoped` to tell Mend's installs from the person's.** With Settings Sync off, a
+  person's install is not machine-scoped either, so the flag cannot tell them apart.
 
-## Open questions and risks
+## History
 
-- Does `installExtension` resolve before the remote `extensions.json` is updated? If so, `learn`
-  could mark a slow install `staysLocal`. Mitigation: re-read once after 1 s before learning.
-- Installs are sequential: 41 ids take roughly 50 to 95 s, in the background. Running two at a time
-  is a later tuning step, measured first.
-- What text does the gallery send when an id is not found? Until the harness records it, an unknown
-  failure is treated as `failed`, so it is retried on the next open.
+### Fix round 1
 
-## Implementation reconciliation (PR 1)
+An adversarial review of PR 2 (Claude Opus, Codex GPT-6.1 Sol, Codex GPT-6-Astra) found these holes.
+Each is fixed in PR 2.
 
-PR 1 follows this design. These points differ from it or settle what it left open:
+1. A restore whose report timed out lost its mark while VS Code's install still ran, so its late
+   arrival became a pick that beat a newer removal. Now the mark holds until VS Code's install
+   command settles.
+2. A restore that appeared and was rolled back, because a dependency failed, read as an uninstall
+   and wrote a tombstone. Now a marked id's appearance and disappearance are neither a pick nor a
+   removal, and only the command's settlement ends the mark.
+3. Packs and dependencies that arrived with a restore became picks and undid a removal. Now, while a
+   restore is marked, an appearing id whose entry is `removed` is not a pick.
+4. The book was checked only after a list change, so a book replaced later stayed wrong while the
+   window was open. Now every observation checks it.
+5. Signing in never located the window's session again, so a window opened signed out stayed at
+   `not signed in`. Now a window with no session looks again when the sign-in or the connection
+   changes.
+6. The plan used the read taken before the locate wait of up to 30 s. Now the pass reads again after
+   locating and plans against that read.
+7. A pick the window also runs in its UI host never reached the workspace, and Mend reported
+   `not synced` on every open. Now such an id counts as present. Every restore passes `donotSync`.
+8. VS Code's own default remote extensions became picks, depending on timing. The first fix never
+   picked an id listed in `remote.defaultExtensionsIfInstalledLocally` or
+   `remote.SSH.defaultExtensions`. The acceptance run then showed that this never carries GitHub
+   Pull Requests, which that setting lists by default and which Nick installed in a workspace and
+   lost. The exclusion is gone: such an id is a pick like any other.
+9. A switch between release and pre-release was never recorded. Now it is a pick with the new
+   choice.
+10. Changes made while the setting was off were recorded when it was turned back on, and a pass
+    running when it was turned off could still show an item. Now `off` drops the baseline and the
+    restores, the pass stops, and nothing shows.
+11. These rules lived in closure state with no tests. Now they are one pure reducer,
+    `editor-observer.ts`, with table tests, and `workspace-editor.ts` only does the reads, the
+    installs and the writes.
 
-- **Where the D5 rule sits.** The rule is in `PersonHome.of`, because only the class itself can call
-  its private constructor. `editorHomeOf` is the exported entry, and it only delegates. The rule is
-  still one function with one test table.
-- **The nominal field.** The ES private field that makes `MendWorkspace` and `PersonHome` nominal
-  holds real data (`#authority`, `#agentFolder`) behind a getter. An unused `#brand` is refused by
-  the linter. A `@ts-expect-error` test fails the typecheck if an object literal ever passes for
-  either class.
-- **The alias.** `@mend/workspace-ssh` exports `isWorkspaceSshAlias`. It accepts only the shape that
-  `parseWorkspaceSshTarget` writes, `mend-ws-<label>-<24 hex>`.
-- **A stopped run is a type.** `runInstalls` returns `{kind: "completed" | "stopped", outcomes}`.
-  `learn` takes only the completed variant, so a cut-off run cannot teach anything.
-- **`windowRemoteAuthority`** moved from `extension.ts` into `workspace-editor.ts`, which exports
-  it. `extension.ts` imports it from there, because exporting it from `extension.ts` would have made
-  an import cycle.
-- **The status item's click.** `statusView` sends `extensions not synced · Sync` to
-  `mend.bringMyEditor`, so the click does what the text says. Every other state opens the log. The
-  texts carry no codicon.
-- **`mend.bringMyEditor` returns the pass's report.** The report holds `state`, `planned`,
-  `results`, `syncMs` and `machineSettings`. The acceptance suite's warm pass reads it from the
-  command. `startWorkspaceEditor` adds itself to `context.subscriptions`.
-- **Not-found text.** `classifyInstallFailure` treats two strings from VS Code 1.139.1 as `missing`:
-  `Extension '{0}' not found.` and
-  `The extension '{0}' cannot be installed because it was not found.` Both come from the bundle's
-  `nls.messages.json`. `Manifest is not found` stays `failed`.
-- **Timeouts.** A remote read gives up after 20 s and an install after 120 s. A timed-out install is
-  `failed`, not transient, so one hung id costs one wait, not three.
-- **Harness.**
-  - The suite reads the remote list at `~/.vscode-server/extensions/extensions.json`, because an SSH
-    shell has no `VSCODE_AGENT_FOLDER`. The spike saw both paths equal.
-  - The uid comes from `id -u` over SSH, not from the extension.
-  - The seeded theme is `dracula-theme.theme-dracula`. The harness fails if either fixture changes
-    shape: the theme gains a `main`, or `editorconfig.editorconfig` loses it.
-  - The fresh-worktree session is the named step `runFreshWorktreeSession`. The suite's step 3
-    excludes exactly that session (`MEND_E2E_PRIOR_SESSION`), not every stopped one.
-  - `MEND_E2E_EDITOR=off` runs with the setting off. `MEND_E2E_EVIDENCE` copies the result files out
-    before cleanup.
-
-### Measured (PR 1)
-
-Four person-layout runs on 0.36.0-next.792 and VS Code 1.139.1, with the load average near 2,
-alternating the setting: on, off, on, off. Window-ready is `firstOpenMs`, from `vscode.openFolder`
-to the remote window's suite entry.
-
-| Run  | Setting | Window-ready | First terminal | Settled                                   |
-| ---- | ------- | ------------ | -------------- | ----------------------------------------- |
-| on1  | on      | 17 225 ms    | 694 ms         | installed 1 in 2 487 ms; warm pass 128 ms |
-| off1 | off     | 17 488 ms    | 665 ms         | inactive                                  |
-| on2  | on      | 17 249 ms    | 622 ms         | installed 1 in 2 458 ms; warm pass 118 ms |
-| off2 | off     | 19 009 ms    | 604 ms         | inactive                                  |
-
-The two sides overlap on both measures, so two runs per side show no measurable difference.
-Window-ready cannot move with the feature: the pass starts at `onStartupFinished`, after the window
-is up. The first terminal runs while editorconfig installs, which is the case that could cost.
-
-### Fix round 1 (PR 1)
-
-The review of PR 1 changed these points:
-
-- **A server folder outside HOME.** When `VSCODE_AGENT_FOLDER` is set and is not inside HOME, the
-  home is not a person home, and Mend installs nothing. Before, Mend read `<home>/.vscode-server`
-  instead, while installs went to the folder the server really uses. The check is in
-  `PersonHome.of`, so a `PersonHome` cannot exist without it. The window shows the shared-home
-  state, because the server keeps its extensions outside the person's home.
-- **A forged `PersonHome`.** An object made with `Object.create(PersonHome.prototype)` throws on
-  `extensionsJson`, because it lacks the private field. A test holds this, and the same for
-  `MendWorkspace.authority`.
-- **What a window must be.** `MendWorkspace.ofWindow` needs `env.remoteName` to be `ssh-remote` and
-  every `vscode-remote` folder to share one authority. A multi-root window across two hosts is not a
-  Mend window. `windowRemoteAuthority`, which takeover uses, is unchanged.
-- **The `Uid:` line.** It must have exactly four numeric fields. A non-numeric field refuses the
-  line instead of being dropped.
-- **An unknown setting value** reads as `off`. An unset setting still gets the manifest default.
-- **Install errors are never logged or returned as text.** An error message can name a path under
-  the person's home. The channel and the report name the extension id and a class: `transient`,
-  `missing`, `refused by policy`, `timed out`, `failed` or `different publisher`. A timeout is the
-  `TimedOut` error class, not a message. `refused by policy` matches VS Code 1.139.1's allowed-list,
-  "not allowed", "reported to be problematic" and "contact your administrator" texts. A file read
-  logs its `FileSystemError` code or `timed out`.
-- **Abort before every attempt.** `runInstalls` checks the signal before each install call,
-  including a retry after its wait. An abort during a retry's wait ends the run as `stopped` with no
-  second call.
-- **The settled state is a comparison.** After installs, or when the plan is empty, the pass
-  compares the whole local list with the remote list (`notInWorkspace`). An id the plan skipped
-  because the gallery had no such extension within a day stays `not synced`. Before, an empty plan
-  settled `in sync`. The tooltip names up to five ids, and the channel names each with its reason.
-  `planExtensions` returns `{install, recentlyMissing}` so the pass can say why an id was skipped.
-- **Gallery provenance.** A local window reads `extensions.json` in the folder of each captured
-  extension (the folder of its `extensionPath`, so a development copy of Mend does not matter).
-  - An entry with `metadata.source` `gallery` and an `identifier.uuid` keeps that uuid and its
-    folder in the record.
-  - An entry with any other source (`vsix`, `resource`) is left out and listed in `fromFile`. The
-    remote pass names it in the channel: `installed from a file, not synced`.
-  - An entry without a source, an unreadable file, or no entry at all keeps the extension with no
-    uuid, so a non-default profile, whose list lives elsewhere, still syncs.
-  - After an install, an id whose remote entry records another uuid is `failed` with the class
-    `different publisher`, and the comparison counts it as not in the workspace on later passes too.
-    A remote entry's uuid is its `identifier.uuid`, or its `metadata.id` when the identifier has
-    none. VS Code 1.139.1's server records a gallery install that way: the harness saw
-    `source: gallery`, no `identifier.uuid`, and a `metadata.id` equal to the local uuid. The first
-    run of this round read only `identifier.uuid` and failed with a false `different publisher`. An
-    entry with neither counts as present. Mend still installs by id, at the latest version (D2).
-- **A stale local list.** A remote window reads each recorded folder's local `extensions.json`
-  again, and drops a uuid-carrying id that the folder no longer lists. An unreadable folder keeps
-  the stored list. Fix round 2 also moves an id the folder now records as a file install.
-- **Harness.** The run fails unless the seeded `editorconfig.editorconfig` is recorded locally as a
-  gallery install with a uuid, and unless its remote entry carries the same uuid.
-  `remoteEditor.seededRemoteEntry` records that entry's uuid, source and `metadata.id`.
-
-### Fix round 2 (PR 1)
-
-The second review's three items:
-
-- **A gallery extension replaced by a file install.** `pruneUninstalled` reads each recorded
-  folder's current `extensions.json`. An id that the folder now records with a non-gallery source
-  leaves the desired list and joins `fromFile`, so the remote pass names it
-  `installed from a file, not synced` instead of installing the gallery version. Before, the cached
-  gallery entry stayed and the gallery version was installed.
-- **A `Uid:` line with five fields** (four numeric and one not) is refused, and a test holds it.
-- **The settled state is one pure function.** `settledState` in `editor-status.ts` turns the local
-  list, the remote list, the install memory and the results into the state the pass reports. A test
-  holds that a gallery miss remembered within the day plans nothing and settles `not synced`, naming
-  the id.
-
-Four person-layout runs at `16694787e`, on 0.36.0-next.792 and VS Code 1.139.1, sequential and
-alternating. The load average is the 1-minute figure at each run's start; other work shared the
-machine.
-
-| Run  | Setting | Load | Window-ready | First terminal | Settled                                   |
-| ---- | ------- | ---- | ------------ | -------------- | ----------------------------------------- |
-| on1  | on      | 8.9  | 21 652 ms    | 614 ms         | installed 1 in 2 292 ms; warm pass 117 ms |
-| off1 | off     | 19.7 | 18 765 ms    | 576 ms         | inactive                                  |
-| on2  | on      | 6.4  | 16 270 ms    | 645 ms         | installed 1 in 2 465 ms; warm pass 165 ms |
-| off2 | off     | 7.0  | 16 844 ms    | 675 ms         | inactive                                  |
-
-Every run landed as uid 40001. In both runs with the setting on, the workspace listed
-`editorconfig.editorconfig` with the local gallery uuid and not the theme, and the warm pass planned
-nothing. The two sides overlap again, and every first terminal is far under the 10 s budget.
-
-### Settings Sync (0.36.x patch)
+### Settings Sync (mend#1156)
 
 With Settings Sync on, a Mend workspace window asked "Would you like to install and synchronize
 '<X>' extension across your devices?" once for each extension Mend installed. One person met about
@@ -536,18 +379,18 @@ The cause is in VS Code's workbench, read at commit `30ca50fe7` of its source:
   (`src/vs/workbench/services/extensionManagement/common/extensionManagementService.ts`, lines 532
   to 537 and 745).
 
-The fix passes `{ donotSync: true }` to the command for each id the window does not already run in
-its UI host. For a workspace-kind id, VS Code then installs a machine-scoped copy in the workspace
-only. It asks nothing and leaves the local copy and Settings Sync as they were.
+The fix passes `{ donotSync: true }` to the command. For a workspace-kind id, VS Code then installs
+a machine-scoped copy in the workspace only. It asks nothing and leaves the local copy and Settings
+Sync as they were.
 
-An id the window already runs in its UI host gets no options. For it the command reaches
-`updateFromGallery`, which installs on the local server. With the same version already there, the
-local server only rewrites the copy's metadata, and it takes `isMachineScoped` from the options when
-they set it (`src/vs/platform/extensionManagement/node/extensionManagementService.ts`, lines 1086
-and 1135 to 1136). Settings Sync ignores every machine-scoped extension
-(`src/vs/platform/userDataSync/common/ignoredExtensions.ts`, line 69). So `donotSync` on such an id,
-such as a theme, would take it out of Settings Sync, with Sync on or off. This path never asked
-before the fix, because `updateFromGallery` does not call `hasToFlagExtensionsMachineScoped`.
+mend#1156 sent no options for an id the window already ran in its UI host. For such an id the
+command reaches `updateFromGallery`, which installs on the local server, and `donotSync` would mark
+the local copy machine-scoped
+(`src/vs/platform/extensionManagement/node/extensionManagementService.ts`, lines 1086 and 1135 to
+1136), which takes it out of Settings Sync
+(`src/vs/platform/userDataSync/common/ignoredExtensions.ts`, line 69). Fix round 1 removed that
+branch. Such an id now counts as present and is never restored, because the command never installs
+it in the workspace. Every restore passes `donotSync`.
 
 The DinD spikes and the PR 1 runs never ran with Settings Sync on. The harness started VS Code
 without `--sync` on a fresh user-data directory, where sync is off. Now
@@ -558,6 +401,14 @@ setting, so sync is on with no account signed in. In an extension test host, VS 
 of `editorconfig.editorconfig` fails, the pass settles `not synced`, and the `remoteEditor` step
 fails.
 
-## Next implementation step
+### Merge gate round 1
 
-PR 2: `editor-settings.ts` and the machine-settings half of the pass, as specified above.
+The independent merge-gate verifier of PR 2 found one more hole.
+
+1. An observation queued behind a read in flight checked only that the window had a workspace, and
+   took the observer's generation when it started. If the setting went off while it waited, it ran
+   afterwards under the new generation and recorded a baseline while the setting was off. An
+   extension installed after that, still while off, became a pick when the setting was turned back
+   on. Now an observation reads the mode in the same step that takes the generation, so one that
+   starts while the setting is off does nothing. `workspace-editor.test.ts` drives this sequence
+   through `startWorkspaceEditor`.

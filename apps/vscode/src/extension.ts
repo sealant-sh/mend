@@ -725,7 +725,10 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
         store.stop();
         statusBar.hide();
         view.badge = undefined;
-      } else store.start();
+      } else {
+        store.start();
+        void workspaceWindow.locateAgain();
+      }
     }
     drawTree();
     accounts.changed();
@@ -842,7 +845,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
   store.setVisible(view.visible);
   void firstRun.refresh();
   workspaceWindow.start();
-  const editor = startWorkspaceEditor(context);
+  const editor = startWorkspaceEditor(context, workspaceWindow);
   return {
     projects: async () => store.details(),
     workspaceEditor: () => editor.settled(),

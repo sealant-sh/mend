@@ -8,6 +8,9 @@ patch number is the extension's own.
 - A Mend workspace window no longer asks to install and synchronize each extension when Settings
   Sync is on. Mend installs them for this workspace only, and adds nothing to the local editor or to
   Settings Sync.
+- Mend now carries only the extensions you install in a project's workspace window, and installs
+  them in that project's later sessions. It no longer installs every local extension. Your settings
+  already apply in a workspace through VS Code, so Mend copies none.
 
 ## 0.36.2
 

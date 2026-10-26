@@ -94,8 +94,10 @@ logs, and a video of the display. The flows below follow the stories in
   Code's diff and multi-diff editors over read-only `mend-change:` documents, and the slice picker.
 - `vscode-stop` stops a live session; the worktree and change remain.
 - `vscode-uri` opens a session from `vscode://sealant-sh.mend/open?session=<id>`.
-- `vscode-bring-my-editor` installs the person's local extensions into a Mend workspace window
-  (`mend.workspaces.bringMyEditor`).
+- `vscode-bring-my-editor` carries what the person installs from the Extensions panel in a project's
+  Mend workspace window to that project's later sessions, which reinstall it with no dialog;
+  uninstalling it stops that, and local extensions never reach a workspace
+  (`mend.workspaces.bringMyEditor`: `off | picked`).
 
 ## How to get to it (user POV)
 
@@ -186,6 +188,16 @@ module whose default export is `async (helpers) => {}`. The recipes:
   `MEND_VERIFY_DIALOG_ANSWER` names (default `Install (Do not sync)`) and counts the
   `install and synchronize` ones. It needs a world from
   `up --settings-sync --local-extensions <id,…>`.
+- `recipes/vscode-editor-picks.mjs` drives an extension the person picks in one session of a project
+  into the next. In session 1 she installs `editorconfig.editorconfig` from the Extensions view
+  (answering VS Code's own Settings Sync question, if it shows, `Install (Do not sync)`), and Mend's
+  log says it is carried. Session 2, in a new worktree of the same project, settles
+  `extensions in sync` with 0 dialogs. Its SSH section and its `extensions.json` list the extension,
+  and her local `editorconfig.generateAuto: false` reads unchecked and carries no
+  `cannot be applied in this window` hint. She uninstalls it there, Mend logs `no longer carried`,
+  and session 3 settles with nothing installed. Session 3's settings.json, where the key is unknown,
+  is the control that the hint read sees VS Code's hints. It needs a world from
+  `up --settings-sync`.
 
 Preconditions:
 
