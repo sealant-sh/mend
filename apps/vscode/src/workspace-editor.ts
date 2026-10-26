@@ -134,8 +134,18 @@ const serialized = <T>(work: () => Promise<T>): (() => Promise<T>) => {
   return run;
 };
 
+export interface WorkspaceEditorContext {
+  readonly globalState: {
+    get(key: string): unknown;
+    update(key: string, value: unknown): Thenable<void>;
+    setKeysForSync(keys: ReadonlyArray<string>): void;
+  };
+  readonly extension: { readonly extensionKind: vscode.ExtensionKind };
+  readonly subscriptions: Array<vscode.Disposable>;
+}
+
 export const startWorkspaceEditor = (
-  context: vscode.ExtensionContext,
+  context: WorkspaceEditorContext,
   window: Pick<WorkspaceWindow, "session" | "onDidLocate">,
 ): WorkspaceEditor => {
   const disposables: Array<vscode.Disposable> = [];
@@ -270,7 +280,9 @@ export const startWorkspaceEditor = (
   };
 
   const observe = serialized(async (): Promise<void> => {
-    if (target === null) return;
+    // A queued observation can start after the setting went off. Reading the mode in the same
+    // step that takes the generation means every read belongs to an enabled period.
+    if (target === null || currentMode() === "off") return;
     const { generation } = observer;
     const result = await readList(target.workspace, target.home);
     dispatch({
@@ -286,7 +298,7 @@ export const startWorkspaceEditor = (
   });
 
   const observeWhileOn = () => {
-    if (currentMode() !== "off") void observe();
+    void observe();
   };
 
   const tick = (focused: boolean) => {

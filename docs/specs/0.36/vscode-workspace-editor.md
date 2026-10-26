@@ -227,7 +227,8 @@ stays off. In that case its local reads would be the remote's.
 - **A restore that brings company.** A pack or a dependency that VS Code installs with a restore is
   not a pick when the book says it was removed. One the book has never seen is a pick.
 - **The setting turned off and on.** Each enabled period has its own generation. A read or a restore
-  that began before the setting went off is dropped when it lands.
+  that began before the setting went off is dropped when it lands. An observation queued before it
+  went off does nothing when its turn comes.
 - **Concurrent `globalState` writes.** VS Code sends an extension's whole memento on each update
   (`src/vs/workbench/api/common/extHostMemento.ts`, lines 35 to 47), so two windows writing in the
   same instant can lose one write. The window that lost it writes again on its 2 s check. A window
@@ -399,3 +400,15 @@ setting, so sync is on with no account signed in. In an extension test host, VS 
 (`src/vs/workbench/services/dialogs/common/dialogService.ts`). If the argument is lost, the install
 of `editorconfig.editorconfig` fails, the pass settles `not synced`, and the `remoteEditor` step
 fails.
+
+### Merge gate round 1
+
+The independent merge-gate verifier of PR 2 found one more hole.
+
+1. An observation queued behind a read in flight checked only that the window had a workspace, and
+   took the observer's generation when it started. If the setting went off while it waited, it ran
+   afterwards under the new generation and recorded a baseline while the setting was off. An
+   extension installed after that, still while off, became a pick when the setting was turned back
+   on. Now an observation reads the mode in the same step that takes the generation, so one that
+   starts while the setting is off does nothing. `workspace-editor.test.ts` drives this sequence
+   through `startWorkspaceEditor`.

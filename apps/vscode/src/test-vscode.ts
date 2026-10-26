@@ -32,9 +32,20 @@ export class Uri {
   constructor(
     readonly scheme: string,
     readonly fsPath: string,
+    readonly authority = "",
   ) {}
+  get path(): string {
+    return this.fsPath;
+  }
   static file(fsPath: string): Uri {
     return new Uri("file", fsPath);
+  }
+  static from(parts: {
+    readonly scheme: string;
+    readonly authority?: string;
+    readonly path?: string;
+  }): Uri {
+    return new Uri(parts.scheme, parts.path ?? "", parts.authority);
   }
   static joinPath(base: Uri, ...parts: ReadonlyArray<string>): Uri {
     return new Uri(base.scheme, [base.fsPath, ...parts].join("/"));
@@ -50,6 +61,27 @@ export class Disposable {
     this.callOnDispose();
   }
 }
+
+export class FileSystemError extends Error {
+  readonly code: string;
+  constructor(code: string) {
+    super(code);
+    this.code = code;
+  }
+  static FileNotFound(): FileSystemError {
+    return new FileSystemError("FileNotFound");
+  }
+}
+
+export class RelativePattern {
+  constructor(
+    readonly base: Uri,
+    readonly pattern: string,
+  ) {}
+}
+
+export const ExtensionKind = { UI: 1, Workspace: 2 };
+export const StatusBarAlignment = { Left: 1, Right: 2 };
 
 export const QuickInputButtons = { Back: { iconPath: new ThemeIcon("arrow-left") } };
 export const InputBoxValidationSeverity = { Info: 1, Warning: 2, Error: 3 };
@@ -101,6 +133,11 @@ const inputBoxes: Array<FakeQuickInput> = [];
 const quickPicks: Array<FakeQuickInput> = [];
 
 const windowState = new EventEmitter<{ readonly focused: boolean }>();
+const configurationChanged = new EventEmitter<{
+  affectsConfiguration(section: string): boolean;
+}>();
+const extensionsChanged = new EventEmitter<void>();
+const settings = new Map<string, unknown>();
 
 export const window = {
   state: { focused: true },
@@ -135,6 +172,20 @@ export const window = {
     _options: unknown,
     task: (progress: { report(value: unknown): void }) => Promise<T>,
   ): Promise<T> => task({ report: () => undefined }),
+  createOutputChannel: (_name: string) => ({
+    appendLine: (_line: string) => undefined,
+    show: (_preserveFocus?: boolean) => undefined,
+    dispose: () => undefined,
+  }),
+  createStatusBarItem: (..._: ReadonlyArray<unknown>) => ({
+    name: "",
+    text: "",
+    tooltip: "",
+    command: "",
+    show: () => undefined,
+    hide: () => undefined,
+    dispose: () => undefined,
+  }),
 };
 
 export const workspace: {
@@ -142,20 +193,45 @@ export const workspace: {
     | ReadonlyArray<{ readonly uri: Uri; readonly name: string; readonly index: number }>
     | undefined;
   onDidChangeWorkspaceFolders: EventEmitter<unknown>["event"];
-  onDidChangeConfiguration: EventEmitter<unknown>["event"];
+  onDidChangeConfiguration: (typeof configurationChanged)["event"];
   getConfiguration(section?: string): { get(key: string): unknown };
+  createFileSystemWatcher(pattern: RelativePattern): {
+    onDidChange: EventEmitter<Uri>["event"];
+    onDidCreate: EventEmitter<Uri>["event"];
+    onDidDelete: EventEmitter<Uri>["event"];
+    dispose(): void;
+  };
+  fs: { readFile(uri: Uri): Promise<Uint8Array> };
 } = {
   workspaceFolders: undefined,
   onDidChangeWorkspaceFolders: new EventEmitter<unknown>().event,
-  onDidChangeConfiguration: new EventEmitter<unknown>().event,
-  getConfiguration: () => ({ get: () => undefined }),
+  onDidChangeConfiguration: configurationChanged.event,
+  getConfiguration: (section) => ({
+    get: (key) => settings.get(section === undefined ? key : `${section}.${key}`),
+  }),
+  createFileSystemWatcher: () => ({
+    onDidChange: new EventEmitter<Uri>().event,
+    onDidCreate: new EventEmitter<Uri>().event,
+    onDidDelete: new EventEmitter<Uri>().event,
+    dispose: () => undefined,
+  }),
+  fs: {
+    readFile: async () => {
+      throw FileSystemError.FileNotFound();
+    },
+  },
 };
 
-export const env = { remoteName: undefined };
-export const extensions = { getExtension: () => undefined };
+export const env: { remoteName: string | undefined } = { remoteName: undefined };
+export const extensions = {
+  getExtension: (_id: string) => undefined,
+  onDidChange: extensionsChanged.event,
+};
 
 export const commands = {
   executeCommand: vi.fn(async (..._: ReadonlyArray<unknown>) => undefined),
+  registerCommand: (_command: string, _callback: (...args: ReadonlyArray<unknown>) => unknown) =>
+    new Disposable(() => undefined),
 };
 
 export const fake = {
@@ -176,6 +252,16 @@ export const fake = {
     window.state.focused = focused;
     windowState.fire({ focused });
   },
+  /** Sets a setting by its full key, then tells every listener it changed. */
+  configure(key: string, value: unknown): void {
+    settings.set(key, value);
+    configurationChanged.fire({
+      affectsConfiguration: (section) => key === section || key.startsWith(`${section}.`),
+    });
+  },
+  extensionsChanged(): void {
+    extensionsChanged.fire();
+  },
   reset(): void {
     window.state.focused = true;
     window.showInformationMessage.mockClear();
@@ -188,5 +274,6 @@ export const fake = {
     commands.executeCommand.mockClear();
     inputBoxes.length = 0;
     quickPicks.length = 0;
+    settings.clear();
   },
 };
