@@ -3637,6 +3637,31 @@ const kubernetesPersonLayoutMigration = Effect.gen(function* () {
     WHERE c.image_key = s.image_key AND c.runtime = s.runtime AND s.kept <> '[]'::jsonb`;
 });
 
+/**
+ * 0139 (docs/adr/0017, Decision log 6): a preview's control, one row per preview, absent while
+ * automatic at revision 0.
+ */
+const previewControlsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE SEQUENCE preview_control_seq AS integer`;
+  yield* sql`CREATE TABLE preview_controls (
+    preview_id text PRIMARY KEY REFERENCES previews(id) ON DELETE CASCADE,
+    revision integer NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    state text NOT NULL CHECK (state IN ('automatic', 'stopped')),
+    stopped_by text,
+    stopped_at timestamptz,
+    stopped_seq integer,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT preview_controls_stop_facts CHECK (
+      CASE WHEN state = 'stopped'
+        THEN stopped_by IS NOT NULL AND stopped_at IS NOT NULL AND stopped_seq IS NOT NULL
+        ELSE stopped_by IS NULL AND stopped_at IS NULL AND stopped_seq IS NULL
+      END
+    )
+  )`;
+  yield* sql`ALTER TABLE session_processes ADD COLUMN reached_at timestamptz`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3777,4 +3802,5 @@ export const migrations = {
   "0136_previews": previewsMigration,
   "0137_preview_grants": previewGrantsMigration,
   "0138_kubernetes_person_layout": kubernetesPersonLayoutMigration,
+  "0139_preview_controls": previewControlsMigration,
 };

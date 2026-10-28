@@ -62,7 +62,7 @@ const startTunnel = async (script: DialScript) => {
   const world = await createTenancyWorld();
   const tickets = makeUpgradeTicketsMemory();
   const sealant = scriptedSealant(script);
-  const adapter = adapterLayer(sealant.layer, "refuse");
+  const adapter = adapterLayer(sealant.layer);
   const forwards = Layer.mock(ServiceForwardsRepo, { byId: () => Effect.succeed(null) });
   const host = ServiceHostLive.pipe(
     Layer.provide(

@@ -10,6 +10,7 @@
     "lint": "oxlint .",
     "start": "node --experimental-strip-types src/main.ts",
     "test": "vitest run --passWithNoTests",
+    "test:preview-acceptance": "vitest run --config vitest.preview.config.ts",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -33,10 +34,15 @@
     "@effect/vitest": "catalog:",
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
+    "@sealant/sdk": "catalog:",
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "esbuild": "catalog:",
     "fast-check": "catalog:",
+    "playwright-core": "catalog:",
     "tsx": "catalog:",
-    "vitest": "catalog:"
+    "vite": "catalog:start",
+    "vitest": "catalog:",
+    "ws": "catalog:"
   }
 }

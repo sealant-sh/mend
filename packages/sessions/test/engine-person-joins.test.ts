@@ -412,7 +412,10 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
       Effect.gen(function* () {
         const service = yield* engine.runService(joined, ["pnpm", "dev"], 3000, "web");
         started = service.attempts[0]?.status ?? null;
-        const after = yield* engine.stopService(service.service.id);
+        const after = yield* engine.stopService(service.service.id, {
+          kind: "person",
+          userId: "user-maria",
+        });
         stopped = after.service.id;
       }),
     );

@@ -7,7 +7,6 @@ import {
   type ForwardIssue,
   type ForwardIssueReason,
   forwardIssueOf,
-  type ForwardSessionOwner,
   SealantClient,
   type SealantPlatformError,
 } from "@mend/sealant";
@@ -58,29 +57,9 @@ export interface ForwardOpenOptions {
   readonly signal?: AbortSignal;
 }
 
-/**
- * Whether a session-bound dial that loopback refused may try the Docker sidecar, port-scoped.
- * Undecided (ADR 0017): composition supplies it, and nothing has a default.
- */
-export type BoundDockerRule = "refuse" | "allow-port-scoped";
-
-export class ForwardPolicy extends Context.Service<
-  ForwardPolicy,
-  { readonly afterBoundLoopbackRefused: BoundDockerRule }
->()("@mend/sessions/ForwardPolicy") {}
-
-/**
- * Where an open forward arrived and what it proved. A Docker arrival proves only the port; one that
- * stood in for a session-bound dial says which session it could not prove.
- */
 export type ForwardArrival =
   | { readonly route: "loopback"; readonly proof: ForwardBinding }
-  | { readonly route: "docker"; readonly proof: { readonly kind: "port" } }
-  | {
-      readonly route: "port-fallback";
-      readonly proof: { readonly kind: "port" };
-      readonly requested: ForwardSessionOwner;
-    };
+  | { readonly route: "docker"; readonly proof: { readonly kind: "port" } };
 
 export type ForwardAttemptOutcome = "ready" | ForwardIssueReason;
 
@@ -149,14 +128,12 @@ export class ForwardAdapter extends Context.Service<ForwardAdapter, ForwardAdapt
   "@mend/sessions/ForwardAdapter",
 ) {}
 
-/** The one fallback rule. Only a typed loopback connection refusal can lead to the sidecar. */
-export const dockerAfterLoopback = (
-  requested: ForwardBinding,
-  loopback: ForwardIssue,
-  rule: BoundDockerRule,
-): boolean =>
-  loopback.reason === "connection-refused" &&
-  (requested.kind === "port" || rule === "allow-port-scoped");
+/**
+ * A session-bound dial never falls back to the sidecar: the sidecar cannot prove the session
+ * (ADR 0017, decided by Yiannis, 2026-10-25).
+ */
+export const dockerAfterLoopback = (requested: ForwardBinding, loopback: ForwardIssue): boolean =>
+  loopback.reason === "connection-refused" && requested.kind === "port";
 
 /**
  * The refusal to report after both attempts: the loopback one when the sidecar is absent or holds
@@ -214,7 +191,6 @@ type Phase<A> =
 
 const makeForwardAdapter = Effect.gen(function* () {
   const sealant = yield* SealantClient;
-  const policy = yield* ForwardPolicy;
 
   const open = (
     target: ForwardTarget,
@@ -354,7 +330,7 @@ const makeForwardAdapter = Effect.gen(function* () {
         const loopbackIssue = loopback.opened.issue;
         if (
           loopbackIssue.reason !== "connection-refused" ||
-          !dockerAfterLoopback(target.binding, loopbackIssue, policy.afterBoundLoopbackRefused)
+          !dockerAfterLoopback(target.binding, loopbackIssue)
         ) {
           progress.attempts = [
             { route: "loopback", openMs: loopback.openMs, outcome: loopbackIssue.reason },
@@ -375,14 +351,7 @@ const makeForwardAdapter = Effect.gen(function* () {
             refusedLoopback,
             { route: "docker", openMs: docker.openMs, outcome: "ready" },
           ];
-          const arrival: ForwardArrival =
-            target.binding.kind === "session"
-              ? {
-                  route: "port-fallback",
-                  proof: { kind: "port" },
-                  requested: target.binding.session,
-                }
-              : { route: "docker", proof: { kind: "port" } };
+          const arrival: ForwardArrival = { route: "docker", proof: { kind: "port" } };
           return { bytes: docker.opened.value.bytes, arrival };
         }
         progress.attempts = [
@@ -438,5 +407,7 @@ const logDial = (record: ForwardDialRecord) =>
     : Effect.logInfo("forward.dial")
   ).pipe(Effect.annotateLogs({ dial: JSON.stringify(record) }));
 
-export const ForwardAdapterLive: Layer.Layer<ForwardAdapter, never, SealantClient | ForwardPolicy> =
-  Layer.effect(ForwardAdapter, makeForwardAdapter);
+export const ForwardAdapterLive: Layer.Layer<ForwardAdapter, never, SealantClient> = Layer.effect(
+  ForwardAdapter,
+  makeForwardAdapter,
+);

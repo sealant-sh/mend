@@ -13,7 +13,6 @@ import { ServiceObservation } from "@mend/domain/workbench";
 import { openBoundedForward, SealantClient, toPlatformError } from "@mend/sealant";
 import {
   ForwardAdapterLive,
-  ForwardPolicy,
   ServiceHost,
   ServiceHostLive,
   validateServiceBindAddresses,
@@ -184,10 +183,7 @@ const observationsStubLayer = Layer.succeed(ServiceObservationsRepo, {
 });
 
 /** ServiceHost over the real forward adapter; a test provides the platform and the repositories. */
-const ServiceHostOverAdapter = ServiceHostLive.pipe(
-  Layer.provide(ForwardAdapterLive),
-  Layer.provide(Layer.succeed(ForwardPolicy, { afterBoundLoopbackRefused: "refuse" })),
-);
+const ServiceHostOverAdapter = ServiceHostLive.pipe(Layer.provide(ForwardAdapterLive));
 
 const TestLayer = ServiceHostOverAdapter.pipe(
   Layer.provide(sealantFakeLayer),

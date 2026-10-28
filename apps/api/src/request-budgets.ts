@@ -1,4 +1,4 @@
-import { addressSubject, clientAddressOf } from "@mend/network";
+import { addressSubject, clientAddressOf, type WindowLimiter } from "@mend/network";
 import { ByteSize, Cause, Clock, Effect, Option, type Layer } from "effect";
 import {
   HttpIncomingMessage,
@@ -13,6 +13,32 @@ import { budgetMessage, credentialSubject, type BudgetName, type Budgets } from 
 const isLoopbackSocket = (address: string): boolean => {
   const bare = address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
   return bare === "::1" || bare.startsWith("127.");
+};
+
+/**
+ * Seconds to wait before `limiter` admits another request from this client, or null now (ADR 0004,
+ * "Budgets"). The client is its address as the one resolver sees it, IPv6 by its /64; a loopback
+ * socket with no `X-Forwarded-For` is this machine's own and is never counted.
+ */
+export const addressWindowWait = (
+  limiter: WindowLimiter,
+  limit: number,
+  request: {
+    readonly socket: string | undefined;
+    readonly forwardedFor: string | undefined;
+    readonly trustedProxies: ReadonlyArray<string>;
+  },
+  at: number,
+): number | null => {
+  const internal =
+    request.socket !== undefined &&
+    isLoopbackSocket(request.socket) &&
+    (request.forwardedFor ?? "").trim() === "";
+  if (internal) return null;
+  const address = addressSubject(
+    clientAddressOf(request.socket, request.forwardedFor, request.trustedProxies),
+  );
+  return limiter.take(address, limit, at);
 };
 
 export type BodyBudget = Extract<BudgetName, "bodyBytes" | "uploadBodyBytes" | "bundleBytes">;
@@ -135,15 +161,14 @@ export const requestBudgets = (
         const request = yield* HttpServerRequest.HttpServerRequest;
         const { limits } = budgets;
         const pathname = new URL(request.url, "http://mend.local").pathname;
-        const socket = Option.getOrUndefined(request.remoteAddress);
-        const forwardedFor = request.headers["x-forwarded-for"];
-        const address = addressSubject(clientAddressOf(socket, forwardedFor, trustedProxies));
-
-        // Never inferred from a trusted chain: a load balancer or a pod inside a trusted CIDR
-        // would then carry the whole Internet past the windows. Only a bare loopback socket is
-        // this machine's own (a probe, the CLI beside the server); the web tier always forwards.
-        const internal =
-          socket !== undefined && isLoopbackSocket(socket) && (forwardedFor ?? "").trim() === "";
+        const client = {
+          socket: Option.getOrUndefined(request.remoteAddress),
+          forwardedFor: request.headers["x-forwarded-for"],
+          trustedProxies,
+        };
+        const address = addressSubject(
+          clientAddressOf(client.socket, client.forwardedFor, trustedProxies),
+        );
 
         const at = now?.() ?? (yield* Clock.currentTimeMillis);
         if (isSignInAttempt(request.method, pathname)) {
@@ -157,9 +182,12 @@ export const requestBudgets = (
             );
           }
         }
-        const addressWait = internal
-          ? null
-          : budgets.addresses.take(address, limits.addressRequestsPerMinute, at);
+        const addressWait = addressWindowWait(
+          budgets.addresses,
+          limits.addressRequestsPerMinute,
+          client,
+          at,
+        );
         if (addressWait !== null) {
           return budgetRefusal(
             429,

@@ -575,6 +575,25 @@ export const previewGrants = pgTable(
 );
 
 /**
+ * A preview's control (ADR 0017, Decision log 6): whether a person stopped it. No row is
+ * automatic at revision 0; the revision moves only when the state does. The stop facts are set
+ * exactly when the state is `stopped` (a CHECK in the migration); `stoppedSeq` is the Stop's place
+ * in `preview_control_seq`.
+ */
+export const previewControls = pgTable("preview_controls", {
+  previewId: text()
+    .$type<PreviewId>()
+    .primaryKey()
+    .references(() => previews.id, { onDelete: "cascade" }),
+  revision: integer().notNull().default(0),
+  state: text().$type<"automatic" | "stopped">().notNull(),
+  stoppedBy: text(),
+  stoppedAt: timestamp({ mode: "date", withTimezone: true }),
+  stoppedSeq: integer(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
  * Pre-provisioned session skeletons kept ready for instant session starts. `id` is the session id
  * the claiming session adopts; the session socket dir derives from it. The skeleton's worktree is
  * a real `worktrees` row (a legal zero-session worktree) adopted at claim time. Claimable only
@@ -1650,6 +1669,8 @@ export const sessionProcesses = pgTable(
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     /** When the process's record first carried output; null until then (0095). */
     firstOutputAt: timestamp({ mode: "date", withTimezone: true }),
+    /** When a probe first saw this Service attempt answer on its port; null until then (0139). */
+    reachedAt: timestamp({ mode: "date", withTimezone: true }),
     exitedAt: timestamp({ mode: "date", withTimezone: true }),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     /** The account whose Linux user the process runs as (docs/adr/0016); null: root (0117). */

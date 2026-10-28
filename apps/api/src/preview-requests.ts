@@ -121,6 +121,86 @@ export const refusalAnswer = (
   }
 };
 
+export type HeaderPair = readonly [name: string, value: string];
+
+/** One request head as the parser read it: raw pairs in order, duplicates kept. */
+export interface PreviewRequestHead {
+  readonly method: string;
+  readonly target: string;
+  readonly headers: ReadonlyArray<HeaderPair>;
+}
+
+export const valuesOf = (headers: ReadonlyArray<HeaderPair>, name: string): Array<string> =>
+  headers.flatMap(([field, value]) => (field.toLowerCase() === name ? [value] : []));
+
+/** Comma-separated list members, trimmed and lowercased; an empty member is kept so it counts. */
+export const membersOf = (headers: ReadonlyArray<HeaderPair>, name: string) =>
+  valuesOf(headers, name).flatMap((value) =>
+    value.split(",").map((member) => member.trim().toLowerCase()),
+  );
+
+const isOnly = (members: ReadonlyArray<string>, expected: string) =>
+  members.length === 1 && members[0] === expected;
+
+/**
+ * Node's parser (llhttp, `insecureHTTPParser: false`) already refuses Content-Length beside
+ * Transfer-Encoding, repeated or listed Content-Length, and repeated `chunked`, but passes other
+ * codings, absolute-form, `*` and fragment targets and an Upgrade without `Connection: upgrade`.
+ * Each row stands whatever the parser does, because the gateway forwards this head.
+ */
+const HEAD_REFUSALS: ReadonlyArray<{
+  readonly refuses: (head: PreviewRequestHead) => boolean;
+  readonly answer: PreviewAnswer;
+}> = [
+  {
+    refuses: ({ headers }) =>
+      membersOf(headers, "service-worker").includes("script") ||
+      membersOf(headers, "sec-fetch-dest").includes("serviceworker"),
+    answer: answer(403, "Refused."),
+  },
+  {
+    refuses: ({ target }) =>
+      !target.startsWith("/") || target.startsWith("//") || target.includes("#"),
+    answer: answer(400, "Bad request."),
+  },
+  {
+    refuses: ({ headers }) => {
+      const lengths = membersOf(headers, "content-length");
+      const codings = membersOf(headers, "transfer-encoding");
+      return lengths.length > 0
+        ? codings.length > 0 || lengths.length > 1 || !/^[0-9]+$/.test(lengths[0] ?? "")
+        : codings.length > 0 && !isOnly(codings, "chunked");
+    },
+    answer: answer(400, "Bad request."),
+  },
+  {
+    refuses: ({ headers }) => {
+      const expectations = membersOf(headers, "expect");
+      return expectations.length > 0 && !isOnly(expectations, "100-continue");
+    },
+    answer: answer(417, "Expectation failed."),
+  },
+  {
+    refuses: ({ headers }) => {
+      const protocols = membersOf(headers, "upgrade");
+      return protocols.length > 0 && !isOnly(protocols, "websocket");
+    },
+    answer: answer(400, "Bad request."),
+  },
+  {
+    // Node hands an upgrade's body over as the upgraded socket's first bytes: the app would read
+    // it as WebSocket frames.
+    refuses: ({ headers }) =>
+      membersOf(headers, "upgrade").length > 0 &&
+      (membersOf(headers, "transfer-encoding").length > 0 ||
+        membersOf(headers, "content-length").some((length) => Number(length) > 0)),
+    answer: answer(400, "Bad request."),
+  },
+];
+
+export const headRefusal = (head: PreviewRequestHead): PreviewAnswer | null =>
+  HEAD_REFUSALS.find((rule) => rule.refuses(head))?.answer ?? null;
+
 export const queryOf = (target: string): string => {
   const mark = target.indexOf("?");
   return mark === -1 ? "" : target.slice(mark + 1);

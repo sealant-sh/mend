@@ -4,7 +4,7 @@
  *
  *   node packages/sessions/bench/forward-dial.ts <mode> --core <url> --key <service key>
  *     --owner <sealant user id> --workspace <id> --port <n> [--session <process session id>]
- *     [--rule refuse|allow-port-scoped] [--runs 100] [--series <label>] --out <file.jsonl>
+ *     [--runs 100] [--series <label>] --out <file.jsonl>
  *
  * Modes:
  *   probe   `runs` sequential probes: open a forward, close it, read no bytes.
@@ -35,7 +35,6 @@ import {
   ForwardAdapter,
   ForwardAdapterLive,
   type ForwardDialRecord,
-  ForwardPolicy,
   type ForwardTarget,
 } from "../src/forward.ts";
 
@@ -48,7 +47,6 @@ const { positionals, values } = parseArgs({
     workspace: { type: "string" },
     port: { type: "string" },
     session: { type: "string" },
-    rule: { type: "string", default: "refuse" },
     runs: { type: "string", default: "100" },
     series: { type: "string" },
     out: { type: "string" },
@@ -64,7 +62,6 @@ const mode = positionals[0];
 if (mode !== "probe" && mode !== "cold" && mode !== "warm") {
   throw new Error("mode must be probe, cold or warm");
 }
-const rule = values.rule === "allow-port-scoped" ? "allow-port-scoped" : "refuse";
 const runs = Number(values.runs);
 const out = required("out", values.out);
 const target: ForwardTarget = {
@@ -89,10 +86,7 @@ const platform = Layer.mock(SealantClient, {
   openForward: (workspace, port, destination, options) =>
     openWorkspaceForward(workspace, port, destination, options, toPlatformError),
 });
-const adapter = ForwardAdapterLive.pipe(
-  Layer.provide(platform),
-  Layer.provide(Layer.succeed(ForwardPolicy, { afterBoundLoopbackRefused: rule })),
-);
+const adapter = ForwardAdapterLive.pipe(Layer.provide(platform));
 
 const write = (line: object) => appendFileSync(out, `${JSON.stringify({ series, ...line })}\n`);
 const dialLine = (record: ForwardDialRecord) => write(record);

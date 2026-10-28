@@ -193,9 +193,14 @@ export class ForwardSocket extends Duplex {
 
   setTimeout(timeoutMs: number, callback?: () => void): this {
     this.#timeoutMs = timeoutMs;
-    if (callback !== undefined) this.once("timeout", callback);
-    if (timeoutMs === 0) this.#clearTimer();
-    else this.#touch();
+    // As net.Socket: zero removes the listener. An Agent passes it on every keep-alive reuse.
+    if (timeoutMs === 0) {
+      if (callback !== undefined) this.removeListener("timeout", callback);
+      this.#clearTimer();
+    } else {
+      if (callback !== undefined) this.once("timeout", callback);
+      this.#touch();
+    }
     return this;
   }
 

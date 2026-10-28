@@ -15,12 +15,7 @@ import type {
 import { ForwardDialError, ForwardResetError } from "@sealant/sdk";
 import { Effect, Layer, Logger, References } from "effect";
 
-import {
-  ForwardAdapterLive,
-  type ForwardDialRecord,
-  ForwardPolicy,
-  type BoundDockerRule,
-} from "../src/forward.ts";
+import { ForwardAdapterLive, type ForwardDialRecord } from "../src/forward.ts";
 import { fakeWorkspace } from "./fake-workspace.ts";
 
 /**
@@ -242,11 +237,8 @@ export const scriptedSealant = (
   return { layer, ledger: read };
 };
 
-export const adapterLayer = (sealant: Layer.Layer<SealantClient>, rule: BoundDockerRule) =>
-  ForwardAdapterLive.pipe(
-    Layer.provide(sealant),
-    Layer.provide(Layer.succeed(ForwardPolicy, { afterBoundLoopbackRefused: rule })),
-  );
+export const adapterLayer = (sealant: Layer.Layer<SealantClient>) =>
+  ForwardAdapterLive.pipe(Layer.provide(sealant));
 
 /** Every `forward.dial` record the adapter logs. */
 export const dialLog = () => {

@@ -1,11 +1,34 @@
-import { encodePreviewLabel, PreviewId, type PreviewLabel, type WorktreeId } from "@mend/domain";
-import { Preview, PreviewView, resolvePreviewBinding } from "@mend/domain/workbench";
-import { and, asc, eq, isNull, type SQL, sql } from "drizzle-orm";
-import { Context, Crypto, Effect, Layer, Schema } from "effect";
+import {
+  encodePreviewLabel,
+  PreviewId,
+  type PreviewLabel,
+  type ServiceId,
+  type WorktreeId,
+} from "@mend/domain";
+import {
+  changePreviewControl,
+  Preview,
+  PREVIEW_CONTROL_INITIAL,
+  PreviewControl,
+  type PreviewControlIntent,
+  type PreviewControlRead,
+  type PreviewGatewayResolution,
+  previewGatewayResolution,
+  type PreviewAttemptEvidence,
+  previewResumeCandidate,
+  type PreviewTarget,
+  PreviewView,
+  resolvePreviewBinding,
+  selectPreviewTarget,
+  type Service,
+} from "@mend/domain/workbench";
+import { and, asc, desc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
+import { Context, Crypto, DateTime, Effect, Layer, Schema } from "effect";
 
 import { type MendDatabase, MendDB } from "../client.ts";
 import {
   agentSessions,
+  previewControls,
   previews,
   projects,
   services,
@@ -26,8 +49,41 @@ export class PreviewsRepo extends Context.Service<
     readonly resolveByLabel: (label: PreviewLabel) => Effect.Effect<PreviewView | null>;
     readonly byId: (id: PreviewId) => Effect.Effect<Preview | null>;
     readonly byLabel: (label: PreviewLabel) => Effect.Effect<Preview | null>;
+    /** The preview's control; a preview with no row is `PREVIEW_CONTROL_INITIAL`. */
+    readonly controlOf: (id: PreviewId) => Effect.Effect<PreviewControl>;
+    /**
+     * Apply a deciding person's Stop or Start under the row's lock; answers the control after. A
+     * Stop takes its place in the order of intents there, so a Start placed before it never clears
+     * it.
+     */
+    readonly changeControl: (
+      id: PreviewId,
+      intent: PreviewControlRequest,
+    ) => Effect.Effect<PreviewControl>;
+    /** A place in the order of intents, for a person's Start as it is asked. */
+    readonly nextControlSeq: () => Effect.Effect<number>;
+    /**
+     * The kept preview of the Service's name in its session's worktree, only while its rule selects
+     * this Service (binds it, or would resume it); never allocates one.
+     */
+    readonly previewOfService: (serviceId: ServiceId) => Effect.Effect<PreviewId | null>;
+    /** What the gateway does with a request to the preview, read in one snapshot. */
+    readonly gatewaySnapshot: (id: PreviewId) => Effect.Effect<PreviewGatewaySnapshot | null>;
+    /** The same for many previews, all read in one snapshot; unknown ids are absent. */
+    readonly gatewaySnapshots: (
+      ids: ReadonlyArray<PreviewId>,
+    ) => Effect.Effect<ReadonlyMap<PreviewId, PreviewGatewaySnapshot>>;
   }
 >()("@mend/db/PreviewsRepo") {}
+
+export type PreviewControlRequest =
+  | Omit<Extract<PreviewControlIntent, { readonly _tag: "Stop" }>, "seq">
+  | Extract<PreviewControlIntent, { readonly _tag: "Start" }>;
+
+export interface PreviewGatewaySnapshot {
+  readonly preview: Preview;
+  readonly resolution: PreviewGatewayResolution;
+}
 
 type Reader = Pick<MendDatabase, "select">;
 
@@ -37,9 +93,11 @@ const decodePreview = (row: typeof previews.$inferSelect) =>
     state: row.worktreeId === null ? "removed" : "kept",
   }).pipe(Effect.orDie);
 
-const targetsOf = (tx: Reader, worktreeId: WorktreeId) =>
+const targetsIn = (tx: Reader, worktreeIds: ReadonlyArray<WorktreeId>) =>
   tx
     .select({
+      worktreeId: agentSessions.worktreeId,
+      workspaceId: agentSessions.sealantWorkspaceId,
       service: services,
       liveAttempt: sessionProcesses,
       recordedCommand: sql<boolean>`EXISTS (
@@ -61,16 +119,26 @@ const targetsOf = (tx: Reader, worktreeId: WorktreeId) =>
         isNull(sessionProcesses.exitedAt),
       ),
     )
-    .where(eq(agentSessions.worktreeId, worktreeId))
+    .where(inArray(agentSessions.worktreeId, [...worktreeIds]))
     .pipe(
-      Effect.map((rows) =>
-        rows.map((row) => ({
-          service: toService(row.service),
-          liveAttempt: row.liveAttempt === null ? null : toSessionProcess(row.liveAttempt),
-          recordedCommand: row.recordedCommand,
-        })),
-      ),
+      Effect.map((rows) => {
+        const byWorktree = new Map<WorktreeId, Array<PreviewTarget>>();
+        for (const row of rows) {
+          const targets = byWorktree.get(row.worktreeId) ?? [];
+          targets.push({
+            service: toService(row.service),
+            liveAttempt: row.liveAttempt === null ? null : toSessionProcess(row.liveAttempt),
+            recordedCommand: row.recordedCommand,
+            workspaceId: row.workspaceId,
+          });
+          byWorktree.set(row.worktreeId, targets);
+        }
+        return byWorktree;
+      }),
     );
+
+const targetsOf = (tx: Reader, worktreeId: WorktreeId) =>
+  Effect.map(targetsIn(tx, [worktreeId]), (byWorktree) => byWorktree.get(worktreeId) ?? []);
 
 const readPreviews = (tx: Reader, id: WorktreeId) =>
   Effect.gen(function* () {
@@ -100,6 +168,118 @@ const readPreviews = (tx: Reader, id: WorktreeId) =>
     ].toSorted();
     return { views, unnamed };
   });
+
+const controlOfRow = (row: typeof previewControls.$inferSelect | undefined) =>
+  row === undefined
+    ? Effect.succeed(PREVIEW_CONTROL_INITIAL)
+    : Schema.decodeUnknownEffect(PreviewControl)(
+        row.state === "stopped"
+          ? {
+              _tag: "Stopped",
+              revision: row.revision,
+              by: row.stoppedBy,
+              at: row.stoppedAt,
+              seq: row.stoppedSeq,
+            }
+          : { _tag: "Automatic", revision: row.revision },
+      ).pipe(Effect.orDie);
+
+const readControl = (tx: Reader, id: PreviewId) =>
+  tx
+    .select()
+    .from(previewControls)
+    .where(eq(previewControls.previewId, id))
+    .pipe(Effect.flatMap(([row]) => controlOfRow(row)));
+
+const historiesOf = (tx: Reader, candidates: ReadonlyArray<Service>) =>
+  candidates.length === 0
+    ? Effect.succeed(new Map<ServiceId, Array<PreviewAttemptEvidence>>())
+    : tx
+        .select()
+        .from(sessionProcesses)
+        .where(
+          and(
+            inArray(
+              sessionProcesses.serviceId,
+              candidates.map((service) => service.id),
+            ),
+            eq(sessionProcesses.kind, "service"),
+          ),
+        )
+        .orderBy(desc(sessionProcesses.createdAt), desc(sessionProcesses.id))
+        .pipe(
+          Effect.map((rows) => {
+            const sessionOf = new Map(candidates.map((service) => [service.id, service.sessionId]));
+            const histories = new Map<ServiceId, Array<PreviewAttemptEvidence>>();
+            for (const row of rows) {
+              if (row.serviceId === null || sessionOf.get(row.serviceId) !== row.sessionId)
+                continue;
+              const history = histories.get(row.serviceId) ?? [];
+              history.push({ attempt: toSessionProcess(row), reachable: row.reachedAt !== null });
+              histories.set(row.serviceId, history);
+            }
+            return histories;
+          }),
+        );
+
+const readGatewaySnapshots = (tx: Reader, ids: ReadonlyArray<PreviewId>) =>
+  Effect.gen(function* () {
+    const read = new Map<PreviewId, PreviewGatewaySnapshot>();
+    if (ids.length === 0) return read;
+    const rows = yield* tx
+      .select({
+        preview: previews,
+        control: previewControls,
+        byName: sql<string | null>`(select nullif(u.name, '') from "user" u
+          where u.id = ${previewControls.stoppedBy})`,
+      })
+      .from(previews)
+      .leftJoin(previewControls, eq(previewControls.previewId, previews.id))
+      .where(inArray(previews.id, [...new Set(ids)]));
+    const found = yield* Effect.forEach(rows, (row) =>
+      Effect.gen(function* () {
+        const control = yield* controlOfRow(row.control ?? undefined);
+        const named: PreviewControlRead =
+          control._tag === "Stopped" ? { ...control, byName: row.byName ?? "a member" } : control;
+        return { preview: yield* decodePreview(row.preview), control: named };
+      }),
+    );
+    const worktreeIds = [
+      ...new Set(
+        found.flatMap(({ preview }) => (preview.worktreeId === null ? [] : [preview.worktreeId])),
+      ),
+    ];
+    const targets = worktreeIds.length === 0 ? new Map() : yield* targetsIn(tx, worktreeIds);
+    const selected = found.map(({ preview, control }) => {
+      const selection = selectPreviewTarget(
+        preview,
+        preview.worktreeId === null ? [] : (targets.get(preview.worktreeId) ?? []),
+      );
+      return { preview, control, selection, candidate: previewResumeCandidate(selection) };
+    });
+    const histories = yield* historiesOf(
+      tx,
+      selected.flatMap(({ candidate }) => (candidate === null ? [] : [candidate])),
+    );
+    for (const { preview, control, selection, candidate } of selected) {
+      const history = candidate === null ? [] : (histories.get(candidate.id) ?? []);
+      read.set(preview.id, {
+        preview,
+        resolution: previewGatewayResolution(control, selection, history),
+      });
+    }
+    return read;
+  });
+
+const takeSeq = (tx: Reader) =>
+  tx
+    .select({ seq: sql<number>`nextval('preview_control_seq')::integer` })
+    .from(sql`(select 1) as one`)
+    .pipe(
+      Effect.flatMap(([row]) =>
+        row === undefined ? Effect.die("nextval answered no row") : Effect.succeed(row.seq),
+      ),
+    );
 
 const queryErrorsDie = {
   EffectDrizzleQueryError: (error: unknown) => Effect.die(error),
@@ -208,6 +388,100 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         return yield* rowWhere(eq(previews.label, label));
       });
 
-      return { ensureForWorktree, resolveByLabel, byId, byLabel };
+      const controlOf = Effect.fn("PreviewsRepo.controlOf")(function* (id: PreviewId) {
+        return yield* readControl(db, id).pipe(Effect.orDie);
+      });
+
+      const nextControlSeq = () => takeSeq(db).pipe(Effect.orDie);
+
+      const changeControl = Effect.fn("PreviewsRepo.changeControl")(function* (
+        id: PreviewId,
+        request: PreviewControlRequest,
+      ) {
+        return yield* db.transaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx
+              .insert(previewControls)
+              .values({ previewId: id, state: "automatic" })
+              .onConflictDoNothing({ target: previewControls.previewId });
+            const [row] = yield* tx
+              .select()
+              .from(previewControls)
+              .where(eq(previewControls.previewId, id))
+              .for("update");
+            const current = yield* controlOfRow(row);
+            const intent: PreviewControlIntent =
+              request._tag === "Stop" ? { ...request, seq: yield* takeSeq(tx) } : request;
+            const next = changePreviewControl(current, intent);
+            if (next === current) return current;
+            yield* tx
+              .update(previewControls)
+              .set({
+                revision: next.revision,
+                ...(next._tag === "Stopped"
+                  ? {
+                      state: "stopped",
+                      stoppedBy: next.by,
+                      stoppedAt: next.at,
+                      stoppedSeq: next.seq,
+                    }
+                  : { state: "automatic", stoppedBy: null, stoppedAt: null, stoppedSeq: null }),
+                updatedAt: yield* DateTime.nowAsDate,
+              })
+              .where(eq(previewControls.previewId, id));
+            return next;
+          }),
+        );
+      }, Effect.catchTags(queryErrorsDie));
+
+      const previewOfService = Effect.fn("PreviewsRepo.previewOfService")(function* (
+        serviceId: ServiceId,
+      ) {
+        return yield* snapshot((tx) =>
+          Effect.gen(function* () {
+            const [row] = yield* tx
+              .select({ preview: previews })
+              .from(services)
+              .innerJoin(agentSessions, eq(agentSessions.id, services.sessionId))
+              .innerJoin(
+                previews,
+                and(
+                  eq(previews.worktreeId, agentSessions.worktreeId),
+                  eq(previews.serviceName, services.name),
+                ),
+              )
+              .where(eq(services.id, serviceId))
+              .limit(1);
+            if (row === undefined) return null;
+            const preview = yield* decodePreview(row.preview);
+            if (preview.worktreeId === null) return null;
+            const selected = selectPreviewTarget(preview, yield* targetsOf(tx, preview.worktreeId));
+            return selected.service?.id === serviceId ? preview.id : null;
+          }),
+        );
+      }, Effect.catchTags(queryErrorsDie));
+
+      const gatewaySnapshots = Effect.fn("PreviewsRepo.gatewaySnapshots")(function* (
+        ids: ReadonlyArray<PreviewId>,
+      ) {
+        return yield* snapshot((tx) => readGatewaySnapshots(tx, ids));
+      }, Effect.catchTags(queryErrorsDie));
+
+      const gatewaySnapshot = Effect.fn("PreviewsRepo.gatewaySnapshot")(function* (id: PreviewId) {
+        return (yield* gatewaySnapshots([id])).get(id) ?? null;
+      });
+
+      return {
+        ensureForWorktree,
+        resolveByLabel,
+        byId,
+        byLabel,
+        controlOf,
+        changeControl,
+        nextControlSeq,
+        previewOfService,
+        gatewaySnapshot,
+        gatewaySnapshots,
+      };
     }),
   );

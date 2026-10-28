@@ -8,10 +8,11 @@ import {
   makeHarnessLayoutsMemoryState,
   piProfileDigest,
 } from "@mend/db";
-import { SessionId } from "@mend/domain";
+import { PreviewId, PreviewLabel, SessionId } from "@mend/domain";
 import {
   AgentHookReport,
   type GitAuthMode,
+  type Preview,
   Project,
   ResolvedGitAuthor,
   Session,
@@ -2833,6 +2834,44 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
     });
   });
 
+  it("the agent's own Stop, run and restart through its person's token never decide the preview", async () => {
+    await livePersonJoin({
+      flag: "person",
+      inspect: (engine, join) =>
+        Effect.gen(function* () {
+          const owner = join.holder.ownerUserId;
+          if (owner === null) throw new Error("the holder has no owner");
+          const grant = yield* grantOf(join.holder, { launchId: join.launchId, accountId: owner });
+          if (!grant.ok) throw new Error(grant.message);
+          yield* grant.api.runService(["pnpm", "dev"], 3000, "web", "tcp", "http");
+          const service = [...join.world.services.values()].find(
+            (candidate) => candidate.sessionId === join.holder.id && candidate.name === "web",
+          );
+          if (service === undefined) throw new Error("the agent's run made no Service");
+          const preview: Preview = {
+            id: PreviewId.make("preview-web"),
+            projectId: join.holder.projectId,
+            worktreeId: join.holder.worktreeId,
+            serviceName: "web",
+            label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            state: "kept",
+          };
+          join.world.previews.set(preview.id, preview);
+          const control = () => join.world.previewControls.get(preview.id);
+
+          yield* grant.api.stopService(service.id);
+          expect(control(), "the agent's Stop under its person's token").toBeUndefined();
+
+          yield* engine.stopService(service.id, { kind: "person", userId: owner });
+          const stopped = control();
+          expect(stopped, "the person's Stop").toMatchObject({ _tag: "Stopped" });
+          yield* grant.api.runService(["pnpm", "dev"], 3000, "web", "tcp", "http");
+          yield* grant.api.restartService(service.id);
+          expect(control(), "the agent's run and restart leave the person's Stop").toEqual(stopped);
+        }),
+    });
+  });
+
   it("a joiner's push signs as the joiner over their own bridge", async () => {
     const bridgeAsked: Array<string> = [];
     await livePersonJoin({
@@ -3045,11 +3084,11 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
             "web",
             "tcp",
             null,
-            MARIA,
+            { kind: "person", userId: MARIA },
           );
           expect(join.opened.at(started)?.user?.name).toBe(JOINER);
           const restarted = join.opened.length;
-          yield* engine.restartService(service.service.id);
+          yield* engine.restartService(service.service.id, { kind: "system" });
           expect(join.opened.at(restarted)?.user?.name).toBe(JOINER);
           // Without a starter named, the session's owner, as before.
           const owners = yield* engine.openShell(join.holder.id);

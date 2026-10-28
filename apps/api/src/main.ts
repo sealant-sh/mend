@@ -146,7 +146,6 @@ import { NetworkConfig, NetworkConfigLive, trustedProxyCidrs } from "@mend/netwo
 import {
   asSealantUser,
   PersonLayoutPlatformLive,
-  type SealantClient,
   type SealantClients,
   SealantLiveFromEnv,
 } from "@mend/sealant";
@@ -164,9 +163,7 @@ import {
   CaptureSealsStoreLive,
   DotfilesClonerLive,
   FollowUpDeliveryLive,
-  ForwardAdapter,
   ForwardAdapterLive,
-  ForwardPolicy,
   HarnessLayoutConfigLive,
   FollowUpLauncherLive,
   ProtocolHostLive,
@@ -229,7 +226,9 @@ import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
-import { PreviewConfigOff, PreviewIdentityLive } from "./preview-identity.ts";
+import { loadPreviewSetup } from "./preview-config.ts";
+import { PreviewIdentityLive } from "./preview-identity.ts";
+import { servePreviews } from "./preview-serving.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RawFileTracingDisabledLive } from "./raw-file-privacy.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
@@ -362,14 +361,7 @@ const SecretCipherLayer: Layer.Layer<SecretCipher> = SecretCipherLive.pipe(
 const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
   Layer.provide(MendKeysConfigLive),
 );
-// ADR 0017's open decision (`BoundDockerRule`). Nothing dials session-bound yet, so `refuse`
-// changes nothing anyone sees today; production's answer goes here.
-const ForwardPolicyLayer: Layer.Layer<ForwardPolicy> = Layer.succeed(ForwardPolicy, {
-  afterBoundLoopbackRefused: "refuse",
-});
-const ForwardAdapterLayer: Layer.Layer<ForwardAdapter, never, SealantClient> =
-  ForwardAdapterLive.pipe(Layer.provide(ForwardPolicyLayer));
-const ServiceHostLayer = ServiceHostLive.pipe(Layer.provide(ForwardAdapterLayer));
+const ServiceHostLayer = ServiceHostLive.pipe(Layer.provide(ForwardAdapterLive));
 const ProtocolHostLayer = ProtocolHostLive;
 // The session channel (docs/KUBERNETES.md): one registry shared by the per-session socket host
 // and the optional network listener; the deployment mode decides whether sockets are created.
@@ -445,7 +437,8 @@ const ServerLive = Layer.unwrap(
     const budgets = yield* Budgets;
     const trustedProxies = yield* trustedProxyCidrs;
     const errorDetail = yield* ErrorDetail;
-    return HttpRouter.serve(
+    const previews = yield* loadPreviewSetup;
+    const router = HttpRouter.serve(
       Layer.mergeAll(
         MendApiLive,
         AuthRoutes,
@@ -459,6 +452,13 @@ const ServerLive = Layer.unwrap(
     ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
       Layer.provide(RawFileTracingDisabledLive),
+    );
+    return servePreviews(router, {
+      setup: previews,
+      appUrl: network.appUrl,
+      trustedProxies,
+      identity: PreviewIdentityLive,
+    }).pipe(
       // Removing a member revokes, closes their connections on every process, stops their sessions.
       Layer.provide(
         MemberRemovalLive.pipe(
@@ -467,7 +467,6 @@ const ServerLive = Layer.unwrap(
         ),
       ),
       Layer.provide(ConnectionRegistryLive),
-      Layer.provide(PreviewIdentityLive.pipe(Layer.provide(PreviewConfigOff))),
       // One LISTEN per process, fanned out to every SSE stream; the worker needs none.
       Layer.provide(EventBusLive),
     );
@@ -906,7 +905,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),
       Layer.provide(AuthLive.pipe(Layer.provide(RegistrationPolicyLive))),
-      Layer.provide(Layer.mergeAll(NetworkConfigLive, ForwardAdapterLayer, ServiceHostLayer)),
+      Layer.provide(Layer.mergeAll(NetworkConfigLive, ForwardAdapterLive, ServiceHostLayer)),
       // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md), and
       // every call about a workspace made as the person who created it, for whoever may work in
       // it (`WorkspaceCaller`): a second person's join reaches the holder's executor.

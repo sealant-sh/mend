@@ -40,9 +40,7 @@ const connectWith = (
   lookup?: Parameters<typeof scriptedSealant>[1],
 ): Promise<ForwardSocketConnect> =>
   Effect.runPromise(
-    forwardSockets.pipe(
-      Effect.provide(adapterLayer(scriptedSealant(script, lookup).layer, "refuse")),
-    ),
+    forwardSockets.pipe(Effect.provide(adapterLayer(scriptedSealant(script, lookup).layer))),
   );
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -340,6 +338,16 @@ const pooled = (agent: http.Agent) =>
   Object.values(agent.sockets).flat().length + Object.values(agent.freeSockets).flat().length;
 
 describe("ForwardAgent", () => {
+  it("keeps one timeout listener on a forward reused across many keep-alive requests", async () => {
+    const agent = await agentWith(async () => fakeForward(keepAliveHttp).forward, {
+      maxSockets: 1,
+      timeout: 4_000,
+    });
+    for (let i = 0; i < 20; i++) await get(agent).response;
+    const [socket] = Object.values(agent.freeSockets).flat();
+    expect(socket?.listenerCount("timeout"), "timeout listeners on the reused forward").toBe(1);
+  });
+
   it("reuses one forward across keep-alive requests", async () => {
     let dials = 0;
     const agent = await agentWith(
