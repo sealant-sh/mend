@@ -61,6 +61,9 @@ export interface BrowserHead {
   readonly fetchSite: string | undefined;
   readonly fetchMode: string | undefined;
   readonly fetchDest: string | undefined;
+  /** Whether any `Sec-Fetch-*` field arrived. */
+  readonly fetchMetadata: boolean;
+  readonly acceptsHtml: boolean;
 }
 
 const FETCH_SITES = new Set(["none", "same-origin", "same-site", "cross-site"]);
@@ -70,6 +73,14 @@ export const isDocumentNavigation = (head: BrowserHead): boolean =>
   !head.upgrade &&
   head.fetchMode === "navigate" &&
   head.fetchDest === "document";
+
+/**
+ * Browsers send Fetch Metadata only to an origin they trust, and one that does not trust
+ * `x.localhost` sends none: a navigation there reads as a GET asking for HTML.
+ */
+export const opensSignIn = (head: BrowserHead): boolean =>
+  isDocumentNavigation(head) ||
+  (head.method === "GET" && !head.upgrade && !head.fetchMetadata && head.acceptsHtml);
 
 export const browserAdmits = (head: BrowserHead, own: PreviewOrigin): boolean => {
   if (head.origins.length > 1) return false;

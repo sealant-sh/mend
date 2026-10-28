@@ -16,8 +16,9 @@ import {
   browserAdmits,
   type BrowserHead,
   headRefusal,
-  isDocumentNavigation,
+  membersOf,
   mustNotForward,
+  opensSignIn,
   parsePreviewPath,
   PREVIEW_ROOT,
   type PreviewAnswer,
@@ -60,6 +61,10 @@ const browserOf = (head: PreviewRequestHead): BrowserHead => ({
   fetchSite: valuesOf(head.headers, "sec-fetch-site")[0],
   fetchMode: valuesOf(head.headers, "sec-fetch-mode")[0],
   fetchDest: valuesOf(head.headers, "sec-fetch-dest")[0],
+  fetchMetadata: head.headers.some(([name]) => name.toLowerCase().startsWith("sec-fetch-")),
+  acceptsHtml: membersOf(head.headers, "accept").some(
+    (member) => member.split(";")[0]?.trim() === "text/html",
+  ),
 });
 
 const exchange = (head: PreviewRequestHead, routing: PreviewRouting, origin: PreviewOrigin) =>
@@ -143,7 +148,7 @@ export const servePreviewRequest = <E, R>(
           Effect.succeed(
             refused._tag === "PreviewNoIdentity" &&
               refused.previewId !== null &&
-              isDocumentNavigation(browser)
+              opensSignIn(browser)
               ? redirect(
                   302,
                   signInAt(
