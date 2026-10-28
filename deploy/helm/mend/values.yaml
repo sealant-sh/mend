@@ -167,8 +167,9 @@ exposure:
   # The gate items no process can observe from inside the deployment, once YOU have verified them
   # from outside: "core-private" (Sealant, its registry and the database answer nothing from the
   # Internet), "edge-tls" (public certificate, renewal, port 80 redirects) and, while the t3code
-  # gateway is enabled, "t3code-gateway" (who reaches its port). Reported as declared, never as
-  # observed. Nothing else can be declared.
+  # gateway is enabled, "t3code-gateway" (who reaches its port) and, while previews are enabled,
+  # "preview-gateway" (the wildcard DNS, its certificate and who reaches the gateway). Reported as
+  # declared, never as observed. Nothing else can be declared.
   declared: []
 
 # An Ingress to the WEB Service only, on one host, with TLS. Opt-in. The chart renders the Ingress;
@@ -178,7 +179,8 @@ exposure:
 #   - api.trustedProxyCidrs must cover the controller's Pods and the web tier, and nothing wider;
 #   - the controller must not log query strings on /api/tty, /api/service-tunnel,
 #     /api/keys/bridge/ws and /tty-embed (they carry single-use tickets; docs/KUBERNETES.md).
-# Nothing but web is ever routed: not the API, not Sealant, not the session channel.
+# This Ingress routes web and nothing else: not the API, not Sealant, not the session channel. Live
+# previews get an Ingress of their own (preview.* below), to the preview gateway only.
 ingress:
   enabled: false
   className: ""
@@ -192,6 +194,36 @@ ingress:
   controller:
     namespace: ""
     podLabels: {}
+
+# Live previews (docs/adr/0017-live-preview.md), each at https://<label>.<domain>, through an
+# Ingress of their own to the API Pod's preview gateway (docs/KUBERNETES.md "Live previews"). The
+# domain must be on a registrable domain of its own, so a page on a preview can neither act as Mend
+# nor set cookies Mend's host receives. The render refuses Mend's host and anything above or
+# under it. It cannot read the Public Suffix List, so the API refuses a same-site domain at start,
+# such as previews.example.com beside mend.example.com, until ADR 0017 step 8b moves Mend's
+# cookies to __Host- names. With exposure.mode public, the render also needs preview-gateway in
+# exposure.declared. The chart installs no issuer: a wildcard certificate needs DNS-01, a cluster
+# decision.
+preview:
+  enabled: false
+  domain: "" # e.g. previews.example.net
+  # The gateway's container port, behind the `<release>-preview` Service.
+  port: 3130
+  # MEND_PREVIEW_START_HOLD (how long a request waits for a stopped preview to start, e.g.
+  # "3 minutes") and MEND_PREVIEW_BODY_BYTES (a cap on one request body). Empty keeps the defaults.
+  startHold: ""
+  bodyBytes: ""
+  ingress:
+    # Empty uses ingress.className.
+    className: ""
+    # What your controller needs to stream bodies both ways, keep requests open for at least the
+    # start hold, and keep the preview hosts' URIs (the sign-in exchange's ticket is in the query)
+    # out of its access log. Controller-specific, so none by default; docs/KUBERNETES.md has the
+    # ingress-nginx set as an example.
+    annotations: {}
+    tls:
+      # A kubernetes.io/tls Secret for *.<domain>. Required.
+      secretName: ""
 
 # Supervised Service listeners (`mend service run/add`) — the same operator policy as
 # everywhere else (MEND_SERVICE_HOSTS, MEND_SERVICE_PORT_MIN/MAX). Defaults match local mode:

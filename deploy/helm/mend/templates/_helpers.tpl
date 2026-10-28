@@ -178,3 +178,56 @@ outputs or a plain URL. Returns "obc" or "url".
 {{- end -}}
 {{- join "," $out -}}
 {{- end -}}
+{{- /* The overlap rule mirrors @mend/network previewDomainOverlap; templates cannot import it.
+A preview domain on Mend's own site (one registrable domain, such as previews.example.com beside
+mend.example.com) passes here: a template cannot read the Public Suffix List. The API refuses it
+at start. */ -}}
+{{- define "mend.validatePreview" -}}
+{{- if .Values.preview.enabled -}}
+{{- $domain := required "preview.domain is required when preview.enabled" .Values.preview.domain -}}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" $domain) -}}
+{{- fail (printf "preview.domain must be a lowercase DNS name a wildcard certificate can be issued for, such as previews.example.net (got %q)" $domain) -}}
+{{- end -}}
+{{- $hosts := list (urlParse .Values.web.appUrl).hostname -}}
+{{- with .Values.ingress.host }}{{ $hosts = append $hosts . }}{{ end -}}
+{{- range .Values.web.allowedOrigins }}{{ $hosts = append $hosts (urlParse .).hostname }}{{ end -}}
+{{- range $hosts -}}
+{{- if or (eq . $domain) (hasSuffix (printf ".%s" $domain) .) -}}
+{{- fail (printf "preview.domain %s holds Mend's host %s (ingress.host, web.appUrl or web.allowedOrigins): previews need a domain that is not Mend's host, above it or under it" $domain .) -}}
+{{- end -}}
+{{- if hasSuffix (printf ".%s" .) $domain -}}
+{{- fail (printf "preview.domain %s is under Mend's host %s (ingress.host, web.appUrl or web.allowedOrigins): previews need a domain that is not Mend's host, above it or under it" $domain .) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (eq .Values.exposure.mode "public") (not (has "preview-gateway" .Values.exposure.declared)) -}}
+{{- fail (printf "exposure.mode is public and previews are on, so the API refuses to start until preview-gateway is declared. Under exposure.mode private first, verify from another network that the wildcard DNS for *.%s points at the ingress controller, that the certificate for *.%s chains to a public root, that https://<label>.%s answers from another network, and that the API Pod's preview port %v answers nothing from outside the cluster. Then add preview-gateway to exposure.declared" $domain $domain $domain .Values.preview.port) -}}
+{{- end -}}
+{{- if not .Values.preview.ingress.tls.secretName -}}
+{{- fail "preview.ingress.tls.secretName is required when preview.enabled: previews are never routed without TLS. A wildcard needs a DNS-01 issuer; the chart installs none" -}}
+{{- end -}}
+{{- range .Values.extraEnv -}}
+{{- if and (eq .name "MEND_PREVIEW_PUBLIC_PORT") (ne (toString .value) "443") -}}
+{{- fail (printf "extraEnv sets MEND_PREVIEW_PUBLIC_PORT=%v: the preview Ingress serves 443, and the gateway routes and checks Origin by the port browsers use" .value) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.networkPolicies.enabled (or (not .Values.ingress.controller.namespace) (not .Values.ingress.controller.podLabels)) -}}
+{{- fail "preview: set ingress.controller.namespace and ingress.controller.podLabels so NetworkPolicy admits the controller's Pods to the preview gateway, and only them" -}}
+{{- end -}}
+{{- include "mend.validatePreviewPort" . -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* The release namespace's NetworkPolicy rule names these ports, so none may be the preview
+port: only the controller's rule admits it. */ -}}
+{{- define "mend.validatePreviewPort" -}}
+{{- $port := int .Values.preview.port -}}
+{{- if eq $port 3101 -}}
+{{- fail (printf "preview.port %d is the API's own port 3101: choose another port for the preview gateway" $port) -}}
+{{- end -}}
+{{- if eq $port (int .Values.sessionChannel.port) -}}
+{{- fail (printf "preview.port %d is the session channel's port (sessionChannel.port): choose another port for the preview gateway" $port) -}}
+{{- end -}}
+{{- if and (ge $port (int .Values.serviceHost.portMin)) (le $port (int .Values.serviceHost.portMax)) -}}
+{{- fail (printf "preview.port %d is inside the Service host range %v-%v (serviceHost.portMin-portMax), which every Pod in the release namespace reaches: choose a preview port outside it, or move the range" $port .Values.serviceHost.portMin .Values.serviceHost.portMax) -}}
+{{- end -}}
+{{- end -}}

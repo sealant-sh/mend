@@ -1,0 +1,33 @@
+# `helm template -f`: live previews behind their own Ingress (docs/adr/0017), beside Mend's, from
+# the Rook ObjectBucketClaim path.
+captureStore:
+  blobStore:
+    fromObjectBucketClaim:
+      configMap: mend-bucket
+      secret: mend-bucket
+store:
+  create:
+    enabled: true
+
+exposure:
+  executorNetwork: private
+
+web:
+  appUrl: https://mend.example.com
+
+ingress:
+  enabled: true
+  className: nginx
+  host: mend.example.com
+  tls:
+    secretName: mend-tls
+  controller:
+    namespace: ingress-nginx
+    podLabels: { app.kubernetes.io/name: ingress-nginx }
+
+preview:
+  enabled: true
+  domain: previews.example.net
+  ingress:
+    tls:
+      secretName: previews-tls

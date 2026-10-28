@@ -182,6 +182,13 @@ Two ways, and Mend wires neither in:
   as `tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }`. The packaged edge's image is pinned by
   setup, so this is an edge you run, as in [The edge in front](#the-edge-in-front).
 
+## Kubernetes
+
+The chart's `preview.*` values render the gateway's port on the API Pod, a ClusterIP Service, a
+second Ingress for `*.<domain>` with TLS, and a NetworkPolicy rule admitting the ingress controller
+to that port only. It installs no issuer, and leaves the controller's annotations to you. See
+[Live previews](../KUBERNETES.md#live-previews).
+
 ## Logs
 
 The sign-in exchange puts a single-use ticket in the preview host's query:

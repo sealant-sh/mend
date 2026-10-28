@@ -342,7 +342,8 @@ install on every run, after the edge's own container has loaded them; to serve a
 certificate, replace the files and run `mend server setup --yes`. The preview gateway's port is
 published on `127.0.0.1` only, and the edge logs no path, query or `Referer` for preview hosts: the
 sign-in exchange carries a single-use ticket in its query. Any edge you run in front of previews
-must keep that query out of its logs too.
+must keep that query out of its logs too. On Kubernetes the chart's `preview.*` values render a
+second Ingress for `*.<preview domain>` (see [Deploy on Kubernetes](/operate/deploy-kubernetes/)).
 
 The gate's `preview-gateway` item stays open until you checked from another network that
 `*.previews.example.net` resolves to the edge, that the certificate chains to a public root, and who
