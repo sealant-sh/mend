@@ -42,6 +42,28 @@ How browsers reach a preview follows from what is set:
   `https://<MEND_PREVIEW_TAILNET_HOSTNAME>:<its port>`. The port list is explicit, because Mend does
   not assign ports yet (delivery step 8). The API refuses a hostname equal to Mend's own host.
 
+### Browsers on loopback
+
+A loopback preview's grant is `mend-preview`: host-only on `<label>.localhost`, `HttpOnly`,
+`SameSite=Lax`, and not `Secure`, because the origin is plain HTTP. Each label is a host of its own,
+so a grant for one preview is never sent to another. `apps/api/test/preview-browsers.acceptance.ts`
+opens a preview through a real ticket, with no resolver mapping and no certificate exception, and
+observed on Linux:
+
+| Browser                         | Opens `<label>.localhost` | Grant cookie as stated | Second label gets no grant | No grant goes to sign-in | `isSecureContext` | `Sec-Fetch-*` sent |
+| ------------------------------- | ------------------------- | ---------------------- | -------------------------- | ------------------------ | ----------------- | ------------------ |
+| Chromium 156 (Playwright build) | yes                       | yes                    | yes                        | yes                      | `true`            | yes                |
+| Firefox 157 (Playwright build)  | yes                       | yes                    | yes                        | yes                      | `true`            | yes                |
+| Safari                          | not verified live         |                        |                            |                          |                   |                    |
+
+Both browsers resolve `*.localhost` to loopback themselves and reach a gateway on `127.0.0.1`, while
+this machine's resolver answers `::1` first. Safari was not run: macOS 26 resolves `*.localhost`,
+and WebKit does not treat `localhost` as a potentially trustworthy origin (WebKit bugs 171934 and
+281149), so Safari is expected, not observed, to send no `Sec-Fetch-*` there. A navigation without a
+grant that carries no `Sec-Fetch-*` field at all and asks for `text/html` is still sent to sign-in,
+so a browser that withholds Fetch Metadata gets the redirect, not a 401. Playwright's Linux WebKit
+is not Safari and was not used to stand in for it.
+
 ## The edge in front
 
 The edge must pass the browser's `Host`, port included, because the gateway routes and checks
@@ -203,6 +225,38 @@ of the gateway logs no URI for preview hosts:
   This was chosen over a filter that keeps the path because it reuses a snippet that already exists
   and needs no regular expression to keep correct. `scripts/edge-overlay.test.mjs` runs the real
   image and holds every line to it.
+- **nginx** writes the request line into its access log with the default `combined` format, query
+  and `Referer` included. Give the preview server a format with the path and no query, and no
+  `Referer`:
+
+  ```nginx
+  log_format preview '$remote_addr [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent';
+
+  server {
+      server_name *.previews.example.net;
+      access_log /var/log/nginx/preview.access.log preview;
+      error_log /var/log/nginx/preview.error.log crit;
+      # ...
+  }
+  ```
+
+  `$uri` is the path without the query; never use `$request`, `$request_uri` or `$args` there, or
+  `$http_referer`. `access_log off;` for the preview server is the other choice.
+
+- **nginx's error log cannot be formatted.** When the dial to the gateway fails during the exchange,
+  nginx writes, at its default level `error`, a line that holds the request line with the ticket,
+  the upstream URL with the ticket again, and the `Referer`:
+
+  ```text
+  [error] connect() failed (111: Connection refused) while connecting to upstream, client: 127.0.0.1, server: *.preview.localhost, request: "GET /__mend/auth?ticket=<the ticket>&path=%2F HTTP/1.1", upstream: "http://127.0.0.1:37065/__mend/auth?ticket=<the ticket>&path=%2F", host: "<label>.preview.localhost:34697", referrer: "…"
+  ```
+
+  The ticket is then unspent and opens the preview once, for the rest of its 30 seconds. No
+  `log_format` reaches this line. Keep it out of a shared log: set the preview server's `error_log`
+  to `crit`, as above, so failed dials are not logged there (the access log still records the 502),
+  or give the preview server an error log of its own that nothing ships and that is kept for less
+  time than anything else. `apps/api/test/preview-edge-logs.acceptance.ts` records this against
+  nginx 1.29 with a real ticket, and holds the `crit` setting to an error log with no ticket in it.
 
 ## Refusals
 
