@@ -7,6 +7,7 @@ import { NotFound } from "@mend/api-contracts";
 import {
   makeUpgradeTicketsMemory,
   PreviewGrantsRepo,
+  type PreviewGrantStanding,
   type PreviewGrantSubject,
   PreviewsRepo,
   UpgradeTicketsRepo,
@@ -35,7 +36,7 @@ import {
 } from "@mend/domain/workbench";
 import { SealantPlatformError, SealantPrincipal } from "@mend/sealant";
 import { type ForwardAdapter, WorkspaceCaller } from "@mend/sessions";
-import { Effect, Layer, PubSub, Redacted } from "effect";
+import { Deferred, Effect, Layer, PubSub, Redacted } from "effect";
 
 import { ProjectAccess } from "../../src/access.ts";
 import {
@@ -47,10 +48,10 @@ import {
 import { ConnectionRegistry, makeConnectionRegistry } from "../../src/connections.ts";
 import { type BusSignal, EventBus } from "../../src/events-bus.ts";
 import {
-  makePreviewGatewayLayer,
   PREVIEW_GATEWAY_DEFAULTS,
   type PreviewGatewaySettings,
-} from "../../src/preview-gateway.ts";
+} from "../../src/preview-gateway-settings.ts";
+import { makePreviewGatewayLayer } from "../../src/preview-gateway.ts";
 import {
   makePreviewIdentityLayer,
   PREVIEW_TIMING,
@@ -182,9 +183,13 @@ export interface GatewayWorldOptions {
   readonly routing?: keyof typeof ROUTINGS;
   readonly forwards: Layer.Layer<ForwardAdapter>;
   readonly targets?: Layer.Layer<PreviewTargets>;
-  readonly settings?: Partial<Omit<PreviewGatewaySettings, "bind" | "port">>;
+  readonly settings?: Partial<Omit<PreviewGatewaySettings, "bind" | "port" | "trustedProxies">> & {
+    readonly trustedProxies?: ReadonlyArray<string>;
+  };
   readonly budgets?: Partial<BudgetLimits>;
 }
+
+const noGate = (): Deferred.Deferred<void> | null => null;
 
 export const freePort = async (): Promise<number> => {
   const probe = net.createServer();
@@ -213,6 +218,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       { readonly previewId: string; readonly origin: string; readonly subject: PreviewGrantSubject }
     >();
     const revoked = new Set<string>();
+    const standingHeld: { current: Deferred.Deferred<void> | null } = { current: null };
     const members = new Map(MEMBERS.map((member) => [member.userId, member]));
     let minted = 0;
 
@@ -244,28 +250,34 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
           return Redacted.make(secret);
         }),
       standing: (keys) =>
-        Effect.sync(() =>
-          keys.map((key) => {
-            const found = grants.get(Redacted.value(key.grant));
-            if (
-              found === undefined ||
-              found.previewId !== key.previewId ||
-              found.origin !== key.origin ||
-              revoked.has(found.subject.userId)
-            ) {
-              return null;
-            }
-            const member = members.get(found.subject.userId);
-            return {
-              subject: found.subject,
-              previewKept: true,
-              membership:
-                member === undefined
-                  ? null
-                  : { organizationId: member.organizationId, role: member.role },
-              project: { organizationId: ORG, visibility: "shared", createdByUserId: "alice" },
-            };
-          }),
+        Effect.andThen(
+          Effect.suspend(() =>
+            standingHeld.current === null ? Effect.void : Deferred.await(standingHeld.current),
+          ),
+          Effect.sync(
+            (): ReadonlyArray<PreviewGrantStanding | null> =>
+              keys.map((key) => {
+                const found = grants.get(Redacted.value(key.grant));
+                if (
+                  found === undefined ||
+                  found.previewId !== key.previewId ||
+                  found.origin !== key.origin ||
+                  revoked.has(found.subject.userId)
+                ) {
+                  return null;
+                }
+                const member = members.get(found.subject.userId);
+                return {
+                  subject: found.subject,
+                  previewKept: true,
+                  membership:
+                    member === undefined
+                      ? null
+                      : { organizationId: member.organizationId, role: member.role },
+                  project: { organizationId: ORG, visibility: "shared", createdByUserId: "alice" },
+                };
+              }),
+          ),
         ),
       cleanup: () => Effect.succeed(0),
     };
@@ -309,6 +321,9 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
         [PREVIEWS.docs.id, bound({ serviceId: ServiceId.make("svc-docs") })],
       ]),
       starts: new Array<PreviewStartRequest>(),
+      failReads: false,
+      beforeClaim: noGate(),
+      launches: new Array<PreviewStartRequest>(),
       snapshotReads: 0,
       batchReads: new Array<ReadonlyArray<string>>(),
       ensureRunning: (
@@ -317,24 +332,40 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
     };
     const targetsLayer = Layer.succeed(PreviewTargets, {
       snapshot: (id) =>
-        Effect.sync(() => {
+        Effect.suspend(() => {
           targets.snapshotReads += 1;
-          return targets.resolutions.get(id) ?? null;
+          return targets.failReads
+            ? Effect.die("the database did not answer")
+            : Effect.succeed(targets.resolutions.get(id) ?? null);
         }),
       snapshots: (ids) =>
-        Effect.sync(() => {
+        Effect.suspend(() => {
           targets.batchReads.push(ids);
-          return new Map(
-            ids.flatMap((id) => {
-              const resolution = targets.resolutions.get(id) ?? null;
-              return resolution === null ? [] : [[id, resolution] as const];
-            }),
-          );
+          if (targets.failReads) return Effect.die("the database did not answer");
+          const read = new Map<PreviewId, PreviewGatewayResolution>();
+          for (const id of ids) {
+            const resolution = targets.resolutions.get(id) ?? null;
+            if (resolution !== null) read.set(id, resolution);
+          }
+          return Effect.succeed(read);
         }),
-      ensureRunning: (request) =>
+      ensureRunning: (request, claim) =>
         Effect.suspend(() => {
           targets.starts.push(request);
-          return targets.ensureRunning(request);
+          return Effect.scoped(
+            Effect.andThen(
+              Effect.andThen(
+                Effect.suspend(() =>
+                  targets.beforeClaim === null ? Effect.void : Deferred.await(targets.beforeClaim),
+                ),
+                claim,
+              ),
+              Effect.suspend(() => {
+                targets.launches.push(request);
+                return targets.ensureRunning(request);
+              }),
+            ),
+          );
         }),
     });
 
@@ -372,9 +403,11 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
         ),
       ),
     );
+    const budgets = makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...options.budgets });
     const settings: PreviewGatewaySettings = {
       bind: "127.0.0.1",
       port,
+      trustedProxies: [],
       ...PREVIEW_GATEWAY_DEFAULTS,
       ...options.settings,
     };
@@ -388,7 +421,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
             callerLayer,
             options.forwards,
             bus,
-            Layer.succeed(Budgets, makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...options.budgets })),
+            Layer.succeed(Budgets, budgets),
             Layer.succeed(ConnectionRegistry, connections),
           ),
         ),
@@ -404,6 +437,8 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       targets,
       lending,
       connections,
+      budgets,
+      standingHeld,
       revokeGrants: (userId: string) => revoked.add(userId),
       publish: (signal: BusSignal) => PubSub.publish(pubsub, signal),
     };

@@ -456,6 +456,7 @@ const ServerLive = Layer.unwrap(
     return servePreviews(router, {
       setup: previews,
       appUrl: network.appUrl,
+      trustedProxies,
       identity: PreviewIdentityLive,
     }).pipe(
       // Removing a member revokes, closes their connections on every process, stops their sessions.

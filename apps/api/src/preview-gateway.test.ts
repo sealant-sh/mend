@@ -21,6 +21,7 @@ import {
   watchGatewayRequests,
   WORKSPACE,
 } from "../test/support/preview-gateway-world.ts";
+import { PREVIEW_GATEWAY_DEFAULTS } from "./preview-gateway-settings.ts";
 import { PreviewStartFailed } from "./preview-targets.ts";
 
 const appRunning = Effect.acquireRelease(
@@ -279,7 +280,14 @@ describe("refusals before anything starts", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const { world } = yield* worldWithApp({
-            settings: { limits: { perPreview: 1, gateway: 256, forwards: 128 } },
+            settings: {
+              limits: {
+                ...PREVIEW_GATEWAY_DEFAULTS.limits,
+                perPreview: 1,
+                gateway: 256,
+                forwards: 128,
+              },
+            },
           });
           world.targets.resolutions.set(PREVIEWS.web.id, dormant());
           const start = yield* gatedStarts(world);
@@ -370,7 +378,14 @@ describe("a request to a stopped preview starts it and is held", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const { world } = yield* worldWithApp({
-          settings: { limits: { perPreview: 128, gateway: 256, forwards: 128 } },
+          settings: {
+            limits: {
+              ...PREVIEW_GATEWAY_DEFAULTS.limits,
+              perPreview: 128,
+              gateway: 256,
+              forwards: 128,
+            },
+          },
           budgets: { accountPreviewConnections: 128 },
         });
         world.targets.resolutions.set(PREVIEWS.web.id, dormant());
@@ -758,7 +773,7 @@ describe("a held request ends when its viewer's access does", () => {
         expect(refused.body, "with the budget's words").toContain(
           "budget reached · 1 preview starts at once for one account · nothing running was stopped",
         );
-        expect(world.targets.starts.length, "the refused start never reached the engine").toBe(1);
+        expect(world.targets.launches.length, "the refused start launched nothing").toBe(1);
         yield* Fiber.interrupt(held);
       }),
     ),
@@ -786,24 +801,24 @@ describe("an account's preview start window", () => {
             const reply = yield* startOnce;
             expect(reply.status, `start ${turn} ran and did not bind`).toBe(503);
           }
-          expect(world.targets.starts.length, "two starts reached the engine").toBe(2);
+          expect(world.targets.launches.length, "two starts launched").toBe(2);
           const refused = yield* startOnce;
           expect(refused.status, "the third start in a minute is refused as a budget").toBe(429);
           expect(refused.body, "with the window's words").toContain(
             "budget reached · 2 preview starts per minute for one account · nothing running was stopped",
           );
           expect(refused.headers["retry-after"], "and when to try again").toBe("60");
-          expect(world.targets.starts.length, "the refused start never reached the engine").toBe(2);
+          expect(world.targets.launches.length, "the refused start launched nothing").toBe(2);
           const dave = yield* fetchAt(
             world.port,
             world.hostOf("web"),
             world.cookieFor("dave", "web"),
           );
           expect(dave.status, "another account has its own window").toBe(503);
-          expect(world.targets.starts.length, "and its start ran").toBe(3);
+          expect(world.targets.launches.length, "and its start ran").toBe(3);
           yield* TestClock.adjust("61 seconds");
           expect((yield* startOnce).status, "a minute later carol may start again").toBe(503);
-          expect(world.targets.starts.length, "and her start ran").toBe(4);
+          expect(world.targets.launches.length, "and her start ran").toBe(4);
         }),
       ),
   );
@@ -864,7 +879,14 @@ describe("the gateway's own ceilings", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const { world } = yield* worldWithApp({
-          settings: { limits: { perPreview: 64, gateway: 256, forwards: 1 } },
+          settings: {
+            limits: {
+              ...PREVIEW_GATEWAY_DEFAULTS.limits,
+              perPreview: 64,
+              gateway: 256,
+              forwards: 1,
+            },
+          },
         });
         const stream = new AbortController();
         const first = yield* Effect.forkChild(

@@ -22,10 +22,15 @@ type GatewayNeeds =
   | Budgets
   | ConnectionRegistry;
 
-const gatewayOf = (setup: PreviewSetup): Layer.Layer<never, PreviewListenFailed, GatewayNeeds> =>
+const gatewayOf = (
+  setup: PreviewSetup,
+  trustedProxies: ReadonlyArray<string>,
+): Layer.Layer<never, PreviewListenFailed, GatewayNeeds> =>
   setup._tag === "Off"
     ? Layer.empty
-    : makePreviewGatewayLayer(setup.gateway).pipe(Layer.provide(PreviewTargetsLive));
+    : makePreviewGatewayLayer({ ...setup.gateway, trustedProxies }).pipe(
+        Layer.provide(PreviewTargetsLive),
+      );
 
 export const previewConfigOf = (appUrl: string, setup: PreviewSetup): PreviewConfig["Service"] => ({
   appUrl,
@@ -43,6 +48,7 @@ export const servePreviews = <E, R>(
   options: {
     readonly setup: PreviewSetup;
     readonly appUrl: string;
+    readonly trustedProxies: ReadonlyArray<string>;
     readonly identity: Layer.Layer<
       PreviewIdentity,
       never,
@@ -55,7 +61,7 @@ export const servePreviews = <E, R>(
     >;
   },
 ) =>
-  Layer.merge(router, gatewayOf(options.setup)).pipe(
+  Layer.merge(router, gatewayOf(options.setup, options.trustedProxies)).pipe(
     Layer.provide(
       options.identity.pipe(
         Layer.provideMerge(

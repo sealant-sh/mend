@@ -92,7 +92,7 @@ describe.skipIf(postgres.skip)("the gateway's targets, from Postgres and the eng
       deadline: 1_000,
     };
     const attempt = await run(
-      Effect.flatMap(PreviewTargets, (targets) => targets.ensureRunning(request)),
+      Effect.flatMap(PreviewTargets, (targets) => targets.ensureRunning(request, Effect.void)),
       (received) =>
         Effect.sync(() => {
           asked.push(received);
@@ -109,12 +109,15 @@ describe.skipIf(postgres.skip)("the gateway's targets, from Postgres and the eng
       const exit = await run(
         Effect.exit(
           Effect.flatMap(PreviewTargets, (targets) =>
-            targets.ensureRunning({
-              previewId: PreviewId.make("pv-refused"),
-              revision: 0,
-              sourceAttemptId: SessionProcessId.make("att-source"),
-              deadline: 1_000,
-            }),
+            targets.ensureRunning(
+              {
+                previewId: PreviewId.make("pv-refused"),
+                revision: 0,
+                sourceAttemptId: SessionProcessId.make("att-source"),
+                deadline: 1_000,
+              },
+              Effect.void,
+            ),
           ),
         ),
         () => Effect.fail(new PreviewStartRefused({ reason, detail: "for the log only" })),

@@ -9,7 +9,12 @@ import {
   previewStartId,
   serviceStartCorrelation,
 } from "@mend/domain/workbench";
-import { PreviewStartRefused, SessionEngine, WorkspaceCaller } from "@mend/sessions";
+import {
+  type PreviewStartDeclined,
+  PreviewStartRefused,
+  SessionEngine,
+  WorkspaceCaller,
+} from "@mend/sessions";
 import { Effect, Exit, Layer, ManagedRuntime, Redacted, Schema, Scope } from "effect";
 import { SqlClient } from "effect/sql";
 
@@ -19,7 +24,7 @@ import { EventBusLive } from "../../src/events-bus.ts";
 import {
   PREVIEW_GATEWAY_DEFAULTS,
   type PreviewGatewaySettings,
-} from "../../src/preview-gateway.ts";
+} from "../../src/preview-gateway-settings.ts";
 import {
   makePreviewIdentityLayer,
   PREVIEW_TIMING,
@@ -134,7 +139,8 @@ export const acceptanceGateway = (
 
     const startFor = (
       request: PreviewStartRequest,
-    ): Effect.Effect<SessionProcessId, PreviewStartRefused> =>
+      claim: Effect.Effect<void, PreviewStartDeclined, Scope.Scope>,
+    ): Effect.Effect<SessionProcessId, PreviewStartRefused | PreviewStartDeclined> =>
       Effect.gen(function* () {
         asked.push(request);
         onStart(request);
@@ -152,6 +158,7 @@ export const acceptanceGateway = (
           case "Refuse":
             return yield* new PreviewStartRefused({ reason: start.reason });
           case "Fixture": {
+            yield* claim;
             yield* Effect.sleep(start.delayMs);
             running.push(
               yield* Effect.promise(() => spawnFixture(start.fixture, options.localPorts[key])),
@@ -159,9 +166,9 @@ export const acceptanceGateway = (
             return yield* recordAttempt(key, request);
           }
         }
-      }).pipe(Effect.provideContext(repos));
+      }).pipe(Effect.scoped, Effect.provideContext(repos));
 
-    const settings: PreviewGatewaySettings = {
+    const settings: Omit<PreviewGatewaySettings, "trustedProxies"> = {
       bind: "127.0.0.1",
       port: options.port,
       startHoldMs: options.startHoldMs ?? PREVIEW_GATEWAY_DEFAULTS.startHoldMs,
@@ -170,11 +177,13 @@ export const acceptanceGateway = (
           ? { _tag: "Unlimited" }
           : { _tag: "Capped", bytes: options.bodyCapBytes },
       limits: PREVIEW_GATEWAY_DEFAULTS.limits,
+      queueWaitMs: PREVIEW_GATEWAY_DEFAULTS.queueWaitMs,
     };
     yield* Layer.build(
       servePreviews(Layer.empty, {
         setup: { _tag: "On", routing: options.routing, gateway: settings },
         appUrl: APP_URL,
+        trustedProxies: [],
         identity: PreviewIdentityLive,
       }).pipe(
         Layer.provide(ConnectionRegistryLive),

@@ -107,7 +107,7 @@ const checkCookieKept = (
 
 export const servePreviewRequest = <E, R>(
   head: PreviewRequestHead,
-  write: (admitted: PreviewViewer) => Effect.Effect<undefined, E, R>,
+  write: (admitted: PreviewViewer, routing: PreviewRouting) => Effect.Effect<undefined, E, R>,
 ): Effect.Effect<
   PreviewAnswer | null,
   E | PreviewAccessEnded,
@@ -135,19 +135,25 @@ export const servePreviewRequest = <E, R>(
     );
     if (grant === "repeated") return answer(400, "Bad request.");
     const identity = yield* PreviewIdentity;
-    return yield* identity.withViewer({ origin, grant }, write).pipe(
-      Effect.as(null),
-      Effect.catchIf(isRefusal, (refused) =>
-        Effect.succeed(
-          refused._tag === "PreviewNoIdentity" &&
-            refused.previewId !== null &&
-            isDocumentNavigation(browser)
-            ? redirect(
-                302,
-                signInAt(appUrl, refused.previewId, parsePreviewPath(head.target) ?? PREVIEW_ROOT),
-              )
-            : refusalAnswer(refused),
+    return yield* identity
+      .withViewer({ origin, grant }, (admitted) => write(admitted, routing))
+      .pipe(
+        Effect.as(null),
+        Effect.catchIf(isRefusal, (refused) =>
+          Effect.succeed(
+            refused._tag === "PreviewNoIdentity" &&
+              refused.previewId !== null &&
+              isDocumentNavigation(browser)
+              ? redirect(
+                  302,
+                  signInAt(
+                    appUrl,
+                    refused.previewId,
+                    parsePreviewPath(head.target) ?? PREVIEW_ROOT,
+                  ),
+                )
+              : refusalAnswer(refused),
+          ),
         ),
-      ),
-    );
+      );
   });

@@ -5,8 +5,8 @@ import {
   PreviewStartRefusal,
   type PreviewStartRequest,
 } from "@mend/domain/workbench";
-import { type PreviewStartRefused, SessionEngine } from "@mend/sessions";
-import { Effect, Layer, Schema } from "effect";
+import { type PreviewStartDeclined, type PreviewStartRefused, SessionEngine } from "@mend/sessions";
+import { Effect, Layer, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
 
 export class PreviewStartFailed extends Schema.TaggedError<PreviewStartFailed>()(
@@ -23,10 +23,14 @@ export class PreviewTargets extends Context.Service<
     readonly snapshots: (
       ids: ReadonlyArray<PreviewId>,
     ) => Effect.Effect<ReadonlyMap<PreviewId, PreviewGatewayResolution>>;
-    /** Returns once the attempt is seen to answer on its port, or fails, by `request.deadline`. */
+    /**
+     * Returns once the attempt is seen to answer on its port, or fails, by `request.deadline`.
+     * `claim` runs only if this request claims a new launch (`SessionEngine.ensurePreviewRunning`).
+     */
     readonly ensureRunning: (
       request: PreviewStartRequest,
-    ) => Effect.Effect<SessionProcessId, PreviewStartFailed>;
+      claim: Effect.Effect<void, PreviewStartDeclined, Scope.Scope>,
+    ) => Effect.Effect<SessionProcessId, PreviewStartFailed | PreviewStartDeclined>;
   }
 >()("@mend/api/PreviewTargets") {}
 
@@ -62,20 +66,18 @@ export const PreviewTargetsLive: Layer.Layer<PreviewTargets, never, PreviewsRepo
                   ),
               ),
             ),
-        // The gateway does not claim starts yet: nothing is charged, and nothing declines.
-        ensureRunning: (request) =>
-          engine.ensurePreviewRunning(request, Effect.void).pipe(
-            Effect.catchTag("PreviewStartDeclined", (declined) => Effect.die(declined)),
-            Effect.tapError((refused) =>
+        ensureRunning: (request, claim) =>
+          engine.ensurePreviewRunning(request, claim).pipe(
+            Effect.catchTag("PreviewStartRefused", (refused) =>
               Effect.logWarning("preview: a request-triggered start was refused").pipe(
                 Effect.annotateLogs({
                   previewId: request.previewId,
                   reason: refused.reason,
                   detail: refused.detail ?? "",
                 }),
+                Effect.andThen(Effect.fail(previewStartFailure(refused))),
               ),
             ),
-            Effect.mapError(previewStartFailure),
           ),
       };
     }),

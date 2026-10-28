@@ -8,7 +8,7 @@ import {
   PREVIEW_GATEWAY_DEFAULTS,
   type PreviewBodyCap,
   type PreviewGatewaySettings,
-} from "./preview-gateway.ts";
+} from "./preview-gateway-settings.ts";
 import type { PreviewRouting } from "./preview-routing.ts";
 
 const PREVIEW_VARIABLES = [
@@ -42,7 +42,7 @@ export type PreviewSetup =
   | {
       readonly _tag: "On";
       readonly routing: PreviewRouting;
-      readonly gateway: PreviewGatewaySettings;
+      readonly gateway: Omit<PreviewGatewaySettings, "trustedProxies">;
     };
 
 export class PreviewConfigRefused extends Schema.TaggedError<PreviewConfigRefused>()(
@@ -246,7 +246,14 @@ export const previewSetupOf = (
     return {
       _tag: "On",
       routing,
-      gateway: { bind, port, startHoldMs, bodyCap, limits: PREVIEW_GATEWAY_DEFAULTS.limits },
+      gateway: {
+        bind,
+        port,
+        startHoldMs,
+        bodyCap,
+        limits: PREVIEW_GATEWAY_DEFAULTS.limits,
+        queueWaitMs: PREVIEW_GATEWAY_DEFAULTS.queueWaitMs,
+      },
     };
   });
 

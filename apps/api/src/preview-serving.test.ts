@@ -25,7 +25,7 @@ import { freePort, send } from "../test/support/preview-gateway-world.ts";
 import { Budgets, DEFAULT_BUDGET_LIMITS, makeBudgets } from "./budgets.ts";
 import { ConnectionRegistryLive } from "./connections.ts";
 import { EventBusLive } from "./events-bus.ts";
-import { PREVIEW_GATEWAY_DEFAULTS } from "./preview-gateway.ts";
+import { PREVIEW_GATEWAY_DEFAULTS } from "./preview-gateway-settings.ts";
 import { PreviewIdentity, PreviewIdentityLive } from "./preview-identity.ts";
 import { servePreviews } from "./preview-serving.ts";
 import { PreviewAuthRoutes } from "./routes/preview-auth.ts";
@@ -108,6 +108,7 @@ describe.skipIf(postgres.skip)("the API's HTTP tier with previews on", () => {
           gateway: { bind: "127.0.0.1", port: gatewayPort, ...PREVIEW_GATEWAY_DEFAULTS },
         },
         appUrl: "http://localhost:3105",
+        trustedProxies: [],
         identity: counted,
       },
     ).pipe(

@@ -1,0 +1,247 @@
+import type { PreviewId } from "@mend/domain";
+import {
+  type PreviewBoundAttempt,
+  type PreviewGatewayResolution,
+  type PreviewStartReason,
+  previewStartReasonOf,
+} from "@mend/domain/workbench";
+import { PreviewStartDeclined } from "@mend/sessions";
+import { Cause, Clock, Deferred, Duration, Effect, Option } from "effect";
+
+import { budgetMessage, Budgets } from "./budgets.ts";
+import {
+  budgetPage,
+  CEILING_RETRY_SECONDS,
+  gatewayPage,
+  notDelivered,
+  REFUSED,
+  undeliveredAnswer,
+} from "./preview-headers.ts";
+import { PreviewNotFound } from "./preview-identity.ts";
+import type { BoundResolution } from "./preview-pools.ts";
+import { type PreviewAnswer, refusalAnswer } from "./preview-requests.ts";
+import { PreviewTargets } from "./preview-targets.ts";
+
+export type PreviewRoute =
+  | { readonly _tag: "Bound"; readonly resolution: BoundResolution }
+  | { readonly _tag: "Refused"; readonly answer: PreviewAnswer }
+  | {
+      readonly _tag: "Start";
+      readonly from: StartFrom;
+      readonly workspaceId: PreviewBoundAttempt["workspaceId"] | null;
+    };
+
+export interface StartFrom {
+  readonly revision: number;
+  readonly sourceAttemptId: PreviewBoundAttempt["attemptId"];
+}
+
+export type WaveOutcome = Exclude<PreviewRoute, { readonly _tag: "Start" }>;
+
+const refused = (answer: PreviewAnswer): WaveOutcome => ({ _tag: "Refused", answer });
+
+const NOT_FOUND = refusalAnswer(new PreviewNotFound());
+
+export const routeOf = (
+  serviceName: string,
+  resolution: PreviewGatewayResolution | null,
+): PreviewRoute => {
+  if (resolution === null) return refused(NOT_FOUND);
+  switch (resolution._tag) {
+    case "Stopped":
+      return refused(
+        undeliveredAnswer({ _tag: "Stopped", serviceName, by: resolution.control.byName }),
+      );
+    case "Refused": {
+      const reason = REFUSED[resolution.reason];
+      return refused(gatewayPage(reason.status, notDelivered(serviceName, reason.fact)));
+    }
+    case "Bound":
+      return { _tag: "Bound", resolution };
+    case "Starting":
+      return {
+        _tag: "Start",
+        from: { revision: resolution.revision, sourceAttemptId: resolution.attemptId },
+        workspaceId: resolution.workspaceId,
+      };
+    case "Dormant":
+      return {
+        _tag: "Start",
+        from: { revision: resolution.revision, sourceAttemptId: resolution.source.sourceAttemptId },
+        workspaceId: resolution.workspaceId,
+      };
+  }
+};
+
+type Settled =
+  | WaveOutcome
+  | { readonly _tag: "ClaimerDeclined"; readonly by: string; readonly answer: PreviewAnswer }
+  | { readonly _tag: "ElsewhereDeclined" };
+
+interface Wave {
+  readonly deadline: number;
+  readonly done: Deferred.Deferred<Settled>;
+}
+
+export interface PreviewToStart {
+  readonly id: PreviewId;
+  readonly serviceName: string;
+}
+
+export interface StartWaves {
+  readonly join: (
+    preview: PreviewToStart,
+    from: StartFrom,
+    viewerId: string,
+  ) => Effect.Effect<WaveOutcome>;
+}
+
+const logged = (message: string, cause: Cause.Cause<unknown>) =>
+  Effect.logError(message).pipe(Effect.annotateLogs({ cause: Cause.pretty(cause) }));
+
+export const makeStartWaves = (startHoldMs: number) =>
+  Effect.gen(function* () {
+    const targets = yield* PreviewTargets;
+    const budgets = yield* Budgets;
+    const clock = yield* Clock.Clock;
+    const scope = yield* Effect.scope;
+    const waves = new Map<PreviewId, Wave>();
+    const { limits } = budgets;
+
+    const didNotStart = (preview: PreviewToStart, reason: PreviewStartReason): WaveOutcome =>
+      refused(
+        undeliveredAnswer({
+          _tag: "DidNotStart",
+          serviceName: preview.serviceName,
+          holdMs: startHoldMs,
+          reason,
+        }),
+      );
+
+    const startedOutcome = (
+      preview: PreviewToStart,
+      resolution: PreviewGatewayResolution | null,
+    ): WaveOutcome => {
+      const route = routeOf(preview.serviceName, resolution);
+      return route._tag === "Start" ? didNotStart(preview, "process exited") : route;
+    };
+
+    const claimFor = (viewerId: string, declined: { answer: PreviewAnswer | null }) =>
+      Effect.gen(function* () {
+        const wait = budgets.previewStarts.take(
+          viewerId,
+          limits.accountPreviewStartsPerMinute,
+          clock.currentTimeMillisUnsafe(),
+        );
+        if (wait !== null) {
+          declined.answer = budgetPage(
+            budgetMessage("accountPreviewStartsPerMinute", limits.accountPreviewStartsPerMinute),
+            wait,
+          );
+          return yield* new PreviewStartDeclined();
+        }
+        if (!(yield* budgets.previewStartSlot(viewerId))) {
+          declined.answer = budgetPage(
+            budgetMessage("accountPreviewStartsInFlight", limits.accountPreviewStartsInFlight),
+            CEILING_RETRY_SECONDS,
+          );
+          return yield* new PreviewStartDeclined();
+        }
+      });
+
+    const runWave = (
+      preview: PreviewToStart,
+      wave: Wave,
+      from: StartFrom,
+      viewerId: string,
+    ): Effect.Effect<void> => {
+      const declined: { answer: PreviewAnswer | null } = { answer: null };
+      const started: Effect.Effect<Settled> = targets
+        .ensureRunning(
+          {
+            previewId: preview.id,
+            revision: from.revision,
+            sourceAttemptId: from.sourceAttemptId,
+            deadline: wave.deadline,
+          },
+          claimFor(viewerId, declined),
+        )
+        .pipe(
+          Effect.andThen(targets.snapshot(preview.id)),
+          Effect.map((read): Settled => startedOutcome(preview, read)),
+          Effect.catchTags({
+            PreviewStartFailed: (failed) =>
+              failed.reason === "stopped"
+                ? Effect.map(targets.snapshot(preview.id), (read) => startedOutcome(preview, read))
+                : Effect.succeed(didNotStart(preview, previewStartReasonOf(failed.reason))),
+            PreviewStartDeclined: () =>
+              Effect.succeed<Settled>(
+                declined.answer === null
+                  ? { _tag: "ElsewhereDeclined" }
+                  : { _tag: "ClaimerDeclined", by: viewerId, answer: declined.answer },
+              ),
+          }),
+        );
+      const bounded = Effect.suspend(() =>
+        started.pipe(
+          Effect.timeoutOption(
+            Duration.millis(Math.max(0, wave.deadline - clock.currentTimeMillisUnsafe())),
+          ),
+          Effect.map(Option.getOrElse((): Settled => didNotStart(preview, "start timed out"))),
+        ),
+      );
+      return bounded.pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : logged("preview gateway: a start failed", cause).pipe(
+                Effect.as(didNotStart(preview, "preview is unavailable")),
+              ),
+        ),
+        Effect.flatMap((settled) => Deferred.succeed(wave.done, settled)),
+        Effect.ensuring(
+          Effect.suspend(() => {
+            if (waves.get(preview.id) === wave) waves.delete(preview.id);
+            return Deferred.succeed(wave.done, didNotStart(preview, "preview is unavailable"));
+          }),
+        ),
+        Effect.asVoid,
+      );
+    };
+
+    const awaitWave = (
+      preview: PreviewToStart,
+      from: StartFrom,
+      viewerId: string,
+    ): Effect.Effect<Settled> =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          let wave = waves.get(preview.id);
+          if (wave === undefined) {
+            wave = {
+              deadline: clock.currentTimeMillisUnsafe() + startHoldMs,
+              done: Deferred.makeUnsafe<Settled>(),
+            };
+            waves.set(preview.id, wave);
+            yield* Effect.forkIn(runWave(preview, wave, from, viewerId), scope);
+          }
+          return yield* restore(Deferred.await(wave.done));
+        }),
+      );
+
+    const join = (
+      preview: PreviewToStart,
+      from: StartFrom,
+      viewerId: string,
+    ): Effect.Effect<WaveOutcome> =>
+      Effect.gen(function* () {
+        for (;;) {
+          const settled = yield* awaitWave(preview, from, viewerId);
+          if (settled._tag === "ElsewhereDeclined") continue;
+          if (settled._tag !== "ClaimerDeclined") return settled;
+          if (settled.by === viewerId) return refused(settled.answer);
+        }
+      });
+
+    return { join } satisfies StartWaves;
+  });

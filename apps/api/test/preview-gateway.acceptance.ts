@@ -399,6 +399,54 @@ describe.each(FRONTS)("through the preview gateway, %s", (front) => {
   });
 });
 
+describe("through the preview gateway behind Caddy over HTTP/2", () => {
+  it("serves a Vite page whose first import wave is 300 modules, none refused", async () => {
+    const vite = await startViteFixture(0, 300, 100);
+    disposers.push(vite.stop);
+    const at = await stage("vite_wide", "caddy", () => ({}));
+    const options = { ...at.options, localPorts: { ...at.options.localPorts, web: vite.port } };
+    await inProcess({ ...at, options });
+    const opened = await openInChromium(await at.signIn.authUrl("carol", "web", "/"), {
+      loopbackHosts: at.loopbackHosts,
+    });
+    disposers.push(opened.close);
+    const statuses = new Map<number, number>();
+    let networkChanged = 0;
+    opened.page.on("response", (response) =>
+      statuses.set(response.status(), (statuses.get(response.status()) ?? 0) + 1),
+    );
+    opened.page.on("requestfailed", (request) => {
+      if (request.failure()?.errorText === "net::ERR_NETWORK_CHANGED") networkChanged += 1;
+    });
+    const wide = opened.page.locator("#wide");
+    const loaded = async (): Promise<"loaded" | "network changed" | "stalled"> => {
+      for (const until = Date.now() + 60_000; Date.now() < until; ) {
+        if ((await wide.textContent()) === "300") return "loaded";
+        if (networkChanged > 0) return "network changed";
+        await new Promise((done) => setTimeout(done, 200));
+      }
+      return "stalled";
+    };
+    for (let tries = 1; ; tries += 1) {
+      networkChanged = 0;
+      const outcome = await opened.page.reload().then(loaded, (error: unknown) => {
+        if (String(error).includes("ERR_NETWORK_CHANGED")) return "network changed";
+        throw error;
+      });
+      if (outcome !== "network changed" || tries >= 5) break;
+      report(`retrying the wide page after ERR_NETWORK_CHANGED (${tries})`);
+    }
+    expect(await wide.textContent(), "every module of the wave loaded").toBe("300");
+    const protocol = await opened.page.evaluate(() => {
+      const [navigation] = performance.getEntriesByType("navigation");
+      return navigation instanceof PerformanceNavigationTiming ? navigation.nextHopProtocol : "";
+    });
+    expect(protocol, "the browser spoke HTTP/2 to the edge").toBe("h2");
+    expect(statuses.get(429) ?? 0, "no request was refused for a budget").toBe(0);
+    report(`caddy h2 wide Vite: statuses ${JSON.stringify([...statuses])}`);
+  });
+});
+
 describe("the gateway's memory under slow readers, direct", () => {
   const READERS = 16;
   const PAYLOAD = 64 * MiB;

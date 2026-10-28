@@ -1,4 +1,9 @@
-import { type PreviewUndelivered, previewUndeliveredLine } from "@mend/domain/workbench";
+import {
+  type PreviewGatewayRefusal,
+  type PreviewUndelivered,
+  previewUndeliveredLine,
+} from "@mend/domain/workbench";
+import type { ForwardIssueReason } from "@mend/sealant";
 
 import {
   answer,
@@ -161,3 +166,66 @@ export const gatewayPage = (status: number, text: string): PreviewAnswer => {
 
 export const undeliveredAnswer = (fact: PreviewUndelivered): PreviewAnswer =>
   gatewayPage(503, previewUndeliveredLine(fact));
+
+export const stated = (service: string, fact: string): string => `preview · ${service} · ${fact}`;
+
+export const notDelivered = (service: string, fact: string): string =>
+  `${stated(service, fact)} · your request was not delivered`;
+
+export const CEILING_RETRY_SECONDS = 1;
+
+export const budgetPage = (message: string, retryAfterSeconds: number): PreviewAnswer => {
+  const page = gatewayPage(429, message);
+  return { ...page, headers: { ...page.headers, "retry-after": String(retryAfterSeconds) } };
+};
+
+export const REFUSED = {
+  "service-missing": { status: 503, fact: "no Service of this name in its worktree" },
+  "not-browser-service": { status: 503, fact: "the Service serves no browser page" },
+  "no-recorded-command": { status: 503, fact: "no recorded command starts it" },
+  "https-unsupported": { status: 501, fact: "it speaks https, which previews do not relay yet" },
+  "process-binding-unavailable": { status: 503, fact: "process binding is unavailable" },
+} as const satisfies Record<PreviewGatewayRefusal, { status: number; fact: string }>;
+
+export type DialDisposition =
+  | { readonly _tag: "NotLent" }
+  | { readonly _tag: "Undelivered"; readonly status: 502 | 503 | 504; readonly fact: string };
+
+const undelivered = (status: 502 | 503 | 504, fact: string): DialDisposition => ({
+  _tag: "Undelivered",
+  status,
+  fact,
+});
+const NOT_LENT: DialDisposition = { _tag: "NotLent" };
+
+export const DIAL_DISPOSITION = {
+  "connection-refused": undelivered(502, "nothing listens"),
+  "name-unresolved": undelivered(502, "nothing listens"),
+  "network-unreachable": undelivered(502, "the forward failed"),
+  "dial-failed": undelivered(502, "the forward failed"),
+  "transport-unavailable": undelivered(503, "the forward failed"),
+  internal: undelivered(502, "the forward failed"),
+  "platform-failed": undelivered(502, "the forward failed"),
+  "unrecognized-refusal": undelivered(502, "the forward failed"),
+  "protocol-unsupported": undelivered(502, "the forward failed"),
+  "invalid-target": undelivered(502, "the forward failed"),
+  "workspace-not-ready": undelivered(503, "workspace is not live"),
+  "runtime-unreachable": undelivered(503, "workspace is not live"),
+  "runtime-untargetable": undelivered(503, "workspace is not live"),
+  "not-found": undelivered(503, "workspace is not live"),
+  "dial-timeout": undelivered(504, "the forward timed out"),
+  "deadline-exceeded": undelivered(504, "the forward timed out"),
+  "budget-exceeded": undelivered(503, "the platform's forward budget is reached"),
+  unauthorized: undelivered(503, "the platform refused the forward"),
+  NO_PRINCIPAL: undelivered(503, "the platform refused the forward"),
+  UNKNOWN_USER: undelivered(503, "the platform refused the forward"),
+  forbidden: NOT_LENT,
+  no_standing: NOT_LENT,
+  creator_no_access: NOT_LENT,
+  "owner-exited": undelivered(502, "process exited"),
+  "owner-required": undelivered(502, "process binding is unavailable"),
+  "peer-mismatch": undelivered(502, "process binding is unavailable"),
+  "binding-unverifiable": undelivered(502, "process binding is unavailable"),
+  "binding-unsupported": undelivered(502, "process binding is unavailable"),
+  cancelled: undelivered(503, "the forward was given up"),
+} as const satisfies Record<ForwardIssueReason, DialDisposition>;
