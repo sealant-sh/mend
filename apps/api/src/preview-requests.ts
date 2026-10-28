@@ -1,3 +1,4 @@
+import { NO_SUCH_PREVIEW } from "@mend/network";
 import { Brand } from "effect";
 
 import type { PreviewNoIdentity, PreviewNotFound, PreviewUnavailable } from "./preview-identity.ts";
@@ -61,8 +62,7 @@ export interface BrowserHead {
   readonly fetchSite: string | undefined;
   readonly fetchMode: string | undefined;
   readonly fetchDest: string | undefined;
-  /** Whether any `Sec-Fetch-*` field arrived. */
-  readonly fetchMetadata: boolean;
+  readonly sentFetchMetadata: boolean;
   readonly acceptsHtml: boolean;
 }
 
@@ -80,7 +80,7 @@ export const isDocumentNavigation = (head: BrowserHead): boolean =>
  */
 export const opensSignIn = (head: BrowserHead): boolean =>
   isDocumentNavigation(head) ||
-  (head.method === "GET" && !head.upgrade && !head.fetchMetadata && head.acceptsHtml);
+  (head.method === "GET" && !head.upgrade && !head.sentFetchMetadata && head.acceptsHtml);
 
 export const browserAdmits = (head: BrowserHead, own: PreviewOrigin): boolean => {
   if (head.origins.length > 1) return false;
@@ -126,7 +126,7 @@ export const refusalAnswer = (
     case "PreviewNoIdentity":
       return answer(401, "Not signed in to this preview.");
     case "PreviewNotFound":
-      return answer(404, "No such preview.");
+      return answer(404, NO_SUCH_PREVIEW);
     case "PreviewUnavailable":
       return answer(503, "Previews are unavailable right now.");
   }

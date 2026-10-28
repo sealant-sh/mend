@@ -1180,7 +1180,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "how this instance is exposed, as declared and as observed",
     synopsis: [],
     description: [
-      "Operator only. States MEND_EXPOSURE as declared (loopback, private or public) and one line per item of the public exposure gate, with how it was established: observed (this server read it), carried (this build contains it, and the server cannot see it in effect), declared (you stated it and the server cannot check it), or open. MEND_EXPOSURE=public refuses to start while an item that blocks a start is open: every item the server can observe, and workspace-ssh until you declare it. Items it cannot observe say what would verify them; once you have verified core-private, edge-tls, workspace-ssh (SSH published apart from the web port) or (while it is enabled) t3code-gateway from outside, name it in MEND_EXPOSURE_DECLARED, or with mend server setup --declare. The report is what was observed; it is not a statement that the instance is fit to expose.",
+      "Operator only. States MEND_EXPOSURE as declared (loopback, private or public) and one line per item of the public exposure gate, with how it was established: observed (this server read it), carried (this build contains it, and the server cannot see it in effect), declared (you stated it and the server cannot check it), or open. MEND_EXPOSURE=public refuses to start while an item that blocks a start is open: every item the server can observe, and workspace-ssh until you declare it. Items it cannot observe say what would verify them; once you have verified core-private, edge-tls, workspace-ssh (SSH published apart from the web port), (while it is enabled) t3code-gateway or (while previews are on) preview-gateway from outside, name it in MEND_EXPOSURE_DECLARED, or with mend server setup --declare. The report is what was observed; it is not a statement that the instance is fit to expose.",
     ],
     see: ["operator gate", "doctor"],
   },
@@ -1344,7 +1344,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--declare <item>",
-        text: "state a gate item you verified from outside: core-private, edge-tls, workspace-ssh or t3code-gateway. Adds to what is saved; repeat for more, none clears. public with --ssh-bind beyond loopback needs workspace-ssh",
+        text: "state a gate item you verified from outside: core-private, edge-tls, workspace-ssh, t3code-gateway or preview-gateway. Adds to what is saved; repeat for more, none clears. public with --ssh-bind beyond loopback needs workspace-ssh",
       },
       {
         flag: "--undeclare <item>",

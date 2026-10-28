@@ -30,7 +30,13 @@ How browsers reach a preview follows from what is set:
   `https://<label>.<MEND_PREVIEW_DOMAIN>:<MEND_PREVIEW_PUBLIC_PORT>`, and the edge terminates TLS
   for `*.<MEND_PREVIEW_DOMAIN>`. The API refuses a preview domain that equals one of Mend's own
   hosts (`APP_URL`, `MEND_ALLOWED_ORIGINS`), holds one of them, or sits under one of them, because
-  previews need a domain apart from Mend's (ADR 0017, decision 1).
+  previews need a domain apart from Mend's (ADR 0017, decision 1). It also refuses a preview domain
+  on Mend's own site: one that shares the registrable domain of one of those hosts, by the Public
+  Suffix List, such as `previews.example.com` beside `mend.example.com`. A page on such a preview
+  can set cookies for `example.com`, and Mend's host receives them. Previews on Mend's own site need
+  Mend's cookies to move to `__Host-` names, which ships in ADR 0017 step 8b with the tailnet
+  default. Until then, use a preview domain on a registrable domain of its own, or loopback
+  (`*.localhost`).
 - **On a tailnet, with a hostname and its ports.** A preview is
   `https://<MEND_PREVIEW_TAILNET_HOSTNAME>:<its port>`. The port list is explicit, because Mend does
   not assign ports yet (delivery step 8). The API refuses a hostname equal to Mend's own host.

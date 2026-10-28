@@ -2200,7 +2200,7 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup", "--declare", "budgets"], invalid.runtime)).toMatchObject({
       _tag: "error",
       message: expect.stringContaining(
-        "--declare takes core-private, edge-tls, workspace-ssh, t3code-gateway or none",
+        "--declare takes core-private, edge-tls, workspace-ssh, t3code-gateway, preview-gateway or none",
       ),
     });
   });

@@ -712,16 +712,59 @@ test(
     assert.notEqual(observable.status, 0);
     assert.match(
       observable.stderr,
-      /exposure\.declared takes only core-private, edge-tls and t3code-gateway/,
+      /exposure\.declared takes only core-private, edge-tls, t3code-gateway and preview-gateway/,
     );
     // The t3code gateway's item, as the docs say it can be declared (review 645-1).
     const gateway = render(...base, "--set", "exposure.declared={t3code-gateway}");
     assert.equal(gateway.status, 0, gateway.stderr);
     assert.match(gateway.stdout, /name: MEND_EXPOSURE_DECLARED, value: "t3code-gateway"/);
+    // The preview gateway's item (ADR 0017 item 15), in the API's list and the CLI's alike.
+    const preview = render(...base, "--set", "exposure.declared={preview-gateway}");
+    assert.equal(preview.status, 0, preview.stderr);
+    assert.match(preview.stdout, /name: MEND_EXPOSURE_DECLARED, value: "preview-gateway"/);
 
     const unset = render(...base);
     assert.equal(unset.status, 0, unset.stderr);
     assert.ok(!unset.stdout.includes("MEND_EXPOSURE_DECLARED"));
+  },
+);
+
+test(
+  "the chart, the CLI and the docs take exactly the gate items the API lets an operator declare",
+  { skip },
+  async () => {
+    const exposure = fs.readFileSync(path.join(root, "apps/api/src/exposure.ts"), "utf8");
+    const api = [
+      ...(/export const DECLARABLE = \[([^\]]*)\]/.exec(exposure)?.[1] ?? "").matchAll(
+        /"([a-z0-9-]+)"/g,
+      ),
+    ].map(([, id]) => id);
+    assert.ok(api.includes("preview-gateway"), "the API's list is read");
+    const { DECLARABLE_ITEMS } = await import("../apps/cli/src/server-edge.ts");
+    assert.deepEqual([...DECLARABLE_ITEMS].toSorted(), api.toSorted());
+    const docs = fs.readFileSync(
+      path.join(root, "apps/docs/src/content/docs/operate/exposure.md"),
+      "utf8",
+    );
+    const base = ["-f", path.join(chart, "ci/obc-values.yaml")];
+    for (const id of api) assert.ok(docs.includes(`\`${id}\``), `the docs name ${id}`);
+    const allowed = [
+      ...(
+        /has \. \(list ((?:"[a-z0-9-]+" ?)+)\)/.exec(
+          fs.readFileSync(path.join(chart, "templates/api.yaml"), "utf8"),
+        )?.[1] ?? ""
+      ).matchAll(/"([a-z0-9-]+)"/g),
+    ].map(([, id]) => id);
+    // The chart publishes no workspace SSH apart from the web port, so it has nothing to state.
+    assert.deepEqual(
+      api.filter((id) => !allowed.includes(id)),
+      ["workspace-ssh"],
+    );
+    for (const id of allowed) {
+      const stated = render(...base, "--set", `exposure.declared={${id}}`);
+      assert.equal(stated.status, 0, `${id}: ${stated.stderr}`);
+    }
+    assert.notEqual(render(...base, "--set", "exposure.declared={workspace-ssh}").status, 0);
   },
 );
 

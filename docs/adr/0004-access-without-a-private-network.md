@@ -195,11 +195,22 @@ Not observable by this build. Reported, never inferred, and they do not block st
     where it is published, it is `open` until declared. Added 2026-10-10 with the gateway's phase 4;
     reworked 2026-10-11 (decision 21).
 
-Items 11 and 12, and 14 where it is not observed, stay `open` until the operator, having verified
-them from outside, names them in `MEND_EXPOSURE_DECLARED` (the chart's `exposure.declared`, setup's
-`--declare`); they then read `declared`, with the words "this process cannot check it". Besides them
-only `workspace-ssh` can be declared, as above. Nothing else can be declared: an item this process
-can read is read, never taken on someone's word, and naming one there refuses to start.
+15. **preview-gateway**, listed while the preview gateway is on (`MEND_PREVIEW_PORT`; docs/adr/0017,
+    "Exposure"). Observed: previews sit apart from `APP_URL`'s host, their scheme (`https:`, or
+    plain HTTP on `<label>.localhost` only under `MEND_EXPOSURE=loopback` with a loopback listener),
+    and where the gateway listens against where setup published its port (`MEND_PREVIEW_PUBLISHED`).
+    Carried: the bounded forward of the pinned SDK. With a preview domain, the wildcard DNS, its
+    certificate and who reaches the listener are `open` until declared; on the tailnet default, the
+    Tailscale steps are, and the item also stays `open` until every Mend cookie's name carries
+    `__Host-` (ADR 0017 delivery step 8b). A fact observed open is never closed by a statement. An
+    open item refuses a `public` start, as item 14 does. Added 2026-10-28 with ADR 0017 step 8a.
+
+Items 11 and 12, 14 where it is not observed, and 15 where it needs a look from outside, stay `open`
+until the operator, having verified them from outside, names them in `MEND_EXPOSURE_DECLARED` (the
+chart's `exposure.declared`, setup's `--declare`); they then read `declared`, with the words "this
+process cannot check it". Besides them only `workspace-ssh` can be declared, as above. Nothing else
+can be declared: an item this process can read is read, never taken on someone's word, and naming
+one there refuses to start.
 
 "Nothing open" means every item was observed, is carried by the build, or was declared by the
 operator. It is a report of what was observed and stated. It is not a statement that the instance is

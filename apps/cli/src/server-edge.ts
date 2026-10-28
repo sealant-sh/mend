@@ -56,6 +56,7 @@ export const DECLARABLE_ITEMS = [
   "edge-tls",
   "workspace-ssh",
   "t3code-gateway",
+  "preview-gateway",
 ] as const;
 export type DeclarableItem = (typeof DECLARABLE_ITEMS)[number];
 

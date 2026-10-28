@@ -1,11 +1,19 @@
 import { sessionCookiePolicy } from "@mend/auth";
-import { NetworkConfig, trustedProxyCidrs, trustsEveryAddress } from "@mend/network";
+import {
+  NetworkConfig,
+  previewDomainOverlap,
+  SAME_SITE_PREVIEW_REASON,
+  trustedProxyCidrs,
+  trustsEveryAddress,
+} from "@mend/network";
 import { DeploymentConfig } from "@mend/store";
 import { Config, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { budgetEnvName, Budgets, budgetsOff, type BudgetName } from "./budgets.ts";
 import { ErrorDetail } from "./error-boundary.ts";
+import { PreviewSetupConfig } from "./preview-config.ts";
+import type { PreviewRouting } from "./preview-routing.ts";
 import { UrlBearers } from "./routes/upgrade-tickets.ts";
 import { TenancyConfig, type GateOutcome } from "./tenancy.ts";
 
@@ -38,7 +46,13 @@ export type Established = "observed" | "carried" | "declared" | "open";
  * outside states so in `MEND_EXPOSURE_DECLARED`; nothing else can close them. `workspace-ssh` is
  * declarable only in that sense: who reaches a published SSH port is never visible from in here.
  */
-export const DECLARABLE = ["core-private", "edge-tls", "workspace-ssh", "t3code-gateway"] as const;
+export const DECLARABLE = [
+  "core-private",
+  "edge-tls",
+  "workspace-ssh",
+  "t3code-gateway",
+  "preview-gateway",
+] as const;
 export type Declarable = (typeof DECLARABLE)[number];
 
 export interface ExposureOutcome {
@@ -93,8 +107,16 @@ export class ExposureRefused extends Schema.TaggedError<ExposureRefused>()("Expo
   message: Schema.String,
 }) {}
 
+export interface PreviewPosture {
+  readonly routing: PreviewRouting;
+  readonly bind: string;
+  readonly port: number;
+  readonly published?: string;
+}
+
 /** The facts the gate reads. Everything here is configuration or something the build carries. */
 export interface ExposurePosture {
+  readonly exposure: Exposure;
   readonly appUrl: string;
   readonly allowedOrigins: ReadonlyArray<string>;
   readonly trustedProxies: ReadonlyArray<string>;
@@ -128,6 +150,7 @@ export interface ExposurePosture {
   readonly t3GatewayPublished?: string;
   /** `MEND_T3_GATEWAY_URL`: what a T3 Code client enters; `https:` when an edge serves it. */
   readonly t3GatewayUrl?: string;
+  readonly preview?: PreviewPosture;
   readonly version: string;
   /**
    * The package and image mirrors sessions are pointed at (`MEND_NPM_MIRROR_URL`,
@@ -292,6 +315,165 @@ const t3codeGateway = (posture: ExposurePosture): ExposureOutcome => {
       };
 };
 
+type PreviewFact =
+  | { readonly established: "observed" | "carried"; readonly said: string }
+  | { readonly established: "open"; readonly said: string; readonly fix: string };
+
+interface PreviewOutside {
+  readonly unobservable: string;
+  readonly howToVerify: string;
+}
+
+const bracketed = (address: string): string => (address.includes(":") ? `[${address}]` : address);
+
+const appUrlApartFact = (appHost: string, domain: string): PreviewFact => {
+  const overlap = previewDomainOverlap(domain, appHost);
+  if (overlap === null)
+    return {
+      established: "observed",
+      said: `APP_URL's host ${appHost} is not ${domain}, above or under it, or on its registrable domain`,
+    };
+  return overlap.kind === "same-site"
+    ? {
+        established: "open",
+        said: `APP_URL's host ${appHost} shares the registrable domain ${overlap.site} with ${domain}, so a page on a preview can set cookies Mend's host receives`,
+        fix: SAME_SITE_PREVIEW_REASON,
+      }
+    : {
+        established: "open",
+        said: `APP_URL's host ${appHost} is ${overlap.kind === "holds" ? "under" : "above"} ${domain}`,
+        fix: "set MEND_PREVIEW_DOMAIN to a domain apart from Mend's",
+      };
+};
+
+const routingOf = (
+  posture: ExposurePosture,
+  routing: PreviewRouting,
+  onLoopback: boolean,
+  reached: string,
+): { readonly facts: ReadonlyArray<PreviewFact>; readonly outside: PreviewOutside | null } => {
+  const appHost = new URL(posture.appUrl).hostname;
+  switch (routing.mode) {
+    case "loopback-http":
+      return {
+        facts: [
+          posture.exposure === "loopback" && onLoopback
+            ? {
+                established: "observed",
+                said: `previews are plain http at http://<label>.localhost:${routing.port}, on loopback under MEND_EXPOSURE=loopback`,
+              }
+            : {
+                established: "open",
+                said: `previews are plain http at http://<label>.localhost:${routing.port}, ${onLoopback ? `and MEND_EXPOSURE is ${posture.exposure}` : "and the listener is reached beyond loopback"}`,
+                fix: "set MEND_PREVIEW_DOMAIN to serve previews over https behind an edge, or keep the gateway on loopback under MEND_EXPOSURE=loopback",
+              },
+        ],
+        outside: null,
+      };
+    case "domain-https":
+      return {
+        facts: [
+          appUrlApartFact(appHost, routing.domain),
+          {
+            established: "observed",
+            said: `previews are https at https://<label>.${routing.domain}${routing.port === 443 ? "" : `:${routing.port}`}`,
+          },
+        ],
+        outside: {
+          unobservable: `the wildcard DNS and certificate for *.${routing.domain}, and who reaches the published listener`,
+          howToVerify: `https://<label>.${routing.domain} from another network, over a certificate that chains to a public root, and ${reached} answering nothing from another machine`,
+        },
+      };
+    case "tailnet-https":
+      return {
+        facts: [
+          {
+            established: "observed",
+            said: `APP_URL's host ${appHost} is not the gateway's name ${routing.hostname}`,
+          },
+          {
+            established: "observed",
+            said: `previews are https at https://${routing.hostname}:<port>`,
+          },
+          {
+            established: "open",
+            said: "Mend's cookies are not named __Host-, and on the tailnet default every preview is Mend's own site",
+            fix: "Mend's cookies move to __Host- names in ADR 0017 delivery step 8b; until it ships, use a preview domain of your own (MEND_PREVIEW_DOMAIN)",
+          },
+        ],
+        outside: {
+          unobservable: `the Tailscale steps for ${routing.hostname} (MagicDNS, HTTPS certificates, the Service and its ports, a tag on this host, its approval, and grants for the people who open previews), and who reaches the published listener`,
+          howToVerify: `https://${routing.hostname}:<port> from a device on the tailnet, and nothing from a device outside it`,
+        },
+      };
+  }
+};
+
+const previewGateway = (posture: ExposurePosture, preview: PreviewPosture): ExposureOutcome => {
+  const listener = `${bracketed(preview.bind)}:${preview.port}`;
+  const reached = preview.published ?? listener;
+  const reachedOnLoopback = isLoopbackAddress(publishedAddress(reached));
+  const listensOnLoopback = isLoopbackAddress(preview.bind);
+  const where: PreviewFact =
+    preview.published !== undefined && listensOnLoopback && !reachedOnLoopback
+      ? {
+          established: "open",
+          said: `it listens on ${listener}, and MEND_PREVIEW_PUBLISHED says ${preview.published}: that statement is not this listener's`,
+          fix: "run mend server setup again, or set MEND_PREVIEW_PUBLISHED to where the gateway's port is published",
+        }
+      : {
+          established: "observed",
+          said:
+            preview.published === undefined
+              ? `it listens on ${listener}, published nowhere else that was said (MEND_PREVIEW_PUBLISHED unset)`
+              : `it listens on ${listener}, its port published on ${preview.published} (MEND_PREVIEW_PUBLISHED)`,
+        };
+  const routing = routingOf(
+    posture,
+    preview.routing,
+    listensOnLoopback && reachedOnLoopback,
+    reached,
+  );
+  const facts: ReadonlyArray<PreviewFact> = [
+    ...routing.facts,
+    {
+      established: "carried",
+      said: "the SDK this build pins has the bounded forward the gateway starts on",
+    },
+    where,
+  ];
+  const { outside } = routing;
+  const declared = outside !== null && posture.declared.includes("preview-gateway");
+  const failed = facts.flatMap((fact) => (fact.established === "open" ? [fact] : []));
+  const lines = [
+    ...facts.map((fact) => `${fact.established}: ${fact.said}`),
+    ...(outside === null
+      ? []
+      : [
+          declared
+            ? `declared: ${outside.unobservable} (MEND_EXPOSURE_DECLARED); this process cannot check it`
+            : `open: ${outside.unobservable}; only a look from another network sees it`,
+        ]),
+  ];
+  const fixes = [
+    ...failed.map((fact) => fact.fix),
+    ...(outside === null || declared
+      ? []
+      : [
+          `what would verify it: ${outside.howToVerify}; then add preview-gateway to MEND_EXPOSURE_DECLARED`,
+        ]),
+  ];
+  return {
+    id: "preview-gateway",
+    established:
+      failed.length > 0 ? "open" : outside === null ? "observed" : declared ? "declared" : "open",
+    detail: lines.join("; "),
+    fix: fixes.length === 0 ? null : fixes.join("; "),
+    blocksStart: true,
+    observable: outside === null,
+  };
+};
+
 export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<ExposureOutcome> => {
   const plainOrigins = posture.allowedOrigins.filter((origin) => !isHttps(origin));
   const cookie = sessionCookiePolicy({ appUrl: posture.appUrl });
@@ -433,6 +615,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
     ),
     // Only while the gateway is enabled: an install that never turns it on reads as before it.
     ...(posture.t3Gateway === true ? [t3codeGateway(posture)] : []),
+    ...(posture.preview === undefined ? [] : [previewGateway(posture, posture.preview)]),
     {
       id: "reassessment",
       established: reassessed ? "declared" : "open",
@@ -488,7 +671,13 @@ const optionalString = (name: string) =>
 export const ExposureConfigLive: Layer.Layer<
   ExposureConfig,
   ExposureRefused | Config.ConfigError,
-  NetworkConfig | TenancyConfig | Budgets | UrlBearers | ErrorDetail | DeploymentConfig
+  | NetworkConfig
+  | TenancyConfig
+  | Budgets
+  | UrlBearers
+  | ErrorDetail
+  | DeploymentConfig
+  | PreviewSetupConfig
 > = Layer.effect(
   ExposureConfig,
   Effect.gen(function* () {
@@ -535,7 +724,12 @@ export const ExposureConfigLive: Layer.Layer<
       }
     });
     const tenancy = yield* TenancyConfig;
+    const { setup: previews } = yield* PreviewSetupConfig;
+    // The container cannot see what its host publishes.
+    const previewPublished =
+      previews._tag === "On" ? yield* optionalString("MEND_PREVIEW_PUBLISHED") : undefined;
     const posture: Omit<ExposurePosture, "tenancyGate"> = {
+      exposure,
       appUrl: network.appUrl,
       allowedOrigins: network.allowedOrigins,
       trustedProxies: yield* trustedProxyCidrs,
@@ -556,6 +750,16 @@ export const ExposureConfigLive: Layer.Layer<
       t3Gateway,
       ...(t3GatewayPublished === undefined ? {} : { t3GatewayPublished }),
       ...(t3GatewayUrl === undefined ? {} : { t3GatewayUrl }),
+      ...(previews._tag === "Off"
+        ? {}
+        : {
+            preview: {
+              routing: previews.routing,
+              bind: previews.gateway.bind,
+              port: previews.gateway.port,
+              ...(previewPublished === undefined ? {} : { published: previewPublished }),
+            },
+          }),
     };
     const gateWith = (tenancyGate: ReadonlyArray<GateOutcome>) =>
       evaluateExposureGate({ ...posture, tenancyGate });

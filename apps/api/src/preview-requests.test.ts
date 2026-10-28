@@ -26,7 +26,7 @@ const head = (overrides: Partial<BrowserHead>): BrowserHead => ({
   fetchSite: undefined,
   fetchMode: undefined,
   fetchDest: undefined,
-  fetchMetadata: false,
+  sentFetchMetadata: false,
   acceptsHtml: false,
   ...overrides,
 });
@@ -161,7 +161,7 @@ describe("which requests without a grant are sent to sign in", () => {
     fetchSite: "cross-site",
     fetchMode: "navigate",
     fetchDest: "document",
-    fetchMetadata: true,
+    sentFetchMetadata: true,
   } as const;
 
   it.each([
@@ -174,7 +174,12 @@ describe("which requests without a grant are sent to sign in", () => {
     ["a GET for anything else without Fetch Metadata", head({}), false],
     [
       "a GET for HTML with Fetch Metadata that is not a navigation",
-      head({ fetchSite: "same-origin", fetchMode: "cors", fetchMetadata: true, acceptsHtml: true }),
+      head({
+        fetchSite: "same-origin",
+        fetchMode: "cors",
+        sentFetchMetadata: true,
+        acceptsHtml: true,
+      }),
       false,
     ],
     ["a POST for HTML without Fetch Metadata", head({ method: "POST", acceptsHtml: true }), false],
@@ -202,9 +207,11 @@ describe("which requests without a grant are sent to sign in", () => {
         }),
         fc.boolean(),
         fc.boolean(),
-        (fields, fetchMetadata, acceptsHtml) => {
+        (fields, sentFetchMetadata, acceptsHtml) => {
           const plain = browserAdmits(head(fields), OWN);
-          expect(browserAdmits(head({ ...fields, fetchMetadata, acceptsHtml }), OWN)).toBe(plain);
+          expect(browserAdmits(head({ ...fields, sentFetchMetadata, acceptsHtml }), OWN)).toBe(
+            plain,
+          );
         },
       ),
     );
