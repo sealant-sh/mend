@@ -2803,7 +2803,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             payload.name,
             payload.protocol,
             payload.browserScheme,
-            caller.user.id,
+            { kind: "person", userId: caller.user.id },
             payload.startId,
           )
           .pipe(
@@ -2835,7 +2835,12 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
         return yield* engine
-          .runServiceRecipe(params.id, payload.name, caller.user.id, payload.startId)
+          .runServiceRecipe(
+            params.id,
+            payload.name,
+            { kind: "person", userId: caller.user.id },
+            payload.startId,
+          )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
               Effect.fail(new NotFound({ id: params.id })),
@@ -2977,17 +2982,21 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         yield* steering.service(params.id);
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
-        return yield* engine.restartService(params.id, caller.user.id).pipe(
-          Effect.catchTag("ServiceNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTags({
-            SealantPlatformError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            ServiceStartError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
-            ServiceBindError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
-          }),
-        );
+        return yield* engine
+          .restartService(params.id, { kind: "person", userId: caller.user.id })
+          .pipe(
+            Effect.catchTag("ServiceNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTags({
+              SealantPlatformError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceStartError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceBindError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
+          );
       }),
     )
     .handle("stopService", ({ params }) =>

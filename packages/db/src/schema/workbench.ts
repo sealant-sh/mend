@@ -577,7 +577,8 @@ export const previewGrants = pgTable(
 /**
  * A preview's control (ADR 0017, Decision log 6): whether a person stopped it. No row is
  * automatic at revision 0; the revision moves only when the state does. The stop facts are set
- * exactly when the state is `stopped` (a CHECK in the migration).
+ * exactly when the state is `stopped` (a CHECK in the migration); `stoppedSeq` is the Stop's place
+ * in `preview_control_seq`.
  */
 export const previewControls = pgTable("preview_controls", {
   previewId: text()
@@ -588,6 +589,7 @@ export const previewControls = pgTable("preview_controls", {
   state: text().$type<"automatic" | "stopped">().notNull(),
   stoppedBy: text(),
   stoppedAt: timestamp({ mode: "date", withTimezone: true }),
+  stoppedSeq: integer(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -1667,6 +1669,8 @@ export const sessionProcesses = pgTable(
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     /** When the process's record first carried output; null until then (0095). */
     firstOutputAt: timestamp({ mode: "date", withTimezone: true }),
+    /** When a probe first saw this Service attempt answer on its port; null until then (0139). */
+    reachedAt: timestamp({ mode: "date", withTimezone: true }),
     exitedAt: timestamp({ mode: "date", withTimezone: true }),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     /** The account whose Linux user the process runs as (docs/adr/0016); null: root (0117). */
@@ -1873,18 +1877,12 @@ export const serviceObservations = pgTable(
     state: text().$type<ServiceTargetState>().notNull(),
     source: text().$type<ServiceObservationSource>().notNull(),
     error: text(),
-    attemptId: text()
-      .$type<SessionProcessId>()
-      .references(() => sessionProcesses.id, { onDelete: "set null" }),
     firstObservedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     lastObservedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("service_observations_service_observed_idx").on(table.serviceId, table.lastObservedAt),
     index("service_observations_forward_observed_idx").on(table.forwardId, table.lastObservedAt),
-    index("service_observations_attempt_idx")
-      .on(table.attemptId)
-      .where(sql`${table.attemptId} IS NOT NULL`),
   ],
 );
 

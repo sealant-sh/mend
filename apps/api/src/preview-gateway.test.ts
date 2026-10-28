@@ -215,6 +215,7 @@ describe("refusals before anything starts", () => {
               control: {
                 _tag: "Stopped",
                 revision: 1,
+                seq: 1,
                 by: "maria",
                 at: new Date(0),
                 byName: "Maria",
@@ -241,7 +242,14 @@ describe("refusals before anything starts", () => {
         const { world, forwards } = yield* worldWithApp();
         world.targets.resolutions.set(PREVIEWS.web.id, {
           _tag: "Stopped",
-          control: { _tag: "Stopped", revision: 3, by: "maria", at: new Date(0), byName: "Maria" },
+          control: {
+            _tag: "Stopped",
+            revision: 3,
+            by: "maria",
+            at: new Date(0),
+            seq: 1,
+            byName: "Maria",
+          },
         });
         const reply = yield* Effect.promise(() =>
           send(world.port, {
@@ -618,7 +626,7 @@ describe("a request to a stopped preview starts it and is held", () => {
             /\r\nconnection: close\r\n/i,
           );
           expect(outcome.answer, "the page says the command failed").toContain(
-            "did not start in 3 min · command failed · your request was not delivered",
+            "did not start · command failed · your request was not delivered",
           );
           expect(
             outcome.sentWhenAnswered,

@@ -175,11 +175,13 @@ export const dormant = (revision = 0): PreviewGatewayResolution => ({
     serviceId: ServiceId.make("svc-web"),
     sourceAttemptId: SessionProcessId.make("attempt-0"),
   },
+  workspaceId: WORKSPACE,
 });
 
 export interface GatewayWorldOptions {
   readonly routing?: keyof typeof ROUTINGS;
   readonly forwards: Layer.Layer<ForwardAdapter>;
+  readonly targets?: Layer.Layer<PreviewTargets>;
   readonly settings?: Partial<Omit<PreviewGatewaySettings, "bind" | "port">>;
   readonly budgets?: Partial<BudgetLimits>;
 }
@@ -278,6 +280,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       byId: (id) => Effect.succeed(byId(id)),
       controlOf: () => Effect.die("unused"),
       changeControl: () => Effect.die("unused"),
+      nextControlSeq: () => Effect.die("unused"),
       previewOfService: () => Effect.die("unused"),
       gatewaySnapshot: () => Effect.die("unused"),
       gatewaySnapshots: () => Effect.die("unused"),
@@ -381,7 +384,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
           Layer.mergeAll(
             identity,
             config,
-            targetsLayer,
+            options.targets ?? targetsLayer,
             callerLayer,
             options.forwards,
             bus,

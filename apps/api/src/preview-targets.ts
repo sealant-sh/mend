@@ -62,8 +62,10 @@ export const PreviewTargetsLive: Layer.Layer<PreviewTargets, never, PreviewsRepo
                   ),
               ),
             ),
+        // The gateway does not claim starts yet: nothing is charged, and nothing declines.
         ensureRunning: (request) =>
-          engine.ensurePreviewRunning(request).pipe(
+          engine.ensurePreviewRunning(request, Effect.void).pipe(
+            Effect.catchTag("PreviewStartDeclined", (declined) => Effect.die(declined)),
             Effect.tapError((refused) =>
               Effect.logWarning("preview: a request-triggered start was refused").pipe(
                 Effect.annotateLogs({

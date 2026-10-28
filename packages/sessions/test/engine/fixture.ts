@@ -1388,7 +1388,8 @@ export interface World {
   readonly serviceStarters: Map<string, string>;
   readonly serviceForwards: Map<string, ServiceForward>;
   readonly serviceObservations: Map<string, ServiceObservation>;
-  readonly observationAttempts: Map<string, SessionProcessId>;
+  readonly reachedAttempts: Set<string>;
+  controlSeq: number;
   readonly previews: Map<string, Preview>;
   readonly previewControls: Map<string, PreviewControl>;
   readonly changes: Map<string, Change>;
@@ -1485,7 +1486,8 @@ export const makeWorld = (): World => ({
   serviceStarters: new Map(),
   serviceForwards: new Map(),
   serviceObservations: new Map(),
-  observationAttempts: new Map(),
+  reachedAttempts: new Set(),
+  controlSeq: 0,
   previews: new Map(),
   previewControls: new Map(),
   changes: new Map(),
@@ -1635,6 +1637,11 @@ export const sessionProcessesLayer = (world: World) => {
           );
         }
       }),
+    markReached: (id) =>
+      Effect.sync(() => {
+        world.reachedAttempts.add(id);
+      }),
+    reached: (id) => Effect.sync(() => world.reachedAttempts.has(id)),
     markFirstOutput: (id, at) =>
       Effect.sync(() => {
         const process = world.processes.get(id);
@@ -1955,7 +1962,7 @@ const serviceForwardsLayer = (world: World) =>
 
 const serviceObservationsLayer = (world: World) =>
   Layer.succeed(ServiceObservationsRepo, {
-    record: ({ attemptId, ...input }) =>
+    record: (input) =>
       Effect.sync(() => {
         const observation = new ServiceObservation({
           id: ServiceObservationId.make(crypto.randomUUID()),
@@ -1965,12 +1972,8 @@ const serviceObservationsLayer = (world: World) =>
           lastObservedAt: world.clock.now(),
         });
         world.serviceObservations.set(observation.id, observation);
-        if (attemptId !== undefined && attemptId !== null) {
-          world.observationAttempts.set(observation.id, attemptId);
-        }
         return observation;
       }),
-    attemptReached: (attemptId) => Effect.sync(() => attemptReachedIn(world, attemptId)),
     latestForService: (serviceId) =>
       Effect.succeed(
         [...world.serviceObservations.values()]
@@ -1985,12 +1988,6 @@ const serviceObservationsLayer = (world: World) =>
       ),
   });
 
-const attemptReachedIn = (world: World, attemptId: string) =>
-  [...world.observationAttempts].some(
-    ([observationId, observed]) =>
-      observed === attemptId && world.serviceObservations.get(observationId)?.state === "reachable",
-  );
-
 const serviceAttemptsIn = (world: World, service: Service) =>
   [...world.processes.values()].filter(
     (process) =>
@@ -1999,7 +1996,7 @@ const serviceAttemptsIn = (world: World, service: Service) =>
       process.kind === "service",
   );
 
-const previewsLayer = (world: World) => {
+export const previewsRepoOf = (world: World) => {
   const targetsOf = (worktreeId: string): ReadonlyArray<PreviewTarget> => {
     const sessionIds = new Set(
       [...world.sessions.values()]
@@ -2014,6 +2011,7 @@ const previewsLayer = (world: World) => {
           service,
           liveAttempt: attempts.find((attempt) => attempt.exitedAt === null) ?? null,
           recordedCommand: attempts.some((attempt) => attempt.argv.length > 0),
+          workspaceId: world.sessions.get(service.sessionId)?.sealantWorkspaceId ?? null,
         };
       });
   };
@@ -2030,7 +2028,7 @@ const previewsLayer = (world: World) => {
         ? []
         : serviceAttemptsIn(world, candidate).map((attempt) => ({
             attempt,
-            reachable: attemptReachedIn(world, attempt.id),
+            reachable: world.reachedAttempts.has(attempt.id),
           }));
     const control = world.previewControls.get(id) ?? PREVIEW_CONTROL_INITIAL;
     const read: PreviewControlRead =
@@ -2039,15 +2037,16 @@ const previewsLayer = (world: World) => {
   };
   return Layer.mock(PreviewsRepo, {
     controlOf: (id) => Effect.sync(() => world.previewControls.get(id) ?? PREVIEW_CONTROL_INITIAL),
-    changeControl: (id, intent) =>
+    changeControl: (id, request) =>
       Effect.sync(() => {
         const next = changePreviewControl(
           world.previewControls.get(id) ?? PREVIEW_CONTROL_INITIAL,
-          intent,
+          request._tag === "Stop" ? { ...request, seq: (world.controlSeq += 1) } : request,
         );
         world.previewControls.set(id, next);
         return next;
       }),
+    nextControlSeq: () => Effect.sync(() => (world.controlSeq += 1)),
     previewOfService: (serviceId) =>
       Effect.sync(() => {
         const service = world.services.get(serviceId);
@@ -2080,7 +2079,7 @@ export const serviceStateLayer = (world: World) =>
     servicesLayer(world),
     serviceForwardsLayer(world),
     serviceObservationsLayer(world),
-    previewsLayer(world),
+    previewsRepoOf(world),
   );
 
 /** Every remote in these worlds is public: the policy's own tests cover refusals and pinning. */

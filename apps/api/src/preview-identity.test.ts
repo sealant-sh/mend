@@ -163,6 +163,7 @@ const makeWorld = () => {
       }),
     controlOf: () => Effect.die("unused"),
     changeControl: () => Effect.die("unused"),
+    nextControlSeq: () => Effect.die("unused"),
     previewOfService: () => Effect.die("unused"),
     gatewaySnapshot: () => Effect.die("unused"),
     gatewaySnapshots: () => Effect.die("unused"),

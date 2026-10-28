@@ -19,6 +19,7 @@ import {
   previewControlDecider,
   Preview,
   PREVIEW_CONTROL_INITIAL,
+  type PreviewControlIntent,
   type PreviewControlRead,
   previewGatewayResolution,
   previewResumeCandidate,
@@ -93,11 +94,13 @@ const live = (owner: Service, overrides: Partial<SessionProcess> = {}): PreviewT
   service: owner,
   liveAttempt: attempt(owner, overrides),
   recordedCommand: (overrides.argv ?? ["npm"]).length > 0,
+  workspaceId: SealantWorkspaceId.make("workspace"),
 });
 const idle = (owner: Service, recordedCommand = false): PreviewTarget => ({
   service: owner,
   liveAttempt: null,
   recordedCommand,
+  workspaceId: SealantWorkspaceId.make("workspace"),
 });
 
 describe("preview bindings", () => {
@@ -258,7 +261,7 @@ it("a label preserves all 128 input bits and leaves only two zero padding bits",
 });
 
 describe("previewUndeliveredLine", () => {
-  it("says a start did not finish within the configured hold, and that nothing was delivered", () => {
+  it("names the hold only for a start that outlasted it, and says nothing was delivered", () => {
     expect(
       previewUndeliveredLine({
         _tag: "DidNotStart",
@@ -266,9 +269,7 @@ describe("previewUndeliveredLine", () => {
         holdMs: 180_000,
         reason: "setup failed",
       }),
-    ).toBe(
-      "preview · web · did not start in 3 min · setup failed · your request was not delivered",
-    );
+    ).toBe("preview · web · did not start · setup failed · your request was not delivered");
     expect(
       previewUndeliveredLine({
         _tag: "DidNotStart",
@@ -293,23 +294,45 @@ describe("previewControlDecider", () => {
     expect(previewControlDecider({ kind: "person", userId: "owner" })).toBe("owner");
     expect(previewControlDecider({ kind: "person", userId: "steerer" })).toBe("steerer");
     expect(previewControlDecider({ kind: "workspace" })).toBe(null);
+    expect(previewControlDecider({ kind: "workspace", runsAs: "owner" })).toBe(null);
     expect(previewControlDecider({ kind: "system", reason: "idle" })).toBe(null);
-    expect(previewControlDecider({ kind: "preview-request" })).toBe(null);
+    expect(previewControlDecider({ kind: "system" })).toBe(null);
   });
 });
 
 describe("changePreviewControl", () => {
-  const stop = { _tag: "Stop", by: "owner", at } as const;
+  const stop: Extract<PreviewControlIntent, { readonly _tag: "Stop" }> = {
+    _tag: "Stop",
+    by: "owner",
+    at,
+    seq: 1,
+  };
   it("moves the revision on each change of state, and on nothing else", () => {
     const stopped = changePreviewControl(PREVIEW_CONTROL_INITIAL, stop);
-    expect(stopped).toEqual({ _tag: "Stopped", revision: 1, by: "owner", at });
-    expect(changePreviewControl(stopped, { ...stop, by: "again", at: new Date(0) })).toBe(stopped);
-    const started = changePreviewControl(stopped, { _tag: "Start" });
+    expect(stopped).toEqual({ _tag: "Stopped", revision: 1, by: "owner", at, seq: 1 });
+    const again = new Date(0);
+    expect(changePreviewControl(stopped, { ...stop, by: "again", at: again, seq: 2 })).toEqual({
+      _tag: "Stopped",
+      revision: 1,
+      by: "again",
+      at: again,
+      seq: 2,
+    });
+    const started = changePreviewControl(stopped, { _tag: "Start", seq: 3 });
     expect(started).toEqual({ _tag: "Automatic", revision: 2 });
-    expect(changePreviewControl(started, { _tag: "Start" })).toBe(started);
-    expect(changePreviewControl(PREVIEW_CONTROL_INITIAL, { _tag: "Start" })).toBe(
+    expect(changePreviewControl(started, { _tag: "Start", seq: 4 })).toBe(started);
+    expect(changePreviewControl(PREVIEW_CONTROL_INITIAL, { _tag: "Start", seq: 5 })).toBe(
       PREVIEW_CONTROL_INITIAL,
     );
+  });
+
+  it("never lets a Start asked before a Stop clear that Stop", () => {
+    const stopped = changePreviewControl(PREVIEW_CONTROL_INITIAL, { ...stop, seq: 7 });
+    expect(changePreviewControl(stopped, { _tag: "Start", seq: 6 })).toBe(stopped);
+    expect(changePreviewControl(stopped, { _tag: "Start", seq: 8 })).toEqual({
+      _tag: "Automatic",
+      revision: 2,
+    });
   });
 });
 
@@ -356,6 +379,7 @@ describe("gateway resolution", () => {
     revision: 1,
     by: "steerer",
     at,
+    seq: 1,
     byName: "Steerer",
   };
 
@@ -366,9 +390,15 @@ describe("gateway resolution", () => {
       reason: "service-missing",
     });
   });
-  it("a person's Stop wins over a live attempt", () => {
+  it("a person's Stop keeps requests from starting the Service, and serves a run the agent started", () => {
     const bound = selectPreviewTarget(preview, [live(web)]);
-    expect(previewGatewayResolution(stopped, bound, [])).toEqual({
+    expect(previewGatewayResolution(stopped, bound, [])).toMatchObject({
+      _tag: "Bound",
+      revision: 1,
+    });
+    expect(
+      previewGatewayResolution(stopped, dormant, [{ attempt: ran("source", 1), reachable: true }]),
+    ).toEqual({
       _tag: "Stopped",
       control: stopped,
     });
@@ -402,6 +432,7 @@ describe("gateway resolution", () => {
         _tag: "Starting",
         revision: 4,
         attemptId: SessionProcessId.make("attempt-web"),
+        workspaceId: SealantWorkspaceId.make("workspace"),
       });
     }
   });
@@ -417,6 +448,7 @@ describe("gateway resolution", () => {
       _tag: "Dormant",
       revision: 0,
       source: { serviceId: web.id, sourceAttemptId: source.id },
+      workspaceId: SealantWorkspaceId.make("workspace"),
     });
     const answered = ran("answered", 3, { launchCorrelationId: byRequest("source") });
     expect(

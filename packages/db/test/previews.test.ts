@@ -5,7 +5,6 @@ import {
   PreviewId,
   PreviewLabel,
   ProjectId,
-  ServiceForwardId,
   ServiceId,
   SessionId,
   SessionProcessId,
@@ -26,7 +25,7 @@ import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { PreviewsRepo, PreviewsRepoLive } from "../src/repos/previews.ts";
-import { ServiceObservationsRepo, ServiceObservationsRepoLive } from "../src/repos/services.ts";
+import { SessionProcessesRepo, SessionProcessesRepoLive } from "../src/repos/session-processes.ts";
 import { WorktreeNotFoundError } from "../src/repos/worktrees.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
@@ -45,7 +44,7 @@ const cryptoWith = (bytes: (size: number) => Uint8Array) =>
     }),
   );
 const repoLayer = (crypto = cryptoWith(randomBytes)) =>
-  Layer.mergeAll(PreviewsRepoLive, SessionsRepoLive, ServiceObservationsRepoLive).pipe(
+  Layer.mergeAll(PreviewsRepoLive, SessionsRepoLive, SessionProcessesRepoLive).pipe(
     Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))),
     Layer.provide(crypto),
   );
@@ -55,7 +54,7 @@ const run = <A, E>(
   effect: Effect.Effect<
     A,
     E,
-    PreviewsRepo | SessionsRepo | ServiceObservationsRepo | SqlClient.SqlClient
+    PreviewsRepo | SessionsRepo | SessionProcessesRepo | SqlClient.SqlClient
   >,
   crypto?: Layer.Layer<Crypto.Crypto>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(repoLayer(crypto)), Effect.scoped));
@@ -149,6 +148,7 @@ const dormant = (sourceAttemptId: string) => ({
   _tag: "Dormant",
   revision: 0,
   source: { serviceId: "svc-dormant-2", sourceAttemptId },
+  workspaceId: null,
 });
 
 describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () => {
@@ -440,10 +440,14 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         const { preview } = yield* live("control");
         const previews = yield* PreviewsRepo;
         expect(yield* previews.controlOf(preview.id)).toEqual(PREVIEW_CONTROL_INITIAL);
-        expect(yield* previews.changeControl(preview.id, { _tag: "Start" })).toEqual(
-          PREVIEW_CONTROL_INITIAL,
-        );
+        expect(
+          yield* previews.changeControl(preview.id, {
+            _tag: "Start",
+            seq: yield* previews.nextControlSeq(),
+          }),
+        ).toEqual(PREVIEW_CONTROL_INITIAL);
         const at = new Date("2026-10-25T08:00:00Z");
+        const askedBefore = yield* previews.nextControlSeq();
         const stops = yield* Effect.all(
           Array.from({ length: 8 }, (_, index) =>
             previews.changeControl(preview.id, {
@@ -457,15 +461,19 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         for (const stopped of stops)
           expect(stopped).toMatchObject({ _tag: "Stopped", revision: 1 });
         const stopped = yield* previews.controlOf(preview.id);
-        expect(stops).toContainEqual(stopped);
-        expect(yield* previews.changeControl(preview.id, { _tag: "Start" })).toEqual({
-          _tag: "Automatic",
-          revision: 2,
+        expect(stopped, "the last Stop written is the latest").toMatchObject({
+          seq: Math.max(...stops.map((stop) => (stop._tag === "Stopped" ? stop.seq : 0))),
         });
-        expect(yield* previews.changeControl(preview.id, { _tag: "Start" })).toEqual({
-          _tag: "Automatic",
-          revision: 2,
-        });
+        expect(
+          yield* previews.changeControl(preview.id, { _tag: "Start", seq: askedBefore }),
+          "a Start asked before those Stops",
+        ).toEqual(stopped);
+        const start = () =>
+          Effect.flatMap(previews.nextControlSeq(), (seq) =>
+            previews.changeControl(preview.id, { _tag: "Start", seq }),
+          );
+        expect(yield* start()).toEqual({ _tag: "Automatic", revision: 2 });
+        expect(yield* start()).toEqual({ _tag: "Automatic", revision: 2 });
         const sql = yield* SqlClient.SqlClient;
         const [row] = yield* sql<{ revision: number; stopped_by: string | null }>`
           SELECT revision, stopped_by FROM preview_controls WHERE preview_id = ${preview.id}`;
@@ -524,7 +532,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
     );
   });
 
-  it("binds the oldest live attempt with its workspace, port and platform session, and a person's Stop wins, named", async () => {
+  it("binds the oldest live attempt with its workspace, port and platform session, and a person's Stop holds once it ends, named", async () => {
     await run(
       Effect.gen(function* () {
         const { preview } = yield* live("bound");
@@ -551,6 +559,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           _tag: "Starting",
           revision: 0,
           attemptId: "att-bound-1",
+          workspaceId: "ws-1",
         });
         yield* sql`UPDATE session_processes SET status = 'running', sealant_session_id = 'pty-att-bound-1'
           WHERE id = 'att-bound-1'`;
@@ -559,18 +568,27 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           by: "alice",
           at: new Date("2026-10-25T08:00:00Z"),
         });
+        expect(
+          (yield* previews.gatewaySnapshot(preview.id))?.resolution,
+          "a run that outlives the Stop is served",
+        ).toMatchObject({ _tag: "Bound", revision: 1 });
+        yield* sql`UPDATE session_processes SET exited_at = now(), status = 'exited'
+          WHERE session_id LIKE 's-bound-%'`;
         expect((yield* previews.gatewaySnapshot(preview.id))?.resolution).toEqual({
           _tag: "Stopped",
           control: { ...stopped, byName: "Alice" },
         });
-        yield* previews.changeControl(preview.id, { _tag: "Start" });
+        yield* previews.changeControl(preview.id, {
+          _tag: "Start",
+          seq: yield* previews.nextControlSeq(),
+        });
         yield* previews.changeControl(preview.id, { _tag: "Stop", by: "gone", at: new Date() });
         expect(
           (yield* previews.gatewaySnapshot(preview.id))?.resolution,
           "a person with no name, or no row, reads as a member",
         ).toMatchObject({ _tag: "Stopped", control: { by: "gone", byName: "a member" } });
-        yield* previews.changeControl(preview.id, { _tag: "Start" });
-        yield* sql`UPDATE session_processes SET sealant_session_id = NULL WHERE id = 'att-bound-1'`;
+        yield* sql`UPDATE session_processes SET exited_at = NULL, status = 'running',
+          sealant_session_id = NULL WHERE id = 'att-bound-1'`;
         expect((yield* previews.gatewaySnapshot(preview.id))?.resolution).toEqual({
           _tag: "Refused",
           reason: "process-binding-unavailable",
@@ -584,22 +602,13 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
       Effect.gen(function* () {
         const { preview } = yield* live("dormant");
         const previews = yield* PreviewsRepo;
-        const observations = yield* ServiceObservationsRepo;
+        const processes = yield* SessionProcessesRepo;
         const sql = yield* SqlClient.SqlClient;
         yield* sql`UPDATE session_processes SET exited_at = now(), status = 'exited'
           WHERE session_id LIKE 's-dormant-%'`;
-        yield* sql`INSERT INTO service_forwards (id, service_id, sealant_workspace_id, state)
-          VALUES ('fwd-dormant-1', 'svc-dormant-1', 'ws-1', 'closed'),
-            ('fwd-dormant-2', 'svc-dormant-2', 'ws-1', 'closed')`;
         // The newest declaration of the name is the second session's: the first one's answering
         // attempt never makes it the Service a request starts.
-        yield* observations.record({
-          serviceId: ServiceId.make("svc-dormant-1"),
-          forwardId: ServiceForwardId.make("fwd-dormant-1"),
-          state: "reachable",
-          source: "probe",
-          attemptId: SessionProcessId.make("att-dormant-1"),
-        });
+        yield* processes.markReached(SessionProcessId.make("att-dormant-1"));
         expect((yield* previews.gatewaySnapshot(preview.id))?.resolution).toEqual(
           dormant("att-dormant-2"),
         );
@@ -609,33 +618,20 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           VALUES ('att-dormant-2b', 's-dormant-2', 'ws-1', 'service', 'exited', 'svc-dormant-2', 2,
             '["npm", "run", "dev"]'::jsonb, ${startedByRequest("svc-dormant-2", "att-dormant-2")},
             ${new Date("2026-10-24T11:00:00Z")}, now())`;
-        yield* observations.record({
-          serviceId: ServiceId.make("svc-dormant-2"),
-          forwardId: ServiceForwardId.make("fwd-dormant-2"),
-          state: "unreachable",
-          source: "probe",
-          error: "connection-refused",
-          attemptId: SessionProcessId.make("att-dormant-2b"),
-        });
         expect((yield* previews.gatewaySnapshot(preview.id))?.resolution).toEqual(
           dormant("att-dormant-2"),
         );
-        yield* observations.record({
-          serviceId: ServiceId.make("svc-dormant-2"),
-          forwardId: ServiceForwardId.make("fwd-dormant-2"),
-          state: "reachable",
-          source: "probe",
-          attemptId: SessionProcessId.make("att-dormant-2b"),
-        });
-        expect(yield* observations.attemptReached(SessionProcessId.make("att-dormant-2b"))).toBe(
-          true,
-        );
-        expect(yield* observations.attemptReached(SessionProcessId.make("att-dormant-2"))).toBe(
-          false,
-        );
+        yield* processes.markReached(SessionProcessId.make("att-dormant-2b"));
+        expect(yield* processes.reached(SessionProcessId.make("att-dormant-2b"))).toBe(true);
+        expect(yield* processes.reached(SessionProcessId.make("att-dormant-2"))).toBe(false);
         expect((yield* previews.gatewaySnapshot(preview.id))?.resolution).toEqual(
           dormant("att-dormant-2b"),
         );
+        yield* sql`UPDATE agent_sessions SET sealant_workspace_id = 'ws-live' WHERE id = 's-dormant-2'`;
+        expect(
+          (yield* previews.gatewaySnapshot(preview.id))?.resolution,
+          "a start runs in the session's live workspace",
+        ).toMatchObject({ _tag: "Dormant", workspaceId: "ws-live" });
       }),
     );
   });
@@ -713,34 +709,6 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           preview: { ...preview, worktreeId: null, state: "removed" },
           resolution: { _tag: "Refused", reason: "service-missing" },
         });
-      }),
-    );
-  });
-
-  it("a probe's episode extends only within the attempt it observed", async () => {
-    await run(
-      Effect.gen(function* () {
-        yield* live("episodes");
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO service_forwards (id, service_id, sealant_workspace_id, state)
-          VALUES ('fwd-episodes', 'svc-episodes-1', 'ws-1', 'bound')`;
-        const observations = yield* ServiceObservationsRepo;
-        const probe = (attemptId: string | null) =>
-          observations.record({
-            serviceId: ServiceId.make("svc-episodes-1"),
-            forwardId: ServiceForwardId.make("fwd-episodes"),
-            state: "reachable",
-            source: "probe",
-            attemptId: attemptId === null ? null : SessionProcessId.make(attemptId),
-          });
-        const first = yield* probe("att-episodes-1");
-        expect((yield* probe("att-episodes-1")).id).toBe(first.id);
-        const next = yield* probe("att-episodes-2");
-        expect(next.id).not.toBe(first.id);
-        expect(next).not.toHaveProperty("attemptId");
-        const [rows] = yield* sql<{ count: number }>`SELECT count(*)::int AS count
-          FROM service_observations WHERE forward_id = 'fwd-episodes'`;
-        expect(rows?.count).toBe(2);
       }),
     );
   });

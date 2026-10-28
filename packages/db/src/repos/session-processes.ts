@@ -104,6 +104,10 @@ export class SessionProcessesRepo extends Context.Service<
      * this call made it, false when the row already had one or is gone.
      */
     readonly markFirstOutput: (id: SessionProcessId, at: Date) => Effect.Effect<boolean>;
+    /** Record that a probe saw this Service attempt answer; the first sighting stays. */
+    readonly markReached: (id: SessionProcessId) => Effect.Effect<void>;
+    /** Whether a probe ever saw this Service attempt answer. */
+    readonly reached: (id: SessionProcessId) => Effect.Effect<boolean>;
     /** Record the bound host port once the listener exists (Services only). */
     readonly setHostPort: (id: SessionProcessId, hostPort: number) => Effect.Effect<void>;
     /** Point a LIVE row at a fresh platform PTY + run (Service restart keeps identity + URL). */
@@ -141,7 +145,10 @@ export class SessionProcessesRepo extends Context.Service<
 const decodeWaiting = Schema.decodeUnknownOption(AgentWait);
 const encodeWaiting = Schema.encodeSync(AgentWait);
 
-export const toSessionProcess = (row: typeof sessionProcesses.$inferSelect): SessionProcess =>
+export const toSessionProcess = ({
+  reachedAt: _reachedAt,
+  ...row
+}: typeof sessionProcesses.$inferSelect): SessionProcess =>
   new SessionProcess({
     ...row,
     waiting: Option.getOrNull(decodeWaiting(row.waiting)),
@@ -366,6 +373,25 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return true;
     });
 
+    const markReached = Effect.fn("SessionProcessesRepo.markReached")(function* (
+      id: SessionProcessId,
+    ) {
+      yield* db
+        .update(sessionProcesses)
+        .set({ reachedAt: yield* DateTime.nowAsDate })
+        .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.reachedAt)))
+        .pipe(Effect.orDie);
+    });
+
+    const reached = Effect.fn("SessionProcessesRepo.reached")(function* (id: SessionProcessId) {
+      const [row] = yield* db
+        .select({ reachedAt: sessionProcesses.reachedAt })
+        .from(sessionProcesses)
+        .where(eq(sessionProcesses.id, id))
+        .pipe(Effect.orDie);
+      return row?.reachedAt != null;
+    });
+
     const setHostPort = Effect.fn("SessionProcessesRepo.setHostPort")(function* (
       id: SessionProcessId,
       hostPort: number,
@@ -477,6 +503,8 @@ export const SessionProcessesRepoLive: Layer.Layer<
       setLabel,
       setProviderSessionId,
       markFirstOutput,
+      markReached,
+      reached,
       setHostPort,
       setSealantSessionId,
       claimProviderSessionId,

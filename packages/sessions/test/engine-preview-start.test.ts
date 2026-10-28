@@ -1,3 +1,4 @@
+import { PreviewsRepo } from "@mend/db";
 import { PreviewId, PreviewLabel, SessionProcessId } from "@mend/domain";
 import {
   type Preview,
@@ -10,15 +11,23 @@ import {
   type ServiceStopCause,
 } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
-import { type PreviewStartRefused, SessionEngine } from "@mend/sessions";
+import {
+  PreviewStartDeclined,
+  type PreviewStartRefused,
+  ServiceBindError,
+  ServiceHost,
+  SessionEngine,
+} from "@mend/sessions";
 import type { CreateOptions } from "@sealant/sdk";
 import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
   now,
+  previewsRepoOf,
   sealantLaunchLayer,
   servedSocketApis,
+  serviceHostStubLayer,
   setup,
   withEngine,
   type World,
@@ -35,6 +44,10 @@ const isService = (argv: ReadonlyArray<string>) => argv[0] === "pnpm";
 
 const servicePlatform = () => {
   const gate: { current: Deferred.Deferred<void> | null } = { current: null };
+  const closing: { gate: Deferred.Deferred<void> | null; waiting: number } = {
+    gate: null,
+    waiting: 0,
+  };
   const opened: Array<ReadonlyArray<string>> = [];
   const closed: string[] = [];
   const dead = new Set<string>();
@@ -61,6 +74,11 @@ const servicePlatform = () => {
           Effect.map((pty) => ({
             ...pty,
             close: async () => {
+              const held = closing.gate;
+              if (held !== null) {
+                closing.waiting += 1;
+                await Effect.runPromise(Deferred.await(held));
+              }
               closed.push(ptyId);
               if (control.failClose) throw new Error("the daemon did not answer");
               return pty.close();
@@ -69,11 +87,36 @@ const servicePlatform = () => {
         ),
     })),
   ).pipe(Layer.provide(sealantLaunchLayer(Array<CreateOptions>())));
-  return { layer, gate, opened, closed, control, dead };
+  return { layer, gate, closing, opened, closed, control, dead };
+};
+
+const flakyServiceHost = () => {
+  const state = { failing: false };
+  const layer = Layer.effect(
+    ServiceHost,
+    Effect.map(ServiceHost, (host) => ({
+      ...host,
+      start: (input) =>
+        state.failing
+          ? Effect.fail(new ServiceBindError({ message: "the host port is taken" }))
+          : host.start(input),
+    })),
+  ).pipe(Layer.provide(serviceHostStubLayer));
+  return { state, layer };
 };
 
 const listeningPort = (dead: ReadonlySet<string>) => {
-  const state: { world: World | null; forced: boolean } = { world: null, forced: false };
+  const state: { world: World | null; forced: boolean; warmupMs: number } = {
+    world: null,
+    forced: false,
+    warmupMs: 0,
+  };
+  const firstSeen = new Map<string, number>();
+  const warm = (handle: string) => {
+    const seen = firstSeen.get(handle) ?? Date.now();
+    firstSeen.set(handle, seen);
+    return Date.now() - seen >= state.warmupMs;
+  };
   const listening = () =>
     state.forced ||
     [...(state.world?.processes.values() ?? [])].some(
@@ -81,7 +124,8 @@ const listeningPort = (dead: ReadonlySet<string>) => {
         process.kind === "service" &&
         process.exitedAt === null &&
         process.sealantSessionId !== null &&
-        !dead.has(process.sealantSessionId),
+        !dead.has(process.sealantSessionId) &&
+        warm(process.sealantSessionId),
     );
   const scripted = scriptedSealant(async () => {
     if (!listening()) throw refusal("connection-refused");
@@ -106,15 +150,10 @@ const preparePreview = (world: World, tmp: string, creatorRecorded = false) =>
       world.executorLaunches.set(session.id, { workspaceId: "workspace-1", launchId: "launch-1" });
     }
     yield* engine.launch(session.id, ["codex"]);
-    const web = yield* engine.runService(
-      session.id,
-      ["pnpm", "dev"],
-      3000,
-      "web",
-      "tcp",
-      "http",
-      OWNER,
-    );
+    const web = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", {
+      kind: "person",
+      userId: OWNER,
+    });
     const worktreeId = world.sessions.get(session.id)?.worktreeId;
     if (worktreeId === undefined) return yield* Effect.die("missing session row");
     const preview: Preview = {
@@ -143,10 +182,36 @@ const requestFor = (
   deadline: Date.now() + deadlineMs,
 });
 
-const refusalOf = <A>(effect: Effect.Effect<A, PreviewStartRefused>) =>
+const resolutionOf = (world: World, preview: Preview) =>
+  PreviewsRepo.use((previews) => previews.gatewaySnapshot(preview.id)).pipe(
+    Effect.map((read) => read?.resolution),
+    Effect.provide(previewsRepoOf(world)),
+  );
+
+const wakeFor = (world: World, preview: Preview, deadlineMs = 20_000) =>
+  Effect.gen(function* () {
+    const resolution = yield* resolutionOf(world, preview);
+    if (resolution?._tag !== "Dormant") {
+      return yield* Effect.die(`the preview is not dormant: ${resolution?._tag ?? "missing"}`);
+    }
+    return {
+      previewId: preview.id,
+      revision: resolution.revision,
+      sourceAttemptId: resolution.source.sourceAttemptId,
+      deadline: Date.now() + deadlineMs,
+    } satisfies PreviewStartRequest;
+  });
+
+const NO_BUDGET_CLAIM = Effect.void;
+
+const refusalOf = <A>(effect: Effect.Effect<A, PreviewStartRefused | PreviewStartDeclined>) =>
   Effect.result(effect).pipe(
     Effect.map((result) =>
-      Result.isFailure(result) ? result.failure.reason : { started: result.success },
+      Result.isFailure(result)
+        ? result.failure._tag === "PreviewStartDeclined"
+          ? "declined"
+          : result.failure.reason
+        : { started: result.success },
     ),
   );
 
@@ -203,7 +268,10 @@ describe("a preview's control", () => {
             by: STEERER,
           });
 
-          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
+          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", {
+            kind: "person",
+            userId: OWNER,
+          });
           expect(world.previewControls.get(preview.id)).toEqual({
             _tag: "Automatic",
             revision: 2,
@@ -248,14 +316,17 @@ describe("a preview's control", () => {
             "the agent's own start and restart",
           ).toEqual(stopped);
 
-          yield* engine.restartService(service.id, STEERER);
+          yield* engine.restartService(service.id, { kind: "person", userId: STEERER });
           expect(world.previewControls.get(preview.id), "a steerer's restart").toEqual({
             _tag: "Automatic",
             revision: 2,
           });
 
           yield* engine.stopService(service.id, bySteerer);
-          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
+          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", {
+            kind: "person",
+            userId: OWNER,
+          });
           expect(world.previewControls.get(preview.id), "the owner's start").toEqual({
             _tag: "Automatic",
             revision: 4,
@@ -294,7 +365,7 @@ describe("a preview's control between two same-named Services in one worktree", 
             "web",
             "tcp",
             "http",
-            STEERER,
+            { kind: "person", userId: STEERER },
           );
           yield* engine.stopService(theirs.service.id, bySteerer);
           expect(
@@ -307,7 +378,10 @@ describe("a preview's control between two same-named Services in one worktree", 
             _tag: "Stopped",
             revision: 1,
           });
-          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
+          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", {
+            kind: "person",
+            userId: OWNER,
+          });
           expect(world.previewControls.get(preview.id)).toEqual({
             _tag: "Automatic",
             revision: 2,
@@ -331,7 +405,10 @@ describe("ensurePreviewRunning", () => {
           const before = platform.opened.length;
           const request = requestFor(world, preview, source);
           const [first, second] = yield* Effect.all(
-            [engine.ensurePreviewRunning(request), engine.ensurePreviewRunning(request)],
+            [
+              engine.ensurePreviewRunning(request, NO_BUDGET_CLAIM),
+              engine.ensurePreviewRunning(request, NO_BUDGET_CLAIM),
+            ],
             { concurrency: "unbounded" },
           );
           expect(second).toBe(first);
@@ -343,12 +420,10 @@ describe("ensurePreviewRunning", () => {
             launchCorrelationId: serviceStartCorrelation(service.id, previewStartId(request)),
           });
           expect(started?.sealantSessionId).not.toBeNull();
-          expect([...world.observationAttempts.values()], "readiness names the attempt").toContain(
-            first,
-          );
-          expect(yield* engine.ensurePreviewRunning(requestFor(world, preview, source))).toBe(
-            first,
-          );
+          expect(world.reachedAttempts.has(first), "readiness names the attempt").toBe(true);
+          expect(
+            yield* engine.ensurePreviewRunning(requestFor(world, preview, source), NO_BUDGET_CLAIM),
+          ).toBe(first);
           expect(platform.opened.length - before).toBe(1);
         }),
       { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
@@ -369,7 +444,10 @@ describe("ensurePreviewRunning", () => {
           platform.gate.current = gate;
           const before = platform.opened.length;
           const run = yield* Effect.forkChild(
-            engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER),
+            engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", {
+              kind: "person",
+              userId: OWNER,
+            }),
           );
           const opening = () =>
             serviceAttempts(world, service.id).find((attempt) => !known.has(attempt.id));
@@ -378,7 +456,9 @@ describe("ensurePreviewRunning", () => {
           if (attempt === undefined) return yield* Effect.die("missing attempt");
           expect(attempt.sealantSessionId, "its process is still opening").toBeNull();
           const joined = yield* Effect.forkChild(
-            refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, attempt.id))),
+            refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, attempt.id), NO_BUDGET_CLAIM),
+            ),
           );
           yield* Effect.sleep("200 millis");
           yield* Deferred.succeed(gate, undefined);
@@ -402,10 +482,14 @@ describe("ensurePreviewRunning", () => {
           platform.control.exitOnOpen = true;
           const before = platform.opened.length;
           expect(
-            yield* refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, source))),
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, source), NO_BUDGET_CLAIM),
+            ),
           ).toBe("command-failed");
           expect(
-            yield* refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, source))),
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, source), NO_BUDGET_CLAIM),
+            ),
           ).toBe("command-failed");
           expect(platform.opened.length - before).toBe(1);
           expect(serviceAttempts(world, service.id).filter((a) => a.exitedAt === null)).toEqual([]);
@@ -442,7 +526,9 @@ describe("ensurePreviewRunning", () => {
             }),
           );
           const before = platform.opened.length;
-          expect(yield* refusalOf(engine.ensurePreviewRunning(request))).toBe("start-unconfirmed");
+          expect(yield* refusalOf(engine.ensurePreviewRunning(request, NO_BUDGET_CLAIM))).toBe(
+            "start-unconfirmed",
+          );
           expect(platform.opened.length).toBe(before);
         }),
       { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
@@ -462,7 +548,9 @@ describe("ensurePreviewRunning", () => {
           const gate = yield* Deferred.make<void>();
           platform.gate.current = gate;
           const start = yield* Effect.forkChild(
-            refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, source))),
+            refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, source), NO_BUDGET_CLAIM),
+            ),
           );
           yield* until(
             () => serviceAttempts(world, service.id).some((attempt) => !known.has(attempt.id)),
@@ -499,7 +587,9 @@ describe("ensurePreviewRunning", () => {
           const gate = yield* Deferred.make<void>();
           platform.gate.current = gate;
           expect(
-            yield* refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, source, 300))),
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, source, 300), NO_BUDGET_CLAIM),
+            ),
           ).toBe("start-expired");
           const accepted = () =>
             serviceAttempts(world, service.id).find((attempt) => !known.has(attempt.id));
@@ -523,24 +613,35 @@ describe("ensurePreviewRunning", () => {
           const { engine, service, preview, source, session } = yield* preparePreview(world, tmp);
           yield* engine.stopService(service.id, byOwner);
           expect(
-            yield* refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, source))),
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, source), NO_BUDGET_CLAIM),
+            ),
           ).toBe("stopped");
 
-          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", OWNER);
+          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", {
+            kind: "person",
+            userId: OWNER,
+          });
           yield* engine.stopService(service.id, idle);
           const stale = { ...requestFor(world, preview, source), revision: 0 };
-          expect(yield* refusalOf(engine.ensurePreviewRunning(stale))).toBe("control-changed");
+          expect(yield* refusalOf(engine.ensurePreviewRunning(stale, NO_BUDGET_CLAIM))).toBe(
+            "control-changed",
+          );
           const latest = serviceAttempts(world, service.id).at(-1)?.id;
           if (latest === undefined) return yield* Effect.die("missing attempt");
           expect(
-            yield* refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, source))),
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, source), NO_BUDGET_CLAIM),
+            ),
             "the newer attempt is the source",
           ).toBe("control-changed");
 
           port.state.forced = true;
           const before = platform.opened.length;
           expect(
-            yield* refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, latest))),
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, latest), NO_BUDGET_CLAIM),
+            ),
           ).toBe("port-occupied");
           expect(platform.opened.length).toBe(before);
           port.state.forced = false;
@@ -549,9 +650,141 @@ describe("ensurePreviewRunning", () => {
           if (row === undefined) return yield* Effect.die("missing session row");
           world.sessions.set(session.id, new Session({ ...row, sealantWorkspaceId: null }));
           expect(
-            yield* refusalOf(engine.ensurePreviewRunning(requestFor(world, preview, latest))),
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, latest), NO_BUDGET_CLAIM),
+            ),
           ).toBe("workspace-not-live");
           expect(platform.opened.length).toBe(before);
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+
+  it("only the request that claims a new launch pays for it; a join or an earlier failure pays nothing", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview, source, session } = yield* preparePreview(world, tmp);
+          yield* engine.stopService(service.id, idle);
+          const claims: Array<string> = [];
+          const claimAs = (who: string) => Effect.sync(() => void claims.push(who));
+          const request = requestFor(world, preview, source);
+          const [first, second] = yield* Effect.all(
+            [
+              engine.ensurePreviewRunning(request, claimAs("first")),
+              engine.ensurePreviewRunning(request, claimAs("second")),
+            ],
+            { concurrency: "unbounded" },
+          );
+          expect(second).toBe(first);
+          expect(claims, "one launch, one claim").toHaveLength(1);
+          expect(
+            yield* engine.ensurePreviewRunning(requestFor(world, preview, source), claimAs("late")),
+          ).toBe(first);
+          expect(claims, "joining a running attempt claims nothing").toHaveLength(1);
+
+          yield* engine.stopService(service.id, idle);
+          platform.control.exitOnOpen = true;
+          const failing = yield* wakeFor(world, preview);
+          expect(yield* refusalOf(engine.ensurePreviewRunning(failing, claimAs("fails")))).toBe(
+            "command-failed",
+          );
+          expect(yield* refusalOf(engine.ensurePreviewRunning(failing, claimAs("again")))).toBe(
+            "command-failed",
+          );
+          expect(claims, "an earlier failure is answered without a claim").toEqual([
+            "first",
+            "fails",
+          ]);
+
+          platform.control.exitOnOpen = false;
+          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", {
+            kind: "person",
+            userId: OWNER,
+          });
+          yield* engine.stopService(service.id, idle);
+          const before = platform.opened.length;
+          const declined = new PreviewStartDeclined();
+          expect(
+            yield* refusalOf(
+              engine.ensurePreviewRunning(yield* wakeFor(world, preview), Effect.fail(declined)),
+            ),
+          ).toBe("declined");
+          expect(platform.opened.length, "a declined claim starts nothing").toBe(before);
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+
+  it("an attempt it started that answered is the next one woken, though no host port bound for it", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    const host = flakyServiceHost();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview } = yield* preparePreview(world, tmp);
+          yield* engine.stopService(service.id, idle);
+          host.state.failing = true;
+          const served = yield* refusalOf(
+            engine.ensurePreviewRunning(yield* wakeFor(world, preview), NO_BUDGET_CLAIM),
+          );
+          expect(served, "served while its host port did not bind").toMatchObject({
+            started: expect.any(String),
+          });
+          yield* engine.stopService(service.id, idle);
+          const woken = yield* refusalOf(
+            engine.ensurePreviewRunning(yield* wakeFor(world, preview), NO_BUDGET_CLAIM),
+          );
+          expect(woken, "the next request starts it again").toMatchObject({
+            started: expect.any(String),
+          });
+          expect(woken).not.toEqual(served);
+        }),
+      {
+        sealantLayer: platform.layer,
+        forwardAdapterLayer: port.layer,
+        serviceHostLayer: host.layer,
+      },
+    );
+  });
+
+  it("a start accepted as its caller's hold ran out still has its answer observed, and wakes again", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview } = yield* preparePreview(world, tmp);
+          yield* engine.stopService(service.id, idle);
+          const known = new Set(serviceAttempts(world, service.id).map((attempt) => attempt.id));
+          port.state.warmupMs = 400;
+          const gate = yield* Deferred.make<void>();
+          platform.gate.current = gate;
+          expect(
+            yield* refusalOf(
+              engine.ensurePreviewRunning(yield* wakeFor(world, preview, 300), NO_BUDGET_CLAIM),
+            ),
+          ).toBe("start-expired");
+          platform.gate.current = null;
+          yield* Deferred.succeed(gate, undefined);
+          const late = () =>
+            serviceAttempts(world, service.id).find((attempt) => !known.has(attempt.id));
+          yield* until(() => late()?.status === "running", "the late start to finish");
+          yield* engine.stopService(service.id, idle);
+          yield* until(() => late()?.exitedAt != null, "the late start to stop");
+          const woken = yield* refusalOf(
+            engine.ensurePreviewRunning(yield* wakeFor(world, preview), NO_BUDGET_CLAIM),
+          );
+          expect(woken, "the next request starts it again").toMatchObject({
+            started: expect.any(String),
+          });
+          expect(woken).not.toEqual({ started: late()?.id });
         }),
       { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
     );
@@ -573,13 +806,95 @@ describe("ensurePreviewRunning", () => {
           yield* engine.stopService(service.id, idle);
           world.serviceStarters.set(service.id, "user-carol");
           const before = platform.opened.length;
-          const refused = yield* Effect.result(
-            engine.ensurePreviewRunning(requestFor(world, preview, source)),
-          );
-          expect(Result.isFailure(refused) ? refused.failure.reason : refused).toBe(
-            "starter-no-standing",
-          );
+          expect(
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, source), NO_BUDGET_CLAIM),
+            ),
+          ).toBe("starter-no-standing");
           expect(platform.opened.length).toBe(before);
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+});
+
+describe("a preview's control under people's concurrent intents", () => {
+  it("a restart asked before another person's Stop never clears that Stop", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview } = yield* preparePreview(world, tmp);
+          const held = yield* Deferred.make<void>();
+          platform.closing.gate = held;
+          const restart = yield* Effect.forkChild(
+            engine.restartService(service.id, { kind: "person", userId: STEERER }),
+          );
+          yield* until(() => platform.closing.waiting > 0, "the restart to hold the lifecycle");
+          const stop = yield* Effect.forkChild(engine.stopService(service.id, byOwner));
+          yield* until(
+            () => world.previewControls.get(preview.id)?._tag === "Stopped",
+            "the owner's Stop recorded before its turn",
+          );
+          platform.closing.gate = null;
+          yield* Deferred.succeed(held, undefined);
+          yield* Fiber.join(restart);
+          yield* Fiber.join(stop);
+          expect(world.previewControls.get(preview.id), "the later Stop stands").toMatchObject({
+            _tag: "Stopped",
+            by: OWNER,
+          });
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+});
+
+describe("a person's Stop and a run the agent started", () => {
+  it("serves the agent's run while it lasts, starts nothing once it ends, and a person's Start clears it", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview, session } = yield* preparePreview(world, tmp);
+          yield* engine.stopService(service.id, byOwner);
+          const agent = servedSocketApis.get(session.id);
+          if (agent === undefined) return yield* Effect.die("the session serves no socket");
+          yield* agent.runService(["pnpm", "dev"], 3000, "web", "tcp", "http");
+          expect(yield* resolutionOf(world, preview), "the agent's run is served").toMatchObject({
+            _tag: "Bound",
+          });
+
+          yield* agent.stopService(service.id);
+          expect(yield* resolutionOf(world, preview), "the Stop holds again").toMatchObject({
+            _tag: "Stopped",
+            control: { by: OWNER },
+          });
+          const latest = serviceAttempts(world, service.id).at(-1)?.id;
+          if (latest === undefined) return yield* Effect.die("missing attempt");
+          const before = platform.opened.length;
+          expect(
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, latest), NO_BUDGET_CLAIM),
+            ),
+          ).toBe("stopped");
+          expect(platform.opened.length, "a request starts nothing").toBe(before);
+
+          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", {
+            kind: "person",
+            userId: OWNER,
+          });
+          yield* engine.stopService(service.id, idle);
+          expect(
+            yield* refusalOf(
+              engine.ensurePreviewRunning(yield* wakeFor(world, preview), NO_BUDGET_CLAIM),
+            ),
+            "a person's Start cleared the Stop",
+          ).toMatchObject({ started: expect.any(String) });
         }),
       { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
     );

@@ -1096,7 +1096,7 @@ describe("SessionEngine", () => {
             expect(service.currentForward?.hostPort).toBe(43127);
             expect(service.latestObservation?.state).toBe("reachable");
             const adoptedRestart = yield* engine
-              .restartService(service.service.id)
+              .restartService(service.service.id, { kind: "system" })
               .pipe(Effect.flip);
             expect(adoptedRestart.message).toContain("no recorded command");
 
@@ -1251,7 +1251,7 @@ describe("SessionEngine", () => {
           const firstAttemptId = service.attempts[0]?.id;
           const firstRunId = service.attempts[0]?.sealantRunId;
           const forwardId = service.currentForward?.id;
-          const restarted = yield* engine.restartService(service.service.id);
+          const restarted = yield* engine.restartService(service.service.id, { kind: "system" });
           expect(restarted.service.id).toBe(service.service.id);
           expect(restarted.attempts).toHaveLength(2);
           expect(restarted.attempts[0]?.id).toBe(firstAttemptId);
@@ -1326,7 +1326,7 @@ describe("SessionEngine", () => {
           const first = service.attempts[0]?.sealantSessionId;
 
           log.length = 0;
-          const restarted = yield* engine.restartService(service.service.id);
+          const restarted = yield* engine.restartService(service.service.id, { kind: "system" });
           expect(log).toEqual(["sever service-restarting", `close ${first}`]);
 
           log.length = 0;
@@ -1496,7 +1496,7 @@ describe("SessionEngine", () => {
               "web",
               "tcp",
               null,
-              "user-fixture",
+              { kind: "person", userId: "user-fixture" },
               startId,
             );
             yield* engine.stopService(hers.service.id, ownerStop);
@@ -1518,7 +1518,7 @@ describe("SessionEngine", () => {
               "web",
               "tcp",
               null,
-              `user-${who}`,
+              { kind: "person", userId: `user-${who}` },
               startId,
             );
             expect(started.service.sessionId).toBe(theirs.id);
@@ -1708,7 +1708,9 @@ describe("SessionEngine", () => {
           yield* engine.launch(session.id, ["codex"]);
           const before = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
           rejectWorkspaceLookup = true;
-          const failure = yield* engine.restartService(before.service.id).pipe(Effect.flip);
+          const failure = yield* engine
+            .restartService(before.service.id, { kind: "system" })
+            .pipe(Effect.flip);
           expect(failure).toBeInstanceOf(SealantPlatformError);
           const attempts = [...world.processes.values()].filter(
             (process) => process.serviceId === before.service.id,

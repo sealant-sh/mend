@@ -3639,29 +3639,27 @@ const kubernetesPersonLayoutMigration = Effect.gen(function* () {
 
 /**
  * 0139 (docs/adr/0017, Decision log 6): a preview's control, one row per preview, absent while
- * automatic at revision 0. A Service probe names the attempt it observed, so a request-triggered
- * start can tell an attempt that answered from one that never did, even across a kept forward.
+ * automatic at revision 0.
  */
 const previewControlsMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE SEQUENCE preview_control_seq AS integer`;
   yield* sql`CREATE TABLE preview_controls (
     preview_id text PRIMARY KEY REFERENCES previews(id) ON DELETE CASCADE,
     revision integer NOT NULL DEFAULT 0 CHECK (revision >= 0),
     state text NOT NULL CHECK (state IN ('automatic', 'stopped')),
     stopped_by text,
     stopped_at timestamptz,
+    stopped_seq integer,
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT preview_controls_stop_facts CHECK (
       CASE WHEN state = 'stopped'
-        THEN stopped_by IS NOT NULL AND stopped_at IS NOT NULL
-        ELSE stopped_by IS NULL AND stopped_at IS NULL
+        THEN stopped_by IS NOT NULL AND stopped_at IS NOT NULL AND stopped_seq IS NOT NULL
+        ELSE stopped_by IS NULL AND stopped_at IS NULL AND stopped_seq IS NULL
       END
     )
   )`;
-  yield* sql`ALTER TABLE service_observations
-    ADD COLUMN attempt_id text REFERENCES session_processes(id) ON DELETE SET NULL`;
-  yield* sql`CREATE INDEX service_observations_attempt_idx ON service_observations (attempt_id)
-    WHERE attempt_id IS NOT NULL`;
+  yield* sql`ALTER TABLE session_processes ADD COLUMN reached_at timestamptz`;
 });
 
 export const migrations = {

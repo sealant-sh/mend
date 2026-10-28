@@ -58,6 +58,8 @@ export interface PreviewTarget {
   readonly service: Service;
   readonly liveAttempt: SessionProcess | null;
   readonly recordedCommand: boolean;
+  /** The live workspace of the Service's session, where a start would run; null when none. */
+  readonly workspaceId: SealantWorkspaceId | null;
 }
 
 export type PreviewSelection =
@@ -66,12 +68,18 @@ export type PreviewSelection =
       readonly _tag: "Unbound";
       readonly reason: PreviewUnboundReason;
       readonly service: Service | null;
+      readonly workspaceId: SealantWorkspaceId | null;
     };
 
 const unbound = (
   reason: PreviewUnboundReason,
-  service: Service | null = null,
-): PreviewSelection => ({ _tag: "Unbound", reason, service });
+  target: PreviewTarget | null = null,
+): PreviewSelection => ({
+  _tag: "Unbound",
+  reason,
+  service: target?.service ?? null,
+  workspaceId: target?.workspaceId ?? null,
+});
 
 const oldestFirst = (
   a: { readonly createdAt: Date; readonly id: string },
@@ -85,25 +93,25 @@ export const selectPreviewTarget = (
   if (preview.state === "removed") return unbound("removed");
   const named = targets.filter((target) => target.service.name === preview.serviceName);
   const live = named
-    .flatMap(({ service, liveAttempt }) =>
-      service.browserScheme !== null && liveAttempt !== null
-        ? [{ service, attempt: liveAttempt }]
+    .flatMap((target) =>
+      target.service.browserScheme !== null && target.liveAttempt !== null
+        ? [{ target, attempt: target.liveAttempt }]
         : [],
     )
     .toSorted((a, b) => oldestFirst(a.attempt, b.attempt))[0];
   if (live !== undefined) {
-    if (live.service.browserScheme === "https") return unbound("https-unsupported", live.service);
-    if (live.attempt.argv.length === 0) return unbound("no-recorded-command", live.service);
-    return { _tag: "Bound", service: live.service, attempt: live.attempt };
+    if (live.target.service.browserScheme === "https") {
+      return unbound("https-unsupported", live.target);
+    }
+    if (live.attempt.argv.length === 0) return unbound("no-recorded-command", live.target);
+    return { _tag: "Bound", service: live.target.service, attempt: live.attempt };
   }
   const newest = named.toSorted((a, b) => oldestFirst(b.service, a.service))[0];
   if (newest === undefined) return unbound("service-missing");
-  if (newest.service.browserScheme === null) return unbound("not-browser-service", newest.service);
-  if (newest.service.browserScheme === "https") {
-    return unbound("https-unsupported", newest.service);
-  }
+  if (newest.service.browserScheme === null) return unbound("not-browser-service", newest);
+  if (newest.service.browserScheme === "https") return unbound("https-unsupported", newest);
   const hasCommand = newest.recordedCommand || newest.service.declarationSource === "explicit-run";
-  return unbound(hasCommand ? "no-live-attempt" : "no-recorded-command", newest.service);
+  return unbound(hasCommand ? "no-live-attempt" : "no-recorded-command", newest);
 };
 
 export const resolvePreviewBinding = (
@@ -118,7 +126,8 @@ export const resolvePreviewBinding = (
 
 /**
  * Whether a preview's requests may start it (ADR 0017, Decision log 6). The revision changes only
- * when a person's Stop or Start changes it, so a start keyed by it runs once per intent.
+ * when a person's Stop or Start changes the state, so a start keyed by it runs once per intent.
+ * `seq` orders the person's Stop against every Start asked before or after it.
  */
 export const PreviewControl = Schema.Union([
   Schema.TaggedStruct("Automatic", { revision: Schema.Int }),
@@ -126,6 +135,7 @@ export const PreviewControl = Schema.Union([
     revision: Schema.Int,
     by: Schema.String,
     at: Schema.Date,
+    seq: Schema.Int,
   }),
 ]);
 export type PreviewControl = typeof PreviewControl.Type;
@@ -142,9 +152,13 @@ export const PREVIEW_CONTROL_INITIAL: Extract<PreviewControl, { readonly _tag: "
   revision: 0,
 };
 
+/**
+ * A person's intent, each with its place in one order of intents (`seq`). A Start asked before a
+ * Stop was recorded never clears that Stop, however late the Start reaches it.
+ */
 export type PreviewControlIntent =
-  | { readonly _tag: "Stop"; readonly by: string; readonly at: Date }
-  | { readonly _tag: "Start" };
+  | { readonly _tag: "Stop"; readonly by: string; readonly at: Date; readonly seq: number }
+  | { readonly _tag: "Start"; readonly seq: number };
 
 export const changePreviewControl = (
   current: PreviewControl,
@@ -152,33 +166,50 @@ export const changePreviewControl = (
 ): PreviewControl => {
   switch (intent._tag) {
     case "Stop":
-      return current._tag === "Stopped"
-        ? current
-        : { _tag: "Stopped", revision: current.revision + 1, by: intent.by, at: intent.at };
+      return {
+        _tag: "Stopped",
+        revision: current._tag === "Stopped" ? current.revision : current.revision + 1,
+        by: intent.by,
+        at: intent.at,
+        seq: intent.seq,
+      };
     case "Start":
-      return current._tag === "Automatic"
+      return current._tag === "Automatic" || current.seq > intent.seq
         ? current
         : { _tag: "Automatic", revision: current.revision + 1 };
   }
 };
 
+/**
+ * Why a Service stops or starts. Only `person` decides its preview's control, and only Mend's
+ * person-facing routes name one (ADR 0017, Decision log 6): the owner's or a steerer's Stop, Start
+ * or restart. `workspace` is the session's own socket or channel, which is its agent even when a
+ * person's token carries it: `runsAs` is then that person.
+ */
 export type ServiceStopCause =
   | { readonly kind: "person"; readonly userId: string }
+  | { readonly kind: "workspace" }
   | { readonly kind: "system"; readonly reason: "session-ended" | "removal" | "idle" };
 
 export type ServiceStartCause =
   | { readonly kind: "person"; readonly userId: string }
-  | { readonly kind: "preview-request" }
+  | { readonly kind: "workspace"; readonly runsAs: string | null }
   | { readonly kind: "system" };
 
-/**
- * The person whose Stop or Start of a Service decides its preview's control, or null when the cause
- * decides nothing (ADR 0017, Decision log 6, decided by Yiannis, 2026-10-25): any person's, the
- * owner's or a steerer's, and never the session's own workspace, which is its agent.
- */
-export const previewControlDecider = (
-  cause: ServiceStopCause | ServiceStartCause | { readonly kind: "workspace" },
-): string | null => (cause.kind === "person" ? cause.userId : null);
+export const previewControlDecider = (cause: ServiceStopCause | ServiceStartCause): string | null =>
+  cause.kind === "person" ? cause.userId : null;
+
+/** Whom a started Service runs as in a person executor; null is the session's owner. */
+export const serviceRunsAs = (cause: ServiceStartCause): string | null => {
+  switch (cause.kind) {
+    case "person":
+      return cause.userId;
+    case "workspace":
+      return cause.runsAs;
+    case "system":
+      return null;
+  }
+};
 
 export interface PreviewBoundAttempt {
   readonly serviceId: ServiceId;
@@ -217,11 +248,13 @@ export type PreviewGatewayResolution =
       readonly _tag: "Starting";
       readonly revision: number;
       readonly attemptId: SessionProcessId;
+      readonly workspaceId: SealantWorkspaceId;
     }
   | {
       readonly _tag: "Dormant";
       readonly revision: number;
       readonly source: PreviewResumeSource;
+      readonly workspaceId: SealantWorkspaceId | null;
     }
   | { readonly _tag: "Refused"; readonly reason: PreviewGatewayRefusal };
 
@@ -273,15 +306,26 @@ export const previewResumeSourceOf = (
 
 /**
  * A removed preview resolves to `service-missing`: the gateway answers it as removed. `history` is
- * the attempts of `previewResumeCandidate(selected)`.
+ * the attempts of `previewResumeCandidate(selected)`. A person's Stop keeps requests from starting
+ * the Service (ADR 0017, Decision log 6): a run the agent started is served while it lasts, and
+ * the Stop holds again once it ends.
  */
 export const previewGatewayResolution = (
   control: PreviewControlRead,
   selected: PreviewSelection,
   history: ReadonlyArray<PreviewAttemptEvidence>,
 ): PreviewGatewayResolution => {
-  const removed = selected._tag === "Unbound" && selected.reason === "removed";
-  if (!removed && control._tag === "Stopped") return { _tag: "Stopped", control };
+  const resolution = unlatchedResolution(control.revision, selected, history);
+  return resolution._tag === "Dormant" && control._tag === "Stopped"
+    ? { _tag: "Stopped", control }
+    : resolution;
+};
+
+const unlatchedResolution = (
+  revision: number,
+  selected: PreviewSelection,
+  history: ReadonlyArray<PreviewAttemptEvidence>,
+): PreviewGatewayResolution => {
   if (selected._tag === "Unbound") {
     switch (selected.reason) {
       case "removed":
@@ -291,7 +335,7 @@ export const previewGatewayResolution = (
           selected.service === null ? null : previewResumeSourceOf(selected.service, history);
         return source === null
           ? { _tag: "Refused", reason: "no-recorded-command" }
-          : { _tag: "Dormant", revision: control.revision, source };
+          : { _tag: "Dormant", revision, source, workspaceId: selected.workspaceId };
       }
       default:
         return { _tag: "Refused", reason: selected.reason };
@@ -299,14 +343,19 @@ export const previewGatewayResolution = (
   }
   const { service, attempt } = selected;
   if (attempt.status === "starting") {
-    return { _tag: "Starting", revision: control.revision, attemptId: attempt.id };
+    return {
+      _tag: "Starting",
+      revision,
+      attemptId: attempt.id,
+      workspaceId: attempt.sealantWorkspaceId,
+    };
   }
   if (attempt.sealantSessionId === null) {
     return { _tag: "Refused", reason: "process-binding-unavailable" };
   }
   return {
     _tag: "Bound",
-    revision: control.revision,
+    revision,
     attempt: {
       serviceId: service.id,
       attemptId: attempt.id,
@@ -377,8 +426,10 @@ const holdText = (ms: number): string =>
 
 export const previewUndeliveredLine = (fact: PreviewUndelivered): string => {
   switch (fact._tag) {
-    case "DidNotStart":
-      return `preview · ${fact.serviceName} · did not start in ${holdText(fact.holdMs)} · ${fact.reason} · your request was not delivered`;
+    case "DidNotStart": {
+      const within = fact.reason === "start timed out" ? ` in ${holdText(fact.holdMs)}` : "";
+      return `preview · ${fact.serviceName} · did not start${within} · ${fact.reason} · your request was not delivered`;
+    }
     case "Stopped":
       return `preview · ${fact.serviceName} · ${fact.by} stopped the preview · your request was not delivered`;
   }
