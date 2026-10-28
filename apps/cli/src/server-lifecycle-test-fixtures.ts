@@ -211,6 +211,7 @@ const createFixture = async (cleanups: Array<() => Promise<void>>) => {
       // Where this machine's CLI points by default, nothing answers on the fixture's machine.
       if (request.startsWith("http://localhost:3105/"))
         return { status: 0, body: "", error: "connection refused" };
+      if (request === "http://127.0.0.1:3130/") return { status: 404, body: "No such preview.\n" };
       if (!request.startsWith(url)) throw new Error("Unexpected network request");
       return base.fetchText(request, timeout, headers);
     },

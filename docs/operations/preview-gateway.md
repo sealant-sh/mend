@@ -21,6 +21,7 @@ API with a message that names the variable. An empty value counts as unset.
 | `MEND_PREVIEW_TAILNET_PORTS`    | unset       | Each preview's port on that name, as `port=previewId`, comma-separated. One preview per port and one port per preview. Required with the hostname. |
 | `MEND_PREVIEW_START_HOLD`       | `3 minutes` | How long a request waits for a stopped preview to start, such as `90 seconds`. At least 1 second.                                                  |
 | `MEND_PREVIEW_BODY_BYTES`       | unset       | A cap on one request body, in bytes, counted as it streams. Unset means no cap.                                                                    |
+| `MEND_PREVIEW_PUBLISHED`        | unset       | Where the gateway's port is published, `<address>:<port>`, as setup states it. Read only by the public exposure gate's `preview-gateway` item.     |
 
 How browsers reach a preview follows from what is set:
 
@@ -98,6 +99,103 @@ any budget below. One that waits longer than 30 seconds is answered `503` with
 `preview · web · every forward to it stayed busy · your request was not delivered`, so streams that
 hold every forward cannot park the rest forever. The acceptance tests load a page of 300 modules
 this way through Caddy over HTTP/2, with nothing refused.
+
+## The packaged edge
+
+On a Docker install with the edge (`mend server setup --edge <host>`), setup serves previews too:
+
+```sh
+mend server setup --preview-domain previews.example.net \
+  --preview-certificate /etc/mend/previews.crt --preview-key /etc/mend/previews.key
+```
+
+- **The domain.** Each preview is `https://<label>.previews.example.net`. Setup refuses a domain
+  that is Mend's host, holds it, or sits under it (`previews.mend.example.com` beside
+  `mend.example.com`), and one on Mend's own site, which shares Mend's registrable domain
+  (`previews.example.com` beside `mend.example.com`), for the reasons above. `previews.example.net`
+  beside `mend.example.com` is on a registrable domain of its own. Point `*.previews.example.net` at
+  the same address as Mend's host. Setup says where `mend-preview-probe.<domain>` resolves from its
+  machine.
+- **The certificate.** The packaged edge, the stock `caddy:2.10-alpine`, has no DNS provider module,
+  and a wildcard certificate needs the ACME DNS-01 challenge. So you supply one: a PEM certificate
+  whose names include `*.<domain>`, and its key, at absolute paths on the machine Mend runs on. Each
+  setup run reads both files, checks that the certificate names the wildcard itself and that the key
+  is its own, and refuses the run when either fails, whatever else the run changes. It does not
+  check the chain to a public root. A certificate that expires within 30 days, or has expired, is
+  said and not refused; one you supply that has already expired is refused. Setup then copies both
+  into the install's generation, `preview-certificate.pem` and `preview-key.pem`, and the edge reads
+  those copies. The key copy is readable by you and your group only, and the edge joins that group:
+  it runs as root with every capability dropped, so it cannot read a key only you can read. Before
+  the new generation goes live, setup has Caddy load it in a container run as the edge is, and
+  refuses the run if Caddy cannot.
+- **Renewal.** Replace the files at the same paths, then run `mend server setup --yes`. It copies
+  them again into a new generation, which recreates the edge, and the edge serves the renewed
+  certificate. `mend server restart` does not: it restarts Mend alone, and the edge keeps the
+  certificate it loaded. Without `--yes` on a terminal, setup opens its guide first.
+- **The gateway.** It runs in the Mend container on port 3130 (`MEND_PREVIEW_BIND=0.0.0.0` there, so
+  the edge's container reaches it) and is published on `127.0.0.1:3130` only
+  (`MEND_PREVIEW_PUBLISHED`). Setup says whether it answered there. The port is fixed: two installs
+  on one machine, such as Docker Desktop's and OrbStack's on one Mac, cannot both serve previews,
+  and setup refuses the second because the port is taken.
+- **A public install.** With `--exposure public`, Mend does not start while the gate's
+  `preview-gateway` item is open, so setup refuses previews until you add
+  `--declare preview-gateway`. That statement says you checked from another network that
+  `*.<domain>` resolves to the edge, that `https://<label>.<domain>` answers over a certificate that
+  chains to a public root, and that `127.0.0.1:3130` answers nothing from another machine. To check
+  before you state it, turn previews on under `--exposure private` first, then switch.
+- **The files.** Setup writes `Caddyfile.preview`, mounted at `/etc/caddy/sites/preview.caddy`,
+  `compose.preview.yaml` and the two copies into the install's generation. They are kept across
+  reruns and upgrades. `mend server setup --no-preview-domain` removes them and leaves your
+  certificate files where they are.
+
+The site the edge serves, as setup writes it:
+
+```caddyfile
+*.{$MEND_PREVIEW_DOMAIN} {
+	tls /etc/caddy/preview/certificate.pem /etc/caddy/preview/key.pem
+
+	reverse_proxy mend:3130 {
+		flush_interval -1
+		transport http {
+			response_header_timeout 10m
+		}
+	}
+
+	log preview {
+		output stdout
+		import uri-free
+	}
+}
+```
+
+### A certificate over DNS-01
+
+Two ways, and Mend wires neither in:
+
+- **Issue it elsewhere and supply it.** Any ACME client that speaks DNS-01 to your DNS provider
+  (certbot with a DNS plugin, lego, acme.sh) issues `*.<domain>` from a public root without
+  publishing the listener. Point `--preview-certificate` and `--preview-key` at what it writes, and
+  run `mend server setup --yes` after each renewal, from the client's deploy hook if it has one.
+- **Run your own Caddy.** Build an image with your provider's module
+  (`xcaddy build --with github.com/caddy-dns/<provider>`) and run it as the edge in front of the
+  gateway yourself, with the site above and its `tls` line replaced by your provider's block, such
+  as `tls { dns cloudflare {env.CLOUDFLARE_API_TOKEN} }`. The packaged edge's image is pinned by
+  setup, so this is an edge you run, as in [The edge in front](#the-edge-in-front).
+
+## Logs
+
+The sign-in exchange puts a single-use ticket in the preview host's query:
+`/__mend/auth?ticket=…&path=…`. The ticket lives 30 seconds and opens once, and until the exchange
+spends it, it is a credential. The app's own paths and queries are the app's. So the edge in front
+of the gateway logs no URI for preview hosts:
+
+- **The packaged edge** imports the Caddyfile's `uri-free` snippet into the preview site's log, as
+  the T3 Code gateway's site does: the URI reads `REDACTED`, and `Location` and `Referer` are
+  dropped. Caddy redacts `Cookie`, `Set-Cookie` and `Authorization` itself. Caddy's error lines
+  about these requests, a failed dial among them, go to its `default` log, which also holds no URI.
+  This was chosen over a filter that keeps the path because it reuses a snippet that already exists
+  and needs no regular expression to keep correct. `scripts/edge-overlay.test.mjs` runs the real
+  image and holds every line to it.
 
 ## Refusals
 

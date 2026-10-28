@@ -55,9 +55,15 @@ import {
   parseEdgeHost,
   postureEnvLines,
   postureEnvironment,
+  PREVIEW_CADDY_SITE,
+  PREVIEW_CADDYFILE,
+  PREVIEW_CADDYFILE_NAME,
+  PREVIEW_COMPOSE_FILE,
   publishedAddress,
   renderPostureOverlay,
+  renderPreviewOverlay,
   renderT3GatewayOverlay,
+  type ServerPreview,
   T3_GATEWAY_CADDY_SITE,
   T3_GATEWAY_CADDYFILE,
   T3_GATEWAY_CADDYFILE_NAME,
@@ -96,11 +102,21 @@ import {
   type ServerMirrors,
 } from "./server-mirrors.ts";
 import {
+  checkPreview,
+  observePreviewGateway,
+  parsePreviewFile,
+  previewDomainLine,
+  type PreviewFiles,
+  type PreviewPem,
+  resolvePreview,
+} from "./server-preview.ts";
+import {
   runServerProcess,
   serverComposeArgs,
   serverProcessDeadlines,
   type ServerProcessOptions,
 } from "./server-runtime.ts";
+import { ServerSetupError, setupError } from "./server-setup-error.ts";
 import {
   changeLines,
   chooseDockerEngine,
@@ -117,7 +133,6 @@ import {
 } from "./server-setup-guide.ts";
 import {
   withServerStore,
-  ServerRefusal,
   ServerStoreError,
   type ServerFiles,
   type HeldBackup,
@@ -316,6 +331,9 @@ interface SetupOptions {
   readonly t3GatewayOrigin: string | undefined;
   /** `--no-t3-gateway-origin`: the edge stops serving it; the gateway stays on. */
   readonly noT3GatewayOrigin: boolean;
+  readonly previewDomain: string | undefined;
+  readonly previewFiles: PreviewFiles | undefined;
+  readonly noPreviewDomain: boolean;
   /**
    * `--allow-userns` (true), `--no-allow-userns` (false): whether setup allows unprivileged user
    * namespaces on a Docker host whose kernel refuses them. Omitted: asked on a terminal, else the
@@ -383,6 +401,7 @@ export interface ServerConfig {
    * with an edge. Absent, the gateway is not served by the edge.
    */
   readonly t3GatewayOrigin?: string;
+  readonly preview?: ServerPreview;
 }
 
 /**
@@ -426,12 +445,6 @@ interface DockerContextRow {
   readonly endpoint: string;
   readonly current: boolean;
 }
-
-class ServerSetupError extends ServerRefusal {
-  readonly _tag = "ServerSetupError" as const;
-}
-
-const setupError = (message: string): ServerSetupError => new ServerSetupError(message);
 
 const ownFields = (value: unknown): ReadonlyMap<string, unknown> | null => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -528,6 +541,10 @@ const SETUP_FLAGS = new Set([
   "--no-t3-gateway",
   "--t3-gateway-origin",
   "--no-t3-gateway-origin",
+  "--preview-domain",
+  "--preview-certificate",
+  "--preview-key",
+  "--no-preview-domain",
   "--undeclare",
   "--allow-userns",
   "--no-allow-userns",
@@ -548,6 +565,7 @@ const SWITCHES: ReadonlySet<string> = new Set([
   "--t3-gateway",
   "--no-t3-gateway",
   "--no-t3-gateway-origin",
+  "--no-preview-domain",
   "--allow-userns",
   "--no-allow-userns",
   "--yes",
@@ -602,6 +620,26 @@ const parseHostFlag = (value: string, flag: string): string => {
 };
 
 const parseEdge = (value: string): string => parseHostFlag(value, "--edge");
+
+const parsePreviewDomainFlag = (value: string): string => {
+  const domain = parseEdgeHost(value);
+  if (domain === null) {
+    throw setupError(
+      `--preview-domain must be a DNS name a wildcard certificate can be issued for, such as previews.example.net, not "${value}".`,
+    );
+  }
+  return domain;
+};
+
+const parsePreviewFileFlag = (value: string, flag: string): string => {
+  const file = parsePreviewFile(value);
+  if (file === null) {
+    throw setupError(
+      `${flag} must be an absolute path on this machine with no colon, quote, # or $ in it, not "${value}": the edge mounts the file read-only.`,
+    );
+  }
+  return file;
+};
 
 const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
   const values = new Map<string, Array<string>>();
@@ -705,6 +743,22 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
       `--t3-gateway-origin contradicts ${values.has("--no-t3-gateway") ? "--no-t3-gateway" : "--no-t3-gateway-origin"}.`,
     );
   }
+  const previewDomain = flagValue("--preview-domain");
+  const previewCertificate = flagValue("--preview-certificate");
+  const previewKey = flagValue("--preview-key");
+  if (
+    values.has("--no-preview-domain") &&
+    (previewDomain !== undefined || previewCertificate !== undefined || previewKey !== undefined)
+  ) {
+    throw setupError(
+      "--no-preview-domain contradicts --preview-domain, --preview-certificate and --preview-key.",
+    );
+  }
+  if ((previewCertificate === undefined) !== (previewKey === undefined)) {
+    throw setupError(
+      "--preview-certificate and --preview-key go together: the certificate for *.<domain> and its private key, as PEM files on this machine.",
+    );
+  }
   return {
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
@@ -741,6 +795,15 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
         ? undefined
         : parseHostFlag(t3GatewayOrigin, "--t3-gateway-origin"),
     noT3GatewayOrigin: values.has("--no-t3-gateway-origin"),
+    previewDomain: previewDomain === undefined ? undefined : parsePreviewDomainFlag(previewDomain),
+    previewFiles:
+      previewCertificate === undefined || previewKey === undefined
+        ? undefined
+        : {
+            certificate: parsePreviewFileFlag(previewCertificate, "--preview-certificate"),
+            key: parsePreviewFileFlag(previewKey, "--preview-key"),
+          },
+    noPreviewDomain: values.has("--no-preview-domain"),
     allowUserns: pair("--allow-userns", "--no-allow-userns"),
   };
 };
@@ -813,30 +876,29 @@ const resolveMirrors = (
   };
 };
 
+const mirrorsCorrupt = () =>
+  setupError("Server config is corrupt: mirrors must hold npm and docker, each an object or null.");
+
 const parseMirrorsField = (value: unknown): ServerMirrors => {
   const fields = ownFields(value);
-  const corrupt = () =>
-    setupError(
-      "Server config is corrupt: mirrors must hold npm and docker, each an object or null.",
-    );
-  if (fields === null || !fields.has("npm") || !fields.has("docker")) throw corrupt();
+  if (fields === null || !fields.has("npm") || !fields.has("docker")) throw mirrorsCorrupt();
   const npm = fields.get("npm");
   const docker = fields.get("docker");
   let parsedNpm: ServerMirrors["npm"] = null;
   if (npm !== null) {
     const maxSize = ownFields(npm)?.get("maxSize");
-    if (typeof maxSize !== "string" || parseMirrorSize(maxSize) !== maxSize) throw corrupt();
+    if (typeof maxSize !== "string" || parseMirrorSize(maxSize) !== maxSize) throw mirrorsCorrupt();
     parsedNpm = { maxSize };
   }
   let parsedDocker: ServerMirrors["docker"] = null;
   if (docker !== null) {
     const dockerFields = ownFields(docker);
-    if (dockerFields === null) throw corrupt();
+    if (dockerFields === null) throw mirrorsCorrupt();
     const maxSize = dockerFields.get("maxSize");
-    if (typeof maxSize !== "string" || parseMirrorSize(maxSize) !== maxSize) throw corrupt();
+    if (typeof maxSize !== "string" || parseMirrorSize(maxSize) !== maxSize) throw mirrorsCorrupt();
     const user = dockerFields.get("upstreamUser");
     if (user !== undefined && (typeof user !== "string" || !isDockerHubCredential(user)))
-      throw corrupt();
+      throw mirrorsCorrupt();
     // A login without the operator's public-only statement is never rendered.
     if (user !== undefined && dockerFields.get("upstreamPublicOnly") !== true)
       throw setupError(
@@ -1035,6 +1097,7 @@ const validateExposure = (
   | "declared"
   | "t3GatewayPort"
   | "t3GatewayOrigin"
+  | "preview"
 > => {
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
@@ -1115,6 +1178,29 @@ const validateExposure = (
   const allowedOrigins = [
     ...new Set((requestedOrigins ?? inheritedOrigins).filter((origin) => origin !== appUrl)),
   ];
+  const preview = resolvePreview(
+    existing?.preview,
+    {
+      domain: options.previewDomain,
+      files: options.previewFiles,
+      off: options.noPreviewDomain,
+    },
+    {
+      edgeHost,
+      hosts: [
+        ...[appUrl, ...allowedOrigins].map((origin) => ({
+          host: parseUrl(origin, "an origin").hostname,
+          what: "Mend's origin's host",
+        })),
+        ...(t3GatewayOrigin === undefined
+          ? []
+          : [{ host: t3GatewayOrigin, what: "the t3code gateway's origin" }]),
+      ],
+      ports: [appPort, sshPort, ...(t3GatewayPort === undefined ? [] : [t3GatewayPort])],
+      exposure,
+      declared,
+    },
+  );
   return {
     bind,
     ...(sshBind === undefined ? {} : { sshBind }),
@@ -1128,6 +1214,7 @@ const validateExposure = (
     ...(declared.length === 0 ? {} : { declared }),
     ...(t3GatewayPort === undefined ? {} : { t3GatewayPort }),
     ...(t3GatewayOrigin === undefined ? {} : { t3GatewayOrigin }),
+    ...(preview === undefined ? {} : { preview }),
   };
 };
 
@@ -1149,6 +1236,7 @@ const settingsOf = (
   declared: config.declared ?? [],
   t3GatewayPort: config.t3GatewayPort,
   t3GatewayOrigin: config.t3GatewayOrigin,
+  preview: config.preview,
   mirrors: config.mirrors,
 });
 
@@ -1226,6 +1314,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
   if (t3GatewayOrigin !== undefined && parseEdgeHost(t3GatewayOrigin) !== t3GatewayOrigin) {
     throw setupError("Server config is corrupt: t3GatewayOrigin must be a lowercase DNS name.");
   }
+  const preview = fields.has("preview") ? parsePreviewField(fields.get("preview")) : undefined;
   const config: ServerConfig = {
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
@@ -1253,6 +1342,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ...(fields.has("mirrors") ? { mirrors: parseMirrorsField(fields.get("mirrors")) } : {}),
     ...(t3GatewayPort === undefined ? {} : { t3GatewayPort }),
     ...(t3GatewayOrigin === undefined ? {} : { t3GatewayOrigin }),
+    ...(preview === undefined ? {} : { preview }),
   };
   if (
     config.schemaVersion !== CONFIG_SCHEMA_VERSION ||
@@ -1299,12 +1389,33 @@ const parseServerConfig = (raw: string): ServerConfig => {
     noT3Gateway: false,
     t3GatewayOrigin: config.t3GatewayOrigin,
     noT3GatewayOrigin: false,
+    previewDomain: config.preview?.domain,
+    previewFiles: config.preview,
+    noPreviewDomain: false,
     allowUserns: undefined,
   });
   if (config.t3GatewayOrigin !== undefined && config.t3GatewayPort === undefined) {
     throw setupError("Server config is corrupt: t3GatewayOrigin without t3GatewayPort.");
   }
   return config;
+};
+
+const parsePreviewField = (raw: unknown): ServerPreview => {
+  const fields = ownFields(raw);
+  if (fields === null) throw setupError("Server config is corrupt: preview must be an object.");
+  const domain = requiredString(fields, "domain");
+  const certificate = requiredString(fields, "certificate");
+  const key = requiredString(fields, "key");
+  if (
+    parseEdgeHost(domain) !== domain ||
+    parsePreviewFile(certificate) !== certificate ||
+    parsePreviewFile(key) !== key
+  ) {
+    throw setupError(
+      "Server config is corrupt: preview needs a lowercase DNS name and two absolute paths.",
+    );
+  }
+  return { domain, certificate, key };
 };
 
 const envValue = (fields: ReadonlyMap<string, string>, key: string): string => {
@@ -1483,14 +1594,15 @@ const selectDockerContext = async (
   };
 };
 
+const apiVersionParts = (value: string): readonly [number, number] => {
+  const match = /^(\d+)\.(\d+)$/.exec(value);
+  if (match === null) throw setupError(`Docker reported an invalid API version "${value}".`);
+  return [Number(match[1]), Number(match[2])];
+};
+
 const compareApiVersions = (left: string, right: string): number => {
-  const parts = (value: string): readonly [number, number] => {
-    const match = /^(\d+)\.(\d+)$/.exec(value);
-    if (match === null) throw setupError(`Docker reported an invalid API version "${value}".`);
-    return [Number(match[1]), Number(match[2])];
-  };
-  const [leftMajor, leftMinor] = parts(left);
-  const [rightMajor, rightMinor] = parts(right);
+  const [leftMajor, leftMinor] = apiVersionParts(left);
+  const [rightMajor, rightMinor] = apiVersionParts(right);
   return leftMajor === rightMajor ? leftMinor - rightMinor : leftMajor - rightMajor;
 };
 
@@ -2046,6 +2158,17 @@ const validateOverlays = (
   ) {
     throw setupError("Server generation is corrupt: compose.t3.yaml is not the gateway overlay.");
   }
+  if (
+    (config.preview === undefined) !== (files.preview === undefined) ||
+    (config.preview === undefined) !== (files.previewCaddyfile === undefined) ||
+    (config.preview === undefined) !== (files.previewCertificate === undefined) ||
+    (config.preview === undefined) !== (files.previewKey === undefined) ||
+    (files.preview !== undefined && !files.preview.includes(PREVIEW_CADDY_SITE))
+  ) {
+    throw setupError(
+      `Server generation is corrupt: ${PREVIEW_COMPOSE_FILE}, ${PREVIEW_CADDYFILE_NAME} and the certificate copies do not match the persisted server config.`,
+    );
+  }
   const servedByEdge = t3GatewayPlacement(config)?.edgeHost !== undefined;
   if (
     servedByEdge !== (files.t3Caddyfile !== undefined) ||
@@ -2325,6 +2448,12 @@ export const readServerInstallationFacts = async (
           ...(generation.files.t3Caddyfile === undefined
             ? []
             : [{ name: T3_GATEWAY_CADDYFILE_NAME, content: generation.files.t3Caddyfile }]),
+          ...(generation.files.preview === undefined
+            ? []
+            : [{ name: PREVIEW_COMPOSE_FILE, content: generation.files.preview }]),
+          ...(generation.files.previewCaddyfile === undefined
+            ? []
+            : [{ name: PREVIEW_CADDYFILE_NAME, content: generation.files.previewCaddyfile }]),
         ],
         envKeys: envKeyNames(generation.files.env),
       };
@@ -2344,6 +2473,7 @@ const generationFiles = (
   config: ServerConfig,
   secrets: ServerSecrets,
   assets: { readonly compose: string; readonly postgresInit: string },
+  previewPem: PreviewPem | undefined,
   identity: string = renderIdentity(secrets),
 ): ServerFiles => {
   const posture = renderPostureOverlay(config);
@@ -2351,6 +2481,7 @@ const generationFiles = (
   const t3Gateway = renderT3GatewayOverlay(config);
   const t3Caddyfile =
     t3GatewayPlacement(config)?.edgeHost === undefined ? undefined : T3_GATEWAY_CADDYFILE;
+  const preview = renderPreviewOverlay(config);
   return {
     identity,
     config: `${JSON.stringify(config, null, 2)}\n`,
@@ -2359,6 +2490,14 @@ const generationFiles = (
     ...(posture === undefined ? {} : { posture }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
     ...(t3Caddyfile === undefined ? {} : { t3Caddyfile }),
+    ...(preview === undefined || previewPem === undefined
+      ? {}
+      : {
+          preview,
+          previewCaddyfile: PREVIEW_CADDYFILE,
+          previewCertificate: previewPem.certificate,
+          previewKey: previewPem.key,
+        }),
     ...(config.edgeHost === undefined
       ? {}
       : { edge: EDGE_COMPOSE_OVERLAY, caddyfile: EDGE_CADDYFILE }),
@@ -2377,7 +2516,40 @@ const persistSetup = (
   config: ServerConfig,
   secrets: ServerSecrets,
   assets: { readonly compose: string; readonly postgresInit: string },
-): ServerGeneration => storeValue(store.prepare(generationFiles(config, secrets, assets)));
+  previewPem: PreviewPem | undefined,
+): ServerGeneration =>
+  storeValue(store.prepare(generationFiles(config, secrets, assets, previewPem)));
+
+const validateEdge = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+): Promise<void> => {
+  const validated = await runtime.run(
+    "docker",
+    serverComposeArgs(composeTarget(installation), [
+      "run",
+      "--rm",
+      "--no-deps",
+      "-T",
+      "edge",
+      "caddy",
+      "validate",
+      "--config",
+      "/etc/caddy/Caddyfile",
+      "--adapter",
+      "caddyfile",
+    ]),
+    { timeoutMs: serverProcessDeadlines.startup },
+  );
+  if (validated.status === 0) return;
+  const said = `${validated.stderr}\n${validated.stdout}`
+    .split("\n")
+    .map((line) => line.trim())
+    .findLast((line) => line.startsWith("Error:"));
+  throw setupError(
+    `The edge's Caddy could not load this configuration, so nothing changed: ${said ?? "caddy validate failed"}. With previews on, the edge reads setup's copies of the certificate and key as root with every capability dropped.`,
+  );
+};
 
 /**
  * Where this machine reads Mend's health: the advertised origin, or, behind the edge, Mend's own
@@ -3716,7 +3888,21 @@ const setupServer = async (
       `${publishedAddress(t3Gateway.bind, t3Gateway.port)} is already in use on this machine, so the t3code gateway cannot be published there and Mend would not start. Free it, or pick another with --t3-gateway-port <n>`,
     );
   }
-  const generation = persistSetup(store, config, secrets, assets);
+  const active = existing === null ? null : storeValue(store.readActive());
+  const preview = await checkPreview(
+    runtime,
+    config,
+    existing?.config.preview === undefined
+      ? undefined
+      : {
+          preview: existing.config.preview,
+          pem:
+            active?.files.previewCertificate === undefined || active.files.previewKey === undefined
+              ? undefined
+              : { certificate: active.files.previewCertificate, key: active.files.previewKey },
+        },
+  );
+  const generation = persistSetup(store, config, secrets, assets, preview.pem);
   const installation: ServerInstallation = {
     directory: generation.directory,
     config,
@@ -3735,6 +3921,7 @@ const setupServer = async (
   });
   if (ownership._tag === "error") throw setupError(ownership.error.message);
   await checkLocalImages(runtime, installation, options.offline ? "local" : "pull-missing");
+  if (config.preview !== undefined) await validateEdge(runtime, installation);
   storeValue(store.activate(generation));
   await startCompose(runtime, installation);
   await initGarage(runtime, installation, secrets);
@@ -3749,6 +3936,12 @@ const setupServer = async (
     runtime.writeLine(await observeT3Gateway(runtime, t3Gateway));
     const origin = await t3GatewayOriginLine(runtime, config);
     if (origin !== null) runtime.writeLine(origin);
+  }
+  for (const line of preview.lines) runtime.writeLine(line);
+  if (config.preview !== undefined) {
+    runtime.writeLine(await observePreviewGateway(runtime));
+    const resolves = await previewDomainLine(runtime, config);
+    if (resolves !== null) runtime.writeLine(resolves);
   }
   if (existing?.config.t3GatewayPort !== undefined && config.t3GatewayPort === undefined) {
     runtime.writeLine(
@@ -4397,7 +4590,15 @@ const upgradeServer = async (
   // The edge and the posture are in `carried`, so the target renders the same overlays from the
   // same config, with this CLI's copy of the edge files. Identity bytes come only from the old
   // generation.
-  const files = generationFiles(config, secrets, assets, previous.files.identity);
+  const files = generationFiles(
+    config,
+    secrets,
+    assets,
+    previous.files.previewCertificate === undefined || previous.files.previewKey === undefined
+      ? undefined
+      : { certificate: previous.files.previewCertificate, key: previous.files.previewKey },
+    previous.files.identity,
+  );
   // Parse the proposed pair before publication.
   const parsed = parseServerConfig(files.config);
   if (renderSecrets(parseSecrets(files.env), parsed) !== files.env)

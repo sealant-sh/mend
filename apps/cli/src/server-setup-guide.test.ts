@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ServerLeftovers } from "./server-docker-volumes.ts";
 import {
+  changeLines,
   chooseDockerEngine,
   type DockerEngine,
   flagsFor,
@@ -37,6 +38,16 @@ const BOX: ServerConfig = {
   tenancy: "multi",
   declared: ["workspace-ssh", "core-private"],
   mirrors: { npm: { maxSize: "10g" }, docker: { maxSize: "20g" } },
+};
+
+const PREVIEWED: ServerConfig = {
+  ...BOX,
+  declared: ["workspace-ssh", "core-private", "preview-gateway"],
+  preview: {
+    domain: "previews.example.net",
+    certificate: "/etc/mend/previews.crt",
+    key: "/etc/mend/previews.key",
+  },
 };
 
 const TAILSCALE_STATUS = JSON.stringify({
@@ -478,6 +489,45 @@ describe("the guided server setup", () => {
     });
   });
 
+  it("shows live previews, and turning them off takes their statement with them", async () => {
+    const [change, livePreviews, keepThem, nothingElse, apply] = ["2", "4", "n", "", ""];
+    const { outcome, transcript } = await converse(
+      [change, livePreviews, keepThem, nothingElse, apply],
+      PREVIEWED,
+    );
+    expect(transcript).toContain(
+      "  live previews    on, at https://<label>.previews.example.net through the edge, with /etc/mend/previews.crt",
+    );
+    const flags = flagsOf(outcome);
+    expect(flags).toEqual(["--undeclare", "preview-gateway", "--no-preview-domain"]);
+    expect(resolveSetupSettings(PREVIEWED, flags).preview).toBeUndefined();
+  });
+
+  it("from public back to this machine: previews go with the edge", async () => {
+    const [change, reach, justThisMachine, nothingElse, apply] = ["2", "1", "1", "", ""];
+    const { outcome, transcript } = await converse(
+      [change, reach, justThisMachine, nothingElse, apply],
+      PREVIEWED,
+    );
+    const flags = flagsOf(outcome);
+    expect(flags).toEqual(expect.arrayContaining(["--no-edge", "--no-preview-domain"]));
+    expect(resolveSetupSettings(PREVIEWED, flags)).toMatchObject({
+      edgeHost: undefined,
+      preview: undefined,
+    });
+    expect(transcript).toContain(
+      "  live previews: on, at https://<label>.previews.example.net through the edge, with /etc/mend/previews.crt → off",
+    );
+  });
+
+  it("says what turning previews off changes", () => {
+    expect(
+      changeLines(settings(PREVIEWED), resolveSetupSettings(PREVIEWED, ["--no-preview-domain"])),
+    ).toEqual([
+      "  live previews: on, at https://<label>.previews.example.net through the edge, with /etc/mend/previews.crt → off",
+    ]);
+  });
+
   it("keeping it as it is changes nothing and says the command a script runs", async () => {
     const { outcome, transcript } = await converse(["", ""], BOX);
     expect(flagsOf(outcome)).toEqual([]);
@@ -827,6 +877,19 @@ describe("the guide's flags round-trip", () => {
         ...settings(BOX),
         sshBind: undefined,
         declared: [],
+      },
+    ],
+    ["previews off", PREVIEWED, { ...settings(PREVIEWED), preview: undefined }],
+    [
+      "previews under another domain, with its certificate",
+      PREVIEWED,
+      {
+        ...settings(PREVIEWED),
+        preview: {
+          domain: "live.example.org",
+          certificate: "/etc/mend/live.crt",
+          key: "/etc/mend/live.key",
+        },
       },
     ],
     [

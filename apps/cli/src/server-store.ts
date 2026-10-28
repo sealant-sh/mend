@@ -46,6 +46,10 @@ export interface ServerFiles {
   readonly t3Gateway?: string;
   /** Caddyfile.t3: the edge's site for the gateway, when the edge serves it on its own origin. */
   readonly t3Caddyfile?: string;
+  readonly preview?: string;
+  readonly previewCaddyfile?: string;
+  readonly previewCertificate?: string;
+  readonly previewKey?: string;
 }
 
 /** An immutable deployment snapshot. Use this directory, not the active symlink, for Compose. */
@@ -235,6 +239,10 @@ const optionalFileKeys = [
   "dockerMirrorGuard",
   "t3Gateway",
   "t3Caddyfile",
+  "preview",
+  "previewCaddyfile",
+  "previewCertificate",
+  "previewKey",
 ] as const;
 const fileNames = {
   identity: "identity.env",
@@ -250,7 +258,18 @@ const fileNames = {
   dockerMirrorGuard: "docker-mirror-guard.sh",
   t3Gateway: "compose.t3.yaml",
   t3Caddyfile: "Caddyfile.t3",
+  preview: "compose.preview.yaml",
+  previewCaddyfile: "Caddyfile.preview",
+  previewCertificate: "preview-certificate.pem",
+  previewKey: "preview-key.pem",
 } as const;
+/**
+ * The edge drops every capability, so its root reads the preview key only through the key's group:
+ * the group generation files are written with, which compose.preview.yaml adds the edge to.
+ */
+export const PREVIEW_KEY_MODE = 0o640;
+export const storeFileGroup = (): number => process.getegid?.() ?? 0;
+
 /**
  * The bind-mounted files another UID reads: Postgres's init (UID 70), Caddy's configuration and
  * the npm mirror's.
@@ -269,6 +288,10 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   dockerMirrorGuard: 0o644,
   t3Gateway: 0o600,
   t3Caddyfile: 0o644,
+  preview: 0o600,
+  previewCaddyfile: 0o644,
+  previewCertificate: 0o644,
+  previewKey: PREVIEW_KEY_MODE,
 };
 
 /** Every file a generation may hold, in a fixed order, with its content or undefined. */
@@ -451,6 +474,10 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const dockerMirrorGuard = optional("dockerMirrorGuard");
   const t3Gateway = optional("t3Gateway");
   const t3Caddyfile = optional("t3Caddyfile");
+  const preview = optional("preview");
+  const previewCaddyfile = optional("previewCaddyfile");
+  const previewCertificate = optional("previewCertificate");
+  const previewKey = optional("previewKey");
   const files: ServerFiles = {
     identity: fs.readFileSync(path.join(directory, fileNames.identity), "utf8"),
     config: fs.readFileSync(path.join(directory, fileNames.config), "utf8"),
@@ -465,6 +492,10 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(dockerMirrorGuard === undefined ? {} : { dockerMirrorGuard }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
     ...(t3Caddyfile === undefined ? {} : { t3Caddyfile }),
+    ...(preview === undefined ? {} : { preview }),
+    ...(previewCaddyfile === undefined ? {} : { previewCaddyfile }),
+    ...(previewCertificate === undefined ? {} : { previewCertificate }),
+    ...(previewKey === undefined ? {} : { previewKey }),
   };
   if (readIdentity(paths) !== files.identity) {
     throw new ServerStoreError(

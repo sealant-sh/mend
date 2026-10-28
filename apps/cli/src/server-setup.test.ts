@@ -1,16 +1,20 @@
-import { createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { createHash, randomBytes, randomInt, X509Certificate } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as tls from "node:tls";
 
+import { SAME_SITE_PREVIEW_REASON } from "@mend/network";
 import * as FastCheck from "fast-check";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
+import { hasOpenssl, makeCertificate } from "../test-fixtures/preview-certificate.ts";
 import { parseDockerInfo } from "./docker-shutdown.ts";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
-import { T3_GATEWAY_CADDYFILE } from "./server-edge.ts";
+import { PREVIEW_CADDYFILE, T3_GATEWAY_CADDYFILE } from "./server-edge.ts";
 import {
   HOST_HELPER_IMAGE,
   instanceIdOf,
@@ -134,6 +138,9 @@ const makeRuntime = (
      * OperatingSystem, or null when it does not answer. Absent names answer as `operatingSystem`.
      */
     readonly engines?: Readonly<Record<string, string | null>>;
+    readonly edgeValidation?: (
+      args: ReadonlyArray<string>,
+    ) => Awaited<ReturnType<ServerSetupRuntime["run"]>>;
   } = {},
 ): RuntimeControl => {
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
@@ -290,6 +297,9 @@ const makeRuntime = (
           stderr: "",
         };
       }
+      if (args.includes("compose") && args.includes("run") && args.includes("validate")) {
+        return options.edgeValidation?.(args) ?? { status: 0, stdout: "", stderr: "" };
+      }
       if (args.includes("compose") && args.includes("up")) {
         return {
           status: options.composeUpStatus ?? 0,
@@ -301,6 +311,9 @@ const makeRuntime = (
     },
     fetchText: async (url) => {
       fetched.push(url);
+      if (url === "http://127.0.0.1:3130/") {
+        return { status: 404, body: "No such preview." };
+      }
       if (url.endsWith("/.well-known/t3/environment")) {
         return options.gatewayAnswers === false
           ? { status: 0, body: "", error: "connection refused" }
@@ -375,6 +388,18 @@ const readEnv = (file: string): ReadonlyMap<string, string> => {
 };
 
 const modeOf = (file: string): number => fs.statSync(file).mode & 0o777;
+const renew = (files: { readonly certificate: string; readonly key: string }, days = 90) => {
+  const renewed = makeCertificate(
+    fs.mkdtempSync(path.join(path.dirname(files.certificate), "renewed-")),
+    ["*.previews.example.net"],
+    "preview",
+    days,
+  );
+  fs.copyFileSync(renewed.certificate, files.certificate);
+  fs.copyFileSync(renewed.key, files.key);
+  return fs.readFileSync(files.certificate, "utf8");
+};
+
 const activeDirectory = (configDir: string): string =>
   path.join(configDir, fs.readlinkSync(path.join(configDir, "active")));
 const activeFile = (configDir: string, name: string): string =>
@@ -849,6 +874,59 @@ describe("uninstall retry records after an unactivated setup", () => {
     expect(fs.existsSync(identityFile)).toBe(false);
   });
 });
+
+const realEdge = () => {
+  const project = `mend-preview-test-${randomBytes(4).toString("hex")}`;
+  const env = {
+    PATH: process.env["PATH"] ?? "",
+    HOME: process.env["HOME"] ?? "",
+    MEND_EDGE_SUBNET: `192.168.${randomInt(160, 250)}.${16 * randomInt(0, 16)}/28`,
+    MEND_EDGE_HOST: "mend.internal",
+    // Compose resolves the whole project, so the volumes setup claims must exist: these, by name.
+    MEND_STORE_VOLUME_NAME: `${project}-store`,
+    MEND_CONTROL_VOLUME_NAME: `${project}-control`,
+    MEND_GARAGE_VOLUME_NAME: `${project}-garage`,
+  };
+  const claimed = [
+    env.MEND_STORE_VOLUME_NAME,
+    env.MEND_CONTROL_VOLUME_NAME,
+    env.MEND_GARAGE_VOLUME_NAME,
+  ];
+  const docker = (args: ReadonlyArray<string>) =>
+    spawnSync("docker", [...args], { encoding: "utf8", env });
+  for (const volume of claimed) docker(["volume", "create", volume]);
+  // Each generation's Compose files, as setup named them when it had the edge validate it.
+  const files = new Map<string, ReadonlyArray<string>>();
+  let last: string | undefined;
+  const compose = (directory: string, command: ReadonlyArray<string>) => {
+    const named = files.get(directory);
+    if (named === undefined) throw new Error(`setup never validated ${directory}`);
+    last = directory;
+    return docker(["compose", "--project-name", project, ...named, ...command]);
+  };
+  return {
+    project,
+    compose,
+    docker,
+    validate: (args: ReadonlyArray<string>) => {
+      const named = args.indexOf("--project-name");
+      const directory = args[args.indexOf("--project-directory") + 1] ?? "";
+      files.set(directory, args.slice(named + 2, args.indexOf("run")));
+      const result = docker([...args.slice(0, named + 1), project, ...args.slice(named + 2)]);
+      return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
+    },
+    cleanUp: () => {
+      docker(["rm", "-f", `${project}-edge-served`]);
+      if (last !== undefined) compose(last, ["down", "-v"]);
+      docker(["volume", "rm", ...claimed]);
+    },
+  };
+};
+
+const dockerEdge =
+  hasOpenssl &&
+  process.platform === "linux" &&
+  spawnSync("docker", ["image", "inspect", "caddy:2.10-alpine"]).status === 0;
 
 describe("mend server setup", () => {
   it("persists the complete generation before claiming daemon data; retries retain identity and use fresh probes", async () => {
@@ -3045,6 +3123,460 @@ describe("mend server setup", () => {
       message: expect.stringContaining(reason),
     });
     expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+  });
+
+  const servingPreviews = async (
+    suffix: string,
+    options: Parameters<typeof makeRuntime>[0] = {},
+  ) => {
+    const configDir = temporaryDirectory(suffix);
+    const files = makeCertificate(path.dirname(configDir), ["*.previews.example.net"]);
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const control = makeRuntime({ ...options, configDir });
+    const runtime = {
+      ...control.runtime,
+      lookupHost: async (host: string) =>
+        host === "mend.example.test" || host === "mend-preview-probe.previews.example.net"
+          ? ["203.0.113.10"]
+          : null,
+    };
+    expect(await serverCommand(["setup", "--edge", "mend.example.test"], runtime)).toEqual({
+      _tag: "ok",
+    });
+    const before = control.lines.length;
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--preview-domain",
+          "previews.example.net",
+          "--preview-certificate",
+          files.certificate,
+          "--preview-key",
+          files.key,
+        ],
+        runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    return { configDir, files, runtime, control, said: control.lines.slice(before) };
+  };
+
+  it.skipIf(!hasOpenssl)(
+    "serves previews behind the edge with the supplied certificate, and says what it observed",
+    async () => {
+      const { configDir, files, control, said } = await servingPreviews("preview-edge");
+      const served = activeDirectory(configDir);
+      const env = readEnv(path.join(served, "server.env"));
+      expect(env.get("MEND_PREVIEW_DOMAIN")).toBe("previews.example.net");
+      expect(env.get("MEND_PREVIEW_PUBLISHED")).toBe("127.0.0.1:3130");
+      expect(fs.readFileSync(path.join(served, "Caddyfile.preview"), "utf8")).toBe(
+        PREVIEW_CADDYFILE,
+      );
+      expect(modeOf(path.join(served, "Caddyfile.preview"))).toBe(0o644);
+      expect(fs.readFileSync(path.join(served, "preview-certificate.pem"), "utf8")).toBe(
+        fs.readFileSync(files.certificate, "utf8"),
+      );
+      expect(fs.readFileSync(path.join(served, "preview-key.pem"), "utf8")).toBe(
+        fs.readFileSync(files.key, "utf8"),
+      );
+      expect(modeOf(path.join(served, "preview-certificate.pem"))).toBe(0o644);
+      expect(modeOf(path.join(served, "preview-key.pem"))).toBe(0o640);
+      expect(fs.statSync(path.join(served, "preview-key.pem")).gid).toBe(process.getegid?.());
+      const overlay = fs.readFileSync(path.join(served, "compose.preview.yaml"), "utf8");
+      expect(overlay).toContain('      - "127.0.0.1:3130:3130"\n');
+      expect(overlay).toContain(`    group_add: ["${process.getegid?.()}"]\n`);
+      expect(overlay).toContain("      - ./Caddyfile.preview:/etc/caddy/sites/preview.caddy:ro\n");
+      expect(overlay).toContain("      - ./preview-key.pem:/etc/caddy/preview/key.pem:ro\n");
+      expect(overlay).not.toContain(files.key);
+      const validated = control.commands.findLastIndex(
+        ([, args]) => args.includes("run") && args.includes("validate"),
+      );
+      const started = control.commands.findLastIndex(([, args]) => args.includes("up"));
+      expect(validated).toBeGreaterThanOrEqual(0);
+      expect(validated).toBeLessThan(started);
+      expect(control.commands[validated]?.[1]).toEqual(
+        expect.arrayContaining([
+          path.join(served, "compose.preview.yaml"),
+          "--no-deps",
+          "edge",
+          "caddy",
+          "validate",
+        ]),
+      );
+      expect(JSON.parse(fs.readFileSync(path.join(served, "server.json"), "utf8"))).toMatchObject({
+        preview: { domain: "previews.example.net", ...files },
+      });
+      expect(said).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^Observed: .* is for \*\.previews\.example\.net, valid until /),
+          "The preview gateway answered at 127.0.0.1:3130, observed from this machine. Its port is published there only; the edge serves each preview at https://<label>.<domain>.",
+          "Observed: mend-preview-probe.previews.example.net resolves to 203.0.113.10, as mend.example.test does.",
+        ]),
+      );
+    },
+  );
+
+  it.skipIf(!hasOpenssl)(
+    "keeps previews across a rerun, keeps the edge while it serves them, and takes them off with --no-preview-domain",
+    async () => {
+      const { configDir, files, runtime } = await servingPreviews("preview-kept");
+      const served = activeDirectory(configDir);
+      expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+      expect(activeDirectory(configDir)).toBe(served);
+      expect(await serverCommand(["setup", "--no-edge"], runtime)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining(
+          "Add --no-preview-domain to take them away with the edge.",
+        ),
+      });
+      expect(await serverCommand(["setup", "--no-preview-domain"], runtime)).toEqual({
+        _tag: "ok",
+      });
+      const off = activeDirectory(configDir);
+      expect(fs.readdirSync(off)).not.toContain("compose.preview.yaml");
+      expect(fs.readdirSync(off)).not.toContain("Caddyfile.preview");
+      expect(readEnv(path.join(off, "server.env")).has("MEND_PREVIEW_DOMAIN")).toBe(false);
+      expect(fs.existsSync(files.certificate)).toBe(true);
+    },
+  );
+
+  it.skipIf(!hasOpenssl)(
+    "serves files renewed in place once setup runs again: a new generation with the new copies",
+    async () => {
+      const { configDir, files, runtime, control } = await servingPreviews("preview-renewed");
+      const before = activeDirectory(configDir);
+      const renewed = renew(files);
+      const said = control.lines.length;
+      expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+      const after = activeDirectory(configDir);
+      expect(after).not.toBe(before);
+      expect(fs.readFileSync(path.join(after, "preview-certificate.pem"), "utf8")).toBe(renewed);
+      expect(control.lines.slice(said)).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /^Observed: .* is for \*\.previews\.example\.net, valid until .*run mend server setup --yes to serve the renewed files\.$/,
+          ),
+        ]),
+      );
+    },
+  );
+
+  it.skipIf(!hasOpenssl)(
+    "refuses a certificate the edge cannot load at the saved paths, whatever else the run changes, and changes nothing",
+    async () => {
+      const { configDir, files, runtime } = await servingPreviews("preview-broken");
+      const before = activeDirectory(configDir);
+      const other = makeCertificate(
+        fs.mkdtempSync(path.join(path.dirname(files.key), "other-")),
+        ["*.previews.example.net"],
+        "other",
+      );
+      fs.copyFileSync(other.key, files.key);
+      expect(await serverCommand(["setup", "--ssh-port", "2223"], runtime)).toMatchObject({
+        _tag: "error",
+        message: `${files.key} is not the key of ${files.certificate}.`,
+      });
+      expect(activeDirectory(configDir)).toBe(before);
+      fs.rmSync(files.certificate);
+      expect(await serverCommand(["setup", "--yes"], runtime)).toMatchObject({
+        _tag: "error",
+        message: `${files.certificate} cannot be read from this machine.`,
+      });
+      expect(activeDirectory(configDir)).toBe(before);
+    },
+  );
+
+  it.skipIf(!hasOpenssl)(
+    "refuses a run the edge's own container cannot load, before it goes live",
+    async () => {
+      const { configDir, runtime } = await servingPreviews("preview-unloadable");
+      const before = activeDirectory(configDir);
+      const refusing = makeRuntime({
+        configDir,
+        edgeValidation: () => ({
+          status: 1,
+          stdout: "",
+          stderr:
+            "Error: loading http app module: provision http: getting tls app: loading tls app module: provision tls: loading certificates: open /etc/caddy/preview/key.pem: permission denied\n",
+        }),
+      }).runtime;
+      expect(
+        await serverCommand(["setup", "--ssh-port", "2223"], {
+          ...refusing,
+          lookupHost: runtime.lookupHost,
+        }),
+      ).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining(
+          "The edge's Caddy could not load this configuration, so nothing changed: Error: loading http app module: provision http: getting tls app: loading tls app module: provision tls: loading certificates: open /etc/caddy/preview/key.pem: permission denied.",
+        ),
+      });
+      expect(activeDirectory(configDir)).toBe(before);
+    },
+  );
+
+  it.skipIf(!hasOpenssl)(
+    "says when the certificate expires soon or has expired, and refuses only an expired one it does not already serve",
+    async () => {
+      const { configDir, files, runtime, control } = await servingPreviews("preview-expiry");
+      renew(files, 10);
+      let said = control.lines.length;
+      expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+      expect(control.lines.slice(said)).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(
+            /^Observed: .* is for \*\.previews\.example\.net and expires on .*, within 30 days\. Renew it in place, then run mend server setup --yes to serve the renewed files\.$/,
+          ),
+        ]),
+      );
+      const served = activeDirectory(configDir);
+      vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 20 * 86_400_000 });
+      try {
+        said = control.lines.length;
+        expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+        expect(activeDirectory(configDir)).toBe(served);
+        expect(control.lines.slice(said)).toEqual(
+          expect.arrayContaining([
+            expect.stringMatching(
+              / expired on .*, and browsers refuse every preview until it is renewed\./,
+            ),
+          ]),
+        );
+        const stale = makeCertificate(
+          fs.mkdtempSync(path.join(path.dirname(files.key), "stale-")),
+          ["*.previews.example.net"],
+          "stale",
+          10,
+        );
+        expect(
+          await serverCommand(
+            ["setup", "--preview-certificate", stale.certificate, "--preview-key", stale.key],
+            runtime,
+          ),
+        ).toMatchObject({
+          _tag: "error",
+          message: expect.stringMatching(
+            / expired on .*\. Renew it, then run mend server setup again\.$/,
+          ),
+        });
+        expect(activeDirectory(configDir)).toBe(served);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.skipIf(!hasOpenssl)(
+    "refuses previews on a public install until preview-gateway is stated, before anything changes",
+    async () => {
+      const { configDir, runtime } = await servingPreviews("preview-public");
+      const before = activeDirectory(configDir);
+      expect(await serverCommand(["setup", "--exposure", "public"], runtime)).toMatchObject({
+        _tag: "error",
+        message:
+          "--exposure public with previews under previews.example.net needs a statement Mend cannot observe, or Mend refuses to start. Check from another network that *.previews.example.net resolves to this machine's edge, that https://<label>.previews.example.net answers over the certificate you supplied and it chains to a public root, and that 127.0.0.1:3130 answers nothing from another machine; then add --declare preview-gateway. To check before you state it, turn previews on under --exposure private first.",
+      });
+      expect(activeDirectory(configDir)).toBe(before);
+      expect(
+        await serverCommand(
+          ["setup", "--exposure", "public", "--declare", "preview-gateway"],
+          runtime,
+        ),
+      ).toEqual({ _tag: "ok" });
+      expect(
+        await serverCommand(["setup", "--undeclare", "preview-gateway"], runtime),
+      ).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("--declare preview-gateway"),
+      });
+    },
+  );
+
+  it.skipIf(!dockerEdge)(
+    "the edge's own container loads setup's copy of a key only its owner can read",
+    async () => {
+      const edge = realEdge();
+      try {
+        const { configDir, files } = await servingPreviews("preview-real-key", {
+          edgeValidation: edge.validate,
+        });
+        const source = fs.statSync(files.key);
+        expect(source.mode & 0o777).toBe(0o600);
+        expect(source.uid).not.toBe(0);
+        const validated = edge.compose(activeDirectory(configDir), [
+          "run",
+          "--rm",
+          "--no-deps",
+          "-T",
+          "edge",
+          "caddy",
+          "validate",
+          "--config",
+          "/etc/caddy/Caddyfile",
+          "--adapter",
+          "caddyfile",
+        ]);
+        expect(validated.stderr).not.toContain("permission denied");
+        expect(validated.status).toBe(0);
+      } finally {
+        edge.cleanUp();
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!dockerEdge)(
+    "after a renewal in place and setup again, the edge Compose recreates serves the new certificate",
+    async () => {
+      const edge = realEdge();
+      try {
+        const { configDir, files, runtime } = await servingPreviews("preview-real-renewal", {
+          edgeValidation: edge.validate,
+        });
+        const before = activeDirectory(configDir);
+        const renewed = renew(files);
+        expect(await serverCommand(["setup", "--yes"], runtime)).toEqual({ _tag: "ok" });
+        const after = activeDirectory(configDir);
+        const hash = (directory: string) =>
+          edge.compose(directory, ["config", "--hash", "edge"]).stdout.trim();
+        // What Compose compares to decide whether `up` recreates the running edge.
+        expect(hash(after)).not.toBe(hash(before));
+        const served = async (directory: string) => {
+          const name = `${edge.project}-edge-served`;
+          edge.docker(["rm", "-f", name]);
+          const started = edge.compose(directory, [
+            "run",
+            "-d",
+            "--no-deps",
+            "--name",
+            name,
+            "edge",
+          ]);
+          expect(started.status, started.stderr).toBe(0);
+          const address = edge
+            .docker([
+              "inspect",
+              "-f",
+              "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+              name,
+            ])
+            .stdout.trim();
+          for (let attempt = 0; attempt < 40; attempt += 1) {
+            const fingerprint = await new Promise<string | null>((resolve) => {
+              const socket = tls.connect({
+                host: address,
+                port: 443,
+                servername: "p1.previews.example.net",
+                rejectUnauthorized: false,
+              });
+              socket.setTimeout(1_000, () => socket.destroy());
+              socket.once("secureConnect", () => {
+                resolve(socket.getPeerX509Certificate()?.fingerprint256 ?? null);
+                socket.end();
+              });
+              socket.once("error", () => resolve(null));
+              socket.once("close", () => resolve(null));
+            });
+            if (fingerprint !== null) return fingerprint;
+            await new Promise((done) => setTimeout(done, 250));
+          }
+          return null;
+        };
+        expect(await served(after)).toBe(new X509Certificate(renewed).fingerprint256);
+        expect(await served(before)).not.toBe(new X509Certificate(renewed).fingerprint256);
+      } finally {
+        edge.cleanUp();
+      }
+    },
+    180_000,
+  );
+
+  it.skipIf(!hasOpenssl)("refuses previews that cannot hold, before anything changes", async () => {
+    const configDir = temporaryDirectory("preview-refused");
+    const scratch = path.dirname(configDir);
+    const wildcard = makeCertificate(scratch, ["*.previews.example.net"]);
+    const other = makeCertificate(scratch, ["mend.example.test"], "other");
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const runtime = makeRuntime({ configDir }).runtime;
+    const certified = [
+      "--preview-certificate",
+      wildcard.certificate,
+      "--preview-key",
+      wildcard.key,
+    ];
+    const refusals: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [
+      [
+        ["--preview-domain", "previews.example.net", ...certified],
+        "--preview-domain needs the edge",
+      ],
+      [
+        ["--edge", "mend.example.test", "--preview-domain", "previews.example.net"],
+        "needs --preview-certificate <file> and --preview-key <file>",
+      ],
+      [
+        ["--edge", "mend.example.test", "--preview-domain", "example.test", ...certified],
+        "holds the edge's host mend.example.test",
+      ],
+      [
+        ["--edge", "mend.example.test", "--preview-domain", "p.mend.example.test", ...certified],
+        "is under the edge's host mend.example.test",
+      ],
+      [
+        ["--edge", "mend.example.test", "--preview-domain", "previews.example.test", ...certified],
+        `--preview-domain previews.example.test shares the registrable domain example.test with the edge's host mend.example.test, so a page on a preview can set cookies Mend's host receives. ${SAME_SITE_PREVIEW_REASON}`,
+      ],
+      [
+        [
+          "--edge",
+          "mend.example.test",
+          "--preview-domain",
+          "previews.example.net",
+          "--preview-certificate",
+          other.certificate,
+          "--preview-key",
+          other.key,
+        ],
+        "is not for *.previews.example.net",
+      ],
+      [
+        [
+          "--edge",
+          "mend.example.test",
+          "--preview-domain",
+          "previews.example.net",
+          "--preview-certificate",
+          wildcard.certificate,
+          "--preview-key",
+          other.key,
+        ],
+        "is not the key of",
+      ],
+      [["--preview-certificate", wildcard.certificate], "go together"],
+      [["--preview-domain", "previews.example.net", "--no-preview-domain"], "contradicts"],
+      [
+        [
+          "--preview-domain",
+          "previews.example.net",
+          "--preview-certificate",
+          "previews.crt",
+          "--preview-key",
+          "/k",
+        ],
+        "must be an absolute path",
+      ],
+    ];
+    const active = activeDirectory(configDir);
+    for (const [flags, reason] of refusals) {
+      expect(await serverCommand(["setup", ...flags], runtime), flags.join(" ")).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining(reason),
+      });
+      expect(activeDirectory(configDir)).toBe(active);
+    }
   });
 
   it("refuses Mend's own origin as the gateway's: t3code always uses a server's root path", async () => {

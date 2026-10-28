@@ -320,6 +320,9 @@ else if (args.includes("image")) {
   out(
     'registry_proxy_hits_total{type="blob"} 3\nregistry_proxy_hits_total{type="manifest"} 2\nregistry_proxy_misses_total{type="blob"} 1\nregistry_proxy_misses_total{type="manifest"} 2',
   );
+} else if (command[0] === "run" && command.includes("validate")) {
+  if (!withEdge) fail();
+  out("Valid configuration");
 } else if (command[0] === "logs" && command.includes("npm-mirror")) {
   // nginx's request lines: one tarball served from the cache, one fetched.
   out('{"uri":"/a/-/a-1.0.0.tgz","cache":"HIT"}\n{"uri":"/b/-/b-1.0.0.tgz","cache":"MISS"}');

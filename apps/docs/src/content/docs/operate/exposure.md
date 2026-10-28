@@ -101,9 +101,10 @@ which ones.
 ## The public exposure gate
 
 The gate has fourteen items, one more while the t3code gateway is enabled, and one more while the
-preview gateway is on. The first eleven can be established by this build, or are stated by you for
-what it cannot see; an open one among them refuses a `public` start. The rest cannot be observed
-from inside the deployment, are reported as open until you state otherwise, and never block a start.
+[preview gateway](#previews) is on. The first eleven can be established by this build, or are stated
+by you for what it cannot see; an open one among them refuses a `public` start. The rest cannot be
+observed from inside the deployment, are reported as open until you state otherwise, and never block
+a start.
 
 | Item                         | Established by        | What closes it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -317,6 +318,36 @@ A proxy you run in place of either must do five things:
 4. Append the client address to `X-Forwarded-For`, and be listed in `MEND_TRUSTED_PROXIES`.
 5. Keep the query strings of `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws`, `/tty-embed`
    and `/pair` out of its logs.
+
+### Previews
+
+Live previews are served on hosts of their own, `https://<label>.<preview domain>`, on a registrable
+domain other than Mend's, so a page on a preview cannot act as Mend or set cookies Mend's host
+receives. On the Caddy edge, setup adds their site:
+
+```sh
+mend server setup --preview-domain previews.example.net \
+  --preview-certificate /etc/mend/previews.crt --preview-key /etc/mend/previews.key
+```
+
+The domain must be neither Mend's host nor above or below it, and must not share Mend's registrable
+domain: `previews.example.com` beside `mend.example.com` is on Mend's own site, and setup and the
+API refuse it. Previews on Mend's own site need Mend's cookies to move to `__Host-` names, which
+ships in ADR 0017 step 8b with the tailnet default. Until then, use a preview domain on a
+registrable domain of its own, or loopback (`*.localhost`).
+
+A wildcard certificate needs the DNS-01 challenge, which the packaged Caddy cannot do, so you supply
+a certificate for `*.previews.example.net` and its key, issued elsewhere. Setup copies both into the
+install on every run, after the edge's own container has loaded them; to serve a renewed
+certificate, replace the files and run `mend server setup --yes`. The preview gateway's port is
+published on `127.0.0.1` only, and the edge logs no path, query or `Referer` for preview hosts: the
+sign-in exchange carries a single-use ticket in its query. Any edge you run in front of previews
+must keep that query out of its logs too.
+
+The gate's `preview-gateway` item stays open until you checked from another network that
+`*.previews.example.net` resolves to the edge, that the certificate chains to a public root, and who
+reaches the gateway, and stated it with `mend server setup --declare preview-gateway`. On a public
+install Mend does not start while it is open, so setup refuses previews there until you state it.
 
 ## Upgrade tickets
 
