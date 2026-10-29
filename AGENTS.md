@@ -80,6 +80,12 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   change (on by default from Slack, as Cursor does), never for a question. Mend never merges, never
   force-pushes, and never writes "ready to merge": a landing reports what was pushed and what GitHub
   last said (`pull request #412 · open · observed`).
+- Screen nouns (`docs/adr/0020-guis-in-sessions.md`): a `screen` is an X display in a session's
+  workspace that the session's agent sees and drives with `screen_look` and `screen_act`. Anyone who
+  can see the session watches it; only the session's owner can `take over` and `hand back`. Mend
+  holds every input. The `screen log` records what the screen showed and who acted on it, and its
+  `frames` live in Mend's blob store for 30 days. "Desktop" stays the Electron app: never call a
+  screen a desktop, and never call a frame or the screen log a recording run.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that
