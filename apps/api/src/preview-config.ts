@@ -3,10 +3,9 @@ import { isIP } from "node:net";
 import {
   DEFAULT_TAILNET_PREVIEW_PORTS,
   NetworkConfig,
-  previewDomainOverlap,
+  previewDomainConflict,
   type PublicNetwork,
   readPreviewPorts,
-  SAME_SITE_PREVIEW_REASON,
   writePreviewPorts,
 } from "@mend/network";
 import { Config, Duration, Effect, Layer, Option, Schema } from "effect";
@@ -96,7 +95,7 @@ const hostsOf = (mend: PublicNetwork) =>
 
 const apartFromMend = (domain: string, mend: PublicNetwork) => {
   for (const { origin, host } of hostsOf(mend)) {
-    const overlap = previewDomainOverlap(domain, host);
+    const overlap = previewDomainConflict(domain, host);
     if (overlap === null) continue;
     switch (overlap.kind) {
       case "holds":
@@ -108,11 +107,6 @@ const apartFromMend = (domain: string, mend: PublicNetwork) => {
         return refuse(
           "domain",
           `"${domain}" is under Mend's own host ${host} (${origin}); previews need a domain apart from Mend's`,
-        );
-      case "same-site":
-        return refuse(
-          "domain",
-          `"${domain}" shares the registrable domain ${overlap.site} with Mend's own origin ${origin} (APP_URL or MEND_ALLOWED_ORIGINS), so a page on a preview can set cookies Mend's host receives. ${SAME_SITE_PREVIEW_REASON}`,
         );
     }
   }

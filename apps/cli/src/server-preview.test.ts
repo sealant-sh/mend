@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { SAME_SITE_PREVIEW_REASON } from "@mend/network";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { hasOpenssl, makeCertificate } from "../test-fixtures/preview-certificate.ts";
@@ -37,10 +36,8 @@ describe("a preview domain beside Mend's hosts", () => {
     expect(previewDomainProblem(domain, mend)).toContain(words);
   });
 
-  it("refuses a sibling on Mend's own site, naming what it needs and what to use instead", () => {
-    expect(previewDomainProblem("previews.example.com", mend)).toBe(
-      `--preview-domain previews.example.com shares the registrable domain example.com with the edge's host mend.example.com, so a page on a preview can set cookies Mend's host receives. ${SAME_SITE_PREVIEW_REASON}`,
-    );
+  it("takes a sibling on Mend's own site", () => {
+    expect(previewDomainProblem("previews.example.com", mend)).toBeNull();
   });
 
   it("takes a registrable domain of its own", () => {

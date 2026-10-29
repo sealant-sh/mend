@@ -6,7 +6,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as tls from "node:tls";
 
-import { SAME_SITE_PREVIEW_REASON } from "@mend/network";
 import * as FastCheck from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -3524,10 +3523,6 @@ describe("mend server setup", () => {
       [
         ["--edge", "mend.example.test", "--preview-domain", "p.mend.example.test", ...certified],
         "is under the edge's host mend.example.test",
-      ],
-      [
-        ["--edge", "mend.example.test", "--preview-domain", "previews.example.test", ...certified],
-        `--preview-domain previews.example.test shares the registrable domain example.test with the edge's host mend.example.test, so a page on a preview can set cookies Mend's host receives. ${SAME_SITE_PREVIEW_REASON}`,
       ],
       [
         [

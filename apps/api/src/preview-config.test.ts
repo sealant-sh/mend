@@ -1,4 +1,4 @@
-import { makePublicNetwork, PublicOrigin, SAME_SITE_PREVIEW_REASON } from "@mend/network";
+import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { NetworkConfig } from "@mend/network";
 import { ConfigProvider, Effect, Exit, Schema } from "effect";
 import { describe, expect, it } from "vitest";
@@ -198,12 +198,8 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
     );
   });
 
-  it("refuses a preview domain on Mend's own site, naming what it needs and what to use instead", () => {
-    const refused = refusalOf({ port: "3117", domain: "previews.example.com" });
-    expect(refused?.variable).toBe("MEND_PREVIEW_DOMAIN");
-    expect(refused?.message).toBe(
-      `MEND_PREVIEW_DOMAIN: "previews.example.com" shares the registrable domain example.com with Mend's own origin https://mend.example.com (APP_URL or MEND_ALLOWED_ORIGINS), so a page on a preview can set cookies Mend's host receives. ${SAME_SITE_PREVIEW_REASON}`,
-    );
+  it("takes a preview domain beside Mend's host on its registrable domain", () => {
+    expect(refusalOf({ port: "3117", domain: "previews.example.com" })).toBeNull();
     expect(refusalOf({ port: "3117", domain: "previews.example.net" })).toBeNull();
   });
 

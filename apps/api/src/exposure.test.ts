@@ -1,4 +1,3 @@
-import { SAME_SITE_PREVIEW_REASON } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -428,22 +427,28 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
     expect(exposureRefusal("public", evaluateExposureGate(stated))).toBeNull();
   });
 
-  it("never reads clean for a preview domain on Mend's own site, whatever was declared", () => {
-    const item = previewOf({
+  it("observes __Host- for a preview domain on Mend's own site, and is open without it", () => {
+    const sibling = (appUrl: string): ExposurePosture => ({
       ...closed,
-      appUrl: "https://mend.example.com",
-      allowedOrigins: ["https://mend.example.com"],
+      appUrl,
+      allowedOrigins: [appUrl],
       declared: ["preview-gateway"],
       preview: {
         ...DOMAIN_PREVIEW,
         routing: { mode: "domain-https", domain: "previews.example.com", port: 443 },
       },
     });
-    expect(item?.established).toBe("open");
-    expect(item?.detail).toContain(
-      "open: APP_URL's host mend.example.com shares the registrable domain example.com with previews.example.com, so a page on a preview can set cookies Mend's host receives",
+    const https = previewOf(sibling("https://mend.example.com"));
+    expect(https?.established).toBe("declared");
+    expect(https?.detail).toContain(
+      "observed: APP_URL's host mend.example.com is beside previews.example.com on the registrable domain example.com, so every preview is Mend's own site",
     );
-    expect(item?.fix).toContain(SAME_SITE_PREVIEW_REASON);
+    expect(https?.detail).toContain(
+      "observed: Mend's cookies are named __Host- (__Host-better-auth.session_token)",
+    );
+    const http = previewOf(sibling("http://mend.example.com"));
+    expect(http?.established).toBe("open");
+    expect(http?.fix).toContain("set APP_URL to https");
   });
 
   it("names a non-default public port, and reads a statement that cannot describe the listener as open", () => {

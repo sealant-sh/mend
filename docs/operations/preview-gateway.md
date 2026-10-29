@@ -31,13 +31,11 @@ How browsers reach a preview follows from what is set:
   `https://<label>.<MEND_PREVIEW_DOMAIN>:<MEND_PREVIEW_PUBLIC_PORT>`, and the edge terminates TLS
   for `*.<MEND_PREVIEW_DOMAIN>`. The API refuses a preview domain that equals one of Mend's own
   hosts (`APP_URL`, `MEND_ALLOWED_ORIGINS`), holds one of them, or sits under one of them, because
-  previews need a domain apart from Mend's (ADR 0017, decision 1). It also refuses a preview domain
-  on Mend's own site: one that shares the registrable domain of one of those hosts, by the Public
-  Suffix List, such as `previews.example.com` beside `mend.example.com`. A page on such a preview
-  can set cookies for `example.com`, and Mend's host receives them. Previews on Mend's own site need
-  Mend's cookies to move to `__Host-` names, which ships in ADR 0017 step 8b with the tailnet
-  default. Until then, use a preview domain on a registrable domain of its own, or loopback
-  (`*.localhost`).
+  previews need a domain apart from Mend's (ADR 0017, decision 1). A preview domain on Mend's own
+  site, one that shares the registrable domain of one of those hosts by the Public Suffix List, such
+  as `previews.example.com` beside `mend.example.com`, is allowed. A page on such a preview can set
+  cookies for `example.com`, but Mend's own cookies are `__Host-` over https, so it can neither set
+  nor replace them, and gate item 15 observes the prefix.
 - **On a tailnet, with a hostname.** A preview is
   `https://<MEND_PREVIEW_TAILNET_HOSTNAME>:<its port>`. Mend gives a preview a port from
   `MEND_PREVIEW_TAILNET_PORTS` the first time someone opens it, never sooner, and the preview keeps
@@ -146,11 +144,9 @@ mend server setup --preview-domain previews.example.net \
 
 - **The domain.** Each preview is `https://<label>.previews.example.net`. Setup refuses a domain
   that is Mend's host, holds it, or sits under it (`previews.mend.example.com` beside
-  `mend.example.com`), and one on Mend's own site, which shares Mend's registrable domain
-  (`previews.example.com` beside `mend.example.com`), for the reasons above. `previews.example.net`
-  beside `mend.example.com` is on a registrable domain of its own. Point `*.previews.example.net` at
-  the same address as Mend's host. Setup says where `mend-preview-probe.<domain>` resolves from its
-  machine.
+  `mend.example.com`), for the reasons above. One on Mend's own site, such as `previews.example.com`
+  beside `mend.example.com`, is allowed. Point `*.previews.example.net` at the same address as
+  Mend's host. Setup says where `mend-preview-probe.<domain>` resolves from its machine.
 - **The certificate.** The packaged edge, the stock `caddy:2.10-alpine`, has no DNS provider module,
   and a wildcard certificate needs the ACME DNS-01 challenge. So you supply one: a PEM certificate
   whose names include `*.<domain>`, and its key, at absolute paths on the machine Mend runs on. Each

@@ -2,7 +2,7 @@ import { createPrivateKey, X509Certificate } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { NO_SUCH_PREVIEW, previewDomainOverlap, SAME_SITE_PREVIEW_REASON } from "@mend/network";
+import { NO_SUCH_PREVIEW, previewDomainConflict } from "@mend/network";
 
 import {
   type DeclarableItem,
@@ -31,15 +31,13 @@ export const previewDomainProblem = (
   mend: ReadonlyArray<{ readonly host: string; readonly what: string }>,
 ): string | null => {
   for (const { host, what } of mend) {
-    const overlap = previewDomainOverlap(domain, host);
+    const overlap = previewDomainConflict(domain, host);
     if (overlap === null) continue;
     switch (overlap.kind) {
       case "holds":
         return `--preview-domain ${domain} holds ${what} ${host}. ${APART}`;
       case "under":
         return `--preview-domain ${domain} is under ${what} ${host}. ${APART}`;
-      case "same-site":
-        return `--preview-domain ${domain} shares the registrable domain ${overlap.site} with ${what} ${host}, so a page on a preview can set cookies Mend's host receives. ${SAME_SITE_PREVIEW_REASON}`;
     }
   }
   return null;

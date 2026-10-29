@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { previewDomainOverlap, SAME_SITE_PREVIEW_REASON } from "./preview-domain.ts";
+import { previewDomainConflict, previewDomainOverlap } from "./preview-domain.ts";
 
 describe("a preview domain beside one of Mend's hosts", () => {
   it.each([
@@ -20,9 +20,15 @@ describe("a preview domain beside one of Mend's hosts", () => {
     expect(previewDomainOverlap(domain, host)).toEqual(overlap);
   });
 
-  it("names what a same-site pair needs and what to use until then", () => {
-    expect(SAME_SITE_PREVIEW_REASON).toBe(
-      "Previews on Mend's own site need Mend's cookies to move to __Host- names, which ships in ADR 0017 step 8b with the tailnet default. Until then, use a preview domain on a registrable domain of its own, or loopback (*.localhost).",
-    );
+  it("refuses an equal, parent or child domain, and allows a sibling on Mend's own site", () => {
+    expect(previewDomainConflict("mend.example.com", "mend.example.com")).toEqual({
+      kind: "holds",
+    });
+    expect(previewDomainConflict("example.com", "mend.example.com")).toEqual({ kind: "holds" });
+    expect(previewDomainConflict("previews.mend.example.com", "mend.example.com")).toEqual({
+      kind: "under",
+    });
+    expect(previewDomainConflict("previews.example.com", "mend.example.com")).toBeNull();
+    expect(previewDomainConflict("previews.example.net", "mend.example.com")).toBeNull();
   });
 });

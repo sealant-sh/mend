@@ -2,7 +2,6 @@ import { sessionCookiePolicy } from "@mend/auth";
 import {
   NetworkConfig,
   previewDomainOverlap,
-  SAME_SITE_PREVIEW_REASON,
   writePreviewPorts,
   trustedProxyCidrs,
   trustsEveryAddress,
@@ -327,26 +326,6 @@ interface PreviewOutside {
 
 const bracketed = (address: string): string => (address.includes(":") ? `[${address}]` : address);
 
-const appUrlApartFact = (appHost: string, domain: string): PreviewFact => {
-  const overlap = previewDomainOverlap(domain, appHost);
-  if (overlap === null)
-    return {
-      established: "observed",
-      said: `APP_URL's host ${appHost} is not ${domain}, above or under it, or on its registrable domain`,
-    };
-  return overlap.kind === "same-site"
-    ? {
-        established: "open",
-        said: `APP_URL's host ${appHost} shares the registrable domain ${overlap.site} with ${domain}, so a page on a preview can set cookies Mend's host receives`,
-        fix: SAME_SITE_PREVIEW_REASON,
-      }
-    : {
-        established: "open",
-        said: `APP_URL's host ${appHost} is ${overlap.kind === "holds" ? "under" : "above"} ${domain}`,
-        fix: "set MEND_PREVIEW_DOMAIN to a domain apart from Mend's",
-      };
-};
-
 /** The session cookie as Auth names it, from the same input. */
 const mendCookieOf = (posture: ExposurePosture) => sessionCookiePolicy({ appUrl: posture.appUrl });
 
@@ -363,6 +342,34 @@ const hostCookieFact = (posture: ExposurePosture): PreviewFact => {
         said: `Mend's cookies are named ${cookie.name}, not __Host-, and every preview is Mend's own site: APP_URL is ${new URL(posture.appUrl).protocol.slice(0, -1)}`,
         fix: "set APP_URL to https, such as Mend's web port served by tailscale serve --https=443 on this machine",
       };
+};
+
+/** A preview domain apart from Mend's host; beside it on one registrable domain, Mend's site. */
+const domainFacts = (posture: ExposurePosture, domain: string): ReadonlyArray<PreviewFact> => {
+  const appHost = new URL(posture.appUrl).hostname;
+  const overlap = previewDomainOverlap(domain, appHost);
+  if (overlap === null)
+    return [
+      {
+        established: "observed",
+        said: `APP_URL's host ${appHost} is not ${domain}, above or under it, or on its registrable domain`,
+      },
+    ];
+  if (overlap.kind === "same-site")
+    return [
+      {
+        established: "observed",
+        said: `APP_URL's host ${appHost} is beside ${domain} on the registrable domain ${overlap.site}, so every preview is Mend's own site`,
+      },
+      hostCookieFact(posture),
+    ];
+  return [
+    {
+      established: "open",
+      said: `APP_URL's host ${appHost} is ${overlap.kind === "holds" ? "under" : "above"} ${domain}`,
+      fix: "set MEND_PREVIEW_DOMAIN to a domain apart from Mend's",
+    },
+  ];
 };
 
 const routingOf = (
@@ -392,7 +399,7 @@ const routingOf = (
     case "domain-https":
       return {
         facts: [
-          appUrlApartFact(appHost, routing.domain),
+          ...domainFacts(posture, routing.domain),
           {
             established: "observed",
             said: `previews are https at https://<label>.${routing.domain}${routing.port === 443 ? "" : `:${routing.port}`}`,

@@ -197,11 +197,10 @@ ingress:
 
 # Live previews (docs/adr/0017-live-preview.md), each at https://<label>.<domain>, through an
 # Ingress of their own to the API Pod's preview gateway (docs/KUBERNETES.md "Live previews"). The
-# domain must be on a registrable domain of its own, so a page on a preview can neither act as Mend
-# nor set cookies Mend's host receives. The render refuses Mend's host and anything above or
-# under it. It cannot read the Public Suffix List, so the API refuses a same-site domain at start,
-# such as previews.example.com beside mend.example.com, until ADR 0017 step 8b moves Mend's
-# cookies to __Host- names. With exposure.mode public, the render also needs preview-gateway in
+# render refuses Mend's host and anything above or under it, where a page on a preview could act as
+# Mend. A domain beside Mend's host, such as previews.example.com beside mend.example.com, is
+# allowed: Mend's cookies are __Host- whenever web.appUrl is https. The chart has no tailnet mode:
+# previews here are always served on a domain. With exposure.mode public, the render also needs preview-gateway in
 # exposure.declared. The chart installs no issuer: a wildcard certificate needs DNS-01, a cluster
 # decision.
 preview:
