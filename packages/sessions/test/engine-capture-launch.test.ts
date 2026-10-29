@@ -688,7 +688,8 @@ describe("SessionEngine capture mode", () => {
     const memory = makeMemoryCaptureStore();
     /** The executor's own copy of the worktree file; null is no file. */
     let workspaceToml: string | null =
-      '[service.web]\ncommand = "pnpm dev --host"\nport = 5173\nbrowserScheme = "http"\n';
+      '[service.web]\ncommand = "pnpm dev --host"\nport = 5173\nbrowserScheme = "http"\n' +
+      '[service.api]\ncommand = "node api.js"\nport = 4000\ncwd = "/srv/api"\n';
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -719,6 +720,13 @@ describe("SessionEngine capture mode", () => {
           expect(note?.at(-1)).toContain("## Mend Services");
           expect(note?.at(-1)).toContain("[--http|--https]");
           expect(note?.at(-1)).toContain("Declared Services (mend.toml + project): web");
+          expect(note?.at(-1)).toContain(
+            "Refused in mend.toml (fix these before running them):\n\n- api · cwd · is absolute",
+          );
+          const declared = yield* engine.serviceDeclarations(session.id);
+          expect(declared.refused.map((refusal) => [refusal.name, refusal.key])).toEqual([
+            ["api", "cwd"],
+          ]);
 
           const listed = yield* engine.listServiceRecipes(session.id);
           expect(listed.map((recipe) => [recipe.name, recipe.port, recipe.browserScheme])).toEqual([

@@ -574,6 +574,33 @@ describe("ensurePreviewRunning", () => {
     );
   });
 
+  it("waits for the source attempt's own ready timeout, never the browser's longer hold", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview, source } = yield* preparePreview(world, tmp);
+          world.launches.set(source, {
+            cwd: null,
+            env: {},
+            ready: { _tag: "Tcp", timeoutMs: 1_000 },
+          });
+          yield* engine.stopService(service.id, idle);
+          port.state.warmupMs = 2_500;
+          const began = Date.now();
+          expect(
+            yield* refusalOf(
+              engine.ensurePreviewRunning(requestFor(world, preview, source), NO_BUDGET_CLAIM),
+            ),
+          ).toBe("start-expired");
+          expect(Date.now() - began).toBeLessThan(2_500);
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+
   it("a caller whose deadline passes leaves an accepted start to finish with its handle recorded", async () => {
     const platform = servicePlatform();
     const port = listeningPort(platform.dead);

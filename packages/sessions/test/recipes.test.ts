@@ -3,7 +3,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { ServiceRecipe } from "@mend/domain/workbench";
-import { mergeRecipes, readServiceRecipes, RecipeFileError } from "@mend/sessions";
+import {
+  type MendTomlFile,
+  mergeRecipes,
+  parseMendToml,
+  planStart,
+  readMendToml,
+  RecipeFileError,
+  resolveDeclarations,
+} from "@mend/sessions";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -15,20 +23,28 @@ const worktreeWith = (toml: string | null): string => {
   return dir;
 };
 
-const makeRecipe = (source: "file" | "project") =>
+const parse = (toml: string): MendTomlFile =>
+  Effect.runSync(parseMendToml(toml, "/repo/mend.toml"));
+
+const declare = (toml: string, project: ReadonlyArray<ServiceRecipe> = []) =>
+  resolveDeclarations(parse(toml), project);
+
+const projectRecipe = (name: string) =>
   new ServiceRecipe({
-    name: "web",
+    name,
     command: "pnpm dev",
     port: 3000,
     protocol: "tcp",
     browserScheme: "http",
-    source,
+    source: "project",
     shadowedBy: null,
   });
 
-describe("readServiceRecipes", () => {
-  it("reads a udp recipe and defaults protocol to tcp", async () => {
-    const worktree = worktreeWith(
+const WEB = ["[service.web]", 'command = "pnpm dev"', "port = 3000", 'browserScheme = "http"'];
+
+describe("parseMendToml", () => {
+  it("reads a udp recipe and defaults protocol to tcp", () => {
+    const file = parse(
       [
         "[service.game]",
         'command = "./server"',
@@ -40,13 +56,12 @@ describe("readServiceRecipes", () => {
         "port = 3000",
       ].join("\n"),
     );
-    const recipes = await Effect.runPromise(readServiceRecipes(worktree));
-    expect(recipes.find((r) => r.name === "game")?.protocol).toBe("udp");
-    expect(recipes.find((r) => r.name === "web")?.protocol).toBe("tcp");
+    expect(file.recipes.find((r) => r.name === "game")?.protocol).toBe("udp");
+    expect(file.recipes.find((r) => r.name === "web")?.protocol).toBe("tcp");
   });
 
-  it("reads an explicit browser scheme without inferring one for raw TCP", async () => {
-    const worktree = worktreeWith(
+  it("reads an explicit browser scheme without inferring one for raw TCP", () => {
+    const file = parse(
       [
         "[service.web]",
         "port = 3000",
@@ -56,27 +71,12 @@ describe("readServiceRecipes", () => {
         "port = 9000",
       ].join("\n"),
     );
-    const recipes = await Effect.runPromise(readServiceRecipes(worktree));
-    expect(recipes.find((recipe) => recipe.name === "web")?.browserScheme).toBe("https");
-    expect(recipes.find((recipe) => recipe.name === "raw")?.browserScheme).toBeNull();
+    expect(file.recipes.find((recipe) => recipe.name === "web")?.browserScheme).toBe("https");
+    expect(file.recipes.find((recipe) => recipe.name === "raw")?.browserScheme).toBeNull();
   });
 
-  it("refuses browser behavior for UDP", async () => {
-    const worktree = worktreeWith(
-      ["[service.game]", "port = 34197", 'protocol = "udp"', 'browserScheme = "http"'].join("\n"),
-    );
-    await expect(Effect.runPromise(readServiceRecipes(worktree))).rejects.toThrow(
-      /cannot declare browserScheme for UDP/,
-    );
-  });
-
-  it("refuses a protocol that is neither tcp nor udp", async () => {
-    const worktree = worktreeWith(["[service.x]", "port = 1", 'protocol = "sctp"'].join("\n"));
-    await expect(Effect.runPromise(readServiceRecipes(worktree))).rejects.toThrow(/protocol/);
-  });
-
-  it("reads run and adopt recipes", async () => {
-    const worktree = worktreeWith(`
+  it("reads run and adopt recipes with the launch defaults", () => {
+    const file = parse(`
 [service.web]
 command = "pnpm dev"
 port = 3000
@@ -85,50 +85,348 @@ port = 3000
 # an already-listening port to adopt
 port = 5432
 `);
-    const recipes = await Effect.runPromise(readServiceRecipes(worktree));
-    expect(recipes).toHaveLength(2);
-    expect(recipes[0]).toMatchObject({ name: "web", command: "pnpm dev", port: 3000 });
-    expect(recipes[1]).toMatchObject({ name: "db", command: null, port: 5432 });
+    expect(file.recipes).toHaveLength(2);
+    expect(file.recipes[0]).toMatchObject({
+      name: "web",
+      command: "pnpm dev",
+      port: 3000,
+      cwd: null,
+      env: {},
+      ready: { _tag: "Tcp", timeoutMs: 60_000 },
+      host: "rewrite",
+      address: "loopback",
+      depends: [],
+    });
+    expect(file.recipes[1]).toMatchObject({ name: "db", command: null, port: 5432 });
   });
 
-  it("a missing file declares nothing", async () => {
-    const recipes = await Effect.runPromise(readServiceRecipes(worktreeWith(null)));
-    expect(recipes).toEqual([]);
+  it("reads every new key", () => {
+    const file = parse(`
+[service.web]
+command = "pnpm dev"
+port = 3000
+browserScheme = "http"
+cwd = "./apps//web/"
+env = { NODE_ENV = "development", _x1 = "" }
+ready = { http = "/health?deep=1", timeout = "2m" }
+host = "preserve"
+depends = ["db", "db"]
+
+[service.db]
+command = "docker compose up db"
+port = 5432
+address = "docker"
+ready = { timeout = "90s" }
+
+[preview]
+service = "web"
+`);
+    expect(file.refused).toEqual([]);
+    expect(file.recipes[0]).toMatchObject({
+      cwd: "apps/web",
+      env: { NODE_ENV: "development", _x1: "" },
+      ready: { _tag: "Http", path: "/health?deep=1", timeoutMs: 120_000 },
+      host: "preserve",
+      depends: ["db"],
+    });
+    expect(file.recipes[1]).toMatchObject({
+      address: "docker",
+      ready: { _tag: "Tcp", timeoutMs: 90_000 },
+    });
+    expect(file.preview).toBe("web");
   });
 
-  it("a file without [service] declares nothing", async () => {
-    const recipes = await Effect.runPromise(readServiceRecipes(worktreeWith(`title = "x"\n`)));
-    expect(recipes).toEqual([]);
+  it.each([
+    ['the root as ""', 'cwd = ""', null],
+    ["the root as .", 'cwd = "."', null],
+  ])("reads cwd %s as none", (_, line, expected) => {
+    expect(parse([...WEB, line].join("\n")).recipes[0]?.cwd).toBe(expected);
   });
 
-  it("invalid TOML is a typed error naming the file", async () => {
-    const error = await Effect.runPromise(
-      readServiceRecipes(worktreeWith("[service.web\nport=")).pipe(Effect.flip),
+  it.each([
+    ["cwd", 'cwd = "/abs"', "cwd", /absolute/],
+    ["cwd", 'cwd = "a/../b"', "cwd", /\.\./],
+    ["cwd", 'cwd = ".."', "cwd", /\.\./],
+    ["cwd", 'cwd = "a\\u0000b"', "cwd", /NUL/],
+    ["cwd", "cwd = 3", "cwd", /repository-relative/],
+    ["env", 'env = { MEND_X = "1" }', "env.MEND_X", /MEND_\* names are Mend's/],
+    ["env", 'env = { PORT = "3000" }', "env.PORT", /PORT is Mend's/],
+    ["env", "env = { X = 1 }", "env.X", /string/],
+    ["env", 'env = { "1X" = "a" }', "env.1X", /not an environment variable name/],
+    ["env", 'env = "X=1"', "env", /table/],
+    ["ready", 'ready = { http = "x" }', "ready.http", /path/],
+    ["ready", 'ready = { http = "/a b" }', "ready.http", /path/],
+    ["ready", 'ready = { timeout = "0s" }', "ready.timeout", /duration/],
+    ["ready", 'ready = { timeout = "120" , http = 3 }', "ready.http", /path/],
+    ["ready", 'ready = { timeout = "11m" }', "ready.timeout", /between 1s and 10m/],
+    ["ready", 'ready = { timeout = "500ms" }', "ready.timeout", /duration/],
+    ["ready", "ready = { timeout = 120 }", "ready.timeout", /duration/],
+    ["ready", 'ready = "/"', "ready", /table/],
+    ["host", 'host = "keep"', "host", /"rewrite" or "preserve"/],
+    ["address", 'address = "host"', "address", /"loopback" or "docker"/],
+    ["depends", 'depends = "db"', "depends", /list/],
+    ["depends", 'depends = ["Db App"]', "depends", /not a recipe name/],
+    ["port", "port = 70000", "port", /1\.\.65535/],
+    ["command", 'command = " "', "command", /non-empty/],
+    ["protocol", 'protocol = "sctp"', "protocol", /"tcp" or "udp"/],
+  ])("refuses a bad %s and names %s", (_, line, key, message) => {
+    const file = parse(
+      [...WEB.filter((l) => !l.startsWith(line.split(" ")[0] ?? "")), line].join("\n"),
     );
-    expect(error).toBeInstanceOf(RecipeFileError);
-    expect(error.message).toContain("not valid TOML");
+    expect(file.recipes).toEqual([]);
+    expect(file.refused).toContainEqual(
+      expect.objectContaining({ name: "web", key, message: expect.stringMatching(message) }),
+    );
   });
 
-  it("a recipe without a usable port is refused", async () => {
-    const error = await Effect.runPromise(
-      readServiceRecipes(worktreeWith(`[service.web]\ncommand = "pnpm dev"\n`)).pipe(Effect.flip),
+  it("refuses host without browserScheme = http", () => {
+    const file = parse(
+      ["[service.api]", 'command = "x"', "port = 1", 'host = "rewrite"'].join("\n"),
     );
-    expect(error.message).toContain("needs a port");
+    expect(file.refused).toEqual([
+      expect.objectContaining({
+        name: "api",
+        key: "host",
+        message: 'needs browserScheme = "http"',
+      }),
+    ]);
   });
 
-  it("a bad name is refused", async () => {
-    const error = await Effect.runPromise(
-      readServiceRecipes(worktreeWith(`[service."Web App"]\nport = 3000\n`)).pipe(Effect.flip),
+  it("refuses an HTTP ready rule on UDP and on an adopted port", () => {
+    const file = parse(`
+[service.game]
+command = "./server"
+port = 34197
+protocol = "udp"
+ready = { http = "/" }
+
+[service.db]
+port = 5432
+ready = { http = "/" }
+`);
+    expect(file.recipes).toEqual([]);
+    expect(file.refused.map((refusal) => [refusal.name, refusal.key])).toEqual([
+      ["game", "ready.http"],
+      ["db", "ready.http"],
+    ]);
+  });
+
+  it("refuses address = docker for UDP", () => {
+    const file = parse(
+      [
+        "[service.game]",
+        'command = "x"',
+        "port = 1",
+        'protocol = "udp"',
+        'address = "docker"',
+      ].join("\n"),
     );
-    expect(error.message).toContain("not a usable Service name");
+    expect(file.refused).toEqual([expect.objectContaining({ name: "game", key: "address" })]);
+  });
+
+  it("refuses browser behavior for UDP", () => {
+    const file = parse(
+      ["[service.game]", "port = 34197", 'protocol = "udp"', 'browserScheme = "http"'].join("\n"),
+    );
+    expect(file.refused).toEqual([
+      expect.objectContaining({
+        name: "game",
+        key: "browserScheme",
+        message: "cannot be declared for UDP",
+      }),
+    ]);
+  });
+
+  it("refuses the reserved shared-service forms, word for word", () => {
+    const file = parse([...WEB, 'depends = ["@db", { shared = "cache" }]'].join("\n"));
+    expect(file.refused.map((refusal) => refusal.message)).toEqual([
+      "@db · shared services are not available yet",
+      "@cache · shared services are not available yet",
+    ]);
+    expect(file.refused.every((refusal) => refusal.key === "depends")).toBe(true);
+  });
+
+  it("leaves the other recipes parsed when one is bad", () => {
+    const file = parse(`
+[service.web]
+command = "pnpm dev"
+port = 3000
+cwd = "/etc"
+
+[service.api]
+command = "node api.js"
+port = 4000
+
+[service."Web App"]
+port = 3001
+
+[service.lonely]
+command = "x"
+`);
+    expect(file.recipes.map((recipe) => recipe.name)).toEqual(["api"]);
+    expect(file.refused.map((refusal) => [refusal.name, refusal.key])).toEqual([
+      ["web", "cwd"],
+      ["Web App", "name"],
+      ["lonely", "port"],
+    ]);
+  });
+
+  it("lists unknown keys, [setup] among them, as ignored, never refused", () => {
+    const file = parse(`
+title = "x"
+
+[setup]
+run = ["pnpm install"]
+
+[service.web]
+command = "pnpm dev"
+port = 3000
+disposable = true
+ready = { http = "/", every = "1s" }
+
+[preview]
+service = "web"
+open = "/"
+`);
+    expect(file.refused).toEqual([]);
+    expect(file.recipes.map((recipe) => recipe.name)).toEqual(["web"]);
+    expect(file.ignored.map((ignored) => [ignored.name, ignored.key])).toEqual([
+      [null, "title"],
+      [null, "setup"],
+      ["web", "disposable"],
+      ["web", "ready.every"],
+      [null, "preview.open"],
+    ]);
+  });
+
+  it("keeps a TOML syntax error, and a service that is not a table, file-level", () => {
+    for (const toml of ["[service.web\nport=", 'service = "web"']) {
+      const error = Effect.runSync(parseMendToml(toml, "/repo/mend.toml").pipe(Effect.flip));
+      expect(error).toBeInstanceOf(RecipeFileError);
+    }
+  });
+
+  it("reads a missing file, and one without [service], as nothing declared", async () => {
+    for (const toml of [null, `title = "x"\n`]) {
+      const file = await Effect.runPromise(readMendToml(worktreeWith(toml)));
+      expect(file.recipes).toEqual([]);
+      expect(file.refused).toEqual([]);
+    }
   });
 });
 
-describe("mergeRecipes", () => {
+describe("resolveDeclarations", () => {
   it("keeps a colliding project declaration visible but marks the file declaration authoritative", () => {
-    expect(mergeRecipes([makeRecipe("file")], [makeRecipe("project")])).toMatchObject([
+    const file = new ServiceRecipe({ ...projectRecipe("web"), source: "file" });
+    expect(mergeRecipes([file], [projectRecipe("web")])).toMatchObject([
       { source: "file", shadowedBy: null },
       { source: "project", shadowedBy: "file" },
     ]);
+  });
+
+  it("shadows a project recipe even while the file's recipe of that name is refused", () => {
+    const declared = declare('[service.web]\ncommand = "x"\nport = 3000\ncwd = "/abs"', [
+      projectRecipe("web"),
+    ]);
+    expect(declared.recipes).toMatchObject([{ source: "project", shadowedBy: "file" }]);
+  });
+
+  it("lets depends name a project recipe", () => {
+    const declared = declare('[service.app]\ncommand = "x"\nport = 1\ndepends = ["web"]', [
+      projectRecipe("web"),
+    ]);
+    expect(declared.refused).toEqual([]);
+  });
+
+  it.each([
+    [
+      "an unknown recipe",
+      '[service.a]\ncommand = "x"\nport = 1\ndepends = ["nope"]',
+      ["a"],
+      /no recipe declares/,
+    ],
+    ["itself", '[service.a]\ncommand = "x"\nport = 1\ndepends = ["a"]', ["a"], /itself/],
+    [
+      "a cycle, every recipe on it",
+      '[service.a]\ncommand = "x"\nport = 1\ndepends = ["b"]\n[service.b]\ncommand = "x"\nport = 2\ndepends = ["a"]',
+      ["a", "b"],
+      /cycle: a → b → a/,
+    ],
+    [
+      "a refused recipe, and whatever depends on that",
+      '[service.a]\ncommand = "x"\nport = 1\ndepends = ["b"]\n[service.b]\ncommand = "x"\nport = 2\ndepends = ["c"]\n[service.c]\ncommand = "x"\nport = 70000',
+      ["b", "a"],
+      /which is refused/,
+    ],
+  ])("refuses depends on %s", (_, toml, names, message) => {
+    const declared = declare(toml);
+    const dependsRefusals = declared.refused.filter((refusal) => refusal.key === "depends");
+    expect(dependsRefusals.map((refusal) => refusal.name)).toEqual(names);
+    expect(dependsRefusals.every((refusal) => message.test(refusal.message))).toBe(true);
+    for (const name of names)
+      expect(declared.recipes.some((recipe) => recipe.name === name)).toBe(false);
+  });
+
+  it.each([
+    ["an unknown recipe", 'service = "nope"', /not a runnable recipe/],
+    ["a recipe without browserScheme = http", 'service = "api"', /browserScheme/],
+    ["an https recipe", 'service = "secure"', /browserScheme/],
+    ["a refused recipe", 'service = "broken"', /not a runnable recipe/],
+  ])("refuses a [preview] naming %s", (_, line, message) => {
+    const declared = declare(
+      [
+        ...WEB,
+        '[service.api]\ncommand = "x"\nport = 2',
+        '[service.secure]\ncommand = "x"\nport = 3\nbrowserScheme = "https"',
+        '[service.broken]\ncommand = "x"\nport = 4\nbrowserScheme = "http"\ncwd = "/x"',
+        "[preview]",
+        line,
+      ].join("\n"),
+    );
+    expect(declared.preview).toBeNull();
+    expect(declared.refused).toContainEqual(
+      expect.objectContaining({
+        name: null,
+        key: "preview.service",
+        message: expect.stringMatching(message),
+      }),
+    );
+  });
+
+  it("keeps a [preview] naming a browser http recipe", () => {
+    expect(declare([...WEB, "[preview]", 'service = "web"'].join("\n")).preview?.service).toBe(
+      "web",
+    );
+  });
+});
+
+describe("planStart", () => {
+  it("starts dependencies first, depth first in listed order, each once", () => {
+    const declared = declare(`
+[service.web]
+command = "x"
+port = 1
+depends = ["api", "db"]
+
+[service.api]
+command = "x"
+port = 2
+depends = ["db", "cache"]
+
+[service.db]
+port = 3
+
+[service.cache]
+command = "x"
+port = 4
+`);
+    expect(planStart(declared, "web").map((recipe) => recipe.name)).toEqual([
+      "db",
+      "cache",
+      "api",
+      "web",
+    ]);
+    expect(planStart(declared, "db").map((recipe) => recipe.name)).toEqual(["db"]);
+    expect(planStart(declared, "nope")).toEqual([]);
   });
 });

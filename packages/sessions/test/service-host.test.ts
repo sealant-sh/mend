@@ -9,7 +9,7 @@ import {
   ServiceId,
   ServiceObservationId,
 } from "@mend/domain";
-import { ServiceObservation } from "@mend/domain/workbench";
+import { ServiceForward, ServiceObservation } from "@mend/domain/workbench";
 import { openBoundedForward, SealantClient, toPlatformError } from "@mend/sealant";
 import {
   ForwardAdapterLive,
@@ -156,7 +156,7 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   resolveWorkspacePackage: () => Effect.die("not in test"),
 });
 
-const forwardsStubLayer = Layer.succeed(ServiceForwardsRepo, {
+const stubForwards: ServiceForwardsRepo["Service"] = {
   create: () => Effect.die("not in test"),
   createAndSelect: () => Effect.die("not in test"),
   byId: () => Effect.succeed(null),
@@ -165,7 +165,8 @@ const forwardsStubLayer = Layer.succeed(ServiceForwardsRepo, {
   markBound: () => Effect.void,
   markFailed: () => Effect.void,
   markClosed: () => Effect.void,
-});
+};
+const forwardsStubLayer = Layer.succeed(ServiceForwardsRepo, stubForwards);
 
 const observationsStubLayer = Layer.succeed(ServiceObservationsRepo, {
   record: (input) =>
@@ -991,3 +992,65 @@ for (const lagMillis of [5_000, 25_000]) {
     }),
   );
 }
+
+effectIt.effect(
+  "probes an HTTP-ready Service with its HTTP rule: a port that only accepts is not reachable",
+  () =>
+    Effect.gen(function* () {
+      const recorded: Array<{ readonly state: string; readonly error: string | null }> = [];
+      const observations = Layer.succeed(ServiceObservationsRepo, {
+        record: (input) =>
+          Effect.sync(() => {
+            recorded.push({ state: input.state, error: input.error ?? null });
+            return new ServiceObservation({
+              id: ServiceObservationId.make(crypto.randomUUID()),
+              ...input,
+              error: input.error ?? null,
+              firstObservedAt: new Date(),
+              lastObservedAt: new Date(),
+            });
+          }),
+        latestForService: () => Effect.succeed(null),
+        listForService: () => Effect.succeed([]),
+      });
+      const bound = new ServiceForward({
+        id: FORWARD_ID,
+        serviceId: SERVICE_ID,
+        sealantWorkspaceId: WORKSPACE_ID,
+        preferredHostPort: null,
+        hostPort: null,
+        boundAddresses: null,
+        state: "bound",
+        error: null,
+        supersedesForwardId: null,
+        createdAt: new Date(),
+        boundAt: new Date(),
+        closedAt: null,
+        updatedAt: new Date(),
+      });
+      const forwards = Layer.succeed(ServiceForwardsRepo, {
+        ...stubForwards,
+        byId: () => Effect.succeed(bound),
+      });
+      yield* Effect.gen(function* () {
+        const host = yield* ServiceHost;
+        // The workspace's echo answers a request with the request: bytes, never a status line.
+        yield* host.start({
+          ...clockStartInput,
+          ready: { _tag: "Http", path: "/health", host: "localhost:3000", tls: false },
+        });
+        yield* TestClock.adjust(20_000);
+        yield* Effect.yieldNow;
+        expect(recorded).toEqual([
+          { state: "unreachable", error: "no HTTP answer to GET /health" },
+        ]);
+      }).pipe(
+        Effect.provide(
+          ServiceHostOverAdapter.pipe(
+            Layer.provide(sealantFakeLayer),
+            Layer.provide(Layer.mergeAll(forwards, observations)),
+          ),
+        ),
+      );
+    }),
+);

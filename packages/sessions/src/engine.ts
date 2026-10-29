@@ -81,6 +81,8 @@ import type {
   RemoteSsh,
   Project,
   Service,
+  ServiceDeclarations,
+  ServiceLaunch,
   ServiceRecipe,
   Session,
   SessionDotfiles,
@@ -92,8 +94,12 @@ import type {
   Worktree,
 } from "@mend/domain/workbench";
 import {
+  DEFAULT_SERVICE_LAUNCH,
+  ServiceStartProgress,
+  ServiceStartStep,
   previewControlDecider,
   previewStartId,
+  recipeRefusalLine,
   PreviewStartRefusal,
   type PreviewStartRequest,
   type ServiceStartCause,
@@ -376,12 +382,7 @@ import {
   snapshotArchive,
 } from "./dotfiles.ts";
 import { type Continuation, type EndAuthority, makeEndOwnership } from "./end-ownership.ts";
-import {
-  ForwardAdapter,
-  type ForwardDialRecord,
-  forwardStartupAction,
-  portTarget,
-} from "./forward.ts";
+import { ForwardAdapter, forwardStartupAction, portTarget } from "./forward.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
@@ -584,10 +585,13 @@ import {
 } from "./protocol-host.ts";
 import type { SteerTurnInput } from "./protocol-steer.ts";
 import {
-  mergeRecipes,
-  parseServiceRecipes,
-  readServiceRecipes,
+  EMPTY_MEND_TOML,
+  type MendTomlFile,
+  parseMendToml,
+  planStart,
+  readMendToml,
   RecipeFileError,
+  resolveDeclarations,
 } from "./recipes.ts";
 import {
   HOT_POOL_MAX_OWNERS,
@@ -612,6 +616,19 @@ import {
   type SecretFilesRecord,
 } from "./secret-files.ts";
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
+import {
+  checkReady,
+  explicitLaunch,
+  type LaunchSpec,
+  PreviewUrls,
+  type ReadyCheck,
+  readyCheckOf,
+  type ReadyVerdict,
+  recipeLaunch,
+  serviceCwdOf,
+  serviceProcessEnv,
+  TCP_READY,
+} from "./service-launch.ts";
 import {
   type AddableProject,
   failureReason,
@@ -1406,8 +1423,69 @@ const ptyOutputTail = (pty: {
     }),
   );
 
-/** How long `mend service run` waits for the declared port before reporting unreachable. */
-const SERVICE_START_TIMEOUT_MS = 60_000;
+/**
+ * How long a recipe start's request waits on its plan (ADR 0017, delivery 9): inside an edge's cut
+ * and the CLI's five-minute wait for an answer. The plan runs on after the answer.
+ */
+const SERVICE_START_HOLD_MS = 60_000;
+const SERVICE_PLAN_KEPT_MS = 10 * 60_000;
+
+interface ServiceStart {
+  readonly name: string | null;
+  readonly port: number;
+  readonly protocol: "tcp" | "udp";
+  readonly browserScheme: ServiceBrowserScheme;
+  readonly declarationSource: ServiceDeclarationSource;
+  readonly launch: LaunchSpec;
+  /** The file's `[preview]` when it was read for this start, for `MEND_PREVIEW_URL`. */
+  readonly filePreview: string | null;
+}
+
+type StartOutcome =
+  | { readonly _tag: "Ready" }
+  /** Still running, and its `ready` rule never held within its timeout. */
+  | { readonly _tag: "NotReady"; readonly reason: string }
+  /** Stopped or replaced before it answered. */
+  | { readonly _tag: "Ended" };
+
+const outcomeOf = (verdict: ReadyVerdict): StartOutcome =>
+  verdict._tag === "Ready" ? verdict : { _tag: "NotReady", reason: verdict.reason };
+
+type PlanFailure =
+  | SessionNotFoundError
+  | SessionNotLiveError
+  | LegacyBenchReadOnlyError
+  | SealantPlatformError
+  | ServiceBindError
+  | ServiceStartError;
+
+/** A recipe start's plan: it runs to its end or a Stop, whatever happens to its request. */
+interface ServicePlan {
+  readonly sessionId: SessionId;
+  readonly names: ReadonlySet<string>;
+  progress: ServiceStartProgress;
+  /** A Stop of one of its Services, or of all the session's: it starts nothing more. */
+  stopped: boolean;
+  target: ServiceId | null;
+  readonly done: Deferred.Deferred<ServiceView, PlanFailure>;
+}
+const planKey = (sessionId: SessionId, startId: string) => `${sessionId} ${startId}`;
+
+const stepTo = (
+  plan: ServicePlan,
+  name: string,
+  state: ServiceStartStep["state"],
+  reason: string | null = null,
+) =>
+  Effect.sync(() => {
+    plan.progress = new ServiceStartProgress({
+      ...plan.progress,
+      steps: plan.progress.steps.map((step) =>
+        step.name === name ? new ServiceStartStep({ ...step, state, reason }) : step,
+      ),
+    });
+  });
+
 /** What the reaper writes when a lease lapsed and the platform no longer answers. */
 const EXECUTOR_LOST_SUMMARY = "executor lost · lease expired";
 /** The key an executor create is asked under: the session, when it was asked, a nonce. */
@@ -2214,6 +2292,17 @@ export class ServiceStartError extends Schema.TaggedError<ServiceStartError>()(
 ) {}
 
 /**
+ * A recipe start still waiting on a dependency when its request's hold ran out: Mend goes on with
+ * it, and its progress says where it stands.
+ */
+export class ServiceStartUnderWayError extends Schema.TaggedError<ServiceStartUnderWayError>()(
+  "ServiceStartUnderWayError",
+  {
+    message: Schema.String,
+  },
+) {}
+
+/**
  * A request-triggered start that did not give a running attempt (ADR 0017). `detail` is for logs
  * and is never shown to a browser.
  */
@@ -2763,7 +2852,21 @@ export class SessionEngine extends Context.Service<
       ReadonlyArray<ServiceRecipe>,
       SessionNotFoundError | ProjectNotFoundError | RecipeFileError | SealantPlatformError
     >;
-    /** Resolve and launch a declared recipe on the server so its provenance cannot be forged. */
+    /**
+     * The same file read whole (ADR 0017, delivery 9): the recipes that list, each refused one
+     * with the key it names, the keys this Mend ignores, and `[preview]`.
+     */
+    readonly serviceDeclarations: (
+      sessionId: SessionId,
+    ) => Effect.Effect<
+      ServiceDeclarations,
+      SessionNotFoundError | ProjectNotFoundError | RecipeFileError | SealantPlatformError
+    >;
+    /**
+     * Resolve and launch a declared recipe on the server so its provenance cannot be forged,
+     * after the recipes it `depends` on; a dependency already live in this session is reused. A
+     * dependency that fails or never answers stops the plan; the ones already started keep running.
+     */
     readonly runServiceRecipe: (
       sessionId: SessionId,
       name: string,
@@ -2782,7 +2885,16 @@ export class SessionEngine extends Context.Service<
       | SealantPlatformError
       | ServiceBindError
       | ServiceStartError
+      | ServiceStartUnderWayError
     >;
+    /**
+     * Where a recipe start stands, by the start id its client sent: each recipe of its plan, and
+     * how it ended. Null for an id this server has no start under (an older start, a restart).
+     */
+    readonly serviceStartProgress: (
+      sessionId: SessionId,
+      startId: string,
+    ) => Effect.Effect<ServiceStartProgress | null, SessionNotFoundError>;
     /**
      * Append a process attempt while preserving the stable Service and forward. A person's restart
      * lets requests start its preview again.
@@ -3073,7 +3185,8 @@ type SessionEngineRequirements =
   | HarnessLayoutsRepo
   | PersonLayoutPlatform
   | HarnessLayoutConfig
-  | WorkspaceHostUserNamespaces;
+  | WorkspaceHostUserNamespaces
+  | PreviewUrls;
 
 /**
  * The executor answered an ask: its evidence fence now clears only with a publication (review
@@ -3202,6 +3315,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // Whether the host whose Docker runs the workspaces lets their Docker services start, read
       // at each launch (`launchInternal`).
       const hostUserNamespaces = yield* WorkspaceHostUserNamespaces;
+      const previewUrls = yield* PreviewUrls;
       // The store's sealed record of a completed final flush (`CaptureSeals`). Nothing provided
       // reads as no seal recorded: nothing is ever saved on a seal Mend cannot read.
       const seals: CaptureSeals["Service"] = Option.getOrElse(
@@ -11227,7 +11341,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.asVoid,
               Effect.catchTag("SessionNotFoundError", () => Effect.void),
             )
-          : closeCurrentServiceForward(ended).pipe(
+          : endServiceAttempt(ended, how, exitCode).pipe(
               Effect.andThen(markProcessExited(ended.id, how, exitCode)),
               Effect.andThen(
                 reconcileSession(ended.sessionId, { sweep: true }).pipe(
@@ -11236,10 +11350,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
 
-      const closeCurrentServiceForward = Effect.fn("SessionEngine.closeCurrentServiceForward")(
-        (process: SessionProcess) =>
+      /**
+       * A Service attempt's end and its forward's close, in one lifecycle transition: a start
+       * finishing meanwhile reads the attempt ended and binds nothing for it.
+       */
+      const endServiceAttempt = Effect.fn("SessionEngine.endServiceAttempt")(
+        (process: SessionProcess, how: "exited" | "stopped", exitCode: number | null) =>
           withServiceLifecycle(
             Effect.gen(function* () {
+              yield* processes.markExited(process.id, how, exitCode);
               if (process.serviceId === null) return;
               const service = yield* services.byId(process.serviceId);
               if (service === null || service.currentAttemptId !== process.id) return;
@@ -12894,7 +13013,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * every workspace (the executor's working directory in capture mode, the bound mount
        * otherwise). An absent file is no declarations; an unreadable one is a typed error.
        */
-      const readWorkspaceRecipes = Effect.fn("SessionEngine.readWorkspaceRecipes")(function* (
+      const readWorkspaceMendToml = Effect.fn("SessionEngine.readWorkspaceMendToml")(function* (
         workspace: Workspace,
       ) {
         const result = yield* sealant.exec(workspace, [
@@ -12904,14 +13023,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "sh",
           WORKSPACE_MEND_TOML,
         ]);
-        if (result.exitCode === WORKSPACE_MEND_TOML_ABSENT) return [];
+        if (result.exitCode === WORKSPACE_MEND_TOML_ABSENT) return EMPTY_MEND_TOML;
         if (result.exitCode !== 0) {
           return yield* new RecipeFileError({
             path: WORKSPACE_MEND_TOML,
             message: `mend.toml could not be read in the session workspace (exit ${result.exitCode}): ${result.stderr.trim()}`,
           });
         }
-        return yield* parseServiceRecipes(result.stdout, WORKSPACE_MEND_TOML);
+        return yield* parseMendToml(result.stdout, WORKSPACE_MEND_TOML);
       });
 
       /**
@@ -12979,21 +13098,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 )
                 .join("\n") +
               `\n\n`;
-        const declaredRecipes = mergeRecipes(
-          yield* worktree === null
-            ? Effect.succeed([])
-            : (capture === null
-                ? readServiceRecipes(worktree)
-                : readWorkspaceRecipes(workspace)
-              ).pipe(Effect.orElseSucceed(() => [])),
+        const read =
+          worktree === null
+            ? EMPTY_MEND_TOML
+            : yield* (
+                capture === null ? readMendToml(worktree) : readWorkspaceMendToml(workspace)
+              ).pipe(
+                Effect.catchTag("RecipeFileError", (error) =>
+                  Effect.succeed<MendTomlFile | RecipeFileError>(error),
+                ),
+                Effect.orElseSucceed(() => EMPTY_MEND_TOML),
+              );
+        const declared = resolveDeclarations(
+          read instanceof RecipeFileError ? EMPTY_MEND_TOML : read,
           yield* projectRecipes.listForProject(project.id).pipe(Effect.orElseSucceed(() => [])),
         );
+        const runnable = declared.recipes.filter((recipe) => recipe.shadowedBy === null);
         const recipesLine =
-          declaredRecipes.length === 0
+          (runnable.length === 0
             ? ""
             : `Declared Services (mend.toml + project): ` +
-              declaredRecipes.map((recipe) => recipe.name).join(", ") +
-              ` — start one with \`mend service run <name>\`.\n\n`;
+              runnable.map((recipe) => recipe.name).join(", ") +
+              ` — start one with \`mend service run <name>\`.\n\n`) +
+          (read instanceof RecipeFileError
+            ? `mend.toml declares nothing this session can run: ${read.message}\n\n`
+            : declared.refused.length === 0
+              ? ""
+              : `Refused in mend.toml (fix these before running them):\n\n` +
+                declared.refused.map((refusal) => `- ${recipeRefusalLine(refusal)}`).join("\n") +
+                `\n\n`);
         const servicesSection =
           `## Mend Services\n\n` +
           `For any long-running server (dev server, database), use ` +
@@ -22020,24 +22153,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * capture mode has that includes the agent's latest edit. No live workspace there is a
        * typed `SessionNotLiveError`, never a defect.
        */
-      const fileRecipesOf = Effect.fn("SessionEngine.fileRecipesOf")(function* (session: Session) {
+      const mendTomlOf = Effect.fn("SessionEngine.mendTomlOf")(function* (session: Session) {
         const mount = yield* sessionRepo.worktreeMount(session.projectId, session.worktree);
-        if (mount !== undefined) return yield* readServiceRecipes(mount);
+        if (mount !== undefined) return yield* readMendToml(mount);
         const workspace = yield* workspaceForSupportingProcess(session);
-        return yield* readWorkspaceRecipes(workspace);
+        return yield* readWorkspaceMendToml(workspace);
       });
 
-      const listServiceRecipes = Effect.fn("SessionEngine.listServiceRecipes")(function* (
+      const declarationsOf = Effect.fn("SessionEngine.declarationsOf")(function* (
+        session: Session,
+      ) {
+        const file = yield* mendTomlOf(session).pipe(
+          Effect.catchTag("SessionNotLiveError", () => Effect.succeed(EMPTY_MEND_TOML)),
+        );
+        return resolveDeclarations(file, yield* projectRecipes.listForProject(session.projectId));
+      });
+
+      const serviceDeclarations = Effect.fn("SessionEngine.serviceDeclarations")(function* (
         sessionId: SessionId,
       ) {
-        const session = yield* sessions.byId(sessionId);
-        const fromFile = yield* fileRecipesOf(session).pipe(
-          Effect.catchTag("SessionNotLiveError", () =>
-            Effect.succeed<ReadonlyArray<ServiceRecipe>>([]),
-          ),
-        );
-        return mergeRecipes(fromFile, yield* projectRecipes.listForProject(session.projectId));
+        return yield* declarationsOf(yield* sessions.byId(sessionId));
       });
+
+      const listServiceRecipes = (sessionId: SessionId) =>
+        Effect.map(serviceDeclarations(sessionId), (declared) => declared.recipes);
 
       const openShell = Effect.fn("SessionEngine.openShell")(function* (
         sessionId: SessionId,
@@ -22165,6 +22304,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         transport: "tcp" | "udp",
         browserScheme: ServiceBrowserScheme,
         declarationSource: ServiceDeclarationSource,
+        placement: Pick<LaunchSpec, "host" | "address"> = { host: "rewrite", address: "loopback" },
       ) {
         if (transport === "udp" && browserScheme !== null) {
           return yield* new ServiceBindError({
@@ -22194,6 +22334,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             existing.workspacePort === workspacePort &&
             existing.transport === transport &&
             existing.browserScheme === browserScheme &&
+            existing.hostPolicy === placement.host &&
+            existing.address === placement.address &&
             existing.bindAddresses !== null &&
             existing.bindAddresses.length === bindAddresses.length &&
             existing.bindAddresses.every((address, index) => address === bindAddresses[index])
@@ -22209,6 +22351,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           transport,
           browserScheme,
           bindAddresses,
+          hostPolicy: placement.host,
+          address: placement.address,
         });
       });
 
@@ -22242,6 +22386,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Captured for the host's detached work (probe timer, connection dials): those run
         // outside any request context and must still act as the session owner.
         const ownerSession = yield* sessions.byId(service.sessionId).pipe(Effect.option);
+        const ready =
+          protocol === "tcp"
+            ? (yield* attemptReadyOf(service, service.currentAttemptId)).check
+            : TCP_READY;
         const binding = yield* serviceHost
           .start({
             serviceId,
@@ -22250,6 +22398,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             workspacePort,
             protocol,
             bindAddresses,
+            ready,
             ownerUserId: Option.isSome(ownerSession) ? ownerSession.value.ownerUserId : null,
             ...(forward.preferredHostPort === null
               ? {}
@@ -22268,37 +22417,61 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return forward.id;
       });
 
-      const recordTcpObservation = Effect.fn("SessionEngine.recordTcpObservation")(function* (
+      const recordObservation = Effect.fn("SessionEngine.recordObservation")(function* (
         serviceId: ServiceId,
         forwardId: ServiceForwardId,
-        probed: ForwardDialRecord,
+        verdict: ReadyVerdict,
       ) {
         yield* serviceObservations.record({
           serviceId,
           forwardId,
-          state: probed.kind === "ready" ? "reachable" : "unreachable",
+          state: verdict._tag === "Ready" ? "reachable" : "unreachable",
           source: "probe",
-          error: probed.kind === "ready" ? null : probed.issue.reason,
+          error: verdict._tag === "Ready" ? null : verdict.reason,
         });
       });
 
+      /** An attempt's check, as written: `reachedAt` when it answered, and the forward's view. */
       const recordReadiness = Effect.fn("SessionEngine.recordReadiness")(function* (
         serviceId: ServiceId,
         attemptId: SessionProcessId,
         forwardId: ServiceForwardId | null,
-        probed: ForwardDialRecord,
+        verdict: ReadyVerdict,
       ) {
-        if (probed.kind === "ready") yield* processes.markReached(attemptId);
-        if (forwardId !== null) yield* recordTcpObservation(serviceId, forwardId, probed);
+        if (verdict._tag === "Ready") yield* processes.markReached(attemptId);
+        if (forwardId !== null) yield* recordObservation(serviceId, forwardId, verdict);
       });
 
-      const addServiceUnlocked = Effect.fn("SessionEngine.addService")(function* (
+      /**
+       * How `attemptId` of `service` counts as up, from what its row recorded at launch: an
+       * attempt from before 0143, or none, is a TCP accept within the default timeout.
+       */
+      const attemptReadyOf = Effect.fn("SessionEngine.attemptReadyOf")(function* (
+        service: Service,
+        attemptId: SessionProcessId | null,
+      ) {
+        const ready =
+          (attemptId === null ? null : yield* processes.launchOf(attemptId))?.ready ??
+          DEFAULT_SERVICE_LAUNCH.ready;
+        const previewUrl =
+          ready._tag === "Http" && service.hostPolicy === "preserve"
+            ? yield* sessions.byId(service.sessionId).pipe(
+                Effect.flatMap((session) => previewUrls.of(session.worktreeId, service.name)),
+                Effect.orElseSucceed(() => null),
+              )
+            : null;
+        return { timeoutMs: ready.timeoutMs, check: readyCheckOf(ready, service, previewUrl) };
+      });
+
+      /** An adoption's first half, under the permit: the Service row and its forward. */
+      const beginAdoption = Effect.fn("SessionEngine.beginAdoption")(function* (
         sessionId: SessionId,
         workspacePort: number,
         name: string | null,
-        protocol: "tcp" | "udp" = "tcp",
-        browserScheme: ServiceBrowserScheme = null,
-        declarationSource: ServiceDeclarationSource = "explicit-adopt",
+        protocol: "tcp" | "udp",
+        browserScheme: ServiceBrowserScheme,
+        declarationSource: ServiceDeclarationSource,
+        placement: Pick<LaunchSpec, "host" | "address">,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
@@ -22314,6 +22487,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocol,
           browserScheme,
           declarationSource,
+          placement,
         );
         const forwardId = yield* bindServiceForward(
           service.id,
@@ -22321,17 +22495,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspacePort,
           protocol,
         );
-        if (protocol === "tcp") {
-          yield* recordTcpObservation(
-            service.id,
-            forwardId,
-            yield* forwardAdapter.probe(portTarget(workspaceId, workspacePort), {
-              purpose: "readiness",
-            }),
-          );
-        }
-        return yield* readServiceView(service.id);
+        return { service, workspaceId, forwardId };
       });
+
+      /** `mend service add`: adopt a port and look at it once. */
       const addService = (
         sessionId: SessionId,
         workspacePort: number,
@@ -22341,15 +22508,59 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         declarationSource: ServiceDeclarationSource = "explicit-adopt",
       ) =>
         withServiceLifecycle(
-          addServiceUnlocked(
-            sessionId,
-            workspacePort,
-            name,
-            protocol,
-            browserScheme,
-            declarationSource,
-          ),
+          Effect.gen(function* () {
+            const { service, workspaceId, forwardId } = yield* beginAdoption(
+              sessionId,
+              workspacePort,
+              name,
+              protocol,
+              browserScheme,
+              declarationSource,
+              { host: "rewrite", address: "loopback" },
+            );
+            if (protocol === "tcp") {
+              yield* recordObservation(
+                service.id,
+                forwardId,
+                yield* checkReady(
+                  forwardAdapter,
+                  portTarget(workspaceId, workspacePort),
+                  TCP_READY,
+                ),
+              );
+            }
+            return yield* readServiceView(service.id);
+          }),
         );
+
+      /**
+       * An adopted port's wait, outside the permit: its TCP accept, looked for until `timeoutMs`
+       * has passed or a refusal says waiting cannot help.
+       */
+      const awaitAdoptedPort = (
+        workspaceId: SealantWorkspaceId,
+        workspacePort: number,
+        timeoutMs: number,
+      ): Effect.Effect<ReadyVerdict> =>
+        Effect.gen(function* () {
+          const deadline = clock.currentTimeMillisUnsafe() + timeoutMs;
+          for (;;) {
+            const verdict = yield* checkReady(
+              forwardAdapter,
+              portTarget(workspaceId, workspacePort),
+              TCP_READY,
+              Math.max(1, deadline - clock.currentTimeMillisUnsafe()),
+            );
+            if (
+              verdict._tag === "Ready" ||
+              (verdict.issue !== null && forwardStartupAction(verdict.issue) === "stop") ||
+              clock.currentTimeMillisUnsafe() >= deadline
+            ) {
+              return verdict;
+            }
+            yield* Effect.sleep("500 millis");
+          }
+        });
 
       /** Processes whose close the platform refused, still recorded live (`notStopped`). */
       const closeFailed = new Map<SessionProcessId, string>();
@@ -22699,17 +22910,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspacePort: number,
         processId: SessionProcessId,
         sessionId: SessionId,
-        deadline: number = clock.currentTimeMillisUnsafe() + SERVICE_START_TIMEOUT_MS,
-      ) =>
+        deadline: number,
+        check: ReadyCheck,
+      ): Effect.Effect<ReadyVerdict, ServiceStartError> =>
         Effect.gen(function* () {
+          const target = portTarget(workspaceId, workspacePort);
           for (;;) {
-            const probed = yield* forwardAdapter.probe(portTarget(workspaceId, workspacePort), {
-              purpose: "readiness",
-              timeoutMs: deadline - clock.currentTimeMillisUnsafe(),
-            });
-            if (probed.kind === "ready" || forwardStartupAction(probed.issue) === "stop") {
-              return probed;
+            const verdict = yield* checkReady(
+              forwardAdapter,
+              target,
+              check,
+              Math.max(1, deadline - clock.currentTimeMillisUnsafe()),
+            );
+            if (
+              verdict._tag === "Ready" ||
+              (verdict.issue !== null && forwardStartupAction(verdict.issue) === "stop")
+            ) {
+              return verdict;
             }
+            // A Stop or a restart ended the attempt: whatever finishes the start reads it ended.
+            const row = yield* processes.byId(processId);
+            if (row === null || row.exitedAt !== null) return verdict;
             const status = yield* Effect.tryPromise({
               try: () => pty.status(),
               catch: () => new Error("status failed"),
@@ -22726,22 +22947,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   (tail === "" ? "" : `\n--- output ---\n${tail}`),
               });
             }
-            if (clock.currentTimeMillisUnsafe() >= deadline) {
-              return probed;
-            }
+            if (clock.currentTimeMillisUnsafe() >= deadline) return verdict;
             yield* Effect.sleep("500 millis");
           }
         });
+
+      const previewUrlFor = Effect.fn("SessionEngine.previewUrlFor")(function* (
+        session: Session,
+        service: Service,
+        filePreview: string | null,
+      ) {
+        const name = service.browserScheme === "http" ? service.name : filePreview;
+        if (name === null) return null;
+        return yield* previewUrls.of(session.worktreeId, name);
+      });
+
+      /** The file's `[preview]` Service, as checked against the recipes it may name. */
+      const filePreviewOf = (session: Session) =>
+        declarationsOf(session).pipe(
+          Effect.map((declared) => declared.preview?.service ?? null),
+          Effect.orElseSucceed(() => null),
+        );
 
       const openAttemptOf = Effect.fn("SessionEngine.openServiceAttempt")(function* (start: {
         readonly session: Session;
         readonly workspace: Workspace;
         readonly service: Service;
         readonly argv: ReadonlyArray<string>;
+        readonly launch: ServiceLaunch;
+        readonly filePreview: string | null;
         readonly runsAs: string | null;
         readonly launchCorrelationId: string | null;
       }) {
-        const { session, workspace, service, argv, runsAs } = start;
+        const { session, workspace, service, argv, launch, runsAs } = start;
+        const previewUrl = yield* previewUrlFor(session, service, start.filePreview);
         const workspaceId = SealantWorkspaceId.make(workspace.id);
         const attempts = yield* processes.listForService(service.id);
         const attempt = yield* processes.create({
@@ -22758,6 +22997,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv,
           status: "starting",
           launchCorrelationId: start.launchCorrelationId,
+          launch,
         });
         yield* services.setCurrentAttempt(service.id, attempt.id);
         const pty = yield* startAsPerson(session, workspace, Effect.succeed(runsAs), "shell").pipe(
@@ -22766,13 +23006,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? Effect.void
               : services.setStartedBy(service.id, runsAs),
           ),
-          Effect.flatMap((startAs) =>
-            sealant.openSession(
-              workspace,
-              argv,
-              startAs === null ? undefined : { user: startAs.user, env: startAs.env },
-            ),
-          ),
+          Effect.flatMap((startAs) => {
+            const cwd = serviceCwdOf(launch.cwd);
+            return sealant.openSession(workspace, argv, {
+              ...(cwd === undefined ? {} : { cwd }),
+              env: serviceProcessEnv({
+                sharedBinding: {},
+                recipe: launch.env,
+                port: service.workspacePort,
+                previewUrl,
+                person: startAs?.env ?? {},
+              }),
+              ...(startAs === null ? {} : { user: startAs.user }),
+            });
+          }),
           Effect.tapError(() => markProcessExited(attempt.id, "exited", null)),
         );
         yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
@@ -22781,19 +23028,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.catchTag("SessionNotFoundError", () => Effect.void),
         );
         yield* Effect.forkIn(watchProcess((yield* processes.byId(attempt.id)) ?? attempt), scope);
-        return { attempt, pty, workspaceId };
+        return {
+          attempt,
+          pty,
+          workspaceId,
+          ready: {
+            timeoutMs: launch.ready.timeoutMs,
+            check: readyCheckOf(launch.ready, service, previewUrl),
+          },
+        };
       });
       const openServiceAttemptAsOwner = (start: Parameters<typeof openAttemptOf>[0]) =>
         owned(start.service.sessionId)(openAttemptOf(start));
 
-      const runServiceUnlocked = Effect.fn("SessionEngine.runService")(function* (
+      /**
+       * The first half of a start, under the lifecycle permit: the Service row, its new attempt and
+       * the process. The readiness wait runs outside the permit (`awaitAttemptReady`), so a slow
+       * starter never holds up another Service's stop; the second half takes the permit again.
+       */
+      const beginServiceStart = Effect.fn("SessionEngine.beginServiceStart")(function* (
         sessionId: SessionId,
-        argv: ReadonlyArray<string>,
-        workspacePort: number,
-        name: string | null,
-        protocol: "tcp" | "udp",
-        browserScheme: ServiceBrowserScheme,
-        declarationSource: ServiceDeclarationSource,
+        start: ServiceStart,
         cause: AcceptedStart,
         startId: string | null,
       ) {
@@ -22816,14 +23071,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             cause: null,
           });
         }
-        const label = name ?? argv[0] ?? "service";
+        const { launch } = start;
+        const label = start.name ?? launch.argv[0] ?? "service";
         const service = yield* getOrCreateService(
           sessionId,
           label,
-          workspacePort,
-          protocol,
-          browserScheme,
-          declarationSource,
+          start.port,
+          start.protocol,
+          start.browserScheme,
+          start.declarationSource,
+          launch,
         );
         // A start id names one start of this Service: a second start under it would make "the
         // attempt this start began" two attempts. The key is the Service and the id, so another
@@ -22840,19 +23097,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             message: "This start id was used by an earlier start of this Service; send a new one.",
           });
         }
-        const { attempt, pty } = yield* openServiceAttemptAsOwner({
+        const opened = yield* openServiceAttemptAsOwner({
           session,
           workspace,
           service,
-          argv,
+          argv: launch.argv,
+          launch,
+          filePreview: start.filePreview,
           runsAs,
           launchCorrelationId,
         });
         // Once its attempt is live: the preview's rule decides whether it selects this Service.
         yield* clearStop(service.id, cause);
+        return { ...opened, service };
+      });
 
-        let probed: ForwardDialRecord | null = null;
-        if (protocol === "udp") {
+      const awaitAttemptReady = (
+        started: Effect.Success<ReturnType<typeof beginServiceStart>>,
+      ): Effect.Effect<ReadyVerdict | null, ServiceStartError> =>
+        Effect.gen(function* () {
+          const { service, attempt, pty, workspaceId, ready } = started;
+          if (service.transport === "tcp") {
+            return yield* awaitServicePort(
+              pty,
+              workspaceId,
+              service.workspacePort,
+              attempt.id,
+              service.sessionId,
+              clock.currentTimeMillisUnsafe() + ready.timeoutMs,
+              ready.check,
+            );
+          }
           yield* Effect.sleep("1500 millis");
           const early = yield* Effect.tryPromise({
             try: () => pty.status(),
@@ -22867,21 +23142,67 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 (tail === "" ? "" : `\n--- output ---\n${tail}`),
             });
           }
-        } else {
-          probed = yield* awaitServicePort(pty, workspaceId, workspacePort, attempt.id, sessionId);
+          return null;
+        });
+
+      /**
+       * The second half, under the permit again. An attempt that ended, or was replaced, while it
+       * waited is left as whatever ended it left it: nothing is bound for it. UDP, which has no
+       * check, counts as up once its process outlived the first moments (`verdict` null).
+       */
+      const finishServiceStart = Effect.fn("SessionEngine.finishServiceStart")(function* (
+        started: Effect.Success<ReturnType<typeof beginServiceStart>>,
+        verdict: ReadyVerdict | null,
+        forward: "rebind" | "keep-bound",
+      ) {
+        const { service, attempt, workspaceId } = started;
+        const current = yield* processes.byId(attempt.id);
+        const latest = yield* services.byId(service.id);
+        if (
+          current === null ||
+          current.exitedAt !== null ||
+          latest === null ||
+          latest.currentAttemptId !== attempt.id
+        ) {
+          return { view: yield* readServiceView(service.id), outcome: { _tag: "Ended" } as const };
         }
         yield* processes.setStatus(attempt.id, "running");
-        const forwardId = yield* bindServiceForward(
-          service.id,
-          workspaceId,
-          workspacePort,
-          protocol,
-        );
-        if (probed !== null) {
-          yield* recordReadiness(service.id, attempt.id, forwardId, probed);
-        }
-        return yield* readServiceView(service.id);
+        const currentForward =
+          forward === "rebind" || latest.currentForwardId === null
+            ? null
+            : yield* serviceForwards.byId(latest.currentForwardId);
+        const forwardId =
+          currentForward !== null && currentForward.state === "bound"
+            ? currentForward.id
+            : yield* bindServiceForward(
+                service.id,
+                workspaceId,
+                service.workspacePort,
+                service.transport,
+              );
+        if (verdict !== null) yield* recordReadiness(service.id, attempt.id, forwardId, verdict);
+        return {
+          view: yield* readServiceView(service.id),
+          outcome: verdict === null ? ({ _tag: "Ready" } as const) : outcomeOf(verdict),
+        };
       });
+
+      const runServiceStart = (
+        sessionId: SessionId,
+        start: ServiceStart,
+        cause: AcceptedStart,
+        startId: string | null,
+        onBegun: (service: Service) => Effect.Effect<void> = () => Effect.void,
+      ) =>
+        Effect.gen(function* () {
+          const started = yield* withServiceLifecycle(
+            beginServiceStart(sessionId, start, cause, startId),
+          );
+          yield* onBegun(started.service);
+          const verdict = yield* awaitAttemptReady(started);
+          return yield* withServiceLifecycle(finishServiceStart(started, verdict, "rebind"));
+        });
+
       const runService = (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
@@ -22893,19 +23214,331 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         cause: AcceptedStart,
         startId: string | null,
       ) =>
-        withServiceLifecycle(
-          runServiceUnlocked(
-            sessionId,
-            argv,
-            workspacePort,
+        runServiceStart(
+          sessionId,
+          {
             name,
+            port: workspacePort,
             protocol,
             browserScheme,
             declarationSource,
+            launch: explicitLaunch(argv),
+            filePreview: null,
+          },
+          cause,
+          startId,
+        ).pipe(Effect.map(({ view }) => view));
+
+      /** The live Service `name` names in this session, with its live attempt when it runs one. */
+      const liveServiceNamed = Effect.fn("SessionEngine.liveServiceNamed")(function* (
+        sessionId: SessionId,
+        name: string,
+      ) {
+        const service = yield* services.byName(sessionId, name);
+        if (service === null || !(yield* serviceIsLive(service))) return null;
+        const attempt =
+          service.currentAttemptId === null
+            ? null
+            : yield* processes.byId(service.currentAttemptId);
+        return { service, attempt: attempt !== null && attempt.exitedAt === null ? attempt : null };
+      });
+
+      /**
+       * A dependency already live, met where its own start would have left it: its attempt
+       * answered its `ready` rule, or is checked against it now, within its own timeout and outside
+       * the permit; an adopted one has its port looked at again. Nothing read back from an earlier
+       * run's observation counts.
+       */
+      const awaitLiveService = Effect.fn("SessionEngine.awaitLiveService")(function* (
+        live: NonNullable<Effect.Success<ReturnType<typeof liveServiceNamed>>>,
+        recipe: ServiceRecipe,
+      ) {
+        const { service, attempt } = live;
+        if (attempt === null) {
+          const forward =
+            service.currentForwardId === null
+              ? null
+              : yield* serviceForwards.byId(service.currentForwardId);
+          if (forward === null || service.transport === "udp") return { _tag: "Ready" } as const;
+          // An adoption has no attempt to record its rule: the recipe's is the one it ran under.
+          const verdict = yield* awaitAdoptedPort(
+            forward.sealantWorkspaceId,
+            service.workspacePort,
+            recipe.ready.timeoutMs,
+          );
+          yield* recordObservation(service.id, forward.id, verdict);
+          return outcomeOf(verdict);
+        }
+        if (service.transport === "udp" || (yield* processes.reached(attempt.id))) {
+          return { _tag: "Ready" } as const;
+        }
+        const ptyId = attempt.sealantSessionId;
+        if (ptyId === null)
+          return { _tag: "NotReady", reason: "its process has not started" } as const;
+        const pty = yield* sealant.getSession(
+          yield* sealant.getWorkspace(attempt.sealantWorkspaceId),
+          ptyId,
+        );
+        const ready = yield* attemptReadyOf(service, attempt.id);
+        const verdict = yield* awaitServicePort(
+          pty,
+          attempt.sealantWorkspaceId,
+          service.workspacePort,
+          attempt.id,
+          service.sessionId,
+          clock.currentTimeMillisUnsafe() + ready.timeoutMs,
+          ready.check,
+        );
+        return yield* withServiceLifecycle(
+          Effect.gen(function* () {
+            const latest = yield* services.byId(service.id);
+            const current = yield* processes.byId(attempt.id);
+            if (
+              latest === null ||
+              latest.currentAttemptId !== attempt.id ||
+              current === null ||
+              current.exitedAt !== null
+            ) {
+              return { _tag: "Ended" } as const;
+            }
+            const forward =
+              latest.currentForwardId === null
+                ? null
+                : yield* serviceForwards.byId(latest.currentForwardId);
+            yield* recordReadiness(
+              service.id,
+              attempt.id,
+              forward !== null && forward.state === "bound" ? forward.id : null,
+              verdict,
+            );
+            return outcomeOf(verdict);
+          }),
+        );
+      });
+
+      /**
+       * One recipe of a plan, started or met: a dependency already live is waited for (never
+       * started again), an adopt-only recipe is adopted and its port waited for, and anything else
+       * starts. The Service asked for is always started: one live by now is refused as a name
+       * taken, as any start of it is.
+       */
+      const startPlanStep = Effect.fn("SessionEngine.startPlanStep")(function* (
+        sessionId: SessionId,
+        recipe: ServiceRecipe,
+        role: "dependency" | "target",
+        filePreview: string | null,
+        cause: AcceptedStart,
+        startId: string | null,
+        onBegun: (service: Service) => Effect.Effect<void>,
+      ) {
+        const declarationSource =
+          recipe.source === "file" ? ("recipe-file" as const) : ("recipe-project" as const);
+        const { command } = recipe;
+        const live =
+          role === "target"
+            ? null
+            : yield* withServiceLifecycle(liveServiceNamed(sessionId, recipe.name));
+        if (live !== null) {
+          yield* onBegun(live.service);
+          return {
+            view: yield* readServiceView(live.service.id),
+            outcome: yield* awaitLiveService(live, recipe),
+            reused: true,
+          };
+        }
+        if (command === null) {
+          const adopted = yield* withServiceLifecycle(
+            beginAdoption(
+              sessionId,
+              recipe.port,
+              recipe.name,
+              recipe.protocol,
+              recipe.browserScheme,
+              declarationSource,
+              { host: recipe.host, address: recipe.address },
+            ),
+          );
+          yield* onBegun(adopted.service);
+          if (recipe.protocol === "udp") {
+            return {
+              view: yield* readServiceView(adopted.service.id),
+              outcome: { _tag: "Ready" } as const,
+              reused: false,
+            };
+          }
+          const verdict = yield* awaitAdoptedPort(
+            adopted.workspaceId,
+            recipe.port,
+            recipe.ready.timeoutMs,
+          );
+          yield* recordObservation(adopted.service.id, adopted.forwardId, verdict);
+          return {
+            view: yield* readServiceView(adopted.service.id),
+            outcome: outcomeOf(verdict),
+            reused: false,
+          };
+        }
+        const started = yield* runServiceStart(
+          sessionId,
+          {
+            name: recipe.name,
+            port: recipe.port,
+            protocol: recipe.protocol,
+            browserScheme: recipe.browserScheme,
+            declarationSource,
+            launch: recipeLaunch({ ...recipe, command }),
+            filePreview,
+          },
+          cause,
+          startId,
+          onBegun,
+        );
+        return { ...started, reused: false };
+      });
+
+      /**
+       * The dependency launches plans are making, each from its first look until its process is
+       * open or its port adopted: a plan needing the same Service joins it, never starting it twice.
+       */
+      const dependencyLaunches = new Map<string, Deferred.Deferred<ServiceId, PlanFailure>>();
+
+      /** A dependency another plan is launching: met once that launch is through, by its `ready`. */
+      const joinDependency = Effect.fn("SessionEngine.joinDependency")(function* (
+        sessionId: SessionId,
+        recipe: ServiceRecipe,
+        launching: Deferred.Deferred<ServiceId, PlanFailure>,
+      ) {
+        const serviceId = yield* Deferred.await(launching);
+        const live = yield* withServiceLifecycle(liveServiceNamed(sessionId, recipe.name));
+        return {
+          view: yield* readServiceView(serviceId),
+          outcome:
+            live === null ? ({ _tag: "Ended" } as const) : yield* awaitLiveService(live, recipe),
+          reused: true,
+        };
+      });
+
+      const dependencyStep = (
+        sessionId: SessionId,
+        recipe: ServiceRecipe,
+        filePreview: string | null,
+        cause: AcceptedStart,
+      ) =>
+        Effect.suspend(() => {
+          const key = `${sessionId} ${recipe.name}`;
+          const launching = dependencyLaunches.get(key);
+          if (launching !== undefined) return joinDependency(sessionId, recipe, launching);
+          const launch = Deferred.makeUnsafe<ServiceId, PlanFailure>();
+          dependencyLaunches.set(key, launch);
+          const settle = (exit: Exit.Exit<ServiceId, PlanFailure>) =>
+            Effect.suspend(() => {
+              if (dependencyLaunches.get(key) === launch) dependencyLaunches.delete(key);
+              return Deferred.done(launch, exit);
+            });
+          return startPlanStep(
+            sessionId,
+            recipe,
+            "dependency",
+            filePreview,
             cause,
-            startId,
+            null,
+            (service) => Effect.asVoid(settle(Exit.succeed(service.id))),
+          ).pipe(
+            Effect.onExit((exit) =>
+              Exit.isFailure(exit) ? settle(Exit.failCause(exit.cause)) : Effect.void,
+            ),
+          );
+        });
+
+      const servicePlans = new Map<string, ServicePlan>();
+
+      /** A Stop reaching the plans its Services belong to (all the session's when `name` is null). */
+      const stopPlans = (sessionId: SessionId, name: string | null) =>
+        Effect.sync(() => {
+          for (const plan of servicePlans.values()) {
+            if (plan.sessionId !== sessionId || plan.progress.state !== "running") continue;
+            if (name === null || plan.names.has(name)) plan.stopped = true;
+          }
+        });
+
+      const runPlan = Effect.fn("SessionEngine.runPlan")(function* (
+        plan: ServicePlan,
+        steps: ReadonlyArray<ServiceRecipe>,
+        filePreview: string | null,
+        cause: AcceptedStart,
+        startId: string | null,
+      ) {
+        const target = steps.at(-1);
+        if (target === undefined) return yield* Effect.die("a plan without its Service");
+        const end = (state: "failed" | "stopped", message: string) =>
+          Effect.sync(() => {
+            plan.progress = new ServiceStartProgress({ ...plan.progress, state, message });
+          }).pipe(Effect.andThen(Effect.fail(new ServiceStartError({ message }))));
+        const stoppedWords = `a Stop came before ${target.name} started`;
+        for (const dependency of steps.slice(0, -1)) {
+          if (plan.stopped) return yield* end("stopped", stoppedWords);
+          yield* stepTo(plan, dependency.name, "starting");
+          const met = yield* dependencyStep(plan.sessionId, dependency, filePreview, cause).pipe(
+            Effect.result,
+          );
+          if (Result.isSuccess(met) && met.success.outcome._tag === "Ready") {
+            yield* stepTo(plan, dependency.name, met.success.reused ? "reused" : "ready");
+            continue;
+          }
+          if (plan.stopped) {
+            yield* stepTo(plan, dependency.name, "stopped");
+            return yield* end("stopped", stoppedWords);
+          }
+          const [state, why] = Result.isFailure(met)
+            ? (["failed", met.failure.message] as const)
+            : met.success.outcome._tag === "NotReady"
+              ? (["not-ready", met.success.outcome.reason] as const)
+              : (["stopped", "it was stopped before it answered"] as const);
+          yield* stepTo(plan, dependency.name, state, why);
+          return yield* end(
+            "failed",
+            `${dependency.name} did not start, so ${target.name} was not started · ${why}`,
+          );
+        }
+        if (plan.stopped) return yield* end("stopped", stoppedWords);
+        const started = yield* startPlanStep(
+          plan.sessionId,
+          target,
+          "target",
+          filePreview,
+          cause,
+          startId,
+          (service) =>
+            Effect.sync(() => {
+              plan.target = service.id;
+            }).pipe(Effect.andThen(stepTo(plan, target.name, "starting"))),
+        ).pipe(
+          Effect.tapError((error) =>
+            stepTo(plan, target.name, plan.stopped ? "stopped" : "failed", error.message).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  plan.progress = new ServiceStartProgress({
+                    ...plan.progress,
+                    state: plan.stopped ? "stopped" : "failed",
+                    message: error.message,
+                  });
+                }),
+              ),
+            ),
           ),
         );
+        const { outcome } = started;
+        yield* outcome._tag === "Ready"
+          ? stepTo(plan, target.name, "ready")
+          : outcome._tag === "NotReady"
+            ? stepTo(plan, target.name, "not-ready", outcome.reason)
+            : stepTo(plan, target.name, "stopped");
+        plan.progress = new ServiceStartProgress({
+          ...plan.progress,
+          state: outcome._tag === "Ended" ? "stopped" : "started",
+        });
+        return started.view;
+      });
 
       const runServiceRecipe = Effect.fn("SessionEngine.runServiceRecipe")(function* (
         sessionId: SessionId,
@@ -22914,7 +23547,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         startId: string | null,
       ) {
         const session = yield* sessions.byId(sessionId);
-        const fromFile = yield* fileRecipesOf(session).pipe(
+        const file = yield* mendTomlOf(session).pipe(
           Effect.catchTags({
             ProjectNotFoundError: () =>
               Effect.fail(
@@ -22931,45 +23564,81 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.fail(new ServiceStartError({ message: error.message })),
           }),
         );
-        const recipes = mergeRecipes(
-          fromFile,
+        const declared = resolveDeclarations(
+          file,
           yield* projectRecipes.listForProject(session.projectId),
         );
-        const recipe = recipes.find(
-          (candidate) => candidate.name === name && candidate.shadowedBy === null,
-        );
-        if (recipe === undefined) {
+        const refusals = declared.refused.filter((refusal) => refusal.name === name);
+        if (refusals.length > 0) {
+          return yield* new ServiceStartError({
+            message: `mend.toml refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
+          });
+        }
+        const steps = planStart(declared, name);
+        const recipe = steps.at(-1);
+        if (recipe === undefined || recipe.name !== name) {
           return yield* new ServiceStartError({
             message: `No Service recipe named "${name}" exists in this session.`,
           });
         }
-        const declarationSource =
-          recipe.source === "file" ? ("recipe-file" as const) : ("recipe-project" as const);
-        return yield* recipe.command === null
-          ? addService(
-              sessionId,
-              recipe.port,
-              recipe.name,
-              recipe.protocol,
-              recipe.browserScheme,
-              declarationSource,
-            )
-          : runService(
-              sessionId,
-              ["sh", "-c", recipe.command],
-              recipe.port,
-              recipe.name,
-              recipe.protocol,
-              recipe.browserScheme,
-              declarationSource,
-              cause,
-              startId,
-            );
+        const key = planKey(sessionId, startId ?? crypto.randomUUID());
+        const running = servicePlans.get(key);
+        // Before any dependency starts: a refused start leaves nothing new running.
+        if (running === undefined && (yield* liveServiceNamed(sessionId, name)) !== null) {
+          return yield* new ServiceBindError({
+            message: `A live Service named "${name}" already exists in this session — stop it or pick another name.`,
+          });
+        }
+        const plan: ServicePlan = running ?? {
+          sessionId,
+          names: new Set(steps.map((step) => step.name)),
+          progress: new ServiceStartProgress({
+            service: name,
+            state: "running",
+            steps: steps.map(
+              (step) =>
+                new ServiceStartStep({
+                  name: step.name,
+                  port: step.port,
+                  state: "waiting",
+                  reason: null,
+                }),
+            ),
+            message: null,
+          }),
+          stopped: false,
+          target: null,
+          done: Deferred.makeUnsafe<ServiceView, PlanFailure>(),
+        };
+        if (running === undefined) {
+          servicePlans.set(key, plan);
+          yield* runPlan(plan, steps, declared.preview?.service ?? null, cause, startId).pipe(
+            Effect.onExit((exit) =>
+              Deferred.done(plan.done, exit).pipe(
+                Effect.andThen(Effect.sleep(Duration.millis(SERVICE_PLAN_KEPT_MS))),
+                Effect.andThen(Effect.sync(() => servicePlans.delete(key))),
+                Effect.forkIn(scope),
+              ),
+            ),
+            Effect.forkIn(scope),
+          );
+        }
+        const settled = yield* Deferred.await(plan.done).pipe(
+          Effect.timeoutOption(Duration.millis(SERVICE_START_HOLD_MS)),
+        );
+        if (Option.isSome(settled)) return settled.value;
+        // Held long enough: the start goes on without its request.
+        if (plan.target !== null) return yield* readServiceView(plan.target);
+        const waiting = plan.progress.steps.find((step) => step.state === "starting");
+        return yield* new ServiceStartUnderWayError({
+          message: `${name} waits on ${waiting?.name ?? "its dependencies"}, which has not answered yet · the start goes on · mend service list`,
+        });
       });
 
       const restartServiceUnlocked = Effect.fn("SessionEngine.restartService")(function* (
         serviceId: ServiceId,
         cause: AcceptedStart,
+        filePreview: string | null,
       ) {
         const service = yield* services.byId(serviceId);
         if (service === null) return yield* new ServiceNotFoundError({ processId: serviceId });
@@ -23005,48 +23674,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           yield* markProcessExited(previous.id, "stopped", null);
         }
-        const { attempt, pty } = yield* openServiceAttemptAsOwner({
+        const launch = (yield* processes.launchOf(previous.id)) ?? DEFAULT_SERVICE_LAUNCH;
+        const opened = yield* openServiceAttemptAsOwner({
           session,
           workspace,
           service,
           argv: previous.argv,
+          launch,
+          filePreview,
           runsAs: yield* services.startedByOf(service.id),
           launchCorrelationId: null,
         });
         yield* clearStop(service.id, cause);
-        let probed: ForwardDialRecord | null = null;
-        if (service.transport === "udp") {
-          yield* Effect.sleep("1500 millis");
-        } else {
-          probed = yield* awaitServicePort(
-            pty,
-            previous.sealantWorkspaceId,
-            service.workspacePort,
-            attempt.id,
-            service.sessionId,
-          );
-        }
-        yield* processes.setStatus(attempt.id, "running");
-        const currentForward =
-          service.currentForwardId === null
-            ? null
-            : yield* serviceForwards.byId(service.currentForwardId);
-        const forwardId =
-          currentForward !== null && currentForward.state === "bound"
-            ? currentForward.id
-            : yield* bindServiceForward(
-                service.id,
-                previous.sealantWorkspaceId,
-                service.workspacePort,
-                service.transport,
-              );
-        if (probed !== null) {
-          yield* recordReadiness(service.id, attempt.id, forwardId, probed);
-        }
-        return yield* readServiceView(service.id);
+        return { ...opened, service };
       });
       const restartService = (serviceId: ServiceId, cause: AcceptedStart) =>
-        withServiceLifecycle(restartServiceUnlocked(serviceId, cause));
+        Effect.gen(function* () {
+          // The file is read before the permit: in capture mode that is an exec in the workspace.
+          const service = yield* services.byId(serviceId);
+          const filePreview =
+            service === null || service.browserScheme === "http"
+              ? null
+              : yield* sessions.byId(service.sessionId).pipe(
+                  Effect.flatMap(filePreviewOf),
+                  Effect.orElseSucceed(() => null),
+                );
+          const started = yield* withServiceLifecycle(
+            restartServiceUnlocked(serviceId, cause, filePreview),
+          );
+          const verdict = yield* awaitAttemptReady(started);
+          const { view } = yield* withServiceLifecycle(
+            finishServiceStart(started, verdict, "keep-bound"),
+          );
+          return view;
+        });
 
       const agentWaitChanges = makeWindowLimiter();
       const agentHookNoOps = makeWindowLimiter();
@@ -23558,7 +24219,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* readServiceView(service.id);
       });
       const stopService = (serviceId: ServiceId, cause: ServiceStopCause) =>
-        recordStop(serviceId, cause).pipe(
+        services.byId(serviceId).pipe(
+          Effect.flatMap((service) =>
+            service === null ? Effect.void : stopPlans(service.sessionId, service.name),
+          ),
+          Effect.andThen(recordStop(serviceId, cause)),
           Effect.andThen(withServiceLifecycle(stopServiceUnlocked(serviceId))),
         );
 
@@ -23581,6 +24246,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         cause: ServiceStopCause,
       ) {
         yield* sessions.byId(sessionId);
+        yield* stopPlans(sessionId, null);
         let stopped = 0;
         for (const service of yield* services.listForSession(sessionId)) {
           if (!(yield* serviceIsLive(service))) continue;
@@ -23695,15 +24361,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `:${service.workspacePort} answered before anything started`,
           );
         }
-        const { attempt, pty } = yield* openServiceAttemptAsOwner({
+        const { attempt, pty, ready } = yield* openServiceAttemptAsOwner({
           session,
           workspace,
           service,
           argv: step.source.argv,
+          launch: (yield* processes.launchOf(step.source.id)) ?? DEFAULT_SERVICE_LAUNCH,
+          filePreview: null,
           runsAs: starter,
           launchCorrelationId: step.correlation,
         }).pipe(Effect.mapError((error) => previewRefused("command-failed", error.message)));
-        return { service, attempt, pty, workspaceId };
+        return { service, attempt, pty, workspaceId, ready };
       });
 
       const endPreviewAttempt = Effect.fn("SessionEngine.endPreviewAttempt")(function* (
@@ -23727,18 +24395,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         request: PreviewStartRequest,
         accepted: Effect.Success<ReturnType<typeof acceptPreviewStart>>,
       ) {
-        const { service, attempt, pty, workspaceId } = accepted;
+        const { service, attempt, pty, workspaceId, ready } = accepted;
+        // The attempt's own timeout, as any start of it waits: the browser's hold is the
+        // gateway's (`ensurePreviewRunning`), and the start goes on past it.
         const readiness = yield* awaitServicePort(
           pty,
           workspaceId,
           service.workspacePort,
           attempt.id,
           service.sessionId,
-          Math.max(request.deadline, clock.currentTimeMillisUnsafe() + SERVICE_START_TIMEOUT_MS),
+          clock.currentTimeMillisUnsafe() + ready.timeoutMs,
+          ready.check,
         ).pipe(
-          Effect.map((probed) => ({ exited: null, probed })),
+          Effect.map((verdict) => ({ exited: null, verdict })),
           Effect.catchTag("ServiceStartError", (error) =>
-            Effect.succeed({ exited: error.message, probed: null }),
+            Effect.succeed({ exited: error.message, verdict: null }),
           ),
         );
         return yield* withServiceLifecycle(
@@ -23752,7 +24423,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 control._tag === "Stopped" ? "stopped" : "control-changed",
               );
             }
-            if (readiness.probed === null || !live) {
+            if (readiness.verdict === null || !live) {
               return yield* previewRefused(
                 "command-failed",
                 readiness.exited ?? "the attempt ended before it answered",
@@ -23784,9 +24455,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       ),
                     ),
                   );
-            yield* recordReadiness(service.id, attempt.id, forwardId, readiness.probed);
-            if (readiness.probed.kind === "ready") return attempt.id;
-            const issue = readiness.probed.issue;
+            const { verdict } = readiness;
+            yield* recordReadiness(service.id, attempt.id, forwardId, verdict);
+            if (verdict._tag === "Ready") return attempt.id;
+            const { issue } = verdict;
+            if (issue === null) return yield* previewRefused("start-expired", verdict.reason);
             return yield* previewRefused(
               forwardStartupAction(issue) === "retry"
                 ? "start-expired"
@@ -25091,6 +25764,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   workspacePort: service.workspacePort,
                   protocol: service.transport,
                   bindAddresses,
+                  ready:
+                    service.transport === "tcp"
+                      ? (yield* attemptReadyOf(service, service.currentAttemptId)).check
+                      : TCP_READY,
                   ownerUserId: Option.isSome(ownerSession) ? ownerSession.value.ownerUserId : null,
                   ...(forward.preferredHostPort === null
                     ? {}
@@ -25117,13 +25794,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   service.currentAttemptId === null
                     ? null
                     : yield* processes.byId(service.currentAttemptId);
-                const probed = yield* forwardAdapter.probe(
+                const live = current !== null && current.exitedAt === null ? current : null;
+                const verdict = yield* checkReady(
+                  forwardAdapter,
                   portTarget(previous.sealantWorkspaceId, service.workspacePort),
-                  { purpose: "readiness" },
+                  (yield* attemptReadyOf(service, live?.id ?? null)).check,
                 );
-                yield* current !== null && current.exitedAt === null
-                  ? recordReadiness(service.id, current.id, forward.id, probed)
-                  : recordTcpObservation(service.id, forward.id, probed);
+                yield* live !== null
+                  ? recordReadiness(service.id, live.id, forward.id, verdict)
+                  : recordObservation(service.id, forward.id, verdict);
               }
             }),
           ).pipe(
@@ -25517,30 +26196,42 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         addService: (sessionId, ...rest) => owned(sessionId)(addService(sessionId, ...rest)),
         runService: (sessionId, argv, port, name, protocol, browserScheme, cause, startId) =>
           owned(sessionId)(
-            Effect.flatMap(acceptStart(cause ?? SYSTEM_START), (accepted) =>
-              runService(
-                sessionId,
-                argv,
-                port,
-                name,
-                protocol ?? "tcp",
-                browserScheme ?? null,
-                "explicit-run",
-                accepted,
-                startId ?? null,
+            detached(
+              Effect.flatMap(acceptStart(cause ?? SYSTEM_START), (accepted) =>
+                runService(
+                  sessionId,
+                  argv,
+                  port,
+                  name,
+                  protocol ?? "tcp",
+                  browserScheme ?? null,
+                  "explicit-run",
+                  accepted,
+                  startId ?? null,
+                ),
               ),
             ),
           ),
         listServiceRecipes: (sessionId) => owned(sessionId)(listServiceRecipes(sessionId)),
+        serviceDeclarations: (sessionId) => owned(sessionId)(serviceDeclarations(sessionId)),
         runServiceRecipe: (sessionId, name, cause, startId) =>
           owned(sessionId)(
             Effect.flatMap(acceptStart(cause ?? SYSTEM_START), (accepted) =>
               runServiceRecipe(sessionId, name, accepted, startId ?? null),
             ),
           ),
+        serviceStartProgress: (sessionId, startId) =>
+          owned(sessionId)(
+            sessions
+              .byId(sessionId)
+              .pipe(Effect.as(servicePlans.get(planKey(sessionId, startId))?.progress ?? null)),
+          ),
+        // A start's two halves are one transition: a caller that leaves interrupts only its wait.
         restartService: (serviceId, cause) =>
           ownedByService(serviceId)(
-            Effect.flatMap(acceptStart(cause), (accepted) => restartService(serviceId, accepted)),
+            detached(
+              Effect.flatMap(acceptStart(cause), (accepted) => restartService(serviceId, accepted)),
+            ),
           ),
         stopService: (serviceId, cause) => ownedByService(serviceId)(stopService(serviceId, cause)),
         stopServices: (sessionId, cause) => owned(sessionId)(stopServices(sessionId, cause)),

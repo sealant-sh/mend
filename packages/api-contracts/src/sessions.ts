@@ -72,6 +72,17 @@ import {
  */
 export const ServiceStartId = Schema.String.check(Schema.isUUID());
 
+/**
+ * A recipe start still waiting on a dependency when its request's hold ran out (ADR 0017,
+ * delivery 9). Mend goes on with it; `GET /sessions/:id/services/starts/:startId` says where it
+ * stands. 504, so a client older than that route reads it as a start that may still be working.
+ */
+export class ServiceStartUnderWay extends Schema.TaggedError<ServiceStartUnderWay>()(
+  "ServiceStartUnderWay",
+  { message: Schema.String },
+  { httpApiStatus: 504 },
+) {}
+
 export const RespondAgentRequest = Schema.Union([
   Schema.Struct({ decision: AgentApprovalDecision }),
   Schema.Struct({ answers: AgentInputAnswers }),
@@ -454,7 +465,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: Schema.Struct({ name: Schema.String, startId: Schema.optional(ServiceStartId) }),
       success: ServiceView,
-      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure],
+      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure, ServiceStartUnderWay],
     }),
   )
   .add(

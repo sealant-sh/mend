@@ -3747,6 +3747,23 @@ const turnSteersMigration = Effect.gen(function* () {
   )`;
 });
 
+/**
+ * 0143 (docs/adr/0017, delivery 9): a Service attempt records how it was launched, so a restart
+ * replays its directory, environment and readiness rule rather than whatever the file says now.
+ * `launch_env` is the recipe's own environment only: Mend's and a dependency's are recomputed at
+ * each start. A Service records its Host policy and where it listens; a changed one is a new row.
+ */
+const recipeLaunchMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE session_processes
+    ADD COLUMN launch_cwd text,
+    ADD COLUMN launch_env jsonb,
+    ADD COLUMN launch_ready jsonb`;
+  yield* sql`ALTER TABLE services
+    ADD COLUMN host_policy text NOT NULL DEFAULT 'rewrite',
+    ADD COLUMN address text NOT NULL DEFAULT 'loopback'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3891,4 +3908,5 @@ export const migrations = {
   "0140_session_pages": sessionPagesMigration,
   "0141_preview_ports": previewPortsMigration,
   "0142_turn_steers": turnSteersMigration,
+  "0143_recipe_launch": recipeLaunchMigration,
 };

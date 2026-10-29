@@ -64,7 +64,16 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
-import type { CapturePosition, HarnessLayout, RemoteSsh } from "@mend/domain/workbench";
+import type {
+  CapturePosition,
+  HarnessLayout,
+  RecipeEnv,
+  RecipeReady,
+  RemoteSsh,
+  RepoRelativePath,
+  ServiceAddress,
+  ServiceHostPolicy,
+} from "@mend/domain/workbench";
 import {
   AuditData,
   HotWorkspaceEnvironment,
@@ -1650,6 +1659,10 @@ export const services = pgTable(
     // Who started it, recorded in a person executor only (docs/adr/0016, decision 1; 0113): a
     // restart runs as them. Null: the session's owner, as before.
     startedBy: text(),
+    /** The Host a preview's requests carry (docs/adr/0017, delivery 9; 0143). */
+    hostPolicy: text().$type<ServiceHostPolicy>().notNull().default("rewrite"),
+    /** Where it listens: the workspace's loopback, or a port Docker publishes (0143). */
+    address: text().$type<ServiceAddress>().notNull().default("loopback"),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
@@ -1700,6 +1713,13 @@ export const sessionProcesses = pgTable(
     runsAs: text(),
     /** agent-pty rows: why the agent waits, as its hooks reported it; null otherwise (0132). */
     waiting: jsonb().$type<typeof AgentWait.Encoded | null>(),
+    /**
+     * Service attempts: the directory, the recipe's own environment and the readiness rule it was
+     * launched with, which a restart replays; null on other kinds and older rows (0143).
+     */
+    launchCwd: text().$type<RepoRelativePath>(),
+    launchEnv: jsonb().$type<RecipeEnv>(),
+    launchReady: jsonb().$type<RecipeReady>(),
   },
   (table) => [
     index("session_processes_session_idx").on(table.sessionId, table.createdAt),

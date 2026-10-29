@@ -468,6 +468,7 @@ const testLayer = (world: TestWorld) => {
   const processesLayer = Layer.succeed(SessionProcessesRepo, {
     create: () => Effect.die("not in test"),
     byId: (id) => Effect.succeed(world.process?.id === id ? world.process : null),
+    launchOf: () => Effect.succeed(null),
     byLaunchCorrelation: (correlationId) =>
       Effect.succeed(world.process?.launchCorrelationId === correlationId ? world.process : null),
     listForSession: () => Effect.succeed(world.process === null ? [] : [world.process]),
