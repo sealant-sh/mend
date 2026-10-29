@@ -85,6 +85,7 @@ import {
   ProjectNotFoundError,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
+  ResourcesRepo,
   ProjectsRepo,
   ProjectEnvironmentDuplicateNameError,
   ProjectEnvironmentInvalidInputError,
@@ -694,6 +695,15 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const viewer = yield* access.viewer();
         if (viewer === null || !canRemoveProject(project, viewer)) {
           return yield* new NotFound({ id: params.id });
+        }
+        // A resource's data lives only in its volumes (docs/adr/0019, "Durability"), and nothing
+        // archives them yet: refuse before anything is stopped or the store is removed.
+        const resources = yield* (yield* ResourcesRepo).listForProject(params.id);
+        if (resources.length > 0) {
+          const names = resources.map((resource) => `@${resource.spec.name}`).join(", ");
+          return yield* new StoreFailure({
+            message: `project has resources (${names}) · remove them first`,
+          });
         }
         // Stop every Service first. A forward-only adopted Service can retain a settled session's
         // workspace even though no session_process row is live.

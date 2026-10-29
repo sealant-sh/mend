@@ -28,6 +28,7 @@ import {
   ProjectMountsRepo,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
+  ResourcesRepo,
   PreviewsRepo,
   PushDevice,
   PushDevicesRepo,
@@ -269,6 +270,7 @@ export const createTenancyApi = async (
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
+      readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
       readonly harnessModels?: Layer.PartialEffectful<HarnessModelsRepo["Service"]>;
       /** Each account's workspace SSH keys on the platform, and the gateway it reports. */
       readonly sshKeys?: SealantClients["Service"]["sshKeys"];
@@ -353,6 +355,7 @@ export const createTenancyApi = async (
       recording(ProjectMountsRepo, "mounts", {}, calls),
       recording(ProjectSecretsRepo, "secrets", options.implement?.secrets ?? {}, calls),
       recording(ProjectServiceRecipesRepo, "recipes", {}, calls),
+      recording(ResourcesRepo, "resources", options.implement?.resources ?? {}, calls),
       recording(
         PushDevicesRepo,
         "pushDevices",

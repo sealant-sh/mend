@@ -795,7 +795,7 @@ const ADMITTED: Readonly<
   // Unimplemented sessions.listForProject stops detail assembly.
   "projects.detail": { status: 500, calls: ["sessions.listForProject"] },
   // Same session listing stops removal before any stop/delete.
-  "projects.remove": { status: 500, calls: ["sessions.listForProject"] },
+  "projects.remove": { status: 500, calls: ["resources.listForProject"] },
   "projects.visibility": { status: 500, calls: ["projects.setVisibility"] },
   "projects.automation": { status: 500, calls: ["projects.setAutomation"] },
   "projects.gitAuth": { status: 500, calls: ["projects.setGitAuthMode"] },

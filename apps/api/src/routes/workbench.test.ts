@@ -13,6 +13,7 @@ import {
   OrganizationsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
+  ResourcesRepo,
   ServiceForwardsRepo,
   ServicesRepo,
   SessionProcessesRepo,
@@ -306,6 +307,7 @@ type ProjectRouteServices =
   | GithubIdentity
   | DeploymentConfig
   | SessionRepositoriesRepo
+  | ResourcesRepo
   | TenancyConfig;
 
 type UnusedProjectRouteServices = Exclude<
@@ -347,6 +349,7 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(GithubIdentity, {}),
   // No session holds a worktree of these projects as a repository (docs/adr/0010).
   Layer.mock(SessionRepositoriesRepo, { listForProject: () => Effect.succeed([]) }),
+  Layer.mock(ResourcesRepo, {}),
   Layer.succeed(DeploymentConfig, {
     mode: "local",
     sessionEndpoint: undefined,
