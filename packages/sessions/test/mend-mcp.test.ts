@@ -26,7 +26,7 @@ import {
   McpCallerUnavailableError,
 } from "../src/mend-mcp/caller.ts";
 import { MendMcp, MendMcpLive, mendMcpLayer } from "../src/mend-mcp/server.ts";
-import { SessionPagesLive } from "../src/mend-mcp/session-pages.ts";
+import { PAGE_CHECK_WORKER, sessionPagesLayer } from "../src/mend-mcp/session-pages.ts";
 import { MEND_TOOLKITS } from "../src/mend-mcp/toolkits.ts";
 import {
   SessionChannelNetworkHost,
@@ -78,7 +78,7 @@ const channelLayer = (options: { readonly idle?: Duration.Input } = {}) =>
     ),
     SessionChannelTokensRepoMemory,
     (options.idle === undefined ? MendMcpLive : mendMcpLayer(MEND_TOOLKITS, options)).pipe(
-      Layer.provide(SessionPagesLive),
+      Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
       Layer.provide(SessionPagesRepoLive),
       Layer.provide(registry),
     ),
@@ -553,6 +553,32 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
       },
     );
   });
+
+  it("refuses a page whose markup outlasts the check's deadline, and answers other sessions while it is checked", async () => {
+    await withChannel(async ({ address, tokens, rows }) => {
+      const alice = await connect(address, tokens.alice);
+      const ben = await connect(address, tokens.ben);
+      const nested = "<div>".repeat(102_000);
+      expect(nested.length).toBeLessThan(PAGE_LIMITS.htmlChars);
+      const started = performance.now();
+      const rendering = alice.render({ ...PAGE, html: nested }, "nested");
+      for (let probe = 1; probe <= 3; probe++) {
+        const due = started + probe * 300;
+        await new Promise((resolve) => setTimeout(resolve, due - performance.now()));
+        const status = await ben.call("tools/list", {}).then((answer) => answer.status, String);
+        expect(performance.now() - due).toBeLessThan(250);
+        expect(status).toBe(200);
+      }
+      const refusal = failureOf(await rendering);
+      expect(performance.now() - started).toBeLessThan(4_000);
+      expect(refusal).toMatchObject({
+        code: "invalid_request",
+        message: expect.stringContaining("took too long to check"),
+      });
+      expect(await rows()).toEqual([]);
+      expect(resultOf(await alice.render(PAGE, "after")).isError).toBe(false);
+    });
+  }, 60_000);
 
   it("reads a page-sized body on this route only, and refuses one past the cap", async () => {
     await withChannel(async ({ address, tokens, rows }) => {

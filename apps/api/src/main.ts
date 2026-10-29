@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { extname } from "node:path";
 
 import { NodeCrypto, NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import type { PgClient } from "@effect/sql-pg";
@@ -172,7 +173,7 @@ import {
   MendMcpLive,
   ProtocolHostLive,
   ServiceHostLive,
-  SessionPagesLive,
+  sessionPagesLayer,
   SessionEngine,
   SessionEngineLive as SessionEngineBaseLive,
   SessionChannelNetworkHostLive,
@@ -381,8 +382,13 @@ const SessionChannelNetworkLayer = SessionChannelNetworkHostLive.pipe(
   Layer.provide(DeploymentConfigLive),
   Layer.provide(SessionChannelRegistryLayer),
 );
+// `src/page-check-worker.ts` from source, `dist/page-check-worker.js` once bundled.
+const PAGE_CHECK_WORKER = new URL(
+  `./page-check-worker${extname(new URL(import.meta.url).pathname)}`,
+  import.meta.url,
+);
 const MendMcpLayer: Layer.Layer<MendMcp, never, SessionPagesRepo> = MendMcpLive.pipe(
-  Layer.provide(SessionPagesLive),
+  Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
   Layer.provide(SessionChannelRegistryLayer),
 );
 // The session-workspace authority (identity-keyed port over Store + ProjectsRepo) and the

@@ -1,16 +1,14 @@
-import { Effect } from "effect";
+import { SessionPagesRepo } from "@mend/db";
+import { SessionId } from "@mend/domain";
+import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { preparePage } from "./session-pages.ts";
+import { checkPage } from "./page-check.ts";
+import { SessionPages, sessionPagesLayer } from "./session-pages.ts";
 
-const refusalOf = (html: string) =>
-  Effect.runSync(
-    preparePage({ html, title: "Page", height: 400 }).pipe(
-      Effect.match({ onFailure: (error) => error.reason, onSuccess: () => null }),
-    ),
-  );
+const refusalOf = (html: string) => checkPage({ html, title: "Page" })?.reason ?? null;
 
-describe("preparePage", () => {
+describe("checkPage", () => {
   it.each([
     "<img src=/tmp/shot.png>",
     '<img src="/tmp/no-extension">',
@@ -123,13 +121,7 @@ describe("preparePage", () => {
 
   it("refuses a NUL character, which the database cannot store, in the page or its title", () => {
     expect(refusalOf("<p>a\u0000b</p>")).toBe("nul-character");
-    expect(
-      Effect.runSync(
-        preparePage({ html: "<p>x</p>", title: "a\u0000b", height: 400 }).pipe(
-          Effect.match({ onFailure: (error) => error.reason, onSuccess: () => null }),
-        ),
-      ),
-    ).toBe("nul-character");
+    expect(checkPage({ html: "<p>x</p>", title: "a\u0000b" })?.reason).toBe("nul-character");
   });
 
   it("reads units in CSS only, so page text that names one is a page", () => {
@@ -157,5 +149,34 @@ describe("preparePage", () => {
       refusalOf(html);
     }
     expect(performance.now() - started).toBeLessThan(1_000);
+  });
+});
+
+describe("SessionPages", () => {
+  it.each([
+    ["throws", "throw new Error('the check crashed')"],
+    ["exits without an answer", "0"],
+  ])("refuses a page, and stores nothing, when its check's worker %s", async (_, program) => {
+    const unreachable = Layer.succeed(SessionPagesRepo, {
+      publish: () => Effect.die(new Error("a page whose check crashed was stored")),
+      byId: () => Effect.succeed(null),
+    });
+    const refusal = await Effect.runPromise(
+      Effect.gen(function* () {
+        const pages = yield* SessionPages;
+        return yield* pages.publish(
+          { sessionId: SessionId.make("s-crash"), accountId: "alice", callKey: "crash" },
+          { html: "<p>x</p>", title: "Page", height: 400 },
+        );
+      }).pipe(
+        Effect.flip,
+        Effect.provide(
+          sessionPagesLayer(new URL(`data:text/javascript,${program}`)).pipe(
+            Layer.provide(unreachable),
+          ),
+        ),
+      ),
+    );
+    expect(refusal).toMatchObject({ _tag: "PageRejectedError", reason: "check-failed" });
   });
 });
