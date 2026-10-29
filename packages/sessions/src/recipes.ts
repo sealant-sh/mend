@@ -14,6 +14,7 @@ import {
   type RecipeReady,
   type RepoRelativePath,
   repoRelativePathOf,
+  type ResourceDefinitionInput,
   ServiceDeclarations,
   type ServiceAddress,
   type ServiceHostPolicy,
@@ -21,6 +22,8 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
+
+import { readResourceProposals } from "./resource-proposals.ts";
 
 /**
  * Declared Services (docs/SESSION-SERVICES.md): the repo's `mend.toml`, read from the SESSION's
@@ -59,6 +62,8 @@ export class RecipeFileError extends Schema.TaggedError<RecipeFileError>()("Reci
 /** One file's declarations as written, before the project's rows and the graph are read. */
 export interface MendTomlFile {
   readonly recipes: ReadonlyArray<ServiceRecipe>;
+  /** `[resource.*]` proposals (ADR 0019); their refusals and ignored keys join the file's. */
+  readonly resources: ReadonlyArray<ResourceDefinitionInput>;
   readonly refused: ReadonlyArray<RecipeRefusal>;
   readonly ignored: ReadonlyArray<IgnoredDeclaration>;
   /** `[preview].service` as written; checked against the merged recipes. */
@@ -67,6 +72,7 @@ export interface MendTomlFile {
 
 export const EMPTY_MEND_TOML: MendTomlFile = {
   recipes: [],
+  resources: [],
   refused: [],
   ignored: [],
   preview: null,
@@ -335,7 +341,11 @@ export const parseMendToml = (
 
     const recipes: ServiceRecipe[] = [];
     const refused: RecipeRefusal[] = [];
-    const ignored = Object.keys(rest).map((key) => new IgnoredDeclaration({ name: null, key }));
+    const { resource, ...unread } = rest;
+    const ignored = Object.keys(unread).map((key) => new IgnoredDeclaration({ name: null, key }));
+    const resources = readResourceProposals(resource);
+    refused.push(...resources.refused.map((r) => new RecipeRefusal({ ...r, name: null })));
+    ignored.push(...resources.ignored.map((i) => new IgnoredDeclaration({ ...i, name: null })));
     for (const [name, entry] of Object.entries(services)) {
       if (!RECIPE_NAME.test(name)) {
         refused.push(
@@ -373,7 +383,7 @@ export const parseMendToml = (
         }
       }
     }
-    return { recipes, refused, ignored, preview: previewService };
+    return { recipes, resources: resources.proposals, refused, ignored, preview: previewService };
   });
 
 /** Read and validate the worktree's `mend.toml`. Missing file = nothing declared. */
