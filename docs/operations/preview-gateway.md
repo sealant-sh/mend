@@ -114,6 +114,12 @@ request with the edge's own error before the gateway's page.
 `tailscale serve` in front of the gateway is not verified live. Delivery step 8 checks it on a
 tailnet.
 
+The gateway writes its own `X-Forwarded-Host` and `X-Forwarded-Proto`. It drops every inbound
+`Forwarded`, `X-Real-IP`, `X-Forwarded-*` and `Tailscale-*` field before the app sees the request,
+in every routing mode. `tailscale serve` adds the viewer's tailnet login, name and picture as
+`Tailscale-User-*`, and a client that reaches the gateway directly can send any of these fields, so
+none of them reaches code an agent wrote.
+
 Behind an edge that speaks HTTP/2 to browsers, as Caddy does, a page asks for every module of its
 first import wave at once, and the edge opens that many requests to the gateway. They wait for one
 of the viewer's six forwards to the dev server, and a request that waits is not an open request in

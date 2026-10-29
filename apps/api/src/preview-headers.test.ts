@@ -58,6 +58,24 @@ describe("the request head an application receives", () => {
     ]);
   });
 
+  it("drops every Tailscale-* field, whoever set it, in every routing mode", () => {
+    const spoofed: ReadonlyArray<HeaderPair> = [
+      ["Host", "x"],
+      ["Tailscale-User-Login", "alice@example.com"],
+      ["tailscale-user-name", "Alice"],
+      ["TAILSCALE-USER-PROFILE-PIC", "https://example.com/a.png"],
+      ["Tailscale-Headers-Info", "https://tailscale.com/s/serve-headers"],
+      ["Tailscale-App-Capabilities", '{"example.com/cap":[{}]}'],
+      ["Tailscale-Funnel-Request", "?1"],
+      ["Accept", "*/*"],
+    ];
+    for (const cookies of [OWN_PORT, HOSTED]) {
+      const sent = forwardRequestHead(spoofed, { ...TO, cookies });
+      expect([...names(sent)].filter((name) => name.startsWith("tailscale"))).toEqual([]);
+      expect(named(sent, "accept")).toEqual(["*/*"]);
+    }
+  });
+
   it("drops hop-by-hop fields and every field Connection names, and keeps Authorization", () => {
     const sent = forwardRequestHead(
       [

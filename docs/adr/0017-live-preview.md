@@ -221,19 +221,22 @@ browser ──TLS──▶ edge: a site for *.<preview domain>          new site
   server expect. `host = "preserve"` sends the preview host. WordPress needs that, because it builds
   absolute URLs and redirects to its configured home.
 - **What the gateway strips and refuses.** Before forwarding, it removes its own grant cookie (every
-  port's grant name on a tailnet's `ts.net` default), inbound `Forwarded` and `X-Forwarded-*`, and
-  hop-by-hop headers. Decided by Yiannis, 2026-10-25: the app's own `Authorization` header and its
-  own cookies pass untouched, both ways, `better-auth.*` names included. Mend's cookies are
-  host-only on Mend's host, so a browser never sends them to a preview host, and Mend's bearers are
-  never ambient, so a browser sends one only when the app's page asked it to. Stripping them would
-  break an app that uses the same names and protect nothing. It refuses `CONNECT`, a request with
-  two `Host` fields, and an unknown port. On the way back it removes the `Domain` attribute from
-  every `Set-Cookie` and drops any cookie named like the grant, so an app cannot plant one. Unless
-  the preview domain is on the Public Suffix List, a page's own JavaScript can still set a cookie
-  for the whole preview domain, which reaches sibling previews. Header stripping cannot stop that,
-  so decision 1 names it as a cost. The gateway sets `Cache-Control: private`, so an edge cache
-  cannot serve one viewer's page to another, and `X-Robots-Tag: noindex`. It injects nothing into
-  pages and sets no CSP on them, which would break apps.
+  port's grant name on a tailnet's `ts.net` default), inbound `Forwarded` and `X-Forwarded-*`, every
+  `Tailscale-*` field, and hop-by-hop headers. `tailscale serve` names the viewer to the app in
+  `Tailscale-User-Login`, `-Name` and `-Profile-Pic`, and a client that reaches the gateway directly
+  can send any `Tailscale-*` field, so the gateway drops them by prefix in every routing mode.
+  Decided by Yiannis, 2026-10-25: the app's own `Authorization` header and its own cookies pass
+  untouched, both ways, `better-auth.*` names included. Mend's cookies are host-only on Mend's host,
+  so a browser never sends them to a preview host, and Mend's bearers are never ambient, so a
+  browser sends one only when the app's page asked it to. Stripping them would break an app that
+  uses the same names and protect nothing. It refuses `CONNECT`, a request with two `Host` fields,
+  and an unknown port. On the way back it removes the `Domain` attribute from every `Set-Cookie` and
+  drops any cookie named like the grant, so an app cannot plant one. Unless the preview domain is on
+  the Public Suffix List, a page's own JavaScript can still set a cookie for the whole preview
+  domain, which reaches sibling previews. Header stripping cannot stop that, so decision 1 names it
+  as a cost. The gateway sets `Cache-Control: private`, so an edge cache cannot serve one viewer's
+  page to another, and `X-Robots-Tag: noindex`. It injects nothing into pages and sets no CSP on
+  them, which would break apps.
 - **Refused for now.** A service-worker script gets 403, because a service worker scoped to the root
   could answer the gateway's `/__mend/` routes from the browser's cache. An `https` Service gets a
   stated refusal, because the first slice speaks plain HTTP to the dev server inside the workspace.
