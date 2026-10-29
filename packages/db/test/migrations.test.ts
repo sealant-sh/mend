@@ -3015,3 +3015,97 @@ describe.skipIf(postgres.skip)("0140 session pages", () => {
     expect(tables).toEqual({ before: null, after: "session_pages", recorded: "session_pages" });
   });
 });
+
+describe.skipIf(postgres.skip)("0146 resources", () => {
+  const DB = `${SCRATCH_DB}_resources`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("holds a definition's columns to its spec, keeps approvals immutable, and keeps its project", async () => {
+    const outcome = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0143_recipe_launch");
+        yield* migrations["0146_resources"];
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        const spec = JSON.stringify({ name: "db", scope: "project", preset: "postgres" });
+        const misnamed = yield* attempt(sql`
+          INSERT INTO resource_definitions (id, project_id, name, scope, preset, spec, declared_by)
+          VALUES ('rdef_2', 'p-1', 'cache', 'project', 'postgres', ${spec}::jsonb, 'alice')`);
+        const unpreset = yield* attempt(sql`
+          INSERT INTO resource_definitions (id, project_id, name, scope, preset, spec, declared_by)
+          VALUES ('rdef_2', 'p-1', 'db', 'project', NULL, ${spec}::jsonb, 'alice')`);
+        yield* sql`
+          INSERT INTO resource_definitions (id, project_id, name, scope, preset, spec, declared_by)
+          VALUES ('rdef_1', 'p-1', 'db', 'project', 'postgres', ${spec}::jsonb, 'alice')`;
+        yield* sql`
+          INSERT INTO resource_approvals (id, definition_id, revision, digest, spec, approved_by)
+          VALUES ('rapr_1', 'rdef_1', 1, ${"a".repeat(64)}, ${spec}::jsonb, 'alice')`;
+        const sameDigest = yield* attempt(sql`
+          INSERT INTO resource_approvals (id, definition_id, revision, digest, spec, approved_by)
+          VALUES ('rapr_2', 'rdef_1', 2, ${"a".repeat(64)}, ${spec}::jsonb, 'alice')`);
+        const rewritten = yield* sql`UPDATE resource_approvals SET approved_by = 'mallory'`.pipe(
+          Effect.as("updated"),
+          Effect.catch(() => Effect.succeed("refused")),
+        );
+        const ownWithoutTarget = yield* attempt(sql`
+          INSERT INTO resource_selections (worktree_id, definition_id, mode, revision)
+          VALUES ('wt-1', 'rdef_1', 'own', 0)`);
+        yield* sql`
+          INSERT INTO resource_selections (worktree_id, definition_id, mode, revision)
+          VALUES ('wt-1', 'rdef_1', 'shared', 0)`;
+        const projectDeleted = yield* attempt(sql`DELETE FROM projects WHERE id = 'p-1'`);
+        yield* sql`DELETE FROM worktrees WHERE id = 'wt-1'`;
+        const [left] = yield* sql<{ readonly selections: number; readonly approvals: number }>`
+          SELECT (SELECT count(*)::int FROM resource_selections) AS selections,
+                 (SELECT count(*)::int FROM resource_approvals) AS approvals`;
+        return {
+          misnamed,
+          unpreset,
+          sameDigest,
+          rewritten,
+          ownWithoutTarget,
+          projectDeleted,
+          left,
+        };
+      }),
+    );
+    expect(outcome).toEqual({
+      misnamed: { code: "23514", constraint: "resource_definitions_spec_columns" },
+      unpreset: { code: "23514", constraint: "resource_definitions_spec_columns" },
+      sameDigest: { code: "23505", constraint: "resource_approvals_definition_digest_key" },
+      rewritten: "refused",
+      ownWithoutTarget: { code: "23514", constraint: "resource_selections_own_target" },
+      projectDeleted: { code: "23503", constraint: "resource_definitions_project_id_fkey" },
+      left: { selections: 0, approvals: 1 },
+    });
+  }, 60_000);
+});

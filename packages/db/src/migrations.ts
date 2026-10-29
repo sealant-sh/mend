@@ -3764,6 +3764,60 @@ const recipeLaunchMigration = Effect.gen(function* () {
     ADD COLUMN address text NOT NULL DEFAULT 'loopback'`;
 });
 
+/**
+ * 0146 (docs/adr/0019): resource definitions a project declares, each approved revision of one
+ * (immutable, one per digest), and each worktree's selection of a project resource. A project
+ * with definitions is not deleted: removal archives them first (ADR 0019, "Durability").
+ */
+const resourcesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE resource_definitions (
+    id text PRIMARY KEY,
+    project_id text NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    name text NOT NULL,
+    scope text NOT NULL,
+    preset text,
+    spec jsonb NOT NULL,
+    declared_by text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT resource_definitions_project_name_key UNIQUE (project_id, name),
+    CONSTRAINT resource_definitions_spec_columns CHECK (
+      name = spec->>'name' AND scope = spec->>'scope'
+      AND preset IS NOT DISTINCT FROM spec->>'preset'
+    )
+  )`;
+  yield* sql`CREATE TABLE resource_approvals (
+    id text PRIMARY KEY,
+    definition_id text NOT NULL REFERENCES resource_definitions(id) ON DELETE CASCADE,
+    revision integer NOT NULL CHECK (revision >= 1),
+    digest text NOT NULL CHECK (digest ~ '^[0-9a-f]{64}$'),
+    spec jsonb NOT NULL,
+    approved_by text NOT NULL,
+    approved_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT resource_approvals_definition_revision_key UNIQUE (definition_id, revision),
+    CONSTRAINT resource_approvals_definition_digest_key UNIQUE (definition_id, digest)
+  )`;
+  yield* sql`CREATE FUNCTION resource_approvals_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'a resource approval is immutable' USING ERRCODE = 'restrict_violation';
+    END $$`;
+  yield* sql`CREATE TRIGGER resource_approvals_immutable BEFORE UPDATE ON resource_approvals
+    FOR EACH ROW EXECUTE FUNCTION resource_approvals_immutable()`;
+  yield* sql`CREATE TABLE resource_selections (
+    worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+    definition_id text NOT NULL REFERENCES resource_definitions(id) ON DELETE CASCADE,
+    mode text NOT NULL CHECK (mode IN ('off', 'shared', 'own')),
+    revision integer NOT NULL CHECK (revision >= 0),
+    own_target jsonb,
+    chosen_by text,
+    chosen_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (worktree_id, definition_id),
+    CONSTRAINT resource_selections_own_target CHECK ((mode = 'own') = (own_target IS NOT NULL))
+  )`;
+  yield* sql`CREATE INDEX resource_selections_definition_idx ON resource_selections (definition_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3909,4 +3963,5 @@ export const migrations = {
   "0141_preview_ports": previewPortsMigration,
   "0142_turn_steers": turnSteersMigration,
   "0143_recipe_launch": recipeLaunchMigration,
+  "0146_resources": resourcesMigration,
 };

@@ -45,6 +45,8 @@ import type {
   ProjectSecretId,
   ProjectMountId,
   ReferenceId,
+  ResourceApprovalId,
+  ResourceDefinitionId,
   RoutedAction,
   RunId,
   RunKind,
@@ -71,13 +73,18 @@ import type {
   RecipeReady,
   RemoteSsh,
   RepoRelativePath,
+  ResourcePreset,
+  ResourceScope,
+  ResourceSpecDigest,
   ServiceAddress,
   ServiceHostPolicy,
 } from "@mend/domain/workbench";
 import {
   AuditData,
   HotWorkspaceEnvironment,
+  OwnTarget,
   RecordLink,
+  ResourceDefinitionInput,
   ReviewCommentAnchor,
   SessionDotfiles,
   PiProfileFile,
@@ -146,6 +153,7 @@ import type {
   SlackProjectSource,
   SlackSessionState,
   TurnLanding,
+  WorktreeChoice,
 } from "@mend/domain/workbench";
 import { sql } from "drizzle-orm";
 import {
@@ -624,6 +632,78 @@ export const previewControls = pgTable("preview_controls", {
   stoppedSeq: integer(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * A resource a project declared (ADR 0019). `spec` is the definition; name, scope and preset are
+ * copied out of it, and a CHECK in the migration holds them equal. The project is not deleted
+ * while one exists.
+ */
+export const resourceDefinitions = pgTable(
+  "resource_definitions",
+  {
+    id: text().$type<ResourceDefinitionId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "restrict" }),
+    name: text().notNull(),
+    scope: text().$type<ResourceScope>().notNull(),
+    preset: text().$type<ResourcePreset>(),
+    spec: jsonbOf(ResourceDefinitionInput).notNull(),
+    declaredBy: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique("resource_definitions_project_name_key").on(table.projectId, table.name)],
+);
+
+/** One approved spec of a definition, never updated (a trigger in the migration), one per digest. */
+export const resourceApprovals = pgTable(
+  "resource_approvals",
+  {
+    id: text().$type<ResourceApprovalId>().primaryKey(),
+    definitionId: text()
+      .$type<ResourceDefinitionId>()
+      .notNull()
+      .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
+    revision: integer().notNull(),
+    digest: text().$type<ResourceSpecDigest>().notNull(),
+    spec: jsonbOf(ResourceDefinitionInput).notNull(),
+    approvedBy: text().notNull(),
+    approvedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("resource_approvals_definition_revision_key").on(table.definitionId, table.revision),
+    unique("resource_approvals_definition_digest_key").on(table.definitionId, table.digest),
+  ],
+);
+
+/**
+ * A worktree's choice for a project resource. `ownTarget` is set exactly when the mode is `own`
+ * (a CHECK in the migration); a null `chosenBy` is the policy's default, which nobody chose.
+ */
+export const resourceSelections = pgTable(
+  "resource_selections",
+  {
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    definitionId: text()
+      .$type<ResourceDefinitionId>()
+      .notNull()
+      .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
+    mode: text().$type<WorktreeChoice>().notNull(),
+    revision: integer().notNull(),
+    ownTarget: jsonbOf(OwnTarget),
+    chosenBy: text(),
+    chosenAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.worktreeId, table.definitionId] }),
+    index("resource_selections_definition_idx").on(table.definitionId),
+  ],
+);
 
 /**
  * Pre-provisioned session skeletons kept ready for instant session starts. `id` is the session id
