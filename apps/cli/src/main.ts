@@ -99,6 +99,7 @@ import {
 import { type ApiCall, pairCommand, qrCommand, type T3GatewayDto } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
 import { isTerminalGone, leaveRawMode } from "./raw-mode.ts";
+import { missingRecipeLine, type ServiceDeclarationsDto } from "./recipe-refusals.ts";
 import {
   beforeDeadline,
   type CommandDetail,
@@ -2642,12 +2643,13 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
     );
     const recipe = recipes.find((entry) => entry.name === name);
     if (recipe === undefined) {
-      const known = recipes.map((entry) => entry.name).join(", ");
-      return fail(
-        recipes.length === 0
-          ? `no mend.toml recipes in this worktree — declare [service.${name}] first`
-          : `no recipe named "${name}" — declared: ${known}`,
-      );
+      // A server before 0.37 has no /declarations route: report without refusals.
+      const declarations = await request<ServiceDeclarationsDto>(
+        config,
+        "GET",
+        `/sessions/${session.id}/declarations`,
+      ).catch(() => null);
+      return fail(missingRecipeLine(name, recipes, declarations));
     }
     const startRecipe = (startId: string) =>
       request<ServiceViewDto>(config, "POST", `/sessions/${session.id}/services/recipe`, {

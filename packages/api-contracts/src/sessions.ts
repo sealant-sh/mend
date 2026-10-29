@@ -23,6 +23,7 @@ import {
   PageRef,
   ReviewSlice,
   ServiceBrowserScheme,
+  ServiceDeclarations,
   ServiceRecipe,
   ServiceView,
   Session,
@@ -473,6 +474,16 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.get("listRecipes", "/sessions/:id/recipes", {
       params: { id: SessionId },
       success: Schema.Array(ServiceRecipe),
+      error: [NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    // The same file read whole (ADR 0017, delivery 9): the recipes, each refused one with the key
+    // it names, the keys this server ignores, and [preview]. A file that is not TOML fails as a
+    // StoreFailure naming it.
+    HttpApiEndpoint.get("declarations", "/sessions/:id/declarations", {
+      params: { id: SessionId },
+      success: ServiceDeclarations,
       error: [NotFound, StoreFailure],
     }),
   )

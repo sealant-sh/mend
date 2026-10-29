@@ -2926,6 +2926,20 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
       }),
     )
+    .handle("declarations", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        return yield* (yield* SessionEngine).serviceDeclarations(session.id).pipe(
+          Effect.catchTags({
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
+            RecipeFileError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+            SealantPlatformError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+          }),
+        );
+      }),
+    )
     .handle("listServices", ({ query }) =>
       Effect.gen(function* () {
         const services = yield* ServicesRepo;

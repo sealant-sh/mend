@@ -541,6 +541,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   ),
   session("steer", "POST", "/services/recipe", { name: "web" })("sessions.runServiceRecipe"),
   session("project-read", "GET", "/recipes")("sessions.listRecipes"),
+  session("project-read", "GET", "/declarations")("sessions.declarations"),
   child("project-read", "process", "GET", "/api/processes", "/logs")("sessions.processLogs"),
   child("steer", "service", "POST", "/api/services", "/restart")("sessions.restartService"),
   child("steer", "service", "POST", "/api/services", "/stop")("sessions.stopService"),
@@ -888,6 +889,7 @@ const ADMITTED: Readonly<
   "sessions.runService": { status: 500, calls: ["engine.runService"] },
   "sessions.runServiceRecipe": { status: 500, calls: ["engine.runServiceRecipe"] },
   "sessions.listRecipes": { status: 500, calls: ["engine.listServiceRecipes"] },
+  "sessions.declarations": { status: 500, calls: ["engine.serviceDeclarations"] },
   "sessions.processLogs": {
     status: 500,
     calls: ["sealant.sessionOutput", "workspaceCaller.observe"],
