@@ -1,6 +1,10 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, SealantWorkspaceId, ServiceId, SessionId, Sha, WorktreeId } from "@mend/domain";
-import { RepoRelativePath, type ServiceLaunch } from "@mend/domain/workbench";
+import {
+  DEFAULT_SERVICE_LAUNCH,
+  RepoRelativePath,
+  type ServiceLaunch,
+} from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -156,7 +160,7 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
     expect(result).toEqual({ before: null, after: "user-maria", service: "person" });
   });
 
-  it("records an attempt's launch for its restart, and a Service's host policy and address (0143)", async () => {
+  it("records an attempt's launch for its restart, what launched it (0145), and a Service's host policy and address (0143)", async () => {
     const result = await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -189,7 +193,9 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
           env: { WP_ENV: "local" },
           ready: { _tag: "Http", path: "/wp-login.php", timeoutMs: 120_000 },
           depends: ["db", "cache"],
+          source: "recipe",
         });
+        const command = yield* attempt({ ...DEFAULT_SERVICE_LAUNCH, source: "command" });
         const explicit = yield* attempt(null);
         yield* sql`
           INSERT INTO services (id, session_id, name, declaration_source, workspace_port)
@@ -198,6 +204,7 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
           service: (yield* services.byId(service.id)) ?? null,
           older: (yield* services.byId(ServiceId.make("svc-older"))) ?? null,
           launch: yield* processes.launchOf(launched.id),
+          command: (yield* processes.launchOf(command.id))?.source,
           explicit: yield* processes.launchOf(explicit.id),
         };
       }),
@@ -212,7 +219,9 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
       env: { WP_ENV: "local" },
       ready: { _tag: "Http", path: "/wp-login.php", timeoutMs: 120_000 },
       depends: ["db", "cache"],
+      source: "recipe",
     });
+    expect(result.command).toBe("command");
     expect(result.explicit, "an attempt with no recorded launch").toBeNull();
   });
 });

@@ -3145,3 +3145,60 @@ describe.skipIf(postgres.skip)("0148 resources", () => {
     });
   }, 60_000);
 });
+
+describe.skipIf(postgres.skip)("recipe approvals", () => {
+  const DB = `${SCRATCH_DB}_recipe_approvals`;
+  const at = ORDERED.findIndex(([name]) => name.endsWith("_recipe_approvals"));
+  const approvals = ORDERED[at]?.[0] ?? "";
+  const previous = ORDERED[at - 1]?.[0] ?? "";
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("reaches a database the migrator took to the one before it, approving nothing, and gives attempts a launch source", async () => {
+    expect(at).toBeGreaterThan(0);
+    const result = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* migrateWith(Object.fromEntries(ORDERED.filter(([name]) => name <= previous)));
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-approvals', 'approvals', '/store/p/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1))`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-approvals', 'p-approvals', 'wt', 'wt', 'mend/wt', 'abc')`;
+        yield* migrateWith(migrations);
+        const applied = yield* sql<{ readonly name: string }>`
+          SELECT name FROM mend_migrations WHERE migration_id = ${Number(approvals.slice(0, 4))}`;
+        const rows = yield* sql`SELECT 1 FROM recipe_approvals`;
+        const source = yield* sql<{ readonly column_name: string }>`
+          SELECT column_name FROM information_schema.columns
+          WHERE table_name = 'session_processes' AND column_name = 'launch_source'`;
+        return { recorded: applied[0]?.name, rows: rows.length, source: source.length };
+      }),
+    );
+    expect(result).toEqual({ recorded: "recipe_approvals", rows: 0, source: 1 });
+  });
+});

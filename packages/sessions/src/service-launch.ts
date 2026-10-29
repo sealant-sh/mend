@@ -35,6 +35,7 @@ export interface LaunchSpec extends ServiceLaunch {
 /** `mend service run --port … -- <command>`: no recipe, so nothing beyond the command. */
 export const explicitLaunch = (argv: ReadonlyArray<string>): LaunchSpec => ({
   ...DEFAULT_SERVICE_LAUNCH,
+  source: "command",
   argv,
   host: "rewrite",
   address: "loopback",
@@ -48,6 +49,7 @@ export const recipeLaunch = (recipe: ServiceRecipe & { readonly command: string 
   depends: recipe.depends,
   host: recipe.host,
   address: recipe.address,
+  source: "recipe",
 });
 
 /** The worktree is at `/workspace/repo` in every workspace; the SDK's default when none is given. */

@@ -3925,6 +3925,21 @@ const setupRunsMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE session_processes ADD COLUMN launch_depends jsonb`;
 });
 
+const recipeApprovalsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE recipe_approvals (
+    worktree_id text NOT NULL REFERENCES worktrees (id) ON DELETE CASCADE,
+    service_name text NOT NULL,
+    digest text NOT NULL,
+    approved_by text NOT NULL,
+    approved_at timestamptz NOT NULL DEFAULT now(),
+    spec jsonb NOT NULL,
+    PRIMARY KEY (worktree_id, service_name, approved_by)
+  )`;
+  yield* sql`ALTER TABLE session_processes
+    ADD COLUMN launch_source text CHECK (launch_source IN ('recipe', 'command'))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4074,4 +4089,5 @@ export const migrations = {
   "0151_screens": screensMigration,
   "0152_screen_log": screenLogMigration,
   "0155_setup_runs": setupRunsMigration,
+  "0157_recipe_approvals": recipeApprovalsMigration,
 };

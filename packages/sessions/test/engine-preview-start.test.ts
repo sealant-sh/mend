@@ -587,6 +587,7 @@ describe("ensurePreviewRunning", () => {
             env: {},
             ready: { _tag: "Tcp", timeoutMs: 1_000 },
             depends: [],
+            source: "recipe",
           });
           yield* engine.stopService(service.id, idle);
           port.state.warmupMs = 2_500;

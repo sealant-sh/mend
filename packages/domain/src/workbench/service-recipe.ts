@@ -170,7 +170,6 @@ export class RecipeSpec extends Schema.Class<RecipeSpec>("RecipeSpec")({
   argv: Schema.NonEmptyArray(Schema.String),
   cwd: Schema.NullOr(RepoRelativePath),
   env: RecipeEnv,
-  /** Each dependency with the digest it had when this was approved: the graph the owner saw. */
   depends: Schema.Array(Schema.Struct({ name: Schema.String, digest: Schema.String })),
   setup: Schema.NullOr(SetupDeclaration),
 }) {}
@@ -208,6 +207,9 @@ export const recipeChangedLine = (name: string): string =>
 
 export const recipeUnapprovedLine = (name: string): string =>
   `${name} · recipe not approved · the owner's Start runs it`;
+
+export const ServiceLaunchSource = Schema.Literals(["recipe", "command"]);
+export type ServiceLaunchSource = typeof ServiceLaunchSource.Type;
 
 /** `[preview]`: the Service a worktree's preview shows. */
 export class PreviewDeclaration extends Schema.Class<PreviewDeclaration>("PreviewDeclaration")({
@@ -320,6 +322,7 @@ export interface ServiceLaunch {
   readonly env: RecipeEnv;
   readonly ready: RecipeReady;
   readonly depends: ReadonlyArray<string>;
+  readonly source: ServiceLaunchSource | "unrecorded";
 }
 
 /** An explicit `mend service run` and an attempt from before 0143 launch this way. */
@@ -328,4 +331,5 @@ export const DEFAULT_SERVICE_LAUNCH: ServiceLaunch = {
   env: {},
   ready: DEFAULT_RECIPE_READY,
   depends: [],
+  source: "unrecorded",
 };
