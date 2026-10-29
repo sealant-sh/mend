@@ -9,8 +9,10 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 ## 2026-10-29 · 0.40.0-next.763 · A service resource
 
-Shared services (ADR 0019, proposed) need a Postgres or a Redis that Sealant runs once per project,
-outside every workspace, whose data survives every executor replacement.
+Resources (ADR 0019, proposed) are long-running services that Sealant runs once per project, or once
+per worktree, outside every workspace, whose volumes survive every executor replacement. A resource
+is any image with a command, ports, env and volumes. Postgres, Redis and MySQL are Mend presets on
+top.
 
 - **Today:** everything runs in a workspace. A workspace needs a harness (`CreateOptions.harness`),
   belongs to one Sealant user, and is replaced at the platform's deadline or after Mend's 7 h 30
@@ -18,28 +20,49 @@ outside every workspace, whose data survives every executor replacement.
   mounts are host paths.
 - **Mend today:** a session can run its own database as a Service in its workspace, and the data
   lasts as long as that workspace. Nothing is shared between worktrees.
-- **Needed:** `services.ensure`, `observe` and `setDesired` for a harness-free workload: an approved
-  image digest and config, one retained volume that no stop or replacement removes, no TTL,
-  idempotency keys, a fenced single writer on the volume, and a generation that a stop must match,
-  so a stop decided before a new consumer arrived is refused. `exec` inside it, with secret input
-  that is never recorded, so Mend can create roles and copy, dump and restore databases without the
-  bytes passing through Mend. A temporary recovery instance started from a base backup on the same
-  volume, beside the live server, so Postgres point-in-time recovery never rewinds the live server.
-  Docker first, then Kubernetes (a retained PVC), then Firecracker.
+- **Needed:** `services.ensure`, `observe` and `setDesired` for a harness-free workload from any
+  image pinned by digest (which images is ADR 0019 decision G2), with a command, ports (TCP or UDP),
+  env (literal or secret), retained named volumes, a backup volume of its own, and CPU, memory and
+  disk limits (decision G3).
+  - No TTL, idempotency keys on every call, and a fenced single writer per volume.
+  - A generation on `setDesired`, so a stop decided before a new consumer arrived is refused.
+  - Refused at the platform, whatever the caller asks: privileged mode, added capabilities, host
+    network, host mounts, the Docker socket and devices.
+  - `exec` inside the instance, with secret input that is never recorded, so Mend can create roles
+    and copy, dump and restore databases without the bytes passing through Mend.
+  - Volume snapshots taken as one group per instance at one instant (crash-consistent while
+    running), a restore of a group into new volumes, an optional command run inside the instance
+    before a snapshot (decision G8), and a temporary recovery instance started from a base backup on
+    the backup volume, so Postgres point-in-time recovery never rewinds the live server.
+  - A missing volume is reported as missing, and the instance is never started on an empty one.
+  - Docker first, then Kubernetes (retained PVCs), then Firecracker.
 
-## 2026-10-29 · 0.40.0-next.763 · Links from a workspace to a service
+## 2026-10-29 · 0.40.0-next.763 · A project network
 
 - **Today:** a forward's host is the closed set `127.0.0.1`, `localhost` or `docker`, and forwards
   go only into a workspace. Core keeps the set closed on purpose (Core #151, #153).
 - **Mend today:** a session in one worktree has no supported, authorized route to a server in
   another. On the Docker bundle the shared `mend_default` network connects them anyway, with no
   isolation between projects.
-- **Needed:** `services.link` and `unlink` from a workspace to one named service on one port. The
-  platform returns an address and a credential for that workspace, revokes it on unlink by closing
-  live connections too, and carries links across an executor replacement. On Docker, one network per
-  link, so two linked workspaces never share a network. Containers the workspace runs through its
-  Docker sidecar (a Compose app) must reach the link too, while the sidecar's daemon port 2375 stays
-  unreachable from it. It never dials an arbitrary host.
+- **Needed:** one private network per project scope, with default-deny reach rules the platform
+  enforces (ADR 0019, "The project network").
+  - Its members are the scope's instances and the workspaces the scope attaches.
+  - A workspace reaches the project's instances and its own worktree's instances. It does not reach
+    another worktree's instances (decision G6) or another workspace (decision G5).
+  - An instance does not open connections to workspaces. Replies to a workspace's own connection
+    pass. An instance reaches another instance only when the scope allows that pair.
+  - Nested containers (a Compose app) live in the Docker sidecar's network namespace, so the sidecar
+    is attached as the workspace's second member, with port 2375 dropped from that attachment and a
+    resolver for the project's names.
+  - Each instance has a stable name, and each workspace a short name per resource that resolves to
+    the instance the scope names for it (decision G10).
+  - A workspace's `mend_default` interface narrowed to Mend's own endpoints (the session channel and
+    the object store), so workspaces stop reaching each other across projects there. Without it,
+    decision G5 cannot hold on Docker.
+  - Attach and detach, with live connections closed on detach, carried across an executor
+    replacement, and available at a standby's claim and for a workspace that is already running.
+  - Nothing on it is published on a host interface. It never reaches Mend, an arbitrary host or
+    another project.
 
 ## 2026-10-29 · 0.40.0-next.763 · A principal that is a project, not a person
 
@@ -47,10 +70,11 @@ outside every workspace, whose data survives every executor replacement.
   `packages/sealant`), and `CreateOptions` has no owner field.
 - **Mend today:** every workspace belongs to the person who created it, and lending ends when that
   person leaves the organization.
-- **Needed:** an application-owned scope per project that owns services and their storage, under a
-  compute and storage budget that refuses new work and never stops running work, with no login of
-  any person, and that may link its services to workspaces owned by the project's members (ADR 0019,
-  decision S7).
+- **Needed:** an application-owned scope per project that owns instances, volumes and the project
+  network, under a compute and storage budget that refuses new work and never stops running work,
+  with no login of any person, and that may attach workspaces owned by the project's members (ADR
+  0019, decision S7). When the project is removed, its instances and volumes can move to an
+  organization-owned archive, kept until a person purges them.
 
 ## 2026-10-29 · 0.40.0-next.763 · Secret env for one process
 
@@ -59,8 +83,8 @@ outside every workspace, whose data survives every executor replacement.
   option gives one process a secret value that the platform promises not to record.
 - **Mend today:** project secrets reach a workspace once, through `secretEnv` at create.
 - **Needed:** secret env for one `sessions.open` or `exec` that the platform never records and masks
-  in output, so a shared service's rotated password reaches one process and no Mend or platform
-  record keeps it.
+  in output, so a resource's rotated password reaches one process and no Mend or platform record
+  keeps it.
 
 ## 2026-10-26 · 0.40.0-next.763 · A per-project, per-person home a capture workspace can mount
 
@@ -120,8 +144,8 @@ Live preview (ADR 0017, proposed) would put an HTTP gateway in Mend's API proces
 
 ## 2026-10-24 · 0.39.0 · Workspaces reaching a project's long-running service
 
-Superseded by the 2026-10-29 entries "A service resource" and "Links from a workspace to a service",
-which give it a surface.
+Superseded by the 2026-10-29 entries "A service resource" and "A project network", which give it a
+surface.
 
 Shared long-running services (P-SLNT-46) and live preview (ADR 0017, decision 3) need a workspace to
 reach a database that outlives it.
