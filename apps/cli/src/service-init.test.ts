@@ -1,7 +1,11 @@
+import { parseMendToml, resolveDeclarations } from "@mend/sessions/recipes";
+import { Effect } from "effect";
+import * as FastCheck from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
   isComposeFile,
+  proposeForRepository,
   proposeFromCompose,
   proposeFromPackageJson,
   proposeFromWorkspacePackage,
@@ -28,7 +32,21 @@ describe("proposeFromPackageJson", () => {
     const proposals = proposeFromPackageJson(JSON.stringify({ scripts: { dev: "vite" } }), [
       "yarn.lock",
     ]);
-    expect(proposals[0]).toMatchObject({ command: "yarn run dev", port: 5173, guessed: true });
+    expect(proposals[0]).toMatchObject({
+      command: "yarn run dev",
+      port: 5173,
+      guessed: true,
+      browserScheme: "http",
+      cwd: null,
+    });
+  });
+
+  it("declares no browser for a server it does not know", () => {
+    const proposals = proposeFromPackageJson(
+      JSON.stringify({ scripts: { start: "node server.js --port 8080" } }),
+      [],
+    );
+    expect(proposals[0]).toMatchObject({ port: 8080, browserScheme: null });
   });
 
   it("proposes nothing when no port can be named", () => {
@@ -61,6 +79,8 @@ services:
       port: 3306,
     });
     expect(proposals[1]).toMatchObject({ name: "redis", port: 6379 });
+    expect(proposals.every((proposal) => proposal.address === "docker")).toBe(true);
+    expect(proposals.every((proposal) => proposal.browserScheme === null)).toBe(true);
   });
 });
 
@@ -89,17 +109,19 @@ describe("workspace sweep", () => {
     expect(workspaceGlobs(null, JSON.stringify({ workspaces: ["apps/*"] }))).toEqual(["apps/*"]);
   });
 
-  it("proposes a workspace package's server script through the package manager", () => {
+  it("proposes a workspace package's server script in its own directory", () => {
     const proposals = proposeFromWorkspacePackage(
-      "marketing",
+      "apps/marketing",
       JSON.stringify({ name: "@mend/marketing", scripts: { dev: "vite dev --port 3102" } }),
       ["pnpm-lock.yaml"],
     );
     expect(proposals[0]).toMatchObject({
       name: "marketing",
-      command: "pnpm --filter @mend/marketing dev",
+      command: "pnpm run dev",
+      cwd: "apps/marketing",
       port: 3102,
       guessed: false,
+      browserScheme: "http",
     });
   });
 });
@@ -121,29 +143,162 @@ describe("proposeFromCompose udp", () => {
 });
 
 describe("renderMendToml", () => {
-  it("renders a commented, committable file", () => {
-    const toml = renderMendToml([
-      {
-        name: "web",
-        command: "pnpm run dev",
-        port: 5173,
-        protocol: "tcp",
-        guessed: true,
-        source: "package.json",
-      },
-      {
-        name: "mysql",
-        command: "docker compose up mysql",
-        port: 3306,
-        protocol: "tcp",
-        guessed: false,
-        source: "compose",
-      },
+  const web = {
+    name: "web",
+    command: "pnpm run dev",
+    port: 5173,
+    protocol: "tcp",
+    guessed: true,
+    browserScheme: "http",
+    cwd: "apps/web",
+    address: "loopback",
+    source: "apps/web/package.json",
+  } as const;
+  const mysql = {
+    name: "mysql",
+    command: "docker compose up mysql",
+    port: 3306,
+    protocol: "tcp",
+    guessed: false,
+    browserScheme: null,
+    cwd: null,
+    address: "docker",
+    source: "compose",
+  } as const;
+
+  it("renders a commented, committable file, with [preview] for its one browser Service", () => {
+    expect(renderMendToml([web, mysql])).toBe(
+      [
+        "# apps/web/package.json",
+        "[service.web]",
+        'command = "pnpm run dev"',
+        "port = 5173 # guessed — verify",
+        'browserScheme = "http"',
+        'cwd = "apps/web"',
+        "",
+        "# compose",
+        "[service.mysql]",
+        'command = "docker compose up mysql"',
+        "port = 3306",
+        'address = "docker"',
+        "",
+        "[preview]",
+        'service = "web"',
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("proposes no [preview] when none, or more than one, is a browser Service", () => {
+    expect(renderMendToml([mysql])).not.toContain("[preview]");
+    expect(renderMendToml([web, { ...web, name: "docs", cwd: "apps/docs" }])).not.toContain(
+      "[preview]",
+    );
+  });
+});
+
+const parsedBack = (toml: string) =>
+  Effect.runSync(
+    Effect.map(parseMendToml(toml, "mend.toml"), (file) => resolveDeclarations(file, [])),
+  );
+
+describe("what init writes, read back by the server's parser", () => {
+  it("refuses nothing in a compose file with UDP and TCP ports", () => {
+    const proposals = proposeFromCompose(
+      [
+        "services:",
+        "  statsd:",
+        "    ports:",
+        '      - "8125:8125/udp"',
+        "  db:",
+        "    ports:",
+        '      - "5432:5432"',
+      ].join("\n"),
+    );
+    const declared = parsedBack(renderMendToml(proposals));
+    expect(declared.refused).toEqual([]);
+    expect(
+      declared.recipes.map((recipe) => [recipe.name, recipe.protocol, recipe.address]),
+    ).toEqual([
+      ["statsd", "udp", "loopback"],
+      ["db", "tcp", "docker"],
     ]);
-    expect(toml).toContain("[service.web]");
-    expect(toml).toContain('command = "pnpm run dev"');
-    expect(toml).toContain("port = 5173 # guessed — verify");
-    expect(toml).toContain("[service.mysql]");
-    expect(toml).toContain("port = 3306\n");
+  });
+});
+
+const nameChars = FastCheck.constantFrom(..."abcXYZ019._- @".split(""));
+/** A directory entry as `readdir` lists one: never `.` or `..`. */
+const rawName = FastCheck.string({ unit: nameChars, minLength: 1, maxLength: 70 }).filter(
+  (name) => name !== "." && name !== "..",
+);
+const script = FastCheck.constantFrom(
+  "vite",
+  "vite --port 3000",
+  "next dev -p 4000",
+  "astro dev",
+  "node server.js --port 8080",
+  'PORT=9000 node "x"\nnode y',
+  "tsc --watch",
+);
+const packageJsonOf = (scripts: Readonly<Record<string, string>>) => JSON.stringify({ scripts });
+const scriptsOf = FastCheck.dictionary(
+  FastCheck.constantFrom("dev", "start", "serve", "preview", "build"),
+  script,
+);
+const composeOf = FastCheck.array(
+  FastCheck.record({
+    name: FastCheck.string({ unit: nameChars, minLength: 1, maxLength: 70 }).map((name) =>
+      name.replace(/[^A-Za-z0-9._-]/g, "x"),
+    ),
+    port: FastCheck.integer({ min: 1, max: 65535 }),
+    udp: FastCheck.boolean(),
+  }),
+  { maxLength: 4 },
+).map((services) =>
+  [
+    "services:",
+    ...services.flatMap(({ name, port, udp }) => [
+      `  ${name}:`,
+      "    ports:",
+      `      - "${port}:${port}${udp ? "/udp" : ""}"`,
+    ]),
+  ].join("\n"),
+);
+
+describe("every proposal init makes", () => {
+  it("parses back with nothing refused or ignored, one recipe per proposal", () => {
+    FastCheck.assert(
+      FastCheck.property(
+        FastCheck.option(scriptsOf, { nil: null }),
+        FastCheck.array(FastCheck.record({ dir: rawName, scripts: scriptsOf }), { maxLength: 3 }),
+        FastCheck.array(
+          FastCheck.record({
+            name: FastCheck.constantFrom("compose.yaml", "compose.dev.yaml", "docker-compose.yml"),
+            text: composeOf,
+          }),
+          { maxLength: 2 },
+        ),
+        FastCheck.constantFrom<ReadonlyArray<string>>(["pnpm-lock.yaml"], ["yarn.lock"], []),
+        (root, packages, composeFiles, rootFiles) => {
+          const proposals = proposeForRepository({
+            rootFiles,
+            packageJson: root === null ? null : packageJsonOf(root),
+            workspacePackages: packages.map(({ dir, scripts }) => ({
+              dir: `apps/${dir}`,
+              packageJson: packageJsonOf(scripts),
+            })),
+            composeFiles,
+          });
+          if (proposals.length === 0) return;
+          const declared = parsedBack(renderMendToml(proposals));
+          expect(declared.refused).toEqual([]);
+          expect(declared.ignored).toEqual([]);
+          expect(declared.recipes.map((recipe) => recipe.name).toSorted()).toEqual(
+            proposals.map((proposal) => proposal.name).toSorted(),
+          );
+        },
+      ),
+      { numRuns: 300 },
+    );
   });
 });

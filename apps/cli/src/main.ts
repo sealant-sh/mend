@@ -146,9 +146,7 @@ import {
 import { ServerStoreError, whenServerLockReleased } from "./server-store.ts";
 import {
   isComposeFile,
-  proposeFromCompose,
-  proposeFromPackageJson,
-  proposeFromWorkspacePackage,
+  proposeForRepository,
   renderMendToml,
   workspaceGlobs,
 } from "./service-init.ts";
@@ -2839,52 +2837,31 @@ const serviceInit = async (args: ReadonlyArray<string>) => {
     return fail(`${target} already exists — edit it directly (init never merges)`);
   }
   const rootFiles = fs.readdirSync(root);
-  const proposals: Array<ReturnType<typeof proposeFromCompose>[number]> = [];
   const readRoot = (name: string) => fs.readFileSync(path.join(root, name), "utf8");
-  if (rootFiles.includes("package.json")) {
-    proposals.push(...proposeFromPackageJson(readRoot("package.json"), rootFiles));
-  }
   // Monorepo sweep: every workspace package, named after its folder.
-  const globs = workspaceGlobs(
+  const workspacePackages = workspaceGlobs(
     rootFiles.includes("pnpm-workspace.yaml") ? readRoot("pnpm-workspace.yaml") : null,
     rootFiles.includes("package.json") ? readRoot("package.json") : null,
-  );
-  for (const glob of globs) {
+  ).flatMap((glob) => {
     const parent = glob.replace(/\/?\*+$/, "");
     const dirs = glob.endsWith("*")
       ? fs.existsSync(path.join(root, parent))
         ? fs.readdirSync(path.join(root, parent)).map((dir) => path.join(parent, dir))
         : []
       : [glob];
-    for (const dir of dirs) {
+    return dirs.flatMap((dir) => {
       const manifest = path.join(root, dir, "package.json");
-      if (!fs.existsSync(manifest)) continue;
-      for (const proposal of proposeFromWorkspacePackage(
-        path.basename(dir),
-        fs.readFileSync(manifest, "utf8"),
-        rootFiles,
-      )) {
-        if (!proposals.some((existing) => existing.name === proposal.name)) {
-          proposals.push(proposal);
-        }
-      }
-    }
-  }
-  // Every compose flavor in the root, aggregated; non-default files need -f.
-  for (const composeName of rootFiles.filter(isComposeFile).toSorted()) {
-    const isDefault = composeName === "compose.yaml" || composeName === "docker-compose.yml";
-    for (const proposal of proposeFromCompose(readRoot(composeName))) {
-      if (!proposals.some((existing) => existing.name === proposal.name)) {
-        proposals.push({
-          ...proposal,
-          command: isDefault
-            ? proposal.command
-            : proposal.command.replace("docker compose ", `docker compose -f ${composeName} `),
-          source: `${composeName}: ${proposal.source}`,
-        });
-      }
-    }
-  }
+      return fs.existsSync(manifest)
+        ? [{ dir: dir.split(path.sep).join("/"), packageJson: fs.readFileSync(manifest, "utf8") }]
+        : [];
+    });
+  });
+  const proposals = proposeForRepository({
+    rootFiles,
+    packageJson: rootFiles.includes("package.json") ? readRoot("package.json") : null,
+    workspacePackages,
+    composeFiles: rootFiles.filter(isComposeFile).map((name) => ({ name, text: readRoot(name) })),
+  });
   if (proposals.length === 0) {
     return fail(
       "nothing to propose — no server-ish package.json script with a nameable port, no compose ports",

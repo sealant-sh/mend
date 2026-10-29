@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./page-check-worker": "./src/mend-mcp/page-check-worker.ts",
+    "./recipes": "./src/recipes.ts",
     "./testing": "./test/testing.ts"
   },
   "scripts": {

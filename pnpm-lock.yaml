@@ -418,6 +418,9 @@ importers:
       '@mend/network':
         specifier: workspace:*
         version: link:../../packages/network
+      '@mend/sessions':
+        specifier: workspace:*
+        version: link:../../packages/sessions
       '@mend/test-ci':
         specifier: workspace:*
         version: link:../../tooling/test-ci
