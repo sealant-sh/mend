@@ -22,7 +22,13 @@ const tailnetOrigin = previewOriginOf(
 );
 if (tailnetOrigin === null) throw new Error("the tailnet routing serves port 20001");
 
-const TO: ForwardRequest = { origin: tailnetOrigin, port: 5173, cookies: OWN_PORT, upgrade: false };
+const TO: ForwardRequest = {
+  origin: tailnetOrigin,
+  port: 5173,
+  host: "rewrite",
+  cookies: OWN_PORT,
+  upgrade: false,
+};
 
 const named = (headers: ReadonlyArray<HeaderPair>, name: string) =>
   headers.flatMap(([field, value]) => (field.toLowerCase() === name ? [value] : []));

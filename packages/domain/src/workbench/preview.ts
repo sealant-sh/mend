@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   PreviewId,
@@ -10,6 +10,7 @@ import {
   SessionProcessId,
   WorktreeId,
 } from "../ids.ts";
+import { type ServiceAddress, ServiceHostPolicy } from "./service-recipe.ts";
 import { type Service, serviceStartCorrelation } from "./service.ts";
 import type { SessionProcess } from "./session-process.ts";
 
@@ -45,9 +46,25 @@ export const PreviewUnboundReason = Schema.Literals([
 ]);
 export type PreviewUnboundReason = typeof PreviewUnboundReason.Type;
 
+/**
+ * How the gateway dials a bound preview: bound to the attempt's process, or by port for a Service
+ * Docker publishes, where nothing can prove the process (ADR 0017, "A bound dial never falls
+ * back").
+ */
+export const PreviewDial = Schema.Literals(["session-bound", "port-scoped"]);
+export type PreviewDial = typeof PreviewDial.Type;
+
+export const previewDialOf = (address: ServiceAddress): PreviewDial =>
+  address === "docker" ? "port-scoped" : "session-bound";
+
 export const PreviewBinding = Schema.Union([
   Schema.TaggedStruct("Unbound", { reason: PreviewUnboundReason }),
-  Schema.TaggedStruct("Bound", { serviceId: ServiceId, attemptId: SessionProcessId }),
+  Schema.TaggedStruct("Bound", {
+    serviceId: ServiceId,
+    attemptId: SessionProcessId,
+    host: ServiceHostPolicy.pipe(Schema.withDecodingDefaultKey(Effect.succeed("rewrite" as const))),
+    dial: PreviewDial.pipe(Schema.withDecodingDefaultKey(Effect.succeed("session-bound" as const))),
+  }),
 ]);
 export type PreviewBinding = typeof PreviewBinding.Type;
 
@@ -120,7 +137,13 @@ export const resolvePreviewBinding = (
 ): PreviewBinding => {
   const selected = selectPreviewTarget(preview, targets);
   return selected._tag === "Bound"
-    ? { _tag: "Bound", serviceId: selected.service.id, attemptId: selected.attempt.id }
+    ? {
+        _tag: "Bound",
+        serviceId: selected.service.id,
+        attemptId: selected.attempt.id,
+        host: selected.service.hostPolicy,
+        dial: previewDialOf(selected.service.address),
+      }
     : { _tag: "Unbound", reason: selected.reason };
 };
 
@@ -218,6 +241,8 @@ export interface PreviewBoundAttempt {
   readonly workspaceId: SealantWorkspaceId;
   readonly port: number;
   readonly platformSessionId: string;
+  readonly host: ServiceHostPolicy;
+  readonly dial: PreviewDial;
 }
 
 export interface PreviewResumeSource {
@@ -363,6 +388,8 @@ const unlatchedResolution = (
       workspaceId: attempt.sealantWorkspaceId,
       port: service.workspacePort,
       platformSessionId: attempt.sealantSessionId,
+      host: service.hostPolicy,
+      dial: previewDialOf(service.address),
     },
   };
 };

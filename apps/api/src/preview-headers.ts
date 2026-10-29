@@ -1,5 +1,6 @@
 import {
   type PreviewGatewayRefusal,
+  type ServiceHostPolicy,
   type PreviewUndelivered,
   previewUndeliveredLine,
 } from "@mend/domain/workbench";
@@ -85,6 +86,7 @@ const keptFields = (headers: ReadonlyArray<HeaderPair>, dropped: ReadonlySet<str
 export interface ForwardRequest {
   readonly origin: PreviewOrigin;
   readonly port: number;
+  readonly host: ServiceHostPolicy;
   readonly cookies: CookiePolicy;
   readonly upgrade: boolean;
 }
@@ -101,7 +103,7 @@ export const forwardRequestHead = (
   const cookie = appCookieHeader(valuesOf(headers, "cookie"), to.cookies);
   const origin = new URL(to.origin);
   return [
-    field("host", `localhost:${to.port}`),
+    field("host", to.host === "preserve" ? origin.host : `localhost:${to.port}`),
     ...keptFields(headers, REQUEST_DROPPED).filter(([name]) => {
       const lower = name.toLowerCase();
       return !REQUEST_DROPPED_PREFIXES.some((prefix) => lower.startsWith(prefix));

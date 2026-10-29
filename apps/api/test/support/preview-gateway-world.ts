@@ -123,6 +123,8 @@ export const attemptOf = (overrides: Partial<PreviewBoundAttempt> = {}): Preview
   workspaceId: WORKSPACE,
   port: APP_PORT,
   platformSessionId: PLATFORM_SESSION,
+  host: "rewrite",
+  dial: "session-bound",
   ...overrides,
 });
 

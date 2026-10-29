@@ -304,6 +304,7 @@ export const makePreviewGatewayLayer = (
           const forward: ForwardRequest = {
             origin,
             port: generation.attempt.port,
+            host: generation.attempt.host,
             cookies: cookiePolicyOf(routing, preview),
             upgrade: exchange.downstream.kind === "raw",
           };

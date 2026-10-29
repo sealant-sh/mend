@@ -30,6 +30,8 @@ describe("GET /worktrees/:id/previews", () => {
         _tag: "Bound",
         serviceId: ServiceId.make(target.service),
         attemptId: SessionProcessId.make(target.process),
+        host: "rewrite",
+        dial: "session-bound",
       },
     };
     const unbound: PreviewView = {

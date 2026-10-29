@@ -164,7 +164,10 @@ export const makePreviewPools = (forwardCeiling: number) =>
       const target: ForwardTarget = {
         workspaceId: attempt.workspaceId,
         port: attempt.port,
-        binding: { kind: "session", session: ForwardSessionOwner.make(attempt.platformSessionId) },
+        binding:
+          attempt.dial === "port-scoped"
+            ? { kind: "port" }
+            : { kind: "session", session: ForwardSessionOwner.make(attempt.platformSessionId) },
       };
       const connect = Effect.runSyncWith(forwarding)(asSealantUser(viewerId)(forwardSockets));
       const open = () => dial(pool, connect, target);
