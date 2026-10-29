@@ -115,9 +115,13 @@ const Argv = Schema.NonEmptyArray(
   ),
 );
 
-/** A TCP accept on the first TCP port, a probe command, or the preset's own check. */
+/**
+ * A TCP accept on the first TCP port, a probe command, the preset's own check, or, for a resource
+ * with no TCP port, none: it is reported running and not probed.
+ */
 export const ResourceReady = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("tcp") }),
+  Schema.Struct({ kind: Schema.Literal("none") }),
   Schema.Struct({ kind: Schema.Literal("command"), argv: Argv }),
   Schema.Struct({ kind: Schema.Literal("preset") }),
 ]);
@@ -282,6 +286,17 @@ const envRefusals = (name: string, value: ResourceEnvValue): ReadonlyArray<Resou
           message: `is not a project secret's name. ${formatProjectEnvironmentIssue(issue)}`,
         },
       ];
+};
+
+const readyRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> => {
+  const hasTcp = def.ports.some((port) => port.protocol === "tcp");
+  if (def.ready.kind === "tcp" && def.ports.length > 0 && !hasTcp) {
+    return [{ key: "ready", message: "is a TCP accept, and this resource has no TCP port" }];
+  }
+  if (def.ready.kind === "none" && hasTcp) {
+    return [{ key: "ready", message: "is none, and this resource has a TCP port to check" }];
+  }
+  return [];
 };
 
 const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> => {
@@ -460,6 +475,7 @@ export const resourceDefinitionRefusals = (
     })),
     ...Object.entries(def.env).flatMap(([name, value]) => envRefusals(name, value)),
     ...presetRefusals(def),
+    ...readyRefusals(def),
     ...Object.entries(def.exports).flatMap(([name, template]) =>
       exportRefusals(def, name, template),
     ),

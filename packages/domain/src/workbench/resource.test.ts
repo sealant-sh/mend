@@ -194,6 +194,12 @@ describe("rules across a definition's fields", () => {
     ["an export over a named port", { exports: { PORT_AMQP: "{port}" } }, "exports.PORT_AMQP"],
     ["an export of an unknown port", { exports: { URL: "{host}:{port.http}" } }, "exports.URL"],
     ["an export of an env the definition lacks", { exports: { URL: "{env.PASS}" } }, "exports.URL"],
+    [
+      "a TCP check on a resource with no TCP port",
+      { ports: [{ name: "dns", port: 53, protocol: "udp" }], ready: { kind: "tcp" } },
+      "ready",
+    ],
+    ["no check on a resource with a TCP port", { ready: { kind: "none" } }, "ready"],
     ["a secret no project secret can be called", { env: { PASS: { secret: "rabbitmq-password" } } }, "env.PASS.secret"],
     ["an empty secret name", { env: { PASS: { secret: "" } } }, "env.PASS.secret"],
     ["a secret in Mend's own namespace", { env: { PASS: { secret: "MEND_TOKEN" } } }, "env.PASS.secret"],
@@ -238,6 +244,14 @@ describe("rules across a definition's fields", () => {
     [redis, "valkey/valkey:8"],
   ])("accepts an image of the preset's family: %#", (preset, image) => {
     expect(resourceDefinitionRefusals(preset({ image }))).toEqual([]);
+  });
+
+  it.each([
+    ["no check", { kind: "none" }],
+    ["a probe command", { kind: "command", argv: ["dig", "@localhost"] }],
+  ])("takes %s on a UDP-only resource", (_, ready) => {
+    const def = define({ ports: [{ name: "dns", port: 53, protocol: "udp" }], ready });
+    expect(resourceDefinitionRefusals(def)).toEqual([]);
   });
 
   it("says which brace an export leaves open", () => {
