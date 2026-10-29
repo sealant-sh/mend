@@ -443,10 +443,14 @@ domain, or with the tailnet default (decision 6). It follows item 14:
   default it is not the gateway's `ts.net` name. The scheme is `https:` (or plain HTTP on loopback),
   the SDK in use has the bounded forward, and the listener's bind matches what setup published.
 - **open until declared:** the wildcard DNS and certificate (on the tailnet default, the Tailscale
-  steps of decision 6), and who can reach the published listener. Only a check from another network
-  sees those. An open item refuses a `public` start, as item 14 does.
+  steps of decision 6), and who can reach the published listener. With a preview domain on Mend's
+  own site, also that no other host on that registrable domain keeps a session in a cookie without
+  `__Host-`, since a page on a preview can set cookies every host there receives. Only a check from
+  another network sees those. An open item refuses a `public` start, as item 14 does.
 - **observed, on the tailnet default (decision 6) and under decision 1's subdomain option:** every
   Mend cookie carries `__Host-`.
+- **open under `MEND_EXPOSURE=public`, whatever was declared:** the tailnet default, whose names are
+  one site and not a registrable domain of the previews' own (decision 6).
 
 `raw-service-ports` stays as it is. A preview never needs a raw port off loopback.
 
@@ -475,7 +479,10 @@ sections keep the options he weighed, so a later change can start from them.
 
 **Decided by Yiannis, 2026-10-24: a separate registrable domain.** He asked, "I suppose the users
 setup matters?" It does. The operator brings the preview domain and its DNS provider, and Mend
-assumes neither. Each setup needs this:
+assumes neither. **Extended by Yiannis, 2026-10-29:** a preview domain on Mend's own registrable
+domain (the subdomain row below) is allowed too, now that Mend's cookies are `__Host-` on every
+https `APP_URL` and Mend refuses cookie-bearing requests from sibling sites (delivery step 8b, D3).
+A domain equal to Mend's host, above it or under it stays refused. Each setup needs this:
 
 - **Public, behind an edge.** A registrable domain of the operator's own, apart from Mend's, with a
   wildcard record `*.<preview domain>` that points at the edge. A wildcard certificate over DNS-01,
@@ -494,12 +501,12 @@ assumes neither. Each setup needs this:
 
 The options weighed:
 
-| Option                                                  | For a person                                                                                                     | For the operator                                                                                                       | In the code                                                                                                                                                                                     |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A separate registrable domain (`*.mendpreview.dev`)     | One redirect crosses sites. The app's cookies live outside Mend's site. Previews share one site with each other. | Buy and renew a second domain, and get a wildcard certificate over DNS-01.                                             | The preview domain is a one-label suffix. Nothing else moves.                                                                                                                                   |
-| The same, listed on the Public Suffix List              | Every preview is a site of its own, so a page on one preview cannot set cookies for another.                     | The domain must be submitted to the list and accepted, which takes weeks, and browsers pick it up with their releases. | Nothing beyond the first option.                                                                                                                                                                |
-| A subdomain of Mend's domain (`*.preview.mend.example`) | A familiar URL. Previews and Mend are cross-origin but **same-site**.                                            | No second domain. A wildcard certificate over DNS-01 is still needed.                                                  | Mend's own cookies move to `__Host-` names, the old names stop authenticating, every state-changing route is checked against requests from sibling sites, and gate item 15 observes the prefix. |
-| Hosts the operator assigns, no wildcard                 | A fixed set of names.                                                                                            | DNS and a certificate per host, and a pool that runs out.                                                              | A table from host to preview replaces the suffix. A host is never reused, so a full pool answers "no host free".                                                                                |
+| Option                                                  | For a person                                                                                                     | For the operator                                                                                                       | In the code                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A separate registrable domain (`*.mendpreview.dev`)     | One redirect crosses sites. The app's cookies live outside Mend's site. Previews share one site with each other. | Buy and renew a second domain, and get a wildcard certificate over DNS-01.                                             | The preview domain is a one-label suffix. Nothing else moves.                                                                                                                                                                                                         |
+| The same, listed on the Public Suffix List              | Every preview is a site of its own, so a page on one preview cannot set cookies for another.                     | The domain must be submitted to the list and accepted, which takes weeks, and browsers pick it up with their releases. | Nothing beyond the first option.                                                                                                                                                                                                                                      |
+| A subdomain of Mend's domain (`*.preview.mend.example`) | A familiar URL. Previews and Mend are cross-origin but **same-site**.                                            | No second domain. A wildcard certificate over DNS-01 is still needed.                                                  | Built in delivery step 8b: Mend's own cookies are `__Host-` names, the old names stop authenticating, a cookie-bearing request from a sibling site is refused unless it names an allowed `Origin` or is a top-level navigation, and gate item 15 observes the prefix. |
+| Hosts the operator assigns, no wildcard                 | A fixed set of names.                                                                                            | DNS and a certificate per host, and a pool that runs out.                                                              | A table from host to preview replaces the suffix. A host is never reused, so a full pool answers "no host free".                                                                                                                                                      |
 
 **Why the separate domain.** ADR 0004 asks only for a separate origin (`:363-364`), so the subdomain
 option is allowed. Its cost is what a sibling host can do. A page on a same-site host can set a
@@ -625,11 +632,15 @@ of their own, and it then takes over from the `ts.net` name. A public instance s
 registrable domain of its own (decision 1).
 
 **The default on a tailnet.** One Tailscale Service, such as `svc:mend-preview`, is the gateway's
-name: `https://mend-preview.<tailnet>.ts.net:<port>`. It is never Mend's own machine name. Mend runs
-`tailscale serve --service=svc:mend-preview --https=<port> http://127.0.0.1:<gateway port>` for each
-preview's port, so TLS ends at `tailscaled` on the Mend host, which is this setup's edge. The
-gateway maps the port to the preview, where elsewhere it maps the label. Everything else in the
-gateway is unchanged.
+name: `https://mend-preview.<tailnet>.ts.net:<port>`. It is never Mend's own machine name. Mend's
+container has no `tailscaled` socket (decided by Yiannis, 2026-10-28), so `mend server setup`
+prints, once,
+`tailscale serve --service=svc:mend-preview --https=<port> --yes http://127.0.0.1:<gateway port>`
+for each port of a fixed set, `20001-20016` unless the operator gives another, and the operator runs
+them on the Mend host. A rerun prints only the ports added or dropped. TLS ends at `tailscaled` on
+the Mend host, which is this setup's edge. Mend gives a preview a port of the set the first time
+someone opens it, and the gateway maps the port to the preview, where elsewhere it maps the label.
+Everything else in the gateway is unchanged.
 
 **What the tailnet default costs.**
 
@@ -662,16 +673,30 @@ gateway is unchanged.
   out when another preview on the same tailnet sets the same name. The prefix also counts against
   the browser's limit of 4096 bytes per cookie. An operator's own preview domain gives each preview
   a host of its own, and the limit goes away.
-- **Ports are finite, and they get reused.** A port is reused only after its preview is removed, and
-  the least recently used free port goes first. A link to a removed preview's port can then open
-  another preview, still behind that preview's own sign-in and visibility check.
+- **Ports are finite, and they get reused.** Decided by Yiannis, 2026-10-29: a port goes to another
+  preview once its own preview, removed or not, has had no open connection for 24 hours, a quiet
+  period kept in one constant (`TAILNET_PORT_QUIET_HOURS`). Ports never used go first, then the
+  least recently used, "used" meaning the last open connection. A preview that lost its port gets a
+  free one at its next open. On the first open of the new preview on a reused port in a browser, the
+  gateway answers the sign-in exchange with `Clear-Site-Data: "cache", "storage"`, so what the
+  earlier preview cached or stored at that origin is gone before the new one's first page. When
+  every port was in use within the quiet period, opening another answers a page that says when the
+  first frees. A link to a reused port opens the new preview, still behind its own sign-in and
+  visibility check.
+- **The limit of port reuse.** A tab of the earlier preview left open through the whole quiet period
+  with no connection, such as a page that loaded and then made no request for 24 hours, keeps
+  running on the port's origin. If the new preview is then opened in the same browser, that page's
+  next request carries the new preview's grant, and the earlier page acts on the new preview as the
+  person signed in. `Clear-Site-Data` clears storage and the cache, not a page that is open. An
+  operator's own preview domain does not have this limit, because every preview gets a host of its
+  own.
 - **How many previews fit.** The `tailscale serve` CLI accepts any `--https` port up to 65535, and
   only Funnel restricts ports (Tailscale `cmd/tailscale/cli/serve_v2.go` and `ipn/serve.go` at
   `a6cffd0a6d11`). A Tailscale Service advertises only the endpoints its definition in the admin
   console lists, such as `tcp:443` (https://tailscale.com/kb/1552/tailscale-services), and grants
   must allow those ports. So the real cap is the set of endpoints the operator defines. Whether a
-  definition takes a range, such as `tcp:20000-20999`, is not documented. Delivery step 8 checks it
-  before Mend relies on a range. Until then, setup asks for an explicit list.
+  definition takes a range, such as `tcp:20000-20999`, is not documented and not verified live, so
+  setup prints one endpoint per port.
 
 **What the operator turns on in Tailscale.**
 
@@ -712,6 +737,30 @@ certificates under a machine name are not available: Tailscale's issue #7081 for
 wildcard certificates is open. ADR 0004 decision 21 published the t3code gateway where Mend's web
 port is, because a gateway on loopback only made every T3 Code client keep an SSH tunnel open. The
 bounded forward (platform feedback 1) gates the gateway on every exposure.
+
+### Delivery step 8b: four answers
+
+Decided by Yiannis, 2026-10-29, for delivery step 8b:
+
+- **D1. `__Host-` on every https APP_URL.** Mend's session cookie is
+  `__Host-better-auth.session_token` whenever `APP_URL` is https, not only on the tailnet default,
+  so a change of preview settings never signs anyone out. Everyone signs in once when it ships. Over
+  plain http the name has no prefix.
+- **D2. The tailnet default needs an https APP_URL.** Setup and the API refuse the tailnet default
+  while `APP_URL` is http, when the tailnet is the routing in use: a domain takes over from a
+  leftover tailnet hostname, and then D2 does not apply. Setup offers the way to https: serve Mend's
+  own web port with `tailscale serve --bg --https=443 http://<its loopback address>:<web port>`,
+  then use this machine's MagicDNS name as `APP_URL`. That is the one https `--url` setup takes on a
+  loopback bind. Rejected: allowing it with gate item 15 open.
+- **D3. A preview domain on Mend's own site is allowed while APP_URL is https.** The 8a refusal of a
+  preview domain that shares Mend's registrable domain is lifted in setup, at API start and in gate
+  item 15, which observes `__Host-` for that layout. Over http Mend's cookies cannot be `__Host-`,
+  so setup and the API still refuse it there. A domain equal to Mend's host, above it or under it is
+  still refused. Every other host on that registrable domain receives the cookies a preview's page
+  sets; gate item 15 asks the operator to declare that none of them keeps a session in a cookie
+  without `__Host-`.
+- **D4. Sixteen ports.** The tailnet default's set is `20001-20016`, changed with
+  `mend server setup --preview-tailnet-ports`.
 
 ## Amendments
 
@@ -792,8 +841,10 @@ This PR adds five entries to `PLATFORM-FEEDBACK.md`:
   keep their own words.
 - An instance where the operator set up neither a preview domain nor the tailnet's Service behaves
   as it does today.
-- On a tailnet, the `ts.net` default moves Mend's own cookies to `__Host-` names, so everyone signs
-  in to Mend once more when it ships.
+- On every https install, Mend's own cookies move to `__Host-` names (D1 below), so everyone signs
+  in to Mend once more when delivery step 8b ships.
+- A preview domain may share Mend's registrable domain while `APP_URL` is https (D3 below); the gate
+  observes `__Host-` for it.
 - The gateway waits for a Sealant release with the bounded forward, on every exposure.
 - A stateful dependency keeps its workspace up after the preview stops, until P-SLNT-46 gives it
   durable storage.
@@ -878,3 +929,34 @@ may overturn any of them without touching the rest.
 9. **The gateway waits for a bounded forward on every exposure.** Taken, because the gateway runs in
    the API process, and an unbounded queue per connection can exhaust the memory of Mend's control
    plane.
+10. **A removed preview frees its tailnet port by a trigger.** Taken in delivery step 8b. A preview
+    is removed only through foreign-key actions, when its worktree or project is deleted, and those
+    run in no code Mend writes. A trigger on `previews` stamps `released_at` in the same transaction
+    on every path, so least-recently-used reuse stays exact. Rejected: a statement in each delete
+    path, which a new path can forget, and a sweep, which reorders ports freed within its interval.
+11. **Tailnet viewers on a Docker install share one address window.** Taken in delivery step 8b.
+    `tailscaled` on the host reaches the gateway through its published loopback port, so inside the
+    container every viewer arrives from the bridge address, and `X-Forwarded-For` from that address
+    is not believed. Trusting the bridge would let any process on the Mend host choose the address
+    it is counted by, and the bridge's address is not fixed. The shared window allows 12,000 preview
+    requests a minute, and each viewer's account budgets still apply after sign-in. Rejected:
+    trusting the bridge peer for the gateway. The same holds for Mend's own web port when D2's
+    `tailscale serve --https=443` serves it: everyone on the tailnet shares one window of 1,200
+    requests and 20 sign-ins a minute, and the upgrade that brings `__Host-` signs everyone in again
+    through those 20. The operations guide names the two budgets to raise. Rejected for the same
+    reason: trusting that hop for Mend's web.
+12. **One sibling-site rule.** Taken in delivery step 8b. Mend's own routes and the preview gateway
+    ask the same predicate, `siblingRequestAdmitted` in `@mend/network`: a request from another site
+    or a sibling host passes only as a top-level document navigation by `GET`. Browsers never
+    navigate by `HEAD`, so a `HEAD` that says it navigates is refused on both. Mend's routes apply
+    it only to a request carrying Mend's exact session cookie, the same name the budgets count. A
+    browser that sends no Fetch Metadata, such as Safari before 16.4, is not checked by it; the
+    `Origin` check still covers writes and upgrades.
+13. **A server image says what its previews can do.** Taken in delivery step 8b. The image carries
+    `dev.sealant.mend.previews`, a list (`tailnet-ports,same-site-domain`), and setup reads it
+    before activating previews on the tailnet or a preview domain on Mend's own site, as it reads
+    the t3code gateway's label. An install whose CLI was upgraded alone keeps its pinned server,
+    which would refuse these settings at start after its working generation was replaced.
+14. **The tailnet default is refused under a public exposure, by the API too.** Taken in delivery
+    step 8b. Gate item 15 holds an open fact for it, so `MEND_EXPOSURE=public` refuses to start with
+    it whatever was declared, not only `mend server setup`.

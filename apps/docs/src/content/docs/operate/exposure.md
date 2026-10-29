@@ -193,11 +193,13 @@ Mend is told the truth about the edge through three settings:
 - Session cookies are `Secure`, `HttpOnly` and `SameSite=Lax` whenever `APP_URL` is `https:`, and
   named `__Host-` (`__Host-better-auth.session_token`): host-only on Mend's host with `Path=/`, so
   no other host on Mend's site can set or replace them. Over `http:` the name has no prefix.
-- A request that carries a cookie and that the browser marks as coming from another site or a
-  sibling host (`Sec-Fetch-Site: same-site` or `cross-site`) is refused with `403` unless it names
-  an allowed `Origin` or is a top-level navigation. A preview on Mend's own site, as on a tailnet's
-  `ts.net` default, then cannot act as the person signed in to Mend through an image, a script or a
-  `fetch`, and a link to Mend from anywhere still opens.
+- A request that carries Mend's session cookie and that the browser marks as coming from another
+  site or a sibling host (`Sec-Fetch-Site: same-site` or `cross-site`) is refused with `403` unless
+  it names an allowed `Origin` or is a top-level navigation by `GET`. A preview on Mend's own site,
+  as on a tailnet's `ts.net` default, then cannot act as the person signed in to Mend through an
+  image, a script or a `fetch`, and a link to Mend from anywhere still opens. A browser that sends
+  no Fetch Metadata, such as Safari before 16.4, gets only the `Origin` check, which covers writes
+  and upgrades but not a `GET` such as an image.
 
 ### The Caddy edge
 
@@ -337,9 +339,13 @@ mend server setup --preview-domain previews.example.net \
 ```
 
 The domain must be neither Mend's host nor above or below it. `previews.example.com` beside
-`mend.example.com` shares Mend's registrable domain and is allowed: Mend's cookies are `__Host-`
-over https, so a page on a preview can neither set nor replace them, and Mend refuses a request
-carrying its cookie from a sibling site unless it is a top-level navigation.
+`mend.example.com` shares Mend's registrable domain and is allowed while Mend's URL is https: Mend's
+cookies are `__Host-` there, so a page on a preview can neither set nor replace them, and Mend
+refuses a request carrying its cookie from a sibling site unless it is a top-level navigation. Every
+other host on `example.com` receives the cookies a preview's page sets, so give previews a
+registrable domain of their own if any of those hosts keeps a session in a cookie without `__Host-`.
+Without a domain, `mend server setup --preview-tailnet` serves previews on a tailnet's `ts.net`
+name.
 
 A wildcard certificate needs the DNS-01 challenge, which the packaged Caddy cannot do, so you supply
 a certificate for `*.previews.example.net` and its key, issued elsewhere. Setup copies both into the
