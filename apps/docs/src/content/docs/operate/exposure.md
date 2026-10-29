@@ -407,7 +407,7 @@ a capture.
 | `MEND_BUDGET_UPLOAD_BODY_BYTES`                | `25165824` | The same, for routes that take a file: pasted images, skills, folder uploads, dotfiles, the workspace image.                 |
 | `MEND_BUDGET_FRAME_BYTES`                      | `1048576`  | One WebSocket frame from a client on a terminal, a service tunnel or the key bridge. Over it, the socket closes 1009.        |
 | `MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE`      | `1200`     | Requests from one client address, counted before authentication.                                                             |
-| `MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE`   | `1200`     | Requests presenting one credential (a session cookie or a bearer), valid or not.                                             |
+| `MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE`   | `1200`     | Requests presenting one credential (Mend's session cookie by its exact name, or a bearer), valid or not.                     |
 | `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE`      | `20`       | Sign-in, sign-up, password reset and invitation attempts from one address.                                                   |
 | `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS`            | `24`       | Unsettled sessions one account holds.                                                                                        |
 | `MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS`       | `120`      | Unsettled sessions one organization holds.                                                                                   |

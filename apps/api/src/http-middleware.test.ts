@@ -40,6 +40,7 @@ const serve = (limits: Partial<BudgetLimits> = {}) => {
       budgets: makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...limits }),
       trustedProxies: [],
       errorDetail: { mode: "redacted" },
+      sessionCookie: "__Host-better-auth.session_token",
       now: () => 0,
     }),
   ).pipe(Layer.provide(HttpServer.layerServices));

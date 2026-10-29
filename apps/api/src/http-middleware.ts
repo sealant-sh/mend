@@ -1,3 +1,4 @@
+import type { SessionCookiePolicy } from "@mend/auth";
 import type { PublicNetwork } from "@mend/network";
 import { Layer } from "effect";
 import type { HttpRouter } from "effect/http";
@@ -29,6 +30,7 @@ export const apiMiddleware = (input: {
   readonly budgets: Budgets["Service"];
   readonly trustedProxies: ReadonlyArray<string>;
   readonly errorDetail: ErrorDetail["Service"];
+  readonly sessionCookie: SessionCookiePolicy["name"];
   readonly now?: () => number;
 }): Layer.Layer<never, never, HttpRouter.HttpRouter> =>
   Layer.mergeAll(
@@ -36,5 +38,5 @@ export const apiMiddleware = (input: {
     apiResponseHeaders,
     publicNetworkPolicy(input.network),
     errorBoundary(input.errorDetail),
-    requestBudgets(input.budgets, input.trustedProxies, input.now),
+    requestBudgets(input),
   );

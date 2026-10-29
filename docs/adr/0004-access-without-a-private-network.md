@@ -238,7 +238,9 @@ happens before the effect it guards.
   and invitation acceptance get a tighter window than the rest. No request is exempt because its
   whole chain is trusted: it is counted under the socket's address (only a bare loopback socket with
   no `X-Forwarded-For` is this machine's own, and sign-in attempts are counted even then). A
-  credential is the bearer or a session cookie's value, never the client-writable rest of `Cookie`.
+  credential is the bearer or the value of the cookie named exactly as Mend's session cookie, never
+  the client-writable rest of `Cookie`, and never a look-alike name another host on Mend's site
+  could plant (ADR 0017 delivery step 8b).
 - **Concurrent work.** Per account: live sessions, launches in flight, and open long-lived
   connections by kind (event streams, terminals, tunnels, key bridges). `ConnectionRegistry` already
   holds every long-lived connection per account, so it is where the connection budget is counted and
