@@ -1118,6 +1118,10 @@ export const makeGatewayRpcHandlers = ({
         }
         if (resource._tag !== "attachment")
           return yield* new AssetWorkspaceContextNotFoundError({ resource });
+        if (resource.mimeType === "text/html" && resource.disposition === "inline")
+          return yield* assetUrls
+            .issue(session.sessionId, { kind: "page", pageId: resource.attachmentId })
+            .pipe(Effect.mapError(() => new AssetAttachmentNotFoundError({ resource })));
         const image = hub.imageOf(resource.attachmentId);
         if (image === null) return yield* new AssetAttachmentNotFoundError({ resource });
         return yield* assetUrls

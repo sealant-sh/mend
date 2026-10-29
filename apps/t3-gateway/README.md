@@ -530,6 +530,33 @@ the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reac
   it. A terminal is kept from before Mend opens its shell: a ticket or socket that fails after, or
   an open that is interrupted, stops that shell rather than leave it running.
 
+## Published pages
+
+A protocol session's Mend `page` items become completed `dynamic_tool` items named `html_render`,
+with only the page id, title and height in the output. The pinned t3code v0.1.2 client reads that
+reference and renders its frame and expanded dialog. The harness call a published page replaces
+stays hidden; a refused call stays visible. Snapshots, live updates and `getTurnItem` use the same
+projection. PTY sessions have no items, so their pages do not appear in T3 threads.
+
+For an inline `text/html` attachment, `assets.createUrl` mints a Mend frame as the paired person
+before issuing a gateway URL. The URL lasts 30 minutes, capped by the originating bearer; a mint is
+refused if that would leave less than 15 minutes, before Mend is asked. A mint for a page whose
+earlier URL from the same bearer has at least 15 minutes left returns that URL again, and no page
+URL is retired before it expires, so a frame t3code keeps mounted never loses its URL early. A 401
+from Mend's frame mint refuses the device. The view request carries no device token, so any answer
+to it other than a 200 only makes the page unavailable. Every GET mints a fresh Mend frame as that
+person and streams its document, including Mend's existing t3code bootstrap. Removing project access
+therefore refuses the next load. Responses use `text/html; charset=utf-8`,
+`Content-Security-Policy: sandbox allow-scripts allow-forms`, `nosniff`, `no-referrer` and
+`private, no-store`. The header also sandboxes t3code's top-level phone WebView. Asset tokens and
+Mend frame tokens do not enter logs or traces. A gateway restart forgets URLs; remounting mints
+again from the pages Mend keeps.
+
+`test/pages.test.ts` covers the RPC and HTTP boundaries, access removal, revocation, expiry, URL
+reuse, redirects over the gateway's own fetch client, tampering, restart and the pinned client's
+readers. `test/thread.test.ts` also verifies bounded metadata and malformed references, with page
+items built as Mend writes them.
+
 ## Current worktree previews
 
 `assets.createUrl` supports `workspace-file` and `media-file` in a visible thread's worktree,

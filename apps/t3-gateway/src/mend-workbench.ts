@@ -117,6 +117,18 @@ export const MendItem = Schema.Struct({
 });
 export type MendItem = typeof MendItem.Type;
 
+/** `PageRef` in @mend/domain/workbench: an item's `data` when its kind is `page`. */
+export const MendPageRef = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  height: Schema.Number,
+});
+export type MendPageRef = typeof MendPageRef.Type;
+
+/** `PageFrame` in @mend/api-contracts, from `GET /api/pages/:id/frame`. */
+export const MendPageFrame = Schema.Struct({ url: Schema.String, expiresAt: Schema.String });
+export type MendPageFrame = typeof MendPageFrame.Type;
+
 /** `AgentInputQuestion` in @mend/domain/workbench. */
 export const MendInputQuestion = Schema.Struct({
   id: Schema.String,

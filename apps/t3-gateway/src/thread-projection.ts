@@ -26,11 +26,15 @@ import {
   type OrchestrationV2UserInputQuestion,
   type ProviderApprovalOption,
 } from "@mend/t3-contracts";
+import { HTML_RENDER_TOOL_NAME, readHtmlRenderReference } from "@mend/t3-contracts/html-render";
 import { derivePendingBackgroundWork } from "@mend/t3-contracts/pending-background-work";
+import { htmlRenderFromToolItem } from "@mend/t3-contracts/tool-output";
 import type * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { wordsOf } from "./images.ts";
-import type { MendItem, MendRequest, MendTurn } from "./mend-workbench.ts";
+import { MendPageRef, type MendItem, type MendRequest, type MendTurn } from "./mend-workbench.ts";
 import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-options.ts";
 import { harnessProvider } from "./server-config.ts";
 import {
@@ -263,12 +267,33 @@ const attachmentOf = (image: StoredImage): ChatAttachment => ({
   sizeBytes: image.sizeBytes,
 });
 
+const decodePageRef = Schema.decodeUnknownOption(MendPageRef);
+
 /** The turn item one Mend item is shown as, or null for one already shown another way. */
 const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem | null => {
-  if (item.kind === "page" || isShownAsPage(item)) return null;
+  if (isShownAsPage(item)) return null;
   const streaming = item.status === "in-progress";
   const data = item.data;
   switch (item.kind) {
+    case "page": {
+      const ref = decodePageRef(data);
+      if (Option.isNone(ref)) return null;
+      const page = readHtmlRenderReference({
+        attachmentId: ref.value.id,
+        title: ref.value.title,
+        height: ref.value.height,
+      });
+      if (page === undefined) return null;
+      return {
+        ...base,
+        type: "dynamic_tool",
+        status: "completed",
+        // t3code v0.1.2 recognizes the bare name, but not mcp__mend__html_render.
+        toolName: HTML_RENDER_TOOL_NAME,
+        input: { title: page.title, height: page.height },
+        output: { htmlRender: page },
+      };
+    }
     // The turn's input is the user message; codex also records it as an item.
     case "user-message":
       return null;
@@ -374,9 +399,16 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
     type: "dynamic_tool",
     toolName: name,
     input: input === undefined ? data : input,
-    ...(item.text === null ? {} : { output: item.text }),
+    ...(item.text === null ? {} : { output: outputOfToolRow(name, item.text) }),
   };
 };
+
+/**
+ * A tool row's output as the agent's harness reported it, unless t3code would read it as a page
+ * reference: only Mend's own record of a publish names a page.
+ */
+const outputOfToolRow = (toolName: string, output: string): unknown =>
+  htmlRenderFromToolItem({ toolName, output }) === undefined ? output : { text: output };
 
 const questionsOf = (request: MendRequest): ReadonlyArray<OrchestrationV2UserInputQuestion> =>
   (request.questions ?? []).flatMap((question) => {
