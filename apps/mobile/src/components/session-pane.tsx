@@ -24,7 +24,7 @@ import { useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { ask } from "@/components/ask";
+import { useAsk } from "@/components/ask";
 import { EvButton } from "@/components/button";
 import { ProtocolConversation } from "@/components/protocol-conversation";
 import { PtyConversation } from "@/components/pty-conversation";
@@ -87,6 +87,7 @@ export function SessionPane({
   readonly direct?: number;
 }) {
   const router = useRouter();
+  const ask = useAsk();
   const insets = useSafeAreaInsets();
   const posture = usePosture();
   const detail = useSession(sessionId);

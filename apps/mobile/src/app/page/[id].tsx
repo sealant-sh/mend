@@ -4,27 +4,31 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { PageFrame } from "@/components/page-frame";
 import { MonoText, UiText } from "@/components/typography";
-import { pageOfRoute } from "@/data/pages";
+import { usePage } from "@/data/live";
+import { pageRouteOf } from "@/data/pages";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 export default function PageScreen() {
-  const params = useLocalSearchParams<{
-    id: string;
-    session?: string;
-    title?: string;
-    height?: string;
-    published?: string;
-  }>();
-  const page = pageOfRoute(params);
+  const route = pageRouteOf(useLocalSearchParams<{ id: string; session?: string }>());
+  const found = usePage(route);
+  const page = found.data ?? null;
   const router = useRouter();
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
   const close = router.canGoBack()
     ? undefined
     : () =>
-        page === null
+        route === null
           ? router.replace("/")
-          : router.replace({ pathname: "/session/[id]", params: { id: page.sessionId } });
+          : router.replace({ pathname: "/session/[id]", params: { id: route.sessionId } });
+  const notice =
+    route === null
+      ? "this page link is missing its details · open the page from its session"
+      : found.isPending
+        ? "loading page…"
+        : found.isError
+          ? found.error.message
+          : "this page is not in its session on this machine · open the page from its session";
   return (
     <>
       <Stack.Screen
@@ -54,7 +58,7 @@ export default function PageScreen() {
       >
         {page === null ? (
           <MonoText tone="faint" style={{ paddingVertical: 16 }}>
-            this page link is missing its details · open the page from its session
+            {notice}
           </MonoText>
         ) : (
           <PageFrame page={page} fill />

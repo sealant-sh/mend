@@ -118,6 +118,34 @@
       "rules": { "no-restricted-imports": "off" }
     },
     {
+      "files": ["apps/mobile/src/**/*.{ts,tsx}"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@tanstack/react-query",
+                "importNames": ["QueryClient", "QueryClientProvider"],
+                "allowTypeImports": true,
+                "message": "Server data lives in the pairing's client. Render under PairingBoundary (src/data/pairing-scope.tsx) and use useQueryClient(); never make a second client."
+              },
+              {
+                "name": "@tanstack/query-core",
+                "importNames": ["QueryClient"],
+                "allowTypeImports": true,
+                "message": "Server data lives in the pairing's client. Render under PairingBoundary (src/data/pairing-scope.tsx) and use useQueryClient(); never make a second client."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["apps/mobile/src/data/pairing-scope.tsx", "apps/mobile/src/**/*.test.{ts,tsx}"],
+      "rules": { "no-restricted-imports": "off" }
+    },
+    {
       "files": ["packages/ui/src/components/ui/**"],
       "rules": {
         "no-shadow": "off"

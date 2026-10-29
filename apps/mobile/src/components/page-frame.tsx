@@ -8,7 +8,7 @@ import { StyleSheet, View } from "react-native";
 import { EvButton } from "@/components/button";
 import { PageDocument } from "@/components/page-document";
 import { MonoText, UiText } from "@/components/typography";
-import { ApiError, api, useConfig } from "@/data/live";
+import { ApiError, api } from "@/data/live";
 import {
   PAGE_OFFLINE_RETRY_MS,
   pageFrameKey,
@@ -16,6 +16,7 @@ import {
   resolvePageUrl,
   type PageConnection,
 } from "@/data/pages";
+import { usePairing } from "@/data/pairing-scope";
 import { Unreachable, useUnreachable } from "@/data/reachability";
 import { radius, useEvidenceScheme, useEvidenceTheme } from "@/theme/evidence";
 
@@ -33,8 +34,6 @@ const mintFrame = async (
   return url;
 };
 
-const NO_CONNECTION: PageConnection = { url: "", token: "" };
-
 export function PageFrame({
   page,
   fill = false,
@@ -42,15 +41,8 @@ export function PageFrame({
   readonly page: PageRef;
   readonly fill?: boolean;
 }) {
-  const connection = useConfig() ?? NO_CONNECTION;
-  return (
-    <PageLifecycle
-      key={pageFrameKey(connection, page.id).join("\n")}
-      page={page}
-      connection={connection}
-      fill={fill}
-    />
-  );
+  const { config: connection } = usePairing();
+  return <PageLifecycle key={page.id} page={page} connection={connection} fill={fill} />;
 }
 
 function PageLifecycle({
@@ -66,7 +58,7 @@ function PageLifecycle({
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
   const retry = () => {
-    void queryClient.invalidateQueries({ queryKey: pageFrameKey(connection, page.id) });
+    void queryClient.invalidateQueries({ queryKey: pageFrameKey(page.id) });
     setFailed(false);
     setAttempt((current) => current + 1);
   };
@@ -99,9 +91,9 @@ function PageLoader({
   const theme = pageThemes[useEvidenceScheme()];
   const [appearance] = useState(theme.appearance);
   const [src, setSrc] = useState<string | null>(null);
-  const unreachable = useUnreachable();
+  const unreachable = useUnreachable(usePairing().key);
   const frame = useQuery({
-    ...pageFrameQuery(connection, page.id, () => mintFrame(connection, page.id, appearance)),
+    ...pageFrameQuery(page.id, () => mintFrame(connection, page.id, appearance)),
     enabled: connection.url !== "",
     retry: false,
     // Mint even when the OS reports no network, so the answer decides what the reader sees.

@@ -11,7 +11,7 @@ import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { ask } from "@/components/ask";
+import { useAsk } from "@/components/ask";
 import { EvButton } from "@/components/button";
 import { DiffPane } from "@/components/diff-pane";
 import { Pane } from "@/components/pane";
@@ -181,6 +181,7 @@ function ShellCompanion({
   readonly sessionId: string;
   readonly onClose: () => void;
 }) {
+  const ask = useAsk();
   const detail = useSession(sessionId);
   const { openShell, stopShell } = useSessionActions();
   const [opened, setOpened] = useState<string | null>(null);

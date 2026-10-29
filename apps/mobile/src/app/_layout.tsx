@@ -8,9 +8,9 @@ import {
   SpaceGrotesk_600SemiBold,
   SpaceGrotesk_700Bold,
 } from "@expo-google-fonts/space-grotesk";
-import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager } from "@tanstack/react-query";
 import { useFonts } from "expo-font";
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider, useRouter } from "expo-router";
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import * as SystemUI from "expo-system-ui";
@@ -20,13 +20,10 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { AskDialog } from "@/components/ask";
-import {
-  configureForegroundPresentation,
-  wireNotificationNavigation,
-} from "@/data/notification-navigation";
+import { NotificationRouting } from "@/components/notification-routing";
+import { configureForegroundPresentation } from "@/data/notification-navigation";
+import { PairingBoundary } from "@/data/pairing-scope";
 import { fontFamilies, useEvidenceTheme } from "@/theme/evidence";
-
-const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
 
 // React Native has no window focus: teach React Query that foregrounding IS
 // focus, so every stale query refetches the moment the app comes back —
@@ -38,14 +35,6 @@ configureForegroundPresentation();
 
 export default function RootLayout() {
   const { scheme, colors } = useEvidenceTheme();
-  const router = useRouter();
-  useEffect(
-    () =>
-      wireNotificationNavigation({
-        push: (sessionId) => router.push({ pathname: "/session/[id]", params: { id: sessionId } }),
-      }),
-    [],
-  );
   // The window behind the app shows wherever a screen does not paint — under the gesture bar on
   // Android, it read as a black strip. Keep it the app's own ground, in both schemes.
   useEffect(() => {
@@ -83,7 +72,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardProvider>
-        <QueryClientProvider client={queryClient}>
+        <PairingBoundary>
           <ThemeProvider value={navTheme}>
             <StatusBar style={scheme === "dark" ? "light" : "dark"} />
             <Stack
@@ -111,8 +100,9 @@ export default function RootLayout() {
               <Stack.Screen name="page/[id]" options={{ title: "Page" }} />
             </Stack>
             <AskDialog />
+            <NotificationRouting />
           </ThemeProvider>
-        </QueryClientProvider>
+        </PairingBoundary>
       </KeyboardProvider>
     </GestureHandlerRootView>
   );

@@ -16,7 +16,7 @@ import {
   View,
 } from "react-native";
 
-import { ask } from "@/components/ask";
+import { useAsk } from "@/components/ask";
 import { MonoText } from "@/components/typography";
 import {
   COMPOSER_LINE_HEIGHT,
@@ -100,24 +100,6 @@ export function ComposerField({ children }: { readonly children: ReactNode }) {
 
 const openSettings = () => void Linking.openSettings();
 
-const cameraRefused = (canAskAgain: boolean) =>
-  ask(
-    "Camera access is off",
-    "Mend takes a photo only when you ask. Turn on camera access for Mend in Settings.",
-    canAskAgain
-      ? [{ text: "OK" }]
-      : [
-          { text: "Cancel", style: "cancel" },
-          { text: "Open Settings", onPress: openSettings },
-        ],
-  );
-
-const failedToChoose = (error: unknown) =>
-  ask(
-    "No image attached",
-    error instanceof Error && error.message !== "" ? error.message : "The image could not be read.",
-  );
-
 /**
  * The button left of the field: photo library, camera, and — when the clipboard holds one — the
  * clipboard's image. iOS shows an action sheet; Android an alert with the same choices.
@@ -136,7 +118,28 @@ export function AttachButton({
   readonly onChosen: (images: ReadonlyArray<ChosenImage>) => void;
 }) {
   const { colors } = useEvidenceTheme();
+  const ask = useAsk();
   const ordinal = held + 1;
+
+  const cameraRefused = (canAskAgain: boolean) =>
+    ask(
+      "Camera access is off",
+      "Mend takes a photo only when you ask. Turn on camera access for Mend in Settings.",
+      canAskAgain
+        ? [{ text: "OK" }]
+        : [
+            { text: "Cancel", style: "cancel" },
+            { text: "Open Settings", onPress: openSettings },
+          ],
+    );
+
+  const failedToChoose = (error: unknown) =>
+    ask(
+      "No image attached",
+      error instanceof Error && error.message !== ""
+        ? error.message
+        : "The image could not be read.",
+    );
 
   const library = () => void chooseFromLibrary(room, ordinal).then(onChosen, failedToChoose);
   const camera = () =>

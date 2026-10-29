@@ -56,7 +56,6 @@ export default function PairScreen() {
   );
   const [code, setCode] = useState(linkedPayload?.code ?? "");
   const busy = useRef(false);
-  const claimedLink = useRef(false);
   const lastScan = useRef<{ readonly data: string; readonly at: number }>({ data: "", at: 0 });
 
   const cameraUsable = Platform.OS !== "web";
@@ -78,14 +77,13 @@ export default function PairScreen() {
     router.replace("/");
   };
 
-  // A deep link is claimed once, on arrival: the user already pointed a camera
-  // at the code, and re-typing it would be the same act twice. The ref makes a
-  // re-render — or a second pass in development — a no-op.
+  // A deep link is claimed on arrival: the user already pointed a camera at
+  // the code, and re-typing it would be the same act twice. A remount, or a
+  // second pass in development, joins the claim already made (claimPairing).
   const linkedUrl = linkedPayload?.url ?? null;
   const linkedCode = linkedPayload?.code ?? null;
   useEffect(() => {
-    if (linkedUrl === null || linkedCode === null || claimedLink.current) return;
-    claimedLink.current = true;
+    if (linkedUrl === null || linkedCode === null) return;
     void claimNow({ url: linkedUrl, code: linkedCode });
   }, [linkedUrl, linkedCode]);
 
