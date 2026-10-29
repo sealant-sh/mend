@@ -105,6 +105,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
             endedAt: null,
           }),
         ),
+      sendMessage: () => Effect.die("message send not in this test"),
       steerTurn: () => Effect.die("not in test"),
       interruptTurn: () => Effect.void,
       respondRequest: () => Effect.die("not in test"),

@@ -4,11 +4,18 @@ import {
   AgentRequestId,
   AgentTurnId,
   AgentTurnSteerId,
+  SessionMessageId,
   type ChangeLandingId,
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
 import {
+  MessageKeyConflictError,
+  TurnSteerForbiddenError,
+  messageOutcome,
+  type MessageTurnReason,
+  type SendMessageInput,
+  type SessionMessageResult,
   AgentItem,
   AgentRequest,
   AgentTurn,
@@ -41,13 +48,15 @@ import {
   notInArray,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
-import { DateTime, Effect, Layer, Schema } from "effect";
+import { Cause, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import {
+  sessionMessages,
   agentItems,
   agentRequests,
   agentSessions,
@@ -154,6 +163,33 @@ export class AgentControlJournalError extends Schema.TaggedError<AgentControlJou
 export class AgentConversationRepo extends Context.Service<
   AgentConversationRepo,
   {
+    readonly messageByClientId: (
+      input: SendMessageInput,
+    ) => Effect.Effect<SessionMessageResult | null, MessageKeyConflictError>;
+    readonly messageById: (id: SessionMessageId) => Effect.Effect<SessionMessageResult>;
+    readonly admitSteerMessage: (
+      input: SendMessageInput,
+      turnId: AgentTurnId,
+    ) => Effect.Effect<
+      MessageAdmission<SteerMessage>,
+      | MessageKeyConflictError
+      | SessionStoppingError
+      | AgentTurnNotFoundError
+      | TurnSteerForbiddenError
+    >;
+    readonly admitTurnMessage: (
+      input: SendMessageInput,
+      processId: SessionProcessId,
+      reason: MessageTurnReason,
+    ) => Effect.Effect<
+      MessageAdmission<TurnMessage>,
+      MessageKeyConflictError | SessionStoppingError
+    >;
+    /** Cancels a message's turn that no process took; true when it did. */
+    readonly withdrawMessageTurn: (
+      id: AgentTurnId,
+      processId: SessionProcessId,
+    ) => Effect.Effect<boolean>;
     readonly submitTurn: (
       sessionId: SessionId,
       processId: SessionProcessId,
@@ -195,10 +231,13 @@ export class AgentConversationRepo extends Context.Service<
     ) => Effect.Effect<AgentTurnSteer>;
     /**
      * A Queued steer whose turn no process will take (its process detached as the turn was
-     * queued): the turn is cancelled and the words stay, NotSent. A turn another process took
-     * meanwhile keeps the receipt.
+     * queued): the turn is cancelled and the words stay, NotSent. A turn another process took or
+     * claimed meanwhile keeps the receipt.
      */
-    readonly withdrawTurnSteer: (id: AgentTurnSteerId) => Effect.Effect<AgentTurnSteer>;
+    readonly withdrawTurnSteer: (
+      id: AgentTurnSteerId,
+      processId: SessionProcessId,
+    ) => Effect.Effect<AgentTurnSteer>;
     /** A restart ends the process's steers left Sending as Unknown: they are never re-sent. */
     readonly recoverSendingSteers: (processId: SessionProcessId) => Effect.Effect<void>;
     readonly recordProtocolControl: (
@@ -427,6 +466,33 @@ const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(fun
   return toTurn(row);
 });
 
+const insertTurnSteer = Effect.fn("AgentConversationRepo.insertTurnSteer")(function* (
+  tx: ConversationTx,
+  target: AgentTurn,
+  input: AdmitTurnSteerInput,
+) {
+  const [position] = yield* tx
+    .select({ value: max(agentTurnSteers.ordinal) })
+    .from(agentTurnSteers)
+    .where(eq(agentTurnSteers.turnId, target.id));
+  const [row] = yield* tx
+    .insert(agentTurnSteers)
+    .values({
+      id: AgentTurnSteerId.make(crypto.randomUUID()),
+      sessionId: target.sessionId,
+      processId: target.processId,
+      turnId: target.id,
+      author: input.author,
+      ordinal: (position?.value ?? -1) + 1,
+      input: input.input,
+      delivery: { _tag: "Sending" },
+      clientSteerId: input.clientSteerId,
+    })
+    .returning();
+  if (row === undefined) return yield* Effect.die("steer insert returned no row");
+  return toSteer(row);
+});
+
 /** Cancel queued turns and their open requests in the caller's transaction, without events. */
 export const cancelOpenTurnRows = Effect.fn("AgentConversationRepo.cancelOpenTurnRows")(function* (
   db: Pick<MendDatabase, "update">,
@@ -459,6 +525,62 @@ export const cancelOpenTurnRows = Effect.fn("AgentConversationRepo.cancelOpenTur
   return rows;
 });
 
+export type SteerMessage = Extract<SessionMessageResult, { readonly _tag: "Steer" }>;
+export type TurnMessage = Extract<SessionMessageResult, { readonly _tag: "Turn" }>;
+
+/** Created: this request wrote the message and delivers it. Replay: an earlier one with its key did. */
+export type MessageAdmission<R extends SessionMessageResult> =
+  | { readonly _tag: "Created"; readonly result: R }
+  | { readonly _tag: "Replay"; readonly result: SessionMessageResult };
+
+const isSteerMessage = (result: SessionMessageResult): result is SteerMessage =>
+  result._tag === "Steer";
+const isTurnMessage = (result: SessionMessageResult): result is TurnMessage =>
+  result._tag === "Turn";
+
+const bindMessage = (
+  tx: ConversationTx,
+  input: SendMessageInput,
+  result: SessionMessageResult,
+  reason: MessageTurnReason | null,
+) =>
+  tx.insert(sessionMessages).values({
+    id: result.messageId,
+    sessionId: input.sessionId,
+    author: input.sender,
+    clientMessageId: input.clientMessageId,
+    queueRequested: input.intent === "queue",
+    turnId: result._tag === "Turn" ? result.turn.id : null,
+    steerId: result._tag === "Steer" ? result.steer.id : null,
+    turnReason: reason,
+  });
+
+/** Cancels a turn no process took: still queued on `processId`, never claimed or sent. */
+const withdrawUntakenTurn = Effect.fn("AgentConversationRepo.withdrawUntakenTurn")(function* (
+  db: Pick<MendDatabase, "update">,
+  id: AgentTurnId,
+  processId: SessionProcessId,
+) {
+  const [turn] = yield* db
+    .update(agentTurns)
+    .set({
+      status: "cancelled",
+      endedAt: yield* DateTime.nowAsDate,
+      error: "The conversation's process ended before taking this turn.",
+    })
+    .where(
+      and(
+        eq(agentTurns.id, id),
+        eq(agentTurns.processId, processId),
+        eq(agentTurns.status, "queued"),
+        isNull(agentTurns.startedAt),
+        isNull(agentTurns.providerTurnId),
+      ),
+    )
+    .returning({ sessionId: agentTurns.sessionId });
+  return turn ?? null;
+});
+
 export const AgentConversationRepoLive: Layer.Layer<
   AgentConversationRepo,
   never,
@@ -470,6 +592,200 @@ export const AgentConversationRepoLive: Layer.Layer<
     const pg = yield* PgClient.PgClient;
 
     const notify = (sessionId: SessionId) => notifyAgentConversation(db, pg, sessionId);
+    /** A message already committed is this request's to deliver, whether or not feeds heard of it. */
+    const notifyAdmitted = (sessionId: SessionId) =>
+      notify(sessionId).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logWarning("conversation: a message's change notification failed").pipe(
+                Effect.annotateLogs({ sessionId }),
+              ),
+        ),
+      );
+
+    const readMessage = Effect.fn("AgentConversationRepo.readMessage")(function* (
+      tx: Pick<MendDatabase, "select">,
+      where: SQL,
+    ) {
+      const [row] = yield* tx
+        .select()
+        .from(sessionMessages)
+        .leftJoin(agentTurns, eq(sessionMessages.turnId, agentTurns.id))
+        .leftJoin(agentTurnSteers, eq(sessionMessages.steerId, agentTurnSteers.id))
+        .where(where)
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined) return null;
+      const binding = row.session_messages;
+      if (row.agent_turns !== null)
+        return {
+          binding,
+          result: messageOutcome(
+            { _tag: "Turn", messageId: binding.id, turn: toTurn(row.agent_turns) },
+            binding.turnReason,
+          ),
+        };
+      if (row.agent_turn_steers !== null)
+        return {
+          binding,
+          result: messageOutcome(
+            { _tag: "Steer", messageId: binding.id, steer: toSteer(row.agent_turn_steers) },
+            null,
+          ),
+        };
+      return yield* Effect.die("message target disappeared");
+    });
+
+    const readMessageKey = Effect.fn("AgentConversationRepo.readMessageKey")(function* (
+      tx: Pick<MendDatabase, "select">,
+      input: SendMessageInput,
+    ) {
+      if (input.clientMessageId === null) return null;
+      const existing = yield* readMessage(
+        tx,
+        sql`${sessionMessages.author} = ${input.sender} AND ${sessionMessages.clientMessageId} = ${input.clientMessageId}`,
+      );
+      if (existing === null) return null;
+      const { binding, result } = existing;
+      const words = result._tag === "Turn" ? result.turn.input : result.steer.input;
+      if (
+        binding.sessionId !== input.sessionId ||
+        words !== input.input ||
+        binding.queueRequested !== (input.intent === "queue")
+      )
+        return yield* new MessageKeyConflictError({
+          clientMessageId: input.clientMessageId,
+          message: "This message key was already used for another request.",
+        });
+      return result;
+    });
+
+    const messageByClientId = (input: SendMessageInput) => readMessageKey(db, input);
+    const messageById = (id: SessionMessageId) =>
+      readMessage(db, eq(sessionMessages.id, id)).pipe(
+        Effect.flatMap((row) =>
+          row === null ? Effect.die("message disappeared") : Effect.succeed(row.result),
+        ),
+      );
+
+    const replayUnderLock = Effect.fn("AgentConversationRepo.replayUnderLock")(function* (
+      tx: ConversationTx,
+      input: SendMessageInput,
+    ) {
+      if (input.clientMessageId === null) return null;
+      yield* tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext(${`mend:message:${input.sender}:${input.clientMessageId.toLowerCase()}`}))`,
+      );
+      const replay = yield* readMessageKey(tx, input);
+      return replay === null ? null : ({ _tag: "Replay", result: replay } as const);
+    });
+
+    /** A commit whose acknowledgement was lost: this attempt's own row is still its to deliver. */
+    const recoverCommitted = <R extends SessionMessageResult>(
+      input: SendMessageInput,
+      messageId: SessionMessageId,
+      cause: unknown,
+      isOwn: (result: SessionMessageResult) => result is R,
+    ): Effect.Effect<MessageAdmission<R>, MessageKeyConflictError> =>
+      Effect.gen(function* () {
+        const own = yield* readMessage(db, eq(sessionMessages.id, messageId));
+        if (own !== null && isOwn(own.result)) return { _tag: "Created", result: own.result };
+        const replay = yield* readMessageKey(db, input);
+        if (replay === null) return yield* Effect.die(cause);
+        return { _tag: "Replay", result: replay };
+      });
+
+    const admitSteerMessage = Effect.fn("AgentConversationRepo.admitSteerMessage")(function* (
+      input: SendMessageInput,
+      turnId: AgentTurnId,
+    ) {
+      const messageId = SessionMessageId.make(crypto.randomUUID());
+      const admitted = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const replay = yield* replayUnderLock(tx, input);
+            if (replay !== null) return replay;
+            if (!(yield* lockOpenConversation(tx, input.sessionId)))
+              return yield* new SessionStoppingError({ sessionId: input.sessionId });
+            const [turn] = yield* tx
+              .select()
+              .from(agentTurns)
+              .where(eq(agentTurns.id, turnId))
+              .for("update");
+            if (turn === undefined || turn.sessionId !== input.sessionId)
+              return yield* new AgentTurnNotFoundError({ turnId });
+            const sender = turnSteerSender(turn);
+            if (sender !== input.sender)
+              return yield* new TurnSteerForbiddenError({
+                turnId: turn.id,
+                reason: sender === null ? "no-sender" : "not-sender",
+                message: "Only this turn's sender may steer it.",
+              });
+            const steer = yield* insertTurnSteer(tx, toTurn(turn), {
+              turnId: turn.id,
+              author: input.sender,
+              input: input.input,
+              clientSteerId: null,
+            });
+            const result = messageOutcome({ _tag: "Steer", messageId, steer }, null);
+            yield* bindMessage(tx, input, result, null);
+            return { _tag: "Created", result } as const;
+          }),
+        )
+        .pipe(
+          Effect.catchTag("EffectDrizzleQueryError", (error) => Effect.die(error)),
+          Effect.catchTag("SqlError", (error) =>
+            recoverCommitted(input, messageId, error, isSteerMessage),
+          ),
+        );
+      if (admitted._tag === "Created") yield* notifyAdmitted(input.sessionId);
+      return admitted;
+    });
+
+    const admitTurnMessage = Effect.fn("AgentConversationRepo.admitTurnMessage")(function* (
+      input: SendMessageInput,
+      processId: SessionProcessId,
+      reason: MessageTurnReason,
+    ) {
+      const messageId = SessionMessageId.make(crypto.randomUUID());
+      const admitted = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const replay = yield* replayUnderLock(tx, input);
+            if (replay !== null) return replay;
+            if (!(yield* lockOpenConversation(tx, input.sessionId)))
+              return yield* new SessionStoppingError({ sessionId: input.sessionId });
+            const turn = yield* insertQueuedTurn(tx, {
+              sessionId: input.sessionId,
+              processId,
+              input: input.input,
+              author: input.sender,
+              launchCorrelationId: null,
+            });
+            const result = messageOutcome({ _tag: "Turn", messageId, turn }, reason);
+            yield* bindMessage(tx, input, result, reason);
+            return { _tag: "Created", result } as const;
+          }),
+        )
+        .pipe(
+          Effect.catchTag("EffectDrizzleQueryError", (error) => Effect.die(error)),
+          Effect.catchTag("SqlError", (error) =>
+            recoverCommitted(input, messageId, error, isTurnMessage),
+          ),
+        );
+      if (admitted._tag === "Created") yield* notifyAdmitted(input.sessionId);
+      return admitted;
+    });
+
+    const withdrawMessageTurn = Effect.fn("AgentConversationRepo.withdrawMessageTurn")(function* (
+      id: AgentTurnId,
+      processId: SessionProcessId,
+    ) {
+      const withdrawn = yield* withdrawUntakenTurn(db, id, processId).pipe(Effect.orDie);
+      if (withdrawn !== null) yield* notify(withdrawn.sessionId);
+      return withdrawn !== null;
+    });
 
     const submitTurn = Effect.fn("AgentConversationRepo.submitTurn")(function* (
       sessionId: SessionId,
@@ -673,26 +989,8 @@ export const AgentConversationRepoLive: Layer.Layer<
               .where(eq(agentTurns.id, turn.id))
               .for("update");
             if (target === undefined) return null;
-            const [position] = yield* tx
-              .select({ value: max(agentTurnSteers.ordinal) })
-              .from(agentTurnSteers)
-              .where(eq(agentTurnSteers.turnId, turn.id));
-            const [row] = yield* tx
-              .insert(agentTurnSteers)
-              .values({
-                id: AgentTurnSteerId.make(crypto.randomUUID()),
-                sessionId: target.sessionId,
-                processId: target.processId,
-                turnId: target.id,
-                author: input.author,
-                ordinal: (position?.value ?? -1) + 1,
-                input: input.input,
-                delivery: { _tag: "Sending" },
-                clientSteerId,
-              })
-              .returning();
-            if (row === undefined) return yield* Effect.die("steer insert returned no row");
-            return { steer: toSteer(row), created: true };
+            const steer = yield* insertTurnSteer(tx, toTurn(target), { ...input, clientSteerId });
+            return { steer, created: true };
           }),
         )
         .pipe(Effect.orDie);
@@ -787,6 +1085,7 @@ export const AgentConversationRepoLive: Layer.Layer<
 
     const withdrawTurnSteer = Effect.fn("AgentConversationRepo.withdrawTurnSteer")(function* (
       id: AgentTurnSteerId,
+      processId: SessionProcessId,
     ) {
       const [saved] = yield* db
         .select()
@@ -806,12 +1105,8 @@ export const AgentConversationRepoLive: Layer.Layer<
             if (row === undefined) return yield* Effect.die("steer disappeared");
             const delivery = row.delivery;
             if (delivery._tag !== "Queued") return { steer: toSteer(row), changed: false };
-            const [turn] = yield* tx
-              .select({ status: agentTurns.status })
-              .from(agentTurns)
-              .where(eq(agentTurns.id, delivery.turnId));
-            if (turn?.status !== "queued") return { steer: toSteer(row), changed: false };
-            yield* cancelOpenTurnRows(tx, [delivery.turnId]);
+            if ((yield* withdrawUntakenTurn(tx, delivery.turnId, processId)) === null)
+              return { steer: toSteer(row), changed: false };
             const [changed] = yield* tx
               .update(agentTurnSteers)
               .set({
@@ -1773,6 +2068,11 @@ export const AgentConversationRepoLive: Layer.Layer<
     });
 
     return {
+      messageByClientId,
+      messageById,
+      admitSteerMessage,
+      admitTurnMessage,
+      withdrawMessageTurn,
       submitTurn,
       byTurnId,
       byLaunchCorrelation,

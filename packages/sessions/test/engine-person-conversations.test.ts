@@ -433,6 +433,7 @@ const resumingHost = (
       }),
     rehydrate: () => Effect.void,
     submitTurn: () => Effect.die("not in test"),
+    sendMessage: () => Effect.die("message send not in this test"),
     steerTurn: () => Effect.die("not in test"),
     interruptTurn: () => Effect.void,
     respondRequest: () => Effect.die("not in test"),
@@ -1198,6 +1199,7 @@ const steeringHost = (
       }),
     rehydrate: () => Effect.void,
     submitTurn: () => Effect.die("not in test"),
+    sendMessage: () => Effect.die("message send not in this test"),
     steerTurn: () => Effect.die("not in test"),
     interruptTurn: () => Effect.void,
     respondRequest: () => Effect.die("not in test"),
@@ -2219,6 +2221,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             }),
           rehydrate: () => Effect.void,
           submitTurn: () => Effect.die("not in test"),
+          sendMessage: () => Effect.die("message send not in this test"),
           steerTurn: () => Effect.die("not in test"),
           interruptTurn: () => Effect.void,
           respondRequest: (request, _response, decidedBy) =>
@@ -2374,6 +2377,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
               restored.push({ process: input.process, hooks: input.hooks });
             }).pipe(Effect.andThen(Deferred.succeed(restoredOnce, undefined))),
           submitTurn: () => Effect.die("not in test"),
+          sendMessage: () => Effect.die("message send not in this test"),
           steerTurn: () => Effect.die("not in test"),
           interruptTurn: () => Effect.void,
           respondRequest: () => Effect.die("not in test"),

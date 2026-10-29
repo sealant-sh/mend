@@ -1,5 +1,6 @@
 import { AgentConversationRepo, makeHarnessLayoutsMemoryState } from "@mend/db";
 import {
+  SessionMessageId,
   AgentTurnId,
   AgentTurnSteerId,
   SealantRunId,
@@ -7,7 +8,13 @@ import {
   SessionId,
   SessionProcessId,
 } from "@mend/domain";
-import { AgentTurn, AgentTurnSteer, Session } from "@mend/domain/workbench";
+import {
+  MessageInput,
+  messageOutcome,
+  AgentTurn,
+  AgentTurnSteer,
+  Session,
+} from "@mend/domain/workbench";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
@@ -20,7 +27,7 @@ import { seedStoppedBeforeRestart } from "./engine/capture-fixture.ts";
 import { agentConversationStub, withEngineEffect } from "./engine/fixture.ts";
 import { MARIA, personPlatform } from "./engine/person-fixture.ts";
 
-describe("SessionEngine native steering admission", () => {
+describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via) => {
   it.effect.each(["allowed", "retiring", "control-off", "login-missing"] as const)(
     "%s keeps the sender's existing payer",
     (condition) => {
@@ -95,7 +102,20 @@ describe("SessionEngine native steering admission", () => {
               });
             const engine = yield* SessionEngine;
             const input = { turnId: turn.id, sender: MARIA, input: receipt.input };
-            const result = yield* engine.steerTurn(input).pipe(Effect.result);
+            const result = yield* via === "steer"
+              ? engine.steerTurn(input).pipe(Effect.result)
+              : engine
+                  .sendMessage({
+                    sessionId,
+                    sender: MARIA,
+                    input: MessageInput.make(receipt.input),
+                    clientMessageId: null,
+                    intent: "default",
+                  })
+                  .pipe(
+                    Effect.map((message) => (message._tag === "Steer" ? message.steer : null)),
+                    Effect.result,
+                  );
             if (condition === "allowed") {
               expect(result._tag).toBe("Success");
               if (result._tag === "Success") expect(result.success).toEqual(receipt);
@@ -117,12 +137,26 @@ describe("SessionEngine native steering admission", () => {
           prepareWorld: (world) => world.members.set(MARIA, "member"),
           conversationLayer: Layer.succeed(AgentConversationRepo, {
             ...agentConversationStub,
+            openTurns: () => Effect.succeed([turn]),
             byTurnId: (id) => Effect.succeed(id === turn.id ? turn : null),
           }),
           protocolHostLayer: Layer.succeed(ProtocolHost, {
             attach: () => Effect.void,
             rehydrate: () => Effect.void,
             submitTurn: () => Effect.die("not in test"),
+            sendMessage: (input, choice) =>
+              Effect.sync(() => {
+                if (choice._tag !== "Steer") throw new Error("expected steer");
+                sent.push({ turnId: choice.turnId, sender: input.sender, input: input.input });
+                return messageOutcome(
+                  {
+                    _tag: "Steer",
+                    messageId: SessionMessageId.make(crypto.randomUUID()),
+                    steer: receipt,
+                  },
+                  null,
+                );
+              }),
             steerTurn: (input) =>
               Effect.sync(() => {
                 sent.push(input);

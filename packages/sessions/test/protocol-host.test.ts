@@ -6,6 +6,7 @@ import {
   SessionsRepo,
   SessionStoppingError,
 } from "@mend/db";
+import { ClientMessageId } from "@mend/domain";
 import {
   AgentItemId,
   AgentTurnId,
@@ -13,13 +14,21 @@ import {
   SessionId,
   SessionProcessId,
 } from "@mend/domain";
+import { MessageInput, type AgentTurnSteer } from "@mend/domain/workbench";
 import { AgentItem, AgentTurn, SessionProcess } from "@mend/domain/workbench";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSession } from "@sealant/sdk";
-import { Deferred, Effect, Fiber, Layer, Schema } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, References } from "effect";
 import { describe, expect, vi } from "vitest";
 
-import { ProtocolHost, ProtocolHostLive } from "../src/protocol-host.ts";
+import {
+  ProtocolHost,
+  ProtocolHostLive,
+  type MessageSendError,
+  type TurnSteerError,
+} from "../src/protocol-host.ts";
+import type { SteerTurnInput } from "../src/protocol-steer.ts";
+import { makePipe, type PeerRequest } from "./support/codex-peer.ts";
 import { makeSteerStore } from "./support/steer-store.ts";
 
 const now = () => new Date();
@@ -92,7 +101,11 @@ const makeConversationWorld = () => {
     beforeHarnessTurn: Effect.Effect<void>;
     beforeComplete: Effect.Effect<void>;
     afterSteerAdmit: Effect.Effect<void>;
+    afterMessageAdmit: Effect.Effect<void>;
     beforeSteerQueue: Effect.Effect<void>;
+    afterSteerQueue: Effect.Effect<void>;
+    beforeClaim: Effect.Effect<void>;
+    afterClaim: Effect.Effect<void>;
   } = {
     stopping: false,
     journalFailure: false,
@@ -100,7 +113,11 @@ const makeConversationWorld = () => {
     beforeHarnessTurn: Effect.void,
     beforeComplete: Effect.void,
     afterSteerAdmit: Effect.void,
+    afterMessageAdmit: Effect.void,
     beforeSteerQueue: Effect.void,
+    afterSteerQueue: Effect.void,
+    beforeClaim: Effect.void,
+    afterClaim: Effect.void,
   };
   const requeued = Effect.runSync(Deferred.make<void>());
   const items = new Map<string, AgentItem>();
@@ -108,11 +125,25 @@ const makeConversationWorld = () => {
   const steerStore = makeSteerStore(turns, () => admission.stopping);
   const layer = Layer.succeed(AgentConversationRepo, {
     ...steerStore,
+    admitSteerMessage: (input, turnId) =>
+      admission.beforeAdmit.pipe(
+        Effect.andThen(steerStore.admitSteerMessage(input, turnId)),
+        Effect.tap(() => admission.afterMessageAdmit),
+        Effect.tap((admitted) =>
+          admitted._tag === "Created" ? admission.afterSteerAdmit : Effect.void,
+        ),
+      ),
+    admitTurnMessage: (input, onProcess, reason) =>
+      admission.beforeAdmit.pipe(
+        Effect.andThen(steerStore.admitTurnMessage(input, onProcess, reason)),
+        Effect.tap(() => admission.afterMessageAdmit),
+      ),
     admitTurnSteer: (input) =>
       steerStore.admitTurnSteer(input).pipe(Effect.tap(() => admission.afterSteerAdmit)),
     queueTurnSteer: (id, onProcess, reason) =>
       Effect.suspend(() => admission.beforeSteerQueue).pipe(
         Effect.andThen(steerStore.queueTurnSteer(id, onProcess, reason)),
+        Effect.tap(() => Effect.suspend(() => admission.afterSteerQueue)),
       ),
     recordProtocolControl: (id, control) =>
       admission.journalFailure
@@ -138,16 +169,21 @@ const makeConversationWorld = () => {
         [...turns.values()].filter((turn) => turn.status === "queued" || turn.status === "running"),
       ),
     claimNextTurn: (onProcess) =>
-      Effect.sync(() => {
-        const all = [...turns.values()]
-          .filter((row) => row.processId === onProcess)
-          .toSorted((a, b) => a.ordinal - b.ordinal);
-        if (all.some((turn) => turn.status === "running")) return null;
-        const queued = all.find((turn) => turn.status === "queued");
-        return queued === undefined
-          ? null
-          : update(queued.id, { status: "running", startedAt: now() });
-      }),
+      Effect.suspend(() => admission.beforeClaim).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            const all = [...turns.values()]
+              .filter((row) => row.processId === onProcess)
+              .toSorted((a, b) => a.ordinal - b.ordinal);
+            if (all.some((turn) => turn.status === "running")) return null;
+            const queued = all.find((turn) => turn.status === "queued");
+            return queued === undefined
+              ? null
+              : update(queued.id, { status: "running", startedAt: now() });
+          }),
+        ),
+        Effect.tap(() => Effect.suspend(() => admission.afterClaim)),
+      ),
     openHarnessTurn: (_session, _process, providerTurnId, reason, payer) =>
       admission.beforeHarnessTurn.pipe(
         Effect.andThen(
@@ -265,7 +301,12 @@ const makeConversationWorld = () => {
     protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
     backfillConversation: () => Effect.succeed(0),
     resetSendingResponses: () => Effect.void,
-    requeueQueuedTurns: () => Effect.void,
+    requeueQueuedTurns: (from, to) =>
+      Effect.sync(() => {
+        for (const turn of turns.values())
+          if (turn.processId === from && turn.status === "queued")
+            update(turn.id, { processId: to });
+      }),
     saveProtocolCursor: () => Effect.void,
   });
   return { layer, turns, items, seed, admission, steerStore, requeued, cancelSweeps };
@@ -382,119 +423,6 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   listRemovalRequested: () => Effect.succeed([]),
 });
 
-/**
- * A scripted codex app-server on the far side of a pipe session: answers the handshake, then
- * follows `turnScript` for each `turn/start` (an error entry rejects the turn, a string accepts
- * it with that provider turn id). Records every interrupt it receives.
- */
-const PeerRequest = Schema.Struct({
-  id: Schema.optionalKey(Schema.Union([Schema.String, Schema.Number])),
-  method: Schema.optionalKey(Schema.String),
-  params: Schema.optionalKey(
-    Schema.Struct({
-      turnId: Schema.optionalKey(Schema.String),
-      expectedTurnId: Schema.optionalKey(Schema.String),
-      input: Schema.optionalKey(
-        Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.String })),
-      ),
-    }),
-  ),
-});
-type PeerRequest = typeof PeerRequest.Type;
-
-const makePipe = (
-  turnScript: Array<{ error: string } | string>,
-  controls: {
-    readonly steer?: (request: PeerRequest, push: (frame: unknown) => void) => Promise<void>;
-    readonly start?: (
-      request: PeerRequest,
-      push: (frame: unknown) => void,
-      pushRaw: (text: string) => void,
-    ) => Promise<void>;
-  } = {},
-) => {
-  const pending: Array<{ sequence: bigint; data: Uint8Array }> = [];
-  let notify: (() => void) | null = null;
-  let sequence = 0n;
-  const interrupted: string[] = [];
-  const written: Array<PeerRequest> = [];
-  const pushRaw = (text: string) => {
-    pending.push({ sequence: sequence++, data: new TextEncoder().encode(text) });
-    notify?.();
-  };
-  const push = (value: unknown) => pushRaw(`${JSON.stringify(value)}\n`);
-  let turnIndex = 0;
-  const pipe: InteractiveSession = {
-    id: "sealant-session-1",
-    workspaceId: "ws-1",
-    runId: "run-1",
-    mode: "pipe",
-    send: (input) => {
-      const text = typeof input === "string" ? input : new TextDecoder().decode(input);
-      const message: unknown = JSON.parse(text);
-      if (typeof message !== "object" || message === null) return Promise.resolve();
-      const request = Schema.decodeUnknownSync(PeerRequest)(message);
-      written.push(request);
-      if (request.id === undefined) return Promise.resolve();
-      switch (request.method) {
-        case "initialize":
-          push({ id: request.id, result: {} });
-          break;
-        case "thread/start":
-        case "thread/resume":
-          push({ id: request.id, result: { thread: { id: "thread-1" } } });
-          break;
-        case "turn/start": {
-          if (controls.start !== undefined) return controls.start(request, push, pushRaw);
-          const step = turnScript[turnIndex++] ?? "turn-fallback";
-          if (typeof step === "string") push({ id: request.id, result: { turn: { id: step } } });
-          else push({ id: request.id, error: { message: step.error } });
-          break;
-        }
-        case "turn/steer":
-          if (controls.steer !== undefined) return controls.steer(request, push);
-          push({ id: request.id, result: { turnId: request.params?.expectedTurnId } });
-          break;
-        case "turn/interrupt":
-          interrupted.push(request.params?.turnId ?? "unknown");
-          push({ id: request.id, result: {} });
-          break;
-        default:
-          push({ id: request.id, result: {} });
-      }
-      return Promise.resolve();
-    },
-    output: (options) => {
-      const signal = options?.signal;
-      return (async function* () {
-        for (;;) {
-          if (signal?.aborted === true) return;
-          const next = pending.shift();
-          if (next !== undefined) {
-            yield next;
-            continue;
-          }
-          await new Promise<void>((resolve) => {
-            notify = resolve;
-            // A push that landed between the empty shift and this arm must not
-            // sleep forever — with one exchange in flight there is no later
-            // push to recover the lost wakeup.
-            if (pending.length > 0) resolve();
-            signal?.addEventListener("abort", () => resolve(), { once: true });
-          });
-          notify = null;
-        }
-      })();
-    },
-    resize: () => Promise.reject(new Error("pipe sessions have no terminal")),
-    signal: () => Promise.resolve(),
-    status: () => Promise.reject(new Error("not in test")),
-    close: () => Promise.resolve(),
-    attach: () => Promise.reject(new Error("not in test")),
-  };
-  return { pipe, interrupted, written, push, pushRaw };
-};
-
 /** A Claude Code on the far side of a pipe: records what Mend sends, says what the test pushes. */
 const makeClaudePipe = () => {
   const pending: Array<{ sequence: bigint; data: Uint8Array }> = [];
@@ -548,7 +476,7 @@ const hostLayer = (
   rows?: ReadonlyArray<SessionProcess>,
 ) =>
   ProtocolHostLive.pipe(
-    Layer.provide(conversation),
+    Layer.provideMerge(conversation),
     Layer.provide(processesLayer(rows)),
     Layer.provide(sessionsLayer),
   );
@@ -567,7 +495,41 @@ const waitUntil = (predicate: () => boolean) =>
     expect.fail("condition never became true");
   });
 
-describe("ProtocolHost", () => {
+const attachCodex = (host: ProtocolHost["Service"], pipe: InteractiveSession) =>
+  host.attach({
+    process: agentProcess,
+    pipe,
+    cwd: "/workspace/repo",
+    permissionMode: "bypass",
+    launchedWithLoginOf: "owner-1",
+    hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+  });
+
+describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => {
+  /** Through a message, a retry reads its key first, as the engine does. */
+  const sendSteer = (
+    host: ProtocolHost["Service"],
+    input: SteerTurnInput,
+  ): Effect.Effect<AgentTurnSteer, MessageSendError | TurnSteerError, AgentConversationRepo> =>
+    via === "turn"
+      ? host.steerTurn(input)
+      : Effect.gen(function* () {
+          const message = {
+            sessionId,
+            sender: input.sender,
+            input: MessageInput.make(input.input),
+            clientMessageId:
+              input.clientSteerId == null
+                ? null
+                : ClientMessageId.make(input.clientSteerId.toLowerCase()),
+            intent: "default" as const,
+          };
+          const result =
+            (yield* (yield* AgentConversationRepo).messageByClientId(message)) ??
+            (yield* host.sendMessage(message, { _tag: "Steer", turnId: input.turnId }));
+          if (result._tag !== "Steer") return yield* Effect.die("expected steer");
+          return result.steer;
+        });
   it.effect("keeps dispatching queued turns past a rejected one", () => {
     const world = makeConversationWorld();
     const first = world.seed("first");
@@ -806,15 +768,6 @@ describe("ProtocolHost", () => {
       expect(interrupted).toEqual(["turn-running"]);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
-  const attachCodex = (host: ProtocolHost["Service"], pipe: InteractiveSession) =>
-    host.attach({
-      process: agentProcess,
-      pipe,
-      cwd: "/workspace/repo",
-      permissionMode: "bypass",
-      launchedWithLoginOf: "owner-1",
-      hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
-    });
   const rehydrateCodex = (
     host: ProtocolHost["Service"],
     pipe: InteractiveSession,
@@ -889,9 +842,11 @@ describe("ProtocolHost", () => {
         const host = yield* ProtocolHost;
         yield* rehydrateCodex(host, peer.pipe, 0n);
         peer.pushRaw(replay.recorded);
-        const steering = yield* host
-          .steerTurn({ turnId: target.id, sender: "user-1", input: "after replay" })
-          .pipe(Effect.forkChild);
+        const steering = yield* sendSteer(host, {
+          turnId: target.id,
+          sender: "user-1",
+          input: "after replay",
+        }).pipe(Effect.forkChild);
         yield* Effect.sleep("300 millis");
         expect(steerFrames()).toEqual([]);
         const saved = (yield* world.steerStore.listConversationTurns(sessionId)).flatMap(
@@ -928,9 +883,11 @@ describe("ProtocolHost", () => {
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* rehydrateCodex(host, peer.pipe, 1n);
-      const steering = yield* host
-        .steerTurn({ turnId: ended.id, sender: "user-1", input: "after it ended" })
-        .pipe(Effect.forkChild);
+      const steering = yield* sendSteer(host, {
+        turnId: ended.id,
+        sender: "user-1",
+        input: "after it ended",
+      }).pipe(Effect.forkChild);
       yield* waitUntil(() => starts().length === 1);
       expect(world.turns.get(queued.id)?.status).toBe("running");
       const receipt = yield* Fiber.join(steering).pipe(Effect.timeout("1 second"));
@@ -956,9 +913,11 @@ describe("ProtocolHost", () => {
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* rehydrateCodex(host, peer.pipe, 1n);
-      const steering = yield* host
-        .steerTurn({ turnId: target.id, sender: "user-1", input: "while replaying" })
-        .pipe(Effect.forkChild);
+      const steering = yield* sendSteer(host, {
+        turnId: target.id,
+        sender: "user-1",
+        input: "while replaying",
+      }).pipe(Effect.forkChild);
       yield* TestClock.adjust("10 seconds");
       const receipt = yield* Fiber.join(steering);
       expect(receipt.delivery).toEqual({
@@ -986,10 +945,10 @@ describe("ProtocolHost", () => {
           input: "  keep this\n",
           clientSteerId: crypto.randomUUID(),
         };
-        const receipt = yield* host.steerTurn(input);
+        const receipt = yield* sendSteer(host, input);
         expect(receipt.delivery).toEqual({ _tag: "Accepted", evidence: "provider-acknowledged" });
         expect(receipt.input).toBe(input.input);
-        expect(yield* host.steerTurn({ ...input })).toEqual(receipt);
+        expect(yield* sendSteer(host, { ...input })).toEqual(receipt);
         const steers = peer.written.filter((frame) => frame.method === "turn/steer");
         expect(steers).toHaveLength(1);
         expect(steers[0]?.params).toEqual({
@@ -1003,7 +962,7 @@ describe("ProtocolHost", () => {
           input: "start",
         });
         yield* host.detach(processId);
-        expect(yield* host.steerTurn(input)).toEqual(receipt);
+        expect(yield* sendSteer(host, input)).toEqual(receipt);
       }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
     },
   );
@@ -1036,14 +995,14 @@ describe("ProtocolHost", () => {
           input: "next words",
           clientSteerId: crypto.randomUUID(),
         };
-        const receipt = yield* host.steerTurn(input);
+        const receipt = yield* sendSteer(host, input);
         expect(receipt.delivery).toEqual({ _tag: "Queued", turnId: receipt.queuedTurnId, reason });
         expect(world.turns.get(receipt.queuedTurnId ?? turn.id)).toMatchObject({
           input: input.input,
           author: input.sender,
           status: "queued",
         });
-        expect(yield* host.steerTurn(input)).toEqual(receipt);
+        expect(yield* sendSteer(host, input)).toEqual(receipt);
         expect(world.turns.size).toBe(2);
         expect(peer.written.filter((frame) => frame.method === "turn/steer")).toHaveLength(1);
         yield* host.detach(processId);
@@ -1060,7 +1019,7 @@ describe("ProtocolHost", () => {
       return Effect.gen(function* () {
         const host = yield* ProtocolHost;
         yield* attachCodex(host, peer.pipe);
-        const receipt = yield* host.steerTurn({
+        const receipt = yield* sendSteer(host, {
           turnId: target.id,
           input: "keep me",
           sender: "user-1",
@@ -1076,38 +1035,39 @@ describe("ProtocolHost", () => {
       }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
     });
 
-  it.effect(
-    "refuses unknown turns, non-senders, no sender, blank input and no live process before admission",
-    () => {
-      const world = makeConversationWorld();
-      const turn = world.seed("start");
-      return Effect.gen(function* () {
-        const host = yield* ProtocolHost;
-        const base = { turnId: turn.id, input: "words", sender: "user-1" };
-        expect(
-          (yield* host
-            .steerTurn({ ...base, turnId: AgentTurnId.make("missing") })
-            .pipe(Effect.flip))._tag,
-        ).toBe("AgentTurnNotFoundError");
-        expect((yield* host.steerTurn({ ...base, input: " \n\t" }).pipe(Effect.flip))._tag).toBe(
-          "InvalidTurnSteerError",
-        );
-        expect(
-          yield* host.steerTurn({ ...base, sender: "owner-1" }).pipe(Effect.flip),
-        ).toMatchObject({ _tag: "TurnSteerForbiddenError", reason: "not-sender" });
-        expect((yield* host.steerTurn(base).pipe(Effect.flip))._tag).toBe(
-          "ProtocolHostNotLiveError",
-        );
-        world.turns.set(turn.id, new AgentTurn({ ...turn, author: null }));
-        expect(yield* host.steerTurn(base).pipe(Effect.flip)).toMatchObject({
-          _tag: "TurnSteerForbiddenError",
-          reason: "no-sender",
-        });
-        expect((yield* world.steerStore.listConversationTurns(sessionId))[0]?.steers).toEqual([]);
-      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
-    },
-  );
-
+  if (via === "turn") {
+    it.effect(
+      "refuses unknown turns, non-senders, no sender, blank input and no live process before admission",
+      () => {
+        const world = makeConversationWorld();
+        const turn = world.seed("start");
+        return Effect.gen(function* () {
+          const host = yield* ProtocolHost;
+          const base = { turnId: turn.id, input: "words", sender: "user-1" };
+          expect(
+            (yield* sendSteer(host, { ...base, turnId: AgentTurnId.make("missing") }).pipe(
+              Effect.flip,
+            ))._tag,
+          ).toBe("AgentTurnNotFoundError");
+          expect((yield* sendSteer(host, { ...base, input: " \n\t" }).pipe(Effect.flip))._tag).toBe(
+            "InvalidTurnSteerError",
+          );
+          expect(
+            yield* sendSteer(host, { ...base, sender: "owner-1" }).pipe(Effect.flip),
+          ).toMatchObject({ _tag: "TurnSteerForbiddenError", reason: "not-sender" });
+          expect((yield* sendSteer(host, base).pipe(Effect.flip))._tag).toBe(
+            "ProtocolHostNotLiveError",
+          );
+          world.turns.set(turn.id, new AgentTurn({ ...turn, author: null }));
+          expect(yield* sendSteer(host, base).pipe(Effect.flip)).toMatchObject({
+            _tag: "TurnSteerForbiddenError",
+            reason: "no-sender",
+          });
+          expect((yield* world.steerStore.listConversationTurns(sessionId))[0]?.steers).toEqual([]);
+        }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+      },
+    );
+  }
   it.effect("keeps words as NotSent when a Stop detaches the process as they are queued", () => {
     const world = makeConversationWorld();
     const ended = world.seed("ended");
@@ -1117,7 +1077,7 @@ describe("ProtocolHost", () => {
       const host = yield* ProtocolHost;
       yield* attachCodex(host, peer.pipe);
       world.admission.beforeSteerQueue = host.detach(processId);
-      const receipt = yield* host.steerTurn({
+      const receipt = yield* sendSteer(host, {
         turnId: ended.id,
         sender: "user-1",
         input: "after the stop",
@@ -1132,6 +1092,63 @@ describe("ProtocolHost", () => {
         [...world.turns.values()].filter((turn) => turn.status === "queued").map((t) => t.input),
       ).toEqual([]);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("leaves a carried steer's turn to the successor that took it", () => {
+    const world = makeConversationWorld();
+    const ended = world.seed("ended");
+    world.turns.set(ended.id, new AgentTurn({ ...ended, status: "completed", endedAt: now() }));
+    const successor = new SessionProcess({
+      ...agentProcess,
+      id: SessionProcessId.make("process-2"),
+    });
+    const busy = world.seed("the successor's own turn");
+    world.turns.set(
+      busy.id,
+      new AgentTurn({
+        ...busy,
+        processId: successor.id,
+        status: "running",
+        providerTurnId: "busy",
+        startedAt: now(),
+      }),
+    );
+    const peer = makePipe([]);
+    const next = makePipe([]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterSteerQueue = Effect.gen(function* () {
+        world.admission.afterSteerQueue = Effect.void;
+        yield* host.detach(processId);
+        yield* host
+          .attach({
+            process: successor,
+            pipe: next.pipe,
+            cwd: "/workspace/repo",
+            permissionMode: "bypass",
+            launchedWithLoginOf: "owner-1",
+            hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+          })
+          .pipe(Effect.orDie);
+      });
+      const receipt = yield* sendSteer(host, {
+        turnId: ended.id,
+        sender: "user-1",
+        input: "carried",
+      });
+      expect(receipt.delivery).toEqual({
+        _tag: "Queued",
+        turnId: receipt.queuedTurnId,
+        reason: "turn-ended",
+      });
+      expect(world.turns.get(receipt.queuedTurnId ?? ended.id)).toMatchObject({
+        input: "carried",
+        processId: successor.id,
+        status: "queued",
+      });
+      yield* host.detach(successor.id);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [agentProcess, successor])));
   });
 
   it.effect("leaves another Mend's Sending steer alone when the host starts", () => {
@@ -1165,10 +1182,12 @@ describe("ProtocolHost", () => {
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* attachCodex(host, peer.pipe);
-      const attempt = yield* host
-        .steerTurn({ turnId: ended.id, sender: "user-1", input: "lost in delivery" })
-        .pipe(Effect.exit);
-      expect(attempt._tag).toBe("Failure");
+      const attempt = yield* sendSteer(host, {
+        turnId: ended.id,
+        sender: "user-1",
+        input: "lost in delivery",
+      }).pipe(Effect.exit);
+      expect(attempt._tag).toBe(via === "turn" ? "Failure" : "Success");
       const steers = (yield* world.steerStore.listConversationTurns(sessionId)).flatMap(
         (row) => row.steers,
       );
@@ -1194,19 +1213,18 @@ describe("ProtocolHost", () => {
         input: "first words",
         clientSteerId: crypto.randomUUID(),
       };
-      const receipt = yield* host.steerTurn(input);
+      const receipt = yield* sendSteer(host, input);
       for (const reuse of [
-        { ...input, turnId: other.id },
+        ...(via === "turn" ? [{ ...input, turnId: other.id }] : []),
         { ...input, input: "other words" },
         { ...input, clientSteerId: input.clientSteerId.toUpperCase(), input: "other words" },
       ]) {
-        expect(yield* host.steerTurn(reuse).pipe(Effect.flip)).toMatchObject({
-          _tag: "TurnSteerKeyConflictError",
-          clientSteerId: input.clientSteerId,
+        expect(yield* sendSteer(host, reuse).pipe(Effect.flip)).toMatchObject({
+          _tag: via === "turn" ? "TurnSteerKeyConflictError" : "MessageKeyConflictError",
         });
       }
       expect(
-        yield* host.steerTurn({ ...input, clientSteerId: input.clientSteerId.toUpperCase() }),
+        yield* sendSteer(host, { ...input, clientSteerId: input.clientSteerId.toUpperCase() }),
       ).toEqual(receipt);
       expect(peer.written.filter((frame) => frame.method === "turn/steer")).toHaveLength(1);
       expect(
@@ -1232,9 +1250,9 @@ describe("ProtocolHost", () => {
         sender: "user-1",
         clientSteerId: crypto.randomUUID(),
       };
-      const receipt = yield* host.steerTurn(input);
+      const receipt = yield* sendSteer(host, input);
       expect(receipt.delivery).toEqual({ _tag: "Unknown", reason: "uncertain" });
-      expect(yield* host.steerTurn(input)).toEqual(receipt);
+      expect(yield* sendSteer(host, input)).toEqual(receipt);
       expect(world.turns.size).toBe(1);
       expect((yield* world.steerStore.listConversationTurns(sessionId))[0]?.steers[0]?.input).toBe(
         input.input,
@@ -1256,7 +1274,7 @@ describe("ProtocolHost", () => {
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* attachCodex(host, peer.pipe);
-      const receipt = yield* host.steerTurn({
+      const receipt = yield* sendSteer(host, {
         turnId: turn.id,
         input: "still readable",
         sender: "user-1",
@@ -1285,9 +1303,11 @@ describe("ProtocolHost", () => {
       const host = yield* ProtocolHost;
       const attaching = yield* attachCodex(host, peer.pipe).pipe(Effect.forkChild);
       yield* waitUntil(() => starts.length === 1);
-      const steering = yield* host
-        .steerTurn({ turnId: turn.id, sender: "user-1", input: "during dispatch" })
-        .pipe(Effect.forkChild);
+      const steering = yield* sendSteer(host, {
+        turnId: turn.id,
+        sender: "user-1",
+        input: "during dispatch",
+      }).pipe(Effect.forkChild);
       yield* waitUntil(() => world.turns.get(turn.id)?.status === "running");
       peer.push({ id: starts[0]?.id, result: { turn: { id: "native" } } });
       yield* Fiber.join(attaching);
@@ -1311,12 +1331,17 @@ describe("ProtocolHost", () => {
       },
     });
     return Effect.gen(function* () {
+      const admitted = yield* Deferred.make<void>();
+      world.admission.afterSteerAdmit = Deferred.succeed(admitted, undefined).pipe(Effect.asVoid);
       const host = yield* ProtocolHost;
       const attaching = yield* attachCodex(host, peer.pipe).pipe(Effect.forkChild);
       yield* waitUntil(() => starts.length === 1);
-      const steering = yield* host
-        .steerTurn({ turnId: turn.id, sender: "user-1", input: "after bind timeout" })
-        .pipe(Effect.forkChild);
+      const steering = yield* sendSteer(host, {
+        turnId: turn.id,
+        sender: "user-1",
+        input: "after bind timeout",
+      }).pipe(Effect.forkChild);
+      yield* Deferred.await(admitted);
       yield* TestClock.adjust("4 seconds");
       const receipt = yield* Fiber.join(steering);
       expect(receipt.delivery).toEqual({
@@ -1353,12 +1378,12 @@ describe("ProtocolHost", () => {
           input: "persist after disconnect",
           clientSteerId: crypto.randomUUID(),
         };
-        const caller = yield* host.steerTurn(input).pipe(Effect.forkChild);
+        const caller = yield* sendSteer(host, input).pipe(Effect.forkChild);
         yield* waitUntil(() => requests.length === 1);
         yield* host.interruptTurn(turn.id);
         expect(peer.interrupted).toEqual(["native"]);
         yield* Fiber.interrupt(caller);
-        const sending = yield* host.steerTurn(input);
+        const sending = yield* sendSteer(host, input);
         expect(sending.delivery._tag).toBe("Sending");
         peer.push({
           method: "turn/completed",
@@ -1368,7 +1393,7 @@ describe("ProtocolHost", () => {
         expect(world.turns.get(next.id)?.status).toBe("queued");
         peer.push({ id: requests[0]?.id, result: { turnId: "native" } });
         yield* waitUntil(() => world.turns.get(next.id)?.providerTurnId === "next-native");
-        const receipt = yield* host.steerTurn(input);
+        const receipt = yield* sendSteer(host, input);
         expect(receipt.id).toBe(sending.id);
         expect(receipt.delivery).toEqual({ _tag: "Accepted", evidence: "provider-acknowledged" });
         expect(world.turns.get(turn.id)?.status).toBe("completed");
@@ -1391,13 +1416,17 @@ describe("ProtocolHost", () => {
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* attachCodex(host, peer.pipe);
-      const first = yield* host
-        .steerTurn({ turnId: turn.id, sender: "user-1", input: "first" })
-        .pipe(Effect.forkChild);
+      const first = yield* sendSteer(host, {
+        turnId: turn.id,
+        sender: "user-1",
+        input: "first",
+      }).pipe(Effect.forkChild);
       yield* waitUntil(() => requests.length === 1);
-      const second = yield* host
-        .steerTurn({ turnId: turn.id, sender: "user-1", input: "second" })
-        .pipe(Effect.forkChild);
+      const second = yield* sendSteer(host, {
+        turnId: turn.id,
+        sender: "user-1",
+        input: "second",
+      }).pipe(Effect.forkChild);
       yield* TestClock.adjust("100 millis");
       expect(requests).toHaveLength(1);
       peer.push({ id: requests[0]?.id, result: { turnId: "native" } });
@@ -1418,6 +1447,48 @@ describe("ProtocolHost", () => {
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
+  if (via === "message")
+    it.effect("refuses words still waiting for admission when the last process stops", () => {
+      const world = makeConversationWorld();
+      const turn = world.seed("start");
+      const requests: Array<PeerRequest> = [];
+      const peer = makePipe(["native"], {
+        steer: (request) => {
+          requests.push(request);
+          return Promise.resolve();
+        },
+      });
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachCodex(host, peer.pipe);
+        const first = yield* sendSteer(host, {
+          turnId: turn.id,
+          sender: "user-1",
+          input: "already admitted",
+        }).pipe(Effect.forkChild);
+        yield* waitUntil(() => requests.length === 1);
+        const pending = yield* sendSteer(host, {
+          turnId: turn.id,
+          sender: "user-1",
+          input: "still waiting",
+          clientSteerId: crypto.randomUUID(),
+        }).pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust("100 millis");
+        yield* host.detach(processId);
+        yield* Fiber.join(first);
+        expect(yield* Fiber.join(pending)).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "ProtocolHostNotLiveError" },
+        });
+        expect(
+          (yield* world.steerStore.listConversationTurns(sessionId)).flatMap((row) =>
+            row.steers.map((steer) => steer.input),
+          ),
+        ).toEqual(["already admitted"]);
+        expect(requests).toHaveLength(1);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    });
+
   it.live("delivers a delayed first admission before a second caller is admitted", () => {
     const world = makeConversationWorld();
     const turn = world.seed("start");
@@ -1431,13 +1502,17 @@ describe("ProtocolHost", () => {
       world.admission.afterSteerAdmit = Effect.suspend(() =>
         admissions++ === 0 ? Deferred.await(released) : Effect.void,
       );
-      const first = yield* host
-        .steerTurn({ turnId: turn.id, sender: "user-1", input: "first" })
-        .pipe(Effect.forkChild);
+      const first = yield* sendSteer(host, {
+        turnId: turn.id,
+        sender: "user-1",
+        input: "first",
+      }).pipe(Effect.forkChild);
       yield* waitUntil(() => admissions === 1);
-      const second = yield* host
-        .steerTurn({ turnId: turn.id, sender: "user-1", input: "second" })
-        .pipe(Effect.forkChild);
+      const second = yield* sendSteer(host, {
+        turnId: turn.id,
+        sender: "user-1",
+        input: "second",
+      }).pipe(Effect.forkChild);
       yield* Effect.sleep("100 millis");
       expect(admissions).toBe(1);
       expect(steerFrames()).toEqual([]);
@@ -1476,7 +1551,7 @@ describe("ProtocolHost", () => {
         launchedWithLoginOf: "owner-1",
         hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
       });
-      const receipt = yield* host.steerTurn({
+      const receipt = yield* sendSteer(host, {
         turnId: target.id,
         sender: "user-1",
         input: "only the original",
@@ -1512,7 +1587,7 @@ describe("ProtocolHost", () => {
       return Effect.gen(function* () {
         const host = yield* ProtocolHost;
         yield* attachCodex(host, peer.pipe);
-        const receipt = yield* host.steerTurn({
+        const receipt = yield* sendSteer(host, {
           turnId: turn.id,
           sender: "user-1",
           input: "for an unsupported harness",
@@ -1613,7 +1688,7 @@ describe("ProtocolHost", () => {
       return Effect.gen(function* () {
         const host = yield* ProtocolHost;
         yield* attachClaude(host, peer, (ended) => Effect.sync(() => void completed.push(ended)));
-        const receipt = yield* host.steerTurn({
+        const receipt = yield* sendSteer(host, {
           turnId: turn.id,
           sender: "user-1",
           input: "Keep the shape",
@@ -1637,7 +1712,11 @@ describe("ProtocolHost", () => {
         yield* waitUntil(() => world.items.has("task:marker"));
         expect(world.turns.get(turn.id)?.status).toBe("running");
         expect(completed).toEqual([]);
-        const gap = yield* host.steerTurn({ turnId: turn.id, sender: "user-1", input: "one more" });
+        const gap = yield* sendSteer(host, {
+          turnId: turn.id,
+          sender: "user-1",
+          input: "one more",
+        });
         expect(gap.delivery).toEqual({
           _tag: "Queued",
           turnId: gap.queuedTurnId,
@@ -1668,7 +1747,7 @@ describe("ProtocolHost", () => {
         const host = yield* ProtocolHost;
         yield* attachClaude(host, peer);
         world.admission.journalFailure = true;
-        const receipt = yield* host.steerTurn({
+        const receipt = yield* sendSteer(host, {
           turnId: turn.id,
           sender: "user-1",
           input: "keep unsent words",
@@ -1697,7 +1776,7 @@ describe("ProtocolHost", () => {
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* attachClaude(host, peer);
-      yield* host.steerTurn({ turnId: turn.id, sender: "user-1", input: "now" });
+      yield* sendSteer(host, { turnId: turn.id, sender: "user-1", input: "now" });
       peer.push(aborted);
       peer.push(marker);
       yield* waitUntil(() => world.items.has("task:marker"));
@@ -1725,7 +1804,7 @@ describe("ProtocolHost", () => {
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* attachClaude(host, peer);
-      yield* host.steerTurn({ turnId: turn.id, sender: "user-1", input: "now" });
+      yield* sendSteer(host, { turnId: turn.id, sender: "user-1", input: "now" });
       peer.push(aborted);
       peer.push(marker);
       yield* waitUntil(() => world.items.has("task:marker"));
@@ -1750,7 +1829,7 @@ describe("ProtocolHost", () => {
       const beforeRestart = Effect.gen(function* () {
         const host = yield* ProtocolHost;
         yield* attachClaude(host, peer);
-        yield* host.steerTurn({
+        yield* sendSteer(host, {
           turnId: turn.id,
           sender: "user-1",
           input: "accepted before restart",
@@ -1808,4 +1887,178 @@ describe("ProtocolHost", () => {
       });
     },
   );
+});
+
+const message = () => ({
+  sessionId,
+  sender: "user-1",
+  input: MessageInput.make("  next words\n"),
+  clientMessageId: ClientMessageId.make(crypto.randomUUID()),
+  intent: "queue" as const,
+});
+describe("ProtocolHost message turn admission", () => {
+  for (const status of [
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ] as const)
+    it.effect(`reads the turn observed ${status} and replays without delivery`, () => {
+      const world = makeConversationWorld();
+      world.seed("hold queue");
+      const peer = makePipe(["native"]);
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachCodex(host, peer.pipe);
+        world.admission.afterMessageAdmit = Effect.sync(() => {
+          for (const [id, turn] of world.turns)
+            if (turn.input === "  next words\n")
+              world.turns.set(id, new AgentTurn({ ...turn, status }));
+        });
+        const input = message();
+        const receipt = yield* host.sendMessage(input, { _tag: "Turn", reason: "queue-requested" });
+        expect(receipt).toMatchObject({
+          _tag: "Turn",
+          turn: { status, input: input.input, author: input.sender },
+        });
+        expect(
+          yield* host.sendMessage(input, { _tag: "Steer", turnId: AgentTurnId.make("changed") }),
+        ).toEqual(receipt);
+        expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(1);
+        expect(world.turns.size).toBe(2);
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    });
+
+  it.effect("dispatches an idle conversation and returns its running observation", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["native"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const result = yield* host.sendMessage(message(), {
+        _tag: "Turn",
+        reason: "no-own-running-turn",
+      });
+      expect(result).toMatchObject({
+        _tag: "Turn",
+        turn: { status: "running", providerTurnId: "native" },
+      });
+      expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(1);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect(
+    "reports an admitted turn as not sent when placement detaches, with words still readable",
+    () => {
+      const world = makeConversationWorld();
+      const peer = makePipe([]);
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachCodex(host, peer.pipe);
+        world.admission.afterMessageAdmit = host.detach(processId);
+        const input = message();
+        const result = yield* host.sendMessage(input, { _tag: "Turn", reason: "queue-requested" });
+        expect(result).toMatchObject({
+          _tag: "Turn",
+          explanation: "not sent · the turn was cancelled before it started",
+          turn: { status: "cancelled", input: input.input },
+        });
+        expect(yield* world.steerStore.messageByClientId(input)).toEqual(result);
+        expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(0);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    },
+  );
+
+  it.effect("withdraws a message turn whose dispatch failed before claiming it", () => {
+    const logs: Array<string> = [];
+    const logLayer = Logger.layer([
+      Logger.make((options) => {
+        logs.push(
+          JSON.stringify([options.message, options.fiber.getRef(References.CurrentLogAnnotations)]),
+        );
+      }),
+    ]);
+    const world = makeConversationWorld();
+    const peer = makePipe(["native"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const input = message();
+      // A query error's message carries its parameters, the person's words among them.
+      world.admission.beforeClaim = Effect.die(new Error(`query failed · params: ${input.input}`));
+      const receipt = yield* host.sendMessage(input, { _tag: "Turn", reason: "queue-requested" });
+      expect(receipt).toMatchObject({
+        _tag: "Turn",
+        explanation: "not sent · the turn was cancelled before it started",
+        turn: { status: "cancelled", input: input.input },
+      });
+      expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(0);
+      expect(logs.some((line) => line.includes("not dispatched"))).toBe(true);
+      expect(logs.filter((line) => line.includes(input.input.trim()))).toEqual([]);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)), Effect.provide(logLayer));
+  });
+
+  it.effect("never reports a claimed turn as sent when its dispatch fails", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["native"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterClaim = Effect.die("the claim's notification failed");
+      const input = message();
+      const exit = yield* host
+        .sendMessage(input, { _tag: "Turn", reason: "queue-requested" })
+        .pipe(Effect.exit);
+      expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
+      expect([...world.turns.values()]).toMatchObject([
+        { input: input.input, status: "running", providerTurnId: null },
+      ]);
+      expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(0);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("sends words as a new turn when the chosen turn vanished or changed sender", () => {
+    const world = makeConversationWorld();
+    const other = world.seed("another person's turn");
+    world.turns.set(
+      other.id,
+      new AgentTurn({ ...other, author: "user-2", status: "running", startedAt: now() }),
+    );
+    const peer = makePipe([]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      for (const turnId of [AgentTurnId.make("vanished"), other.id]) {
+        const input = { ...message(), intent: "default" as const };
+        expect(yield* host.sendMessage(input, { _tag: "Steer", turnId })).toMatchObject({
+          _tag: "Turn",
+          explanation: "sent as your next turn · you had no running turn in this session",
+          turn: { input: input.input, author: input.sender, status: "queued" },
+        });
+      }
+      expect(peer.written.filter((frame) => frame.method === "turn/steer")).toHaveLength(0);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("refuses a stopped or terminal-only session before storing a message", () => {
+    const world = makeConversationWorld();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      const input = message();
+      expect(
+        yield* host
+          .sendMessage(input, { _tag: "Turn", reason: "queue-requested" })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "ProtocolHostNotLiveError" });
+      expect(yield* world.steerStore.messageByClientId(input)).toBeNull();
+      expect(world.turns.size).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 });

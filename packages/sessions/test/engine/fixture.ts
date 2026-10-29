@@ -51,6 +51,7 @@ import {
   SkillsRepo,
   UserDotfilesRepo,
   UserAgentLoginsRepo,
+  MessageSettingsRepo,
   UserGitAuthorRepo,
   type GitAccessMode,
   type CaptureObservation,
@@ -92,6 +93,7 @@ import {
   defaultSettings,
   type DotfilesRepository,
 } from "@mend/domain";
+import { DEFAULT_MESSAGE_SETTINGS, type MessageSettings } from "@mend/domain/workbench";
 import {
   AgentTurn,
   Change,
@@ -912,6 +914,11 @@ const finalCompletionOf = (answer: WorkspaceCaptureStatus) => {
 
 /** PTY-only engine tests never persist structured conversations. */
 export const agentConversationStub: AgentConversationRepo["Service"] = {
+  messageByClientId: () => Effect.succeed(null),
+  messageById: () => Effect.die("message read not in this test"),
+  admitSteerMessage: () => Effect.die("message admission not in this test"),
+  admitTurnMessage: () => Effect.die("message admission not in this test"),
+  withdrawMessageTurn: () => Effect.succeed(false),
   submitTurn: () => Effect.die("not in test"),
   byTurnId: () => Effect.succeed(null),
   byLaunchCorrelation: () => Effect.succeed(null),
@@ -1050,6 +1057,7 @@ export const protocolHostStubLayer = Layer.succeed(ProtocolHost, {
   attach: () => Effect.die("not in test"),
   rehydrate: () => Effect.die("not in test"),
   submitTurn: () => Effect.die("not in test"),
+  sendMessage: () => Effect.die("message send not in this test"),
   steerTurn: () => Effect.die("not in test"),
   interruptTurn: () => Effect.die("not in test"),
   respondRequest: () => Effect.die("not in test"),
@@ -1102,6 +1110,7 @@ export const recordingProtocolHostLayer = (
           endedAt: null,
         });
       }),
+    sendMessage: () => Effect.die("message send not in this test"),
     steerTurn: () => Effect.die("not in test"),
     interruptTurn: () => Effect.void,
     respondRequest: () => Effect.die("not in test"),
@@ -3648,6 +3657,7 @@ interface EngineOptions {
   readonly exposeSealant?: (client: SealantClientShape) => void;
   readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
   readonly conversationLayer?: Layer.Layer<AgentConversationRepo>;
+  readonly messageSettings?: Map<string, MessageSettings>;
   readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
   readonly skillsLayer?: Layer.Layer<SkillsRepo>;
   readonly piProfilesLayer?: Layer.Layer<PiProfilesRepo>;
@@ -3880,7 +3890,18 @@ export const withPreparedEngineEffect = <B, A, E>(
               ? {}
               : { executorTransport: options.executorTransport }),
           });
+    const preferences = options.messageSettings ?? new Map<string, MessageSettings>();
     const engineLayer = SessionEngineLive.pipe(
+      Layer.provide(
+        Layer.succeed(MessageSettingsRepo, {
+          forUser: (id) => Effect.sync(() => preferences.get(id) ?? DEFAULT_MESSAGE_SETTINGS),
+          set: (id, value) =>
+            Effect.sync(() => {
+              preferences.set(id, value);
+              return value;
+            }),
+        }),
+      ),
       Layer.provide(testDrainPolicy(options.drainPolicy)),
       Layer.provide(sessionRepositoryLayer),
       Layer.provide(storeLayer),

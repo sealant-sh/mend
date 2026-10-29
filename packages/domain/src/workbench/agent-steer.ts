@@ -81,3 +81,12 @@ export const AgentProtocolControl = Schema.Struct({
   action: Schema.Literals(["steer-now", "interrupt", "not-written"]),
 });
 export type AgentProtocolControl = typeof AgentProtocolControl.Type;
+
+export class TurnSteerForbiddenError extends Schema.TaggedError<TurnSteerForbiddenError>()(
+  "TurnSteerForbiddenError",
+  {
+    turnId: Schema.String,
+    reason: Schema.Literals(["not-sender", "no-sender"]),
+    message: Schema.String,
+  },
+) {}

@@ -6,6 +6,7 @@ import {
   SealantUnavailable,
   HealthStatus,
   InstanceView,
+  InvalidMessageSettings,
   IssueDetail,
   LossReportView,
   LossSpanView,
@@ -29,11 +30,12 @@ import {
   PushDevicesRepo,
   RunsRepo,
   UserAgentLoginsRepo,
+  MessageSettingsRepo,
   UserEvents,
   UsersRepo,
 } from "@mend/db";
 import type { RunId } from "@mend/domain";
-import { narrowCredential } from "@mend/domain/workbench";
+import { MessageSettings, narrowCredential } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import {
   asSealantUser,
@@ -44,7 +46,7 @@ import {
   SealantPrincipal,
 } from "@mend/sealant";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
-import { Config, Effect, Layer, Option, Redacted, Stream } from "effect";
+import { Config, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -241,6 +243,31 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
       }).pipe(
         Effect.catchTag("SealantPlatformError", (error) => Effect.fail(accountFailure(error))),
       ),
+    )
+    .handle("messageSettings", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* MessageSettingsRepo).forUser(caller.user.id);
+      }),
+    )
+    .handleRaw("setMessageSettings", ({ request }) =>
+      Effect.gen(function* () {
+        const payload = yield* request.json.pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(MessageSettings, { onExcessProperty: "error" }),
+          ),
+          Effect.mapError(
+            () =>
+              new InvalidMessageSettings({
+                message: "Message settings must contain only sendSteersRunningTurn as a boolean.",
+              }),
+          ),
+        );
+        const caller = yield* CurrentUser;
+        const saved = yield* (yield* MessageSettingsRepo).set(caller.user.id, payload);
+        yield* accountsChanged(caller.user.id);
+        return saved;
+      }),
     )
     .handle("agentLogins", () =>
       Effect.gen(function* () {

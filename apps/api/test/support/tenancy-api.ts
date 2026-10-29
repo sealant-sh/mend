@@ -17,6 +17,7 @@ import {
   IssuesRepo,
   NotificationSettingsRepo,
   UserAgentLoginsRepo,
+  MessageSettingsRepo,
   OrganizationSettingsRepo,
   PiProfilesRepo,
   AgentMemoryRepo,
@@ -386,6 +387,7 @@ export const createTenancyApi = async (
       recording(ReviewCommentsRepo, "comments", {}, calls),
       recording(UserDotfilesRepo, "userDotfiles", userDotfiles, calls),
       recording(NotificationSettingsRepo, "notificationSettings", {}, calls),
+      recording(MessageSettingsRepo, "messageSettings", {}, calls),
       recording(UserAgentLoginsRepo, "agentLogins", {}, calls),
     ),
     Layer.mergeAll(

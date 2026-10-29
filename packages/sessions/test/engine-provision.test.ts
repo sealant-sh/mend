@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { MessageSettingsRepo } from "@mend/db";
 import {
   SessionRepositoriesRepoMemory,
   InstanceRolesRepo,
@@ -17,6 +18,7 @@ import {
   Sha,
   WorktreeId,
 } from "@mend/domain";
+import { DEFAULT_MESSAGE_SETTINGS } from "@mend/domain/workbench";
 import { Session, SessionProcess, SessionRun } from "@mend/domain/workbench";
 import { PersonLayoutPlatformNone, SealantPlatformError } from "@mend/sealant";
 import {
@@ -1021,6 +1023,12 @@ describe("SessionEngine", () => {
       Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))),
     );
     const engineLayer = SessionEngineLive.pipe(
+      Layer.provide(
+        Layer.succeed(MessageSettingsRepo, {
+          forUser: () => Effect.succeed(DEFAULT_MESSAGE_SETTINGS),
+          set: (_, setting) => Effect.succeed(setting),
+        }),
+      ),
       Layer.provide(testDrainPolicy()),
       Layer.provide(
         SessionRepositoryLocalLive.pipe(

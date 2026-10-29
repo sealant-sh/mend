@@ -635,18 +635,28 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           process,
           "turn-ended",
         );
-        const withdrawn = yield* repo.withdrawTurnSteer(stranded.id);
+        const withdrawn = yield* repo.withdrawTurnSteer(stranded.id, process);
         expect(withdrawn).toMatchObject({
           input: "stranded",
           delivery: { _tag: "NotSent", reason: "turn-ended" },
           queuedTurnId: null,
         });
         expect((yield* repo.byTurnId(stranded.queuedTurnId ?? turn.id))?.status).toBe("cancelled");
-        expect(yield* repo.withdrawTurnSteer(stranded.id)).toEqual(withdrawn);
+        expect(yield* repo.withdrawTurnSteer(stranded.id, process)).toEqual(withdrawn);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO session_processes (id, session_id, sealant_workspace_id, kind, harness, status) VALUES ('next', ${session}, 'ws-1', 'agent-protocol', 'codex', 'running')`;
+        const next = SessionProcessId.make("next");
+        const moved = yield* repo.queueTurnSteer((yield* admit("moved")).id, process, "turn-ended");
+        yield* repo.requeueQueuedTurns(process, next);
+        expect(yield* repo.withdrawTurnSteer(moved.id, process)).toEqual(moved);
+        expect(yield* repo.byTurnId(moved.queuedTurnId ?? turn.id)).toMatchObject({
+          status: "queued",
+          processId: next,
+        });
         yield* repo.completeTurn("native", session, "completed", null, null);
         const taken = yield* repo.queueTurnSteer((yield* admit("taken")).id, process, "turn-ended");
         expect((yield* repo.claimNextTurn(process))?.id).toBe(taken.queuedTurnId);
-        expect(yield* repo.withdrawTurnSteer(taken.id)).toEqual(taken);
+        expect(yield* repo.withdrawTurnSteer(taken.id, process)).toEqual(taken);
       }),
     );
   });
