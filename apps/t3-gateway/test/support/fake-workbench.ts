@@ -1,5 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+import { PageId, SessionId } from "@mend/domain";
+import { PageRef } from "@mend/domain/workbench";
+import * as Schema from "effect/Schema";
+
 /**
  * The workbench half of the fake Mend: projects, sessions, protocol turns, items and requests,
  * served in Mend's shapes (`ProjectDetail`, `AgentTurn`, `AgentItem`, `AgentRequest` in
@@ -112,6 +116,27 @@ export interface FakeRequest {
   readonly createdAt: string;
   decidedAt: string | null;
 }
+
+/** A `page` item as Mend's `pageItemRow` (@mend/db) writes it: no text, its `PageRef` as data. */
+export const pageItem = (page: {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly title: string;
+  readonly height: number;
+}) => ({
+  kind: "page",
+  title: page.title,
+  text: null,
+  data: Schema.encodeSync(PageRef)(
+    new PageRef({
+      id: PageId.make(page.id),
+      sessionId: SessionId.make(page.sessionId),
+      title: page.title,
+      height: page.height,
+      publishedAt: new Date("2026-10-04T09:00:02.000Z"),
+    }),
+  ),
+});
 
 /** `LandedPullRequest` in @mend/domain/workbench. */
 export interface FakePullRequest {

@@ -3,6 +3,7 @@ import { IncomingMessage } from "node:http";
 import { posix } from "node:path";
 
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
+import { PAGE_FRAME_TTL_MS } from "@mend/domain/workbench";
 import type { AuthSessionId } from "@mend/t3-contracts";
 import {
   Cause,
@@ -28,6 +29,12 @@ import { type BearerSession, GatewayState } from "./state.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 export const ASSET_URL_TTL_MS = 60 * 60_000;
+/**
+ * The life a page URL has when a mint returns it: t3code v0.1.2 mints once per frame mount and
+ * discards a URL with 5 minutes or less left (HtmlRenderFrame.tsx).
+ */
+export const PAGE_URL_MIN_LIFE_MS = 15 * 60_000;
+const PAGE_FILE_NAME = "page.html";
 
 export class AssetUnavailable extends Schema.TaggedError<AssetUnavailable>()(
   "AssetUnavailable",
@@ -35,6 +42,7 @@ export class AssetUnavailable extends Schema.TaggedError<AssetUnavailable>()(
 ) {}
 
 export type AssetSubject =
+  | { readonly kind: "page"; readonly pageId: string }
   | {
       readonly kind: "file";
       readonly worktreeId: string;
@@ -54,6 +62,12 @@ interface IssuedAsset {
   readonly expiresAt: number;
   readonly fileRevision?: string;
 }
+interface AssetRequest {
+  readonly target: Redacted.Redacted<string>;
+  readonly method: "GET" | "HEAD";
+  readonly range: string | undefined;
+  readonly ifRange: string | undefined;
+}
 interface OpenedAsset {
   readonly status: 200 | 206 | 416;
   readonly headers: Readonly<Record<string, string>>;
@@ -68,12 +82,9 @@ export class AssetUrls extends Context.Service<
       sessionId: AuthSessionId,
       subject: AssetSubject,
     ) => Effect.Effect<IssuedAsset, AssetUnavailable>;
-    readonly open: (input: {
-      readonly target: Redacted.Redacted<string>;
-      readonly method: "GET" | "HEAD";
-      readonly range: string | undefined;
-      readonly ifRange: string | undefined;
-    }) => Effect.Effect<OpenedAsset, AssetUnavailable, Scope.Scope>;
+    readonly open: (
+      input: AssetRequest,
+    ) => Effect.Effect<OpenedAsset, AssetUnavailable, Scope.Scope>;
   }
 >()("@mend/t3-gateway/AssetUrls") {}
 
@@ -220,6 +231,7 @@ const headersFor = (contentType: string, csp: string | null): Record<string, str
 });
 
 type Source =
+  | { readonly kind: "page"; readonly pageId: string }
   | {
       readonly kind: "image";
       readonly imageId: string;
@@ -250,8 +262,42 @@ interface Grant {
   readonly source: Source;
   /** The device's session and the file or image it names, which re-mints share. */
   readonly subject: string;
+  readonly url: string | null;
   readonly cost: number;
 }
+
+interface Terms {
+  readonly suffix: string;
+  readonly keyParts: ReadonlyArray<string>;
+  readonly ttlMs: number;
+  readonly reuseMinLifeMs: number | null;
+}
+
+const termsOf = (source: Source): Terms => {
+  switch (source.kind) {
+    case "page":
+      return {
+        suffix: PAGE_FILE_NAME,
+        keyParts: ["page", source.pageId],
+        ttlMs: PAGE_FRAME_TTL_MS,
+        reuseMinLifeMs: PAGE_URL_MIN_LIFE_MS,
+      };
+    case "image":
+      return {
+        suffix: posix.basename(Redacted.value(source.name)),
+        keyParts: ["image", source.imageId, Redacted.value(source.name)],
+        ttlMs: ASSET_URL_TTL_MS,
+        reuseMinLifeMs: null,
+      };
+    case "file":
+      return {
+        suffix: posix.basename(Redacted.value(source.path)),
+        keyParts: ["file", source.worktreeId, source.preview, Redacted.value(source.path)],
+        ttlMs: ASSET_URL_TTL_MS,
+        reuseMinLifeMs: null,
+      };
+  }
+};
 
 export const AssetUrlsLive: Layer.Layer<
   AssetUrls,
@@ -291,10 +337,108 @@ export const AssetUrlsLive: Layer.Layer<
     const sweep = (now: number) => {
       for (const [key, grant] of grants) if (grant.expiresAt <= now) drop(key);
     };
+    const gated = (session: BearerSession) =>
+      gateDeviceCalls(mend, (token) => projections.refuseDevice(session.mendUser.id, token));
     const opened = (session: BearerSession, worktreeId: string, input: MendRawFileRequest) =>
-      gateDeviceCalls(mend, (token) => projections.refuseDevice(session.mendUser.id, token))
+      gated(session)
         .openRawFile(Redacted.make(session.deviceToken), worktreeId, input)
         .pipe(Effect.mapError(() => new AssetUnavailable({})));
+
+    const openPage = (
+      session: BearerSession,
+      source: Extract<Source, { kind: "page" }>,
+      method: "GET" | "HEAD",
+    ): Effect.Effect<OpenedAsset, AssetUnavailable, Scope.Scope> =>
+      Effect.gen(function* () {
+        if (!session.scopes.includes("orchestration:read")) return yield* new AssetUnavailable({});
+        const body = yield* gated(session)
+          .openPage(Redacted.make(session.deviceToken), source.pageId)
+          .pipe(Effect.mapError(() => new AssetUnavailable({})));
+        return {
+          status: 200,
+          // t3code's phone loads this as a top-level document, without an iframe sandbox.
+          headers: headersFor("text/html; charset=utf-8", "sandbox allow-scripts allow-forms"),
+          body:
+            method === "HEAD"
+              ? Stream.empty
+              : body.pipe(Stream.mapError(() => new AssetUnavailable({}))),
+        };
+      });
+
+    const openImage = (
+      grant: Grant,
+      source: Extract<Source, { kind: "image" }>,
+      method: "GET" | "HEAD",
+    ): Effect.Effect<OpenedAsset, AssetUnavailable> =>
+      Effect.gen(function* () {
+        const kept = yield* state
+          .imageBytes(grant.userId, source.imageId)
+          .pipe(Effect.mapError(() => new AssetUnavailable({})));
+        if (kept === null || kept.bytes.byteLength > source.sizeBytes)
+          return yield* new AssetUnavailable({});
+        return {
+          status: 200,
+          headers: {
+            ...headersFor(kept.image.mimeType, null),
+            "content-length": String(kept.bytes.length),
+          },
+          body: method === "HEAD" ? Stream.empty : chunked(kept.bytes),
+        };
+      });
+
+    const openFile = (
+      session: BearerSession,
+      source: Extract<Source, { kind: "file" }>,
+      suffix: string,
+      input: AssetRequest,
+    ): Effect.Effect<OpenedAsset, AssetUnavailable, Scope.Scope> =>
+      Effect.gen(function* () {
+        if (!session.scopes.includes("filesystem:read")) return yield* new AssetUnavailable({});
+        const extent = source.extent;
+        const granted = Redacted.value(source.path);
+        const directory = extent.kind === "directory" ? extent.directory : "";
+        const name =
+          extent.kind === "exact" ? granted : directory === "" ? suffix : `${directory}/${suffix}`;
+        const requested =
+          extent.kind === "exact" ? grantable(name, source.preview) : dependency(suffix);
+        if (requested === null) return yield* new AssetUnavailable({});
+        const ranges = ranged(requested.family);
+        const file: MendRawFile = yield* opened(session, source.worktreeId, {
+          path: Redacted.make(name),
+          within: Redacted.make(directory),
+          captureId: source.captureId,
+          method: input.method,
+          range:
+            ranges && input.method === "GET" && input.ifRange === undefined
+              ? input.range
+              : undefined,
+        });
+        const canonical = Redacted.value(file.canonicalPath);
+        const type =
+          extent.kind === "exact"
+            ? canonical === granted &&
+              (extent.identity === null || extent.identity === file.identity)
+              ? requested
+              : null
+            : withinDirectory(canonical, directory)
+              ? dependency(directory === "" ? canonical : canonical.slice(directory.length + 1))
+              : null;
+        if (type === null || (!ranges && file.status !== 200))
+          return yield* new AssetUnavailable({});
+        const headers = headersFor(type.contentType, type.csp);
+        headers["content-length"] = String(file.length);
+        if (ranges) headers["accept-ranges"] = "bytes";
+        if (file.contentRange !== undefined) headers["content-range"] = file.contentRange;
+        return {
+          status: file.status,
+          headers,
+          body:
+            input.method === "HEAD" || file.status === 416
+              ? Stream.empty
+              : file.body.pipe(Stream.mapError(() => new AssetUnavailable({}))),
+        };
+      });
+
     return {
       issue: (sessionId, subject) =>
         Effect.scoped(
@@ -305,10 +449,13 @@ export const AssetUrlsLive: Layer.Layer<
             const session = bearer.session;
             if (!(yield* mints(session.mendDeviceId))) return yield* new AssetUnavailable({});
             yield* auth.confirmDevice(bearer).pipe(Effect.mapError(() => new AssetUnavailable({})));
-            const now = yield* Clock.currentTimeMillis;
             let source: Source;
             let fileRevision: string | undefined;
-            if (subject.kind === "image") {
+            if (subject.kind === "page") {
+              if (!session.scopes.includes("orchestration:read"))
+                return yield* new AssetUnavailable({});
+              source = subject;
+            } else if (subject.kind === "image") {
               const name = Redacted.value(subject.fileName);
               if (
                 !validPath(name) ||
@@ -357,21 +504,35 @@ export const AssetUrlsLive: Layer.Layer<
               };
               if (subject.preview === "media") fileRevision = file.revision;
             }
-            const suffix = posix.basename(
-              Redacted.value(source.kind === "image" ? source.name : source.path),
-            );
-            const subjectKey = [
-              session.mendDeviceId,
-              sessionId,
-              ...(source.kind === "image"
-                ? ["image", source.imageId, Redacted.value(source.name)]
-                : ["file", source.worktreeId, source.preview, Redacted.value(source.path)]),
-            ].join("\0");
-            // The subject twice (its index and the grant's source), the digest and the fields.
-            const cost = 2 * Buffer.byteLength(subjectKey) + 256;
+            const { suffix, keyParts, ttlMs, reuseMinLifeMs } = termsOf(source);
+            const now = yield* Clock.currentTimeMillis;
+            if (reuseMinLifeMs !== null && session.expiresAt - now < reuseMinLifeMs)
+              return yield* new AssetUnavailable({});
+            if (source.kind === "page")
+              yield* gated(session)
+                .pageFrame(Redacted.make(session.deviceToken), source.pageId)
+                .pipe(Effect.mapError(() => new AssetUnavailable({})));
+            const subjectKey = [session.mendDeviceId, sessionId, ...keyParts].join("\0");
             sweep(now);
             const siblings = subjects.get(subjectKey) ?? [];
+            if (reuseMinLifeMs !== null) {
+              const kept = siblings
+                .map((sibling) => grants.get(sibling))
+                .findLast(
+                  (grant) => grant !== undefined && grant.expiresAt - now >= reuseMinLifeMs,
+                );
+              if (kept !== undefined && kept.url !== null)
+                return { relativeUrl: kept.url, expiresAt: kept.expiresAt };
+            }
             const retired = siblings.length >= limits.grantsPerSubject ? siblings[0] : undefined;
+            if (retired !== undefined && reuseMinLifeMs !== null)
+              return yield* new AssetUnavailable({});
+            const token = `ast_${randomBytes(32).toString("base64url")}`;
+            const relativeUrl = `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(suffix)}`;
+            const url = reuseMinLifeMs === null ? null : relativeUrl;
+            // The subject twice (its index and the grant's source), a kept URL, the digest and fields.
+            const cost =
+              2 * Buffer.byteLength(subjectKey) + (url === null ? 0 : Buffer.byteLength(url)) + 256;
             const freed = retired === undefined ? undefined : grants.get(retired);
             const room = freed === undefined ? 0 : 1;
             if (
@@ -381,9 +542,8 @@ export const AssetUrlsLive: Layer.Layer<
             )
               return yield* new AssetUnavailable({});
             if (retired !== undefined) drop(retired);
-            const token = `ast_${randomBytes(32).toString("base64url")}`;
             const key = digest(token);
-            const expiresAt = Math.min(now + ASSET_URL_TTL_MS, session.expiresAt);
+            const expiresAt = Math.min(now + ttlMs, session.expiresAt);
             grants.set(key, {
               sessionId,
               userId: session.mendUser.id,
@@ -391,13 +551,14 @@ export const AssetUrlsLive: Layer.Layer<
               expiresAt,
               source,
               subject: subjectKey,
+              url,
               cost,
             });
             subjects.set(subjectKey, [...(subjects.get(subjectKey) ?? []), key]);
             counts.set(session.mendDeviceId, (counts.get(session.mendDeviceId) ?? 0) + 1);
             metadataBytes += cost;
             return {
-              relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(suffix)}`,
+              relativeUrl,
               expiresAt,
               ...(fileRevision === undefined ? {} : { fileRevision }),
             };
@@ -421,12 +582,8 @@ export const AssetUrlsLive: Layer.Layer<
             return yield* new AssetUnavailable({});
           const suffix = parts.join("/");
           const source = grant.source;
-          if (
-            (source.kind === "image" || source.extent.kind === "exact") &&
-            suffix !==
-              posix.basename(Redacted.value(source.kind === "image" ? source.name : source.path))
-          )
-            return yield* new AssetUnavailable({});
+          const exact = source.kind !== "file" || source.extent.kind === "exact";
+          if (exact && suffix !== termsOf(source).suffix) return yield* new AssetUnavailable({});
           if (
             !(yield* reads(grant.deviceId)) ||
             (source.kind === "image" && !(yield* imageBytes(grant.deviceId, source.sizeBytes)))
@@ -439,69 +596,14 @@ export const AssetUrlsLive: Layer.Layer<
           if (session.mendDeviceId !== grant.deviceId || session.mendUser.id !== grant.userId)
             return yield* new AssetUnavailable({});
           yield* auth.confirmDevice(bearer).pipe(Effect.mapError(() => new AssetUnavailable({})));
-          if (source.kind === "image") {
-            const kept = yield* state
-              .imageBytes(grant.userId, source.imageId)
-              .pipe(Effect.mapError(() => new AssetUnavailable({})));
-            if (kept === null || kept.bytes.byteLength > source.sizeBytes)
-              return yield* new AssetUnavailable({});
-            return {
-              status: 200,
-              headers: {
-                ...headersFor(kept.image.mimeType, null),
-                "content-length": String(kept.bytes.length),
-              },
-              body: input.method === "HEAD" ? Stream.empty : chunked(kept.bytes),
-            };
+          switch (source.kind) {
+            case "page":
+              return yield* openPage(session, source, input.method);
+            case "image":
+              return yield* openImage(grant, source, input.method);
+            case "file":
+              return yield* openFile(session, source, suffix, input);
           }
-          if (!session.scopes.includes("filesystem:read")) return yield* new AssetUnavailable({});
-          const extent = source.extent;
-          const granted = Redacted.value(source.path);
-          const directory = extent.kind === "directory" ? extent.directory : "";
-          const name =
-            extent.kind === "exact"
-              ? granted
-              : directory === ""
-                ? suffix
-                : `${directory}/${suffix}`;
-          const requested =
-            extent.kind === "exact" ? grantable(name, source.preview) : dependency(suffix);
-          if (requested === null) return yield* new AssetUnavailable({});
-          const ranges = ranged(requested.family);
-          const file: MendRawFile = yield* opened(session, source.worktreeId, {
-            path: Redacted.make(name),
-            within: Redacted.make(directory),
-            captureId: source.captureId,
-            method: input.method,
-            range:
-              ranges && input.method === "GET" && input.ifRange === undefined
-                ? input.range
-                : undefined,
-          });
-          const canonical = Redacted.value(file.canonicalPath);
-          const type =
-            extent.kind === "exact"
-              ? canonical === granted &&
-                (extent.identity === null || extent.identity === file.identity)
-                ? requested
-                : null
-              : withinDirectory(canonical, directory)
-                ? dependency(directory === "" ? canonical : canonical.slice(directory.length + 1))
-                : null;
-          if (type === null || (!ranges && file.status !== 200))
-            return yield* new AssetUnavailable({});
-          const headers = headersFor(type.contentType, type.csp);
-          headers["content-length"] = String(file.length);
-          if (ranges) headers["accept-ranges"] = "bytes";
-          if (file.contentRange !== undefined) headers["content-range"] = file.contentRange;
-          return {
-            status: file.status,
-            headers,
-            body:
-              input.method === "HEAD" || file.status === 416
-                ? Stream.empty
-                : file.body.pipe(Stream.mapError(() => new AssetUnavailable({}))),
-          };
         }),
     };
   }),

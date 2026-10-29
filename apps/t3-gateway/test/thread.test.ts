@@ -10,6 +10,7 @@ import {
   type OrchestrationV2TurnItem,
 } from "@mend/t3-contracts";
 import { threadTranscriptHeader } from "@mend/t3-contracts/thread-transcript";
+import { compactDynamicToolOutput, htmlRenderFromToolItem } from "@mend/t3-contracts/tool-output";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -22,6 +23,7 @@ import { NO_NOTICES } from "../src/notices.ts";
 import { threadProjectionOf, TURN_ORDINAL_STRIDE } from "../src/thread-projection.ts";
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
+import { pageItem } from "./support/fake-workbench.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
@@ -514,7 +516,7 @@ describe("Mend's items as turn items", () => {
       items,
     );
 
-  it("leaves out a page and the call its page replaces, and keeps a call that failed", () => {
+  it("projects a page, hides its published call, and keeps a call that failed", () => {
     const call = (id: string, attachmentId: string | null) =>
       item({
         id,
@@ -535,15 +537,7 @@ describe("Mend's items as turn items", () => {
       call("item-published", "page-1"),
       item({
         id: "item-page",
-        kind: "page",
-        title: "Latency",
-        data: {
-          id: "page-1",
-          sessionId: "session-1",
-          title: "Latency",
-          height: 420,
-          publishedAt: "2026-10-04T09:00:02.000Z",
-        },
+        ...pageItem({ id: "page-1", sessionId: "session-1", title: "Latency", height: 420 }),
       }),
       call("item-refused", null),
     ]);
@@ -551,9 +545,81 @@ describe("Mend's items as turn items", () => {
       turnItems.map((entry) => [entry.id, entry.type]),
       [
         ["input:turn-1", "user_message"],
+        ["item-page", "dynamic_tool"],
         ["item-refused", "dynamic_tool"],
       ],
     );
+    const page = turnItems[1];
+    if (page?.type !== "dynamic_tool") throw new Error("Expected the page tool item");
+    assert.strictEqual(page.status, "completed");
+    assert.deepStrictEqual(htmlRenderFromToolItem(page), {
+      attachmentId: "page-1",
+      title: "Latency",
+      height: 420,
+    });
+    assert.deepStrictEqual(compactDynamicToolOutput(page.output), {
+      htmlRender: { attachmentId: "page-1", title: "Latency", height: 420 },
+    });
+    assert.isBelow(Buffer.byteLength(JSON.stringify(page.output)), 16_384);
+  });
+
+  it("bounds page metadata for the pinned reader", () => {
+    const { turnItems } = projectionWith([
+      item({
+        id: "page-item",
+        ...pageItem({
+          id: "x".repeat(256),
+          sessionId: "session-1",
+          title: "\u0000".repeat(20_000),
+          height: 99_999,
+        }),
+        status: "in-progress",
+      }),
+    ]);
+    const page = turnItems[1];
+    if (page?.type !== "dynamic_tool") throw new Error("Expected the page tool item");
+    assert.strictEqual(page.status, "completed");
+    assert.deepStrictEqual(htmlRenderFromToolItem(page), {
+      attachmentId: "x".repeat(256),
+      title: "\u0000".repeat(200),
+      height: 2000,
+    });
+    assert.isBelow(Buffer.byteLength(JSON.stringify(page.output)), 16_384);
+    assert.isBelow(Buffer.byteLength(JSON.stringify(page.input)), 16_384);
+  });
+
+  it("omits malformed page references without falling back to a tool containing raw data", () => {
+    for (const data of [
+      null,
+      { id: "", title: "bad", height: 420 },
+      { id: "x".repeat(257), title: "bad", height: 420 },
+      { id: "page-1", title: "bad", height: Infinity },
+    ]) {
+      const { turnItems } = projectionWith([item({ id: "bad-page", kind: "page", data })]);
+      assert.deepStrictEqual(
+        turnItems.map((entry) => entry.type),
+        ["user_message"],
+      );
+    }
+  });
+
+  it("never lets an agent's own tool output stand for a page", () => {
+    const { turnItems } = projectionWith([
+      item({
+        id: "item-imitation",
+        kind: "tool-call",
+        title: "html_render",
+        text: JSON.stringify({
+          htmlRender: { attachmentId: "page-1", title: "Impersonated", height: 300 },
+        }),
+        data: { type: "tool_use", name: "html_render", input: {} },
+      }),
+    ]);
+    const imitation = turnItems.find((entry) => entry.id === "item-imitation");
+    if (imitation?.type !== "dynamic_tool") throw new Error("Expected the tool row");
+    assert.strictEqual(imitation.status, "completed");
+    assert.include(JSON.stringify(imitation.output), "Impersonated");
+    assert.isUndefined(htmlRenderFromToolItem(imitation));
   });
 
   it("reads codex's own item shapes", () => {

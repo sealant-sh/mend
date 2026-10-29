@@ -1,7 +1,9 @@
 import { isChosenDefault } from "@mend/domain/default-login";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
@@ -30,6 +32,7 @@ import {
   MendWorktreeDetail,
   MendFileListing,
   MendSkill,
+  MendPageFrame,
   MendPastedImage,
   MendProjectDetail,
   MendRemovalReport,
@@ -56,6 +59,9 @@ import {
  */
 const RAW_HEADERS_DEADLINE = Duration.seconds(11);
 
+const PAGE_DEADLINE = Duration.seconds(11);
+const PAGE_VIEW_PATH = "/api/page-view";
+
 /** A scoped response from Mend's raw endpoint; no upstream request or cause escapes. */
 export interface MendRawFile {
   readonly captureId: string | null;
@@ -80,6 +86,11 @@ export interface MendRawFileRequest {
 
 export class MendRawFileUnavailable extends Schema.TaggedError<MendRawFileUnavailable>()(
   "MendRawFileUnavailable",
+  { status: Schema.NullOr(Schema.Number) },
+) {}
+
+export class MendPageUnavailable extends Schema.TaggedError<MendPageUnavailable>()(
+  "MendPageUnavailable",
   { status: Schema.NullOr(Schema.Number) },
 ) {}
 
@@ -400,6 +411,18 @@ export class MendClient extends Context.Service<
       worktreeId: string,
       input: MendRawFileRequest,
     ) => Effect.Effect<MendRawFile, MendRawFileUnavailable | MendDeviceRefused, Scope.Scope>;
+    readonly pageFrame: (
+      deviceToken: Redacted.Redacted<string>,
+      pageId: string,
+    ) => Effect.Effect<Redacted.Redacted<string>, MendPageUnavailable | MendDeviceRefused>;
+    readonly openPage: (
+      deviceToken: Redacted.Redacted<string>,
+      pageId: string,
+    ) => Effect.Effect<
+      Stream.Stream<Uint8Array, MendPageUnavailable>,
+      MendPageUnavailable | MendDeviceRefused,
+      Scope.Scope
+    >;
     /**
      * `GET /api/worktrees/:id/contents`: one file (as it stands, or at a checkpoint) or the lines a
      * search matches. A path Mend refuses (outside the worktree) is its 422, a refusal. A path with
@@ -612,6 +635,68 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
       const config = yield* GatewayConfig;
       const http = yield* HttpClient.HttpClient;
       const url = (path: string) => new URL(path, config.mendUrl);
+
+      const withinPageDeadline = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.timeoutOrElse(effect, {
+          duration: PAGE_DEADLINE,
+          orElse: () => Effect.fail(new MendPageUnavailable({ status: null })),
+        });
+
+      const pageResponse = (request: HttpClientRequest.HttpClientRequest) =>
+        HttpClient.withScope(http)
+          .execute(request)
+          .pipe(
+            Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
+            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+            Effect.mapError(() => new MendPageUnavailable({ status: null })),
+          );
+
+      const pageFrame: MendClient["Service"]["pageFrame"] = (deviceToken, pageId) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const response = yield* pageResponse(
+              HttpClientRequest.get(
+                url(`/api/pages/${encodeURIComponent(pageId)}/frame?appearance=light`),
+              ).pipe(HttpClientRequest.bearerToken(deviceToken)),
+            );
+            if (response.status === 401)
+              return yield* new MendDeviceRefused({ operation: "page frame" });
+            if (response.status !== 200)
+              return yield* new MendPageUnavailable({ status: response.status });
+            const frame = yield* response.json.pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(MendPageFrame)),
+              Effect.mapError(() => new MendPageUnavailable({ status: 200 })),
+            );
+            const target = URL.parse(frame.url, config.mendUrl);
+            if (
+              target === null ||
+              target.origin !== config.mendUrl.origin ||
+              target.pathname !== PAGE_VIEW_PATH ||
+              target.hash !== "" ||
+              !target.searchParams.get("view") ||
+              !(Date.parse(frame.expiresAt) > (yield* Clock.currentTimeMillis))
+            )
+              return yield* new MendPageUnavailable({ status: 200 });
+            return Redacted.make(target.toString());
+          }),
+        ).pipe(withinPageDeadline);
+
+      const openPage: MendClient["Service"]["openPage"] = (deviceToken, pageId) =>
+        Effect.gen(function* () {
+          const frame = yield* pageFrame(deviceToken, pageId);
+          const response = yield* pageResponse(HttpClientRequest.get(Redacted.value(frame))).pipe(
+            withinPageDeadline,
+          );
+          if (response.status !== 200)
+            return yield* new MendPageUnavailable({ status: response.status });
+          if (
+            response.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() !== "text/html"
+          )
+            return yield* new MendPageUnavailable({ status: 200 });
+          return response.stream.pipe(
+            Stream.mapError(() => new MendPageUnavailable({ status: 200 })),
+          );
+        });
 
       const send = (operation: string, request: HttpClientRequest.HttpClientRequest) =>
         http.execute(request).pipe(
@@ -1379,6 +1464,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         worktreeDiff,
         worktreeContents,
         openRawFile,
+        pageFrame,
+        openPage,
         projectFiles,
         listSkills,
         projectSkills,

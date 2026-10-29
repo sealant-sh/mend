@@ -47,6 +47,8 @@ class GatedMendClient {
   readonly worktreeDiff: DeviceCalls["worktreeDiff"];
   readonly worktreeContents: DeviceCalls["worktreeContents"];
   readonly openRawFile: DeviceCalls["openRawFile"];
+  readonly pageFrame: DeviceCalls["pageFrame"];
+  readonly openPage: DeviceCalls["openPage"];
   readonly createSession: DeviceCalls["createSession"];
   readonly joinWorktree: DeviceCalls["joinWorktree"];
   readonly labelSession: DeviceCalls["labelSession"];
@@ -90,6 +92,8 @@ class GatedMendClient {
     this.worktreeDiff = calls.worktreeDiff;
     this.worktreeContents = calls.worktreeContents;
     this.openRawFile = calls.openRawFile;
+    this.pageFrame = calls.pageFrame;
+    this.openPage = calls.openPage;
     this.createSession = calls.createSession;
     this.joinWorktree = calls.joinWorktree;
     this.labelSession = calls.labelSession;
@@ -160,6 +164,8 @@ export const gateDeviceCalls = (
       guard(token, mend.worktreeContents(token, worktreeId, question)),
     openRawFile: (token, worktreeId, input) =>
       guard(Redacted.value(token), mend.openRawFile(token, worktreeId, input)),
+    pageFrame: (token, pageId) => guard(Redacted.value(token), mend.pageFrame(token, pageId)),
+    openPage: (token, pageId) => guard(Redacted.value(token), mend.openPage(token, pageId)),
     projectFiles: (token, projectId, sessionId) =>
       guard(token, mend.projectFiles(token, projectId, sessionId)),
     listSkills: (token) => guard(token, mend.listSkills(token)),

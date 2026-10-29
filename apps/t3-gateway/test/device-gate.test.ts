@@ -44,6 +44,8 @@ const revokedMend: DeviceCalls = {
   worktreeDiff: () => refused("range"),
   worktreeContents: () => refused("contents"),
   openRawFile: () => refused("raw"),
+  pageFrame: () => refused("page frame"),
+  openPage: () => refused("page document"),
   createSession: () => refused("create"),
   joinWorktree: () => refused("join"),
   labelSession: () => refused("label"),
@@ -121,6 +123,8 @@ describe("the device gate", () => {
             method: "HEAD",
           }),
         ),
+        pageFrame: gated.pageFrame(Redacted.make("t-pageFrame"), "page"),
+        openPage: Effect.scoped(gated.openPage(Redacted.make("t-openPage"), "page")),
         worktreeDiff: gated.worktreeDiff("t-worktreeDiff", "w", {
           from: null,
           to: "c",
