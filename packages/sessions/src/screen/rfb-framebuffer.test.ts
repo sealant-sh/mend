@@ -10,6 +10,7 @@ import {
   RELAYED_CANVAS,
   RELAYED_SERVER,
   RELAYED_VIEWER,
+  allocatedBy,
   queueOf,
 } from "../../test/rfb-fixtures.ts";
 import {
@@ -248,6 +249,21 @@ describe("Framebuffer", () => {
     expect(refusal(signedIn().read(queueOf(update(half, half, rect(0, 0, 1, 1, RAW)))))).toBe(
       "oversized",
     );
+  });
+
+  it("refuses an oversized length within the message ceiling, wherever the header is cut", () => {
+    const header = update(rect(0, 0, 64, 64, ZRLE, bytes([4, 0xffffffff])));
+    const unsplit = 4;
+    const split = 4 + 11;
+    for (const cut of [unsplit, split]) {
+      const framebuffer = signedIn();
+      const queue = queueOf(header.subarray(0, cut));
+      expect(framebuffer.read(queue)).toEqual({ _tag: "Read", events: [] });
+      queue.push(Buffer.concat([header.subarray(cut), Buffer.alloc(16 * 1024 * 1024)]));
+      const { result, bytes: added } = allocatedBy(() => framebuffer.read(queue));
+      expect(refusal(result)).toBe("oversized");
+      expect(added).toBeLessThanOrEqual(MESSAGE_CEILING);
+    }
   });
 
   it("refuses rectangles outside the screen, other encodings and other message types", () => {
