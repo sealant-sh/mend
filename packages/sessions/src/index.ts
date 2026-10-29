@@ -20,6 +20,7 @@ export * from "./workspace-git-hooks.ts";
 export * from "./harness-state.ts";
 export * from "./pasted-images.ts";
 export * from "./pickup-tickets.ts";
+export * from "./resource-proposals.ts";
 export * from "./secret-files.ts";
 export * from "./forward.ts";
 export * from "./forward-node.ts";
