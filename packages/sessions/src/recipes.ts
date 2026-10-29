@@ -588,6 +588,17 @@ export const readMendToml = (worktree: string): Effect.Effect<MendTomlFile, Reci
     ),
   );
 
+const fileNamesOf = (file: MendTomlFile): ReadonlySet<string> =>
+  new Set([
+    ...file.recipes.map((recipe) => recipe.name),
+    ...file.refused.flatMap((refusal) => (refusal.name === null ? [] : [refusal.name])),
+  ]);
+
+export const recipesBeforeDependsCheck = (
+  file: MendTomlFile,
+  project: ReadonlyArray<ServiceRecipe>,
+): ReadonlyArray<ServiceRecipe> => mergeRecipes(file.recipes, project, fileNamesOf(file));
+
 /**
  * File + project recipes as ONE declaration set. Collisions are refused at write time (the web
  * checks before creating); if one exists anyway, the file wins: it travels with the repo and
@@ -614,10 +625,7 @@ export const resolveDeclarations = (
   file: MendTomlFile,
   project: ReadonlyArray<ServiceRecipe>,
 ): ServiceDeclarations => {
-  const fileNames = new Set([
-    ...file.recipes.map((recipe) => recipe.name),
-    ...file.refused.flatMap((refusal) => (refusal.name === null ? [] : [refusal.name])),
-  ]);
+  const fileNames = fileNamesOf(file);
   const merged = mergeRecipes(file.recipes, project, fileNames);
   const refused: RecipeRefusal[] = [...file.refused];
   const out = new Set<string>(fileNames);

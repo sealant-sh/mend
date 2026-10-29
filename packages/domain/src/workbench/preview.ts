@@ -217,7 +217,8 @@ export type ServiceStopCause =
 export type ServiceStartCause =
   | { readonly kind: "person"; readonly userId: string }
   | { readonly kind: "workspace"; readonly runsAs: string | null }
-  | { readonly kind: "system" };
+  /** `runsAs` null: the session's owner. */
+  | { readonly kind: "system"; readonly runsAs: string | null };
 
 export const previewControlDecider = (cause: ServiceStopCause | ServiceStartCause): string | null =>
   cause.kind === "person" ? cause.userId : null;
@@ -228,9 +229,8 @@ export const serviceRunsAs = (cause: ServiceStartCause): string | null => {
     case "person":
       return cause.userId;
     case "workspace":
-      return cause.runsAs;
     case "system":
-      return null;
+      return cause.runsAs;
   }
 };
 

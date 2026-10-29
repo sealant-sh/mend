@@ -319,7 +319,7 @@ describe("previewControlDecider", () => {
     expect(previewControlDecider({ kind: "workspace" })).toBe(null);
     expect(previewControlDecider({ kind: "workspace", runsAs: "owner" })).toBe(null);
     expect(previewControlDecider({ kind: "system", reason: "idle" })).toBe(null);
-    expect(previewControlDecider({ kind: "system" })).toBe(null);
+    expect(previewControlDecider({ kind: "system", runsAs: null })).toBe(null);
   });
 });
 

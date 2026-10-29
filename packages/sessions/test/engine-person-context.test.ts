@@ -3173,6 +3173,34 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
     });
   });
 
+  it("Mend's restart of a recipe after a turn changed it runs the approved version, as its last starter", async () => {
+    let toml = '[service.web]\ncommand = "pnpm dev"\nport = 3000\nenv = { MODE = "approved" }\n';
+    await livePersonJoin({
+      flag: "person",
+      exec: (argv) =>
+        argv.at(-1) === WORKSPACE_MEND_TOML ? { exitCode: 0, stdout: toml, stderr: "" } : undefined,
+      inspect: (engine, join) =>
+        Effect.gen(function* () {
+          const owner = join.holder.ownerUserId ?? "";
+          yield* engine.runServiceRecipe(join.holder.id, "web", { kind: "person", userId: owner });
+          yield* engine.stopServices(join.holder.id, { kind: "workspace" });
+          toml = toml.replace("pnpm dev", "pnpm dev --edited").replace("approved", "edited");
+
+          const started = join.opened.length;
+          const view = yield* engine.runServiceRecipe(join.holder.id, "web", {
+            kind: "system",
+            runsAs: MARIA,
+          });
+          expect(view.approvedVersion).toBe(true);
+          expect(view.attempts.at(-1)?.argv).toEqual(["sh", "-c", "pnpm dev"]);
+          expect(join.opened.at(started)).toMatchObject({
+            user: { name: JOINER },
+            env: { MODE: "approved", PORT: "3000" },
+          });
+        }),
+    });
+  });
+
   it("a shell and a Service run as the person who opened them, and a restart as its starter", async () => {
     await livePersonJoin({
       flag: "person",
@@ -3200,7 +3228,7 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           );
           expect(join.opened.at(started)?.user?.name).toBe(JOINER);
           const restarted = join.opened.length;
-          yield* engine.restartService(service.service.id, { kind: "system" });
+          yield* engine.restartService(service.service.id, { kind: "system", runsAs: null });
           expect(join.opened.at(restarted)?.user?.name).toBe(JOINER);
           // Without a starter named, the session's owner, as before.
           const owners = yield* engine.openShell(join.holder.id);
