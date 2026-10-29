@@ -4,6 +4,7 @@ import {
   CLIENT_HANDSHAKE,
   DEFAULTS_VIEWER,
   RELAYED_VIEWER,
+  allocatedBy,
   chunkings,
   queueOf,
 } from "../../test/rfb-fixtures.ts";
@@ -69,6 +70,26 @@ describe("readViewer", () => {
     expect(readViewer(queueOf(encodings))).toEqual([
       { _tag: "Close", reason: "oversized", type: 2 },
     ]);
+  });
+
+  it("refuses an oversized length whose header is split, without copying what follows", () => {
+    const split = [
+      {
+        type: 6,
+        head: Uint8Array.of(6, 0, 0, 0, 0xff, 0xff, 0xff),
+        ceiling: VIEWER_CUT_TEXT_CEILING,
+      },
+      { type: 2, head: Uint8Array.of(2, 0, 0), ceiling: 4 * VIEWER_ENCODINGS_CEILING },
+    ];
+    for (const { type, head, ceiling } of split) {
+      const queue = queueOf(head);
+      expect(readViewer(queue)).toEqual([]);
+      const tail = new Uint8Array(16 * 1024 * 1024).fill(0xff);
+      queue.push(tail);
+      const { result, bytes } = allocatedBy(() => readViewer(queue));
+      expect(result).toEqual([{ _tag: "Close", reason: "oversized", type }]);
+      expect(bytes).toBeLessThanOrEqual(ceiling);
+    }
   });
 
   it("closes on any other message type", () => {

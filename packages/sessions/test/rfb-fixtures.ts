@@ -33,3 +33,12 @@ export const queueOf = (...chunks: ReadonlyArray<Uint8Array>): ByteQueue => {
   for (const chunk of chunks) queue.push(chunk);
   return queue;
 };
+
+/** Net array-buffer growth across `run`, not its peak. */
+export const allocatedBy = <A>(run: () => A): { readonly result: A; readonly bytes: number } => {
+  if (globalThis.gc === undefined) throw new Error("the sessions tests run with --expose-gc");
+  globalThis.gc();
+  const before = process.memoryUsage().arrayBuffers;
+  const result = run();
+  return { result, bytes: process.memoryUsage().arrayBuffers - before };
+};

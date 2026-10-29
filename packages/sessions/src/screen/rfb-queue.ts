@@ -12,19 +12,30 @@ export class ByteQueue {
   peek(count: number): Uint8Array {
     const first = this.chunks[0];
     if (first !== undefined && first.length >= count) return first.subarray(0, count);
-    let joined = 0;
-    let size = 0;
-    while (size < count) size += this.chunks[joined++]?.length ?? count;
-    const merged = Buffer.concat(this.chunks.splice(0, joined));
-    this.chunks.unshift(merged);
-    return merged.subarray(0, count);
+    const bytes = Buffer.alloc(count);
+    let filled = 0;
+    for (const chunk of this.chunks) {
+      if (filled === count) break;
+      const part = chunk.subarray(0, count - filled);
+      bytes.set(part, filled);
+      filled += part.length;
+    }
+    return bytes;
   }
 
   take(count: number): Uint8Array {
     const bytes = this.peek(count);
-    const rest = this.chunks[0]?.subarray(count);
-    if (rest === undefined || rest.length === 0) this.chunks.shift();
-    else this.chunks[0] = rest;
+    let left = count;
+    let spent = 0;
+    for (const chunk of this.chunks) {
+      if (chunk.length > left) {
+        this.chunks[spent] = chunk.subarray(left);
+        break;
+      }
+      left -= chunk.length;
+      spent++;
+    }
+    this.chunks.splice(0, spent);
     this.length -= count;
     return bytes;
   }
