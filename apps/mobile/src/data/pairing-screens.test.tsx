@@ -115,7 +115,9 @@ beforeEach(async () => {
   root = createRoot(host);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // The pairing's cache outlives an unmount: end the pairing where the boundary sees it.
+  await act(() => clearConfig());
   act(() => root.unmount());
   host.remove();
   vi.unstubAllGlobals();

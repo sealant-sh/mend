@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { pageThemes } from "@mend/ui/page-theme";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -48,6 +49,12 @@ const serve = async (input: RequestInfo | URL): Promise<Response> => {
 
 let root: Root;
 let host: HTMLDivElement;
+let pairingCache: QueryClient | undefined;
+
+const CacheOfPairing = () => {
+  pairingCache = useQueryClient();
+  return null;
+};
 
 const settle = () => act(() => vi.advanceTimersByTimeAsync(10));
 const show = (node: ReactNode) => act(() => root.render(<PairingBoundary>{node}</PairingBoundary>));
@@ -68,7 +75,9 @@ beforeEach(async () => {
   await act(() => saveConfig(MACHINE_A));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // The pairing's cache outlives an unmount: end the pairing where the boundary sees it.
+  await act(() => clearConfig());
   act(() => root.unmount());
   host.remove();
   vi.unstubAllGlobals();
@@ -134,7 +143,14 @@ describe("offline", () => {
     await settle();
     expect(text()).toContain("Shown when the phone is back online");
 
-    act(() => root.render(null));
+    act(() =>
+      root.render(
+        <PairingBoundary>
+          <CacheOfPairing />
+        </PairingBoundary>,
+      ),
+    );
+    pairingCache?.clear();
     network.offline = false;
     // A server that answers `null`: reading its URL throws a TypeError in the phone's own code.
     network.frameBody = "null";
