@@ -130,14 +130,8 @@ export type ResourceReady = typeof ResourceReady.Type;
 /** An export's name, the suffix after `MEND_RESOURCE_<NAME>_`. */
 export const RESOURCE_EXPORT_NAME = /^[A-Z][A-Z0-9_]*$/;
 
-/**
- * A resource as declared and not yet approved (ADR 0019): from project settings, `mend resource`
- * or a `[resource.*]` proposal in `mend.toml`. Shapes are checked here; rules across fields are
- * `resourceDefinitionRefusals`.
- */
-export const ResourceDefinitionInput = Schema.Struct({
+const definitionFields = {
   name: ResourceName,
-  scope: ResourceScope,
   preset: Schema.NullOr(ResourcePreset),
   image: Schema.String.check(Schema.isMinLength(1)),
   /** Null keeps the image's entrypoint. */
@@ -150,7 +144,29 @@ export const ResourceDefinitionInput = Schema.Struct({
   ready: ResourceReady,
   /** Templates over `{host}`, `{port}`, `{port.<name>}` and `{env.<NAME>}`. */
   exports: Schema.Record(Schema.String, Schema.String),
+};
+
+export const ProjectResourceDefinition = Schema.Struct({
+  ...definitionFields,
+  scope: Schema.Literal("project"),
 });
+export type ProjectResourceDefinition = typeof ProjectResourceDefinition.Type;
+
+export const WorktreeResourceDefinition = Schema.Struct({
+  ...definitionFields,
+  scope: Schema.Literal("worktree"),
+});
+export type WorktreeResourceDefinition = typeof WorktreeResourceDefinition.Type;
+
+/**
+ * A resource as declared and not yet approved (ADR 0019): from project settings, `mend resource`
+ * or a `[resource.*]` proposal in `mend.toml`. Shapes are checked here; rules across fields are
+ * `resourceDefinitionRefusals`.
+ */
+export const ResourceDefinitionInput = Schema.Union([
+  ProjectResourceDefinition,
+  WorktreeResourceDefinition,
+]);
 export type ResourceDefinitionInput = typeof ResourceDefinitionInput.Type;
 
 /** Why a definition cannot be approved: the key it names (`ports.http`, `exports.URL`) and why. */
