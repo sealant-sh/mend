@@ -3008,10 +3008,10 @@ describe.skipIf(postgres.skip)("0140 session pages", () => {
         const after = yield* sql<{ readonly name: string | null }>`
           SELECT to_regclass('session_pages')::text AS name`;
         const applied = yield* sql<{ readonly name: string }>`
-          SELECT name FROM mend_migrations ORDER BY migration_id DESC LIMIT 1`;
-        return { before: before[0]?.name, after: after[0]?.name, latest: applied[0]?.name };
+          SELECT name FROM mend_migrations WHERE migration_id = 140`;
+        return { before: before[0]?.name, after: after[0]?.name, recorded: applied[0]?.name };
       }),
     );
-    expect(tables).toEqual({ before: null, after: "session_pages", latest: "preview_ports" });
+    expect(tables).toEqual({ before: null, after: "session_pages", recorded: "session_pages" });
   });
 });
