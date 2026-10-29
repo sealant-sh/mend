@@ -1,13 +1,16 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { ScreenId } from "../ids.ts";
+import { ScreenId, ViewerConnectionId } from "../ids.ts";
 import {
   screenActionNote,
   DisplayNumber,
   SCREEN_LIMITS,
   ScreenActParams,
+  type ScreenInput,
+  type ScreenLife,
   ScreenSpan,
+  screenStatusLine,
 } from "./screen.ts";
 
 const accepts = Schema.is(ScreenActParams);
@@ -76,5 +79,82 @@ describe("screen data shapes", () => {
       action: click(3, 4),
       result: "skipped: taken over",
     });
+  });
+});
+
+describe("screenStatusLine", () => {
+  const now = new Date("2026-10-30T10:00:10Z");
+  const live: ScreenLife = { _tag: "Live", degraded: null };
+  const line = (input: ScreenInput, facts: { life?: ScreenLife; viewers?: number } = {}) =>
+    screenStatusLine({
+      life: facts.life ?? live,
+      input,
+      lastFrameAt: new Date("2026-10-30T10:00:07Z"),
+      viewers: facts.viewers ?? 0,
+      now,
+      nameOf: (userId) => (userId === "u-yiannis" ? "Yiannis" : userId),
+    });
+  const connection = ViewerConnectionId.make("connection");
+
+  it.each<[ScreenInput, string]>([
+    [{ _tag: "Agent", epoch: 1 }, "screen · agent has input · frame 3 s ago"],
+    [
+      { _tag: "Fencing", epoch: 2, by: "u-yiannis", to: { _tag: "Person", connection } },
+      "screen · Yiannis taking over · frame 3 s ago",
+    ],
+    [
+      { _tag: "Fencing", epoch: 3, by: "u-yiannis", to: { _tag: "AwaitingAgent" } },
+      "screen · handing back to the agent · frame 3 s ago",
+    ],
+    [
+      { _tag: "Person", epoch: 2, userId: "u-yiannis", connection },
+      "screen · Yiannis has input · frame 3 s ago",
+    ],
+    [
+      { _tag: "Paused", epoch: 3, reason: "disconnected", since: now },
+      "screen · input paused · connection lost · frame 3 s ago",
+    ],
+    [
+      { _tag: "Paused", epoch: 3, reason: "restart", since: now },
+      "screen · input paused · Mend restarted · frame 3 s ago",
+    ],
+    [
+      { _tag: "AwaitingAgent", epoch: 0 },
+      "screen · waiting for the agent's next look · frame 3 s ago",
+    ],
+  ])("reads %j as observed", (input, expected) => {
+    expect(line(input)).toBe(expected);
+  });
+
+  it("names a degraded screen, its watchers and a missing frame", () => {
+    expect(
+      line(
+        { _tag: "Agent", epoch: 1 },
+        { life: { _tag: "Live", degraded: "client-failed" }, viewers: 2 },
+      ),
+    ).toBe(
+      "screen · agent has input · frame 3 s ago · degraded · an app failed to start · 2 watching",
+    );
+    expect(
+      screenStatusLine({
+        life: live,
+        input: { _tag: "AwaitingAgent", epoch: 0 },
+        lastFrameAt: null,
+        viewers: 0,
+        now,
+        nameOf: String,
+      }),
+    ).toBe("screen · waiting for the agent's next look · no frame yet");
+  });
+
+  it("reads a starting or ended screen without its input", () => {
+    const agent: ScreenInput = { _tag: "Agent", epoch: 1 };
+    expect(line(agent, { life: { _tag: "Starting" } })).toBe("screen · starting");
+    expect(line(agent, { life: { _tag: "Ended", reason: "idle" } })).toBe(
+      "screen · ended after 15 min idle",
+    );
+    expect(line(agent, { life: { _tag: "Ended", reason: "session-stopped" } })).toBe(
+      "screen · ended · session stopped",
+    );
   });
 });
