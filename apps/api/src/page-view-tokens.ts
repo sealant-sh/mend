@@ -1,8 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { PAGE_FRAME_TTL_MS, PageAppearance } from "@mend/api-contracts";
+import { PageAppearance } from "@mend/api-contracts";
 import { authSecret } from "@mend/auth";
 import { PageId } from "@mend/domain";
+import { PAGE_FRAME_TTL_MS } from "@mend/domain/workbench";
 import { Clock, type Config, Effect, Layer, Redacted, Schema } from "effect";
 import * as Context from "effect/Context";
 

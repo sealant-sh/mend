@@ -281,11 +281,13 @@ const EmbeddedTerminal = ({
   });
   if (credential.data === undefined) return null;
   // A spent or expired ticket cannot be renewed by the page: it asks, and a fresh one is minted
-  // here, with the device's bearer in a header. A new URL reloads the WebView. The same when the
-  // OS kills the WebView's process, whose reload would present the spent ticket from its URL.
+  // here, with the device's bearer in a header. Each fresh URL loads in a new WebView. The same when
+  // the OS kills the WebView's process: a reload would present the spent ticket from its URL, and an
+  // Android WebView whose renderer is gone cannot load again.
   const remint = () => void credential.refetch();
   return (
     <WebView
+      key={credential.dataUpdatedAt}
       source={{
         uri: `${serverUrl}/tty-embed?${address}&${credential.data}${readOnly ? "&readOnly=1" : ""}`,
       }}
@@ -295,6 +297,7 @@ const EmbeddedTerminal = ({
         if (event.nativeEvent.data === "mend:embed-expired") remint();
       }}
       onContentProcessDidTerminate={remint}
+      onRenderProcessGone={remint}
     />
   );
 };

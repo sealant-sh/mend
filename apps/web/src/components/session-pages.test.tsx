@@ -361,9 +361,15 @@ describe("pages in the Record", () => {
     const replies = vi.spyOn(target, "postMessage");
     post(request("https://example.com/docs"));
     post(request("http://example.com/docs"));
+    post(request("https://mend_server.example.com/docs"));
+    post(request("http://localhost:5173/report?q=1"));
+    post(request("HTTPS://Example.COM:8443"));
     expect(opened.mock.calls).toEqual([
       ["https://example.com/docs", "_blank", "noopener,noreferrer"],
       ["http://example.com/docs", "_blank", "noopener,noreferrer"],
+      ["https://mend_server.example.com/docs", "_blank", "noopener,noreferrer"],
+      ["http://localhost:5173/report?q=1", "_blank", "noopener,noreferrer"],
+      ["https://example.com:8443/", "_blank", "noopener,noreferrer"],
     ]);
     expect(replies).toHaveBeenCalledWith({ jsonrpc: "2.0", id: "link-1", result: {} }, "*");
   });
@@ -405,6 +411,7 @@ describe("pages in the Record", () => {
     await click(button("Open"));
     const [inline, opened] = document.querySelectorAll("iframe");
     expect(opened?.getAttribute("src")).toBe(inline?.getAttribute("src"));
+    size(400, opened?.contentWindow);
     await advance(60 * 60_000);
     expect(mints()).toBe(1);
     expect(document.querySelectorAll("iframe")[0]).toBe(inline);
@@ -415,6 +422,7 @@ describe("pages in the Record", () => {
     const harness = makeHarness();
     await harness.render(<PageFrame page={page} />);
     const iframe = frame();
+    size(400);
     await advance(10 * 60_000);
     expect(mints()).toBe(1);
     expect(frame()).toBe(iframe);
@@ -484,6 +492,17 @@ describe("pages in the Record", () => {
     await advance(15_010);
     expect(host.textContent).toContain("This page could not be loaded.");
     expect(document.querySelector("iframe")).toBeNull();
+    await retry();
+    expect(mints()).toBe(3);
+    expect(frame()).toBeDefined();
+  });
+
+  it("re-mints, then offers a retry, for a frame whose request never completes", async () => {
+    await makeHarness().render(<PageFrame page={page} />);
+    await advance(15_010);
+    expect(mints()).toBe(2);
+    await advance(15_010);
+    expect(host.textContent).toContain("This page could not be loaded.");
     await retry();
     expect(mints()).toBe(3);
     expect(frame()).toBeDefined();

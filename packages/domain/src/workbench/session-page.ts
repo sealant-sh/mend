@@ -31,6 +31,11 @@ export class PageRef extends Schema.Class<PageRef>("PageRef")({
   publishedAt: Timestamp,
 }) {}
 
+/** How long a minted frame URL serves the page. */
+export const PAGE_FRAME_TTL_MS = 30 * 60 * 1000;
+/** A client reuses a frame URL only while at least this much of its life is left. */
+export const PAGE_FRAME_MIN_URL_LIFE_MS = 5 * 60 * 1000;
+
 export const pageItemProviderId = (id: PageId): string => `mend-page:${id}`;
 
 export const MendPageCallFailure = Schema.Struct({

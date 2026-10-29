@@ -8,7 +8,6 @@ import {
   conversationActivity,
   EMPTY_CONVERSATION,
   isHarnessTurn,
-  isShownAsPage,
   itemFailed,
   itemName,
   openTurnOf,
@@ -38,6 +37,7 @@ import {
   TurnImages,
 } from "@/components/composer";
 import { MendMarkdown } from "@/components/markdown";
+import { PageEntry } from "@/components/page-entry";
 import { ComposerDock, usePaneEdges } from "@/components/pane";
 import { SessionPullRequest } from "@/components/pull-request-card";
 import { TaskCard } from "@/components/task-card";
@@ -51,6 +51,7 @@ import { findLastMatching } from "@/data/collections";
 import { composerReadiness, readinessHint, storedImages, type Attachment } from "@/data/composer";
 import { useComposerAttachments } from "@/data/image-attach";
 import { useConversationWait, useOrganizationMembers, useSession } from "@/data/live";
+import { pageCallFailureOf, pageOfItem, withPagesInPlace } from "@/data/pages";
 import { hasUnrecordedSend, reconcileConversation, type TurnView } from "@/data/pending-turns";
 import {
   pullRequestCards,
@@ -158,7 +159,10 @@ const TurnRow = memo(function TurnRow({
 
 function ItemRow({ item }: { readonly item: AgentItemDto }) {
   const { colors } = useEvidenceTheme();
-  if (item.kind === "page" || isShownAsPage(item)) return null;
+  const page = pageOfItem(item);
+  if (page !== null) {
+    return <PageEntry page={page} />;
+  }
   const task = agentTaskOf(item);
   if (task !== null) {
     return <TaskCard task={task} />;
@@ -193,7 +197,9 @@ function ItemRow({ item }: { readonly item: AgentItemDto }) {
     );
   }
 
-  const failure = itemFailed(item);
+  const pageFailure = pageCallFailureOf(item);
+  const failure = itemFailed(item) || pageFailure !== null;
+  const text = pageFailure ?? item.text;
   return (
     <View
       style={{
@@ -210,9 +216,9 @@ function ItemRow({ item }: { readonly item: AgentItemDto }) {
         {itemName(item)}
         {item.status === "in-progress" ? " ▍" : ""}
       </MonoText>
-      {item.text === null || item.text === "" ? null : (
+      {text === null || text === "" ? null : (
         <MonoText tone="faint" size={10.5} numberOfLines={4}>
-          {item.text}
+          {text}
         </MonoText>
       )}
     </View>
@@ -458,7 +464,7 @@ export function ProtocolConversation({
   }));
   const data = conversation.data ?? EMPTY_CONVERSATION;
   const entries = useMemo(
-    () => buildAgentConversation(conversation.data ?? EMPTY_CONVERSATION),
+    () => withPagesInPlace(buildAgentConversation(conversation.data ?? EMPTY_CONVERSATION)),
     [conversation.data],
   );
   const sessionRead = useSession(sessionId).data;
@@ -597,8 +603,11 @@ export function ProtocolConversation({
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         style={{ flex: 1 }}
+        // LegendList's web build spreads this style onto a DOM element, where `paddingHorizontal`
+        // is not a CSS property and the rows would meet the screen's edges.
         contentContainerStyle={{
-          paddingHorizontal: 16,
+          paddingLeft: 16,
+          paddingRight: 16,
           paddingTop: spacing.xs,
           paddingBottom: bottomPad,
           gap: 10,
