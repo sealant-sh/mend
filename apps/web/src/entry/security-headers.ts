@@ -1,4 +1,10 @@
-import { isPageViewTarget, PAGE_VIEW_HEADERS, requestPathOf } from "@mend/network";
+import {
+  isPageViewTarget,
+  PAGE_VIEW_HEADERS,
+  PAGE_VIEW_PATH,
+  type PublicNetwork,
+  requestPathOf,
+} from "@mend/network";
 
 /**
  * The browser header policy (docs/adr/0004, "Errors and browser headers"; MEND-11). Set by the
@@ -16,13 +22,14 @@ import { isPageViewTarget, PAGE_VIEW_HEADERS, requestPathOf } from "@mend/networ
  *   governs. A `data:` fetch reaches no server, so it carries nothing out; without it the terminal
  *   and `/tty-embed` load nothing (observed in Chromium; security-headers.test.ts pins it to how
  *   the installed library loads).
+ * - `frame-src`: a source with a path and no trailing slash matches only that path; the query
+ *   string is not part of the match (CSP Level 3, "Does url match expression").
  * - `frame-ancestors 'none'`: nothing may frame Mend. The terminal embed is loaded by the phone's
  *   WebView as a top-level document, which this does not touch.
  */
 export interface SecurityHeaderInput {
   readonly target: string;
-  /** The exact browser origin (`APP_URL`). */
-  readonly appUrl: string;
+  readonly network: PublicNetwork;
 }
 
 const webSocketOrigin = (appUrl: string): string => {
@@ -30,7 +37,7 @@ const webSocketOrigin = (appUrl: string): string => {
   return `${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}`;
 };
 
-export const contentSecurityPolicy = (appUrl: string): string =>
+export const contentSecurityPolicy = ({ appUrl, allowedOrigins }: PublicNetwork): string =>
   [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
@@ -39,6 +46,7 @@ export const contentSecurityPolicy = (appUrl: string): string =>
     "font-src 'self' data:",
     `connect-src 'self' data: ${webSocketOrigin(appUrl)}`,
     "worker-src 'self' blob:",
+    `frame-src ${allowedOrigins.map((origin) => `${origin}${PAGE_VIEW_PATH}`).join(" ")}`,
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -75,7 +83,7 @@ const transportHeaders = (appUrl: string): Readonly<Record<string, string>> =>
   appUrl.startsWith("https://") ? { "strict-transport-security": "max-age=31536000" } : {};
 
 const appHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>> => ({
-  "content-security-policy": contentSecurityPolicy(input.appUrl),
+  "content-security-policy": contentSecurityPolicy(input.network),
   "x-content-type-options": "nosniff",
   // For browsers that predate frame-ancestors.
   "x-frame-options": "DENY",
@@ -85,7 +93,7 @@ const appHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>
   "permissions-policy": PERMISSIONS_POLICY,
   "cross-origin-opener-policy": "same-origin",
   "cross-origin-resource-policy": "same-origin",
-  ...transportHeaders(input.appUrl),
+  ...transportHeaders(input.network.appUrl),
 });
 
 export const securityHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>> =>
@@ -93,6 +101,6 @@ export const securityHeaders = (input: SecurityHeaderInput): Readonly<Record<str
     ? {
         ...PAGE_VIEW_HEADERS,
         "permissions-policy": PERMISSIONS_POLICY,
-        ...transportHeaders(input.appUrl),
+        ...transportHeaders(input.network.appUrl),
       }
     : appHeaders(input);

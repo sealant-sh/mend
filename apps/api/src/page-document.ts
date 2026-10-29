@@ -193,19 +193,28 @@ const shapeOf = (page: string): PageShape => {
   return { head, html, charset, viewport };
 };
 
-const bootstrapMarkup = (shape: PageShape, rules: ReadonlyArray<ThemeRule>): string =>
+const bootstrapMarkup = (
+  shape: PageShape,
+  rules: ReadonlyArray<ThemeRule>,
+  overrides: string,
+): string =>
   [
     shape.charset ? "" : '<meta charset="utf-8">',
     shape.viewport ? "" : '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<style id="t3-theme">${rulesCss(rules)}${vendored().baseCss}</style>`,
+    overrides === "" ? "" : `<style>${overrides}</style>`,
     `<script>${vendored().script}</script>`,
   ].join("");
 
 const DOCTYPE = /^\s*<!doctype[^>]*>/i;
 
-export const injectPageBootstrap = (html: string, rules: ReadonlyArray<ThemeRule>): string => {
+export const injectPageBootstrap = (
+  html: string,
+  rules: ReadonlyArray<ThemeRule>,
+  overrides = "",
+): string => {
   const shape = shapeOf(html);
-  const markup = bootstrapMarkup(shape, rules);
+  const markup = bootstrapMarkup(shape, rules, overrides);
   if (shape.head !== null) return html.slice(0, shape.head) + markup + html.slice(shape.head);
   if (shape.html !== null) {
     return `${html.slice(0, shape.html)}<head>${markup}</head>${html.slice(shape.html)}`;
@@ -218,7 +227,11 @@ export const injectPageBootstrap = (html: string, rules: ReadonlyArray<ThemeRule
   return `<!doctype html><head>${markup}</head>${html}`;
 };
 
+// t3code's base styles give an image the zoom-in cursor of its image viewer, which Mend's clients
+// do not have. The bootstrap rewrites only the `t3-theme` element, so a later one keeps this.
+const MEND_PAGE_CSS = ":where(img){cursor:auto}";
+
 // A t3code client's `#t3-theme=` fragment and `host-context-changed` messages still replace Mend's
 // palette: t3code's bootstrap script rewrites the `t3-theme` style element it finds.
 export const pageDocument = (html: string, appearance: keyof typeof pageThemes): string =>
-  injectPageBootstrap(html, [{ media: null, theme: pageThemes[appearance] }]);
+  injectPageBootstrap(html, [{ media: null, theme: pageThemes[appearance] }], MEND_PAGE_CSS);

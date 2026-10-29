@@ -6,6 +6,7 @@ import { gitRouter } from "./git.ts";
 import { harnessesRouter } from "./harnesses.ts";
 import { landingsRouter } from "./landings.ts";
 import { organizationRouter } from "./organization.ts";
+import { pagesRouter } from "./pages.ts";
 import { platformRouter } from "./platform.ts";
 import { projectsRouter } from "./projects.ts";
 import { queueRouter } from "./queue.ts";
@@ -37,6 +38,7 @@ export const appRouter = router({
   harnesses: harnessesRouter,
   landings: landingsRouter,
   organization: organizationRouter,
+  pages: pagesRouter,
   platform: platformRouter,
   projects: projectsRouter,
   queue: queueRouter,

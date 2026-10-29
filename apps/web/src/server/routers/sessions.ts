@@ -102,6 +102,11 @@ export const sessionsRouter = router({
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.transcript({ params: { id: i.id } })),
     ),
+  pages: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.pages.listForSession({ params: { id: i.id } })),
+    ),
   processes: procedure
     .input(byId)
     .query(({ ctx, input: i }) =>

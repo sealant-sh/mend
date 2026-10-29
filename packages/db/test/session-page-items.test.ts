@@ -183,7 +183,7 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
         const pointer = yield* Effect.forkScoped(
           listenEvents(pg).pipe(
             Stream.filter((payload) => payload.includes(PROTOCOL)),
-            Stream.take(1),
+            Stream.take(2),
             Stream.runCollect,
           ),
         );
@@ -218,11 +218,10 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
       },
     ]);
     expect(JSON.stringify(result.items)).not.toContain("xxxx");
-    expect(JSON.parse([...result.notified][0] ?? "null")).toEqual({
-      type: "agent-conversation",
-      sessionId: PROTOCOL,
-      projectId: "p-items",
-    });
+    expect([...result.notified].map((payload) => JSON.parse(payload))).toEqual([
+      { type: "agent-conversation", sessionId: PROTOCOL, projectId: "p-items" },
+      { type: "session", sessionId: PROTOCOL, projectId: "p-items" },
+    ]);
   });
 
   it("lands in the turn after it completed, never in a turn still queued", async () => {
@@ -265,6 +264,38 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
     expect(result.ptyItems).toEqual([]);
     expect(result.switchedItems).toEqual([]);
     expect(result.listed.map((ref) => ref.id)).toEqual([result.switched.id]);
+  });
+
+  it("tells a terminal session's clients of each new page, though it adds no item, and of no retry", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const pages = yield* SessionPagesRepo;
+        const pg = yield* PgClient.PgClient;
+        const heard: Array<unknown> = [];
+        const listening = yield* Effect.forkScoped(
+          listenEvents(pg).pipe(
+            Stream.filter((payload) => payload.includes(PTY)),
+            Stream.take(2),
+            Stream.runForEach((payload) => Effect.sync(() => heard.push(JSON.parse(payload)))),
+          ),
+        );
+        yield* Effect.sleep(Duration.millis(200));
+        yield* pages.publish(newPage(PTY, "call-live"));
+        yield* Effect.sleep(Duration.millis(300));
+        const afterFirst = [...heard];
+        yield* pages.publish(newPage(PTY, "call-live"));
+        yield* Effect.sleep(Duration.millis(300));
+        const afterRetry = [...heard];
+        yield* pages.publish(newPage(PTY, "call-live-2"));
+        yield* Fiber.join(listening).pipe(Effect.timeout(Duration.seconds(5)));
+        return { afterFirst, afterRetry, heard, items: yield* pageItems(PTY) };
+      }),
+    );
+    const published = { type: "session", sessionId: PTY, projectId: "p-items" };
+    expect(result.items).toEqual([]);
+    expect(result.afterFirst).toEqual([published]);
+    expect(result.afterRetry).toEqual([published]);
+    expect(result.heard).toEqual([published, published]);
   });
 
   it("allocates seq under the conversation's lock, beside items the harness streams", async () => {

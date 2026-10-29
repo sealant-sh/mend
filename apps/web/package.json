@@ -26,6 +26,7 @@
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
     "@mend/sealant": "workspace:*",
+    "@mend/t3-contracts": "workspace:*",
     "@mend/ui": "workspace:*",
     "@pierre/diffs": "catalog:",
     "@tailwindcss/vite": "catalog:",

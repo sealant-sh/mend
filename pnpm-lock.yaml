@@ -966,6 +966,9 @@ importers:
       '@mend/sealant':
         specifier: workspace:*
         version: link:../../packages/sealant
+      '@mend/t3-contracts':
+        specifier: workspace:*
+        version: link:../../packages/t3-contracts
       '@mend/ui':
         specifier: workspace:*
         version: link:../../packages/ui

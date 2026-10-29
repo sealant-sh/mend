@@ -49,7 +49,7 @@ describe("the transcript shows the session's pages where the agent published the
         ] as const,
     ),
   ] as const)(
-    "%s (%s), settled: after the html_render call that names it, an unplaced one at the end, a forged id nowhere",
+    "%s (%s), settled: in place of the html_render call that names it, an unplaced one at the end, a forged id nowhere",
     async (harness, _shape, transcriptOf) => {
       const pages: Array<PageRef> = [];
       const events = await withEngine(
@@ -73,7 +73,6 @@ describe("the transcript shows the session's pages where the agent published the
       expect(shape(events)).toEqual([
         "user",
         ...(harness === "claude" ? ["tool"] : []),
-        "tool",
         `page:${PLACED}`,
         "tool",
         "assistant",
