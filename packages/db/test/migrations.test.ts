@@ -3012,6 +3012,6 @@ describe.skipIf(postgres.skip)("0140 session pages", () => {
         return { before: before[0]?.name, after: after[0]?.name, latest: applied[0]?.name };
       }),
     );
-    expect(tables).toEqual({ before: null, after: "session_pages", latest: "session_pages" });
+    expect(tables).toEqual({ before: null, after: "session_pages", latest: "preview_ports" });
   });
 });

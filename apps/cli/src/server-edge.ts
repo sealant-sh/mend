@@ -1,5 +1,7 @@
 import * as net from "node:net";
 
+import { writePreviewPorts } from "@mend/network";
+
 import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY } from "./server-edge-files.ts";
 import { MIRRORS_COMPOSE_FILE, runsMirrors, type ServerMirrors } from "./server-mirrors.ts";
 import { storeFileGroup } from "./server-store.ts";
@@ -101,13 +103,32 @@ export interface ServerPosture {
 }
 
 /**
- * A wildcard certificate needs ACME DNS-01, which the packaged Caddy image cannot do, so the
- * operator supplies one issued elsewhere.
+ * Live previews (docs/adr/0017), in one of two modes.
+ *
+ * - `domain`: the edge serves each preview at `https://<label>.<domain>`. A wildcard certificate
+ *   needs ACME DNS-01, which the packaged Caddy image cannot do, so the operator supplies one
+ *   issued elsewhere.
+ * - `tailnet` (decision 6): `tailscale serve` on this machine serves each preview at
+ *   `https://<hostname>:<port>`, one port each from `ports`, under one Tailscale Service. No edge,
+ *   no certificate of Mend's own.
+ *
+ * A config written before the tailnet mode has no `mode` and reads as `domain`.
  */
-export interface ServerPreview {
+export type ServerPreview = DomainPreview | TailnetPreview;
+
+export interface DomainPreview {
+  readonly mode: "domain";
   readonly domain: string;
   readonly certificate: string;
   readonly key: string;
+}
+
+export interface TailnetPreview {
+  readonly mode: "tailnet";
+  /** `mend-preview.<MagicDNS suffix>`, the Tailscale Service's name. */
+  readonly hostname: string;
+  /** Ascending, no port twice (`readPreviewPorts`). */
+  readonly ports: ReadonlyArray<number>;
 }
 
 /** `<address>:<port>` as Compose and the gate read it: IPv6 in brackets. */
@@ -259,13 +280,23 @@ export const t3GatewayEnvLines = (posture: ServerPosture): ReadonlyArray<string>
 
 export const PREVIEW_PUBLISHED = publishedAddress("127.0.0.1", PREVIEW_GATEWAY_PORT);
 
-export const previewEnvLines = (posture: ServerPosture): ReadonlyArray<string> =>
-  posture.preview === undefined
-    ? []
-    : [
-        `MEND_PREVIEW_DOMAIN=${posture.preview.domain}`,
+export const previewEnvLines = (posture: ServerPosture): ReadonlyArray<string> => {
+  const preview = posture.preview;
+  if (preview === undefined) return [];
+  switch (preview.mode) {
+    case "domain":
+      return [
+        `MEND_PREVIEW_DOMAIN=${preview.domain}`,
         `MEND_PREVIEW_PUBLISHED=${PREVIEW_PUBLISHED}`,
       ];
+    case "tailnet":
+      return [
+        `MEND_PREVIEW_TAILNET_HOSTNAME=${preview.hostname}`,
+        `MEND_PREVIEW_TAILNET_PORTS=${writePreviewPorts(preview.ports)}`,
+        `MEND_PREVIEW_PUBLISHED=${PREVIEW_PUBLISHED}`,
+      ];
+  }
+};
 
 /** The `KEY=value` lines the posture and the edge add to `server.env`. */
 export const postureEnvLines = (posture: ServerPosture): ReadonlyArray<string> => [
@@ -382,8 +413,18 @@ export const T3_GATEWAY_CADDYFILE = [
 ].join("\n");
 
 export const renderPreviewOverlay = (posture: ServerPosture): string | undefined => {
-  if (posture.preview === undefined) return undefined;
-  return [
+  const preview = posture.preview;
+  if (preview === undefined) return undefined;
+  switch (preview.mode) {
+    case "domain":
+      return domainPreviewOverlay();
+    case "tailnet":
+      return TAILNET_PREVIEW_OVERLAY;
+  }
+};
+
+const domainPreviewOverlay = (): string =>
+  [
     "# Written by mend server setup --preview-domain: live previews (docs/adr/0017), each at",
     "# https://<label>.<domain>, served by the edge with setup's copy of the certificate you supplied.",
     "# The gateway's port is published on this machine's loopback only. mend server setup",
@@ -408,7 +449,28 @@ export const renderPreviewOverlay = (posture: ServerPosture): string | undefined
     `      - ./${PREVIEW_KEY_COPY_NAME}:${PREVIEW_KEY_TARGET}:ro`,
     "",
   ].join("\n");
-};
+
+/**
+ * The tailnet mode's overlay: the gateway's port published on this machine's loopback, where
+ * `tailscale serve` on the host forwards each preview's port. No edge, no certificate.
+ */
+const TAILNET_PREVIEW_OVERLAY = [
+  "# Written by mend server setup --preview-tailnet: live previews (docs/adr/0017, decision 6), each",
+  "# at https://<hostname>:<port>, served by tailscale serve on this machine. The gateway's port is",
+  "# published on this machine's loopback only. mend server setup --no-preview-tailnet removes it.",
+  "services:",
+  "  mend:",
+  "    environment:",
+  `      MEND_PREVIEW_PORT: "${PREVIEW_GATEWAY_PORT}"`,
+  "      # Where Docker's published port reaches it, inside the container.",
+  "      MEND_PREVIEW_BIND: 0.0.0.0",
+  `      MEND_PREVIEW_TAILNET_HOSTNAME: ${required("MEND_PREVIEW_TAILNET_HOSTNAME")}`,
+  `      MEND_PREVIEW_TAILNET_PORTS: ${required("MEND_PREVIEW_TAILNET_PORTS")}`,
+  `      MEND_PREVIEW_PUBLISHED: ${required("MEND_PREVIEW_PUBLISHED")}`,
+  "    ports:",
+  `      - "127.0.0.1:${PREVIEW_GATEWAY_PORT}:${PREVIEW_GATEWAY_PORT}"`,
+  "",
+].join("\n");
 
 export const PREVIEW_CADDYFILE = [
   "# Written by mend server setup --preview-domain: live previews (docs/adr/0017), one host each",
@@ -513,17 +575,28 @@ const t3GatewayDeclaredLines = (posture: ServerPosture): ReadonlyArray<string> =
   ];
 };
 
+/** Previews as the install declares them, in one line; none when they are off. */
+const previewDeclaredLines = (preview: ServerPreview | undefined): ReadonlyArray<string> => {
+  if (preview === undefined) return [];
+  switch (preview.mode) {
+    case "domain":
+      return [
+        `previews · https://<label>.${preview.domain} · served by the edge with setup's copy of ${preview.certificate} · the gateway's port published on ${PREVIEW_PUBLISHED} only`,
+      ];
+    case "tailnet":
+      return [
+        `previews · https://${preview.hostname}:<port> · ports ${writePreviewPorts(preview.ports)} · served by tailscale serve on this machine · the gateway's port published on ${PREVIEW_PUBLISHED} only`,
+      ];
+  }
+};
+
 /** The posture as the install declares it, one line each; a default is said to be one. */
 export const declaredPostureLines = (posture: ServerPosture): ReadonlyArray<string> => [
   ...(posture.edgeHost === undefined
     ? []
     : [`edge · ${posture.edgeHost} · ${EDGE_IMAGE} on 80 and 443 · Mend's own port on loopback`]),
   ...t3GatewayDeclaredLines(posture),
-  ...(posture.preview === undefined
-    ? []
-    : [
-        `previews · https://<label>.${posture.preview.domain} · served by the edge with setup's copy of ${posture.preview.certificate} · the gateway's port published on ${PREVIEW_PUBLISHED} only`,
-      ]),
+  ...previewDeclaredLines(posture.preview),
   `exposure · declared ${posture.exposure ?? "private"}${posture.exposure === undefined ? " · the default, not set on this install" : ""}`,
   `tenancy · declared ${posture.tenancy ?? "single"}${posture.tenancy === undefined ? " · the default, not set on this install" : ""}`,
   ...(posture.sshBind === undefined || posture.sshPort === undefined

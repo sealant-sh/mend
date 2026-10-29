@@ -1,5 +1,5 @@
 import { isPreviewGrantSecret, type PreviewGrantSecret } from "@mend/db";
-import { type PreviewId, PreviewLabel } from "@mend/domain";
+import { PreviewLabel } from "@mend/domain";
 import { Brand, Redacted, Schema } from "effect";
 
 export type PreviewOrigin = string & Brand.Brand<"PreviewOrigin">;
@@ -11,8 +11,15 @@ export type PreviewRouting =
   | {
       readonly mode: "tailnet-https";
       readonly hostname: string;
-      readonly ports: ReadonlyArray<{ readonly port: number; readonly previewId: PreviewId }>;
+      /** The set Mend assigns previews from (`PreviewsRepo.assignTailnetPort`). */
+      readonly ports: ReadonlyArray<number>;
     };
+
+/** Where a preview is reached: its label, and on the tailnet default the port it holds. */
+export interface PreviewPlace {
+  readonly label: PreviewLabel;
+  readonly tailnetPort: number | null;
+}
 
 const schemeOf = (routing: PreviewRouting) =>
   routing.mode === "loopback-http" ? "http:" : "https:";
@@ -22,21 +29,20 @@ const originAt = (scheme: string, authority: string): PreviewOrigin | null => {
   return parsed === null ? null : PreviewOrigin(parsed.origin);
 };
 
+/** Null on the tailnet default for a preview that holds no port of the set. */
 export const previewOriginOf = (
   routing: PreviewRouting,
-  preview: { readonly id: PreviewId; readonly label: PreviewLabel },
+  place: PreviewPlace,
 ): PreviewOrigin | null => {
   switch (routing.mode) {
     case "loopback-http":
-      return originAt("http:", `${preview.label}.localhost:${routing.port}`);
+      return originAt("http:", `${place.label}.localhost:${routing.port}`);
     case "domain-https":
-      return originAt("https:", `${preview.label}.${routing.domain}:${routing.port}`);
-    case "tailnet-https": {
-      const assigned = routing.ports.find((entry) => entry.previewId === preview.id);
-      return assigned === undefined
+      return originAt("https:", `${place.label}.${routing.domain}:${routing.port}`);
+    case "tailnet-https":
+      return place.tailnetPort === null || !routing.ports.includes(place.tailnetPort)
         ? null
-        : originAt("https:", `${routing.hostname}:${assigned.port}`);
-    }
+        : originAt("https:", `${routing.hostname}:${place.tailnetPort}`);
   }
 };
 
@@ -48,7 +54,7 @@ const hostnameOf = (name: string) => URL.parse(`http://${name}`)?.hostname ?? na
 export const previewAtOrigin = (
   routing: PreviewRouting,
   origin: PreviewOrigin,
-): { readonly label: PreviewLabel } | { readonly previewId: PreviewId } | null => {
+): { readonly label: PreviewLabel } | { readonly tailnetPort: number } | null => {
   const url = new URL(origin);
   if (url.protocol !== schemeOf(routing)) return null;
   const port = Number(url.port === "" ? (url.protocol === "https:" ? 443 : 80) : url.port);
@@ -63,8 +69,7 @@ export const previewAtOrigin = (
       return port === routing.port ? labelUnder(`.${hostnameOf(routing.domain)}`) : null;
     case "tailnet-https": {
       if (url.hostname !== hostnameOf(routing.hostname)) return null;
-      const assigned = routing.ports.find((entry) => entry.port === port);
-      return assigned === undefined ? null : { previewId: assigned.previewId };
+      return routing.ports.includes(port) ? { tailnetPort: port } : null;
     }
   }
 };

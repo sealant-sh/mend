@@ -44,6 +44,13 @@ const REQUEST_DROPPED = new Set([
   "x-real-ip",
 ]);
 
+/**
+ * The gateway writes its own `X-Forwarded-*`. `tailscale serve` adds the viewer's tailnet identity
+ * as `Tailscale-*`, and a client that reaches the gateway directly can send any of them: neither
+ * may reach agent-written code.
+ */
+const REQUEST_DROPPED_PREFIXES = ["x-forwarded-", "tailscale-"];
+
 const RESPONSE_DROPPED = new Set([
   ...HOP_BY_HOP,
   "proxy-authenticate",
@@ -95,9 +102,10 @@ export const forwardRequestHead = (
   const origin = new URL(to.origin);
   return [
     field("host", `localhost:${to.port}`),
-    ...keptFields(headers, REQUEST_DROPPED).filter(
-      ([name]) => !name.toLowerCase().startsWith("x-forwarded-"),
-    ),
+    ...keptFields(headers, REQUEST_DROPPED).filter(([name]) => {
+      const lower = name.toLowerCase();
+      return !REQUEST_DROPPED_PREFIXES.some((prefix) => lower.startsWith(prefix));
+    }),
     ...(membersOf(headers, "transfer-encoding").length > 0
       ? [field("transfer-encoding", "chunked")]
       : []),

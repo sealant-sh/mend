@@ -17,7 +17,7 @@ import {
 const toResponse = (reply: PreviewAnswer) =>
   HttpServerResponse.text(reply.body, { status: reply.status, headers: reply.headers });
 
-const answerPreviewAuth = (input: {
+export const answerPreviewAuth = (input: {
   readonly method: string;
   readonly target: string;
   readonly cookie: string | undefined;

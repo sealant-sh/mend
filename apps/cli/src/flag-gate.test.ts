@@ -283,7 +283,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "server-setup.ts removeStrayService": CHILD,
   "server-setup.ts startCompose": CHILD,
   "server-setup.ts validateEdge": CHILD,
-  "server-setup.ts guideObservations": CHILD,
+  "server-setup.ts readTailscale": CHILD,
   "server-setup.ts mendIn": CHILD,
   "server-setup.ts observeDockerEngines": CHILD,
   "server-setup.ts settleDockerEngine": CHILD,
@@ -331,7 +331,10 @@ const READS: Readonly<Record<string, Reads>> = {
   "server-runtime.ts serverComposeArgs": CHILD,
   // The `mend server setup` command a guide prints for the operator to run.
   "server-setup-guide.ts flagsFor": SERVER_SETUP,
+  "server-setup-guide.ts previewFlagsFor": SERVER_SETUP,
   "server-setup-guide.ts setupCommandOf": SERVER_SETUP,
+  // The setup flag that turns off previews a pinned server image cannot serve.
+  "server-preview.ts PREVIEW_CAPABILITIES": SERVER_SETUP,
 };
 
 const DECLARATION = /^(?:export )?(?:const|let|function|async function) ([A-Za-z_$][\w$]*)/;

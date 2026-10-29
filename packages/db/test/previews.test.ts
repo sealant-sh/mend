@@ -24,7 +24,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
-import { PreviewsRepo, PreviewsRepoLive } from "../src/repos/previews.ts";
+import {
+  PreviewsRepo,
+  PreviewsRepoLive,
+  TAILNET_PORT_QUIET_HOURS,
+  TAILNET_PORT_RENEW_AFTER_HOURS,
+} from "../src/repos/previews.ts";
 import { SessionProcessesRepo, SessionProcessesRepoLive } from "../src/repos/session-processes.ts";
 import { WorktreeNotFoundError } from "../src/repos/worktrees.ts";
 import { postgresTestConfig } from "./postgres.ts";
@@ -124,15 +129,17 @@ const holdingRows = Effect.fn("previews.test.holdingRows")(function* (
   }).pipe(Effect.orDie);
 });
 
-const someoneWaitsOnALock = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  for (;;) {
-    const [waiting] = yield* sql<{ count: number }>`SELECT count(*)::int AS count
+const waitingOnLocks = (count: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (;;) {
+      const [waiting] = yield* sql<{ count: number }>`SELECT count(*)::int AS count
       FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
-    if ((waiting?.count ?? 0) > 0) return;
-    yield* Effect.sleep("20 millis");
-  }
-}).pipe(Effect.timeout("20 seconds"));
+      if ((waiting?.count ?? 0) >= count) return;
+      yield* Effect.sleep("20 millis");
+    }
+  }).pipe(Effect.timeout("20 seconds"));
+const someoneWaitsOnALock = waitingOnLocks(1);
 
 const startedByRequest = (serviceId: string, sourceAttemptId: string) =>
   serviceStartCorrelation(
@@ -711,5 +718,297 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         });
       }),
     );
+  });
+
+  describe("the tailnet port pool", () => {
+    const keptPreview = Effect.fn("previews.test.keptPreview")(function* (suffix: string) {
+      const { worktree, project } = yield* seed(`pool-${suffix}`);
+      const [view] = yield* (yield* PreviewsRepo).ensureForWorktree(worktree);
+      if (view === undefined) return yield* Effect.die("missing preview");
+      return { id: view.preview.id, worktree, project };
+    });
+    const portRows = Effect.fn("previews.test.portRows")(function* (ports: ReadonlyArray<number>) {
+      const sql = yield* SqlClient.SqlClient;
+      return yield* sql<{
+        readonly port: number;
+        readonly previewId: string | null;
+        readonly released: boolean;
+      }>`SELECT port, preview_id AS "previewId", released_at IS NOT NULL AS released FROM preview_ports
+        WHERE port IN ${sql.in(ports)} ORDER BY port`;
+    });
+
+    it("gives a preview one port at its first open, the same however many open it at once", async () => {
+      await run(
+        Effect.gen(function* () {
+          const previews = yield* PreviewsRepo;
+          const first = yield* keptPreview("once");
+          const set = [31001, 31002, 31003];
+          expect(yield* previews.tailnetPorts([first.id])).toEqual(new Map());
+          const opens = yield* Effect.all(
+            Array.from({ length: 8 }, () => previews.assignTailnetPort(first.id, set)),
+            { concurrency: "unbounded" },
+          );
+          expect(new Set(opens.map((open) => JSON.stringify(open)))).toEqual(
+            new Set([JSON.stringify({ _tag: "Assigned", port: 31001 })]),
+          );
+          expect(yield* previews.tailnetPorts([first.id])).toEqual(new Map([[first.id, 31001]]));
+          expect((yield* previews.byTailnetPort(31001))?.preview.id).toBe(first.id);
+          expect(yield* previews.byTailnetPort(31002)).toBeNull();
+        }),
+      );
+    });
+
+    it("gives previews opened at once a port each, and says the set's size when none is free", async () => {
+      await run(
+        Effect.gen(function* () {
+          const previews = yield* PreviewsRepo;
+          const opened = yield* Effect.forEach(["a", "b", "c"], (name) =>
+            keptPreview(`full-${name}`),
+          );
+          const set = [31101, 31102];
+          const answers = yield* Effect.all(
+            opened.map(({ id }) => previews.assignTailnetPort(id, set)),
+            { concurrency: "unbounded" },
+          );
+          const assigned = answers.flatMap((answer) =>
+            answer._tag === "Assigned" ? [answer.port] : [],
+          );
+          expect(assigned.toSorted()).toEqual(set);
+          expect(
+            answers.flatMap((answer) => (answer._tag === "PoolFull" ? [answer.size] : [])),
+          ).toEqual([2]);
+        }),
+      );
+    });
+
+    const backdatePorts = Effect.fn("previews.test.backdatePorts")(function* (
+      ports: ReadonlyArray<number>,
+      hours: number,
+    ) {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE preview_ports
+        SET last_used_at = last_used_at - make_interval(hours => ${hours}),
+            released_at = released_at - make_interval(hours => ${hours})
+        WHERE port IN ${sql.in(ports)}`;
+    });
+
+    it.each(["worktree", "project"])(
+      "frees a port when its preview's %s is removed, and gives it again only after the quiet period",
+      async (kind) => {
+        await run(
+          Effect.gen(function* () {
+            const previews = yield* PreviewsRepo;
+            const sql = yield* SqlClient.SqlClient;
+            const base = kind === "worktree" ? 31200 : 31300;
+            const set = [base + 1, base + 2];
+            const [p1, p2, p3, p4] = yield* Effect.forEach(["1", "2", "3", "4"], (name) =>
+              keptPreview(`quiet-${kind}-${name}`),
+            );
+            if (p1 === undefined || p2 === undefined || p3 === undefined || p4 === undefined)
+              return yield* Effect.die("missing previews");
+            expect(yield* previews.assignTailnetPort(p1.id, set)).toMatchObject({
+              port: base + 1,
+            });
+            expect(yield* previews.assignTailnetPort(p2.id, set)).toMatchObject({
+              port: base + 2,
+            });
+            const remove = (preview: { readonly worktree: string; readonly project: string }) =>
+              kind === "worktree"
+                ? sql`DELETE FROM worktrees WHERE id = ${preview.worktree}`
+                : sql`DELETE FROM projects WHERE id = ${preview.project}`;
+            yield* remove(p1);
+            expect(yield* portRows(set)).toEqual([
+              { port: base + 1, previewId: null, released: true },
+              { port: base + 2, previewId: p2.id, released: false },
+            ]);
+            expect(yield* previews.byTailnetPort(base + 1)).toBeNull();
+            expect(yield* previews.assignTailnetPort(p1.id, set)).toEqual({ _tag: "Removed" });
+
+            yield* previews.touchTailnetPorts([p2.id]);
+            const full = yield* previews.assignTailnetPort(p3.id, set);
+            if (full._tag !== "PoolFull") return yield* Effect.die("the removed port came back");
+            expect(full.size).toBe(2);
+            const [frees] = yield* sql<{
+              readonly at: Date;
+            }>`SELECT released_at + make_interval(hours => ${TAILNET_PORT_QUIET_HOURS}) AS at
+              FROM preview_ports WHERE port = ${base + 1}`;
+            expect(
+              full.nextFreeAt,
+              "the removed port, a quiet period after its removal, before the one in use",
+            ).toEqual(frees?.at);
+
+            yield* backdatePorts([base + 1], TAILNET_PORT_QUIET_HOURS - 1);
+            expect((yield* previews.assignTailnetPort(p3.id, set))._tag).toBe("PoolFull");
+            yield* backdatePorts([base + 1], 2);
+            expect(yield* previews.assignTailnetPort(p3.id, set)).toEqual({
+              _tag: "Assigned",
+              port: base + 1,
+            });
+            expect(yield* previews.tailnetPortReused(base + 1, p3.id)).toBe(true);
+            expect(yield* previews.tailnetPortReused(base + 2, p2.id)).toBe(false);
+            expect((yield* previews.assignTailnetPort(p4.id, set))._tag).toBe("PoolFull");
+          }),
+        );
+      },
+    );
+
+    it("takes back a port whose preview had no open connection for the quiet period, and gives that preview a fresh one at its next open", async () => {
+      await run(
+        Effect.gen(function* () {
+          const previews = yield* PreviewsRepo;
+          const [idle, busy, next] = yield* Effect.forEach(["idle", "busy", "next"], (name) =>
+            keptPreview(`reclaim-${name}`),
+          );
+          if (idle === undefined || busy === undefined || next === undefined)
+            return yield* Effect.die("missing previews");
+          const set = [31501, 31502];
+          expect(yield* previews.assignTailnetPort(idle.id, set)).toMatchObject({ port: 31501 });
+          expect(yield* previews.assignTailnetPort(busy.id, set)).toMatchObject({ port: 31502 });
+          yield* backdatePorts(set, TAILNET_PORT_QUIET_HOURS + 1);
+          yield* previews.touchTailnetPorts([busy.id]);
+          expect(
+            yield* previews.assignTailnetPort(next.id, set),
+            "the port in use stays; the idle one goes",
+          ).toEqual({ _tag: "Assigned", port: 31501 });
+          expect(yield* previews.tailnetPorts([idle.id, busy.id, next.id])).toEqual(
+            new Map([
+              [busy.id, 31502],
+              [next.id, 31501],
+            ]),
+          );
+          expect(yield* previews.tailnetPortReused(31501, next.id)).toBe(true);
+          expect(
+            (yield* previews.assignTailnetPort(idle.id, set))._tag,
+            "every port was used within the quiet period",
+          ).toBe("PoolFull");
+          expect(
+            yield* previews.assignTailnetPort(idle.id, [...set, 31503]),
+            "its next open, with a port free, gets a fresh one",
+          ).toEqual({ _tag: "Assigned", port: 31503 });
+        }),
+      );
+    });
+
+    it.each<"renewal" | "reclaim">(["renewal", "reclaim"])(
+      "a renewal and a reclaim of one quiet port, queued together: the %s goes first and wins",
+      async (first) => {
+        await run(
+          Effect.gen(function* () {
+            const previews = yield* PreviewsRepo;
+            const sql = yield* SqlClient.SqlClient;
+            const [web, docs] = yield* Effect.forEach(["web", "docs"], (name) =>
+              keptPreview(`renew-${first}-${name}`),
+            );
+            if (web === undefined || docs === undefined)
+              return yield* Effect.die("missing previews");
+            const port = first === "renewal" ? 31701 : 31702;
+            expect(yield* previews.assignTailnetPort(web.id, [port])).toEqual({
+              _tag: "Assigned",
+              port,
+            });
+            expect((yield* previews.byTailnetPort(port))?.renewDue, "used just now").toBe(false);
+            yield* backdatePorts([port], TAILNET_PORT_RENEW_AFTER_HOURS);
+            expect((yield* previews.byTailnetPort(port))?.renewDue).toBe(true);
+            yield* backdatePorts([port], TAILNET_PORT_QUIET_HOURS);
+
+            const release = yield* holdingRows(
+              sql`SELECT pg_advisory_xact_lock(hashtext('mend:preview-ports'))`,
+            );
+            const queue = <A>(effect: Effect.Effect<A>, place: number) =>
+              Effect.gen(function* () {
+                const fiber = yield* Effect.forkChild(effect);
+                yield* waitingOnLocks(place);
+                return fiber;
+              });
+            const renew = previews.renewTailnetPort(port, web.id);
+            const renewedFirst = first === "renewal" ? yield* queue(renew, 1) : null;
+            const reassignment = yield* queue(
+              previews.assignTailnetPort(docs.id, [port]),
+              first === "renewal" ? 2 : 1,
+            );
+            const renewal = renewedFirst ?? (yield* queue(renew, 2));
+            yield* release;
+            const renewed = yield* Fiber.join(renewal);
+            const reassigned = yield* Fiber.join(reassignment);
+            if (first === "renewal") {
+              expect(renewed).toBe("Renewed");
+              expect(reassigned._tag, "the renewed port is in use").toBe("PoolFull");
+              expect(yield* previews.tailnetPorts([web.id, docs.id])).toEqual(
+                new Map([[web.id, port]]),
+              );
+            } else {
+              expect(reassigned).toEqual({ _tag: "Assigned", port });
+              expect(renewed, "the port went to docs first").toBe("Moved");
+              expect(yield* previews.tailnetPorts([web.id, docs.id])).toEqual(
+                new Map([[docs.id, port]]),
+              );
+            }
+          }),
+        );
+      },
+    );
+
+    it("gives the least recently used port first, never-used ports before any", async () => {
+      await run(
+        Effect.gen(function* () {
+          const previews = yield* PreviewsRepo;
+          const held = yield* Effect.forEach(["a", "b", "c"], (name) => keptPreview(`lru-${name}`));
+          const set = [31601, 31602, 31603];
+          for (const preview of held) yield* previews.assignTailnetPort(preview.id, set);
+          yield* backdatePorts([31601], 30);
+          yield* backdatePorts([31602], 26);
+          yield* backdatePorts([31603], 50);
+          const [fresh, x, y, z] = yield* Effect.forEach(["fresh", "x", "y", "z"], (name) =>
+            keptPreview(`lru-${name}`),
+          );
+          if (fresh === undefined || x === undefined || y === undefined || z === undefined)
+            return yield* Effect.die("missing previews");
+          expect(
+            yield* previews.assignTailnetPort(fresh.id, [...set, 31604]),
+            "a port never used comes first",
+          ).toEqual({ _tag: "Assigned", port: 31604 });
+          const order = [];
+          for (const preview of [x, y, z]) {
+            const answer = yield* previews.assignTailnetPort(preview.id, set);
+            order.push(answer._tag === "Assigned" ? answer.port : answer._tag);
+          }
+          expect(order, "used longest ago first").toEqual([31603, 31601, 31602]);
+        }),
+      );
+    });
+
+    it("replaces an assignment whose port left the set at the next open, and frees the old port", async () => {
+      await run(
+        Effect.gen(function* () {
+          const previews = yield* PreviewsRepo;
+          const moved = yield* keptPreview("moved");
+          expect(yield* previews.assignTailnetPort(moved.id, [31401, 31402])).toEqual({
+            _tag: "Assigned",
+            port: 31401,
+          });
+          expect(yield* previews.assignTailnetPort(moved.id, [31402, 31403])).toEqual({
+            _tag: "Assigned",
+            port: 31402,
+          });
+          expect(yield* portRows([31401, 31402])).toEqual([
+            { port: 31401, previewId: null, released: true },
+            { port: 31402, previewId: moved.id, released: false },
+          ]);
+          expect(yield* previews.tailnetPorts([moved.id])).toEqual(new Map([[moved.id, 31402]]));
+        }),
+      );
+    });
+
+    it("refuses a port outside 1 to 65535", async () => {
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const outside = yield* Effect.flip(sql`INSERT INTO preview_ports (port) VALUES (65536)`);
+          expect(Schema.decodeUnknownSync(CheckViolation)(outside.reason.cause).constraint).toBe(
+            "preview_ports_port_check",
+          );
+        }),
+      );
+    });
   });
 });

@@ -18,6 +18,7 @@ import {
   renderPostureOverlay,
   renderPreviewOverlay,
   renderT3GatewayOverlay,
+  type ServerPosture,
   T3_GATEWAY_CADDYFILE,
   t3GatewayEnvLines,
   t3GatewayPlacement,
@@ -428,11 +429,12 @@ describe("where the t3code gateway is published (ADR 0012, ADR 0004)", () => {
 });
 
 describe("previews behind the edge (ADR 0017)", () => {
-  const posture = {
+  const posture: ServerPosture = {
     bind: "127.0.0.1",
     appUrl: "https://mend.example.com",
     edgeHost: "mend.example.com",
     preview: {
+      mode: "domain",
       domain: "previews.example.net",
       certificate: "/etc/mend/previews.crt",
       key: "/etc/mend/previews.key",
@@ -479,6 +481,48 @@ describe("previews behind the edge (ADR 0017)", () => {
     ]);
     for (const setting of ["flush_interval -1", "response_header_timeout 10m"])
       expect(PREVIEW_CADDYFILE).toContain(`\t${setting}\n`);
+  });
+});
+
+describe("previews on the tailnet (ADR 0017, decision 6)", () => {
+  const posture: ServerPosture = {
+    bind: "127.0.0.1",
+    appUrl: "https://mend-box.tailc79e49.ts.net",
+    preview: {
+      mode: "tailnet",
+      hostname: "mend-preview.tailc79e49.ts.net",
+      ports: [20001, 20002, 20003, 20010],
+    },
+  };
+
+  it("hands the gateway its name and ports from server.env, publishes it on loopback only, and has no edge", () => {
+    expect(postureEnvLines(posture)).toEqual([
+      "MEND_PREVIEW_TAILNET_HOSTNAME=mend-preview.tailc79e49.ts.net",
+      "MEND_PREVIEW_TAILNET_PORTS=20001-20003,20010",
+      "MEND_PREVIEW_PUBLISHED=127.0.0.1:3130",
+    ]);
+    expect(composeOverlays(posture)).toEqual(["compose.preview.yaml"]);
+    const overlay = renderPreviewOverlay(posture) ?? "";
+    for (const line of [
+      '      MEND_PREVIEW_PORT: "3130"',
+      "      MEND_PREVIEW_BIND: 0.0.0.0",
+      "      MEND_PREVIEW_TAILNET_HOSTNAME: ${MEND_PREVIEW_TAILNET_HOSTNAME:?set MEND_PREVIEW_TAILNET_HOSTNAME in server.env}",
+      "      MEND_PREVIEW_TAILNET_PORTS: ${MEND_PREVIEW_TAILNET_PORTS:?set MEND_PREVIEW_TAILNET_PORTS in server.env}",
+      "      MEND_PREVIEW_PUBLISHED: ${MEND_PREVIEW_PUBLISHED:?set MEND_PREVIEW_PUBLISHED in server.env}",
+    ])
+      expect(overlay).toContain(`${line}\n`);
+    expect(overlay.match(/^ {6}- "[^"]*"$/gm)).toEqual(['      - "127.0.0.1:3130:3130"']);
+    expect(overlay).not.toMatch(/^ {2}edge:/m);
+    expect(overlay).not.toContain("MEND_PREVIEW_DOMAIN");
+    expect(overlay).not.toContain("Caddyfile");
+    expect(overlay).not.toContain(".pem");
+  });
+
+  it("says where previews are, which ports, and who serves them", () => {
+    expect(declaredPostureLines(posture)[0]).toBe(
+      "previews · https://mend-preview.tailc79e49.ts.net:<port> · ports 20001-20003,20010 · served by tailscale serve on this machine · the gateway's port published on 127.0.0.1:3130 only",
+    );
+    for (const line of declaredPostureLines(posture)) expect(line).not.toMatch(VERDICTS);
   });
 });
 

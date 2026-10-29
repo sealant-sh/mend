@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 
-import { makePublicNetwork, PublicOrigin } from "@mend/network";
+import { makePublicNetwork, PublicOrigin, sessionCookieName } from "@mend/network";
 import { Effect } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ import { createTrpcHandler } from "./trpc-handler.ts";
 const network = makePublicNetwork(PublicOrigin.make("http://localhost:3105"), [
   PublicOrigin.make("http://mac-mini.local:3105"),
 ]);
+const MEND_COOKIE = sessionCookieName(network.appUrl);
 
 const startApi = async () => {
   const requests: Array<{
@@ -147,6 +148,52 @@ describe("tRPC source-request trust and API forwarding", () => {
       headers: { cookie: "test-cookie=credential" },
     });
     expect(api.exists()).toBe(false);
+  });
+  it.each<[string, Record<string, string>, string]>([
+    [
+      "a fetch",
+      { "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" },
+      "GET",
+    ],
+    [
+      "a no-cors image",
+      { "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "image" },
+      "GET",
+    ],
+    [
+      "a cross-site iframe",
+      { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" },
+      "GET",
+    ],
+  ])(
+    "refuses %s from a sibling site that carries Mend's cookie, before any API request",
+    async (_, fetchMetadata, method) => {
+      const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+      const response = await handle(
+        request({ cookie: `${MEND_COOKIE}=credential`, ...fetchMetadata }, "git.key", method),
+      );
+      expect(response.status).toBe(403);
+      expect(await response.text()).toBe("Cross-site request refused");
+      expect(api.requests).toHaveLength(0);
+    },
+  );
+  it("keeps a sibling site's request that names an allowed Origin, one with no cookie, and one with only a look-alike a sibling planted", async () => {
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const sibling = { "sec-fetch-site": "same-site", "sec-fetch-mode": "cors" };
+    const planted = await handle(
+      request({ cookie: `x${MEND_COOKIE}=planted; other=1`, ...sibling }, "git.key", "GET"),
+    );
+    expect(planted.status).toBe(200);
+    const allowed = await handle(
+      request(
+        { origin: "http://mac-mini.local:3105", cookie: `${MEND_COOKIE}=credential`, ...sibling },
+        "git.key",
+        "GET",
+      ),
+    );
+    expect(allowed.status).toBe(200);
+    const cookieless = await handle(request(sibling, "git.key", "GET"));
+    expect(cookieless.status).toBe(200);
   });
   it("the derived client itself never drops or replaces an unlisted Origin", async () => {
     const headers = new Headers({

@@ -90,7 +90,10 @@ contract:
   audit). It takes the rightmost entry that is not a trusted hop, so a client cannot choose its own
   address. Web keeps deleting inbound `Forwarded`, `X-Forwarded-Host` and `X-Forwarded-Proto`.
 - Cookies are `Secure`, `HttpOnly` and `SameSite=Lax` whenever `APP_URL` is `https:`, set explicitly
-  and tested, not inferred.
+  and tested, not inferred. Over `https:` their names carry `__Host-` (ADR 0017 delivery step 8b).
+- A cookie-bearing request whose `Sec-Fetch-Site` is `same-site` or `cross-site` is refused unless
+  its `Origin` is allowed or it is a top-level document `GET` or `HEAD`, in the API and in web's
+  tRPC handler, which the API reaches without Fetch Metadata (ADR 0017 delivery step 8b).
 
 **Everything behind Mend stays private.** Core, its registry, Postgres, the bucket's admin surface,
 raw service ports and the Kubernetes API get no new exposure. Core stays a trusted control plane
@@ -201,9 +204,10 @@ Not observable by this build. Reported, never inferred, and they do not block st
     and where the gateway listens against where setup published its port (`MEND_PREVIEW_PUBLISHED`).
     Carried: the bounded forward of the pinned SDK. With a preview domain, the wildcard DNS, its
     certificate and who reaches the listener are `open` until declared; on the tailnet default, the
-    Tailscale steps are, and the item also stays `open` until every Mend cookie's name carries
-    `__Host-` (ADR 0017 delivery step 8b). A fact observed open is never closed by a statement. An
-    open item refuses a `public` start, as item 14 does. Added 2026-10-28 with ADR 0017 step 8a.
+    Tailscale steps are, and the item observes that every Mend cookie's name carries `__Host-`,
+    which needs an `https:` `APP_URL` (ADR 0017 delivery step 8b). A fact observed open is never
+    closed by a statement. An open item refuses a `public` start, as item 14 does. Added 2026-10-28
+    with ADR 0017 step 8a.
 
 Items 11 and 12, 14 where it is not observed, and 15 where it needs a look from outside, stay `open`
 until the operator, having verified them from outside, names them in `MEND_EXPOSURE_DECLARED` (the
@@ -237,7 +241,9 @@ happens before the effect it guards.
   and invitation acceptance get a tighter window than the rest. No request is exempt because its
   whole chain is trusted: it is counted under the socket's address (only a bare loopback socket with
   no `X-Forwarded-For` is this machine's own, and sign-in attempts are counted even then). A
-  credential is the bearer or a session cookie's value, never the client-writable rest of `Cookie`.
+  credential is the bearer or the value of the cookie named exactly as Mend's session cookie, never
+  the client-writable rest of `Cookie`, and never a look-alike name another host on Mend's site
+  could plant (ADR 0017 delivery step 8b).
 - **Concurrent work.** Per account: live sessions, launches in flight, and open long-lived
   connections by kind (event streams, terminals, tunnels, key bridges). `ConnectionRegistry` already
   holds every long-lived connection per account, so it is where the connection budget is counted and

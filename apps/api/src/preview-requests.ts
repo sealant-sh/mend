@@ -1,7 +1,18 @@
-import { NO_SUCH_PREVIEW } from "@mend/network";
+import { TAILNET_PORT_QUIET_HOURS } from "@mend/db";
+import {
+  type BrowserRequest,
+  isDocumentNavigation,
+  NO_SUCH_PREVIEW,
+  siblingRequestAdmitted,
+} from "@mend/network";
 import { Brand } from "effect";
 
-import type { PreviewNoIdentity, PreviewNotFound, PreviewUnavailable } from "./preview-identity.ts";
+import type {
+  PreviewNoIdentity,
+  PreviewNotFound,
+  PreviewPoolFull,
+  PreviewUnavailable,
+} from "./preview-identity.ts";
 import type { PreviewOrigin } from "./preview-routing.ts";
 
 export type PreviewPath = string & Brand.Brand<"PreviewPath">;
@@ -55,24 +66,13 @@ export const strictQuery = (
   return values;
 };
 
-export interface BrowserHead {
-  readonly method: string;
-  readonly upgrade: boolean;
+export interface BrowserHead extends BrowserRequest {
   readonly origins: ReadonlyArray<string>;
-  readonly fetchSite: string | undefined;
-  readonly fetchMode: string | undefined;
-  readonly fetchDest: string | undefined;
   readonly sentFetchMetadata: boolean;
   readonly acceptsHtml: boolean;
 }
 
 const FETCH_SITES = new Set(["none", "same-origin", "same-site", "cross-site"]);
-
-export const isDocumentNavigation = (head: BrowserHead): boolean =>
-  head.method === "GET" &&
-  !head.upgrade &&
-  head.fetchMode === "navigate" &&
-  head.fetchDest === "document";
 
 /**
  * Browsers send Fetch Metadata only to an origin they trust, and one that does not trust
@@ -88,11 +88,8 @@ export const browserAdmits = (head: BrowserHead, own: PreviewOrigin): boolean =>
   if (origin !== undefined && origin !== own) return false;
   const safe = (head.method === "GET" || head.method === "HEAD") && !head.upgrade;
   if (origin === undefined && !safe) return false;
-  if (head.fetchSite === undefined) return true;
-  if (!FETCH_SITES.has(head.fetchSite)) return false;
-  return head.fetchSite === "same-site" || head.fetchSite === "cross-site"
-    ? isDocumentNavigation(head)
-    : true;
+  if (head.fetchSite !== undefined && !FETCH_SITES.has(head.fetchSite)) return false;
+  return siblingRequestAdmitted(head);
 };
 
 export interface PreviewAnswer {
@@ -119,8 +116,15 @@ export const redirect = (
   headers: Readonly<Record<string, string>> = {},
 ): PreviewAnswer => answer(status, "", { location, ...headers });
 
+const nextMinuteUtc = (at: Date): string =>
+  new Date(Math.ceil(at.getTime() / 60_000) * 60_000)
+    .toISOString()
+    .slice(0, 16)
+    .replace("T", " ")
+    .concat(" UTC");
+
 export const refusalAnswer = (
-  error: PreviewNoIdentity | PreviewNotFound | PreviewUnavailable,
+  error: PreviewNoIdentity | PreviewNotFound | PreviewUnavailable | PreviewPoolFull,
 ): PreviewAnswer => {
   switch (error._tag) {
     case "PreviewNoIdentity":
@@ -129,6 +133,11 @@ export const refusalAnswer = (
       return answer(404, NO_SUCH_PREVIEW);
     case "PreviewUnavailable":
       return answer(503, "Previews are unavailable right now.");
+    case "PreviewPoolFull":
+      return answer(
+        503,
+        `No preview port is free. All ${error.size} ports this server serves previews on had a preview open within the last ${TAILNET_PORT_QUIET_HOURS} hours, and a port goes to another preview only after ${TAILNET_PORT_QUIET_HOURS} hours with no connection to its own. The next one frees at ${nextMinuteUtc(error.nextFreeAt)} at the earliest, if its preview stays closed until then. The operator can serve more ports (mend server setup --preview-tailnet-ports).`,
+      );
   }
 };
 

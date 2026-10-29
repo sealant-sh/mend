@@ -67,11 +67,18 @@ const Routing = Schema.Union([
     domain: Schema.String,
     port: Schema.Number,
   }),
+  Schema.Struct({
+    mode: Schema.Literal("tailnet-https"),
+    hostname: Schema.String,
+    ports: Schema.Array(Schema.Number),
+  }),
 ]);
 
 export const AcceptanceGatewayOptions = Schema.Struct({
   databaseUrl: Schema.String,
   routing: Routing,
+  /** Mend's own origin, where a preview with no grant sends its viewer to sign in. */
+  appUrl: Schema.optional(Schema.String),
   port: Schema.Number,
   startHoldMs: Schema.optional(Schema.Number),
   bodyCapBytes: Schema.optional(Schema.Number),
@@ -182,7 +189,7 @@ export const acceptanceGateway = (
     yield* Layer.build(
       servePreviews(Layer.empty, {
         setup: { _tag: "On", routing: options.routing, gateway: settings },
-        appUrl: APP_URL,
+        appUrl: options.appUrl ?? APP_URL,
         trustedProxies: [],
         identity: PreviewIdentityLive,
       }).pipe(
@@ -227,10 +234,17 @@ export const previewSignIn = (
       Layer.provideMerge(previewReposLayer(databaseUrl)),
     ),
   );
+  /** On a tailnet a preview's origin is its port, which its first ticket assigns. */
+  const opened = new Map<PreviewId, string>();
   const originOf = (previewId: PreviewId) => {
     const preview = SERVICE_KEYS.map((key) => previews[key]).find((p) => p.id === previewId);
-    const origin = preview === undefined ? null : previewOriginOf(routing, preview);
-    if (origin === null) throw new Error(`the routing addresses no preview ${previewId}`);
+    const origin =
+      preview === undefined
+        ? null
+        : routing.mode === "tailnet-https"
+          ? (opened.get(previewId) ?? null)
+          : previewOriginOf(routing, { label: preview.label, tailnetPort: null });
+    if (origin === null) throw new Error(`the routing addresses no preview ${previewId} yet`);
     return origin;
   };
   return {
@@ -243,6 +257,7 @@ export const previewSignIn = (
             previewId: previews[key].id,
             opener: { userId, credential },
           });
+          opened.set(previews[key].id, issued.origin);
           return `${issued.origin}/__mend/auth?ticket=${encodeURIComponent(Redacted.value(issued.ticket))}&path=${encodeURIComponent(path)}`;
         }),
       ),

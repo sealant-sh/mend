@@ -1,4 +1,4 @@
-import { makePublicNetwork, PublicOrigin, SAME_SITE_PREVIEW_REASON } from "@mend/network";
+import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { NetworkConfig } from "@mend/network";
 import { ConfigProvider, Effect, Exit, Schema } from "effect";
 import { describe, expect, it } from "vitest";
@@ -78,15 +78,22 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
       {
         port: "3117",
         tailnetHostname: "mend-preview.tail1234.ts.net",
-        tailnetPorts: "20001=pv_web, 20002=pv_docs",
+        tailnetPorts: "20001-20003, 20010",
       },
       {
         mode: "tailnet-https",
         hostname: "mend-preview.tail1234.ts.net",
-        ports: [
-          { port: 20001, previewId: "pv_web" },
-          { port: 20002, previewId: "pv_docs" },
-        ],
+        ports: [20001, 20002, 20003, 20010],
+      },
+      { bind: "127.0.0.1", port: 3117, ...defaults },
+    ],
+    [
+      "a tailnet name alone, on the default sixteen ports",
+      { port: "3117", tailnetHostname: "mend-preview.tail1234.ts.net" },
+      {
+        mode: "tailnet-https",
+        hostname: "mend-preview.tail1234.ts.net",
+        ports: Array.from({ length: 16 }, (_, index) => 20001 + index),
       },
       { bind: "127.0.0.1", port: 3117, ...defaults },
     ],
@@ -96,7 +103,7 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
         port: "3117",
         domain: "previews.example.net",
         tailnetHostname: "mend-preview.tail1234.ts.net",
-        tailnetPorts: "20001=pv_web",
+        tailnetPorts: "20001",
       },
       { mode: "domain-https", domain: "previews.example.net", port: 443 },
       { bind: "127.0.0.1", port: 3117, ...defaults },
@@ -142,45 +149,25 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
     ["a body cap with a unit", { port: "3117", bodyBytes: "1MiB" }, "bodyBytes", "positive"],
     [
       "tailnet ports without a hostname",
-      { port: "3117", tailnetPorts: "20001=pv_web" },
+      { port: "3117", tailnetPorts: "20001" },
       "tailnetHostname",
       "is required",
     ],
     [
-      "a tailnet hostname without ports",
-      { port: "3117", tailnetHostname: "mend-preview.tail1234.ts.net" },
+      "the port=previewId form from before Mend assigned ports",
+      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "20001=pv_web" },
       "tailnetPorts",
-      "is required",
-    ],
-    [
-      "a tailnet entry that is not port=previewId",
-      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "20001" },
-      "tailnetPorts",
-      "is not port=previewId",
+      "pairs a port with a preview, the form before Mend assigned ports itself",
     ],
     [
       "a tailnet port listed twice",
-      {
-        port: "3117",
-        tailnetHostname: "mend-preview.t.ts.net",
-        tailnetPorts: "20001=pv_web,20001=pv_docs",
-      },
+      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "20001,20001" },
       "tailnetPorts",
       "port 20001 is listed twice",
     ],
     [
-      "a preview given two tailnet ports",
-      {
-        port: "3117",
-        tailnetHostname: "mend-preview.t.ts.net",
-        tailnetPorts: "20001=pv_web,20002=pv_web",
-      },
-      "tailnetPorts",
-      "preview pv_web is given two ports",
-    ],
-    [
       "a tailnet port out of range",
-      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "99999=pv_web" },
+      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "99999" },
       "tailnetPorts",
       "not a TCP port",
     ],
@@ -211,19 +198,57 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
     );
   });
 
-  it("refuses a preview domain on Mend's own site, naming what it needs and what to use instead", () => {
-    const refused = refusalOf({ port: "3117", domain: "previews.example.com" });
-    expect(refused?.variable).toBe("MEND_PREVIEW_DOMAIN");
-    expect(refused?.message).toBe(
-      `MEND_PREVIEW_DOMAIN: "previews.example.com" shares the registrable domain example.com with Mend's own origin https://mend.example.com (APP_URL or MEND_ALLOWED_ORIGINS), so a page on a preview can set cookies Mend's host receives. ${SAME_SITE_PREVIEW_REASON}`,
-    );
+  it("takes a preview domain beside Mend's host on its registrable domain", () => {
+    expect(refusalOf({ port: "3117", domain: "previews.example.com" })).toBeNull();
     expect(refusalOf({ port: "3117", domain: "previews.example.net" })).toBeNull();
+  });
+
+  it("refuses the tailnet default while APP_URL is http, and says how to serve it on https", () => {
+    const refused = refusalOf(
+      { port: "3117", tailnetHostname: "mend-preview.tail1234.ts.net" },
+      makePublicNetwork(origin("http://box.tail1234.ts.net:3105"), []),
+    );
+    expect(refused?.variable).toBe("MEND_PREVIEW_TAILNET_HOSTNAME");
+    expect(refused?.message).toContain(
+      "previews on a tailnet need Mend's own APP_URL on https, and it is http://box.tail1234.ts.net:3105",
+    );
+    expect(refused?.message).toContain("tailscale serve --bg --https=443");
+  });
+
+  it("takes a domain over a leftover tailnet hostname with an http APP_URL, and starts", () => {
+    const http = makePublicNetwork(origin("http://mend.example.org:3105"), []);
+    const exit = setupOf(
+      {
+        port: "3117",
+        domain: "previews.example.net",
+        tailnetHostname: "mend-preview.tail1234.ts.net",
+        tailnetPorts: "20001",
+      },
+      http,
+    );
+    expect(Exit.isSuccess(exit) ? exit.value : exit).toMatchObject({
+      _tag: "On",
+      routing: { mode: "domain-https", domain: "previews.example.net", port: 443 },
+    });
+  });
+
+  it("refuses a preview domain on Mend's own site while APP_URL is http, and says why", () => {
+    const http = makePublicNetwork(origin("http://mend.example.com"), []);
+    const refused = refusalOf({ port: "3117", domain: "previews.example.com" }, http);
+    expect(refused?.variable).toBe("MEND_PREVIEW_DOMAIN");
+    expect(refused?.message).toContain(
+      "is on Mend's own site, example.com, and APP_URL is http://mend.example.com",
+    );
+    expect(refused?.message).toContain(
+      "a preview domain on Mend's own site needs Mend's APP_URL on https",
+    );
+    expect(refusalOf({ port: "3117", domain: "previews.example.net" }, http)).toBeNull();
   });
 
   it("refuses a tailnet hostname that is Mend's own host", () => {
     const mend = makePublicNetwork(origin("https://box.tail1234.ts.net"), []);
     const refused = refusalOf(
-      { port: "3117", tailnetHostname: "box.tail1234.ts.net", tailnetPorts: "20001=pv_web" },
+      { port: "3117", tailnetHostname: "box.tail1234.ts.net", tailnetPorts: "20001" },
       mend,
     );
     expect(refused?.variable).toBe("MEND_PREVIEW_TAILNET_HOSTNAME");
@@ -233,7 +258,7 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
         {
           port: "3117",
           tailnetHostname: "mend-preview.tail1234.ts.net",
-          tailnetPorts: "20001=pv_web",
+          tailnetPorts: "20001",
         },
         mend,
       )._tag,

@@ -632,6 +632,36 @@ describe("the preview gateway relays to the app", () => {
     ),
   );
 
+  it.live("never lets a Tailscale-* field reach the app, on a tailnet or a domain", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const routings: ReadonlyArray<keyof typeof ROUTINGS> = ["tailnet", "domain"];
+        for (const routing of routings) {
+          const { world } = yield* relayWorld(routing);
+          const reply = yield* getAs(world, world.cookieFor("carol", "web"), "/echo-headers", {
+            headers: {
+              "tailscale-user-login": "mallory@example.com",
+              "Tailscale-User-Name": "Mallory",
+              "Tailscale-User-Profile-Pic": "https://example.com/m.png",
+              "Tailscale-App-Capabilities": "{}",
+              "x-forwarded-for": "203.0.113.9",
+            },
+          });
+          expect(reply.status, `the app answered on the ${routing}`).toBe(200);
+          const headers = Object.keys(decodeEchoed(reply.body).headers);
+          expect(
+            headers.filter((name) => name.startsWith("tailscale-")),
+            `no Tailscale-* field reached the app on the ${routing}`,
+          ).toEqual([]);
+          expect(
+            headers.filter((name) => name === "x-forwarded-for"),
+            `no inbound X-Forwarded-For reached the app on the ${routing}`,
+          ).toEqual([]);
+        }
+      }),
+    ),
+  );
+
   it.live("namespaces HttpOnly app cookies per preview on the tailnet, both ways", () =>
     Effect.scoped(
       Effect.gen(function* () {

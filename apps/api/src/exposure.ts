@@ -2,7 +2,7 @@ import { sessionCookiePolicy } from "@mend/auth";
 import {
   NetworkConfig,
   previewDomainOverlap,
-  SAME_SITE_PREVIEW_REASON,
+  writePreviewPorts,
   trustedProxyCidrs,
   trustsEveryAddress,
 } from "@mend/network";
@@ -326,24 +326,62 @@ interface PreviewOutside {
 
 const bracketed = (address: string): string => (address.includes(":") ? `[${address}]` : address);
 
-const appUrlApartFact = (appHost: string, domain: string): PreviewFact => {
-  const overlap = previewDomainOverlap(domain, appHost);
-  if (overlap === null)
-    return {
-      established: "observed",
-      said: `APP_URL's host ${appHost} is not ${domain}, above or under it, or on its registrable domain`,
-    };
-  return overlap.kind === "same-site"
+/** The session cookie as Auth names it, from the same input. */
+const mendCookieOf = (posture: ExposurePosture) => sessionCookiePolicy({ appUrl: posture.appUrl });
+
+/** On Mend's own site a sibling page can set cookies Mend's host receives, unless they are `__Host-`. */
+const hostCookieFact = (posture: ExposurePosture): PreviewFact => {
+  const cookie = mendCookieOf(posture);
+  return cookie.prefix === "__Host-"
     ? {
-        established: "open",
-        said: `APP_URL's host ${appHost} shares the registrable domain ${overlap.site} with ${domain}, so a page on a preview can set cookies Mend's host receives`,
-        fix: SAME_SITE_PREVIEW_REASON,
+        established: "observed",
+        said: `Mend's cookies are named __Host- (${cookie.name}), so a preview on Mend's own site cannot set or replace them`,
       }
     : {
         established: "open",
+        said: `Mend's cookies are named ${cookie.name}, not __Host-, and every preview is Mend's own site: APP_URL is ${new URL(posture.appUrl).protocol.slice(0, -1)}`,
+        fix: "set APP_URL to an https origin",
+      };
+};
+
+/** A preview domain apart from Mend's host; beside it on one registrable domain, Mend's site. */
+const domainFacts = (
+  posture: ExposurePosture,
+  domain: string,
+): { readonly facts: ReadonlyArray<PreviewFact>; readonly site: string | null } => {
+  const appHost = new URL(posture.appUrl).hostname;
+  const overlap = previewDomainOverlap(domain, appHost);
+  if (overlap === null)
+    return {
+      facts: [
+        {
+          established: "observed",
+          said: `APP_URL's host ${appHost} is not ${domain}, above or under it, or on its registrable domain`,
+        },
+      ],
+      site: null,
+    };
+  if (overlap.kind === "same-site")
+    return {
+      facts: [
+        {
+          established: "observed",
+          said: `APP_URL's host ${appHost} is beside ${domain} on the registrable domain ${overlap.site}, so every preview is Mend's own site`,
+        },
+        hostCookieFact(posture),
+      ],
+      site: overlap.site,
+    };
+  return {
+    facts: [
+      {
+        established: "open",
         said: `APP_URL's host ${appHost} is ${overlap.kind === "holds" ? "under" : "above"} ${domain}`,
         fix: "set MEND_PREVIEW_DOMAIN to a domain apart from Mend's",
-      };
+      },
+    ],
+    site: null,
+  };
 };
 
 const routingOf = (
@@ -370,20 +408,25 @@ const routingOf = (
         ],
         outside: null,
       };
-    case "domain-https":
+    case "domain-https": {
+      const { facts, site } = domainFacts(posture, routing.domain);
       return {
         facts: [
-          appUrlApartFact(appHost, routing.domain),
+          ...facts,
           {
             established: "observed",
             said: `previews are https at https://<label>.${routing.domain}${routing.port === 443 ? "" : `:${routing.port}`}`,
           },
         ],
         outside: {
-          unobservable: `the wildcard DNS and certificate for *.${routing.domain}, and who reaches the published listener`,
-          howToVerify: `https://<label>.${routing.domain} from another network, over a certificate that chains to a public root, and ${reached} answering nothing from another machine`,
+          unobservable:
+            site === null
+              ? `the wildcard DNS and certificate for *.${routing.domain}, and who reaches the published listener`
+              : `the wildcard DNS and certificate for *.${routing.domain}, who reaches the published listener, and that no other host on ${site} keeps a session in a cookie without __Host-, since a page on a preview can set cookies every host on ${site} receives`,
+          howToVerify: `https://<label>.${routing.domain} from another network, over a certificate that chains to a public root, and ${reached} answering nothing from another machine${site === null ? "" : `, and each other host on ${site} keeping its sessions in __Host- cookies or none`}`,
         },
       };
+    }
     case "tailnet-https":
       return {
         facts: [
@@ -393,13 +436,19 @@ const routingOf = (
           },
           {
             established: "observed",
-            said: `previews are https at https://${routing.hostname}:<port>`,
+            said: `previews are https at https://${routing.hostname}:<port>, a port each from ${writePreviewPorts(routing.ports)}`,
           },
-          {
-            established: "open",
-            said: "Mend's cookies are not named __Host-, and on the tailnet default every preview is Mend's own site",
-            fix: "Mend's cookies move to __Host- names in ADR 0017 delivery step 8b; until it ships, use a preview domain of your own (MEND_PREVIEW_DOMAIN)",
-          },
+          hostCookieFact(posture),
+          posture.exposure === "public"
+            ? {
+                established: "open",
+                said: "previews are on a tailnet, and MEND_EXPOSURE is public: a tailnet's names are one site, not a registrable domain of the previews' own",
+                fix: "keep the exposure private on a tailnet, or serve previews under a registrable domain of their own (MEND_PREVIEW_DOMAIN, behind the edge)",
+              }
+            : {
+                established: "observed",
+                said: `previews are on a tailnet, under MEND_EXPOSURE=${posture.exposure}`,
+              },
         ],
         outside: {
           unobservable: `the Tailscale steps for ${routing.hostname} (MagicDNS, HTTPS certificates, the Service and its ports, a tag on this host, its approval, and grants for the people who open previews), and who reaches the published listener`,
@@ -476,7 +525,7 @@ const previewGateway = (posture: ExposurePosture, preview: PreviewPosture): Expo
 
 export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<ExposureOutcome> => {
   const plainOrigins = posture.allowedOrigins.filter((origin) => !isHttps(origin));
-  const cookie = sessionCookiePolicy({ appUrl: posture.appUrl });
+  const cookie = mendCookieOf(posture);
   // All of them, `operator-present` included: until the first account exists, registration is
   // open to whoever arrives first, and on the Internet that is not the owner. Create the first
   // account over a private path, then declare `public`.

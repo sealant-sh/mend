@@ -1020,6 +1020,7 @@ test(
         edgeHost: "mend.example.com",
         exposure: "public",
         preview: {
+          mode: "domain",
           domain: "previews.example.net",
           certificate: path.join(scratch, "previews.crt"),
           key: path.join(scratch, "previews.key"),

@@ -1,4 +1,4 @@
-import { PreviewId, PreviewLabel } from "@mend/domain";
+import { PreviewLabel } from "@mend/domain";
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
@@ -14,7 +14,7 @@ import { previewOriginOf } from "./preview-routing.ts";
 
 const addressed = previewOriginOf(
   { mode: "domain-https", domain: "preview.example", port: 443 },
-  { id: PreviewId.make("pv-1"), label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa") },
+  { label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"), tailnetPort: null },
 );
 if (addressed === null) throw new Error("a domain routing addresses every preview");
 const OWN = addressed;

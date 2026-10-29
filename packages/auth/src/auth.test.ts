@@ -58,34 +58,78 @@ describe("the session cookie", () => {
     await post("sign-up/email", { ...credentials, name: "Cookie test" });
     const signedIn = await post("sign-in/email", credentials);
     expect(signedIn.status).toBe(200);
-    return (signedIn.headers.get("set-cookie") ?? "").toLowerCase();
+    const [cookie = ""] = signedIn.headers.getSetCookie();
+    return {
+      name: cookie.slice(0, cookie.indexOf("=")),
+      attributes: cookie
+        .split(";")
+        .slice(1)
+        .map((attribute) => attribute.trim().toLowerCase()),
+    };
   };
 
-  it("is Secure, HttpOnly and SameSite=Lax over an https origin", async () => {
-    const cookie = await signedInCookie("https://mend.example.com");
-    expect(cookie).toContain("__secure-");
-    expect(cookie).toContain("session_token=");
-    expect(cookie).toContain("secure");
-    expect(cookie).toContain("httponly");
-    expect(cookie).toContain("samesite=lax");
+  it("is __Host-, Secure, Path=/, host-only, HttpOnly and SameSite=Lax over https", async () => {
+    const site = { appUrl: "https://mend.example.com" };
+    const cookie = await signedInCookie(site.appUrl);
+    expect(cookie.name).toBe("__Host-better-auth.session_token");
+    expect(cookie.name).toBe(sessionCookiePolicy(site).name);
+    expect(cookie.attributes).toEqual(
+      expect.arrayContaining(["secure", "httponly", "samesite=lax", "path=/"]),
+    );
+    expect(cookie.attributes.filter((attribute) => attribute.startsWith("domain"))).toEqual([]);
   });
 
-  it("is HttpOnly and SameSite=Lax over http, and does not claim Secure", async () => {
-    const cookie = await signedInCookie("http://localhost:3105");
-    expect(cookie).toContain("session_token=");
-    expect(cookie).toContain("httponly");
-    expect(cookie).toContain("samesite=lax");
-    expect(cookie).not.toContain("__secure-");
-    expect(cookie).not.toMatch(/;\s*secure/);
+  it("is HttpOnly and SameSite=Lax over http, and claims neither Secure nor a prefix", async () => {
+    const site = { appUrl: "http://localhost:3105" };
+    const cookie = await signedInCookie(site.appUrl);
+    expect(cookie.name).toBe("better-auth.session_token");
+    expect(cookie.name).toBe(sessionCookiePolicy(site).name);
+    expect(cookie.attributes).toEqual(expect.arrayContaining(["httponly", "samesite=lax"]));
+    expect(cookie.attributes).not.toContain("secure");
   });
 
-  it("states its policy from the primary origin alone", () => {
+  it("states its policy from the primary origin", () => {
     expect(sessionCookiePolicy({ appUrl: "https://mend.example.com" })).toEqual({
+      name: "__Host-better-auth.session_token",
+      prefix: "__Host-",
       secure: true,
       httpOnly: true,
       sameSite: "lax",
     });
-    expect(sessionCookiePolicy({ appUrl: "http://10.0.0.216:3105" }).secure).toBe(false);
+    expect(sessionCookiePolicy({ appUrl: "http://10.0.0.216:3105" })).toMatchObject({
+      name: "better-auth.session_token",
+      prefix: "",
+      secure: false,
+    });
+  });
+
+  it("is answered for a cookie it set, and not for the name it replaced", async () => {
+    const appUrl = "https://mend.example.com";
+    const isolated = createAuthHandler({
+      network: makePublicNetwork(decodeOrigin(appUrl), []),
+      secret: "test-secret-with-at-least-thirty-two-bytes",
+    });
+    const post = (route: string, body: object) =>
+      isolated(
+        new Request(`${appUrl}/api/auth/${route}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: appUrl },
+          body: JSON.stringify(body),
+        }),
+      );
+    const credentials = { email: "renamed@example.invalid", password: "disposable-rename-pw" };
+    await post("sign-up/email", { ...credentials, name: "Rename test" });
+    const signedIn = await post("sign-in/email", credentials);
+    const [set = ""] = signedIn.headers.getSetCookie();
+    const value = set.slice(set.indexOf("=") + 1, set.indexOf(";"));
+    const sessionWith = (cookie: string) =>
+      isolated(new Request(`${appUrl}/api/auth/get-session`, { headers: { cookie } })).then(
+        (response) => response.json(),
+      );
+    await expect(sessionWith(`__Host-better-auth.session_token=${value}`)).resolves.toMatchObject({
+      user: { email: credentials.email },
+    });
+    await expect(sessionWith(`__Secure-better-auth.session_token=${value}`)).resolves.toBeNull();
   });
 });
 

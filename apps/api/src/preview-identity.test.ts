@@ -35,7 +35,9 @@ import {
   PREVIEW_TIMING,
   PreviewConfig,
   PreviewIdentity,
+  PreviewPoolFull,
   type PreviewViewer,
+  type SignedInAccount,
 } from "./preview-identity.ts";
 import { previewOriginOf, type PreviewRouting } from "./preview-routing.ts";
 
@@ -58,7 +60,7 @@ const NEXT: Preview = {
   label: PreviewLabel.make("baaaaaaaaaaaaaaaaaaaaaaaaa"),
   serviceName: "docs",
 };
-const addressed = previewOriginOf(ROUTING, kept);
+const addressed = previewOriginOf(ROUTING, { label: LABEL, tailnetPort: null });
 if (addressed === null) throw new Error("a domain routing addresses every preview");
 const ORIGIN = addressed;
 
@@ -89,7 +91,24 @@ const makeWorld = () => {
     string,
     { readonly previewId: string; readonly origin: string; readonly subject: PreviewGrantSubject }
   >();
-  const reads = { standing: 0, byLabel: 0, byId: 0, resolveByLabel: 0, projectAs: 0 };
+  const reads = {
+    standing: 0,
+    byLabel: 0,
+    byId: 0,
+    resolveByLabel: 0,
+    projectAs: 0,
+    assignTailnetPort: 0,
+  };
+  /** The tailnet port each preview holds. */
+  const pool = new Map<PreviewId, number>();
+  const reusedPorts = new Set<number>();
+  const touchCalls: Array<ReadonlyArray<PreviewId>> = [];
+  /** Previews whose port went unused past the renewal age. */
+  const unusedPorts = new Set<PreviewId>();
+  const renewals: Array<readonly [port: number, id: PreviewId]> = [];
+  /** A reclaim that commits just before the next renewal gives the port to this preview. */
+  const reclaim: { before: PreviewId | null } = { before: null };
+  const FULL_UNTIL = new Date("2026-10-30T14:05:00Z");
   const store: { latency: Duration.Input; hold: Hold | null; holdAfter: Map<number, Hold> } = {
     latency: 0,
     hold: null,
@@ -167,6 +186,52 @@ const makeWorld = () => {
     previewOfService: () => Effect.die("unused"),
     gatewaySnapshot: () => Effect.die("unused"),
     gatewaySnapshots: () => Effect.die("unused"),
+    assignTailnetPort: (id, ports) =>
+      Effect.sync(() => {
+        reads.assignTailnetPort += 1;
+        const held = pool.get(id);
+        if (held !== undefined && ports.includes(held)) return { _tag: "Assigned", port: held };
+        const taken = new Set(pool.values());
+        const free = ports.find((port) => !taken.has(port));
+        if (free === undefined)
+          return { _tag: "PoolFull", size: ports.length, nextFreeAt: FULL_UNTIL };
+        pool.set(id, free);
+        return { _tag: "Assigned", port: free };
+      }),
+    tailnetPorts: (ids) =>
+      Effect.sync(
+        () =>
+          new Map(
+            ids.flatMap((id): Array<[PreviewId, number]> => {
+              const port = pool.get(id);
+              return port === undefined ? [] : [[id, port]];
+            }),
+          ),
+      ),
+    byTailnetPort: (port) =>
+      Effect.sync(() => {
+        const holder = [...pool].find(([, held]) => held === port)?.[0];
+        const preview = holder === PREVIEW ? kept : holder === NEXT.id ? NEXT : null;
+        return preview === null ? null : { preview, renewDue: unusedPorts.has(preview.id) };
+      }),
+    renewTailnetPort: (port, id) =>
+      Effect.sync(() => {
+        if (reclaim.before !== null) {
+          pool.delete(id);
+          pool.set(reclaim.before, port);
+          reclaim.before = null;
+        }
+        if (pool.get(id) !== port) return "Moved";
+        unusedPorts.delete(id);
+        renewals.push([port, id]);
+        return "Renewed";
+      }),
+    touchTailnetPorts: (ids) =>
+      Effect.sync(() => {
+        touchCalls.push(ids);
+      }),
+    tailnetPortReused: (port, id) =>
+      Effect.sync(() => pool.get(id) === port && reusedPorts.has(port)),
   };
 
   const access = Layer.mock(ProjectAccess, {
@@ -194,6 +259,13 @@ const makeWorld = () => {
     revoked,
     members,
     project,
+    pool,
+    reusedPorts,
+    touchCalls,
+    unusedPorts,
+    renewals,
+    reclaim,
+    FULL_UNTIL,
     reads,
     store,
     tickets,
@@ -313,6 +385,7 @@ describe("preview identity: what one request costs", () => {
           byId: 0,
           resolveByLabel: 0,
           projectAs: 0,
+          assignTailnetPort: 0,
         });
         yield* Fiber.interrupt(fiber);
       }),
@@ -723,22 +796,53 @@ describe("preview identity: open streams end when access does", () => {
   );
 });
 
-describe("preview identity: a tailnet port that passes to another preview", () => {
+describe("preview identity: tailnet ports", () => {
+  const hostname = "mend-preview.tail1234.ts.net";
+  const tailnet: PreviewRouting = { mode: "tailnet-https", hostname, ports: [20001, 20002] };
+  const opener: SignedInAccount = { userId: "carol", credential: "session:carol-1" };
+
+  it.effect("a preview gets its port when it is first opened, and the same one after", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const world = makeWorld();
+        const { identity } = yield* identityIn(world, () => tailnet);
+        expect(world.pool.size, "nothing is assigned before an open").toBe(0);
+        const first = yield* identity.issueTicket({ previewId: PREVIEW, opener });
+        const again = yield* identity.issueTicket({ previewId: PREVIEW, opener });
+        const next = yield* identity.issueTicket({ previewId: NEXT.id, opener });
+        expect(first.origin).toBe(`https://${hostname}:20001`);
+        expect(again.origin).toBe(first.origin);
+        expect(next.origin).toBe(`https://${hostname}:20002`);
+        expect(world.pool).toEqual(
+          new Map([
+            [PREVIEW, 20001],
+            [NEXT.id, 20002],
+          ]),
+        );
+      }),
+    ),
+  );
+
+  it.effect("opening a preview when every port holds one says how many the set has", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const world = makeWorld();
+        const { identity } = yield* identityIn(world, () => ({ ...tailnet, ports: [20001] }));
+        yield* identity.issueTicket({ previewId: PREVIEW, opener });
+        const full = yield* Effect.flip(identity.issueTicket({ previewId: NEXT.id, opener }));
+        expect(full).toEqual(new PreviewPoolFull({ size: 1, nextFreeAt: world.FULL_UNTIL }));
+      }),
+    ),
+  );
+
   it.effect("a grant for the port's earlier preview opens nothing on its next one", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const world = makeWorld();
-        const hostname = "mend-preview.tail1234.ts.net";
-        let routing: PreviewRouting = {
-          mode: "tailnet-https",
-          hostname,
-          ports: [{ port: 20001, previewId: PREVIEW }],
-        };
-        const { identity } = yield* identityIn(world, () => routing);
-        const origin = previewOriginOf(routing, kept);
-        if (origin === null) return yield* Effect.die("the port is assigned");
+        const { identity } = yield* identityIn(world, () => tailnet);
+        const { origin } = yield* identity.issueTicket({ previewId: PREVIEW, opener });
         const grant = yield* world.grantsRepo.create({
-          subject: { userId: "carol", credential: "session:carol-1" },
+          subject: opener,
           previewId: PREVIEW,
           origin,
         });
@@ -748,8 +852,8 @@ describe("preview identity: a tailnet port that passes to another preview", () =
         );
         expect((yield* Deferred.await(before.started)).preview.id).toBe(PREVIEW);
         yield* Fiber.interrupt(opened);
-        routing = { mode: "tailnet-https", hostname, ports: [{ port: 20001, previewId: NEXT.id }] };
-        expect(previewOriginOf(routing, NEXT)).toBe(origin);
+        world.pool.delete(PREVIEW);
+        world.pool.set(NEXT.id, 20001);
         const after = yield* openStream();
         const refused = yield* Effect.flip(identity.withViewer({ origin, grant }, after.write));
         expect(refused._tag === "PreviewNoIdentity" && refused.reason).toBe("invalid-grant");
@@ -762,27 +866,154 @@ describe("preview identity: a tailnet port that passes to another preview", () =
     Effect.scoped(
       Effect.gen(function* () {
         const world = makeWorld();
-        const hostname = "mend-preview.tail1234.ts.net";
-        let routing: PreviewRouting = {
-          mode: "tailnet-https",
-          hostname,
-          ports: [{ port: 20001, previewId: PREVIEW }],
-        };
-        const { identity } = yield* identityIn(world, () => routing);
-        const origin = previewOriginOf(routing, kept);
-        if (origin === null) return yield* Effect.die("the port is assigned");
+        const { identity } = yield* identityIn(world, () => tailnet);
+        const { origin } = yield* identity.issueTicket({ previewId: PREVIEW, opener });
         const grant = yield* world.grantsRepo.create({
-          subject: { userId: "carol", credential: "session:carol-1" },
+          subject: opener,
           previewId: PREVIEW,
           origin,
         });
         const stream = yield* openStream();
         const fiber = yield* Effect.forkChild(identity.withViewer({ origin, grant }, stream.write));
         yield* Deferred.await(stream.started);
-        routing = { mode: "tailnet-https", hostname, ports: [{ port: 20001, previewId: NEXT.id }] };
+        world.pool.set(PREVIEW, 20002);
         yield* TestClock.adjust("50 seconds");
         const ended = failureOf(yield* Fiber.await(fiber));
         expect(ended?._tag === "PreviewAccessEnded" && ended.reason).toBe("access-ended");
+      }),
+    ),
+  );
+
+  it.effect("an open connection keeps its port in use, and its close is the port's last use", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const world = makeWorld();
+        const { identity } = yield* identityIn(world, () => tailnet);
+        const { origin } = yield* identity.issueTicket({ previewId: PREVIEW, opener });
+        const grant = yield* world.grantsRepo.create({
+          subject: opener,
+          previewId: PREVIEW,
+          origin,
+        });
+        const open = Effect.gen(function* () {
+          const stream = yield* openStream();
+          const fiber = yield* Effect.forkChild(
+            identity.withViewer({ origin, grant }, stream.write),
+          );
+          yield* Deferred.await(stream.started);
+          return fiber;
+        });
+        const brief = yield* open;
+        expect(world.touchCalls.flat()).toEqual([]);
+        yield* Fiber.interrupt(brief);
+        yield* Effect.yieldNow;
+        expect(world.touchCalls.flat(), "a connection's close is its port's use").toEqual([
+          PREVIEW,
+        ]);
+        const held = yield* open;
+        yield* TestClock.adjust("50 seconds");
+        yield* TestClock.adjust("50 seconds");
+        expect(world.touchCalls.flat(), "and each pass while one is open").toEqual([
+          PREVIEW,
+          PREVIEW,
+          PREVIEW,
+        ]);
+        yield* Fiber.interrupt(held);
+        yield* Effect.yieldNow;
+        expect(world.touchCalls.length, "a close just after a pass stamped it adds no write").toBe(
+          3,
+        );
+      }),
+    ),
+  );
+
+  it.effect(
+    "a connection to a preview whose port went unused renews the port before it is served, and one renewed lately writes nothing",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const world = makeWorld();
+          const { identity } = yield* identityIn(world, () => ({ ...tailnet, ports: [20001] }));
+          const { origin } = yield* identity.issueTicket({ previewId: PREVIEW, opener });
+          const grant = yield* world.grantsRepo.create({
+            subject: opener,
+            previewId: PREVIEW,
+            origin,
+          });
+          const servedAfter: Array<ReadonlyArray<readonly [number, PreviewId]>> = [];
+          const serveOnce = identity.withViewer({ origin, grant }, () =>
+            Effect.sync(() => {
+              servedAfter.push([...world.renewals]);
+              return undefined;
+            }),
+          );
+          world.unusedPorts.add(PREVIEW);
+          yield* serveOnce;
+          yield* serveOnce;
+          expect(
+            servedAfter,
+            "renewed before the first was served; the second wrote nothing",
+          ).toEqual([[[20001, PREVIEW]], [[20001, PREVIEW]]]);
+
+          world.unusedPorts.add(PREVIEW);
+          world.reclaim.before = NEXT.id;
+          const refused = yield* Effect.flip(serveOnce);
+          expect(
+            refused._tag === "PreviewNoIdentity" && [refused.reason, refused.previewId],
+            "the port went to another preview first: sign in again",
+          ).toEqual(["port-moved", PREVIEW]);
+          expect(servedAfter, "and nothing was served").toHaveLength(2);
+        }),
+      ),
+  );
+
+  it.effect(
+    "the first open of a preview on a reused port asks the browser to clear the port's storage, and no later one",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const world = makeWorld();
+          const { identity } = yield* identityIn(world, () => tailnet);
+          const exchange = (presented: PreviewGrantSecret | null) =>
+            Effect.gen(function* () {
+              const issued = yield* identity.issueTicket({ previewId: PREVIEW, opener });
+              return yield* identity.exchangeTicket({
+                origin: issued.origin,
+                ticket: issued.ticket,
+                presented,
+              });
+            });
+          const fresh = yield* exchange(null);
+          expect(fresh.clearSiteData, "a port no preview held before").toBe(false);
+          world.reusedPorts.add(20001);
+          const earlier = yield* world.grantsRepo.create({
+            subject: opener,
+            previewId: NEXT.id,
+            origin: fresh.origin,
+          });
+          const first = yield* exchange(earlier);
+          expect(first.clearSiteData, "the browser held only the earlier preview's grant").toBe(
+            true,
+          );
+          expect((yield* exchange(null)).clearSiteData, "a browser with no grant").toBe(true);
+          expect(
+            (yield* exchange(first.grant)).clearSiteData,
+            "a browser already signed in to this preview",
+          ).toBe(false);
+        }),
+      ),
+  );
+
+  it.effect("a preview whose port left the set gets one of the set at its next open", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const world = makeWorld();
+        world.pool.set(PREVIEW, 20009);
+        const { identity } = yield* identityIn(world, () => tailnet);
+        const { origin } = yield* identity.issueTicket({ previewId: PREVIEW, opener });
+        expect(origin, "the next open reassigns it within the set").toBe(
+          `https://${hostname}:20001`,
+        );
       }),
     ),
   );
@@ -802,8 +1033,12 @@ describe("preview identity: tickets", () => {
           scope,
         });
         const ticket = Redacted.make(minted.ticket);
-        const refused = yield* Effect.flip(identity.exchangeTicket({ origin: ORIGIN, ticket }));
-        const replay = yield* Effect.flip(identity.exchangeTicket({ origin: ORIGIN, ticket }));
+        const refused = yield* Effect.flip(
+          identity.exchangeTicket({ origin: ORIGIN, ticket, presented: null }),
+        );
+        const replay = yield* Effect.flip(
+          identity.exchangeTicket({ origin: ORIGIN, ticket, presented: null }),
+        );
         expect(
           [refused, replay].map((error) => error._tag === "PreviewNoIdentity" && error.reason),
         ).toEqual(["credential-required", "invalid-ticket"]);

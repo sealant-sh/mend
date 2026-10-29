@@ -44,9 +44,26 @@ const PREVIEWED: ServerConfig = {
   ...BOX,
   declared: ["workspace-ssh", "core-private", "preview-gateway"],
   preview: {
+    mode: "domain",
     domain: "previews.example.net",
     certificate: "/etc/mend/previews.crt",
     key: "/etc/mend/previews.key",
+  },
+};
+
+/** A private install on a tailnet: Mend served by Tailscale over https, previews on the tailnet. */
+const { edgeHost: _boxEdge, ...BOX_WITHOUT_EDGE } = BOX;
+const ON_TAILNET: ServerConfig = {
+  ...BOX_WITHOUT_EDGE,
+  appUrl: "https://mend-box.tailc79e49.ts.net",
+  allowedOrigins: [],
+  exposure: "private",
+  tenancy: "single",
+  declared: [],
+  preview: {
+    mode: "tailnet",
+    hostname: "mend-preview.tailc79e49.ts.net",
+    ports: [20001, 20002, 20003],
   },
 };
 
@@ -886,6 +903,7 @@ describe("the guide's flags round-trip", () => {
       {
         ...settings(PREVIEWED),
         preview: {
+          mode: "domain",
           domain: "live.example.org",
           certificate: "/etc/mend/live.crt",
           key: "/etc/mend/live.key",
@@ -908,6 +926,19 @@ describe("the guide's flags round-trip", () => {
       },
       { ...settings(BOX), mirrors: { npm: { maxSize: "10g" }, docker: null } },
     ],
+    [
+      "tailnet previews on other ports",
+      ON_TAILNET,
+      {
+        ...settings(ON_TAILNET),
+        preview: {
+          mode: "tailnet",
+          hostname: "mend-preview.tailc79e49.ts.net",
+          ports: [20001, 20005, 20006],
+        },
+      },
+    ],
+    ["tailnet previews off", ON_TAILNET, { ...settings(ON_TAILNET), preview: undefined }],
   ];
   for (const [name, saved, target] of variants) {
     it(name, () => {
@@ -947,13 +978,98 @@ describe("tailscale's own words", () => {
     expect(facts).toEqual({
       running: true,
       dnsName: "mend-box.tailc79e49.ts.net",
+      magicDnsSuffix: null,
+      magicDns: false,
       ipv4: "100.94.101.28",
       ipv6: "fd7a:115c:a1e0::1",
       serve: [
-        { origin: "https://mend-box.tailc79e49.ts.net", loopbackPort: 3105, funnel: true },
-        { origin: "https://mend-box.tailc79e49.ts.net:8443", loopbackPort: null, funnel: false },
+        {
+          origin: "https://mend-box.tailc79e49.ts.net",
+          port: 443,
+          loopbackPort: 3105,
+          upstream: "http://localhost:3105/",
+          listener: null,
+          funnel: true,
+        },
+        {
+          origin: "https://mend-box.tailc79e49.ts.net:8443",
+          port: 8443,
+          loopbackPort: null,
+          upstream: "http://10.0.0.5/",
+          listener: null,
+          funnel: false,
+        },
       ],
+      services: new Map(),
     });
+  });
+
+  it("reads the tailnet's MagicDNS suffix and what each Tailscale Service serves here, Funnel included", () => {
+    const facts = tailscaleFactsOf(
+      JSON.stringify({
+        BackendState: "Running",
+        Self: { DNSName: "mend-box.tailc79e49.ts.net." },
+        CurrentTailnet: {
+          Name: "example.com",
+          MagicDNSSuffix: "tailc79e49.ts.net",
+          MagicDNSEnabled: true,
+        },
+      }),
+      JSON.stringify({
+        Services: {
+          "svc:mend-preview": {
+            TCP: { "20001": { HTTPS: true }, "20002": { HTTP: true } },
+            Web: {
+              "mend-preview.tailc79e49.ts.net:20001": {
+                Handlers: { "/": { Proxy: "http://127.0.0.1:3130" } },
+              },
+              "mend-preview.tailc79e49.ts.net:20002": {
+                Handlers: { "/": { Proxy: "https://localhost:3130/base" } },
+              },
+              "mend-preview.tailc79e49.ts.net:20003": {
+                Handlers: {
+                  "/": { Proxy: "3130" },
+                  "/other": { Proxy: "http://127.0.0.1:9000" },
+                },
+              },
+            },
+            AllowFunnel: { "mend-preview.tailc79e49.ts.net:20002": true },
+          },
+        },
+      }),
+    );
+    expect(facts?.magicDnsSuffix).toBe("tailc79e49.ts.net");
+    expect(facts?.magicDns).toBe(true);
+    expect(facts?.services?.get("svc:mend-preview")).toEqual([
+      {
+        origin: "https://mend-preview.tailc79e49.ts.net:20001",
+        port: 20001,
+        loopbackPort: 3130,
+        upstream: "http://127.0.0.1:3130/",
+        listener: "https",
+        funnel: false,
+      },
+      {
+        origin: "https://mend-preview.tailc79e49.ts.net:20002",
+        port: 20002,
+        loopbackPort: 3130,
+        upstream: "https://localhost:3130/base",
+        listener: "http",
+        funnel: true,
+      },
+      {
+        origin: "https://mend-preview.tailc79e49.ts.net:20003",
+        port: 20003,
+        loopbackPort: 3130,
+        upstream: null,
+        listener: null,
+        funnel: false,
+      },
+    ]);
+  });
+
+  it("knows no Service when tailscale serve status was not read", () => {
+    expect(tailscaleFactsOf(TAILSCALE_STATUS, "")?.services).toBeNull();
   });
 
   it("is nothing when the output is not Tailscale's", () => {

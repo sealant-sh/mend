@@ -6,22 +6,30 @@ relays its requests to the preview's dev server over a forward, and starts a sto
 request reaches it. It is off until `MEND_PREVIEW_PORT` is set. It runs where the API's HTTP server
 runs (`MEND_MODE=all` or `api`) and never in `MEND_MODE=worker`.
 
+## After upgrading: everyone signs in once
+
+Mend's session cookie is `__Host-better-auth.session_token` on every install whose `APP_URL` is
+https (ADR 0017, delivery step 8b, D1). A browser's cookie from before the upgrade has the old name,
+which Mend no longer reads, so everyone signs in to Mend once more. Nothing is deleted: paired
+devices and their tokens keep working, and an earlier sign-in expires as it would have. Over plain
+http the cookie keeps the name `better-auth.session_token`.
+
 ## Variables
 
 The API reads them once, at start. A malformed value, or a combination that cannot run, stops the
 API with a message that names the variable. An empty value counts as unset.
 
-| Variable                        | Default     | What it sets                                                                                                                                       |
-| ------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_PREVIEW_PORT`             | unset (off) | The gateway's listen port. Required once any `MEND_PREVIEW_*` variable is set.                                                                     |
-| `MEND_PREVIEW_BIND`             | `127.0.0.1` | The address it listens on, an IP address or `localhost`.                                                                                           |
-| `MEND_PREVIEW_DOMAIN`           | unset       | The preview domain. Each preview is `https://<label>.<domain>`, behind an edge. Takes over from a tailnet hostname.                                |
-| `MEND_PREVIEW_PUBLIC_PORT`      | `443`       | The port browsers use on the edge, with `MEND_PREVIEW_DOMAIN` only.                                                                                |
-| `MEND_PREVIEW_TAILNET_HOSTNAME` | unset       | The gateway's name on a tailnet, such as `mend-preview.<tailnet>.ts.net`. Never Mend's own host.                                                   |
-| `MEND_PREVIEW_TAILNET_PORTS`    | unset       | Each preview's port on that name, as `port=previewId`, comma-separated. One preview per port and one port per preview. Required with the hostname. |
-| `MEND_PREVIEW_START_HOLD`       | `3 minutes` | How long a request waits for a stopped preview to start, such as `90 seconds`. At least 1 second.                                                  |
-| `MEND_PREVIEW_BODY_BYTES`       | unset       | A cap on one request body, in bytes, counted as it streams. Unset means no cap.                                                                    |
-| `MEND_PREVIEW_PUBLISHED`        | unset       | Where the gateway's port is published, `<address>:<port>`, as setup states it. Read only by the public exposure gate's `preview-gateway` item.     |
+| Variable                        | Default       | What it sets                                                                                                                                               |
+| ------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_PREVIEW_PORT`             | unset (off)   | The gateway's listen port. Required once any `MEND_PREVIEW_*` variable is set.                                                                             |
+| `MEND_PREVIEW_BIND`             | `127.0.0.1`   | The address it listens on, an IP address or `localhost`.                                                                                                   |
+| `MEND_PREVIEW_DOMAIN`           | unset         | The preview domain. Each preview is `https://<label>.<domain>`, behind an edge. Takes over from a tailnet hostname.                                        |
+| `MEND_PREVIEW_PUBLIC_PORT`      | `443`         | The port browsers use on the edge, with `MEND_PREVIEW_DOMAIN` only.                                                                                        |
+| `MEND_PREVIEW_TAILNET_HOSTNAME` | unset         | The gateway's name on a tailnet, such as `mend-preview.<tailnet>.ts.net`. Never Mend's own host.                                                           |
+| `MEND_PREVIEW_TAILNET_PORTS`    | `20001-20016` | The ports Mend gives previews on that name, as ports and ranges, comma-separated in ascending order, such as `20001-20016` or `20001,20003`. At most 1000. |
+| `MEND_PREVIEW_START_HOLD`       | `3 minutes`   | How long a request waits for a stopped preview to start, such as `90 seconds`. At least 1 second.                                                          |
+| `MEND_PREVIEW_BODY_BYTES`       | unset         | A cap on one request body, in bytes, counted as it streams. Unset means no cap.                                                                            |
+| `MEND_PREVIEW_PUBLISHED`        | unset         | Where the gateway's port is published, `<address>:<port>`, as setup states it. Read only by the public exposure gate's `preview-gateway` item.             |
 
 How browsers reach a preview follows from what is set:
 
@@ -31,16 +39,29 @@ How browsers reach a preview follows from what is set:
   `https://<label>.<MEND_PREVIEW_DOMAIN>:<MEND_PREVIEW_PUBLIC_PORT>`, and the edge terminates TLS
   for `*.<MEND_PREVIEW_DOMAIN>`. The API refuses a preview domain that equals one of Mend's own
   hosts (`APP_URL`, `MEND_ALLOWED_ORIGINS`), holds one of them, or sits under one of them, because
-  previews need a domain apart from Mend's (ADR 0017, decision 1). It also refuses a preview domain
-  on Mend's own site: one that shares the registrable domain of one of those hosts, by the Public
-  Suffix List, such as `previews.example.com` beside `mend.example.com`. A page on such a preview
-  can set cookies for `example.com`, and Mend's host receives them. Previews on Mend's own site need
-  Mend's cookies to move to `__Host-` names, which ships in ADR 0017 step 8b with the tailnet
-  default. Until then, use a preview domain on a registrable domain of its own, or loopback
-  (`*.localhost`).
-- **On a tailnet, with a hostname and its ports.** A preview is
-  `https://<MEND_PREVIEW_TAILNET_HOSTNAME>:<its port>`. The port list is explicit, because Mend does
-  not assign ports yet (delivery step 8). The API refuses a hostname equal to Mend's own host.
+  previews need a domain apart from Mend's (ADR 0017, decision 1). A preview domain on Mend's own
+  site, one that shares the registrable domain of one of those hosts by the Public Suffix List, such
+  as `previews.example.com` beside `mend.example.com`, is allowed while `APP_URL` is https. A page
+  on such a preview can set cookies for `example.com`, but Mend's own cookies are `__Host-` over
+  https, so it can neither set nor replace them, and gate item 15 observes the prefix. Over http
+  Mend's cookies cannot be `__Host-`, so the API refuses such a domain with an http `APP_URL`. Every
+  other host on `example.com` receives the cookies a preview's page sets: if one of them keeps a
+  session in a cookie without `__Host-`, agent-written code can sign its visitors in as someone
+  else. Give previews a registrable domain of their own when any does.
+- **On a tailnet, with a hostname.** A preview is
+  `https://<MEND_PREVIEW_TAILNET_HOSTNAME>:<its port>`. Mend gives a preview a port from
+  `MEND_PREVIEW_TAILNET_PORTS` the first time someone opens it, never sooner. A port goes to another
+  preview only once its own preview, removed or not, has had no open connection for 24 hours: ports
+  never used first, then the one whose last connection closed longest ago. A preview that lost its
+  port gets a free one the next time it is opened. On the first open of a preview on a port that
+  held another, the gateway answers with `Clear-Site-Data: "cache", "storage"`, so the browser drops
+  what the earlier preview stored at that origin. The assignments live in the database, so a new
+  preview needs no restart and every API process agrees. A preview whose port left the set gets a
+  port of the current set the next time it is opened. When every port was in use within the last 24
+  hours, opening another answers `503` with a page that says how many ports the set has and when the
+  first frees, if its preview stays closed until then. The API refuses a hostname equal to Mend's
+  own host, and the `port=previewId` form that earlier builds read, with a message that says what
+  changed.
 
 ### Browsers on loopback
 
@@ -111,8 +132,59 @@ decide what is too large. `$connection_upgrade` is the usual `map $http_upgrade`
 `close` when the header is empty). A timeout shorter than `MEND_PREVIEW_START_HOLD` answers a held
 request with the edge's own error before the gateway's page.
 
-`tailscale serve` in front of the gateway is not verified live. Delivery step 8 checks it on a
-tailnet.
+### `tailscale serve` on a tailnet
+
+On the tailnet default, `tailscaled` on the Mend host is the edge. Mend's container has no
+`tailscaled` socket, so `mend server setup --preview-tailnet` prints the commands and the operator
+runs them once: for each port of the set,
+`tailscale serve --service=svc:mend-preview --https=<port> --yes http://127.0.0.1:3130`, every port
+to the one gateway port. It also prints the Service's endpoints (`tcp:<port>` each) for the admin
+console and the six Tailscale steps of ADR 0017, decision 6. A rerun prints only the ports added
+(their `serve` line) and dropped (`tailscale serve --service=svc:mend-preview --https=<port> off`),
+against what `tailscale serve status --json` shows for the Service where it can read it. Funnel must
+stay off for these ports: Funnel makes a preview port public, and Mend's container cannot see it.
+
+Mend's own origin must be https as well, because on a `ts.net` name every preview is Mend's own site
+and Mend's cookies are `__Host-` only over https. Setup refuses the tailnet default with an http
+`APP_URL`, and says how to serve Mend's web port over Tailscale first:
+`tailscale serve --bg --https=443 http://127.0.0.1:<web port>`, then
+`--url https://<this machine's MagicDNS name>`.
+
+`apps/api/test/preview-tailnet.acceptance.ts` runs a stand-in for `tailscaled`: Caddy serving
+`mend-preview.mend-test.ts.net` on two ports with a certificate from a local CA, `Host` with its
+port, and the `Tailscale-User-*` fields set. Mend's own origin is `mend.mend-test.ts.net` on a third
+port. Observed on Linux, in Chromium 156 (the certificate trusted by its SPKI) and Firefox 157
+(certificate errors ignored, because Playwright's Firefox takes no certificate of its own): two
+ports reach two previews; each port's grant is its own cookie, `__Host-mend-preview-<port>`, and a
+grant for one port opens nothing on another, which sends the viewer to Mend's sign-in; no
+`Tailscale-*` field and no inbound `X-Forwarded-For` reaches the app; an event stream, a WebSocket
+and an 8 MiB upload held while the preview starts pass through; and a preview page's fetch, image
+and form post to Mend's API carrying Mend's cookie are refused, while a link to Mend opens.
+
+Not verified live: a real tailnet, a phone, Safari, whether a Service definition takes a port range,
+whether a Service's serve configuration survives a `tailscaled` restart, Tailscale v1.96's fix for
+reaching a Service from its own host, and what `tailscaled` itself logs.
+
+On a Docker install, `tailscaled` reaches the gateway through its port published on
+`127.0.0.1:3130`, so inside the container every tailnet viewer arrives from the Docker bridge's
+address, and Mend does not believe `X-Forwarded-For` from it. Every tailnet viewer is then counted
+in one address window, `MEND_BUDGET_ADDRESS_PREVIEW_REQUESTS_PER_MINUTE` (12000 by default); each
+viewer's account budgets still apply once signed in. Trusting the bridge would let any process on
+the Mend host choose the address it is counted by.
+
+The same holds for Mend's own web port served by `tailscale serve --https=443` on a loopback bind,
+the https `APP_URL` previews on the tailnet need. Every person on the tailnet reaching Mend that way
+shares one address window: `MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE` (1200 requests a minute by
+default) and `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE` (20 sign-ins a minute by default), for all of
+them together. The upgrade that moves Mend's cookies to `__Host-` signs everyone out once, so on
+that day the whole team signs in through those 20. A team that meets either window raises it in
+`server.env` (docs/operations/budgets.md); the per-account budgets still apply to each person.
+
+The gateway writes its own `X-Forwarded-Host` and `X-Forwarded-Proto`. It drops every inbound
+`Forwarded`, `X-Real-IP`, `X-Forwarded-*` and `Tailscale-*` field before the app sees the request,
+in every routing mode. `tailscale serve` adds the viewer's tailnet login, name and picture as
+`Tailscale-User-*`, and a client that reaches the gateway directly can send any of these fields, so
+none of them reaches code an agent wrote.
 
 Behind an edge that speaks HTTP/2 to browsers, as Caddy does, a page asks for every module of its
 first import wave at once, and the edge opens that many requests to the gateway. They wait for one
@@ -133,11 +205,9 @@ mend server setup --preview-domain previews.example.net \
 
 - **The domain.** Each preview is `https://<label>.previews.example.net`. Setup refuses a domain
   that is Mend's host, holds it, or sits under it (`previews.mend.example.com` beside
-  `mend.example.com`), and one on Mend's own site, which shares Mend's registrable domain
-  (`previews.example.com` beside `mend.example.com`), for the reasons above. `previews.example.net`
-  beside `mend.example.com` is on a registrable domain of its own. Point `*.previews.example.net` at
-  the same address as Mend's host. Setup says where `mend-preview-probe.<domain>` resolves from its
-  machine.
+  `mend.example.com`), for the reasons above. One on Mend's own site, such as `previews.example.com`
+  beside `mend.example.com`, is allowed. Point `*.previews.example.net` at the same address as
+  Mend's host. Setup says where `mend-preview-probe.<domain>` resolves from its machine.
 - **The certificate.** The packaged edge, the stock `caddy:2.10-alpine`, has no DNS provider module,
   and a wildcard certificate needs the ACME DNS-01 challenge. So you supply one: a PEM certificate
   whose names include `*.<domain>`, and its key, at absolute paths on the machine Mend runs on. Each

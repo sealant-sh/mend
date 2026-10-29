@@ -34,7 +34,29 @@ export const openInChromium = async (
 
 export type BrowserKind = "chromium" | "firefox";
 
-export const launchBrowser = (kind: BrowserKind): Promise<Browser> =>
-  kind === "chromium"
-    ? chromium.launch({ headless: true, args: ["--no-sandbox"] })
-    : firefox.launch({ headless: true });
+/** Names a browser resolves to loopback, and the one certificate Chromium trusts for them. */
+export interface BrowserNames {
+  readonly loopbackHosts: ReadonlyArray<string>;
+  /** Chromium's allow-list; Playwright's Firefox takes no certificate of its own. */
+  readonly spki?: string;
+}
+
+export const launchBrowser = (kind: BrowserKind, names?: BrowserNames): Promise<Browser> => {
+  const hosts = names?.loopbackHosts ?? [];
+  if (kind === "firefox")
+    return firefox.launch({
+      headless: true,
+      ...(hosts.length === 0
+        ? {}
+        : { firefoxUserPrefs: { "network.dns.localDomains": hosts.join(",") } }),
+    });
+  const rules = hosts.map((host) => `MAP ${host} 127.0.0.1`).join(", ");
+  return chromium.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      ...(rules === "" ? [] : [`--host-resolver-rules=${rules}`]),
+      ...(names?.spki === undefined ? [] : [`--ignore-certificate-errors-spki-list=${names.spki}`]),
+    ],
+  });
+};

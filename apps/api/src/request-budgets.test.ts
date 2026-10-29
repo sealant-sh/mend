@@ -2,6 +2,7 @@ import { createServer, request as httpRequest, type IncomingMessage } from "node
 
 import { NodeHttpServer } from "@effect/platform-node";
 import { cliAuthGroup, AuthMiddleware, Unauthorized } from "@mend/api-contracts";
+import { sessionCookiePolicy } from "@mend/auth";
 import { DevicesRepo, CliAuthRequest } from "@mend/db";
 import { makePublicNetwork, PublicOrigin, NetworkConfig } from "@mend/network";
 import { Cause, Effect, Layer, ManagedRuntime } from "effect";
@@ -30,6 +31,8 @@ import { DevicePairingLive } from "./routes/devices.ts";
  * MEND-05 (docs/adr/0004, "Budgets"): every refusal here happens before the route runs, which the
  * `reached` counter proves. A refused request reaches nothing.
  */
+const SESSION_COOKIE = sessionCookiePolicy({ appUrl: "https://mend.example.com" }).name;
+
 const disposers: Array<() => Promise<void>> = [];
 afterEach(async () => {
   await Promise.all(disposers.splice(0).map((dispose) => dispose()));
@@ -87,11 +90,12 @@ const serve = (limits: Partial<BudgetLimits>, trustedProxies: ReadonlyArray<stri
   );
   const budgeted = Layer.mergeAll(
     routes,
-    requestBudgets(
-      makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...limits }),
+    requestBudgets({
+      budgets: makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...limits }),
       trustedProxies,
-      () => clock,
-    ),
+      sessionCookie: SESSION_COOKIE,
+      now: () => clock,
+    }),
   );
   const { handler, dispose } = HttpRouter.toWebHandler(
     budgeted.pipe(Layer.provide(HttpServer.layerServices)),
@@ -307,7 +311,11 @@ describe("bodies are bounded before they are decoded", () => {
         Layer.mergeAll(
           routes,
           observer,
-          requestBudgets(makeBudgets({ ...DEFAULT_BUDGET_LIMITS, bodyBytes: 16 }), []),
+          requestBudgets({
+            budgets: makeBudgets({ ...DEFAULT_BUDGET_LIMITS, bodyBytes: 16 }),
+            trustedProxies: [],
+            sessionCookie: SESSION_COOKIE,
+          }),
         ).pipe(Layer.provide(HttpServer.layerServices)),
         { disableLogger: true },
       );
@@ -351,6 +359,7 @@ describe("bodies are bounded before they are decoded", () => {
             budgets: makeBudgets({ ...DEFAULT_BUDGET_LIMITS, bodyBytes: 64 }),
             trustedProxies: [],
             errorDetail: { mode: "redacted" },
+            sessionCookie: SESSION_COOKIE,
           }),
         ),
         { disableLogger: true, disableListenLog: true },
@@ -562,17 +571,38 @@ describe("requests are counted per address and per credential", () => {
           ...(authorization === undefined ? {} : { authorization }),
         },
       });
-    expect((await withCookie("__Secure-better-auth.session_token=abc")).status).toBe(200);
-    expect((await withCookie("__Secure-better-auth.session_token=abc; pad=1")).status).toBe(429);
+    expect((await withCookie(`${SESSION_COOKIE}=abc`)).status).toBe(200);
+    expect((await withCookie(`${SESSION_COOKIE}=abc; pad=1`)).status).toBe(429);
     // A made-up bearer beside the cookie does not start a fresh window for the cookie.
-    expect((await withCookie("better-auth.session_token=abc", "Bearer junk-1")).status).toBe(429);
-    expect(presentedCredentials({ cookie: "theme=dark; other=1" })).toEqual([]);
+    expect((await withCookie(`${SESSION_COOKIE}=abc`, "Bearer junk-1")).status).toBe(429);
+    expect(presentedCredentials({ cookie: "theme=dark; other=1" }, SESSION_COOKIE)).toEqual([]);
     expect(
-      presentedCredentials({
-        authorization: "Bearer t",
-        cookie: "a=1; x.session_token=v",
-      }),
+      presentedCredentials(
+        { authorization: "Bearer t", cookie: `a=1; ${SESSION_COOKIE}=v` },
+        SESSION_COOKIE,
+      ),
     ).toEqual(["Bearer t", "v"]);
+  });
+
+  it("does not pool visitors under a look-alike cookie a sibling page planted", async () => {
+    const api = serve({
+      credentialRequestsPerMinute: 1,
+      addressRequestsPerMinute: 100,
+    });
+    const visitor = (own: string) =>
+      api.send("/api/projects", {
+        headers: { cookie: `better-auth.session_token=planted; ${SESSION_COOKIE}=${own}` },
+      });
+    expect((await visitor("alice")).status).toBe(200);
+    expect((await visitor("bob")).status, "a second visitor has a window of their own").toBe(200);
+    for (const planted of [
+      "better-auth.session_token",
+      "__Secure-better-auth.session_token",
+      "x.session_token",
+      `${SESSION_COOKIE}x`,
+    ]) {
+      expect(presentedCredentials({ cookie: `${planted}=p` }, SESSION_COOKIE), planted).toEqual([]);
+    }
   });
 
   it.each([

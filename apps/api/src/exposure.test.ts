@@ -1,5 +1,3 @@
-import { PreviewId } from "@mend/domain";
-import { SAME_SITE_PREVIEW_REASON } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -56,7 +54,7 @@ const TAILNET_PREVIEW: PreviewPosture = {
   routing: {
     mode: "tailnet-https",
     hostname: "mend-preview.tail1234.ts.net",
-    ports: [{ port: 20001, previewId: PreviewId.make("pv_1") }],
+    ports: [20001],
   },
   bind: "127.0.0.1",
   port: 3130,
@@ -429,22 +427,48 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
     expect(exposureRefusal("public", evaluateExposureGate(stated))).toBeNull();
   });
 
-  it("never reads clean for a preview domain on Mend's own site, whatever was declared", () => {
-    const item = previewOf({
+  it("observes __Host- for a preview domain on Mend's own site, and is open without it", () => {
+    const sibling = (appUrl: string): ExposurePosture => ({
       ...closed,
-      appUrl: "https://mend.example.com",
-      allowedOrigins: ["https://mend.example.com"],
+      appUrl,
+      allowedOrigins: [appUrl],
       declared: ["preview-gateway"],
       preview: {
         ...DOMAIN_PREVIEW,
         routing: { mode: "domain-https", domain: "previews.example.com", port: 443 },
       },
     });
+    const https = previewOf(sibling("https://mend.example.com"));
+    expect(https?.established).toBe("declared");
+    expect(https?.detail).toContain(
+      "observed: APP_URL's host mend.example.com is beside previews.example.com on the registrable domain example.com, so every preview is Mend's own site",
+    );
+    expect(https?.detail).toContain(
+      "observed: Mend's cookies are named __Host- (__Host-better-auth.session_token)",
+    );
+    expect(https?.detail).toContain(
+      "declared: the wildcard DNS and certificate for *.previews.example.com, who reaches the published listener, and that no other host on example.com keeps a session in a cookie without __Host-, since a page on a preview can set cookies every host on example.com receives (MEND_EXPOSURE_DECLARED)",
+    );
+    const http = previewOf(sibling("http://mend.example.com"));
+    expect(http?.established).toBe("open");
+    expect(http?.fix).toContain("set APP_URL to an https origin");
+    expect(http?.fix, "no Tailscale advice for a domain behind an edge").not.toContain("tailscale");
+  });
+
+  it("refuses the tailnet default under a public exposure, whatever was declared", () => {
+    const posture: ExposurePosture = {
+      ...closed,
+      exposure: "public",
+      preview: TAILNET_PREVIEW,
+      declared: ["preview-gateway"],
+    };
+    const item = previewOf(posture);
     expect(item?.established).toBe("open");
     expect(item?.detail).toContain(
-      "open: APP_URL's host mend.example.com shares the registrable domain example.com with previews.example.com, so a page on a preview can set cookies Mend's host receives",
+      "open: previews are on a tailnet, and MEND_EXPOSURE is public: a tailnet's names are one site, not a registrable domain of the previews' own",
     );
-    expect(item?.fix).toContain(SAME_SITE_PREVIEW_REASON);
+    expect(exposureRefusal("public", evaluateExposureGate(posture))).toContain("preview-gateway:");
+    expect(previewOf({ ...posture, exposure: "private" })?.established).toBe("declared");
   });
 
   it("names a non-default public port, and reads a statement that cannot describe the listener as open", () => {
@@ -468,7 +492,7 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
     );
   });
 
-  it("on the tailnet default, open while Mend's cookies are not __Host-, even when the Tailscale steps are declared", () => {
+  it("on the tailnet default, observes the __Host- session cookie Auth sets over https", () => {
     const posture: ExposurePosture = {
       ...closed,
       exposure: "private",
@@ -476,17 +500,33 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
       declared: ["preview-gateway"],
     };
     const item = previewOf(posture);
-    expect(item?.established).toBe("open");
+    expect(item?.established).toBe("declared");
     expect(item?.detail).toContain(
       "observed: APP_URL's host mend.example is not the gateway's name mend-preview.tail1234.ts.net",
     );
     expect(item?.detail).toContain(
-      "open: Mend's cookies are not named __Host-, and on the tailnet default every preview is Mend's own site",
+      "observed: Mend's cookies are named __Host- (__Host-better-auth.session_token)",
     );
     expect(item?.detail).toContain(
       "declared: the Tailscale steps for mend-preview.tail1234.ts.net",
     );
-    expect(item?.fix).toContain("ADR 0017 delivery step 8b");
+  });
+
+  it("on the tailnet default, open while APP_URL is http, so Mend's cookies cannot be __Host-", () => {
+    const posture: ExposurePosture = {
+      ...closed,
+      exposure: "private",
+      appUrl: "http://mend.tail1234.ts.net:3105",
+      allowedOrigins: ["http://mend.tail1234.ts.net:3105"],
+      preview: TAILNET_PREVIEW,
+      declared: ["preview-gateway"],
+    };
+    const item = previewOf(posture);
+    expect(item?.established).toBe("open");
+    expect(item?.detail).toContain(
+      "open: Mend's cookies are named better-auth.session_token, not __Host-, and every preview is Mend's own site: APP_URL is http",
+    );
+    expect(item?.fix).toContain("set APP_URL to an https origin");
     expect(exposureRefusal("private", evaluateExposureGate(posture))).toBeNull();
     expect(exposureRefusal("public", evaluateExposureGate(posture))).toContain("preview-gateway:");
   });

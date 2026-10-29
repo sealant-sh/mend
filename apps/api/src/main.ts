@@ -3,7 +3,7 @@ import { extname } from "node:path";
 
 import { NodeCrypto, NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import type { PgClient } from "@effect/sql-pg";
-import { Auth, AuthLive } from "@mend/auth";
+import { Auth, AuthLive, sessionCookiePolicy } from "@mend/auth";
 import {
   AgentConversationRepoLive,
   BriefCommentsRepoLive,
@@ -464,7 +464,13 @@ const ServerLive = Layer.unwrap(
         PreviewAuthRoutes,
         // Headers, origin policy, the error boundary and the budgets, in the order they promise
         // (http-middleware.ts; MEND-05, MEND-11).
-        apiMiddleware({ network, budgets, trustedProxies, errorDetail }),
+        apiMiddleware({
+          network,
+          budgets,
+          trustedProxies,
+          errorDetail,
+          sessionCookie: sessionCookiePolicy(network).name,
+        }),
       ),
     ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),

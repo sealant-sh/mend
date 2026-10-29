@@ -268,6 +268,10 @@ else if (args.includes("image")) {
     } else if (args.some((arg) => arg.includes("{{.Size}}"))) {
       out(`sha256:${version}\t${state.imageSize ?? 1000}`);
     }
+    // What the image's previews can do; empty on an image from before step 8b.
+    else if (args.some((arg) => arg.includes("dev.sealant.mend.previews"))) {
+      out(state.imagesBeforePreviews?.includes(version) ? "" : "tailnet-ports,same-site-domain");
+    }
     // The t3code gateway's label: "1" on an image that carries it, empty on one before it.
     else if (args.some((arg) => arg.includes("dev.sealant.mend.t3-gateway"))) {
       out(state.gatewayImages?.includes(version) ? "1" : "");

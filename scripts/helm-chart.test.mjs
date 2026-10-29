@@ -14,8 +14,8 @@ import { parseAllDocuments } from "yaml";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const chart = path.join(root, "deploy/helm/mend");
-const { SAME_SITE_PREVIEW_REASON: SAME_SITE } =
-  await import("../packages/network/src/preview-domain.ts");
+const SIBLING =
+  "A preview domain beside Mend's host on one registrable domain is allowed while web.appUrl is https, where Mend's cookies are __Host-; over http the API refuses it at start.";
 const helmAvailable = spawnSync("helm", ["version", "--short"], { encoding: "utf8" }).status === 0;
 const skip = helmAvailable ? false : "helm is not on PATH";
 
@@ -974,11 +974,12 @@ test(
     assert.match(previews, /The chart installs no issuer: a wildcard certificate needs DNS-01/);
     assert.match(previews, /\/__mend\/auth carries a single-use ticket in its\nquery/);
     const said = previews.replace(/\s+/g, " ");
-    assert.ok(said.includes(SAME_SITE), "NOTES say the API refuses a preview on Mend's own site");
+    assert.ok(said.includes(SIBLING), "NOTES say a preview on Mend's own site is allowed, and why");
+    assert.ok(said.includes("This chart has no tailnet mode."), "NOTES say previews need a domain");
     assert.match(said, /ingress-nginx's error log at its default level, notice, holds the ticket/);
     assert.match(said, /error-log-level: crit in the controller ConfigMap/);
     assert.match(said, /every Ingress that controller serves/);
-    assert.ok(!plain.replace(/\s+/g, " ").includes(SAME_SITE));
+    assert.ok(!plain.replace(/\s+/g, " ").includes(SIBLING));
   },
 );
 
@@ -986,8 +987,18 @@ test("docs/KUBERNETES.md says what the API does with a preview on Mend's own sit
   const docs = fs.readFileSync(path.join(root, "docs/KUBERNETES.md"), "utf8");
   const section = docs.slice(docs.indexOf("## Live previews"), docs.indexOf("## Request bodies"));
   const said = section.replace(/\s+/g, " ");
-  assert.ok(said.replaceAll("`", "").includes(SAME_SITE), "the same-site sentence");
+  assert.ok(
+    said.includes(
+      "A preview domain on Mend's own site renders, and the API starts with it while `web.appUrl` is https.",
+    ),
+    "the same-site sentence",
+  );
+  assert.ok(said.includes("observes the `__Host-` prefix for this layout"));
   assert.ok(said.includes("such as `previews.example.com` beside `mend.example.com`"));
+  assert.ok(
+    said.includes("Every other host on `example.com` receives the cookies a preview's page sets"),
+    "the operator's other hosts on the site",
+  );
   assert.ok(!/\bapart\b/.test(section), "no pair is called apart");
   assert.match(said, /`error-log-level`/);
   assert.match(said, /ingress-nginx itself is not verified live/);

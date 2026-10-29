@@ -1,4 +1,4 @@
-import { encodePreviewLabel, PreviewId, PreviewLabel } from "@mend/domain";
+import { encodePreviewLabel, PreviewLabel } from "@mend/domain";
 import { Redacted } from "effect";
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
@@ -14,6 +14,7 @@ import {
   namespacedCookieName,
   previewAtOrigin,
   previewOriginOf,
+  type PreviewPlace,
   type PreviewRouting,
   reachedPreviewOrigin,
   readGrantCookie,
@@ -21,20 +22,17 @@ import {
 } from "./preview-routing.ts";
 
 const LABEL = PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa");
-const PREVIEW = { id: PreviewId.make("pv-1"), label: LABEL };
-const OTHER = {
-  id: PreviewId.make("pv-2"),
+const PREVIEW: PreviewPlace = { label: LABEL, tailnetPort: 443 };
+const OTHER: PreviewPlace = {
   label: PreviewLabel.make("baaaaaaaaaaaaaaaaaaaaaaaaa"),
+  tailnetPort: 20001,
 };
 const domain: PreviewRouting = { mode: "domain-https", domain: "preview.example", port: 443 };
 const loopback: PreviewRouting = { mode: "loopback-http", port: 3110 };
 const tailnet: PreviewRouting = {
   mode: "tailnet-https",
   hostname: "mend-preview.tail1234.ts.net",
-  ports: [
-    { port: 443, previewId: PREVIEW.id },
-    { port: 20001, previewId: OTHER.id },
-  ],
+  ports: [443, 20001],
 };
 const GRANT = Redacted.make(`mpg_${"a".repeat(43)}`);
 const HOSTED: CookiePolicy = { mode: "host-per-preview" };
@@ -58,15 +56,17 @@ describe("preview hosts and their origins", () => {
     expect(originOf(loopback)).toBe(`http://${LABEL}.localhost:3110`);
     expect(originOf(tailnet)).toBe("https://mend-preview.tail1234.ts.net");
     expect(originOf(tailnet, OTHER)).toBe("https://mend-preview.tail1234.ts.net:20001");
+    expect(previewOriginOf(tailnet, { label: LABEL, tailnetPort: null }), "no port yet").toBeNull();
     expect(
-      previewOriginOf(tailnet, { id: PreviewId.make("pv-unassigned"), label: LABEL }),
+      previewOriginOf(tailnet, { label: LABEL, tailnetPort: 20002 }),
+      "a port that left the set",
     ).toBeNull();
   });
 
   it("reads back exactly the preview an origin names, and nothing for any other host", () => {
     expect(previewAtOrigin(domain, originOf(domain))).toEqual({ label: LABEL });
     expect(previewAtOrigin(loopback, originOf(loopback))).toEqual({ label: LABEL });
-    expect(previewAtOrigin(tailnet, originOf(tailnet, OTHER))).toEqual({ previewId: OTHER.id });
+    expect(previewAtOrigin(tailnet, originOf(tailnet, OTHER))).toEqual({ tailnetPort: 20001 });
     for (const authority of [
       `${LABEL}.preview.example:8443`,
       `x.${LABEL}.preview.example`,
@@ -173,7 +173,9 @@ describe("preview origins in the browser's own form", () => {
         expect(reachedPreviewOrigin(routing, authority), authority).toBe(origin);
       }
       expect(previewAtOrigin(routing, origin)).toEqual(
-        routing.mode === "tailnet-https" ? { previewId: preview.id } : { label: preview.label },
+        routing.mode === "tailnet-https"
+          ? { tailnetPort: preview.tailnetPort }
+          : { label: preview.label },
       );
     }
   });
@@ -185,9 +187,7 @@ describe("preview origins in the browser's own form", () => {
     );
     expect(originOf({ mode: "loopback-http", port: 443 })).toBe(`http://${LABEL}.localhost:443`);
     expect(originOf({ ...domain, port: 80 })).toBe(`https://${LABEL}.preview.example:80`);
-    expect(originOf({ ...tailnet, ports: [{ port: 443, previewId: PREVIEW.id }] })).toBe(
-      "https://mend-preview.tail1234.ts.net",
-    );
+    expect(originOf({ ...tailnet, ports: [443] })).toBe("https://mend-preview.tail1234.ts.net");
     expect(reachedPreviewOrigin(domain, `${LABEL}.preview.example:443`)).toBe(originOf(domain));
   });
 

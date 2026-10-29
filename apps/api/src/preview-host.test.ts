@@ -1,5 +1,5 @@
 import { PreviewId, PreviewLabel } from "@mend/domain";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { servePreviewRequest } from "./preview-host.ts";
@@ -9,8 +9,8 @@ import { previewOriginOf, type PreviewRouting } from "./preview-routing.ts";
 
 const ROUTING: PreviewRouting = { mode: "domain-https", domain: "preview.example", port: 443 };
 const ORIGIN = previewOriginOf(ROUTING, {
-  id: PreviewId.make("pv-1"),
   label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
+  tailnetPort: null,
 });
 if (ORIGIN === null) throw new Error("a domain routing addresses every preview");
 const HOST = new URL(ORIGIN).host;
@@ -218,5 +218,66 @@ describe("a request with no grant", () => {
   ])("%s", async (_, method, headers, status, location) => {
     const answer = await answerWithoutGrant(method, headers);
     expect([answer?.status, answer?.headers["location"]]).toEqual([status, location]);
+  });
+});
+
+describe("the exchange on a tailnet port", () => {
+  const TAILNET: PreviewRouting = {
+    mode: "tailnet-https",
+    hostname: "mend-preview.tail1234.ts.net",
+    ports: [20001],
+  };
+  const PORT_ORIGIN = previewOriginOf(TAILNET, {
+    label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    tailnetPort: 20001,
+  });
+  if (PORT_ORIGIN === null) throw new Error("a tailnet routing addresses a held port");
+  const TICKET = `mut_${"a".repeat(43)}`;
+  const HELD = `mpg_${"b".repeat(43)}`;
+  const exchangeWith = (clearSiteData: boolean, cookie: ReadonlyArray<HeaderPair>) => {
+    const presented: Array<string | null> = [];
+    const identity = Layer.succeed(PreviewIdentity, {
+      issueTicket: () => unreached,
+      exchangeTicket: (request) =>
+        Effect.sync(() => {
+          presented.push(request.presented === null ? null : Redacted.value(request.presented));
+          return {
+            origin: request.origin,
+            grant: Redacted.make(`mpg_${"c".repeat(43)}`),
+            clearSiteData,
+          };
+        }),
+      withViewer: () => unreached,
+    });
+    const config = Layer.succeed(PreviewConfig, {
+      appUrl: "https://mend.tail1234.ts.net",
+      routing: TAILNET,
+    });
+    return Effect.runPromise(
+      servePreviewRequest(
+        {
+          method: "GET",
+          target: `/__mend/auth?ticket=${TICKET}&path=%2F`,
+          headers: [["Host", new URL(PORT_ORIGIN).host], ...cookie],
+        },
+        () => Effect.succeed(undefined),
+      ).pipe(Effect.provide(Layer.merge(identity, config))),
+    ).then((answer) => ({ answer, presented }));
+  };
+
+  it("asks the browser to clear the port's cache and storage on a first open after the port held another preview", async () => {
+    const { answer, presented } = await exchangeWith(true, [
+      ["Cookie", `__Host-mend-preview-20001=${HELD}`],
+    ]);
+    expect(answer?.status).toBe(303);
+    expect(answer?.headers["clear-site-data"]).toBe('"cache", "storage"');
+    expect(presented, "the grant the browser held for the port").toEqual([HELD]);
+  });
+
+  it("leaves the browser's data alone otherwise", async () => {
+    const { answer, presented } = await exchangeWith(false, []);
+    expect(answer?.status).toBe(303);
+    expect(answer?.headers["clear-site-data"]).toBeUndefined();
+    expect(presented).toEqual([null]);
   });
 });

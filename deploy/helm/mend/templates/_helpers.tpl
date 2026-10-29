@@ -178,10 +178,10 @@ outputs or a plain URL. Returns "obc" or "url".
 {{- end -}}
 {{- join "," $out -}}
 {{- end -}}
-{{- /* The overlap rule mirrors @mend/network previewDomainOverlap; templates cannot import it.
-A preview domain on Mend's own site (one registrable domain, such as previews.example.com beside
-mend.example.com) passes here: a template cannot read the Public Suffix List. The API refuses it
-at start. */ -}}
+{{- /* The overlap rule mirrors @mend/network previewDomainConflict; templates cannot import it.
+A preview domain beside Mend's host on one registrable domain passes: the API allows it while
+web.appUrl is https and refuses it at start over http, and a template has no Public Suffix List to
+tell the two apart. */ -}}
 {{- define "mend.validatePreview" -}}
 {{- if .Values.preview.enabled -}}
 {{- $domain := required "preview.domain is required when preview.enabled" .Values.preview.domain -}}

@@ -1,4 +1,10 @@
-import { addressSubject, clientAddressOf, type WindowLimiter } from "@mend/network";
+import {
+  addressSubject,
+  clientAddressOf,
+  cookieValues,
+  type SessionCookieName,
+  type WindowLimiter,
+} from "@mend/network";
 import { ByteSize, Cause, Clock, Effect, Option, type Layer } from "effect";
 import {
   HttpIncomingMessage,
@@ -90,24 +96,21 @@ export const isSignInAttempt = (method: string, pathname: string): boolean =>
 
 /**
  * The credentials a request presents, whatever they turn out to be worth: the bearer, and the
- * value of each session cookie. Only those: the rest of a `Cookie` header is the client's to
- * write, and counting it would let one appended pair start a fresh window on every request. A
- * request presenting both is counted under both, whichever one authentication goes on to read.
+ * value of each cookie named exactly as Mend's session cookie. Only those: the rest of a `Cookie`
+ * header is the client's to write, and counting it would let one appended pair start a fresh
+ * window on every request. A look-alike name is not counted either: a sibling page on Mend's site
+ * can plant one for the parent domain, and it would pool every visitor into one window. A request
+ * presenting both is counted under both, whichever one authentication goes on to read.
  */
 export const presentedCredentials = (
   headers: Readonly<Record<string, string | undefined>>,
+  sessionCookie: SessionCookieName,
 ): ReadonlyArray<string> => {
-  const found: Array<string> = [];
   const authorization = headers["authorization"]?.trim() ?? "";
-  if (authorization !== "") found.push(authorization);
-  for (const pair of (headers["cookie"] ?? "").split(";")) {
-    const at = pair.indexOf("=");
-    if (at < 0) continue;
-    const name = pair.slice(0, at).trim();
-    const value = pair.slice(at + 1).trim();
-    if (name.endsWith("session_token") && value !== "") found.push(value);
-  }
-  return found;
+  return [
+    ...(authorization === "" ? [] : [authorization]),
+    ...cookieValues(headers["cookie"], sessionCookie),
+  ];
 };
 
 export const budgetRefusal = (
@@ -150,12 +153,14 @@ export const budgetRefusal = (
  *
  * Installed on the router like the public network policy, so it also guards upgrades.
  */
-export const requestBudgets = (
-  budgets: Budgets["Service"],
-  trustedProxies: ReadonlyArray<string>,
-  now?: () => number,
-): Layer.Layer<never, never, HttpRouter.HttpRouter> =>
-  HttpRouter.middleware(
+export const requestBudgets = (input: {
+  readonly budgets: Budgets["Service"];
+  readonly trustedProxies: ReadonlyArray<string>;
+  readonly sessionCookie: SessionCookieName;
+  readonly now?: () => number;
+}): Layer.Layer<never, never, HttpRouter.HttpRouter> => {
+  const { budgets, trustedProxies, sessionCookie, now } = input;
+  return HttpRouter.middleware(
     (handler) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
@@ -196,7 +201,7 @@ export const requestBudgets = (
             addressWait,
           );
         }
-        for (const credential of presentedCredentials(request.headers)) {
+        for (const credential of presentedCredentials(request.headers, sessionCookie)) {
           const wait = budgets.credentials.take(
             credentialSubject(credential),
             limits.credentialRequestsPerMinute,
@@ -251,6 +256,7 @@ export const requestBudgets = (
       }),
     { global: true },
   );
+};
 
 /**
  * A web `Request` for a handler that wants one (better-auth), with the body read under this

@@ -14,6 +14,7 @@ import {
   hostUserNamespacesFix,
   hostUserNamespacesOf,
 } from "@mend/domain/host-user-namespaces";
+import { readPreviewPorts, writePreviewPorts } from "@mend/network";
 
 import {
   type DockerDaemonFacts,
@@ -38,6 +39,7 @@ import {
 import {
   composeOverlays,
   declaredPostureLines,
+  type DomainPreview,
   DEFAULT_T3_GATEWAY_PORT,
   EDGE_CADDYFILE,
   EDGE_COMPOSE_OVERLAY,
@@ -64,6 +66,7 @@ import {
   renderPreviewOverlay,
   renderT3GatewayOverlay,
   type ServerPreview,
+  type TailnetPreview,
   T3_GATEWAY_CADDY_SITE,
   T3_GATEWAY_CADDYFILE,
   T3_GATEWAY_CADDYFILE_NAME,
@@ -103,12 +106,20 @@ import {
 } from "./server-mirrors.ts";
 import {
   checkPreview,
+  KEEP_PREVIEW,
   observePreviewGateway,
+  observeTailnet,
   parsePreviewFile,
+  parsePreviewPorts,
+  requiredPreviewCapability,
   previewDomainLine,
-  type PreviewFiles,
+  previewImageProblem,
   type PreviewPem,
+  type PreviewRequest,
+  PREVIEWS_IMAGE_LABEL,
   resolvePreview,
+  type TailnetObservation,
+  tailnetServeLines,
 } from "./server-preview.ts";
 import {
   runServerProcess,
@@ -129,6 +140,7 @@ import {
   offerLeftoverRemoval,
   runGuide,
   type SetupSettings,
+  type TailscaleFacts,
   tailscaleFactsOf,
 } from "./server-setup-guide.ts";
 import {
@@ -331,9 +343,11 @@ interface SetupOptions {
   readonly t3GatewayOrigin: string | undefined;
   /** `--no-t3-gateway-origin`: the edge stops serving it; the gateway stays on. */
   readonly noT3GatewayOrigin: boolean;
-  readonly previewDomain: string | undefined;
-  readonly previewFiles: PreviewFiles | undefined;
-  readonly noPreviewDomain: boolean;
+  /**
+   * `--preview-domain`, `--preview-certificate`, `--preview-key`, `--preview-tailnet`,
+   * `--preview-tailnet-ports` and their `--no-` forms: what they ask of live previews.
+   */
+  readonly preview: PreviewRequest;
   /**
    * `--allow-userns` (true), `--no-allow-userns` (false): whether setup allows unprivileged user
    * namespaces on a Docker host whose kernel refuses them. Omitted: asked on a terminal, else the
@@ -545,6 +559,9 @@ const SETUP_FLAGS = new Set([
   "--preview-certificate",
   "--preview-key",
   "--no-preview-domain",
+  "--preview-tailnet",
+  "--preview-tailnet-ports",
+  "--no-preview-tailnet",
   "--undeclare",
   "--allow-userns",
   "--no-allow-userns",
@@ -566,6 +583,8 @@ const SWITCHES: ReadonlySet<string> = new Set([
   "--no-t3-gateway",
   "--no-t3-gateway-origin",
   "--no-preview-domain",
+  "--preview-tailnet",
+  "--no-preview-tailnet",
   "--allow-userns",
   "--no-allow-userns",
   "--yes",
@@ -759,6 +778,45 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
       "--preview-certificate and --preview-key go together: the certificate for *.<domain> and its private key, as PEM files on this machine.",
     );
   }
+  const previewTailnetPorts = flagValue("--preview-tailnet-ports");
+  const previewTailnet = values.has("--preview-tailnet") || previewTailnetPorts !== undefined;
+  if (values.has("--no-preview-tailnet") && previewTailnet) {
+    throw setupError(
+      "--no-preview-tailnet contradicts --preview-tailnet and --preview-tailnet-ports.",
+    );
+  }
+  if (previewTailnet && (previewDomain !== undefined || previewCertificate !== undefined)) {
+    throw setupError(
+      "--preview-tailnet and --preview-domain are two ways to serve previews; give one. --preview-tailnet serves them through tailscale serve on this machine, a port each under one name on your tailnet; --preview-domain serves them through the edge, a host each under a domain of your own, with its certificate.",
+    );
+  }
+  const offModes = [
+    ...(values.has("--no-preview-domain") ? (["domain"] as const) : []),
+    ...(values.has("--no-preview-tailnet") ? (["tailnet"] as const) : []),
+  ];
+  const preview: PreviewRequest = previewTailnet
+    ? {
+        _tag: "Tailnet",
+        ports:
+          previewTailnetPorts === undefined
+            ? undefined
+            : parsePreviewPorts(previewTailnetPorts, "--preview-tailnet-ports"),
+      }
+    : previewDomain !== undefined || previewCertificate !== undefined || previewKey !== undefined
+      ? {
+          _tag: "Domain",
+          domain: previewDomain === undefined ? undefined : parsePreviewDomainFlag(previewDomain),
+          files:
+            previewCertificate === undefined || previewKey === undefined
+              ? undefined
+              : {
+                  certificate: parsePreviewFileFlag(previewCertificate, "--preview-certificate"),
+                  key: parsePreviewFileFlag(previewKey, "--preview-key"),
+                },
+        }
+      : offModes.length > 0
+        ? { _tag: "Off", modes: offModes }
+        : KEEP_PREVIEW;
   return {
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
@@ -795,15 +853,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
         ? undefined
         : parseHostFlag(t3GatewayOrigin, "--t3-gateway-origin"),
     noT3GatewayOrigin: values.has("--no-t3-gateway-origin"),
-    previewDomain: previewDomain === undefined ? undefined : parsePreviewDomainFlag(previewDomain),
-    previewFiles:
-      previewCertificate === undefined || previewKey === undefined
-        ? undefined
-        : {
-            certificate: parsePreviewFileFlag(previewCertificate, "--preview-certificate"),
-            key: parsePreviewFileFlag(previewKey, "--preview-key"),
-          },
-    noPreviewDomain: values.has("--no-preview-domain"),
+    preview,
     allowUserns: pair("--allow-userns", "--no-allow-userns"),
   };
 };
@@ -985,13 +1035,27 @@ const resolveAppUrl = (
   return parseHttpOrigin(options.url ?? fallback, "--url");
 };
 
-const checkExposurePair = (bind: string, appUrl: string, requireExplicitUrl: boolean): void => {
+const checkExposurePair = (
+  bind: string,
+  appUrl: string,
+  requireExplicitUrl: boolean,
+  tailnet: TailnetObservation | undefined,
+): void => {
   const bindIsLoopback = isLoopbackBind(bind);
   if (!bindIsLoopback && requireExplicitUrl) {
     throw setupError("A non-loopback --bind also requires an explicit --url.");
   }
-  const appHostIsLoopback = isLoopbackHost(parseUrl(appUrl, "--url").hostname);
-  if (bindIsLoopback !== appHostIsLoopback) {
+  const url = parseUrl(appUrl, "--url");
+  const appHostIsLoopback = isLoopbackHost(url.hostname);
+  // tailscale serve --https=443 on this machine proxies its MagicDNS name to the loopback bind, so
+  // that https URL is the one non-loopback URL a loopback bind takes.
+  const self = tailnet?._tag === "Observed" ? tailnet.self : null;
+  const servedHere =
+    bindIsLoopback &&
+    url.protocol === "https:" &&
+    url.hostname.endsWith(".ts.net") &&
+    (self === null || url.hostname === self);
+  if (bindIsLoopback !== appHostIsLoopback && !servedHere) {
     throw setupError(
       "--bind and --url must both describe localhost exposure or both describe non-local exposure.",
     );
@@ -1083,6 +1147,7 @@ const checkPosture = (
 const validateExposure = (
   existing: ServerConfig | null,
   options: SetupOptions,
+  tailnet?: TailnetObservation,
 ): Pick<
   ServerConfig,
   | "bind"
@@ -1171,36 +1236,37 @@ const validateExposure = (
   const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
   // Behind the edge, loopback bind and https origin is the pair; everywhere else both must agree.
   if (edgeHost === undefined)
-    checkExposurePair(bind, appUrl, options.url === undefined && existing === null);
+    checkExposurePair(bind, appUrl, options.url === undefined && existing === null, tailnet);
+  if (exposure === "loopback" && !isLoopbackHost(parseUrl(appUrl, "--url").hostname)) {
+    throw setupError(
+      `--exposure loopback contradicts --url ${appUrl}: Mend is reached at a name beyond this machine.`,
+    );
+  }
 
   const requestedOrigins = options.origins?.map((origin) => parseHttpOrigin(origin, "--origin"));
   const inheritedOrigins = existing?.allowedOrigins ?? [];
   const allowedOrigins = [
     ...new Set((requestedOrigins ?? inheritedOrigins).filter((origin) => origin !== appUrl)),
   ];
-  const preview = resolvePreview(
-    existing?.preview,
-    {
-      domain: options.previewDomain,
-      files: options.previewFiles,
-      off: options.noPreviewDomain,
-    },
-    {
-      edgeHost,
-      hosts: [
-        ...[appUrl, ...allowedOrigins].map((origin) => ({
-          host: parseUrl(origin, "an origin").hostname,
-          what: "Mend's origin's host",
-        })),
-        ...(t3GatewayOrigin === undefined
-          ? []
-          : [{ host: t3GatewayOrigin, what: "the t3code gateway's origin" }]),
-      ],
-      ports: [appPort, sshPort, ...(t3GatewayPort === undefined ? [] : [t3GatewayPort])],
-      exposure,
-      declared,
-    },
-  );
+  const preview = resolvePreview(existing?.preview, options.preview, {
+    edgeHost,
+    hosts: [
+      ...[appUrl, ...allowedOrigins].map((origin) => ({
+        host: parseUrl(origin, "an origin").hostname,
+        what: "Mend's origin's host",
+      })),
+      ...(t3GatewayOrigin === undefined
+        ? []
+        : [{ host: t3GatewayOrigin, what: "the t3code gateway's origin" }]),
+    ],
+    ports: [appPort, sshPort, ...(t3GatewayPort === undefined ? [] : [t3GatewayPort])],
+    exposure,
+    declared,
+    appUrl,
+    bind,
+    appPort,
+    tailnet,
+  });
   return {
     bind,
     ...(sshBind === undefined ? {} : { sshBind }),
@@ -1389,9 +1455,8 @@ const parseServerConfig = (raw: string): ServerConfig => {
     noT3Gateway: false,
     t3GatewayOrigin: config.t3GatewayOrigin,
     noT3GatewayOrigin: false,
-    previewDomain: config.preview?.domain,
-    previewFiles: config.preview,
-    noPreviewDomain: false,
+    preview:
+      config.preview === undefined ? KEEP_PREVIEW : { _tag: "Saved", preview: config.preview },
     allowUserns: undefined,
   });
   if (config.t3GatewayOrigin !== undefined && config.t3GatewayPort === undefined) {
@@ -1400,9 +1465,39 @@ const parseServerConfig = (raw: string): ServerConfig => {
   return config;
 };
 
+/** A saved preview; one written before the tailnet mode has no `mode`, and is the domain mode. */
 const parsePreviewField = (raw: unknown): ServerPreview => {
   const fields = ownFields(raw);
   if (fields === null) throw setupError("Server config is corrupt: preview must be an object.");
+  const mode = fields.get("mode");
+  if (mode === "tailnet") return parseTailnetPreview(fields);
+  if (mode !== undefined && mode !== "domain")
+    throw setupError("Server config is corrupt: preview's mode must be domain or tailnet.");
+  return parseDomainPreview(fields);
+};
+
+const parseTailnetPreview = (fields: ReadonlyMap<string, unknown>): TailnetPreview => {
+  const hostname = requiredString(fields, "hostname");
+  const saved = fields.get("ports");
+  const ports = Array.isArray(saved)
+    ? saved.filter((port): port is number => typeof port === "number" && Number.isInteger(port))
+    : [];
+  // Read back as the server reads it: ascending, each port once, in range.
+  const read = readPreviewPorts(writePreviewPorts(ports));
+  if (
+    parseEdgeHost(hostname) !== hostname ||
+    !Array.isArray(saved) ||
+    ports.length !== saved.length ||
+    read._tag !== "Ports"
+  ) {
+    throw setupError(
+      "Server config is corrupt: a tailnet preview needs a lowercase DNS name and ascending TCP ports.",
+    );
+  }
+  return { mode: "tailnet", hostname, ports: read.ports };
+};
+
+const parseDomainPreview = (fields: ReadonlyMap<string, unknown>): DomainPreview => {
   const domain = requiredString(fields, "domain");
   const certificate = requiredString(fields, "certificate");
   const key = requiredString(fields, "key");
@@ -1415,7 +1510,7 @@ const parsePreviewField = (raw: unknown): ServerPreview => {
       "Server config is corrupt: preview needs a lowercase DNS name and two absolute paths.",
     );
   }
-  return { domain, certificate, key };
+  return { mode: "domain", domain, certificate, key };
 };
 
 const envValue = (fields: ReadonlyMap<string, string>, key: string): string => {
@@ -2158,13 +2253,7 @@ const validateOverlays = (
   ) {
     throw setupError("Server generation is corrupt: compose.t3.yaml is not the gateway overlay.");
   }
-  if (
-    (config.preview === undefined) !== (files.preview === undefined) ||
-    (config.preview === undefined) !== (files.previewCaddyfile === undefined) ||
-    (config.preview === undefined) !== (files.previewCertificate === undefined) ||
-    (config.preview === undefined) !== (files.previewKey === undefined) ||
-    (files.preview !== undefined && !files.preview.includes(PREVIEW_CADDY_SITE))
-  ) {
+  if (!previewFilesMatch(config.preview, files)) {
     throw setupError(
       `Server generation is corrupt: ${PREVIEW_COMPOSE_FILE}, ${PREVIEW_CADDYFILE_NAME} and the certificate copies do not match the persisted server config.`,
     );
@@ -2465,6 +2554,55 @@ export const readServerInstallationFacts = async (
 };
 
 /**
+ * The preview files a generation holds for its config: the domain mode's overlay, edge site and
+ * certificate copies; the tailnet mode's overlay alone; nothing when previews are off.
+ */
+const previewFilesMatch = (
+  preview: ServerPreview | undefined,
+  files: ServerGeneration["files"],
+): boolean => {
+  const edgeFiles = [files.previewCaddyfile, files.previewCertificate, files.previewKey];
+  switch (preview?.mode) {
+    case undefined:
+      return files.preview === undefined && edgeFiles.every((file) => file === undefined);
+    case "domain":
+      return (
+        files.preview?.includes(PREVIEW_CADDY_SITE) === true &&
+        edgeFiles.every((file) => file !== undefined)
+      );
+    case "tailnet":
+      return (
+        files.preview?.includes("MEND_PREVIEW_TAILNET_HOSTNAME") === true &&
+        !files.preview.includes(PREVIEW_CADDY_SITE) &&
+        edgeFiles.every((file) => file === undefined)
+      );
+  }
+};
+
+/** The preview files a generation is written with, from its config and the copied pair. */
+const renderPreviewFiles = (
+  config: ServerConfig,
+  pem: PreviewPem | undefined,
+): Pick<ServerFiles, "preview" | "previewCaddyfile" | "previewCertificate" | "previewKey"> => {
+  const preview = renderPreviewOverlay(config);
+  switch (config.preview?.mode) {
+    case undefined:
+      return {};
+    case "domain":
+      return preview === undefined || pem === undefined
+        ? {}
+        : {
+            preview,
+            previewCaddyfile: PREVIEW_CADDYFILE,
+            previewCertificate: pem.certificate,
+            previewKey: pem.key,
+          };
+    case "tailnet":
+      return preview === undefined ? {} : { preview };
+  }
+};
+
+/**
  * Every file of a generation, from one config: the release assets, `server.env`, and the overlays
  * the config declares. Setup and upgrade both render through here, so whatever a config carries
  * (the edge, the posture, the mirrors) reaches every generation written from it.
@@ -2481,7 +2619,6 @@ const generationFiles = (
   const t3Gateway = renderT3GatewayOverlay(config);
   const t3Caddyfile =
     t3GatewayPlacement(config)?.edgeHost === undefined ? undefined : T3_GATEWAY_CADDYFILE;
-  const preview = renderPreviewOverlay(config);
   return {
     identity,
     config: `${JSON.stringify(config, null, 2)}\n`,
@@ -2490,14 +2627,7 @@ const generationFiles = (
     ...(posture === undefined ? {} : { posture }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
     ...(t3Caddyfile === undefined ? {} : { t3Caddyfile }),
-    ...(preview === undefined || previewPem === undefined
-      ? {}
-      : {
-          preview,
-          previewCaddyfile: PREVIEW_CADDYFILE,
-          previewCertificate: previewPem.certificate,
-          previewKey: previewPem.key,
-        }),
+    ...renderPreviewFiles(config, previewPem),
     ...(config.edgeHost === undefined
       ? {}
       : { edge: EDGE_COMPOSE_OVERLAY, caddyfile: EDGE_CADDYFILE }),
@@ -2950,6 +3080,26 @@ const checkLocalImages = async (
       );
     }
   }
+  // A server image from before these previews refuses their settings at start, after the working
+  // generation is replaced: refused here, before it is activated.
+  const capability = requiredPreviewCapability(config);
+  if (capability !== null) {
+    const previews = await runtime.run("docker", [
+      "--context",
+      config.dockerContext,
+      "image",
+      "inspect",
+      image,
+      "--format",
+      `{{index .Config.Labels "${PREVIEWS_IMAGE_LABEL}"}}`,
+    ]);
+    const problem = previewImageProblem(
+      config.serverVersion,
+      capability,
+      previews.status === 0 ? previews.stdout.trim() : "",
+    );
+    if (problem !== null) throw setupError(problem);
+  }
   // Every session's launch runs the guard: preload it with the server, so a host that cannot pull
   // it fails here, not at the first session.
   const guardLabel = await runtime.run("docker", [
@@ -3392,16 +3542,19 @@ const refuseLegacyContract = (existing: ServerInstallation | null): void => {
   }
 };
 
+/** Tailscale's facts on this machine, or null when `tailscale` did not answer. */
+const readTailscale = async (runtime: ServerSetupRuntime): Promise<TailscaleFacts | null> => {
+  const status = await runtime.run("tailscale", ["status", "--json"], { timeoutMs: 5_000 });
+  if (status.stdout.trim() === "") return null;
+  const serve = await runtime.run("tailscale", ["serve", "status", "--json"], {
+    timeoutMs: 5_000,
+  });
+  return tailscaleFactsOf(status.stdout, serve.status === 0 ? serve.stdout : "");
+};
+
 /** What the guide looks at on this machine, through the runtime. */
 const guideObservations = (runtime: ServerSetupRuntime): GuideObservations => ({
-  tailscale: async () => {
-    const status = await runtime.run("tailscale", ["status", "--json"], { timeoutMs: 5_000 });
-    if (status.stdout.trim() === "") return null;
-    const serve = await runtime.run("tailscale", ["serve", "status", "--json"], {
-      timeoutMs: 5_000,
-    });
-    return tailscaleFactsOf(status.stdout, serve.status === 0 ? serve.stdout : "");
-  },
+  tailscale: () => readTailscale(runtime),
   lookupHost: runtime.lookupHost ?? (async () => null),
   localAddresses: runtime.localAddresses ?? (() => []),
   portTaken: runtime.portTaken ?? (async () => false),
@@ -3781,11 +3934,17 @@ const setupServer = async (
       `DOCKER_CONTEXT is "${variable}"; this install runs on Docker context "${existing.config.dockerContext}", where its data is, and stays there. Running Mend in another Docker engine is a new install: mend uninstall --server removes this one, its data included, then mend server setup there.`,
     );
   }
+  // Previews on the tailnet take their name from Tailscale here, and setup says what tailscale
+  // serve should hold for them; it looks only when they are, or were, on.
+  const tailnet =
+    options.preview._tag === "Tailnet" || existing?.config.preview?.mode === "tailnet"
+      ? await observeTailnet(() => readTailscale(runtime), selectedContext.endpoint)
+      : undefined;
   // Before anything is pulled or written: a port another server holds would leave this one
   // unpublished, and its health answered by the other (two Docker engines on one Mac).
   await refuseTakenPorts(
     runtime,
-    validateExposure(existing?.config ?? null, options),
+    validateExposure(existing?.config ?? null, options, tailnet),
     existing?.config ?? null,
   );
   // Before the Mend image is pulled or anything is written: a host that refuses user namespaces
@@ -3808,7 +3967,7 @@ const setupServer = async (
       ...selectedContext,
       operatingSystem,
     }),
-    ...validateExposure(existing?.config ?? null, options),
+    ...validateExposure(existing?.config ?? null, options, tailnet),
     mirrors,
   };
   const dockerHubToken = await resolveDockerHubToken(runtime, options, mirrors, store);
@@ -3921,7 +4080,7 @@ const setupServer = async (
   });
   if (ownership._tag === "error") throw setupError(ownership.error.message);
   await checkLocalImages(runtime, installation, options.offline ? "local" : "pull-missing");
-  if (config.preview !== undefined) await validateEdge(runtime, installation);
+  if (config.preview?.mode === "domain") await validateEdge(runtime, installation);
   storeValue(store.activate(generation));
   await startCompose(runtime, installation);
   await initGarage(runtime, installation, secrets);
@@ -3939,10 +4098,16 @@ const setupServer = async (
   }
   for (const line of preview.lines) runtime.writeLine(line);
   if (config.preview !== undefined) {
-    runtime.writeLine(await observePreviewGateway(runtime));
+    runtime.writeLine(await observePreviewGateway(runtime, config.preview));
     const resolves = await previewDomainLine(runtime, config);
     if (resolves !== null) runtime.writeLine(resolves);
   }
+  for (const line of tailnetServeLines(
+    existing?.config.preview,
+    config.preview,
+    tailnet?._tag === "Observed" ? tailnet.served : null,
+  ))
+    runtime.writeLine(line);
   if (existing?.config.t3GatewayPort !== undefined && config.t3GatewayPort === undefined) {
     runtime.writeLine(
       `The t3code gateway is off. Its state (pairings and the device tokens they hold, queued messages) stays in its volume and comes back if you turn it on again; to remove it: docker --context ${config.dockerContext} volume rm mend_${T3_GATEWAY_VOLUME}`,

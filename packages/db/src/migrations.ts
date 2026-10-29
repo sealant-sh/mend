@@ -3682,6 +3682,35 @@ const sessionPagesMigration = Effect.gen(function* () {
     CREATE INDEX session_pages_session_published_idx ON session_pages (session_id, published_at)`;
 });
 
+/**
+ * 0141 (docs/adr/0017, decision 6): the tailnet default's port pool. A row is a port some preview
+ * was given; a port of the set with no row was never used. A preview is removed by a foreign-key action that nulls its worktree_id, and
+ * Postgres fires UPDATE OF triggers for that action, so its port frees in the same transaction on
+ * every removal path.
+ */
+const previewPortsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE preview_ports (
+    port integer PRIMARY KEY CHECK (port BETWEEN 1 AND 65535),
+    preview_id text UNIQUE REFERENCES previews(id) ON DELETE SET NULL,
+    assigned_at timestamptz NOT NULL DEFAULT now(),
+    released_at timestamptz,
+    last_used_at timestamptz NOT NULL DEFAULT now(),
+    reused boolean NOT NULL DEFAULT false
+  )`;
+  yield* sql.unsafe(`CREATE FUNCTION preview_ports_release() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      UPDATE preview_ports SET preview_id = NULL, released_at = now() WHERE preview_id = NEW.id;
+      RETURN NULL;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER previews_release_port
+    AFTER UPDATE OF worktree_id ON previews
+    FOR EACH ROW WHEN (OLD.worktree_id IS NOT NULL AND NEW.worktree_id IS NULL)
+    EXECUTE FUNCTION preview_ports_release()`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3824,4 +3853,5 @@ export const migrations = {
   "0138_kubernetes_person_layout": kubernetesPersonLayoutMigration,
   "0139_preview_controls": previewControlsMigration,
   "0140_session_pages": sessionPagesMigration,
+  "0141_preview_ports": previewPortsMigration,
 };

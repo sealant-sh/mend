@@ -14,6 +14,7 @@ import { canSeeProject, type Preview, type Viewer } from "@mend/domain/workbench
 import {
   Array as Arr,
   Cause,
+  Clock,
   Deferred,
   Duration,
   Effect,
@@ -64,6 +65,7 @@ export class PreviewNoIdentity extends Schema.TaggedError<PreviewNoIdentity>()(
       "invalid-ticket",
       "credential-required",
       "membership-ended",
+      "port-moved",
     ]),
     previewId: Schema.NullOr(PreviewId),
   },
@@ -81,6 +83,11 @@ export class PreviewAccessEnded extends Schema.TaggedError<PreviewAccessEnded>()
   { reason: Schema.Literals(["access-ended", "admission-unavailable"]) },
 ) {}
 
+export class PreviewPoolFull extends Schema.TaggedError<PreviewPoolFull>()("PreviewPoolFull", {
+  size: Schema.Number,
+  nextFreeAt: Schema.Date,
+}) {}
+
 export type PreviewRefusal = PreviewNoIdentity | PreviewNotFound;
 
 export class PreviewIdentity extends Context.Service<
@@ -91,13 +98,22 @@ export class PreviewIdentity extends Context.Service<
       readonly opener: SignedInAccount;
     }) => Effect.Effect<
       { readonly origin: PreviewOrigin; readonly ticket: Redacted.Redacted<string> },
-      PreviewRefusal | PreviewUnavailable
+      PreviewRefusal | PreviewUnavailable | PreviewPoolFull
     >;
+    /**
+     * `presented` is the grant the browser already holds for the origin. `clearSiteData` says the
+     * port held another preview before, and this browser has not signed in to this one on it.
+     */
     readonly exchangeTicket: (request: {
       readonly origin: PreviewOrigin;
       readonly ticket: Redacted.Redacted<string>;
+      readonly presented: PreviewGrantSecret | null;
     }) => Effect.Effect<
-      { readonly origin: PreviewOrigin; readonly grant: PreviewGrantSecret },
+      {
+        readonly origin: PreviewOrigin;
+        readonly grant: PreviewGrantSecret;
+        readonly clearSiteData: boolean;
+      },
       PreviewRefusal | PreviewUnavailable
     >;
     readonly withViewer: <E, R>(
@@ -273,15 +289,19 @@ export const makePreviewIdentityLayer = (
           : Effect.succeed(config.routing),
       );
 
+      /** The preview at `origin`, and its tailnet port when an admission renews it before serving. */
       const previewAt = Effect.fn("PreviewIdentity.previewAt")(function* (origin: PreviewOrigin) {
         const routed = yield* routing;
         const at = previewAtOrigin(routed, origin);
         if (at === null) return yield* new PreviewNotFound();
-        const preview =
-          "label" in at ? yield* previews.byLabel(at.label) : yield* previews.byId(at.previewId);
+        const held = "label" in at ? null : yield* previews.byTailnetPort(at.tailnetPort);
+        const preview = "label" in at ? yield* previews.byLabel(at.label) : (held?.preview ?? null);
         if (preview === null || preview.state === "removed") return yield* new PreviewNotFound();
-        if (previewOriginOf(routed, preview) !== origin) return yield* new PreviewNotFound();
-        return preview;
+        const tailnetPort = "tailnetPort" in at ? at.tailnetPort : null;
+        if (previewOriginOf(routed, { label: preview.label, tailnetPort }) !== origin) {
+          return yield* new PreviewNotFound();
+        }
+        return { preview, renewPort: held?.renewDue === true ? tailnetPort : null };
       });
 
       const canSee = (userId: string, preview: KeptPreview) =>
@@ -297,7 +317,7 @@ export const makePreviewIdentityLayer = (
         withinDeadline(
           timing.admissionDeadline,
           Effect.gen(function* () {
-            const preview = yield* previewAt(request.origin);
+            const { preview, renewPort } = yield* previewAt(request.origin);
             if (request.grant === null) {
               return yield* new PreviewNoIdentity({
                 reason: "missing-grant",
@@ -310,6 +330,12 @@ export const makePreviewIdentityLayer = (
               .pipe(Effect.mapError(unavailable));
             const verdict = judge(standing, preview.id);
             if (verdict._tag === "Refused") return yield* Effect.fail(verdict.refusal);
+            if (
+              renewPort !== null &&
+              (yield* previews.renewTailnetPort(renewPort, preview.id)) === "Moved"
+            ) {
+              return yield* new PreviewNoIdentity({ reason: "port-moved", previewId: preview.id });
+            }
             return {
               viewer: { viewer: verdict.viewer, preview, origin: request.origin },
               subject: verdict.subject,
@@ -322,6 +348,26 @@ export const makePreviewIdentityLayer = (
           ),
         );
 
+      /** A preview gets its port on the tailnet default when it is first opened, never sooner. */
+      const assignedPort = (
+        previewId: PreviewId,
+        ports: ReadonlyArray<number>,
+      ): Effect.Effect<number, PreviewNotFound | PreviewPoolFull> =>
+        Effect.gen(function* () {
+          const assignment = yield* previews.assignTailnetPort(previewId, ports);
+          switch (assignment._tag) {
+            case "Assigned":
+              return assignment.port;
+            case "PoolFull":
+              return yield* new PreviewPoolFull({
+                size: assignment.size,
+                nextFreeAt: assignment.nextFreeAt,
+              });
+            case "Removed":
+              return yield* new PreviewNotFound();
+          }
+        });
+
       const issueTicket = Effect.fn("PreviewIdentity.issueTicket")(function* (request: {
         readonly previewId: PreviewId;
         readonly opener: SignedInAccount;
@@ -330,7 +376,9 @@ export const makePreviewIdentityLayer = (
         const preview = yield* previews.byId(request.previewId);
         if (preview === null || preview.state === "removed") return yield* new PreviewNotFound();
         yield* canSee(request.opener.userId, preview);
-        const origin = previewOriginOf(routed, preview);
+        const tailnetPort =
+          routed.mode === "tailnet-https" ? yield* assignedPort(preview.id, routed.ports) : null;
+        const origin = previewOriginOf(routed, { label: preview.label, tailnetPort });
         if (origin === null) return yield* new PreviewUnavailable({ operation: "address" });
         const minted = yield* tickets.mint({
           userId: request.opener.userId,
@@ -341,11 +389,33 @@ export const makePreviewIdentityLayer = (
         return { origin, ticket: Redacted.make(minted.ticket) };
       }, undecidedOnDefect);
 
+      /**
+       * A browser's first open of a preview on a port that held another one: the earlier preview's
+       * storage and cache at this origin are still the browser's (ADR 0017, decision 6).
+       */
+      const firstOnReusedPort = (
+        preview: KeptPreview,
+        origin: PreviewOrigin,
+        presented: PreviewGrantSecret | null,
+      ) =>
+        Effect.gen(function* () {
+          const routed = yield* routing;
+          const at = previewAtOrigin(routed, origin);
+          if (at === null || !("tailnetPort" in at)) return false;
+          if (!(yield* previews.tailnetPortReused(at.tailnetPort, preview.id))) return false;
+          if (presented === null) return true;
+          const [standing = null] = yield* grants
+            .standing([{ grant: presented, previewId: preview.id, origin }])
+            .pipe(Effect.mapError(unavailable));
+          return judge(standing, preview.id)._tag === "Refused";
+        });
+
       const exchangeTicket = Effect.fn("PreviewIdentity.exchangeTicket")(function* (request: {
         readonly origin: PreviewOrigin;
         readonly ticket: Redacted.Redacted<string>;
+        readonly presented: PreviewGrantSecret | null;
       }) {
-        const preview = yield* previewAt(request.origin);
+        const { preview } = yield* previewAt(request.origin);
         const spent = yield* tickets.consume({
           ticket: Redacted.value(request.ticket),
           target: "preview",
@@ -361,6 +431,7 @@ export const makePreviewIdentityLayer = (
           });
         }
         yield* canSee(spent.userId, preview);
+        const clearSiteData = yield* firstOnReusedPort(preview, request.origin, request.presented);
         const grant = yield* grants
           .create({
             subject: { userId: spent.userId, credential: spent.credential },
@@ -368,8 +439,23 @@ export const makePreviewIdentityLayer = (
             origin: request.origin,
           })
           .pipe(Effect.mapError(unavailable));
-        return { origin: request.origin, grant };
+        return { origin: request.origin, grant, clearSiteData };
       }, undecidedOnDefect);
+
+      /** The ports the previews hold now; none to read off the tailnet default. */
+      const heldPorts = (routed: PreviewRouting, ids: ReadonlyArray<PreviewId>) =>
+        routed.mode !== "tailnet-https"
+          ? Effect.succeed(Option.some(new Map<PreviewId, number>()))
+          : withinDeadline(timing.passDeadline, previews.tailnetPorts(ids)).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.failCause(cause)
+                  : Effect.logWarning("preview: the held ports could not be read").pipe(
+                      Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+                      Effect.as(Option.none()),
+                    ),
+              ),
+            );
 
       const recheck = (selection: Selection) =>
         Effect.gen(function* () {
@@ -378,9 +464,18 @@ export const makePreviewIdentityLayer = (
           if (selected.length === 0) return;
           const routed = config.routing;
           if (routed === null) return yield* stopAll(selected, { _tag: "Unavailable" });
+          const held = yield* heldPorts(
+            routed,
+            selected.map((registration) => registration.preview.id),
+          );
+          if (Option.isNone(held)) return yield* stopAll(selected, { _tag: "Unavailable" });
           const byGrant = new Map<string, GrantGroup>();
           for (const registration of selected) {
-            if (previewOriginOf(routed, registration.preview) !== registration.key.origin) {
+            const place = {
+              label: registration.preview.label,
+              tailnetPort: held.value.get(registration.preview.id) ?? null,
+            };
+            if (previewOriginOf(routed, place) !== registration.key.origin) {
               yield* stop(registration, { _tag: "Refused", refusal: new PreviewNotFound() });
               continue;
             }
@@ -431,6 +526,36 @@ export const makePreviewIdentityLayer = (
               { _tag: "Unavailable" },
             );
           }
+        });
+
+      // Each pass stamps every preview with a connection open; a close stamps its own preview
+      // unless this process stamped it within the last pass, so short requests cost no write each.
+      const lastStamped = new Map<PreviewId, number>();
+      const stampUsed = (ids: ReadonlyArray<PreviewId>) =>
+        Effect.gen(function* () {
+          if (config.routing?.mode !== "tailnet-https" || ids.length === 0) return;
+          const now = yield* Clock.currentTimeMillis;
+          for (const id of ids) lastStamped.set(id, now);
+          yield* previews.touchTailnetPorts(ids);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("preview: a port's last use could not be stamped").pipe(
+                  Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+                ),
+          ),
+        );
+      const stampOpen = Effect.suspend(() => {
+        lastStamped.clear();
+        return stampUsed([...new Set([...registry].map(({ preview }) => preview.id))]);
+      });
+      const stampClosed = (id: PreviewId) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
+          const last = lastStamped.get(id);
+          if (last !== undefined && now - last < Duration.toMillis(timing.sweepEvery)) return;
+          yield* stampUsed([id]);
         });
 
       const closeWriter = <A, E>(writer: Fiber.Fiber<A, E>) =>
@@ -493,7 +618,13 @@ export const makePreviewIdentityLayer = (
                 : Effect.fail(unavailable());
             }
             return yield* runWriter(registration.stopped, Effect.scoped(write(admitted.viewer)));
-          }).pipe(Effect.ensuring(Effect.sync(() => void registry.delete(registration))));
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => void registry.delete(registration)).pipe(
+                Effect.andThen(Effect.forkIn(stampClosed(registration.preview.id), scope)),
+              ),
+            ),
+          );
         });
 
       const supervisedRecheck = (selection: Selection) =>
@@ -519,6 +650,7 @@ export const makePreviewIdentityLayer = (
         Effect.repeat(Schedule.fixed(timing.sweepEvery)),
         Effect.forkScoped,
       );
+      yield* stampOpen.pipe(Effect.delay(timing.sweepEvery), Effect.forever, Effect.forkScoped);
       yield* grants.cleanup().pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("preview: grant cleanup failed; it runs again").pipe(

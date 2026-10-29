@@ -1,6 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import { NetworkConfig, type PublicNetwork } from "@mend/network";
+import {
+  NetworkConfig,
+  type PublicNetwork,
+  SESSION_COOKIE_BASE,
+  type SessionCookieName,
+  sessionCookieName,
+  type SessionCookiePrefix,
+  sessionCookiePrefix,
+} from "@mend/network";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { bearer } from "better-auth/plugins";
@@ -109,16 +117,47 @@ const registrationHooks = (policy: RegistrationPolicy["Service"]) => ({
   },
 });
 
+export interface SessionCookiePolicy {
+  readonly name: SessionCookieName;
+  readonly prefix: SessionCookiePrefix;
+  readonly secure: boolean;
+  readonly httpOnly: true;
+  readonly sameSite: "lax";
+}
+
 /**
- * The session cookie's attributes, stated and not inferred (docs/adr/0004, "The access model").
- * `Secure` follows the scheme of the one primary origin (`APP_URL`): over https the cookie never
- * travels in clear, and the public exposure gate reads this same answer. `HttpOnly` keeps it from
+ * The session cookie's name and attributes, stated and not inferred (docs/adr/0004, "The access
+ * model"). `Secure` follows the scheme of the one primary origin (`APP_URL`): over https the cookie
+ * never travels in clear, and the public exposure gate reads this same answer. Over https it is
+ * also `__Host-` (`sessionCookiePrefix`). `HttpOnly` keeps it from
  * scripts. `SameSite=Lax` keeps it off cross-site subrequests, and every state-changing request
  * also has to name an exact allowed Origin (`publicNetworkPolicy`).
  */
-export const sessionCookiePolicy = (network: { readonly appUrl: string }) => {
-  const secure = network.appUrl.startsWith("https://");
-  return { secure, httpOnly: true, sameSite: "lax" } as const;
+export const sessionCookiePolicy = (network: { readonly appUrl: string }): SessionCookiePolicy => {
+  return {
+    name: sessionCookieName(network.appUrl),
+    prefix: sessionCookiePrefix(network.appUrl),
+    secure: network.appUrl.startsWith("https://"),
+    httpOnly: true,
+    sameSite: "lax",
+  };
+};
+
+/**
+ * Better Auth puts `__Secure-` before any name it is given, so `__Host-` rides its cookie prefix
+ * with that switch off and `Secure` set as an attribute.
+ */
+const betterAuthCookies = (network: { readonly appUrl: string }) => {
+  const cookie = sessionCookiePolicy(network);
+  return {
+    useSecureCookies: false,
+    cookiePrefix: `${cookie.prefix}${SESSION_COOKIE_BASE}`,
+    defaultCookieAttributes: {
+      secure: cookie.secure,
+      httpOnly: cookie.httpOnly,
+      sameSite: cookie.sameSite,
+    },
+  };
 };
 
 const createBetterAuth = (options: AuthHandlerOptions) =>
@@ -140,9 +179,7 @@ const createBetterAuth = (options: AuthHandlerOptions) =>
     },
     advanced: {
       disableOriginCheck: false,
-      // Also prefixes the cookie names with `__Secure-`, which a browser refuses over http.
-      useSecureCookies: sessionCookiePolicy(options.network).secure,
-      defaultCookieAttributes: sessionCookiePolicy(options.network),
+      ...betterAuthCookies(options.network),
     },
     plugins: [bearer()],
     trustedOrigins: [...options.network.allowedOrigins],
