@@ -3,7 +3,7 @@ import * as http from "node:http";
 import type * as net from "node:net";
 import * as path from "node:path";
 
-import type { SessionId } from "@mend/domain";
+import type { SessionId, SessionProcessId } from "@mend/domain";
 import type {
   AgentHookReport,
   ServiceBrowserScheme,
@@ -108,7 +108,10 @@ export interface SessionSocketApi {
    * the fact (`agentHookTarget`).
    */
   readonly agentHook: (report: AgentHookReport) => Effect.Effect<AgentHookOutcome>;
-  readonly mcpCaller: () => Effect.Effect<ChannelCaller, McpCallerUnavailableError>;
+  /** Who calls Mend's MCP server, with the session's agent process a request `named`, if any. */
+  readonly mcpCaller: (
+    named: SessionProcessId | null,
+  ) => Effect.Effect<ChannelCaller, McpCallerUnavailableError>;
   /**
    * `mend repo` (docs/adr/0011-repositories-in-a-session.md): the repositories this session
    * holds beside its own worktree, the projects it may add, and adding one. `addRepository`

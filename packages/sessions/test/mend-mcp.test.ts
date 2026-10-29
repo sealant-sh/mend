@@ -8,6 +8,8 @@ import {
   SessionChannelTokensRepo,
   SessionChannelTokensRepoMemory,
   SessionPagesRepoLive,
+  SessionProcessesRepo,
+  SessionProcessesRepoLive,
   SessionsRepo,
   SessionsRepoLive,
   migrations,
@@ -21,6 +23,7 @@ import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  agentProcessRefOf,
   MEND_MCP_CALL_KEY_HEADER,
   MEND_MCP_PATH,
   McpCallerUnavailableError,
@@ -77,6 +80,7 @@ const channelLayer = (options: { readonly idle?: Duration.Input } = {}) =>
       Layer.provide(SessionChannelTokensRepoMemory),
     ),
     SessionChannelTokensRepoMemory,
+    SessionProcessesRepoLive,
     (options.idle === undefined ? MendMcpLive : mendMcpLayer(MEND_TOOLKITS, options)).pipe(
       Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
       Layer.provide(SessionPagesRepoLive),
@@ -87,7 +91,10 @@ const channelLayer = (options: { readonly idle?: Duration.Input } = {}) =>
 
 const refused = () => Effect.die(new Error("not in this test"));
 
-const sessionApi = (sessionId: SessionId): SessionSocketApi => ({
+const sessionApi = (
+  sessionId: SessionId,
+  processes: SessionProcessesRepo["Service"],
+): SessionSocketApi => ({
   recipes: refused,
   listServices: refused,
   runServiceRecipe: refused,
@@ -103,7 +110,15 @@ const sessionApi = (sessionId: SessionId): SessionSocketApi => ({
   addRepository: refused,
   gitTransport: refused,
   gitTransportDone: () => Effect.void,
-  mcpCaller: () => Effect.succeed({ sessionId, accountId: ownerOf(sessionId) }),
+  mcpCaller: (named) =>
+    (named === null
+      ? Effect.succeed(null)
+      : processes
+          .listForSession(sessionId)
+          .pipe(Effect.map((rows) => agentProcessRefOf(rows, named)))
+    ).pipe(
+      Effect.map((agentProcess) => ({ sessionId, accountId: ownerOf(sessionId), agentProcess })),
+    ),
 });
 
 interface Answer {
@@ -236,6 +251,7 @@ const withChannel = <A>(
         const sockets = yield* SessionSocketHost;
         const tokens = yield* SessionChannelTokensRepo;
         const mendMcp = yield* MendMcp;
+        const processes = yield* SessionProcessesRepo;
         const sql = yield* SqlClient.SqlClient;
         yield* sql`DELETE FROM session_pages`;
         const mcpSessions: Array<string> = [];
@@ -253,9 +269,10 @@ const withChannel = <A>(
             return mendMcp.handle(request, caller);
           },
         });
-        const aliceApi = options.aliceApi?.(sessionApi(ALICE_SESSION)) ?? sessionApi(ALICE_SESSION);
+        const alicesApi = sessionApi(ALICE_SESSION, processes);
+        const aliceApi = options.aliceApi?.(alicesApi) ?? alicesApi;
         const dir = yield* sockets.start(ALICE_SESSION, aliceApi);
-        yield* sockets.start(BEN_SESSION, sessionApi(BEN_SESSION));
+        yield* sockets.start(BEN_SESSION, sessionApi(BEN_SESSION, processes));
         const alice = yield* tokens.issue(ALICE_SESSION, "launch-alice");
         const ben = yield* tokens.issue(BEN_SESSION, "launch-ben");
         const context = yield* Effect.context<SqlClient.SqlClient>();
@@ -548,7 +565,11 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
         aliceApi: (base) => ({
           ...base,
           mcpCaller: () =>
-            Effect.succeed({ sessionId: SessionId.make("s-mcp-gone"), accountId: "alice" }),
+            Effect.succeed({
+              sessionId: SessionId.make("s-mcp-gone"),
+              accountId: "alice",
+              agentProcess: null,
+            }),
         }),
       },
     );
@@ -639,6 +660,99 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
     });
   });
 
+  it("places a page on the turn of the agent process the bridge names, and on the session's agent when it names none of the session's", async () => {
+    const superseded = "0b6a1f52-8c1e-4d0a-9f3b-1c2d3e4f5a6b";
+    const current = "5d7e9f10-2a3b-4c5d-8e6f-7a8b9c0d1e2f";
+    const bens = "9e8d7c6b-5a49-4382-a716-05f4e3d2c1b0";
+    const ITEM = Schema.Array(
+      Schema.Struct({
+        session_id: Schema.String,
+        turn_id: Schema.String,
+        process_id: Schema.String,
+        title: Schema.String,
+      }),
+    );
+    await withChannel(async ({ address, tokens, helper, sql }) => {
+      await sql(`
+        INSERT INTO session_processes
+          (id, session_id, sealant_workspace_id, kind, harness, status, exited_at, created_at)
+        VALUES
+          ('${superseded}', '${ALICE_SESSION}', 'ws-mcp', 'agent-protocol', 'claude', 'exited',
+           now(), now() - interval '1 hour'),
+          ('${current}', '${ALICE_SESSION}', 'ws-mcp', 'agent-protocol', 'claude', 'running',
+           NULL, now()),
+          ('${bens}', '${BEN_SESSION}', 'ws-mcp-ben', 'agent-protocol', 'claude', 'running',
+           NULL, now())`);
+      await sql(`
+        INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status)
+        VALUES
+          ('turn-superseded', '${ALICE_SESSION}', '${superseded}', 1, 'before', 'completed'),
+          ('turn-current', '${ALICE_SESSION}', '${current}', 2, 'after', 'running'),
+          ('turn-ben', '${BEN_SESSION}', '${bens}', 1, 'ben', 'running')`);
+      const renderAs = async (title: string, env: Record<string, string>) => {
+        const harness = startMendMcp(helper, {
+          MEND_SESSION_ENDPOINT: `http://${address}`,
+          MEND_SESSION_ID: ALICE_SESSION,
+          MEND_SESSION_TOKEN: tokens.alice,
+          ...env,
+        });
+        harness.send(
+          rpc("initialize", {
+            protocolVersion: "2025-06-18",
+            capabilities: {},
+            clientInfo: { name: "claude-code", version: "2" },
+          }),
+        );
+        harness.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+        harness.send(rpc("tools/call", { name: "html_render", arguments: { ...PAGE, title } }));
+        const run = await harness.end();
+        expect(run.stdout.at(-1)).toMatchObject({ result: { isError: false } });
+      };
+      try {
+        await renderAs("From the superseded process", { MEND_AGENT_PROCESS_ID: superseded });
+        await renderAs("From an unnamed process", {});
+        await renderAs("Naming Ben's process", { MEND_AGENT_PROCESS_ID: bens });
+        await renderAs("Naming no process's id", { MEND_AGENT_PROCESS_ID: "turn-current" });
+        const items = Schema.decodeUnknownSync(ITEM)(
+          await sql(`
+            SELECT session_id, turn_id, process_id, title FROM agent_items
+            WHERE kind = 'page' ORDER BY session_id, seq`),
+        );
+        expect(items).toEqual([
+          {
+            session_id: ALICE_SESSION,
+            turn_id: "turn-superseded",
+            process_id: superseded,
+            title: "From the superseded process",
+          },
+          {
+            session_id: ALICE_SESSION,
+            turn_id: "turn-current",
+            process_id: current,
+            title: "From an unnamed process",
+          },
+          {
+            session_id: ALICE_SESSION,
+            turn_id: "turn-current",
+            process_id: current,
+            title: "Naming Ben's process",
+          },
+          {
+            session_id: ALICE_SESSION,
+            turn_id: "turn-current",
+            process_id: current,
+            title: "Naming no process's id",
+          },
+        ]);
+      } finally {
+        await sql(`DELETE FROM agent_items WHERE kind = 'page'`);
+        await sql(
+          `DELETE FROM session_processes WHERE id IN ('${superseded}', '${current}', '${bens}')`,
+        );
+      }
+    });
+  });
+
   it("answers 503 while Mend cannot say who calls, and the staged helper asks again", async () => {
     let outages = 2;
     await withChannel(
@@ -670,7 +784,7 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
       {
         aliceApi: (base) => ({
           ...base,
-          mcpCaller: () =>
+          mcpCaller: (named) =>
             Effect.suspend(() =>
               outages > 0
                 ? Effect.fail(
@@ -678,7 +792,7 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
                       message: `the store did not answer ${outages--}`,
                     }),
                   )
-                : base.mcpCaller(),
+                : base.mcpCaller(named),
             ),
         }),
       },
@@ -752,9 +866,10 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
           const network = yield* SessionChannelNetworkHost;
           const sockets = yield* SessionSocketHost;
           const tokens = yield* SessionChannelTokensRepo;
+          const alice = sessionApi(ALICE_SESSION, yield* SessionProcessesRepo);
           yield* sockets.start(ALICE_SESSION, {
-            ...sessionApi(ALICE_SESSION),
-            channelFor: () => Effect.succeed({ ok: true, api: sessionApi(ALICE_SESSION) } as const),
+            ...alice,
+            channelFor: () => Effect.succeed({ ok: true, api: alice } as const),
           });
           const write = yield* tokens.issueWrite("launch-alice", "alice");
           const answer = yield* Effect.promise(() =>

@@ -453,7 +453,7 @@ describe("SessionChannelNetworkHost", () => {
     const cancelled = Promise.withResolvers<"cancelled">();
     const held = (): SessionSocketApi => ({
       ...api([]),
-      mcpCaller: () => Effect.succeed({ sessionId: SESSION, accountId: null }),
+      mcpCaller: () => Effect.succeed({ sessionId: SESSION, accountId: null, agentProcess: null }),
     });
     const outcome = await Effect.runPromise(
       Effect.scoped(

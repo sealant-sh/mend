@@ -2925,16 +2925,17 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
         Effect.gen(function* () {
           const own = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
           if (!own.ok) throw new Error(own.message);
-          const refused = yield* own.api.mcpCaller().pipe(Effect.exit);
+          const refused = yield* own.api.mcpCaller(null).pipe(Effect.exit);
           expect(failureText(refused)).toContain(CONTAINER_TOKEN_REFUSED);
           const maria = yield* grantOf(shareControl(join.world, join.holder), {
             launchId: join.launchId,
             accountId: MARIA,
           });
           if (!maria.ok) throw new Error(maria.message);
-          expect(yield* maria.api.mcpCaller()).toEqual({
+          expect(yield* maria.api.mcpCaller(null)).toEqual({
             sessionId: join.holder.id,
             accountId: MARIA,
+            agentProcess: null,
           });
         }),
     });
@@ -2947,9 +2948,10 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
         Effect.gen(function* () {
           const own = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
           if (!own.ok) throw new Error(own.message);
-          expect(yield* own.api.mcpCaller()).toEqual({
+          expect(yield* own.api.mcpCaller(null)).toEqual({
             sessionId: join.holder.id,
             accountId: join.holder.ownerUserId,
+            agentProcess: null,
           });
           expect(join.holder.ownerUserId).toBe("user-fixture");
         }),

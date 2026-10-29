@@ -465,7 +465,7 @@ import {
   type SessionMovedOnError,
 } from "./launch-admission.ts";
 import { LAUNCH_UNDER_WAY_WORDS, makeLaunchGate } from "./launch-gate.ts";
-import { McpCallerUnavailableError } from "./mend-mcp/caller.ts";
+import { agentProcessRefOf, McpCallerUnavailableError } from "./mend-mcp/caller.ts";
 import { withMendMcp } from "./mend-mcp/launch.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
@@ -23895,22 +23895,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // cannot be one of the engine's dependencies.
         land: () => gitHooks.landRequested(sessionId, actor),
         agentHook: (report) => agentHook(sessionId, report),
-        mcpCaller: () =>
-          actor !== null
-            ? Effect.succeed({ sessionId, accountId: actor })
-            : sessions.byId(sessionId).pipe(
-                Effect.map((session) => ({ sessionId, accountId: session.ownerUserId })),
-                Effect.catchDefect(() =>
-                  Effect.fail(
-                    new McpCallerUnavailableError({
-                      message: "session channel: this request could not be answered now",
-                    }),
-                  ),
-                ),
-                Effect.catchTag("SessionNotFoundError", () =>
-                  Effect.die(new Error("this session is no longer in Mend")),
-                ),
+        mcpCaller: (named) =>
+          Effect.all({
+            accountId:
+              actor !== null
+                ? Effect.succeed(actor)
+                : sessions.byId(sessionId).pipe(Effect.map((session) => session.ownerUserId)),
+            agentProcess:
+              named === null
+                ? Effect.succeed(null)
+                : processes
+                    .listForSession(sessionId)
+                    .pipe(Effect.map((rows) => agentProcessRefOf(rows, named))),
+          }).pipe(
+            Effect.map((caller) => ({ sessionId, ...caller })),
+            Effect.catchDefect(() =>
+              Effect.fail(
+                new McpCallerUnavailableError({
+                  message: "session channel: this request could not be answered now",
+                }),
               ),
+            ),
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.die(new Error("this session is no longer in Mend")),
+            ),
+          ),
         // Repositories in a session (docs/adr/0010): the helper's `mend repo` verbs. A refusal
         // reaches the helper as its message.
         listRepositories: () =>
