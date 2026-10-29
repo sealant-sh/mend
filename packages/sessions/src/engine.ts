@@ -29,6 +29,8 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   ServicesRepo,
+  type SetupClaimRequest,
+  SetupRunsRepo,
   SessionGitOpsRepo,
   WorktreeChangesRepo,
   type WorktreeNotFoundError,
@@ -96,7 +98,10 @@ import type {
 import {
   DEFAULT_SERVICE_LAUNCH,
   ServiceStartProgress,
+  ServiceStartSetup,
   ServiceStartStep,
+  type SetupDeclaration,
+  setupRefusalsOf,
   previewControlDecider,
   previewStartId,
   recipeRefusalLine,
@@ -592,12 +597,15 @@ import {
 import type { SteerTurnInput } from "./protocol-steer.ts";
 import {
   EMPTY_MEND_TOML,
+  MEND_TOML,
   type MendTomlFile,
   parseMendToml,
   planStart,
   readMendToml,
+  readWorktreeFile,
   RecipeFileError,
   resolveDeclarations,
+  WorktreeFileError,
 } from "./recipes.ts";
 import { declarationsNote } from "./resource-proposals.ts";
 import {
@@ -635,6 +643,7 @@ import {
   serviceCwdOf,
   serviceProcessEnv,
   TCP_READY,
+  WORKSPACE_REPO,
 } from "./service-launch.ts";
 import {
   type AddableProject,
@@ -661,6 +670,17 @@ import {
   type AgentHookOutcome,
   type SessionSocketApi,
 } from "./session-socket.ts";
+import {
+  outputTailOf,
+  SETUP_BUSY_POLL_MS,
+  SETUP_LEASE_MS,
+  SETUP_RENEW_MS,
+  type SetupInputRead,
+  setupFingerprint,
+  setupSiteKey,
+  setupStepArgv,
+  setupStopArgv,
+} from "./setup.ts";
 import { loadShellProfile, shellProfileApplies } from "./shell-profile.ts";
 import {
   MANAGED_SKILLS_DIGESTS,
@@ -1492,6 +1512,7 @@ interface ServicePlan {
   progress: ServiceStartProgress;
   /** A Stop of one of its Services, or of all the session's: it starts nothing more. */
   stopped: boolean;
+  readonly stopping: Deferred.Deferred<void>;
   target: ServiceId | null;
   readonly done: Deferred.Deferred<ServiceView, PlanFailure>;
 }
@@ -1511,6 +1532,24 @@ const stepTo = (
       ),
     });
   });
+
+const setupTo = (
+  plan: ServicePlan,
+  state: ServiceStartSetup["state"],
+  step: string | null = null,
+  reason: string | null = null,
+) =>
+  Effect.sync(() => {
+    plan.progress = new ServiceStartProgress({
+      ...plan.progress,
+      setup: new ServiceStartSetup({ state, step, reason }),
+    });
+  });
+
+type PlanSetup =
+  | { readonly _tag: "None" }
+  | { readonly _tag: "Declared"; readonly setup: SetupDeclaration }
+  | { readonly _tag: "Refused"; readonly line: string };
 
 /** What the reaper writes when a lease lapsed and the platform no longer answers. */
 const EXECUTOR_LOST_SUMMARY = "executor lost · lease expired";
@@ -2017,9 +2056,9 @@ export interface ProvisionInput {
 /** Where a linked project is bound inside the workspace (ADR-0001). */
 export const linkedProjectMountPath = (name: string) => `/workspace/repos/${name}`;
 /** The worktree's `mend.toml` as a workspace sees it. */
-export const WORKSPACE_MEND_TOML = "/workspace/repo/mend.toml";
-/** The read script's exit code for "no mend.toml": distinct from `cat`'s own failures. */
-const WORKSPACE_MEND_TOML_ABSENT = 44;
+export const WORKSPACE_MEND_TOML = `${WORKSPACE_REPO}/${MEND_TOML}`;
+/** The read script's exit code for "no such file": distinct from `cat`'s own failures. */
+const WORKSPACE_FILE_ABSENT = 44;
 const isLinkedProjectMountPath = (mountPath: string) => mountPath.startsWith("/workspace/repos/");
 
 const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
@@ -3179,6 +3218,7 @@ type SessionEngineRequirements =
   | SessionProcessesRepo
   | SessionPagesRepo
   | ServicesRepo
+  | SetupRunsRepo
   | ServiceForwardsRepo
   | ServiceObservationsRepo
   | ServiceHost
@@ -8576,6 +8616,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       const services = yield* ServicesRepo;
+      const setupRuns = yield* SetupRunsRepo;
       const serviceForwards = yield* ServiceForwardsRepo;
       const serviceObservations = yield* ServiceObservationsRepo;
       const previews = yield* PreviewsRepo;
@@ -13034,30 +13075,48 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
-      /**
-       * `mend.toml` read from inside a workspace — the worktree sits at `/workspace/repo` in
-       * every workspace (the executor's working directory in capture mode, the bound mount
-       * otherwise). An absent file is no declarations; an unreadable one is a typed error.
-       */
-      const readWorkspaceMendToml = Effect.fn("SessionEngine.readWorkspaceMendToml")(function* (
+      const readWorkspaceFile = Effect.fn("SessionEngine.readWorkspaceFile")(function* (
         workspace: Workspace,
+        relative: string,
       ) {
-        const result = yield* sealant.exec(workspace, [
-          "sh",
-          "-c",
-          `[ -e "$1" ] || exit ${WORKSPACE_MEND_TOML_ABSENT}; cat -- "$1"`,
-          "sh",
-          WORKSPACE_MEND_TOML,
-        ]);
-        if (result.exitCode === WORKSPACE_MEND_TOML_ABSENT) return EMPTY_MEND_TOML;
+        const result = yield* sealant
+          .exec(workspace, [
+            "sh",
+            "-c",
+            `[ -e "$1" ] || exit ${WORKSPACE_FILE_ABSENT}; cat -- "$1"`,
+            "sh",
+            `${WORKSPACE_REPO}/${relative}`,
+          ])
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new WorktreeFileError({
+                  path: relative,
+                  message: `${relative} could not be read in the session workspace: ${error.message}`,
+                }),
+            ),
+          );
+        if (result.exitCode === WORKSPACE_FILE_ABSENT) return null;
         if (result.exitCode !== 0) {
-          return yield* new RecipeFileError({
-            path: WORKSPACE_MEND_TOML,
-            message: `mend.toml could not be read in the session workspace (exit ${result.exitCode}): ${result.stderr.trim()}`,
+          return yield* new WorktreeFileError({
+            path: relative,
+            message: `${relative} could not be read in the session workspace (exit ${result.exitCode}): ${result.stderr.trim()}`,
           });
         }
-        return yield* parseMendToml(result.stdout, WORKSPACE_MEND_TOML);
+        return result.stdout;
       });
+
+      const readWorkspaceMendToml = (workspace: Workspace) =>
+        readWorkspaceFile(workspace, MEND_TOML).pipe(
+          Effect.mapError(
+            (error) => new RecipeFileError({ path: WORKSPACE_MEND_TOML, message: error.message }),
+          ),
+          Effect.flatMap((raw) =>
+            raw === null
+              ? Effect.succeed(EMPTY_MEND_TOML)
+              : parseMendToml(raw, WORKSPACE_MEND_TOML),
+          ),
+        );
 
       /**
        * Tell the harness what rides beside the repo — Mend's block in each harness's global
@@ -22176,16 +22235,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * The worktree's `mend.toml` recipes, wherever the worktree is: beside this process when
-       * the deployment co-locates it, else in the session's live workspace — the only copy
-       * capture mode has that includes the agent's latest edit. No live workspace there is a
-       * typed `SessionNotLiveError`, never a defect.
+       * The copy of a session's worktree Mend reads: beside this process when the deployment
+       * co-locates it, else the session's live workspace, the only copy capture mode has that
+       * includes the agent's latest edit. No live workspace there is a `SessionNotLiveError`.
        */
-      const mendTomlOf = Effect.fn("SessionEngine.mendTomlOf")(function* (session: Session) {
+      const worktreeCopyOf = Effect.fn("SessionEngine.worktreeCopyOf")(function* (
+        session: Session,
+      ) {
         const mount = yield* sessionRepo.worktreeMount(session.projectId, session.worktree);
-        if (mount !== undefined) return yield* readMendToml(mount);
-        const workspace = yield* workspaceForSupportingProcess(session);
-        return yield* readWorkspaceMendToml(workspace);
+        if (mount !== undefined) return { _tag: "Host", path: mount } as const;
+        return {
+          _tag: "Workspace",
+          workspace: yield* workspaceForSupportingProcess(session),
+        } as const;
+      });
+
+      const mendTomlOf = Effect.fn("SessionEngine.mendTomlOf")(function* (session: Session) {
+        const copy = yield* worktreeCopyOf(session);
+        return copy._tag === "Host"
+          ? yield* readMendToml(copy.path)
+          : yield* readWorkspaceMendToml(copy.workspace);
       });
 
       const declarationsOf = Effect.fn("SessionEngine.declarationsOf")(function* (
@@ -23485,9 +23554,170 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.sync(() => {
           for (const plan of servicePlans.values()) {
             if (plan.sessionId !== sessionId || plan.progress.state !== "running") continue;
-            if (name === null || plan.names.has(name)) plan.stopped = true;
+            if (name === null || plan.names.has(name)) {
+              plan.stopped = true;
+              Deferred.doneUnsafe(plan.stopping, Effect.void);
+            }
           }
         });
+
+      const setupFailed = (message: string) => new ServiceStartError({ message });
+      const setupErrorOf = (error: { readonly _tag: string; readonly message: string }) =>
+        error instanceof ServiceStartError
+          ? error
+          : setupFailed(
+              error._tag === "SessionNotLiveError"
+                ? "This session has no live workspace, so setup cannot run. Resume it, then run the recipe."
+                : `setup did not run · ${error.message}`,
+            );
+
+      const setupFingerprintIn = Effect.fn("SessionEngine.setupFingerprintIn")(function* (
+        copy: Effect.Success<ReturnType<typeof worktreeCopyOf>>,
+        workspace: Workspace,
+        setup: SetupDeclaration,
+      ) {
+        const inputs: SetupInputRead[] = [];
+        for (const input of setup.inputs) {
+          const bytes =
+            copy._tag === "Host"
+              ? yield* readWorktreeFile(copy.path, input)
+              : yield* readWorkspaceFile(workspace, input).pipe(
+                  Effect.map((raw) => (raw === null ? null : new TextEncoder().encode(raw))),
+                );
+          inputs.push({ path: input, bytes });
+        }
+        // An executor's copy may have been restored from a capture made on another platform.
+        const probe =
+          copy._tag === "Host"
+            ? null
+            : yield* sealant.exec(workspace, ["sh", "-c", PLATFORM_PROBE_SCRIPT]);
+        const platform = probe === null ? null : (platformKeyOf(probe.stdout) ?? "unknown");
+        return setupFingerprint({ run: setup.run, inputs, platform });
+      });
+
+      const SETUP_STOPPED = "a Stop came during setup";
+
+      /** A site another start is running setup in is waited for, never run in alongside it. */
+      const claimSetupSite = Effect.fn("SessionEngine.claimSetupSite")(function* (
+        plan: ServicePlan,
+        request: SetupClaimRequest,
+      ) {
+        for (;;) {
+          if (plan.stopped) return yield* setupFailed(SETUP_STOPPED);
+          const claim = yield* setupRuns.claim(request);
+          if (claim._tag !== "Busy") return claim;
+          yield* setupTo(plan, "waiting", null, "another start is running setup here");
+          yield* Effect.raceFirst(
+            Effect.sleep(Duration.millis(SETUP_BUSY_POLL_MS)),
+            Deferred.await(plan.stopping),
+          );
+        }
+      });
+
+      const runSetupSteps = Effect.fn("SessionEngine.runSetupSteps")(function* (
+        plan: ServicePlan,
+        workspace: Workspace,
+        setup: SetupDeclaration,
+        claimId: string,
+        user: ProcessUser | null,
+      ) {
+        const stopProcesses = sealant.exec(workspace, setupStopArgv(claimId)).pipe(
+          Effect.asVoid,
+          Effect.orElseSucceed(() => undefined),
+        );
+        let tail = "";
+        for (const step of setup.run) {
+          if (plan.stopped) return yield* setupFailed(SETUP_STOPPED);
+          yield* setupTo(plan, "running", step);
+          // Exec cannot be cancelled: a Stop ends the step's processes until the exec returns.
+          const result = yield* sealant
+            .exec(workspace, setupStepArgv(claimId, step), {
+              cwd: WORKSPACE_REPO,
+              ...(user === null ? {} : { user }),
+            })
+            .pipe(
+              Effect.onError(() => stopProcesses),
+              Effect.raceFirst(
+                Deferred.await(plan.stopping).pipe(
+                  Effect.andThen(
+                    stopProcesses.pipe(Effect.andThen(Effect.sleep("5 seconds")), Effect.forever),
+                  ),
+                ),
+              ),
+            );
+          tail = outputTailOf(result.stdout, result.stderr);
+          if (result.exitCode === 0) continue;
+          if (plan.stopped) return yield* setupFailed(SETUP_STOPPED);
+          yield* setupRuns.finish(claimId, {
+            state: "failed",
+            exitCode: result.exitCode,
+            outputTail: tail,
+          });
+          const why = `\`${step}\` exited ${result.exitCode}`;
+          yield* setupTo(plan, "failed", step, why);
+          return yield* setupFailed(
+            `setup did not finish, so nothing was started · ${why}` +
+              (tail === "" ? "" : `\n--- output ---\n${tail}`),
+          );
+        }
+        yield* setupRuns.finish(claimId, { state: "done", exitCode: 0, outputTail: tail });
+        yield* setupTo(plan, "ran");
+      });
+
+      /**
+       * Runs outside the lifecycle permit, before anything else the plan starts (ADR 0017,
+       * decision 4). The claim is released however the run ends; once stamped, release is a no-op.
+       */
+      const runPlanSetup = Effect.fn("SessionEngine.runPlanSetup")(function* (
+        plan: ServicePlan,
+        setup: SetupDeclaration,
+        cause: AcceptedStart,
+      ) {
+        const session = yield* sessions.byId(plan.sessionId);
+        const copy = yield* worktreeCopyOf(session);
+        const workspace =
+          copy._tag === "Workspace"
+            ? copy.workspace
+            : yield* workspaceForSupportingProcess(session);
+        const workspaceId = SealantWorkspaceId.make(workspace.id);
+        const runsAs = serviceRunsAs(cause) ?? session.ownerUserId;
+        const retired = yield* retirementRefusalFor(workspaceId, runsAs);
+        if (retired !== null) return yield* setupFailed(retired);
+        const claim = yield* claimSetupSite(plan, {
+          siteKey: setupSiteKey(
+            copy._tag === "Host"
+              ? { _tag: "Host", path: copy.path }
+              : { _tag: "Executor", workspaceId },
+          ),
+          fingerprint: yield* setupFingerprintIn(copy, workspace, setup),
+          runsAs,
+          retryFailed: cause.kind !== "system",
+          leaseMs: SETUP_LEASE_MS,
+        });
+        if (claim._tag === "Done") return yield* setupTo(plan, "unchanged");
+        if (claim._tag === "Failed") {
+          const why = `it failed here (exit ${claim.exitCode ?? "unknown"}) and an automatic start does not run it again · a Start runs it`;
+          yield* setupTo(plan, "failed", null, why);
+          return yield* setupFailed(
+            `setup ${why}` +
+              (claim.outputTail === null || claim.outputTail === ""
+                ? ""
+                : `\n--- output ---\n${claim.outputTail}`),
+          );
+        }
+        const { claimId } = claim;
+        const renewing = Effect.sleep(Duration.millis(SETUP_RENEW_MS)).pipe(
+          Effect.andThen(setupRuns.renew(claimId, SETUP_LEASE_MS)),
+          Effect.forever,
+        );
+        return yield* startAsPerson(session, workspace, Effect.succeed(runsAs), "shell").pipe(
+          Effect.flatMap((startAs) =>
+            runSetupSteps(plan, workspace, setup, claimId, startAs?.user ?? null),
+          ),
+          Effect.raceFirst(renewing),
+          Effect.ensuring(setupRuns.release(claimId)),
+        );
+      }, Effect.mapError(setupErrorOf));
 
       const runPlan = Effect.fn("SessionEngine.runPlan")(function* (
         plan: ServicePlan,
@@ -23495,6 +23725,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         filePreview: string | null,
         cause: AcceptedStart,
         startId: string | null,
+        setup: PlanSetup,
       ) {
         const target = steps.at(-1);
         if (target === undefined) return yield* Effect.die("a plan without its Service");
@@ -23503,6 +23734,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             plan.progress = new ServiceStartProgress({ ...plan.progress, state, message });
           }).pipe(Effect.andThen(Effect.fail(new ServiceStartError({ message }))));
         const stoppedWords = `a Stop came before ${target.name} started`;
+        if (setup._tag === "Declared") {
+          const ran = yield* runPlanSetup(plan, setup.setup, cause).pipe(Effect.result);
+          if (Result.isFailure(ran)) {
+            const left = plan.progress.setup;
+            if (left !== null && (left.state === "waiting" || left.state === "running")) {
+              yield* plan.stopped
+                ? setupTo(plan, "stopped", left.step)
+                : setupTo(plan, "failed", left.step, ran.failure.message);
+            }
+            return yield* plan.stopped
+              ? end("stopped", stoppedWords)
+              : end("failed", ran.failure.message);
+          }
+        }
         for (const dependency of steps.slice(0, -1)) {
           if (plan.stopped) return yield* end("stopped", stoppedWords);
           yield* stepTo(plan, dependency.name, "starting");
@@ -23612,6 +23857,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (recipe === undefined || recipe.name !== name) {
           return yield* notRun(`No Service recipe named "${name}" exists in this session.`);
         }
+        const setupRefusals = setupRefusalsOf(declared.refused);
+        const setup: PlanSetup = !steps.some((step) => step.command !== null)
+          ? { _tag: "None" }
+          : setupRefusals.length > 0
+            ? { _tag: "Refused", line: setupRefusals.map(recipeRefusalLine).join("; ") }
+            : declared.setup === null
+              ? { _tag: "None" }
+              : { _tag: "Declared", setup: declared.setup };
+        if (setup._tag === "Refused" && cause.kind === "system") {
+          return yield* new ServiceStartError({
+            message: `mend.toml refuses [setup], so ${name} is not started automatically: ${setup.line}`,
+          });
+        }
         const key = planKey(sessionId, startId ?? crypto.randomUUID());
         const running = servicePlans.get(key);
         // Before any dependency starts: a refused start leaves nothing new running.
@@ -23636,14 +23894,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }),
             ),
             message: null,
+            setup:
+              setup._tag === "None"
+                ? null
+                : setup._tag === "Refused"
+                  ? new ServiceStartSetup({ state: "refused", step: null, reason: setup.line })
+                  : new ServiceStartSetup({ state: "waiting", step: null, reason: null }),
           }),
           stopped: false,
+          stopping: Deferred.makeUnsafe<void>(),
           target: null,
           done: Deferred.makeUnsafe<ServiceView, PlanFailure>(),
         };
         if (running === undefined) {
           servicePlans.set(key, plan);
-          yield* runPlan(plan, steps, declared.preview?.service ?? null, cause, startId).pipe(
+          yield* runPlan(
+            plan,
+            steps,
+            declared.preview?.service ?? null,
+            cause,
+            startId,
+            setup,
+          ).pipe(
             Effect.onExit((exit) =>
               Deferred.done(plan.done, exit).pipe(
                 Effect.andThen(Effect.sleep(Duration.millis(SERVICE_PLAN_KEPT_MS))),
@@ -23660,6 +23932,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (Option.isSome(settled)) return settled.value;
         // Held long enough: the start goes on without its request.
         if (plan.target !== null) return yield* readServiceView(plan.target);
+        const setupState = plan.progress.setup?.state;
+        if (setupState === "waiting" || setupState === "running") {
+          return yield* new ServiceStartUnderWayError({
+            message: `${name} waits on setup, which has not finished yet · the start goes on · mend service list`,
+          });
+        }
         const waiting = plan.progress.steps.find((step) => step.state === "starting");
         return yield* new ServiceStartUnderWayError({
           message: `${name} waits on ${waiting?.name ?? "its dependencies"}, which has not answered yet · the start goes on · mend service list`,

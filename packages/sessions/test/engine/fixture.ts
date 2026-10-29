@@ -30,6 +30,7 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   ServicesRepo,
+  SetupRunsRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
   SessionGitOpsRepo,
@@ -135,6 +136,7 @@ import {
   type CaptureFlushKind,
   PersonLayoutPlatform,
   PersonLayoutPlatformNone,
+  type PersonExecOptions,
   type PersonSessionOptions,
   SealantClient,
   type SealantClientShape,
@@ -500,6 +502,7 @@ export const sealantLaunchLayer = (
      */
     readonly execEffect?: (
       argv: ReadonlyArray<string>,
+      options?: PersonExecOptions,
     ) =>
       | Effect.Effect<
           { readonly exitCode: number; readonly stdout: string; readonly stderr: string },
@@ -783,7 +786,7 @@ export const sealantLaunchLayer = (
       Effect.suspend(() => {
         execCalls?.push(argv);
         captureOps?.execUsers?.push(options?.user?.name ?? null);
-        const effect = captureOps?.execEffect?.(argv);
+        const effect = captureOps?.execEffect?.(argv, options);
         if (effect !== undefined) {
           return effect.pipe(Effect.map((answer) => ({ ...answer, run: fakeExecRun })));
         }
@@ -1437,6 +1440,7 @@ export interface World {
   readonly reachedAttempts: Set<string>;
   /** Each Service attempt's recorded launch (`launch_cwd`, `launch_env`, `launch_ready`). */
   readonly launches: Map<string, ServiceLaunch>;
+  readonly setupRuns: Array<SetupRunRow>;
   controlSeq: number;
   readonly previews: Map<string, Preview>;
   readonly previewControls: Map<string, PreviewControl>;
@@ -1536,6 +1540,7 @@ export const makeWorld = (): World => ({
   serviceObservations: new Map(),
   reachedAttempts: new Set(),
   launches: new Map(),
+  setupRuns: [],
   controlSeq: 0,
   previews: new Map(),
   previewControls: new Map(),
@@ -2125,9 +2130,94 @@ export const previewsRepoOf = (world: World) => {
   });
 };
 
+export interface SetupRunRow {
+  readonly siteKey: string;
+  readonly fingerprint: string;
+  state: "running" | "done" | "failed";
+  readonly claimId: string;
+  readonly runsAs: string | null;
+  leaseUntil: number;
+  finishedAt: Date | null;
+  exitCode: number | null;
+  outputTail: string | null;
+}
+
+export const setupRunsLayer = (world: World) => {
+  const held = (claimId: string) =>
+    world.setupRuns.find((row) => row.claimId === claimId && row.state === "running");
+  const drop = (keep: (row: SetupRunRow) => boolean) => {
+    const kept = world.setupRuns.filter(keep);
+    world.setupRuns.splice(0, world.setupRuns.length, ...kept);
+  };
+  return Layer.succeed(SetupRunsRepo, {
+    claim: (request) =>
+      Effect.sync(() => {
+        const at = world.clock.now().getTime();
+        drop(
+          (row) =>
+            !(row.siteKey === request.siteKey && row.state === "running" && row.leaseUntil <= at),
+        );
+        const site = world.setupRuns.filter((row) => row.siteKey === request.siteKey);
+        const running = site.find((row) => row.state === "running");
+        if (running !== undefined) {
+          return {
+            _tag: "Busy",
+            fingerprint: running.fingerprint,
+            runsAs: running.runsAs,
+          } as const;
+        }
+        const stamp = site.find((row) => row.fingerprint === request.fingerprint);
+        if (stamp?.state === "done" && stamp.finishedAt !== null) {
+          return { _tag: "Done", finishedAt: stamp.finishedAt } as const;
+        }
+        if (stamp?.state === "failed" && stamp.finishedAt !== null && !request.retryFailed) {
+          return {
+            _tag: "Failed",
+            exitCode: stamp.exitCode,
+            outputTail: stamp.outputTail,
+            finishedAt: stamp.finishedAt,
+          } as const;
+        }
+        drop((row) => row.siteKey !== request.siteKey);
+        const claimId = crypto.randomUUID();
+        world.setupRuns.push({
+          siteKey: request.siteKey,
+          fingerprint: request.fingerprint,
+          state: "running",
+          claimId,
+          runsAs: request.runsAs,
+          leaseUntil: at + request.leaseMs,
+          finishedAt: null,
+          exitCode: null,
+          outputTail: null,
+        });
+        return { _tag: "Claimed", claimId } as const;
+      }),
+    renew: (claimId, leaseMs) =>
+      Effect.sync(() => {
+        const row = held(claimId);
+        if (row !== undefined) row.leaseUntil = world.clock.now().getTime() + leaseMs;
+        return row !== undefined;
+      }),
+    finish: (claimId, outcome) =>
+      Effect.sync(() => {
+        const row = held(claimId);
+        if (row === undefined) return false;
+        row.state = outcome.state;
+        row.finishedAt = world.clock.now();
+        row.exitCode = outcome.exitCode;
+        row.outputTail = outcome.outputTail;
+        return true;
+      }),
+    release: (claimId) =>
+      Effect.sync(() => drop((row) => !(row.claimId === claimId && row.state === "running"))),
+  });
+};
+
 /** Shared serviceStateLayer fixture for engine scenarios. */
 export const serviceStateLayer = (world: World) =>
   Layer.mergeAll(
+    setupRunsLayer(world),
     servicesLayer(world),
     serviceForwardsLayer(world),
     serviceObservationsLayer(world),

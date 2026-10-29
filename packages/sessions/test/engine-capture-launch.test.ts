@@ -16,7 +16,13 @@ import {
 } from "@mend/domain";
 import { Project, RepositoryCloneUrl, Session, SessionProcess } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
-import { HARNESS_HOME_MOUNT_PATH, SessionEngine, WORKSPACE_MEND_TOML } from "@mend/sessions";
+import {
+  HARNESS_HOME_MOUNT_PATH,
+  PLATFORM_PROBE_SCRIPT,
+  SessionEngine,
+  setupFingerprint,
+  WORKSPACE_MEND_TOML,
+} from "@mend/sessions";
 import {
   BlobStoreFsLive,
   captureKeys,
@@ -682,12 +688,14 @@ describe("SessionEngine capture mode", () => {
     { timeout: 20_000 },
   );
 
-  it("reads mend.toml from the live executor, not the host: lists and runs a recipe, and tells the agent about it", async () => {
+  it("reads mend.toml and setup's inputs from the live executor, not the host: lists and runs a recipe, and tells the agent about it", async () => {
     const created: Array<CreateOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
     const memory = makeMemoryCaptureStore();
+    const lockfile = "lockfileVersion: '9.0'\n";
     /** The executor's own copy of the worktree file; null is no file. */
     let workspaceToml: string | null =
+      '[setup]\nrun = ["pnpm install --frozen-lockfile"]\ninputs = ["pnpm-lock.yaml"]\n' +
       '[service.web]\ncommand = "pnpm dev --host"\nport = 5173\nbrowserScheme = "http"\n' +
       '[service.api]\ncommand = "node api.js"\nport = 4000\ncwd = "/srv/api"\n';
     await withEngine(
@@ -738,6 +746,25 @@ describe("SessionEngine capture mode", () => {
           expect(service.service.browserScheme).toBe("http");
           expect(service.attempts[0]?.argv).toEqual(["sh", "-c", "pnpm dev --host"]);
 
+          expect(
+            execCalls.filter((argv) => argv.at(-1) === "/workspace/repo/pnpm-lock.yaml"),
+          ).toHaveLength(1);
+          expect(
+            execCalls.filter((argv) => argv[3] === "mend-setup").map((argv) => argv[5]),
+          ).toEqual(["pnpm install --frozen-lockfile"]);
+          const workspaceId = world.sessions.get(session.id)?.sealantWorkspaceId;
+          expect(world.setupRuns).toMatchObject([
+            {
+              siteKey: `executor:${workspaceId}`,
+              state: "done",
+              fingerprint: setupFingerprint({
+                run: ["pnpm install --frozen-lockfile"],
+                inputs: [{ path: "pnpm-lock.yaml", bytes: new TextEncoder().encode(lockfile) }],
+                platform: "linux-x86_64-gnu",
+              }),
+            },
+          ]);
+
           // A malformed file is a readable refusal naming the problem.
           workspaceToml = "[service.web\n";
           const malformed = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
@@ -766,11 +793,15 @@ describe("SessionEngine capture mode", () => {
           undefined,
           {
             exec: (argv) =>
-              !readsToml(argv)
-                ? undefined
-                : workspaceToml === null
-                  ? { exitCode: 44, stdout: "", stderr: "" }
-                  : { exitCode: 0, stdout: workspaceToml, stderr: "" },
+              argv.at(-1) === "/workspace/repo/pnpm-lock.yaml"
+                ? { exitCode: 0, stdout: lockfile, stderr: "" }
+                : argv[2] === PLATFORM_PROBE_SCRIPT
+                  ? { exitCode: 0, stdout: "Linux\nx86_64\nldd (GNU libc) 2.39\n", stderr: "" }
+                  : !readsToml(argv)
+                    ? undefined
+                    : workspaceToml === null
+                      ? { exitCode: 44, stdout: "", stderr: "" }
+                      : { exitCode: 0, stdout: workspaceToml, stderr: "" },
           },
         ),
       },

@@ -210,11 +210,31 @@ export class ServiceStartStep extends Schema.Class<ServiceStartStep>("ServiceSta
   reason: Schema.NullOr(Schema.String),
 }) {}
 
+export const ServiceStartSetupState = Schema.Literals([
+  "waiting",
+  "running",
+  /** It ran now, every step exiting 0. */
+  "ran",
+  /** It ran here before for this fingerprint and succeeded, so it was not run again. */
+  "unchanged",
+  /** `[setup]` is refused: an explicit start goes on without it, and says why. */
+  "refused",
+  "failed",
+  "stopped",
+]);
+
+export class ServiceStartSetup extends Schema.Class<ServiceStartSetup>("ServiceStartSetup")({
+  state: ServiceStartSetupState,
+  step: Schema.NullOr(Schema.String),
+  reason: Schema.NullOr(Schema.String),
+}) {}
+
 /**
- * A recipe start Mend runs to its end whatever its request does (ADR 0017, delivery 9): each
- * recipe of its plan, dependencies first and the Service asked for last. `running` until that
- * Service's start has finished (`started`), a dependency did not start (`failed`) or a Stop came
- * first (`stopped`); `message` says why for the last two.
+ * A recipe start Mend runs to its end whatever its request does (ADR 0017, delivery 9): the
+ * file's `[setup]` first, when it declares one, then each recipe of its plan, dependencies first
+ * and the Service asked for last. `running` until that Service's start has finished (`started`),
+ * setup or a dependency did not finish (`failed`) or a Stop came first (`stopped`); `message`
+ * says why for the last two.
  */
 export class ServiceStartProgress extends Schema.Class<ServiceStartProgress>(
   "ServiceStartProgress",
@@ -223,6 +243,11 @@ export class ServiceStartProgress extends Schema.Class<ServiceStartProgress>(
   state: Schema.Literals(["running", "started", "failed", "stopped"]),
   steps: Schema.Array(ServiceStartStep),
   message: Schema.NullOr(Schema.String),
+  /** Null when the file declares no `[setup]`, or nothing in the plan runs a command. */
+  setup: Schema.NullOr(ServiceStartSetup).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
 }) {}
 
 /** A refusal as a person reads it: `web · cwd · is absolute; …`. */
