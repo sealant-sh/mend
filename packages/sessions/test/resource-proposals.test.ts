@@ -3,7 +3,12 @@ import {
   type ResourceDefinitionInput,
   ServiceRecipe,
 } from "@mend/domain/workbench";
-import { type MendTomlFile, parseMendToml, resolveDeclarations } from "@mend/sessions";
+import {
+  type MendTomlFile,
+  parseMendToml,
+  readResourceProposals,
+  resolveDeclarations,
+} from "@mend/sessions";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -66,7 +71,7 @@ describe("[resource.*] proposals in mend.toml", () => {
     expect(file.ignored).toEqual([]);
   });
 
-  it("refuses the ADR's secret name as written, which no project secret can have", () => {
+  it("refuses a lower-case secret name", () => {
     const file = parse(
       ADR_QUEUE.map((line) => line.replace('"RABBITMQ_PASSWORD"', '"rabbitmq-password"')),
     );
@@ -140,12 +145,12 @@ describe("[resource.*] proposals in mend.toml", () => {
     [
       "a reserved name",
       ["[resource.postgres]", 'image = "postgres:17"', "ports = { pg = 5432 }"],
-      "resource.postgres.name",
+      "resource.postgres",
     ],
     [
       "a name that is not a label",
       ["[resource.Queue]", 'image = "rabbitmq:4"', "ports = { amqp = 5672 }"],
-      "resource.Queue.name",
+      "resource.Queue",
     ],
     [
       "a bad env key",
@@ -295,5 +300,118 @@ describe("[resource.*] proposals in mend.toml", () => {
     expect(file.resources).toEqual([]);
     expect(file.refused).toEqual([]);
     expect(file.ignored).toEqual([{ name: null, key: "future" }]);
+  });
+
+  it("names the table, not a name key, when the table's name is refused", () => {
+    const file = parse(["[resource.Queue]", 'name = "queue"', 'image = "rabbitmq:4"', "ports = { amqp = 5672 }"]);
+    expect(file.refused.map(recipeRefusalLine)).toEqual([
+      "mend.toml · resource.Queue · is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -, not ending in -)",
+    ]);
+    expect(file.ignored.map((ignored) => ignored.key)).toEqual(["resource.Queue.name"]);
+  });
+
+  it("lists unknown keys in a ready or secret table that also lacks its required key", () => {
+    const file = parse([
+      "[resource.queue]",
+      'image = "rabbitmq:4"',
+      "ports = { amqp = 5672 }",
+      'ready = { cmd = ["probe"], interval = "5s" }',
+      'env = { PASS = { secrt = "PASSWORD", rotate = true } }',
+    ]);
+    expect(refusedKeys(file).toSorted()).toEqual(["resource.queue.env.PASS", "resource.queue.ready"]);
+    expect(file.ignored.map((ignored) => ignored.key).toSorted()).toEqual([
+      "resource.queue.env.PASS.rotate",
+      "resource.queue.env.PASS.secrt",
+      "resource.queue.ready.cmd",
+      "resource.queue.ready.interval",
+    ]);
+  });
+
+  it("reports every rule a table breaks in one read, when a rule's fields read", () => {
+    expect(refusedKeys(parse(["[resource.q]"]))).toEqual(["resource.q.image", "resource.q.ports"]);
+    expect(
+      refusedKeys(
+        parse([
+          "[resource.cache]",
+          'preset = "redis"',
+          'scope = "worktree"',
+          'image = "redis:7"',
+          "ports = { redis = 6379 }",
+          'exports = { ADDR = "{host}:{port}" }',
+          "limits = { memoryMiB = 1.5 }",
+        ]),
+      ).toSorted(),
+    ).toEqual(["resource.cache.exports", "resource.cache.limits.memoryMiB", "resource.cache.scope"]);
+  });
+
+  it("does not refuse an export for naming a port that is itself refused", () => {
+    const file = parse([
+      "[resource.queue]",
+      'image = "rabbitmq:4"',
+      "ports = { amqp = 70000 }",
+      'exports = { URL = "amqp://{host}:{port.amqp}/" }',
+    ]);
+    expect(refusedKeys(file)).toEqual(["resource.queue.ports.amqp"]);
+  });
+
+  it("refuses a volume name with the domain's own rule", () => {
+    const file = parse([
+      "[resource.queue]",
+      'image = "rabbitmq:4"',
+      "ports = { amqp = 5672 }",
+      'volumes = { data- = "/data" }',
+    ]);
+    expect(file.refused.map(recipeRefusalLine)).toEqual([
+      "mend.toml · resource.queue.volumes.data- · is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -, not ending in -)",
+    ]);
+  });
+
+  it("refuses a preset image with no tag or digest, and reads one pinned by digest", () => {
+    const untagged = parse(["[resource.db]", 'preset = "postgres"', 'image = "postgres"', "ports = { pg = 5432 }"]);
+    expect(untagged.resources).toEqual([]);
+    expect(untagged.refused.map(recipeRefusalLine)).toEqual([
+      'mend.toml · resource.db.image · has no tag or digest, and the postgres preset runs the version its image names, such as "postgres:<tag>"',
+    ]);
+    const pinned = parse([
+      "[resource.db]",
+      'preset = "postgres"',
+      `image = "postgres@sha256:${"a".repeat(64)}"`,
+      "ports = { pg = 5432 }",
+    ]);
+    expect(pinned.refused).toEqual([]);
+    expect(proposed(pinned)).toEqual(["db"]);
+  });
+
+  it("refuses both proposals that would set the same env name, each at its own key", () => {
+    const file = parse([
+      "[resource.db]",
+      'image = "ghcr.io/acme/db:1"',
+      "ports = { pg = 5432 }",
+      'exports = { MAIN_URL = "pg://{host}:{port}/main" }',
+      "",
+      "[resource.db-main]",
+      'image = "ghcr.io/acme/db:1"',
+      "ports = { pg = 5432 }",
+      'exports = { URL = "pg://{host}:{port}/" }',
+      "",
+      ...MAIL,
+    ]);
+    expect(proposed(file)).toEqual(["mail"]);
+    expect(file.refused.map(recipeRefusalLine)).toEqual([
+      "mend.toml · resource.db.exports.MAIN_URL · sets MEND_RESOURCE_DB_MAIN_URL, as db-main does too",
+      "mend.toml · resource.db-main.exports.URL · sets MEND_RESOURCE_DB_MAIN_URL, as db does too",
+    ]);
+  });
+});
+
+describe("readResourceProposals", () => {
+  it("returns each refusal and ignored key by its full key alone, which names the resource", () => {
+    expect(
+      readResourceProposals({ web: { image: "nginx:1.27", ports: { http: 0 }, weight: 2 } }),
+    ).toEqual({
+      proposals: [],
+      refused: [{ key: "resource.web.ports.http", message: "must be a port in 1..65535" }],
+      ignored: [{ key: "resource.web.weight" }],
+    });
   });
 });

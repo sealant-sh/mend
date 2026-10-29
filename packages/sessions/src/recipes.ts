@@ -344,8 +344,8 @@ export const parseMendToml = (
     const { resource, ...unread } = rest;
     const ignored = Object.keys(unread).map((key) => new IgnoredDeclaration({ name: null, key }));
     const resources = readResourceProposals(resource);
-    refused.push(...resources.refused.map((r) => new RecipeRefusal({ ...r, name: null })));
-    ignored.push(...resources.ignored.map((i) => new IgnoredDeclaration({ ...i, name: null })));
+    refused.push(...resources.refused.map((r) => new RecipeRefusal({ name: null, ...r })));
+    ignored.push(...resources.ignored.map((i) => new IgnoredDeclaration({ name: null, ...i })));
     for (const [name, entry] of Object.entries(services)) {
       if (!RECIPE_NAME.test(name)) {
         refused.push(

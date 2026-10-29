@@ -1,13 +1,18 @@
 import {
-  RESOURCE_NAME,
+  envNameCollisions,
+  imageReference,
+  ProjectResourceDefinition,
   RESOURCE_PRESETS,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
+  resourceEnvPrefix,
   type ResourceEnvValue,
+  ResourceLimits,
   resourceNameIssue,
   ResourcePort,
   ResourcePreset,
-  type ResourceReady,
+  ResourceReady,
+  type ResourceRefusal,
   ResourceScope,
   ResourceVolume,
 } from "@mend/domain/workbench";
@@ -17,7 +22,8 @@ import { Option, Schema } from "effect";
  * `[resource.*]` tables in `mend.toml` (ADR 0019, decision S8): proposals, which run only once a
  * manager approves them in project settings. A bad table refuses that resource alone, naming its
  * full key; the file's other resources still read. A key this Mend does not read is listed as
- * ignored, as recipes' are.
+ * ignored, as recipes' are. Fields are checked with the domain's schemas, so a proposal passes the
+ * rules a definition entered in settings does.
  *
  * ```toml
  * [resource.queue]
@@ -30,22 +36,11 @@ import { Option, Schema } from "effect";
  * ```
  */
 
-/** One refusal: the resource (null for the `resource` table itself), its full key, and why. */
-export interface ResourceProposalRefusal {
-  readonly name: string | null;
-  readonly key: string;
-  readonly message: string;
-}
-
-export interface ResourceProposalIgnored {
-  readonly name: string | null;
-  readonly key: string;
-}
-
 export interface ResourceProposals {
   readonly proposals: ReadonlyArray<ResourceDefinitionInput>;
-  readonly refused: ReadonlyArray<ResourceProposalRefusal>;
-  readonly ignored: ReadonlyArray<ResourceProposalIgnored>;
+  /** Keyed in full (`resource.queue.ports.amqp`), which names the resource. */
+  readonly refused: ReadonlyArray<ResourceRefusal>;
+  readonly ignored: ReadonlyArray<{ readonly key: string }>;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -63,19 +58,17 @@ const oneOf = (options: ReadonlyArray<string>): string => {
     : `${quoted.slice(0, -1).join(", ")} or ${quoted.at(-1)}`;
 };
 
-type Argv = readonly [string, ...Array<string>];
-
-const isArgv = (value: unknown): value is Argv =>
-  Array.isArray(value) &&
-  value.length > 0 &&
-  value.every((part) => typeof part === "string" && !part.includes("\0")) &&
-  value[0] !== "";
+const isImage = Schema.is(ProjectResourceDefinition.fields.image);
+const isCommand = Schema.is(ProjectResourceDefinition.fields.command);
+const isReady = Schema.is(ResourceReady);
+const isPortNumber = Schema.is(ResourcePort.fields.port);
+const isProtocol = Schema.is(ResourcePort.fields.protocol);
+const isPort = Schema.is(ResourcePort);
+const isVolumeName = Schema.is(ResourceVolume.fields.name);
+const isVolume = Schema.is(ResourceVolume);
 
 const ARGV_RULE =
   'must be a list: the executable, then its arguments, such as ["rabbitmq-diagnostics", "ping"]';
-
-const isPort = (value: unknown): value is number =>
-  typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535;
 
 /** `amqp = 5672`, or `dns = { port = 53, protocol = "udp" }`. */
 const readPort = (name: string, spec: unknown, context: KeyContext): ResourcePort | undefined => {
@@ -86,19 +79,19 @@ const readPort = (name: string, spec: unknown, context: KeyContext): ResourcePor
   }
   const { port, protocol = "tcp", ...rest } = isRecord(spec) ? spec : { port: spec };
   for (const extra of Object.keys(rest)) context.ignore(`${key}.${extra}`);
-  if (!isPort(port)) {
+  if (!isPortNumber(port)) {
     context.refuse(isRecord(spec) ? `${key}.port` : key, "must be a port in 1..65535");
     return undefined;
   }
-  if (protocol !== "tcp" && protocol !== "udp") {
-    context.refuse(`${key}.protocol`, `must be ${oneOf(["tcp", "udp"])}`);
+  if (!isProtocol(protocol)) {
+    context.refuse(`${key}.protocol`, `must be ${oneOf(ResourcePort.fields.protocol.literals)}`);
     return undefined;
   }
   const read = { name, port, protocol };
-  if (Schema.is(ResourcePort)(read)) return read;
+  if (isPort(read)) return read;
   context.refuse(
     key,
-    "is not a port name (a lowercase letter, then lowercase letters, digits or single -, at most 15)",
+    "is not a port name (a lowercase letter, then lowercase letters, digits or single -, not ending in -, at most 15)",
   );
   return undefined;
 };
@@ -108,18 +101,24 @@ const allRead = <A>(values: ReadonlyArray<A | undefined>): ReadonlyArray<A> | un
   return read.length === values.length ? read : undefined;
 };
 
+const ENV_VALUE_RULE = 'must be a string or { secret = "NAME" }';
+
 const readEnvValue = (
   name: string,
   setting: unknown,
   context: KeyContext,
 ): ResourceEnvValue | undefined => {
   if (typeof setting === "string") return setting;
-  if (!isRecord(setting) || !("secret" in setting)) {
-    context.refuse(`env.${name}`, 'must be a string or { secret = "NAME" }');
+  if (!isRecord(setting)) {
+    context.refuse(`env.${name}`, ENV_VALUE_RULE);
     return undefined;
   }
   const { secret, ...rest } = setting;
   for (const extra of Object.keys(rest)) context.ignore(`env.${name}.${extra}`);
+  if (secret === undefined) {
+    context.refuse(`env.${name}`, ENV_VALUE_RULE);
+    return undefined;
+  }
   if (typeof secret === "string") return { secret };
   context.refuse(`env.${name}.secret`, "must be a project secret's name");
   return undefined;
@@ -145,25 +144,25 @@ const readTable =
     return all === undefined ? undefined : Object.fromEntries(all);
   };
 
-const LIMITS = {
-  cpu: { valid: Number.isFinite, rule: "must be a number above 0" },
-  memoryMiB: { valid: Number.isSafeInteger, rule: "must be a whole number of MiB above 0" },
-  diskGiB: { valid: Number.isSafeInteger, rule: "must be a whole number of GiB above 0" },
-} as const;
+const LIMIT_RULES: { readonly [K in keyof ResourceLimits]: string } = {
+  cpu: "must be a number above 0",
+  memoryMiB: "must be a whole number of MiB above 0",
+  diskGiB: "must be a whole number of GiB above 0",
+};
 
-const isLimit = (key: string): key is keyof typeof LIMITS => Object.hasOwn(LIMITS, key);
+const isLimitKey = (key: string): key is keyof ResourceLimits => Object.hasOwn(LIMIT_RULES, key);
 
 interface Fields {
   readonly image: string;
   readonly scope: ResourceScope;
   readonly preset: ResourcePreset;
-  readonly command: Argv;
-  readonly ports: ReadonlyArray<ResourcePort>;
-  readonly volumes: ReadonlyArray<ResourceVolume>;
-  readonly env: Readonly<Record<string, ResourceEnvValue>>;
-  readonly exports: Readonly<Record<string, string>>;
+  readonly command: ResourceDefinitionInput["command"];
+  readonly ports: ResourceDefinitionInput["ports"];
+  readonly volumes: ResourceDefinitionInput["volumes"];
+  readonly env: ResourceDefinitionInput["env"];
+  readonly exports: ResourceDefinitionInput["exports"];
   readonly ready: ResourceReady;
-  readonly limits: Readonly<Partial<Record<keyof typeof LIMITS, number>>>;
+  readonly limits: Partial<ResourceLimits>;
 }
 
 type Reader<K extends keyof Fields> = (
@@ -179,18 +178,18 @@ const literalOf =
     return found;
   };
 
-const READY_KINDS = ["tcp", "none", "preset"] as const;
+const READY_RULE = 'must be "tcp", "none", "preset" or { command = [...] }';
 
 const READERS: { readonly [K in keyof Fields]: Reader<K> } = {
   image: (value, context) => {
-    if (typeof value === "string" && /^\S+$/.test(value)) return value;
+    if (isImage(value)) return value;
     context.refuse("image", 'must be an image reference, such as "rabbitmq:4-management"');
     return undefined;
   },
   scope: literalOf("scope", ResourceScope.literals),
   preset: literalOf("preset", ResourcePreset.literals),
   command: (value, context) => {
-    if (isArgv(value)) return value;
+    if (isCommand(value)) return value;
     context.refuse("command", ARGV_RULE);
     return undefined;
   },
@@ -212,12 +211,11 @@ const READERS: { readonly [K in keyof Fields]: Reader<K> } = {
     return allRead(
       Object.entries(value).map(([name, mountPath]) => {
         const read = { name, mountPath };
-        if (Schema.is(ResourceVolume)(read)) return read;
+        if (isVolume(read)) return read;
         context.refuse(
           `volumes.${name}`,
-          RESOURCE_NAME.test(name)
-            ? "must be an absolute, normalized path below /"
-            : "is not a volume name (a lowercase letter, then lowercase letters, digits or -)",
+          (isVolumeName(name) ? null : resourceNameIssue(name)) ??
+            "must be an absolute, normalized path below /",
         );
         return undefined;
       }),
@@ -234,15 +232,20 @@ const READERS: { readonly [K in keyof Fields]: Reader<K> } = {
     },
   ),
   ready: (value, context) => {
-    const kind = READY_KINDS.find((candidate) => candidate === value);
-    if (kind !== undefined) return { kind };
-    if (!isRecord(value) || !("command" in value)) {
-      context.refuse("ready", 'must be "tcp", "none", "preset" or { command = [...] }');
+    const named = { kind: value };
+    if (typeof value === "string" && isReady(named)) return named;
+    if (!isRecord(value)) {
+      context.refuse("ready", READY_RULE);
       return undefined;
     }
     const { command, ...rest } = value;
     for (const extra of Object.keys(rest)) context.ignore(`ready.${extra}`);
-    if (isArgv(command)) return { kind: "command", argv: command };
+    if (command === undefined) {
+      context.refuse("ready", READY_RULE);
+      return undefined;
+    }
+    const probe = { kind: "command", argv: command };
+    if (isReady(probe)) return probe;
     context.refuse("ready.command", ARGV_RULE);
     return undefined;
   },
@@ -254,16 +257,16 @@ const READERS: { readonly [K in keyof Fields]: Reader<K> } = {
       );
       return undefined;
     }
-    const limits: Partial<Record<keyof typeof LIMITS, number>> = {};
+    const limits: Partial<Record<keyof ResourceLimits, number>> = {};
     let refused = false;
     for (const [key, limit] of Object.entries(value)) {
-      if (!isLimit(key)) {
+      if (!isLimitKey(key)) {
         context.ignore(`limits.${key}`);
-      } else if (typeof limit === "number" && limit > 0 && LIMITS[key].valid(limit)) {
+      } else if (Schema.is(ResourceLimits.fields[key])(limit)) {
         limits[key] = limit;
       } else {
         refused = true;
-        context.refuse(`limits.${key}`, LIMITS[key].rule);
+        context.refuse(`limits.${key}`, LIMIT_RULES[key]);
       }
     }
     return refused ? undefined : limits;
@@ -285,22 +288,56 @@ const defaultReady = (
       ? { kind: "tcp" }
       : { kind: "none" };
 
+type Field = keyof Fields | "name";
+
+/**
+ * The fields each rule across fields reads, by the first segment of the key it refuses. A rule
+ * whose fields a reader refused is not reported, since it would judge a stand-in.
+ */
+const READS: Readonly<Record<string, ReadonlyArray<Field>>> = {
+  name: ["name"],
+  scope: ["scope", "preset"],
+  ports: ["ports"],
+  volumes: ["volumes"],
+  env: ["env"],
+  image: ["image", "preset"],
+  ready: ["ready", "preset", "ports"],
+  exports: ["exports", "preset", "ports", "env"],
+};
+
+/** Stands in for a refused name or image, which `READS` then keeps out of every report. */
+const STAND_IN = "refused";
+
+/** A preset runs the version its image names (ADR 0019, "Versions"); `latest` would move under it. */
+const untaggedPreset = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> =>
+  def.preset === null || def.image.includes("@") || imageReference(def.image).tag !== ""
+    ? []
+    : [
+        {
+          key: "image",
+          message: `has no tag or digest, and the ${def.preset} preset runs the version its image names, such as "${def.image}:<tag>"`,
+        },
+      ];
+
 /** Relative keys (`ports.amqp`, or "" for the table itself); the caller prefixes them. */
 const readResource = (
   name: string,
   entry: Record<string, unknown>,
   context: KeyContext,
 ): ResourceDefinitionInput | null => {
-  let refused = false;
+  const refusedFields = new Set<string>();
   const guarded: KeyContext = {
     refuse: (key, message) => {
-      refused = true;
+      refusedFields.add(key.split(".")[0] ?? key);
       context.refuse(key, message);
     },
     ignore: context.ignore,
   };
   const nameIssue = resourceNameIssue(name);
-  if (nameIssue !== null) guarded.refuse("name", nameIssue);
+  if (nameIssue !== null) {
+    refusedFields.add("name");
+    context.refuse("", nameIssue);
+  }
 
   const fields: { -readonly [K in keyof Fields]?: Fields[K] } = {};
   const assign = <K extends keyof Fields>(key: K, value: unknown) => {
@@ -319,14 +356,13 @@ const readResource = (
         : `is required, with its tag: the ${fields.preset} preset runs ${RESOURCE_PRESETS[fields.preset].images.join(", ")}`,
     );
   }
-  if (refused) return null;
 
   const ports = fields.ports ?? [];
   const decoded = decodeDefinition({
-    name,
+    name: refusedFields.has("name") ? STAND_IN : name,
     scope: fields.scope ?? "project",
     preset: fields.preset ?? null,
-    image: fields.image,
+    image: fields.image ?? STAND_IN,
     command: fields.command ?? null,
     ports,
     env: fields.env ?? {},
@@ -339,9 +375,24 @@ const readResource = (
     context.refuse("", "is not a resource definition Mend can read");
     return null;
   }
-  const refusals = resourceDefinitionRefusals(decoded.value);
-  for (const refusal of refusals) context.refuse(refusal.key, refusal.message);
-  return refusals.length === 0 ? decoded.value : null;
+  const reported = [
+    ...resourceDefinitionRefusals(decoded.value),
+    ...untaggedPreset(decoded.value),
+  ].filter((refusal) => {
+    const reads = READS[refusal.key.split(".")[0] ?? refusal.key];
+    return reads === undefined
+      ? refusedFields.size === 0
+      : !reads.some((field) => refusedFields.has(field));
+  });
+  for (const refusal of reported) context.refuse(refusal.key, refusal.message);
+  return refusedFields.size === 0 && reported.length === 0 ? decoded.value : null;
+};
+
+/** The key a collision refuses: the export that sets the name, else the table. */
+const collisionKey = (def: ResourceDefinitionInput, env: string): string => {
+  const prefix = resourceEnvPrefix(def.name);
+  const suffix = env.startsWith(prefix) ? env.slice(prefix.length) : "";
+  return Object.hasOwn(def.exports, suffix) ? `exports.${suffix}` : "";
 };
 
 /** `mend.toml`'s `resource` value, as parsed. Absent proposes nothing. */
@@ -350,31 +401,41 @@ export const readResourceProposals = (value: unknown): ResourceProposals => {
   if (!isRecord(value)) {
     return {
       proposals: [],
-      refused: [
-        {
-          name: null,
-          key: "resource",
-          message: "must be a table of resources ([resource.<name>])",
-        },
-      ],
+      refused: [{ key: "resource", message: "must be a table of resources ([resource.<name>])" }],
       ignored: [],
     };
   }
-  const proposals: ResourceDefinitionInput[] = [];
-  const refused: ResourceProposalRefusal[] = [];
-  const ignored: ResourceProposalIgnored[] = [];
-  for (const [name, entry] of Object.entries(value)) {
+  const read: ResourceDefinitionInput[] = [];
+  const refused: ResourceRefusal[] = [];
+  const ignored: Array<{ readonly key: string }> = [];
+  const contextOf = (name: string): KeyContext => {
     const full = (key: string) => (key === "" ? `resource.${name}` : `resource.${name}.${key}`);
-    const context: KeyContext = {
-      refuse: (key, message) => refused.push({ name, key: full(key), message }),
-      ignore: (key) => ignored.push({ name, key: full(key) }),
+    return {
+      refuse: (key, message) => refused.push({ key: full(key), message }),
+      ignore: (key) => ignored.push({ key: full(key) }),
     };
+  };
+  for (const [name, entry] of Object.entries(value)) {
+    const context = contextOf(name);
     if (!isRecord(entry)) {
       context.refuse("", "must be a table");
       continue;
     }
     const proposal = readResource(name, entry, context);
-    if (proposal !== null) proposals.push(proposal);
+    if (proposal !== null) read.push(proposal);
   }
-  return { proposals, refused, ignored };
+
+  // Two proposals that set one env name can never be in use together (ADR 0019, A1).
+  const collided = new Set<string>();
+  for (const collision of envNameCollisions(read)) {
+    for (const def of read.filter((one) => collision.resources.includes(one.name))) {
+      collided.add(def.name);
+      const others = collision.resources.filter((other) => other !== def.name);
+      contextOf(def.name).refuse(
+        collisionKey(def, collision.name),
+        `sets ${collision.name}, as ${others.join(" and ")} does too`,
+      );
+    }
+  }
+  return { proposals: read.filter((def) => !collided.has(def.name)), refused, ignored };
 };
