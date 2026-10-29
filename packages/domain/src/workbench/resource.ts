@@ -143,7 +143,30 @@ const addressSuffixes = (def: ResourceDefinitionInput): ReadonlyArray<string> =>
   ...def.ports.map((port) => `PORT_${envPart(port.name)}`),
 ];
 
-const PLACEHOLDER = /\{([^{}]*)\}/g;
+type TemplateParse =
+  | { readonly ok: true; readonly placeholders: ReadonlyArray<string> }
+  | { readonly ok: false; readonly issue: string };
+
+/** A template has no escape, so every brace opens or closes a placeholder. */
+const parseTemplate = (template: string): TemplateParse => {
+  const placeholders: Array<string> = [];
+  let open: number | null = null;
+  for (let at = 0; at < template.length; at++) {
+    if (template[at] === "{") {
+      if (open !== null) {
+        return { ok: false, issue: `opens a { at ${at} inside the placeholder at ${open}` };
+      }
+      open = at;
+    } else if (template[at] === "}") {
+      if (open === null) return { ok: false, issue: `closes a } at ${at} that no { opened` };
+      placeholders.push(template.slice(open + 1, at));
+      open = null;
+    }
+  }
+  return open === null
+    ? { ok: true, placeholders }
+    : { ok: false, issue: `leaves the { at ${open} open` };
+};
 
 const exportRefusals = (
   def: ResourceDefinitionInput,
@@ -157,14 +180,15 @@ const exportRefusals = (
   if (addressSuffixes(def).includes(name)) {
     return [{ key, message: "is set by Mend for every resource" }];
   }
+  const parsed = parseTemplate(template);
+  if (!parsed.ok) return [{ key, message: parsed.issue }];
   const known = new Set([
     "host",
     "port",
     ...def.ports.map((port) => `port.${port.name}`),
     ...Object.keys(def.env).map((env) => `env.${env}`),
   ]);
-  return [...template.matchAll(PLACEHOLDER)]
-    .map((match) => match[1] ?? "")
+  return parsed.placeholders
     .filter((placeholder) => !known.has(placeholder))
     .map((placeholder) => ({
       key,

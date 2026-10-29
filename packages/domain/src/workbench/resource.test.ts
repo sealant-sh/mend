@@ -170,6 +170,9 @@ describe("rules across a definition's fields", () => {
     ["an export over a named port", { exports: { PORT_AMQP: "{port}" } }, "exports.PORT_AMQP"],
     ["an export of an unknown port", { exports: { URL: "{host}:{port.http}" } }, "exports.URL"],
     ["an export of an env the definition lacks", { exports: { URL: "{env.PASS}" } }, "exports.URL"],
+    ["an export with a { never closed", { exports: { URL: "amqp://{host}:{port.amqp" } }, "exports.URL"],
+    ["an export with a } never opened", { exports: { URL: "amqp://{host}}" } }, "exports.URL"],
+    ["an export with nested braces", { exports: { URL: "amqp://{{host}}:{port.amqp}" } }, "exports.URL"],
     [
       "an env key that is not an env name",
       { env: { "discovery.type": "single-node" } },
@@ -208,6 +211,11 @@ describe("rules across a definition's fields", () => {
     [redis, "valkey/valkey:8"],
   ])("accepts an image of the preset's family: %#", (preset, image) => {
     expect(resourceDefinitionRefusals(preset({ image }))).toEqual([]);
+  });
+
+  it("says which brace an export leaves open", () => {
+    const [refusal] = resourceDefinitionRefusals(define({ exports: { URL: "{host}:{port" } }));
+    expect(refusal?.message).toMatch(/\{ at 7/);
   });
 
   it("says why a worktree Redis waits", () => {
