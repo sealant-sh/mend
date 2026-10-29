@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ask, AskDialog } from "@/components/ask";
 import { useAgentConversation } from "@/data/agent-conversation";
-import { saveConfig, useSession } from "@/data/live";
+import { clearConfig, saveConfig, useSession } from "@/data/live";
 import { HttpPairingClient, type PairingDevice } from "@/data/pairing-client";
+import { PairingBoundary } from "@/data/pairing-scope";
 
 vi.mock("@react-native-async-storage/async-storage", async () => ({
   default: (await import("@/test/memory-storage")).storage,
@@ -17,6 +18,11 @@ const SESSION = "session-a";
 const A_HEADER = "rotate the payroll keys";
 const A_PROMPT = "print the payroll export for March";
 const A_REPLY = "Here is the March payroll export";
+const A_LATE = "The April export is attached";
+
+const OWNER_CODE = "ABCD2345";
+const OTHER_ACCOUNT_CODE = "EFGH6789";
+const OWNER_TOKEN = `token-a.example-${OWNER_CODE}`;
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 const notFound = () => json({ _tag: "NotFound", message: "session not found" }, 404);
@@ -47,45 +53,64 @@ const turnA = {
   error: null,
   createdAt: at,
 };
-const replyA = {
-  id: "item-a",
-  seq: 1,
+const itemA = (seq: number, text: string) => ({
+  id: `item-a-${seq}`,
+  seq,
   turnId: "turn-a",
   kind: "agent_message",
   status: "completed",
   title: null,
-  text: A_REPLY,
+  text,
   data: null,
   createdAt: at,
   updatedAt: at,
-};
-
-const pairedAs = (host: string) => ({
-  url: `https://${host}`,
-  token: `token-${host}`,
-  device: { name: "Test phone" },
-  user: { id: `user-${host}`, name: host, email: `${host}@example.com` },
 });
 
-// Two machines, one account each. Only machine A's account owns the session.
-const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = new URL(String(input));
-  if (url.pathname === "/api/pair") return json(pairedAs(url.host));
-  const bearer = new Headers(init?.headers).get("authorization");
-  if (url.host !== "a.example" || bearer !== "Bearer token-a.example") return notFound();
+const pairedAs = (host: string, code: string) => ({
+  url: `https://${host}`,
+  token: `token-${host}-${code}`,
+  device: { name: "Test phone" },
+  user: { id: `user-${host}-${code}`, name: host, email: `${host}@example.com` },
+});
+
+/** Every request the phone made, as `host path?query`, with the bearer it carried. */
+let requests: Array<{ readonly line: string; readonly bearer: string | null }> = [];
+/** While set, machine A's owner gets every answer only when the test releases it. */
+let holdOwner: Array<() => void> | null = null;
+let ownerItems = [itemA(1, A_REPLY)];
+
+const answerOwner = (url: URL): Response => {
   if (url.pathname === `/api/sessions/${SESSION}`) return json(accountA);
   if (url.pathname === `/api/sessions/${SESSION}/turns`) return json([turnA]);
   if (url.pathname === `/api/sessions/${SESSION}/items`) {
-    return json(url.searchParams.get("after") === "0" ? [replyA] : []);
+    const after = Number(url.searchParams.get("after"));
+    return json(ownerItems.filter((item) => item.seq > after));
   }
   if (url.pathname === `/api/sessions/${SESSION}/requests`) return json([]);
   return notFound();
 };
 
+// Machine A holds two accounts, machine B one. Only A's owner can read the session.
+const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  const url = new URL(String(input));
+  const bearer = new Headers(init?.headers).get("authorization");
+  requests.push({ line: `${url.host} ${url.pathname}${url.search}`, bearer });
+  if (url.pathname === "/api/pair") {
+    const body: unknown = JSON.parse(String(init?.body));
+    const code =
+      typeof body === "object" && body !== null && "code" in body ? String(body.code) : "";
+    return json(pairedAs(url.host, code));
+  }
+  if (url.host !== "a.example" || bearer !== `Bearer ${OWNER_TOKEN}`) return notFound();
+  const held = holdOwner;
+  if (held === null) return answerOwner(url);
+  return new Promise((resolve) => held.push(() => resolve(answerOwner(url))));
+};
+
 /** What the session screen reads for one session: its header and its conversation. */
 const SessionReader = ({ sessionId }: { readonly sessionId: string }) => {
   const detail = useSession(sessionId);
-  const conversation = useAgentConversation(sessionId, true, false);
+  const conversation = useAgentConversation(sessionId, true, true);
   return (
     <div>
       <p>{detail.data?.session.label}</p>
@@ -101,24 +126,49 @@ const SessionReader = ({ sessionId }: { readonly sessionId: string }) => {
 
 const device: PairingDevice = { name: "Test phone", platform: "web" };
 const pairing = new HttpPairingClient({ saveConfig });
-const pair = (host: string) =>
-  act(() => pairing.claim({ url: `https://${host}`, code: "ABCD2345" }, device));
+const pair = async (host: string, code = OWNER_CODE) => {
+  const outcome = await act(() => pairing.claim({ url: `https://${host}`, code }, device));
+  expect(outcome.state).toBe("paired");
+};
 
 let root: Root;
 let host: HTMLDivElement;
-// One client for the app's whole life, as `app/_layout.tsx` holds it.
-let client: QueryClient;
 
 const settle = () => act(() => vi.advanceTimersByTimeAsync(10));
-const show = (node: ReactNode) =>
-  act(() => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>));
-const text = () => host.textContent ?? "";
+// The app's own boundary, mounted once as the root layout mounts it; nothing above it.
+const mount = (node: ReactNode) =>
+  act(() => root.render(<PairingBoundary>{node}</PairingBoundary>));
+const text = () => document.body.textContent ?? "";
+const expectNothingOfA = () => {
+  expect(text()).not.toContain(A_HEADER);
+  expect(text()).not.toContain(A_PROMPT);
+  expect(text()).not.toContain(A_REPLY);
+  expect(text()).not.toContain(A_LATE);
+};
+const itemReadsAfter = (hostName: string) =>
+  requests
+    .filter(({ line }) => line.startsWith(`${hostName} /api/sessions/${SESSION}/items`))
+    .map(({ line }) => new URL(`https://${line.split(" ")[1]}`).searchParams.get("after"));
 
-beforeEach(() => {
+/** Pair as A's owner, open A's session, and see all of it. */
+const readAsOwner = async () => {
+  await pair("a.example");
+  mount(<SessionReader sessionId={SESSION} />);
+  await settle();
+  expect(text()).toContain(A_HEADER);
+  expect(text()).toContain(A_PROMPT);
+  expect(text()).toContain(A_REPLY);
+  requests = [];
+};
+
+beforeEach(async () => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
   vi.useFakeTimers();
   vi.stubGlobal("fetch", vi.fn(serve));
-  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  requests = [];
+  holdOwner = null;
+  ownerItems = [itemA(1, A_REPLY)];
+  await clearConfig();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -127,29 +177,81 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
-  client.clear();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
 describe("a conversation under a pairing", () => {
-  it("is not readable once the phone is paired to another account", async () => {
-    const first = await pair("a.example");
-    expect(first.state).toBe("paired");
-    show(<SessionReader sessionId={SESSION} />);
+  it("is gone the moment the phone pairs to another machine, and stays gone", async () => {
+    await readAsOwner();
+
+    await pair("b.example");
+    expectNothingOfA();
+
     await settle();
+    expect(requests.some(({ line }) => line.startsWith("b.example /api/sessions/"))).toBe(true);
+    expectNothingOfA();
+    expect(itemReadsAfter("b.example")).toEqual(["0"]);
+  });
+
+  it("is gone after Unpair", async () => {
+    await readAsOwner();
+
+    await act(() => clearConfig());
+    expectNothingOfA();
+    await settle();
+    expectNothingOfA();
+  });
+
+  it("is gone after pairing to another account on the same machine", async () => {
+    await readAsOwner();
+
+    await pair("a.example", OTHER_ACCOUNT_CODE);
+    expectNothingOfA();
+    await settle();
+    expectNothingOfA();
+    expect(itemReadsAfter("a.example")).toEqual(["0"]);
+  });
+
+  it("never takes an answer A's machine sends after the re-pair", async () => {
+    await readAsOwner();
+    holdOwner = [];
+    ownerItems = [itemA(1, A_REPLY), itemA(2, A_LATE)];
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    const held = holdOwner;
+    expect(held.length).toBeGreaterThan(0);
+
+    await pair("b.example");
+    holdOwner = null;
+    await act(async () => {
+      for (const release of held) release();
+    });
+    await settle();
+    expectNothingOfA();
+  });
+
+  it("starts empty when the phone pairs back to the first account", async () => {
+    await readAsOwner();
+    await pair("b.example");
+    await settle();
+
+    holdOwner = [];
+    await pair("a.example");
+    expectNothingOfA();
+    await settle();
+    expectNothingOfA();
+    expect(itemReadsAfter("a.example")).toEqual(["0"]);
+  });
+});
+
+describe("a question on the web dialog", () => {
+  it("is not left on screen once the pairing it was asked under ends", async () => {
+    await pair("a.example");
+    mount(<AskDialog />);
+    act(() => ask("Stop this session?", A_HEADER, [{ text: "Stop session" }]));
     expect(text()).toContain(A_HEADER);
-    expect(text()).toContain(A_PROMPT);
-    expect(text()).toContain(A_REPLY);
 
-    show(null);
-    const second = await pair("b.example");
-    expect(second.state).toBe("paired");
-    show(<SessionReader sessionId={SESSION} />);
-    await settle();
-
+    await pair("b.example");
     expect(text()).not.toContain(A_HEADER);
-    expect(text()).not.toContain(A_PROMPT);
-    expect(text()).not.toContain(A_REPLY);
   });
 });

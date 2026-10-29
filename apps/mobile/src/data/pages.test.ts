@@ -13,6 +13,7 @@ import {
   transcriptPageOf,
   withPagesInPlace,
 } from "./pages";
+import { pairingKeyOf } from "./pairing-key";
 
 const PAGE_WIRE = {
   id: "page-1",
@@ -130,19 +131,35 @@ describe("pages in the terminal transcript", () => {
 });
 
 describe("the full-screen route", () => {
+  const pairedA = pairingKeyOf({ url: "https://a.example", token: "token-a" });
+
   it("carries the whole ref and gives it back", () => {
     const page = pageOf(PAGE_WIRE);
     if (page === null) throw new Error("no page");
-    expect(pageOfRoute(pageRouteParams(page))).toEqual(page);
+    expect(pageOfRoute(pageRouteParams(page, pairedA), pairedA)).toEqual(page);
   });
 
   it("opens nothing from a route missing a field or holding a repeated one", () => {
     const page = pageOf(PAGE_WIRE);
     if (page === null) throw new Error("no page");
-    const { title: _title, ...untitled } = pageRouteParams(page);
-    expect(pageOfRoute(untitled)).toBeNull();
-    expect(pageOfRoute({ ...pageRouteParams(page), id: ["a", "b"] })).toBeNull();
-    expect(pageOfRoute({ ...pageRouteParams(page), height: "tall" })).toBeNull();
+    const { title: _title, ...untitled } = pageRouteParams(page, pairedA);
+    expect(pageOfRoute(untitled, pairedA)).toBeNull();
+    const { pairing: _pairing, ...unstamped } = pageRouteParams(page, pairedA);
+    expect(pageOfRoute(unstamped, pairedA)).toBeNull();
+    expect(pageOfRoute({ ...pageRouteParams(page, pairedA), id: ["a", "b"] }, pairedA)).toBeNull();
+    expect(pageOfRoute({ ...pageRouteParams(page, pairedA), height: "tall" }, pairedA)).toBeNull();
+  });
+
+  it("shows nothing of a page opened under another pairing, not even its title", () => {
+    const page = pageOf(PAGE_WIRE);
+    if (page === null) throw new Error("no page");
+    const params = pageRouteParams(page, pairedA);
+    expect(
+      pageOfRoute(params, pairingKeyOf({ url: "https://b.example", token: "token-b" })),
+    ).toBeNull();
+    expect(
+      pageOfRoute(params, pairingKeyOf({ url: "https://a.example", token: "token-c" })),
+    ).toBeNull();
   });
 });
 
