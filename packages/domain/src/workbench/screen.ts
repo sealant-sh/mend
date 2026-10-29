@@ -229,3 +229,128 @@ export const ScreenEpisode = Schema.Struct({
   personHeld: Schema.Boolean,
 });
 export type ScreenEpisode = typeof ScreenEpisode.Type;
+
+export type ScreenInputEvent =
+  | { readonly _tag: "Take"; readonly by: string; readonly connection: ViewerConnectionId }
+  | { readonly _tag: "Fenced"; readonly epoch: number }
+  | {
+      readonly _tag: "Lapse";
+      readonly connection: ViewerConnectionId;
+      readonly reason: Exclude<ScreenLapse, "restart">;
+      readonly at: Date;
+    }
+  | { readonly _tag: "HandBack"; readonly by: string }
+  | { readonly _tag: "PausedTimeout"; readonly at: Date }
+  | { readonly _tag: "AgentLooked" }
+  | { readonly _tag: "AgentActed" }
+  | { readonly _tag: "Boot"; readonly at: Date }
+  | { readonly _tag: "Ended" };
+
+export interface ScreenInputLog {
+  readonly actor: Extract<ScreenActor, { readonly _tag: "Person" | "Mend" }>;
+  readonly body: Extract<ScreenLogBody, { readonly _tag: "Taken" | "HandedBack" | "Paused" }>;
+}
+
+/**
+ * `Changed`: store `next`; when `releases`, the hand sends a key-up and a button-up for everything
+ * the former holder holds before anything behind it; append `log` when present.
+ */
+export type ScreenInputTransition =
+  | {
+      readonly _tag: "Changed";
+      readonly next: ScreenInput;
+      readonly releases: boolean;
+      readonly log: ScreenInputLog | null;
+    }
+  | { readonly _tag: "Unchanged" }
+  | { readonly _tag: "Refused"; readonly why: "owner-only" | "held" | "look-first" };
+
+const UNCHANGED: ScreenInputTransition = { _tag: "Unchanged" };
+
+const changed = (
+  next: ScreenInput,
+  releases: boolean,
+  log: ScreenInputLog | null = null,
+): ScreenInputTransition => ({ _tag: "Changed", next, releases, log });
+
+const handedBack = (epoch: number, actor: ScreenInputLog["actor"]): ScreenInputTransition =>
+  changed({ _tag: "AwaitingAgent", epoch }, false, { actor, body: { _tag: "HandedBack", epoch } });
+
+const holderConnection = (input: ScreenInput): ViewerConnectionId | null => {
+  if (input._tag === "Person") return input.connection;
+  return input._tag === "Fencing" && input.to._tag === "Person" ? input.to.connection : null;
+};
+
+/** ADR 0020's table of who holds the input, applied under the screen row's lock. */
+export const transitionInput = (
+  input: ScreenInput,
+  event: ScreenInputEvent,
+  owner: string | null,
+): ScreenInputTransition => {
+  const epoch = input.epoch + 1;
+  const pause = (reason: ScreenLapse, since: Date, releases: boolean): ScreenInputTransition =>
+    changed({ _tag: "Paused", epoch, reason, since }, releases, {
+      actor: { _tag: "Mend" },
+      body: { _tag: "Paused", reason },
+    });
+  switch (event._tag) {
+    case "Take":
+      if (owner === null || event.by !== owner) return { _tag: "Refused", why: "owner-only" };
+      if (holderConnection(input) === event.connection) return UNCHANGED;
+      return changed(
+        {
+          _tag: "Fencing",
+          epoch,
+          by: event.by,
+          to: { _tag: "Person", connection: event.connection },
+        },
+        input._tag === "Agent" || input._tag === "Person",
+      );
+    case "Fenced": {
+      if (input._tag !== "Fencing" || input.epoch !== event.epoch) return UNCHANGED;
+      const actor: ScreenInputLog["actor"] = { _tag: "Person", userId: input.by };
+      if (input.to._tag === "AwaitingAgent") return handedBack(input.epoch, actor);
+      return changed(
+        { _tag: "Person", epoch: input.epoch, userId: input.by, connection: input.to.connection },
+        false,
+        { actor, body: { _tag: "Taken", epoch: input.epoch } },
+      );
+    }
+    case "Lapse":
+      return holderConnection(input) === event.connection
+        ? pause(event.reason, event.at, input._tag === "Person")
+        : UNCHANGED;
+    case "HandBack":
+      if (owner === null || event.by !== owner) return { _tag: "Refused", why: "owner-only" };
+      if (input._tag === "Paused") return handedBack(epoch, { _tag: "Person", userId: event.by });
+      if (input._tag === "Person" || (input._tag === "Fencing" && input.to._tag === "Person")) {
+        return changed(
+          { _tag: "Fencing", epoch, by: event.by, to: { _tag: "AwaitingAgent" } },
+          input._tag === "Person",
+        );
+      }
+      return UNCHANGED;
+    case "PausedTimeout":
+      return input._tag === "Paused" &&
+        event.at.getTime() - input.since.getTime() >= SCREEN_LIMITS.pausedTimeoutMs
+        ? handedBack(epoch, { _tag: "Mend" })
+        : UNCHANGED;
+    case "AgentLooked":
+      if (input._tag === "Agent") return UNCHANGED;
+      return input._tag === "AwaitingAgent"
+        ? changed({ _tag: "Agent", epoch }, false)
+        : { _tag: "Refused", why: "held" };
+    case "AgentActed":
+      if (input._tag === "Agent") return UNCHANGED;
+      return { _tag: "Refused", why: input._tag === "AwaitingAgent" ? "look-first" : "held" };
+    case "Boot":
+      if (input._tag === "Agent") return changed({ _tag: "AwaitingAgent", epoch }, false);
+      return input._tag === "Fencing" || input._tag === "Person"
+        ? pause("restart", event.at, false)
+        : UNCHANGED;
+    case "Ended":
+      return input._tag === "AwaitingAgent"
+        ? UNCHANGED
+        : changed({ _tag: "AwaitingAgent", epoch }, false);
+  }
+};
