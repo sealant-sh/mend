@@ -4,8 +4,11 @@ import { describe, expect, it } from "vitest";
 import {
   choicesFor,
   defaultChoiceFor,
+  envNameCollisions,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
+  resourceEnvNames,
+  resourceEnvPrefix,
   ResourceName,
   resourceNameIssue,
   WorktreeSelection,
@@ -211,5 +214,116 @@ describe("a worktree's selection", () => {
     ],
   ])("refuses %s", (_, raw) => {
     expect(() => read(raw)).toThrow();
+  });
+});
+
+const postgres = (name = "db") =>
+  define({
+    name,
+    preset: "postgres",
+    image: "postgres:17",
+    ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
+    volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
+    ready: { kind: "preset" },
+  });
+
+const redis = (name = "cache") =>
+  define({
+    name,
+    preset: "redis",
+    image: "redis:8",
+    ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
+    volumes: [{ name: "data", mountPath: "/data" }],
+    ready: { kind: "preset" },
+  });
+
+describe("env names", () => {
+  it("writes the name in upper case with - as _", () => {
+    expect(resourceEnvPrefix(ResourceName.make("mail-catcher"))).toBe(
+      "MEND_RESOURCE_MAIL_CATCHER_",
+    );
+  });
+
+  it("gives the host, the first port, each named port and the exports", () => {
+    const mail = define({
+      name: "mail-catcher",
+      image: "axllent/mailpit:v1.21",
+      ports: [
+        { name: "smtp", port: 1025, protocol: "tcp" },
+        { name: "web-ui", port: 8025, protocol: "tcp" },
+      ],
+      exports: { SMTP_URL: "smtp://{host}:{port.smtp}" },
+    });
+    expect(resourceEnvNames(mail, { onlyOfItsEngine: true })).toEqual([
+      "MEND_RESOURCE_MAIL_CATCHER_HOST",
+      "MEND_RESOURCE_MAIL_CATCHER_PORT",
+      "MEND_RESOURCE_MAIL_CATCHER_PORT_SMTP",
+      "MEND_RESOURCE_MAIL_CATCHER_PORT_WEB_UI",
+      "MEND_RESOURCE_MAIL_CATCHER_SMTP_URL",
+    ]);
+  });
+
+  it("gives a Postgres preset its fixed exports, and DATABASE_URL and PG* only when it is the one Postgres", () => {
+    const fixed = [
+      "MEND_RESOURCE_DB_HOST",
+      "MEND_RESOURCE_DB_PORT",
+      "MEND_RESOURCE_DB_PORT_POSTGRES",
+      "MEND_RESOURCE_DB_URL",
+      "MEND_RESOURCE_DB_DATABASE",
+      "MEND_RESOURCE_DB_USERNAME",
+      "MEND_RESOURCE_DB_PASSWORD",
+    ];
+    expect(resourceEnvNames(postgres(), { onlyOfItsEngine: false })).toEqual(fixed);
+    expect(resourceEnvNames(postgres(), { onlyOfItsEngine: true })).toEqual([
+      ...fixed,
+      "DATABASE_URL",
+      "PGHOST",
+      "PGPORT",
+      "PGUSER",
+      "PGPASSWORD",
+      "PGDATABASE",
+    ]);
+  });
+
+  it("gives Redis _URL, and REDIS_URL only when it is the one Redis", () => {
+    expect(resourceEnvNames(redis(), { onlyOfItsEngine: false })).toContain(
+      "MEND_RESOURCE_CACHE_URL",
+    );
+    expect(resourceEnvNames(redis(), { onlyOfItsEngine: false })).not.toContain("REDIS_URL");
+    expect(resourceEnvNames(redis(), { onlyOfItsEngine: true })).toContain("REDIS_URL");
+    expect(resourceEnvNames(redis(), { onlyOfItsEngine: true })).not.toContain("DATABASE_URL");
+  });
+
+  it("gives an image Mend does not know no conventional names", () => {
+    expect(resourceEnvNames(define(), { onlyOfItsEngine: true })).toEqual([
+      "MEND_RESOURCE_QUEUE_HOST",
+      "MEND_RESOURCE_QUEUE_PORT",
+      "MEND_RESOURCE_QUEUE_PORT_AMQP",
+    ]);
+  });
+});
+
+describe("env name collisions", () => {
+  it("finds none between distinct resources", () => {
+    expect(envNameCollisions([postgres(), redis(), define()])).toEqual([]);
+  });
+
+  it("reports an export that lands on another resource's name", () => {
+    const db = define({ name: "db", exports: { MAIN_URL: "{host}" } });
+    expect(envNameCollisions([db, postgres("db-main")])).toEqual([
+      { name: "MEND_RESOURCE_DB_MAIN_URL", resources: ["db", "db-main"] },
+    ]);
+  });
+
+  it("reports a named port that lands on another resource's host", () => {
+    const db = define({ name: "db", ports: [{ name: "host", port: 1, protocol: "tcp" }] });
+    const dbPort = define({ name: "db-port" });
+    expect(envNameCollisions([db, dbPort])).toEqual([
+      { name: "MEND_RESOURCE_DB_PORT_HOST", resources: ["db", "db-port"] },
+    ]);
+  });
+
+  it("leaves the conventional names out when two of one engine are in use", () => {
+    expect(envNameCollisions([postgres("db"), postgres("analytics")])).toEqual([]);
   });
 });

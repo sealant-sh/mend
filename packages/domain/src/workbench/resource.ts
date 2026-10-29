@@ -167,6 +167,66 @@ const exportRefusals = (
     }));
 };
 
+/**
+ * What Mend knows of each preset's inside: whether `own` is a database on the project instance,
+ * the fixed exports, and the conventional names set when it is the only one of its engine in use.
+ */
+export const RESOURCE_PRESETS: {
+  readonly [P in ResourcePreset]: {
+    readonly database: boolean;
+    readonly exports: ReadonlyArray<string>;
+    readonly conventional: ReadonlyArray<string>;
+  };
+} = {
+  postgres: {
+    database: true,
+    exports: ["URL", "DATABASE", "USERNAME", "PASSWORD"],
+    conventional: ["DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"],
+  },
+  mysql: { database: true, exports: ["URL", "DATABASE", "USERNAME", "PASSWORD"], conventional: [] },
+  redis: { database: false, exports: ["URL"], conventional: ["REDIS_URL"] },
+};
+
+/** `MEND_RESOURCE_<NAME>_`, with `-` written as `_`. */
+export const resourceEnvPrefix = (name: ResourceName): string => `MEND_RESOURCE_${envPart(name)}_`;
+
+/**
+ * Every env name a process gets from one resource: its address, its exports, and, when the caller
+ * says it is the only one of its engine in use, the preset's conventional names.
+ */
+export const resourceEnvNames = (
+  def: ResourceDefinitionInput,
+  use: { readonly onlyOfItsEngine: boolean },
+): ReadonlyArray<string> => {
+  const preset = def.preset === null ? null : RESOURCE_PRESETS[def.preset];
+  const suffixes = [...addressSuffixes(def), ...(preset?.exports ?? Object.keys(def.exports))];
+  return [
+    ...suffixes.map((suffix) => resourceEnvPrefix(def.name) + suffix),
+    ...(use.onlyOfItsEngine ? (preset?.conventional ?? []) : []),
+  ];
+};
+
+export interface ResourceEnvCollision {
+  readonly name: string;
+  readonly resources: ReadonlyArray<ResourceName>;
+}
+
+/** Env names two resources in use together would both set (`db`'s `MAIN_URL`, `db-main`'s `URL`). */
+export const envNameCollisions = (
+  defs: ReadonlyArray<ResourceDefinitionInput>,
+): ReadonlyArray<ResourceEnvCollision> => {
+  const setBy = new Map<string, ReadonlyArray<ResourceName>>();
+  for (const def of defs) {
+    const onlyOfItsEngine = defs.filter((other) => other.preset === def.preset).length === 1;
+    for (const name of resourceEnvNames(def, { onlyOfItsEngine })) {
+      setBy.set(name, [...(setBy.get(name) ?? []), def.name]);
+    }
+  }
+  return [...setBy].flatMap(([name, resources]) =>
+    resources.length > 1 ? [{ name, resources }] : [],
+  );
+};
+
 /** A project resource's choice for one worktree. */
 export const WorktreeChoice = Schema.Literals(["off", "shared", "own"]);
 export type WorktreeChoice = typeof WorktreeChoice.Type;
