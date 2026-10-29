@@ -137,7 +137,8 @@ describe("the host document", () => {
   });
 
   it("relays only the requests a page may make", () => {
-    const { fromPage, events } = loadHost();
+    const { page, fromPage, events } = loadHost();
+    page.focus();
     fromPage({ jsonrpc: "2.0", method: "t3/notifications/open-image", params: { src: "x" } });
     fromPage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: {} });
     fromPage({ method: "ui/notifications/size-changed", params: { height: 10 } });
@@ -159,6 +160,19 @@ describe("the host document", () => {
         "http://10.0.0.40:3105/report?q=1",
       ].map((url) => ({ kind: "link", id: "t3-link-1", url })),
     ]);
+  });
+
+  it("relays a link only while the reader is using the page", () => {
+    const { host, page, fromPage, events } = loadHost();
+    const activation = { isActive: true };
+    Object.defineProperty(host.navigator, "userActivation", { value: activation });
+    fromPage(link("https://example.com/unfocused"));
+    page.focus();
+    activation.isActive = false;
+    fromPage(link("https://example.com/no-tap"));
+    activation.isActive = true;
+    fromPage(link("https://example.com/docs"));
+    expect(events()).toEqual([{ kind: "link", id: "t3-link-1", url: "https://example.com/docs" }]);
   });
 
   it("signs what it sends, so React Native ignores a page posting to the bridge itself", () => {

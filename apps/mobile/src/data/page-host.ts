@@ -50,7 +50,7 @@ if(typeof p.height!=="number"||!(p.height>=0))return;
 f.style.height=Math.min(MAX,Math.max(MIN,Math.ceil(p.height)))+"px";
 send({jsonrpc:"2.0",method:d.method,params:{height:p.height}});
 }else if(d.method==="ui/open-link"){
-if(navigator.userActivation&&!navigator.userActivation.isActive)return;
+if(document.activeElement!==f||navigator.userActivation&&!navigator.userActivation.isActive)return;
 send({jsonrpc:"2.0",id:d.id,method:d.method,params:{url:p.url}});
 }
 });
