@@ -33,6 +33,39 @@ const define = (overrides: Record<string, unknown> = {}): ResourceDefinitionInpu
     ...overrides,
   });
 
+const postgres = (overrides: Record<string, unknown> = {}) =>
+  define({
+    name: "db",
+    preset: "postgres",
+    image: "postgres:17",
+    ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
+    volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
+    ready: { kind: "preset" },
+    ...overrides,
+  });
+
+const mysql = (overrides: Record<string, unknown> = {}) =>
+  define({
+    name: "db",
+    preset: "mysql",
+    image: "mysql:8.4",
+    ports: [{ name: "mysql", port: 3306, protocol: "tcp" }],
+    volumes: [{ name: "data", mountPath: "/var/lib/mysql" }],
+    ready: { kind: "preset" },
+    ...overrides,
+  });
+
+const redis = (overrides: Record<string, unknown> = {}) =>
+  define({
+    name: "cache",
+    preset: "redis",
+    image: "redis:8",
+    ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
+    volumes: [{ name: "data", mountPath: "/data" }],
+    ready: { kind: "preset" },
+    ...overrides,
+  });
+
 describe("resource names", () => {
   it.each(["db", "queue", "mail-catcher", "a", "a2", `a${"b".repeat(30)}`])(
     "accepts the DNS label %s",
@@ -133,16 +166,10 @@ describe("rules across a definition's fields", () => {
       "volumes",
     ],
     ["a preset's check without a preset", { ready: { kind: "preset" } }, "ready"],
-    [
-      "exports on a preset",
-      { preset: "postgres", name: "db", exports: { URL: "postgres://{host}" } },
-      "exports",
-    ],
     ["an export Mend already sets", { exports: { HOST: "{host}" } }, "exports.HOST"],
     ["an export over a named port", { exports: { PORT_AMQP: "{port}" } }, "exports.PORT_AMQP"],
     ["an export of an unknown port", { exports: { URL: "{host}:{port.http}" } }, "exports.URL"],
     ["an export of an env the definition lacks", { exports: { URL: "{env.PASS}" } }, "exports.URL"],
-    ["a worktree Redis", { preset: "redis", name: "cache", scope: "worktree" }, "scope"],
     [
       "an env key that is not an env name",
       { env: { "discovery.type": "single-node" } },
@@ -156,10 +183,35 @@ describe("rules across a definition's fields", () => {
     ]);
   });
 
+  it.each([
+    ["exports on a preset", postgres({ exports: { URL: "postgres://{host}" } }), "exports"],
+    ["a worktree Redis", redis({ scope: "worktree" }), "scope"],
+    ["a Postgres preset on a Redis image", postgres({ image: "redis:8" }), "image"],
+    ["a Postgres preset on an image of another name", postgres({ image: "ghcr.io/x/custom-pg:17" }), "image"],
+    ["a MySQL preset on a Postgres image", mysql({ image: "postgres:17" }), "image"],
+    ["a Redis preset on a MySQL image", redis({ image: "mariadb:11" }), "image"],
+    ["a preset with a probe command", postgres({ ready: { kind: "command", argv: ["true"] } }), "ready"],
+    ["a preset with a TCP check", redis({ ready: { kind: "tcp" } }), "ready"],
+  ])("refuses %s by its key", (_, def, key) => {
+    expect(resourceDefinitionRefusals(def).map((refusal) => refusal.key)).toEqual([key]);
+  });
+
+  it.each([
+    [postgres, "postgres:17"],
+    [postgres, "docker.io/library/postgres:17"],
+    [postgres, "mirror.example:5000/postgres:17"],
+    [postgres, "pgvector/pgvector:pg17"],
+    [postgres, "postgis/postgis:17-3.5@sha256:abc"],
+    [mysql, "mysql:8.4"],
+    [mysql, "mariadb:11.4"],
+    [redis, "redis:8"],
+    [redis, "valkey/valkey:8"],
+  ])("accepts an image of the preset's family: %#", (preset, image) => {
+    expect(resourceDefinitionRefusals(preset({ image }))).toEqual([]);
+  });
+
   it("says why a worktree Redis waits", () => {
-    const [refusal] = resourceDefinitionRefusals(
-      define({ preset: "redis", name: "cache", scope: "worktree" }),
-    );
+    const [refusal] = resourceDefinitionRefusals(redis({ scope: "worktree" }));
     expect(refusal?.message).toMatch(/Redis/);
     expect(refusal?.message).toMatch(/project/);
   });
@@ -185,16 +237,16 @@ describe("the scope policy", () => {
   });
 
   it("lets every non-refused definition through validation", () => {
-    for (const [scope, preset, name] of [
-      ["project", "postgres", "db"],
-      ["project", "mysql", "db"],
-      ["project", "redis", "cache"],
-      ["project", null, "queue"],
-      ["worktree", "postgres", "db"],
-      ["worktree", "mysql", "db"],
-      ["worktree", null, "mail"],
-    ] as const) {
-      expect(resourceDefinitionRefusals(define({ scope, preset, name }))).toEqual([]);
+    for (const def of [
+      postgres(),
+      mysql(),
+      redis(),
+      define(),
+      postgres({ scope: "worktree" }),
+      mysql({ scope: "worktree" }),
+      define({ name: "mail", scope: "worktree" }),
+    ]) {
+      expect(resourceDefinitionRefusals(def)).toEqual([]);
     }
   });
 });
@@ -225,26 +277,6 @@ describe("a worktree's selection", () => {
     expect(() => read(raw)).toThrow();
   });
 });
-
-const postgres = (name = "db") =>
-  define({
-    name,
-    preset: "postgres",
-    image: "postgres:17",
-    ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
-    volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
-    ready: { kind: "preset" },
-  });
-
-const redis = (name = "cache") =>
-  define({
-    name,
-    preset: "redis",
-    image: "redis:8",
-    ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
-    volumes: [{ name: "data", mountPath: "/data" }],
-    ready: { kind: "preset" },
-  });
 
 describe("env names", () => {
   it("writes the name in upper case with - as _", () => {
@@ -319,7 +351,7 @@ describe("env name collisions", () => {
 
   it("reports an export that lands on another resource's name", () => {
     const db = define({ name: "db", exports: { MAIN_URL: "{host}" } });
-    expect(envNameCollisions([db, postgres("db-main")])).toEqual([
+    expect(envNameCollisions([db, postgres({ name: "db-main" })])).toEqual([
       { name: "MEND_RESOURCE_DB_MAIN_URL", resources: ["db", "db-main"] },
     ]);
   });
@@ -333,7 +365,7 @@ describe("env name collisions", () => {
   });
 
   it("leaves the conventional names out when two of one engine are in use", () => {
-    expect(envNameCollisions([postgres("db"), postgres("analytics")])).toEqual([]);
+    expect(envNameCollisions([postgres(), postgres({ name: "analytics" })])).toEqual([]);
   });
 });
 

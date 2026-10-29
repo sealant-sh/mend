@@ -173,23 +173,78 @@ const exportRefusals = (
 };
 
 /**
- * What Mend knows of each preset's inside: whether `own` is a database on the project instance,
- * the fixed exports, and the conventional names set when it is the only one of its engine in use.
+ * What Mend knows of each preset's inside: the image repositories it runs, whether `own` is a
+ * database on the project instance, the fixed exports, and the conventional names set when it is
+ * the only one of its engine in use.
  */
 export const RESOURCE_PRESETS: {
   readonly [P in ResourcePreset]: {
+    readonly images: ReadonlyArray<string>;
     readonly database: boolean;
     readonly exports: ReadonlyArray<string>;
     readonly conventional: ReadonlyArray<string>;
   };
 } = {
   postgres: {
+    images: ["postgres", "pgvector/pgvector", "postgis/postgis"],
     database: true,
     exports: ["URL", "DATABASE", "USERNAME", "PASSWORD"],
     conventional: ["DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"],
   },
-  mysql: { database: true, exports: ["URL", "DATABASE", "USERNAME", "PASSWORD"], conventional: [] },
-  redis: { database: false, exports: ["URL"], conventional: ["REDIS_URL"] },
+  mysql: {
+    images: ["mysql", "mariadb"],
+    database: true,
+    exports: ["URL", "DATABASE", "USERNAME", "PASSWORD"],
+    conventional: [],
+  },
+  redis: {
+    images: ["redis", "valkey/valkey"],
+    database: false,
+    exports: ["URL"],
+    conventional: ["REDIS_URL"],
+  },
+};
+
+/**
+ * An image reference's repository and tag: `docker.io/library/postgres:17@sha256:…` is
+ * `postgres` and `17`. A registry host is dropped, so a mirror's `postgres` is still `postgres`.
+ */
+export const imageReference = (image: string): { repository: string; tag: string } => {
+  const [named = image] = image.split("@");
+  const tagAt = named.lastIndexOf(":");
+  const tagged = tagAt > named.lastIndexOf("/");
+  const segments = (tagged ? named.slice(0, tagAt) : named).split("/");
+  const [first = "", ...rest] = segments;
+  const isHost = rest.length > 0 && (first.includes(".") || first.includes(":") || first === "localhost");
+  const path = isHost ? rest : segments;
+  const repository = path.length === 2 && path[0] === "library" ? path.slice(1) : path;
+  return { repository: repository.join("/"), tag: tagged ? named.slice(tagAt + 1) : "" };
+};
+
+const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> => {
+  if (def.preset === null) {
+    return def.ready.kind === "preset"
+      ? [{ key: "ready", message: "is a preset's own check, and this resource has no preset" }]
+      : [];
+  }
+  const preset = RESOURCE_PRESETS[def.preset];
+  const { repository } = imageReference(def.image);
+  return [
+    ...(preset.images.includes(repository)
+      ? []
+      : [
+          {
+            key: "image",
+            message: `is ${repository}, and the ${def.preset} preset runs ${preset.images.join(", ")}`,
+          },
+        ]),
+    ...(def.ready.kind === "preset"
+      ? []
+      : [{ key: "ready", message: `is fixed by the ${def.preset} preset to its own check` }]),
+    ...(Object.keys(def.exports).length > 0
+      ? [{ key: "exports", message: `are fixed by the ${def.preset} preset` }]
+      : []),
+  ];
 };
 
 /** `MEND_RESOURCE_<NAME>_`, with `-` written as `_`. */
@@ -343,12 +398,7 @@ export const resourceDefinitionRefusals = (
         ? []
         : [{ key: `env.${name}`, message: "is not an environment variable name" }],
     ),
-    ...(def.ready.kind === "preset" && def.preset === null
-      ? [{ key: "ready", message: "is a preset's own check, and this resource has no preset" }]
-      : []),
-    ...(def.preset !== null && Object.keys(def.exports).length > 0
-      ? [{ key: "exports", message: `are fixed by the ${def.preset} preset` }]
-      : []),
+    ...presetRefusals(def),
     ...Object.entries(def.exports).flatMap(([name, template]) =>
       exportRefusals(def, name, template),
     ),
