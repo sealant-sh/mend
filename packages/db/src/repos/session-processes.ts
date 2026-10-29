@@ -156,6 +156,7 @@ const decodeLaunch = Schema.decodeUnknownOption(
     cwd: Schema.NullOr(RepoRelativePath),
     env: Schema.NullOr(RecipeEnv),
     ready: RecipeReady,
+    depends: Schema.NullOr(Schema.Array(Schema.String)),
   }),
 );
 const encodeWaiting = Schema.encodeSync(AgentWait);
@@ -165,6 +166,7 @@ export const toSessionProcess = ({
   launchCwd: _launchCwd,
   launchEnv: _launchEnv,
   launchReady: _launchReady,
+  launchDepends: _launchDepends,
   ...row
 }: typeof sessionProcesses.$inferSelect): SessionProcess =>
   new SessionProcess({
@@ -208,6 +210,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
           launchCwd: launch?.cwd ?? null,
           launchEnv: launch?.env ?? null,
           launchReady: launch?.ready ?? null,
+          launchDepends: launch?.depends ?? null,
           id: input.id ?? SessionProcessId.make(crypto.randomUUID()),
           harness: input.harness ?? null,
           providerSessionId: input.providerSessionId ?? null,
@@ -255,6 +258,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
           cwd: sessionProcesses.launchCwd,
           env: sessionProcesses.launchEnv,
           ready: sessionProcesses.launchReady,
+          depends: sessionProcesses.launchDepends,
         })
         .from(sessionProcesses)
         .where(eq(sessionProcesses.id, id))
@@ -264,7 +268,11 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return Option.getOrNull(
         Option.map(
           decodeLaunch(row),
-          (launch): ServiceLaunch => ({ ...launch, env: launch.env ?? {} }),
+          (launch): ServiceLaunch => ({
+            ...launch,
+            env: launch.env ?? {},
+            depends: launch.depends ?? [],
+          }),
         ),
       );
     });

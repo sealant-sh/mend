@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { PersonExecOptions } from "@mend/sealant";
+import { type PersonExecOptions, SealantPlatformError } from "@mend/sealant";
 import { ForwardAdapter, type ForwardTarget, SessionEngine } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
@@ -28,9 +28,11 @@ const write = (tmp: string, worktree: string, file: string, text: string) =>
   fs.writeFileSync(path.join(worktreeOf(tmp, worktree), file), text);
 
 const setupStepOf = (argv: ReadonlyArray<string>) => {
-  const [, , , tag, , step] = argv;
-  return tag === "mend-setup" ? step : null;
+  const at = argv.indexOf("mend-setup");
+  return at === -1 ? null : (argv[at + 1] ?? null);
 };
+const setupRunIdOf = (argv: ReadonlyArray<string>) =>
+  argv.find((arg) => arg.startsWith("MEND_SETUP_RUN="))?.slice("MEND_SETUP_RUN=".length) ?? null;
 const setupStopRunOf = (argv: ReadonlyArray<string>) => {
   const [, , , tag, runId] = argv;
   return tag === "mend-setup-stop" ? runId : null;
@@ -106,7 +108,8 @@ describe("[setup] in a recipe start", () => {
           expect(opensOf(spawned, "pnpm dev")).toHaveLength(1);
           expect(world.setupRuns).toMatchObject([
             {
-              siteKey: `host:${fs.realpathSync(worktreeOf(tmp, session.worktree))}`,
+              siteKey: `host:${session.worktreeId}`,
+              worktreeId: session.worktreeId,
               state: "done",
               exitCode: 0,
             },
@@ -464,7 +467,7 @@ describe("a long [setup]", () => {
                 }
                 const step = setupStepOf(argv);
                 if (step === null || step === undefined) return undefined;
-                stepRuns.push(argv[4] ?? "");
+                stepRuns.push(setupRunIdOf(argv) ?? "");
                 return Effect.sync(() => running.push(step)).pipe(
                   Effect.andThen(Deferred.await(killed)),
                   Effect.as(answered(143)),
@@ -476,4 +479,445 @@ describe("a long [setup]", () => {
       );
     }),
   );
+});
+
+const ONE_STEP = `
+[setup]
+run = ["pnpm install --frozen-lockfile"]
+inputs = ["pnpm-lock.yaml"]
+
+[service.web]
+command = "pnpm dev"
+port = 3000
+
+[service.api]
+command = "node api.js"
+port = 4000
+`;
+
+const platformError = (code: string, message: string) =>
+  new SealantPlatformError({ code, status: null, message, cause: null });
+
+/**
+ * A world whose setup steps each wait to be finished (a processes-stop ends them with `onStop`,
+ * 143 unless said), recording each step, the run id it ran under, and every processes-stop.
+ */
+const blockingSetup = (clock: Effect.Success<ReturnType<typeof makeEngineClock>>, onStop = 143) => {
+  const steps = clock.watched<{ readonly step: string; readonly runId: string }>();
+  const stops = clock.watched<string>();
+  const releases: Array<Deferred.Deferred<number>> = [];
+  const execEffect = (argv: ReadonlyArray<string>) => {
+    const stopped = setupStopRunOf(argv);
+    if (stopped !== null && stopped !== undefined) {
+      return Effect.sync(() => stops.push(stopped)).pipe(
+        Effect.andThen(
+          Effect.forEach(releases, (release) => Deferred.succeed(release, onStop), {
+            discard: true,
+          }),
+        ),
+        Effect.as(answered(0)),
+      );
+    }
+    const step = setupStepOf(argv);
+    if (step === null) return undefined;
+    const release = Deferred.makeUnsafe<number>();
+    releases.push(release);
+    return Effect.sync(() => steps.push({ step, runId: setupRunIdOf(argv) ?? "" })).pipe(
+      Effect.andThen(Deferred.await(release)),
+      Effect.map((exitCode) => answered(exitCode)),
+    );
+  };
+  const finishStep = (exitCode = 0) =>
+    Effect.forEach(releases.splice(0), (release) => Deferred.succeed(release, exitCode), {
+      discard: true,
+    });
+  return { steps, stops, execEffect, finishStep };
+};
+
+const layerWith = (
+  spawned: ReadonlyArray<string>[],
+  ops: Parameters<typeof sealantLaunchLayer>[11],
+  stopped?: string[],
+) =>
+  sealantLaunchLayer(
+    [],
+    undefined,
+    stopped,
+    spawned,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    ops,
+  );
+
+describe("[setup] and the process lifecycle", () => {
+  it.effect(
+    "keeps its workspace while it runs: a stopped agent's workspace waits for setup, then the Service",
+    () =>
+      Effect.gen(function* () {
+        const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+        const spawned = clock.watched<ReadonlyArray<string>>();
+        const stopped = clock.watched<string>();
+        const setupWorld = blockingSetup(clock);
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const shell = yield* engine.openShell(session.id);
+              write(tmp, session.worktree, "mend.toml", ONE_STEP);
+              const starting = yield* engine
+                .runServiceRecipe(session.id, "web", ownerStart)
+                .pipe(Effect.forkChild);
+              yield* clock.untilChanged(() => setupWorld.steps.length > 0, "setup running");
+
+              yield* engine.stop(session.id);
+              const agentExited = () =>
+                [...world.processes.values()].some(
+                  (process) => process.kind === "agent-pty" && process.exitedAt !== null,
+                );
+              yield* clock.untilChanged(agentExited, "the stop ends the agent");
+              yield* engine.stopShell(shell.id);
+              expect(stopped, "setup holds the workspace").toEqual([]);
+
+              yield* setupWorld.finishStep();
+              yield* Fiber.join(starting);
+              expect(opensOf(spawned, "pnpm dev")).toHaveLength(1);
+              expect(stopped, "then the Service holds it").toEqual([]);
+            }),
+          {
+            prepareWorld: clock.prepareWorld,
+            forwardAdapterLayer: portsAnswer,
+            sealantLayer: layerWith(spawned, { execEffect: setupWorld.execEffect }, stopped),
+          },
+        );
+      }),
+  );
+});
+
+describe("one run of [setup] per directory", () => {
+  it.effect(
+    "a claimant that lost its claim stops its own run, starts nothing, and stamps nothing",
+    () =>
+      Effect.gen(function* () {
+        const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+        const spawned = clock.watched<ReadonlyArray<string>>();
+        const setupWorld = blockingSetup(clock);
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              write(tmp, session.worktree, "mend.toml", ONE_STEP);
+              const starting = yield* engine
+                .runServiceRecipe(session.id, "web", ownerStart)
+                .pipe(Effect.flip, Effect.forkChild);
+              yield* clock.untilChanged(() => setupWorld.steps.length > 0, "setup running");
+              const [held] = world.setupRuns;
+              if (held === undefined) return yield* Effect.die("no claim");
+              world.setupRuns.splice(0, 1, {
+                ...held,
+                claimId: "taken-over",
+                leaseUntil: held.leaseUntil + 600_000,
+              });
+
+              yield* TestClock.adjust("20 seconds");
+              const error = yield* Fiber.join(starting);
+
+              expect(setupWorld.stops, "its own run, by its marker").toEqual([
+                setupWorld.steps[0]?.runId,
+              ]);
+              expect(error.message).toBe(
+                "setup lost its claim on this directory (its lease was not renewed in time), so its run was stopped and nothing was started · start it again",
+              );
+              expect(world.setupRuns).toMatchObject([{ claimId: "taken-over", state: "running" }]);
+              expect(opensOf(spawned, "pnpm dev")).toEqual([]);
+            }),
+          {
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: layerWith(spawned, { execEffect: setupWorld.execEffect }),
+          },
+        );
+      }),
+  );
+
+  it.effect("stops a lapsed claim's processes before running setup in its directory", () =>
+    Effect.gen(function* () {
+      const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+      const spawned = clock.watched<ReadonlyArray<string>>();
+      const order: string[] = [];
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            write(tmp, session.worktree, "mend.toml", ONE_STEP);
+            const workspaceId = world.sessions.get(session.id)?.sealantWorkspaceId ?? "";
+            world.setupRuns.push({
+              siteKey: `host:${session.worktreeId}`,
+              fingerprint: "an earlier fingerprint",
+              worktreeId: session.worktreeId,
+              state: "running",
+              claimId: "lapsed-claim",
+              workspaceId,
+              runsAs: "user-fixture",
+              leaseUntil: world.clock.now().getTime() - 10_000,
+              finishedAt: null,
+              exitCode: null,
+              outputTail: null,
+            });
+
+            yield* engine.runServiceRecipe(session.id, "web", ownerStart);
+
+            expect(order).toEqual(["stop lapsed-claim", "pnpm install --frozen-lockfile"]);
+            expect(world.setupRuns).toMatchObject([{ state: "done", workspaceId }]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          forwardAdapterLayer: portsAnswer,
+          sealantLayer: layerWith(spawned, {
+            execEffect: (argv) => {
+              const stopped = setupStopRunOf(argv);
+              if (stopped !== null && stopped !== undefined) {
+                return Effect.sync(() => order.push(`stop ${stopped}`)).pipe(
+                  Effect.as(answered(0)),
+                );
+              }
+              const step = setupStepOf(argv);
+              if (step === null) return undefined;
+              return Effect.sync(() => order.push(step)).pipe(Effect.as(answered(0)));
+            },
+          }),
+        },
+      );
+    }),
+  );
+
+  it.effect("a Stop as the last step ends never stamps it done, whatever it exits with", () =>
+    Effect.gen(function* () {
+      const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+      const spawned = clock.watched<ReadonlyArray<string>>();
+      // The step traps TERM and exits 0 as the Stop's processes-stop reaches it.
+      const setupWorld = blockingSetup(clock, 0);
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            write(tmp, session.worktree, "mend.toml", ONE_STEP);
+            const starting = yield* engine
+              .runServiceRecipe(session.id, "web", ownerStart)
+              .pipe(Effect.flip, Effect.forkChild);
+            yield* clock.untilChanged(() => setupWorld.steps.length > 0, "setup running");
+
+            yield* engine.stopServices(session.id, ownerStop);
+            const error = yield* Fiber.join(starting);
+
+            expect(error.message).toBe("a Stop came before web started");
+            expect(world.setupRuns, "the claim is given up, not stamped").toEqual([]);
+            expect(opensOf(spawned, "pnpm dev")).toEqual([]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: layerWith(spawned, { execEffect: setupWorld.execEffect }),
+        },
+      );
+    }),
+  );
+
+  it.effect("a start that waited behind another's setup reads its inputs after the wait", () =>
+    Effect.gen(function* () {
+      const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+      const spawned = clock.watched<ReadonlyArray<string>>();
+      const setupWorld = blockingSetup(clock);
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            write(tmp, session.worktree, "mend.toml", ONE_STEP);
+            write(tmp, session.worktree, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+            const web = yield* engine
+              .runServiceRecipe(session.id, "web", ownerStart)
+              .pipe(Effect.forkChild);
+            yield* clock.untilChanged(() => setupWorld.steps.length === 1, "web's setup running");
+            const apiStart = "5d4c3b2a-1908-4f7e-8d6c-5b4a39281706";
+            const api = yield* engine
+              .runServiceRecipe(session.id, "api", ownerStart, apiStart)
+              .pipe(Effect.forkChild);
+            const waiting = Effect.suspend(() =>
+              Effect.map(
+                engine.serviceStartProgress(session.id, apiStart),
+                (progress) => progress?.setup?.reason === "another start is running setup here",
+              ),
+            );
+            // Its inputs are read from disk: real time passes for that, the test clock for the poll.
+            for (let look = 0; look < 100 && !(yield* waiting); look++) {
+              yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20)));
+              yield* TestClock.adjust("100 millis");
+            }
+            expect(yield* waiting, "api waits behind web's setup").toBe(true);
+            expect(setupWorld.steps).toHaveLength(1);
+
+            write(tmp, session.worktree, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n# edited\n");
+            yield* setupWorld.finishStep();
+            yield* Fiber.join(web);
+            for (let look = 0; look < 100 && setupWorld.steps.length < 2; look++) {
+              yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20)));
+              yield* TestClock.adjust("100 millis");
+            }
+            expect(setupWorld.steps, "api ran setup over the edited lockfile").toHaveLength(2);
+            yield* setupWorld.finishStep();
+            yield* Fiber.join(api);
+            expect(world.setupRuns).toMatchObject([{ state: "done" }]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          forwardAdapterLayer: portsAnswer,
+          sealantLayer: layerWith(spawned, { execEffect: setupWorld.execEffect }),
+        },
+      );
+    }),
+  );
+});
+
+describe("stopping and reporting a first start's [setup]", () => {
+  it.effect("a Stop by the Service's name ends its first start during setup", () =>
+    Effect.gen(function* () {
+      const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+      const spawned = clock.watched<ReadonlyArray<string>>();
+      const setupWorld = blockingSetup(clock);
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            write(tmp, session.worktree, "mend.toml", ONE_STEP);
+            const starting = yield* engine
+              .runServiceRecipe(session.id, "web", ownerStart)
+              .pipe(Effect.flip, Effect.forkChild);
+            yield* clock.untilChanged(() => setupWorld.steps.length > 0, "setup running");
+            expect(sessionServices(world, session.id), "no Service row yet").toEqual([]);
+
+            expect(yield* engine.stopServiceStarts(session.id, "api")).toBe(0);
+            expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+            const error = yield* Fiber.join(starting);
+
+            expect(error.message).toBe("a Stop came before web started");
+            expect(setupWorld.stops).toEqual([setupWorld.steps[0]?.runId]);
+            expect(world.setupRuns).toEqual([]);
+            expect(opensOf(spawned, "pnpm dev")).toEqual([]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: layerWith(spawned, { execEffect: setupWorld.execEffect }),
+        },
+      );
+    }),
+  );
+
+  it("a person's start says in its answer that it went on without a refused [setup]", async () => {
+    const spawned: ReadonlyArray<string>[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const { engine, session } = yield* provisionIn(project);
+          yield* engine.launch(session.id, ["codex"]);
+          write(
+            tmp,
+            session.worktree,
+            "mend.toml",
+            '[setup]\nrun = []\n\n[service.web]\ncommand = "pnpm dev"\nport = 3000\n',
+          );
+          const started = yield* engine.runServiceRecipe(session.id, "web", ownerStart);
+          expect(started.setup).toMatchObject({
+            state: "refused",
+            reason: "mend.toml · setup.run · must list at least one command",
+          });
+        }),
+      { sealantLayer: layerWith(spawned, { execEffect: recordSetup([], spawned) }) },
+    );
+  });
+
+  it("runs setup over a done stamp when the start asks, and again once the workspace image changes", async () => {
+    const spawned: ReadonlyArray<string>[] = [];
+    const execs: SetupExec[] = [];
+    let image = "sha256:node22";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const { engine, session } = yield* provisionIn(project);
+          yield* engine.launch(session.id, ["codex"]);
+          write(tmp, session.worktree, "mend.toml", ONE_STEP);
+          const run = (options?: { readonly setupAgain?: boolean }) =>
+            engine
+              .runServiceRecipe(session.id, "web", ownerStart, undefined, options)
+              .pipe(Effect.andThen(engine.stopServices(session.id, ownerStop)));
+          yield* run();
+          yield* run();
+          expect(execs, "a done stamp skips it").toHaveLength(1);
+          yield* run({ setupAgain: true });
+          expect(execs, "asked for").toHaveLength(2);
+          image = "sha256:node24";
+          yield* run();
+          expect(execs, "a new image").toHaveLength(3);
+        }),
+      {
+        sealantLayer: layerWith(spawned, {
+          execEffect: recordSetup(execs, spawned),
+          bootedImage: () => image,
+        }),
+      },
+    );
+  });
+
+  it("records a step the platform stopped waiting for as failed, says why, and stops its processes", async () => {
+    const spawned: ReadonlyArray<string>[] = [];
+    const stops: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const { engine, session } = yield* provisionIn(project);
+          yield* engine.launch(session.id, ["codex"]);
+          write(tmp, session.worktree, "mend.toml", ONE_STEP);
+          const error = yield* engine
+            .runServiceRecipe(session.id, "web", ownerStart)
+            .pipe(Effect.flip);
+          expect(error.message).toBe(
+            "setup did not finish, so nothing was started · `pnpm install --frozen-lockfile` ran past 30 minutes, the longest one setup step may run, so it was stopped",
+          );
+          expect(stops).toHaveLength(1);
+          expect(world.setupRuns).toMatchObject([{ state: "failed", exitCode: null }]);
+          expect(opensOf(spawned, "pnpm dev")).toEqual([]);
+        }),
+      {
+        sealantLayer: layerWith(spawned, {
+          execEffect: (argv) => {
+            const stopped = setupStopRunOf(argv);
+            if (stopped !== null && stopped !== undefined) {
+              return Effect.sync(() => stops.push(stopped)).pipe(Effect.as(answered(0)));
+            }
+            return setupStepOf(argv) === null
+              ? undefined
+              : Effect.fail(
+                  platformError("exec_timeout", "Timed out waiting for exec run r-1 to complete."),
+                );
+          },
+        }),
+      },
+    );
+  });
 });

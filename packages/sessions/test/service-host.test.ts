@@ -135,6 +135,7 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   captureFlush: () => Effect.die("not in test"),
   captureStatus: () => Effect.succeed(null),
   runtimeDeadline: () => Effect.succeed(null),
+  bootedImage: () => Effect.succeed(null),
   runtimeResourceId: () => Effect.succeed(null),
   launchedRuntime: () => Effect.succeed("unknown" as const),
   findWorkspaceByKey: () => Effect.succeed({ kind: "unsupported" as const }),

@@ -45,6 +45,7 @@ export const recipeLaunch = (recipe: ServiceRecipe & { readonly command: string 
   cwd: recipe.cwd,
   env: recipe.env,
   ready: recipe.ready,
+  depends: recipe.depends,
   host: recipe.host,
   address: recipe.address,
 });

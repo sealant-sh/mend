@@ -275,6 +275,30 @@ export const runtimeDeadlineOf = (
   );
 };
 
+interface BootedImageReadable {
+  readonly image: () => Promise<{ readonly digest?: unknown; readonly reference?: unknown } | null>;
+}
+
+const readsBootedImage = (workspace: object): workspace is BootedImageReadable =>
+  "image" in workspace && typeof workspace.image === "function";
+
+/**
+ * The image the workspace's latest launch booted (`workspace.image()`): its digest, else its
+ * reference; null when the platform cannot say.
+ */
+export const bootedImageOf = (
+  workspace: object,
+): Effect.Effect<string | null, SealantPlatformError> => {
+  if (!readsBootedImage(workspace)) return Effect.succeed(null);
+  return wrap(() => workspace.image()).pipe(
+    Effect.map((image) => {
+      if (image === null) return null;
+      if (typeof image.digest === "string" && image.digest !== "") return image.digest;
+      return typeof image.reference === "string" && image.reference !== "" ? image.reference : null;
+    }),
+  );
+};
+
 /**
  * A run's changes as Core read them. `available: false` means Core never read them (the run has
  * not ended, the reading failed, or none was recorded): the empty `files` and `diff` then say
@@ -783,6 +807,10 @@ export interface SealantClientShape {
   readonly runtimeDeadline: (
     workspace: Workspace,
   ) => Effect.Effect<Date | null, SealantPlatformError>;
+  /** The image the workspace's latest launch booted (`bootedImageOf`). */
+  readonly bootedImage: (
+    workspace: Workspace,
+  ) => Effect.Effect<string | null, SealantPlatformError>;
   /** Re-arm the workspace TTL and return the platform's exact resulting expiry. */
   readonly expireWorkspace: (
     workspaceId: string,
@@ -1026,6 +1054,10 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
 
     const runtimeDeadline = Effect.fn("SealantClient.runtimeDeadline")((workspace: Workspace) =>
       runtimeDeadlineOf(workspace),
+    );
+
+    const bootedImage = Effect.fn("SealantClient.bootedImage")((workspace: Workspace) =>
+      bootedImageOf(workspace),
     );
 
     const runtimeResourceId = Effect.fn("SealantClient.runtimeResourceId")(
@@ -1283,6 +1315,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       captureFlush,
       captureStatus,
       runtimeDeadline,
+      bootedImage,
       runtimeResourceId,
       launchedRuntime,
       captureReplan,
@@ -1771,6 +1804,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       captureFlush: (workspace, kind) => via((c) => c.captureFlush(workspace, kind)),
       captureStatus: (workspace) => via((c) => c.captureStatus(workspace)),
       runtimeDeadline: (workspace) => via((c) => c.runtimeDeadline(workspace)),
+      bootedImage: (workspace) => via((c) => c.bootedImage(workspace)),
       runtimeResourceId: (workspace, launchId) =>
         via((c) => c.runtimeResourceId(workspace, launchId)),
       launchedRuntime: (workspace) => via((c) => c.launchedRuntime(workspace)),

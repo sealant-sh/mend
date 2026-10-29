@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -6,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import {
+  type SetupClaim,
   type SetupClaimRequest,
   SetupRunsRepo,
   SetupRunsRepoLive,
@@ -33,15 +35,27 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
 const run = <A, E>(effect: Effect.Effect<A, E, SetupRunsRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
+const PROJECT = "setup-runs-project";
+const WORKTREE = WorktreeId.make("setup-runs-worktree");
+const OTHER_WORKTREE = WorktreeId.make("setup-runs-other");
+
 let sites = 0;
 const request = (overrides: Partial<SetupClaimRequest> = {}): SetupClaimRequest => ({
-  siteKey: `host:/store/p/worktrees/wt-${(sites += 1)}`,
+  siteKey: `host:wt-${(sites += 1)}`,
+  worktreeId: WORKTREE,
+  workspaceId: "ws-1",
   fingerprint: "fp-a",
   runsAs: "alice",
-  retryFailed: false,
+  runAgain: "never",
   leaseMs: 60_000,
+  fenced: null,
   ...overrides,
 });
+
+const claimed = (claim: SetupClaim) => {
+  if (claim._tag !== "Claimed") throw new Error(`not claimed: ${claim._tag}`);
+  return claim.claimId;
+};
 
 const failed = { state: "failed", exitCode: 1, outputTail: "ERR_PNPM_OUTDATED_LOCKFILE" } as const;
 const done = { state: "done", exitCode: 0, outputTail: "" } as const;
@@ -55,11 +69,20 @@ describe.skipIf(postgres.skip)("setup_runs: the claim and stamp of a site's setu
       }),
     );
     await run(
-      Effect.forEach(
-        Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b)),
-        ([, migration]) => migration,
-        { discard: true },
-      ),
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+        yield* Effect.forEach(ordered, ([, migration]) => migration, { discard: true });
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES (${PROJECT}, 'setup', '/store/p/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1))`;
+        for (const id of [WORKTREE, OTHER_WORKTREE]) {
+          yield* sql`
+            INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+            VALUES (${id}, ${PROJECT}, ${id}, ${id}, ${`mend/${id}`}, 'abc')`;
+        }
+      }),
     );
   });
   afterAll(async () => {
@@ -96,20 +119,25 @@ describe.skipIf(postgres.skip)("setup_runs: the claim and stamp of a site's setu
     }
   });
 
-  it("skips a done stamp, runs again once the fingerprint changes, and again on a return to an earlier one", async () => {
+  it("skips a done stamp, runs again once the fingerprint changes, on a return to an earlier one, and when asked to", async () => {
     const first = request();
     const result = await run(
       Effect.gen(function* () {
         const repo = yield* SetupRunsRepo;
-        const claimed = yield* repo.claim(first);
-        if (claimed._tag !== "Claimed") throw new Error(`claimed: ${claimed._tag}`);
-        const stamped = yield* repo.finish(claimed.claimId, done);
+        const stamped = yield* repo.finish(claimed(yield* repo.claim(first)), done);
         const again = yield* repo.claim(first);
         const changed = yield* repo.claim({ ...first, fingerprint: "fp-b" });
-        if (changed._tag !== "Claimed") throw new Error(`changed: ${changed._tag}`);
-        yield* repo.finish(changed.claimId, done);
+        yield* repo.finish(claimed(changed), done);
         const back = yield* repo.claim(first);
-        return { stamped, again: again._tag, changed: changed._tag, back: back._tag };
+        yield* repo.finish(claimed(back), done);
+        const asked = yield* repo.claim({ ...first, runAgain: "always" });
+        return {
+          stamped,
+          again: again._tag,
+          changed: changed._tag,
+          back: back._tag,
+          asked: asked._tag,
+        };
       }),
     );
     expect(result).toEqual({
@@ -117,20 +145,19 @@ describe.skipIf(postgres.skip)("setup_runs: the claim and stamp of a site's setu
       again: "Done",
       changed: "Claimed",
       back: "Claimed",
+      asked: "Claimed",
     });
   });
 
-  it("never stamps a failure done: an automatic start is told, an explicit one runs it again", async () => {
+  it("never stamps a failure done: an automatic start is told, a person's runs it again", async () => {
     const site = request();
     const result = await run(
       Effect.gen(function* () {
         const repo = yield* SetupRunsRepo;
-        const claimed = yield* repo.claim(site);
-        if (claimed._tag !== "Claimed") throw new Error(`claimed: ${claimed._tag}`);
-        yield* repo.finish(claimed.claimId, failed);
+        yield* repo.finish(claimed(yield* repo.claim(site)), failed);
         const automatic = yield* repo.claim(site);
-        const explicit = yield* repo.claim({ ...site, retryFailed: true });
-        return { automatic, explicit: explicit._tag };
+        const person = yield* repo.claim({ ...site, runAgain: "after-failure" });
+        return { automatic, person: person._tag };
       }),
     );
     expect(result.automatic).toMatchObject({
@@ -138,46 +165,111 @@ describe.skipIf(postgres.skip)("setup_runs: the claim and stamp of a site's setu
       exitCode: 1,
       outputTail: "ERR_PNPM_OUTDATED_LOCKFILE",
     });
-    expect(result.explicit).toBe("Claimed");
+    expect(result.person).toBe("Claimed");
   });
 
-  it("lets an expired lease be claimed again, and leaves the old claimant nothing to stamp", async () => {
-    const site = request({ leaseMs: 1 });
+  it("hands a lapsed claim's id and workspace to the next claimant, which claims once it has stopped that run", async () => {
+    const site = request({ leaseMs: 300 });
     const result = await run(
       Effect.gen(function* () {
         const repo = yield* SetupRunsRepo;
-        const stale = yield* repo.claim(site);
-        if (stale._tag !== "Claimed") throw new Error(`stale: ${stale._tag}`);
-        yield* Effect.sleep("20 millis");
-        const fresh = yield* repo.claim({ ...site, leaseMs: 60_000 });
-        if (fresh._tag !== "Claimed") throw new Error(`fresh: ${fresh._tag}`);
+        const lapsed = claimed(yield* repo.claim(site));
+        yield* Effect.sleep("350 millis");
+        const next = { ...site, workspaceId: "ws-2" };
+        const unfenced = yield* repo.claim(next);
+        const fenced = yield* repo.claim({ ...next, fenced: lapsed });
         return {
-          renewed: yield* repo.renew(stale.claimId, 60_000),
-          stampedByStale: yield* repo.finish(stale.claimId, done),
-          stillHeld: (yield* repo.claim(site))._tag,
+          lapsed,
+          unfenced,
+          fenced: fenced._tag,
+          renewed: yield* repo.renew(lapsed, 60_000),
+          stampedByLapsed: yield* repo.finish(lapsed, done),
+          stillHeld: (yield* repo.claim(next))._tag,
         };
       }),
     );
-    expect(result).toEqual({ renewed: false, stampedByStale: false, stillHeld: "Busy" });
+    expect(result.unfenced).toEqual({ _tag: "Stale", claimId: result.lapsed, workspaceId: "ws-1" });
+    expect(result).toMatchObject({
+      fenced: "Claimed",
+      renewed: false,
+      stampedByLapsed: false,
+      stillHeld: "Busy",
+    });
   });
 
-  it("keeps a renewed lease held, and frees the site on release with no stamp", async () => {
-    const site = request({ leaseMs: 200 });
+  it("takes a lapsed claim over without a stop once a whole lease more has passed", async () => {
+    const site = request({ leaseMs: 100 });
     const result = await run(
       Effect.gen(function* () {
         const repo = yield* SetupRunsRepo;
-        const claimed = yield* repo.claim(site);
-        if (claimed._tag !== "Claimed") throw new Error(`claimed: ${claimed._tag}`);
+        claimed(yield* repo.claim(site));
+        yield* Effect.sleep("250 millis");
+        return (yield* repo.claim({ ...site, workspaceId: "ws-2" }))._tag;
+      }),
+    );
+    expect(result).toBe("Claimed");
+  });
+
+  it("refuses a lapsed claim its stamp and its renewal even when nobody has claimed since", async () => {
+    const site = request({ leaseMs: 100 });
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* SetupRunsRepo;
+        const claimId = claimed(yield* repo.claim(site));
         yield* Effect.sleep("150 millis");
-        const renewed = yield* repo.renew(claimed.claimId, 60_000);
+        return {
+          renewed: yield* repo.renew(claimId, 60_000),
+          stamped: yield* repo.finish(claimId, done),
+        };
+      }),
+    );
+    expect(result).toEqual({ renewed: false, stamped: false });
+  });
+
+  it("keeps a renewed lease held, counts it in its workspace, and frees the site on release with no stamp", async () => {
+    const site = request({ leaseMs: 200, workspaceId: "ws-counted" });
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* SetupRunsRepo;
+        const claimId = claimed(yield* repo.claim(site));
+        yield* Effect.sleep("150 millis");
+        const renewed = yield* repo.renew(claimId, 60_000);
         yield* Effect.sleep("100 millis");
-        const whileHeld = (yield* repo.claim(site))._tag;
-        yield* repo.release(claimed.claimId);
-        const afterRelease = (yield* repo.claim(site))._tag;
+        const whileHeld = {
+          claim: (yield* repo.claim(site))._tag,
+          busy: yield* repo.busy(site.siteKey),
+          inWorkspace: yield* repo.runningIn("ws-counted"),
+        };
+        yield* repo.release(claimId);
+        const afterRelease = {
+          busy: yield* repo.busy(site.siteKey),
+          inWorkspace: yield* repo.runningIn("ws-counted"),
+          claim: (yield* repo.claim(site))._tag,
+        };
         return { renewed, whileHeld, afterRelease };
       }),
     );
-    expect(result).toEqual({ renewed: true, whileHeld: "Busy", afterRelease: "Claimed" });
+    expect(result).toEqual({
+      renewed: true,
+      whileHeld: { claim: "Busy", busy: true, inWorkspace: 1 },
+      afterRelease: { busy: false, inWorkspace: 0, claim: "Claimed" },
+    });
+  });
+
+  it("forgets a worktree's stamps when the worktree is removed", async () => {
+    const site = request({ worktreeId: OTHER_WORKTREE });
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* SetupRunsRepo;
+        const sql = yield* SqlClient.SqlClient;
+        yield* repo.finish(claimed(yield* repo.claim(site)), done);
+        const before = (yield* repo.claim(site))._tag;
+        yield* sql`DELETE FROM worktrees WHERE id = ${OTHER_WORKTREE}`;
+        const rows = yield* sql`SELECT 1 FROM setup_runs WHERE site_key = ${site.siteKey}`;
+        return { before, left: rows.length };
+      }),
+    );
+    expect(result).toEqual({ before: "Done", left: 0 });
   });
 
   it("holds at most one running row per site in the table itself", async () => {
@@ -186,9 +278,10 @@ describe.skipIf(postgres.skip)("setup_runs: the claim and stamp of a site's setu
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const insert = (fingerprint: string) => sql`
-          INSERT INTO setup_runs (site_key, fingerprint, state, claim_id, claimed_at, lease_until)
-          VALUES (${site.siteKey}, ${fingerprint}, 'running', gen_random_uuid(), now(),
-                  now() + interval '1 minute')`;
+          INSERT INTO setup_runs (site_key, fingerprint, worktree_id, state, claim_id,
+                                  workspace_id, claimed_at, lease_until)
+          VALUES (${site.siteKey}, ${fingerprint}, ${WORKTREE}, 'running', gen_random_uuid(),
+                  'ws-1', now(), now() + interval '1 minute')`;
         yield* insert("fp-a");
         return yield* insert("fp-b").pipe(Effect.flip);
       }),

@@ -1468,6 +1468,57 @@ describe("a dependency's address in a Service's env", () => {
     );
   });
 
+  it("a restart binds the dependencies its attempt was started with, whatever mend.toml says now", async () => {
+    const created: CreateOptions[] = [];
+    const opened: Array<SessionOptions | PersonSessionOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const { engine, session } = yield* provisionIn(project);
+          yield* engine.launch(session.id, ["codex"]);
+          writeMendToml(tmp, session.worktree, WEB_DB_CACHE);
+          const web = yield* engine.runServiceRecipe(session.id, "web", ownerStart);
+          const attempt = web.service.currentAttemptId;
+          expect(attempt === null ? undefined : world.launches.get(attempt)?.depends).toEqual([
+            "db",
+            "cache",
+          ]);
+
+          writeMendToml(
+            tmp,
+            session.worktree,
+            WEB_DB_CACHE.replace('depends = ["db", "cache"]', 'depends = ["cache"]'),
+          );
+          yield* engine.restartService(web.service.id, ownerStart);
+          writeMendToml(tmp, session.worktree, "[service.web\n");
+          yield* engine.restartService(web.service.id, ownerStart);
+
+          const bound = {
+            PORT: "3000",
+            MEND_SERVICE_DB_HOST: "127.0.0.1",
+            MEND_SERVICE_DB_PORT: "5432",
+            MEND_SERVICE_CACHE_HOST: "127.0.0.1",
+            MEND_SERVICE_CACHE_PORT: "6379",
+          };
+          expect(opened.slice(-2).map((options) => options.env)).toEqual([bound, bound]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+        ),
+        forwardAdapterLayer: routedForwards(new Set()),
+      },
+    );
+  });
+
   it("refuses a recipe two of whose dependencies would set the same names", async () => {
     const created: CreateOptions[] = [];
     const spawned: ReadonlyArray<string>[] = [];

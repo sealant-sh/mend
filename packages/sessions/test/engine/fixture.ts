@@ -30,6 +30,7 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   ServicesRepo,
+  decideSetupClaim,
   SetupRunsRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
@@ -268,6 +269,7 @@ export const sealantDeadLayer = Layer.succeed(SealantClient, {
   captureFlush: () => Effect.die("not in test"),
   captureStatus: () => Effect.succeed(null),
   runtimeDeadline: () => Effect.succeed(null),
+  bootedImage: () => Effect.succeed(null),
   runtimeResourceId: () => Effect.succeed(null),
   launchedRuntime: () => Effect.succeed("unknown" as const),
   findWorkspaceByKey: () => Effect.succeed({ kind: "unsupported" as const }),
@@ -478,6 +480,8 @@ export const sealantLaunchLayer = (
       workspace: Workspace,
       options?: { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null },
     ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
+    /** The image digest the workspace booted; absent: the platform cannot say. */
+    readonly bootedImage?: () => string | null;
     /** While true, every workspace lookup fails the way an unreachable Core does (503). */
     readonly unreachablePlatform?: () => boolean;
     /** What the platform reports of the workspace, given whether a stop was asked of it. */
@@ -768,6 +772,7 @@ export const sealantLaunchLayer = (
         ? Effect.succeed(null)
         : captureOps.captureStatus(target),
     runtimeDeadline: () => Effect.sync(() => captureOps?.runtimeDeadline?.() ?? null),
+    bootedImage: () => Effect.sync(() => captureOps?.bootedImage?.() ?? null),
     runtimeResourceId: () => Effect.sync(() => captureOps?.resourceId?.() ?? null),
     launchedRuntime: () => Effect.sync(() => captureOps?.launchedRuntime?.() ?? "unknown"),
     findWorkspaceByKey: (key) =>
@@ -1440,7 +1445,7 @@ export interface World {
   readonly reachedAttempts: Set<string>;
   /** Each Service attempt's recorded launch (`launch_cwd`, `launch_env`, `launch_ready`). */
   readonly launches: Map<string, ServiceLaunch>;
-  readonly setupRuns: Array<SetupRunRow>;
+  readonly setupRuns: Array<WorldSetupRun>;
   controlSeq: number;
   readonly previews: Map<string, Preview>;
   readonly previewControls: Map<string, PreviewControl>;
@@ -2132,11 +2137,14 @@ export const previewsRepoOf = (world: World) => {
   });
 };
 
-export interface SetupRunRow {
+/** A `setup_runs` row as the test world keeps it; `leaseUntil` is the world clock's millis. */
+export interface WorldSetupRun {
   readonly siteKey: string;
   readonly fingerprint: string;
+  readonly worktreeId: string;
   state: "running" | "done" | "failed";
   readonly claimId: string;
+  readonly workspaceId: string;
   readonly runsAs: string | null;
   leaseUntil: number;
   finishedAt: Date | null;
@@ -2144,61 +2152,54 @@ export interface SetupRunRow {
   outputTail: string | null;
 }
 
+/** The store's claim rules (`decideSetupClaim`) over the world's rows, on the world's clock. */
 export const setupRunsLayer = (world: World) => {
+  const at = () => world.clock.now().getTime();
   const held = (claimId: string) =>
-    world.setupRuns.find((row) => row.claimId === claimId && row.state === "running");
-  const drop = (keep: (row: SetupRunRow) => boolean) => {
+    world.setupRuns.find(
+      (row) => row.claimId === claimId && row.state === "running" && row.leaseUntil > at(),
+    );
+  const drop = (keep: (row: WorldSetupRun) => boolean) => {
     const kept = world.setupRuns.filter(keep);
     world.setupRuns.splice(0, world.setupRuns.length, ...kept);
   };
+  const live = (row: WorldSetupRun) => row.state === "running" && row.leaseUntil > at();
   return Layer.succeed(SetupRunsRepo, {
     claim: (request) =>
       Effect.sync(() => {
-        const at = world.clock.now().getTime();
-        drop(
-          (row) =>
-            !(row.siteKey === request.siteKey && row.state === "running" && row.leaseUntil <= at),
-        );
         const site = world.setupRuns.filter((row) => row.siteKey === request.siteKey);
-        const running = site.find((row) => row.state === "running");
-        if (running !== undefined) {
-          return {
-            _tag: "Busy",
-            fingerprint: running.fingerprint,
-            runsAs: running.runsAs,
-          } as const;
-        }
-        const stamp = site.find((row) => row.fingerprint === request.fingerprint);
-        if (stamp?.state === "done" && stamp.finishedAt !== null) {
-          return { _tag: "Done", finishedAt: stamp.finishedAt } as const;
-        }
-        if (stamp?.state === "failed" && stamp.finishedAt !== null && !request.retryFailed) {
-          return {
-            _tag: "Failed",
-            exitCode: stamp.exitCode,
-            outputTail: stamp.outputTail,
-            finishedAt: stamp.finishedAt,
-          } as const;
-        }
+        const decided = decideSetupClaim(
+          site.map((row) => ({ ...row, lapsedMs: at() - row.leaseUntil })),
+          request,
+        );
+        if (decided._tag !== "Claim") return decided;
         drop((row) => row.siteKey !== request.siteKey);
         const claimId = crypto.randomUUID();
         world.setupRuns.push({
           siteKey: request.siteKey,
           fingerprint: request.fingerprint,
+          worktreeId: request.worktreeId,
           state: "running",
           claimId,
+          workspaceId: request.workspaceId,
           runsAs: request.runsAs,
-          leaseUntil: at + request.leaseMs,
+          leaseUntil: at() + request.leaseMs,
           finishedAt: null,
           exitCode: null,
           outputTail: null,
         });
         return { _tag: "Claimed", claimId } as const;
       }),
+    busy: (siteKey) =>
+      Effect.sync(() => world.setupRuns.some((row) => row.siteKey === siteKey && live(row))),
+    runningIn: (workspaceId) =>
+      Effect.sync(
+        () => world.setupRuns.filter((row) => row.workspaceId === workspaceId && live(row)).length,
+      ),
     renew: (claimId, leaseMs) =>
       Effect.sync(() => {
         const row = held(claimId);
-        if (row !== undefined) row.leaseUntil = world.clock.now().getTime() + leaseMs;
+        if (row !== undefined) row.leaseUntil = at() + leaseMs;
         return row !== undefined;
       }),
     finish: (claimId, outcome) =>

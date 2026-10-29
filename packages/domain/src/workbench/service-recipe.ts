@@ -260,12 +260,14 @@ export const recipeRefusalLine = (refusal: RecipeRefusal): string =>
 
 /**
  * How one Service attempt was launched, as its row records it: a restart replays it rather than
- * reading the file again. `env` is the recipe's own, never Mend's.
+ * reading the file again. `env` is the recipe's own, never Mend's; `depends` names the session
+ * dependencies whose addresses its env carries, which a restart looks up again.
  */
 export interface ServiceLaunch {
   readonly cwd: RepoRelativePath | null;
   readonly env: RecipeEnv;
   readonly ready: RecipeReady;
+  readonly depends: ReadonlyArray<string>;
 }
 
 /** An explicit `mend service run` and an attempt from before 0143 launch this way. */
@@ -273,4 +275,5 @@ export const DEFAULT_SERVICE_LAUNCH: ServiceLaunch = {
   cwd: null,
   env: {},
   ready: DEFAULT_RECIPE_READY,
+  depends: [],
 };

@@ -9,7 +9,7 @@ import {
   SessionProcessId,
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
-import { ServiceAddress, ServiceHostPolicy } from "./service-recipe.ts";
+import { ServiceAddress, ServiceHostPolicy, ServiceStartSetup } from "./service-recipe.ts";
 import { SessionProcess } from "./session-process.ts";
 
 /** How a stable Service declaration entered one session. */
@@ -135,6 +135,14 @@ export class ServiceView extends Schema.Class<ServiceView>("ServiceView")({
   workspaceTtlRenewalError: Schema.NullOr(Schema.String),
   endpoints: Schema.Array(ServiceEndpoint),
   previousEndpoints: Schema.Array(ServiceEndpoint),
+  /**
+   * A recipe start's answer only: how its `[setup]` went (`ServiceStartProgress.setup`), so a
+   * client says a refused one without following the start. Null everywhere else.
+   */
+  setup: Schema.NullOr(ServiceStartSetup).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
 }) {}
 
 const endpointAuthority = (address: string, port: number): string =>

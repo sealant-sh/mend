@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -490,31 +491,90 @@ const isMissing = (cause: unknown) =>
   "code" in cause &&
   (cause.code === "ENOENT" || cause.code === "ENOTDIR");
 
-/** A path that resolves outside the worktree is never read: `mend.toml` is the agent's to write. */
-export const readWorktreeFile = (
+export const WORKTREE_FILE_MAX_BYTES = 16 * 1024 * 1024;
+
+class Refused extends Error {}
+
+const resolveInside = async (root: string, relative: string): Promise<string | null> => {
+  let real: string;
+  try {
+    real = await fs.realpath(path.join(root, relative));
+  } catch (cause) {
+    if (isMissing(cause)) return null;
+    throw cause;
+  }
+  if (real !== root && !real.startsWith(`${root}${path.sep}`)) {
+    throw new Refused("resolves outside the worktree");
+  }
+  return real;
+};
+
+/**
+ * Opens `relative` in the worktree for reading, or answers null for no file. Never a file that
+ * resolves outside it, whatever is swapped in meanwhile (the file opened is checked against the
+ * path as it resolves after the open), and never anything but a regular file: a FIFO would hold
+ * the read open forever, a directory has no bytes.
+ */
+const withWorktreeFile = <A>(
   worktree: string,
   relative: string,
-): Effect.Effect<Uint8Array | null, WorktreeFileError> =>
+  use: (file: fs.FileHandle, size: number) => Promise<A>,
+): Effect.Effect<A | null, WorktreeFileError> =>
   Effect.tryPromise({
     try: async () => {
       const root = await fs.realpath(worktree);
-      let real: string;
+      const real = await resolveInside(root, relative);
+      if (real === null) return null;
+      const file = await fs.open(
+        real,
+        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+      );
       try {
-        real = await fs.realpath(path.join(root, relative));
-      } catch (cause) {
-        if (isMissing(cause)) return null;
-        throw cause;
+        const opened = await file.stat();
+        if (opened.isDirectory()) throw new Refused("is a directory; name a file");
+        if (!opened.isFile()) throw new Refused("is not a regular file");
+        const now = await resolveInside(root, relative);
+        const there = now === null ? null : await fs.stat(now);
+        if (there === null || there.ino !== opened.ino || there.dev !== opened.dev) {
+          throw new Refused("changed while it was read");
+        }
+        return await use(file, opened.size);
+      } finally {
+        await file.close();
       }
-      if (real !== root && !real.startsWith(`${root}${path.sep}`)) {
-        throw new Error("resolves outside the worktree");
-      }
-      return new Uint8Array(await fs.readFile(real));
     },
     catch: (cause) =>
       new WorktreeFileError({
         path: relative,
-        message: `${relative} could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+        message: `${relative} ${cause instanceof Refused ? "" : "could not be read: "}${cause instanceof Error ? cause.message : String(cause)}`,
       }),
+  });
+
+/** A worktree file's bytes, or null for none (`withWorktreeFile`), up to the size limit. */
+export const readWorktreeFile = (
+  worktree: string,
+  relative: string,
+): Effect.Effect<Uint8Array | null, WorktreeFileError> =>
+  withWorktreeFile(worktree, relative, async (file, size) => {
+    if (size > WORKTREE_FILE_MAX_BYTES) {
+      throw new Refused(`is over the ${WORKTREE_FILE_MAX_BYTES / (1024 * 1024)} MiB Mend reads`);
+    }
+    return new Uint8Array(await file.readFile());
+  });
+
+/** The sha256 of a worktree file's bytes, read in chunks, or null for none (`withWorktreeFile`). */
+export const digestWorktreeFile = (
+  worktree: string,
+  relative: string,
+): Effect.Effect<string | null, WorktreeFileError> =>
+  withWorktreeFile(worktree, relative, async (file) => {
+    const hash = createHash("sha256");
+    const chunk = Buffer.alloc(1024 * 1024);
+    for (;;) {
+      const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) return hash.digest("hex");
+      hash.update(chunk.subarray(0, bytesRead));
+    }
   });
 
 /** Read and validate the worktree's `mend.toml`. Missing or unreadable = nothing declared. */
