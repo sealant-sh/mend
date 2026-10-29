@@ -63,6 +63,7 @@ export * from "./protocol-idle.ts";
 export * from "./preview.ts";
 export * from "./reference.ts";
 export * from "./repository.ts";
+export * from "./resource.ts";
 export * from "./review-comment.ts";
 export * from "./review-slice.ts";
 export * from "./review-target.ts";
