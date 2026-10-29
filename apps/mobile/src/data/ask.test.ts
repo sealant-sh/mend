@@ -7,46 +7,13 @@ const stopButtons = (onStop: () => void, onCancel?: () => void): ReadonlyArray<A
   { text: "Stop session", style: "destructive", onPress: onStop },
 ];
 
-describe("ask on a phone", () => {
-  it.each(["ios", "android"])("hands %s the platform alert, word for word", (os) => {
-    const alert = vi.fn();
-    const asker = createAsker({ os, alert });
-    const onStop = vi.fn();
-    const buttons = stopButtons(onStop);
-    asker.ask("Stop this session?", "The agent ends.", buttons, { cancelable: true });
-
-    expect(alert).toHaveBeenCalledWith("Stop this session?", "The agent ends.", buttons, {
-      cancelable: true,
-    });
-    expect(asker.showing()).toBeNull();
-    expect(onStop).not.toHaveBeenCalled();
-  });
-
-  it("passes a notice without buttons as it came", () => {
-    const alert = vi.fn();
-    createAsker({ os: "ios", alert }).ask("No image on the clipboard", "Copy one first.");
-    expect(alert).toHaveBeenCalledWith(
-      "No image on the clipboard",
-      "Copy one first.",
-      undefined,
-      undefined,
-    );
-  });
-});
-
-const web = () => {
-  const alert = vi.fn();
-  return { alert, asker: createAsker({ os: "web", alert }) };
-};
-
-describe("ask on the web build", () => {
-  it("shows the question in the app instead of the alert that does nothing", () => {
-    const { alert, asker } = web();
+describe("ask before the dialog shows", () => {
+  it("runs beforeAsk first, then queues the question word for word", () => {
+    const asker = createAsker({ beforeAsk: vi.fn(() => expect(asker.showing()).toBeNull()) });
     const listener = vi.fn();
     asker.subscribe(listener);
     asker.ask("Stop this session?", "The agent ends.", stopButtons(vi.fn()));
 
-    expect(alert).not.toHaveBeenCalled();
     expect(listener).toHaveBeenCalledTimes(1);
     expect(asker.showing()).toMatchObject({
       title: "Stop this session?",
@@ -54,9 +21,11 @@ describe("ask on the web build", () => {
       buttons: [{ text: "Cancel" }, { text: "Stop session" }],
     });
   });
+});
 
+describe("ask in the app's own dialog", () => {
   it("runs the chosen button once, after closing", () => {
-    const { asker } = web();
+    const asker = createAsker();
     const onStop = vi.fn(() => expect(asker.showing()).toBeNull());
     asker.ask("Stop this session?", undefined, stopButtons(onStop));
     const question = asker.showing();
@@ -70,7 +39,7 @@ describe("ask on the web build", () => {
   });
 
   it("does nothing on Cancel", () => {
-    const { asker } = web();
+    const asker = createAsker();
     const onStop = vi.fn();
     asker.ask("Stop this session?", undefined, stopButtons(onStop));
     const question = asker.showing();
@@ -84,7 +53,7 @@ describe("ask on the web build", () => {
   });
 
   it("treats a dismissal as Cancel, never as the action", () => {
-    const { asker } = web();
+    const asker = createAsker();
     const onStop = vi.fn();
     const onCancel = vi.fn();
     asker.ask("Stop this session?", undefined, stopButtons(onStop, onCancel));
@@ -98,11 +67,10 @@ describe("ask on the web build", () => {
   });
 
   it("calls onDismiss when the question has no Cancel", () => {
-    const { asker } = web();
+    const asker = createAsker();
     const onDismiss = vi.fn();
     const onChoice = vi.fn();
     asker.ask("Attach an image", undefined, [{ text: "Photo library", onPress: onChoice }], {
-      cancelable: true,
       onDismiss,
     });
     const question = asker.showing();
@@ -113,8 +81,8 @@ describe("ask on the web build", () => {
     expect(onChoice).not.toHaveBeenCalled();
   });
 
-  it("gives a notice the OK a phone would show", () => {
-    const { asker } = web();
+  it("gives a notice without buttons an OK", () => {
+    const asker = createAsker();
     asker.ask("No image on the clipboard", "Copy a screenshot or photo first.");
     expect(asker.showing()).toMatchObject({
       title: "No image on the clipboard",
@@ -124,7 +92,7 @@ describe("ask on the web build", () => {
   });
 
   it("shows questions one at a time, oldest first", () => {
-    const { asker } = web();
+    const asker = createAsker();
     asker.ask("First");
     asker.ask("Second");
     const first = asker.showing();
