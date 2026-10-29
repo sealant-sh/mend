@@ -146,13 +146,22 @@ code, so it travels to every collaborator and every session worktree:
 
 ```toml
 [service.web]
-command = "pnpm dev"
+command = "pnpm dev --port 3000 --host 127.0.0.1"
 port = 3000
 browserScheme = "http"
+cwd = "apps/web"
+env = { NODE_ENV = "development" }
+ready = { http = "/", timeout = "120s" }
+host = "rewrite"
+depends = ["db"]
 
 [service.db]
-# No command: an already-listening port to adopt (compose sidecar, external daemon).
+command = "docker compose up db"
 port = 5432
+address = "docker"
+
+[preview]
+service = "web"
 ```
 
 A declaration is a recipe, never a running process. `mend service run web` starts one by name; the
@@ -161,17 +170,88 @@ worktree when the deployment co-locates it, and from the session's live workspac
 (`/workspace/repo/mend.toml`, through the SDK's exec) when it does not — the capture store's MicroVM
 executors. With no live workspace in that mode the file is not observable: the recipe list answers
 the project's recipes only, and running a file recipe is refused with a message that says so. A
-port-only entry is an `add` recipe. Nothing autostarts: declaring, claiming a hot workspace,
-resuming, and reconnecting do not start a Service. The session's worktree copy is authoritative, so
-an agent can add a recipe as part of its change and Review shows that edit.
+port-only entry is an `add` recipe. The session's worktree copy is authoritative, so an agent can
+add a recipe as part of its change and Review shows that edit.
+
+**Nothing autostarts.** Declaring, claiming a hot workspace, resuming and reconnecting start no
+Service. The one start Mend makes on its own is when it replaces an executor: it starts again the
+recipe Services that were running in the one it replaced.
 
 Transport and browser behavior are separate. `protocol` remains `tcp | udp`; `browserScheme` is
 optional `http | https`. Mend shows Open only when a browser scheme exists. Other Services show Copy
 endpoint.
 
+#### Keys
+
+Mend 0.37 is the first version that reads `cwd`, `env`, `ready`, `host`, `address`, `depends` and
+`[preview]`. An older server ignores them without a word: it runs the `command` at the repository
+root with no environment of the recipe's, and no parser in a newer Mend can change that. Check the
+server's version before you rely on them.
+
+| Key                 | Meaning                                                                                                                                                                                                                                                                | Refused when                                                                                                                                                                                                                               |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `port`              | Where the process listens inside the workspace. Required.                                                                                                                                                                                                              | Missing, or outside 1–65535.                                                                                                                                                                                                               |
+| `command`           | The shell command Mend supervises. Absent: adopt a listener something else starts.                                                                                                                                                                                     | Empty.                                                                                                                                                                                                                                     |
+| `protocol`          | `"tcp"` (default) or `"udp"`.                                                                                                                                                                                                                                          | Anything else.                                                                                                                                                                                                                             |
+| `browserScheme`     | `"http"` or `"https"`: the Service is opened in a browser.                                                                                                                                                                                                             | Anything else, or on UDP.                                                                                                                                                                                                                  |
+| `cwd`               | The directory the command runs in, relative to the repository root. Mend passes `/workspace/repo/<cwd>`. `""` and `"."` are the root.                                                                                                                                  | Absolute, containing `..`, containing NUL, or not a string.                                                                                                                                                                                |
+| `env`               | The recipe's own environment, string values only.                                                                                                                                                                                                                      | A name that is not `[A-Za-z_][A-Za-z0-9_]*`, a `MEND_*` name (Mend's), `PORT` (Mend's), or a value that is not a string.                                                                                                                   |
+| `ready`             | When a started Service counts as up: `{ http = "/health", timeout = "2m" }` waits for any HTTP status line for that path, over TLS for an `https` Service; `{ timeout = "90s" }` keeps the TCP accept with a longer wait, for an adopted port too. Default: TCP, 60 s. | `http` not a path, `timeout` not a quoted duration or outside 1 s–10 min, or `http` on UDP or on a recipe with no command.                                                                                                                 |
+| `host`              | The `Host` a preview's requests carry: `"rewrite"` (default, `localhost:<port>`) or `"preserve"` (the preview's own host, for an app that builds its links from it).                                                                                                   | Without `browserScheme = "http"`.                                                                                                                                                                                                          |
+| `address`           | `"loopback"` (default) or `"docker"`: Docker publishes the port, as a compose service's. A docker Service is always dialled port-scoped, never bound to a process, and its preview says `port-scoped`.                                                                 | Anything else, or on UDP.                                                                                                                                                                                                                  |
+| `depends`           | Recipes of the same session started first, in this order.                                                                                                                                                                                                              | Not a list, a name no runnable recipe has, the recipe itself, a cycle (every recipe on it), or a refused recipe. A shared service's spelling, `"@db"` or `{ shared = "db" }`, is refused as `@db · shared services are not available yet`. |
+| `[preview].service` | The Service the worktree's preview shows.                                                                                                                                                                                                                              | A name that is not a runnable recipe with `browserScheme = "http"`.                                                                                                                                                                        |
+
+Each refusal belongs to one recipe and names its key; the file's other recipes still list and run.
+Only a file that is not TOML, or a `service` that is not a table, fails the whole file. A key Mend
+does not read (a later version's, `[setup]` among them for now, or a typo) is listed as ignored,
+never refused. `GET /sessions/:id/declarations` answers the file read whole: the recipes, each
+refusal with its key, the ignored keys, and `[preview]`. `mend service run <name>` says why a
+refused recipe does not run, and the agent's workspace note names the refused recipes with their
+reasons.
+
+**How a recipe runs.** The process gets the recipe's `env`, then `PORT` (its `port`), then
+`MEND_PREVIEW_URL`, then Mend's own names for the person it runs as, each over the one before.
+`MEND_PREVIEW_URL` is the Service's own preview's address when it is a browser Service, else the
+`[preview]` Service's, and is unset, never empty, when previews are off or that preview has no
+address yet. They are process environment, so they reach a Service in a standby workspace whose
+workspace environment was fixed before its worktree was known. `depends` starts each dependency
+first, one start at a time. One already live in the session is not started again, but it counts only
+once it has answered its own `ready` rule: one that never did is checked again, within its own
+timeout, and a command-less one has its port looked at again. A command-less one not yet live is
+adopted and waited for within its `ready.timeout`. The first that fails or never answers stops the
+start with its name, leaving the ones already started running. The readiness wait holds nothing
+another Service's stop needs.
+
+**One rule says a Service is up.** The recipe's `ready` decides it at the start, at a restart, at
+the 20-second background probe and when the server starts again. A port that accepts a connection is
+not an HTTP answer: an HTTP-ready Service reads `reachable` only once its path answered. An `https`
+Service's check speaks TLS and takes the dev server's own certificate without checking it: it asks
+whether the server answers, and trusts nothing it says.
+
+**A start outlives its request.** Mend runs a start, dependencies first, to its end or to a Stop of
+one of its Services, whatever happens to the request that asked for it. The request waits up to a
+minute: it answers with the Service, or, when a dependency is still starting, with a 504 that says
+which one, and the start goes on. `GET /sessions/:id/services/starts/:startId` says where a start
+stands, recipe by recipe, for ten minutes after it ends. `mend service run <name> --wait` follows
+it, naming each dependency as it starts and answers, for as long as `--timeout` allows. A Stop of a
+dependency, or of all the session's Services, ends the start: nothing after it starts.
+
+**What a restart runs.** An attempt records its command, `cwd`, the recipe's `env` and its `ready`
+rule. A restart replays those, never the file as it reads now, so a turn that edited `mend.toml`
+changes nothing until a new start. `PORT`, `MEND_PREVIEW_URL` and the person's names are worked out
+again at each start.
+
+Project recipes, the machine-local ones the web app adds, keep their four fields: no `cwd`, `env`,
+`ready`, `host`, `address` or `depends`.
+
 `mend service init` scaffolds the file: it reads the project's own manifests — package.json scripts,
-compose files — and proposes entries for the user to confirm and commit. A generator for the recipe
-file, nothing more.
+compose files — and proposes entries for the user to confirm and commit. A workspace package runs in
+its own directory with `cwd`, a known dev server gets `browserScheme = "http"`, a compose service
+gets `address = "docker"` (a UDP one stays on loopback, which is all UDP has), and the one browser
+Service, when there is exactly one, becomes the `[preview]`. A folder or compose service whose name
+is not a recipe name is proposed under one (`My_App` becomes `my_app`). Everything it writes is
+something this server's parser accepts. A generator for the recipe file, nothing more.
 
 ## How it works
 
@@ -457,5 +537,5 @@ runs that full stack and ships something usable on its own.
 - Host port allocation range. A stable Service prefers its previous port and reports endpoint
   movement when that port is occupied.
 - The friendly-address lookup (`session:port`), if ever; this is presentation only.
-- The full `mend.toml` recipe shape beyond command, port, transport, and browser scheme. Add cwd,
-  environment references, or readiness rules only when a real project needs them.
+- `[setup]`, the recipe digest and its approval (ADR 0017, delivery 9b and 9c), and a session
+  dependency's address in the environment (`MEND_SERVICE_<NAME>_HOST`/`_PORT`).

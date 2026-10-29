@@ -173,7 +173,9 @@ export type PreviewBinding =
   process tries the workspace's loopback only. When loopback refuses it, the gateway answers that
   nothing listens and does not try the Docker route, because a container cannot prove the process. A
   docker-hosted Service is always port-scoped, and its status says `port-scoped`. Nothing claims a
-  process proof for it. Step 9's recipe key declares which Services are docker-hosted.
+  process proof for it. Step 9's recipe key declares which Services are docker-hosted:
+  `address = "docker"` (default `"loopback"`), decided by Yiannis on 2026-10-25. `host` stays the
+  Host-header policy (`"rewrite"` | `"preserve"`).
 - A second session in the worktree that runs the same name does not take the host over. A
   managed-port claim on (workspace, port) turns that into a named conflict.
 
@@ -351,6 +353,7 @@ depends = ["db"]                            # started first, in order, never a c
 [service.db]
 command = "docker compose up db"
 port = 5432
+address = "docker"                          # Docker publishes it: dialled port-scoped
 
 [preview]
 service = "web"                             # must name a Service with a browserScheme
