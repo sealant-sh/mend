@@ -141,7 +141,9 @@ export type ScreenInput = typeof ScreenInput.Type;
 
 export const SCREEN_INPUT_INITIAL: ScreenInput = { _tag: "AwaitingAgent", epoch: 0 };
 
+/** `NotStarted`: the display is reserved and no screen has run on it yet. */
 export const ScreenLife = Schema.Union([
+  Schema.TaggedStruct("NotStarted", {}),
   Schema.TaggedStruct("Starting", {}),
   Schema.TaggedStruct("Live", { degraded: Schema.NullOr(ScreenDegraded) }),
   Schema.TaggedStruct("Ended", { reason: ScreenEndReason }),
@@ -403,6 +405,7 @@ export interface ScreenStatusFacts {
 
 /** `screen · agent has input · frame 3 s ago`: what Mend observed, on every surface. */
 export const screenStatusLine = (facts: ScreenStatusFacts): string => {
+  if (facts.life._tag === "NotStarted") return "screen · not started";
   if (facts.life._tag === "Starting") return "screen · starting";
   if (facts.life._tag === "Ended") return `screen · ${ENDED[facts.life.reason]}`;
   return [

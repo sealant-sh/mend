@@ -147,8 +147,9 @@ describe("screenStatusLine", () => {
     ).toBe("screen · waiting for the agent's next look · no frame yet");
   });
 
-  it("reads a starting or ended screen without its input", () => {
+  it("reads a screen not started, starting or ended without its input", () => {
     const agent: ScreenInput = { _tag: "Agent", epoch: 1 };
+    expect(line(agent, { life: { _tag: "NotStarted" } })).toBe("screen · not started");
     expect(line(agent, { life: { _tag: "Starting" } })).toBe("screen · starting");
     expect(line(agent, { life: { _tag: "Ended", reason: "idle" } })).toBe(
       "screen · ended after 15 min idle",
