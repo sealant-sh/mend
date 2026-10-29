@@ -191,6 +191,7 @@ export const reconcileConversation = (
   const placed = new Set<string>();
   const rows: Array<ConversationRow> = [];
   for (const entry of entries) {
+    if (entry.kind === "steer") continue;
     if (entry.kind !== "turn") {
       rows.push(entry);
       continue;

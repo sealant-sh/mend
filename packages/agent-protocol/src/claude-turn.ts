@@ -71,6 +71,7 @@ export type ClaudeTurnEffect =
       readonly cause: "sent" | "harness" | "replay";
     }
   | { readonly _tag: "SegmentClosed"; readonly turnId: string }
+  | { readonly _tag: "DrainEnded" }
   | {
       readonly _tag: "TurnCompleted";
       readonly turnId: string;
@@ -214,6 +215,13 @@ const foldControl = (state: ClaudeTurns, control: AgentControlCheckpoint): Claud
 };
 
 export const foldClaudeTurn = (state: ClaudeTurns, input: ClaudeTurnInput): ClaudeTurnFold => {
+  const folded = foldTurn(state, input);
+  return state.turn._tag === "Draining" && folded.state.turn._tag !== "Draining"
+    ? { state: folded.state, effects: [{ _tag: "DrainEnded" }, ...folded.effects] }
+    : folded;
+};
+
+const foldTurn = (state: ClaudeTurns, input: ClaudeTurnInput): ClaudeTurnFold => {
   const turn = state.turn;
   switch (input._tag) {
     case "TurnSent":

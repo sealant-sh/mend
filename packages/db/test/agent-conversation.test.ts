@@ -1,11 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, SessionProcessId } from "@mend/domain";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Queue, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
+import { MEND_EVENTS_CHANNEL, MendEvent } from "../src/events.ts";
 import { migrations } from "../src/migrations.ts";
 import {
   AgentConversationRepo,
@@ -25,7 +26,7 @@ const reposLayer = AgentConversationRepoLive.pipe(
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 const withConversation = <A, E>(
-  effect: Effect.Effect<A, E, AgentConversationRepo | SqlClient.SqlClient>,
+  effect: Effect.Effect<A, E, AgentConversationRepo | SqlClient.SqlClient | PgClient.PgClient>,
 ) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 let created = false;
 
@@ -35,6 +36,31 @@ const foreignKeyRefusal = (statement: Effect.Effect<unknown, SqlError>) =>
     Effect.flip,
     Effect.map((error) => Schema.decodeUnknownSync(ConstraintDiagnostic)(error.reason.cause)),
   );
+
+const untilWaiting = (relation: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const rows = yield* sql<{ readonly waiting: string }>`
+        SELECT count(*)::text AS waiting FROM pg_locks l
+        JOIN pg_stat_activity a ON a.pid = l.pid AND a.datname = current_database()
+        LEFT JOIN pg_class c ON c.oid = l.relation
+        WHERE NOT l.granted AND (c.relname = ${relation} OR l.locktype IN ('transactionid', 'tuple'))`;
+      if (rows[0]?.waiting !== "0") return;
+      yield* Effect.sleep("25 millis");
+    }
+    return yield* Effect.die(`nothing waited on ${relation}`);
+  });
+
+const runningTurn = Effect.gen(function* () {
+  const repo = yield* AgentConversationRepo;
+  const session = SessionId.make("sess-codex");
+  const process = SessionProcessId.make("p-codex-1");
+  const turn = yield* repo.submitTurn(session, process, "start", "user-1");
+  yield* repo.claimNextTurn(process);
+  yield* repo.setProviderTurnId(turn.id, "native");
+  return { session, process, turn };
+});
 
 describe.skipIf(postgres.skip)("conversation repository against current migrations", () => {
   beforeEach(async () => {
@@ -415,5 +441,414 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
       code: "23503",
       constraint: "agent_turns_billed_user_id_fkey",
     });
+  });
+  it("keeps every admitted steer through completion and allocates ordinals once", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const session = SessionId.make("sess-codex");
+        const process = SessionProcessId.make("p-codex-1");
+        const turn = yield* repo.submitTurn(session, process, "start", "user-1");
+        yield* repo.claimNextTurn(process);
+        yield* repo.setProviderTurnId(turn.id, "native");
+        const key = crypto.randomUUID();
+        const [first, retry] = yield* Effect.all(
+          [
+            repo.admitTurnSteer({
+              turnId: turn.id,
+              author: "user-1",
+              input: "  exact words\n",
+              clientSteerId: key,
+            }),
+            repo.admitTurnSteer({
+              turnId: turn.id,
+              author: "user-1",
+              input: "  exact words\n",
+              clientSteerId: key.toUpperCase(),
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(first.steer.id).toBe(retry.steer.id);
+        expect([first.created, retry.created].filter(Boolean)).toHaveLength(1);
+        const [racing, completed] = yield* Effect.all(
+          [
+            repo.admitTurnSteer({
+              turnId: turn.id,
+              author: "user-1",
+              input: "race",
+              clientSteerId: null,
+            }),
+            repo.completeTurn("native", session, "completed", null, null),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(racing.created).toBe(true);
+        expect(completed?.status).toBe("completed");
+        const after = yield* repo.admitTurnSteer({
+          turnId: turn.id,
+          author: "user-1",
+          input: "after",
+          clientSteerId: null,
+        });
+        yield* repo.settleTurnSteer(first.steer.id, {
+          _tag: "Accepted",
+          evidence: "provider-acknowledged",
+        });
+        yield* repo.settleTurnSteer(first.steer.id, { _tag: "Unknown", reason: "failed" });
+        yield* repo.queueTurnSteer(first.steer.id, process, "turn-ended");
+        const carried = yield* repo.queueTurnSteer(after.steer.id, process, "turn-ended");
+        expect(yield* repo.queueTurnSteer(after.steer.id, process, "unsupported")).toEqual(carried);
+        const turns = yield* repo.listConversationTurns(session);
+        expect(turns).toHaveLength(2);
+        expect(turns[0]?.steers.map((steer) => steer.ordinal)).toEqual([0, 1, 2]);
+        expect(turns[0]?.steers[0]).toMatchObject({
+          input: "  exact words\n",
+          delivery: { _tag: "Accepted" },
+        });
+        expect(turns[0]?.steerSender).toBe("user-1");
+        expect(turns[1]).toMatchObject({
+          author: "user-1",
+          input: "after",
+          fromSteer: after.steer.id,
+        });
+        const correlated = yield* repo.byLaunchCorrelation(session, `steer:${after.steer.id}`);
+        expect(correlated?.id).toBe(carried.queuedTurnId);
+      }),
+    );
+  });
+
+  it("completes an ended turn again on a replayed or late completion, keeping its usage", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const { session, turn } = yield* runningTurn;
+        const stopped = yield* repo.completeTurn("native", session, "interrupted", null, "stopped");
+        expect(stopped?.status).toBe("interrupted");
+        const usage = {
+          inputTokens: 12,
+          outputTokens: 3,
+          cachedInputTokens: null,
+          totalTokens: 15,
+          contextWindow: null,
+        };
+        const late = yield* repo.completeTurn("native", session, "completed", usage, null);
+        expect(late).toMatchObject({ id: turn.id, status: "completed", usage, error: null });
+        const replayed = yield* repo.completeTurn("native", session, "completed", usage, null);
+        expect(replayed).toMatchObject({ id: turn.id, status: "completed", usage });
+      }),
+    );
+  });
+
+  it("deduplicates a person's key across turns and preserves every final delivery", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const session = SessionId.make("sess-codex");
+        const process = SessionProcessId.make("p-codex-1");
+        const one = yield* repo.submitTurn(session, process, "one", "user-1");
+        const two = yield* repo.submitTurn(session, process, "two", "user-1");
+        const key = crypto.randomUUID();
+        const [left, right] = yield* Effect.all(
+          [one, two].map((turn) =>
+            repo.admitTurnSteer({
+              turnId: turn.id,
+              author: "user-1",
+              input: turn.input,
+              clientSteerId: key,
+            }),
+          ),
+          { concurrency: "unbounded" },
+        );
+        expect(left?.steer).toEqual(right?.steer);
+        for (const delivery of [
+          { _tag: "Accepted", evidence: "transport-written" },
+          { _tag: "Unknown", reason: "uncertain" },
+          { _tag: "NotSent", reason: "not-running" },
+        ] as const) {
+          const { steer } = yield* repo.admitTurnSteer({
+            turnId: one.id,
+            author: "user-1",
+            input: delivery._tag,
+            clientSteerId: null,
+          });
+          const settled = yield* repo.settleTurnSteer(steer.id, delivery);
+          expect(
+            yield* repo.settleTurnSteer(steer.id, { _tag: "Unknown", reason: "failed" }),
+          ).toEqual(settled);
+          expect(yield* repo.queueTurnSteer(steer.id, process, "turn-ended")).toEqual(settled);
+        }
+      }),
+    );
+  });
+
+  it("keeps words as NotSent when the session stops, and never resends Sending after restart", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const session = SessionId.make("sess-codex");
+        const process = SessionProcessId.make("p-codex-1");
+        const turn = yield* repo.submitTurn(session, process, "start", "user-1");
+        const { steer } = yield* repo.admitTurnSteer({
+          turnId: turn.id,
+          author: "user-1",
+          input: "keep me",
+          clientSteerId: null,
+        });
+        yield* sql`UPDATE agent_sessions SET settled_at = now() WHERE id = ${session}`;
+        const notSent = yield* repo.queueTurnSteer(steer.id, process, "turn-ended");
+        expect(notSent).toMatchObject({
+          input: "keep me",
+          delivery: { _tag: "NotSent", reason: "turn-ended" },
+          queuedTurnId: null,
+        });
+        const pending = yield* repo.admitTurnSteer({
+          turnId: turn.id,
+          author: "user-1",
+          input: "uncertain words",
+          clientSteerId: null,
+        });
+        yield* repo.recoverSendingSteers(process);
+        const turns = yield* repo.listConversationTurns(session);
+        expect(turns).toHaveLength(1);
+        expect(turns[0]?.steers.find((row) => row.id === pending.steer.id)).toMatchObject({
+          input: "uncertain words",
+          delivery: { _tag: "Unknown", reason: "restart" },
+        });
+        expect(turns[0]?.steers[0]).toEqual(notSent);
+      }),
+    );
+  });
+
+  it("withdraws a carried steer's turn as NotSent unless a process took it", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const { session, process, turn } = yield* runningTurn;
+        const admit = (input: string) =>
+          repo
+            .admitTurnSteer({ turnId: turn.id, author: "user-1", input, clientSteerId: null })
+            .pipe(Effect.map(({ steer }) => steer));
+        const stranded = yield* repo.queueTurnSteer(
+          (yield* admit("stranded")).id,
+          process,
+          "turn-ended",
+        );
+        const withdrawn = yield* repo.withdrawTurnSteer(stranded.id);
+        expect(withdrawn).toMatchObject({
+          input: "stranded",
+          delivery: { _tag: "NotSent", reason: "turn-ended" },
+          queuedTurnId: null,
+        });
+        expect((yield* repo.byTurnId(stranded.queuedTurnId ?? turn.id))?.status).toBe("cancelled");
+        expect(yield* repo.withdrawTurnSteer(stranded.id)).toEqual(withdrawn);
+        yield* repo.completeTurn("native", session, "completed", null, null);
+        const taken = yield* repo.queueTurnSteer((yield* admit("taken")).id, process, "turn-ended");
+        expect((yield* repo.claimNextTurn(process))?.id).toBe(taken.queuedTurnId);
+        expect(yield* repo.withdrawTurnSteer(taken.id)).toEqual(taken);
+      }),
+    );
+  });
+
+  it("round trips the control journal and refuses a conflicting checkpoint", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const process = SessionProcessId.make("p-codex-1");
+        const control = {
+          ordinal: 0,
+          controlId: crypto.randomUUID(),
+          providerTurnId: "logical-turn",
+          afterOutputLine: 3,
+          action: "steer-now",
+        } as const;
+        yield* repo.recordProtocolControl(process, control);
+        yield* repo.recordProtocolControl(process, control);
+        expect(yield* repo.protocolControls(process)).toEqual([control]);
+        expect(
+          (yield* repo
+            .recordProtocolControl(process, { ...control, afterOutputLine: 4 })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* repo
+            .recordProtocolControl(process, { ...control, ordinal: 1 })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(yield* repo.protocolControls(process)).toEqual([control]);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM session_processes WHERE id = ${process}`;
+        expect(yield* repo.protocolControls(process)).toEqual([]);
+      }),
+    );
+  });
+  it("never reports a control whose journal row committed as not written", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const process = SessionProcessId.make("p-codex-1");
+        yield* sql`ALTER TABLE agent_protocol_control_journal RENAME TO journal_rows`;
+        yield* sql`CREATE SEQUENCE journal_reads`;
+        yield* sql.unsafe(`CREATE FUNCTION journal_read() RETURNS boolean LANGUAGE plpgsql AS $$
+          BEGIN
+            IF nextval('journal_reads') = 1 THEN RAISE EXCEPTION 'journal read failed'; END IF;
+            RETURN true;
+          END $$`);
+        yield* sql`CREATE VIEW agent_protocol_control_journal AS
+          SELECT * FROM journal_rows WHERE journal_read()`;
+        const control = {
+          ordinal: 0,
+          controlId: crypto.randomUUID(),
+          providerTurnId: "logical-turn",
+          afterOutputLine: 2,
+          action: "steer-now",
+        } as const;
+        const recorded = yield* repo.recordProtocolControl(process, control).pipe(Effect.result);
+        const stored = yield* sql<{ readonly action: string }>`
+          SELECT action FROM journal_rows WHERE control_id = ${control.controlId}`;
+        expect({
+          recorded: recorded._tag,
+          armed: stored.some((row) => row.action === "steer-now"),
+        }).toEqual({ recorded: recorded._tag, armed: recorded._tag === "Success" });
+      }),
+    );
+  });
+
+  it("admits a steer only after a completion holding the turn's row commits", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const { session, turn } = yield* runningTurn;
+        const completing = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const completion = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const ended = yield* repo.completeTurn("native", session, "completed", null, null);
+              yield* Deferred.succeed(completing, undefined);
+              yield* Deferred.await(release);
+              return ended;
+            }),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(completing);
+        const admission = yield* repo
+          .admitTurnSteer({ turnId: turn.id, author: "user-1", input: "late", clientSteerId: null })
+          .pipe(Effect.forkChild);
+        yield* untilWaiting("agent_turns");
+        expect(admission.pollUnsafe()).toBeUndefined();
+        yield* Deferred.succeed(release, undefined);
+        expect((yield* Fiber.join(completion))?.status).toBe("completed");
+        const admitted = yield* Fiber.join(admission);
+        expect(admitted).toMatchObject({ created: true, steer: { delivery: { _tag: "Sending" } } });
+        expect((yield* repo.byTurnId(turn.id))?.status).toBe("completed");
+        const turns = yield* repo.listConversationTurns(session);
+        expect(turns.map((row) => [row.status, row.steers.map((steer) => steer.input)])).toEqual([
+          ["completed", ["late"]],
+        ]);
+      }),
+    );
+  });
+
+  it("completes a turn only after an admission holding its row commits the steer", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const { session, turn } = yield* runningTurn;
+        const locked = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        // SHARE mode lets the admission lock the turn row and read ordinals, then stops its insert.
+        const holder = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* sql`LOCK TABLE agent_turn_steers IN SHARE MODE`;
+              yield* Deferred.succeed(locked, undefined);
+              yield* Deferred.await(release);
+            }),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(locked);
+        const admission = yield* repo
+          .admitTurnSteer({
+            turnId: turn.id,
+            author: "user-1",
+            input: "first",
+            clientSteerId: null,
+          })
+          .pipe(Effect.forkChild);
+        yield* untilWaiting("agent_turn_steers");
+        const completion = yield* repo
+          .completeTurn("native", session, "completed", null, null)
+          .pipe(Effect.forkChild);
+        yield* Effect.sleep("200 millis");
+        expect(admission.pollUnsafe()).toBeUndefined();
+        expect(completion.pollUnsafe()).toBeUndefined();
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(holder);
+        const admitted = yield* Fiber.join(admission);
+        expect((yield* Fiber.join(completion))?.status).toBe("completed");
+        expect(admitted).toMatchObject({ created: true, steer: { ordinal: 0, input: "first" } });
+        const turns = yield* repo.listConversationTurns(session);
+        expect(turns.map((row) => [row.status, row.steers.map((steer) => steer.id)])).toEqual([
+          ["completed", [admitted.steer.id]],
+        ]);
+      }),
+    );
+  });
+
+  it("notifies conversation readers only once the steer and its fallback turn are readable", async () => {
+    await withConversation(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const repo = yield* AgentConversationRepo;
+          const pg = yield* PgClient.PgClient;
+          const { session, process, turn } = yield* runningTurn;
+          const notices = yield* pg.listen(MEND_EVENTS_CHANNEL);
+          const next = Queue.take(notices).pipe(
+            Effect.timeout("2 seconds"),
+            Effect.map((notice) =>
+              Schema.decodeUnknownSync(Schema.fromJsonString(MendEvent))(notice.payload),
+            ),
+          );
+          const steers = repo
+            .listConversationTurns(session)
+            .pipe(Effect.map((turns) => turns.flatMap((row) => row.steers)));
+          const admitted = yield* repo.admitTurnSteer({
+            turnId: turn.id,
+            author: "user-1",
+            input: "visible at notification",
+            clientSteerId: null,
+          });
+          expect(yield* next).toMatchObject({ type: "agent-conversation", sessionId: session });
+          expect(yield* steers).toEqual([admitted.steer]);
+          const accepted = yield* repo.settleTurnSteer(admitted.steer.id, {
+            _tag: "Accepted",
+            evidence: "provider-acknowledged",
+          });
+          expect(yield* next).toMatchObject({ type: "agent-conversation", sessionId: session });
+          expect(yield* steers).toEqual([accepted]);
+          const second = yield* repo.admitTurnSteer({
+            turnId: turn.id,
+            author: "user-1",
+            input: "carried",
+            clientSteerId: null,
+          });
+          yield* next;
+          const queued = yield* repo.queueTurnSteer(second.steer.id, process, "turn-ended");
+          expect(yield* next).toMatchObject({ type: "agent-conversation", sessionId: session });
+          const turns = yield* repo.listConversationTurns(session);
+          expect(turns.flatMap((row) => row.steers)).toEqual([accepted, queued]);
+          expect(turns.find((row) => row.id === queued.queuedTurnId)).toMatchObject({
+            input: "carried",
+            status: "queued",
+            fromSteer: queued.id,
+          });
+        }),
+      ),
+    );
   });
 });

@@ -55,6 +55,9 @@ import {
   SessionRepositoryView,
   SessionServicesStopped,
   SessionNotSteerable,
+  TurnSteerForbidden,
+  InvalidTurnSteer,
+  TurnSteerKeyConflict,
   WorkspaceReplaceRefused,
   SessionNotLive,
   SettingsFailure,
@@ -2613,6 +2616,47 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           );
       }),
     )
+    .handle("steerTurn", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const { session } = yield* (yield* SessionSteering).turn(params.id);
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionEngine)
+          .steerTurn({
+            turnId: params.id,
+            input: payload.input,
+            sender: caller.user.id,
+            clientSteerId: payload.clientSteerId ?? null,
+          })
+          .pipe(
+            Effect.catchTags({
+              AgentTurnNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+              ProtocolHostNotLiveError: (error) =>
+                Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
+              SessionTurnRefusedError: (error) =>
+                Effect.fail(
+                  new SessionNotSteerable({ sessionId: session.id, message: error.message }),
+                ),
+              TurnSteerForbiddenError: (error) =>
+                Effect.fail(
+                  new TurnSteerForbidden({
+                    turnId: params.id,
+                    reason: error.reason,
+                    message: error.message,
+                  }),
+                ),
+              InvalidTurnSteerError: (error) =>
+                Effect.fail(new InvalidTurnSteer({ message: error.message })),
+              TurnSteerKeyConflictError: (error) =>
+                Effect.fail(
+                  new TurnSteerKeyConflict({
+                    clientSteerId: error.clientSteerId,
+                    message: error.message,
+                  }),
+                ),
+            }),
+          );
+      }),
+    )
     .handle("interruptTurn", ({ params }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
@@ -2646,7 +2690,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const conversation = yield* AgentConversationRepo;
         yield* (yield* ProjectAccess).session(params.id);
-        return yield* conversation.listTurns(params.id);
+        return yield* conversation.listConversationTurns(params.id);
       }),
     )
     .handle("listItems", ({ params, query }) =>

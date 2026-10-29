@@ -13,6 +13,8 @@ import {
   AgentItem,
   AgentRequest,
   AgentTurn,
+  AgentTurnSteer,
+  ConversationTurn,
   Checkpoint,
   ConversationWait,
   ConversationWaitWork,
@@ -116,6 +118,34 @@ export class HarnessLayoutRefused extends Schema.TaggedError<HarnessLayoutRefuse
     message: Schema.String,
   },
   { httpApiStatus: 403 },
+) {}
+
+export class SteerTurnRequest extends Schema.Class<SteerTurnRequest>("SteerTurnRequest")({
+  input: Schema.String.check(Schema.isPattern(/\S/)),
+  clientSteerId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),
+}) {}
+
+export class TurnSteerForbidden extends Schema.TaggedError<TurnSteerForbidden>()(
+  "TurnSteerForbidden",
+  {
+    turnId: AgentTurnId,
+    reason: Schema.Literals(["not-sender", "no-sender"]),
+    message: Schema.String,
+  },
+  { httpApiStatus: 403 },
+) {}
+
+/** A steer key reused for another turn or other words: the first steer keeps it. */
+export class TurnSteerKeyConflict extends Schema.TaggedError<TurnSteerKeyConflict>()(
+  "TurnSteerKeyConflict",
+  { clientSteerId: Schema.String, message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+export class InvalidTurnSteer extends Schema.TaggedError<InvalidTurnSteer>()(
+  "InvalidTurnSteer",
+  { message: Schema.String },
+  { httpApiStatus: 400 },
 ) {}
 
 export class SessionNotSteerable extends Schema.TaggedError<SessionNotSteerable>()(
@@ -300,6 +330,21 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
+    HttpApiEndpoint.post("steerTurn", "/turns/:id/steer", {
+      params: { id: AgentTurnId },
+      payload: SteerTurnRequest,
+      success: AgentTurnSteer,
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        TurnSteerForbidden,
+        InvalidTurnSteer,
+        TurnSteerKeyConflict,
+        ProtocolSessionNotLive,
+      ],
+    }),
+  )
+  .add(
     HttpApiEndpoint.post("interruptTurn", "/turns/:id/interrupt", {
       params: { id: AgentTurnId },
       error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive],
@@ -308,7 +353,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     HttpApiEndpoint.get("listTurns", "/sessions/:id/turns", {
       params: { id: SessionId },
-      success: Schema.Array(AgentTurn),
+      success: Schema.Array(ConversationTurn),
       error: NotFound,
     }),
   )

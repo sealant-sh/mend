@@ -460,6 +460,8 @@ export const ClaudeAdapter: AgentAdapter = {
           }
           case "SegmentClosed":
             return cancelOpenRequests(effect.turnId);
+          case "DrainEnded":
+            return publish({ _tag: "drain.ended" });
           case "TurnCompleted":
             return publish({
               _tag: "turn.completed",

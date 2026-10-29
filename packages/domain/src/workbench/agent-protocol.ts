@@ -317,6 +317,7 @@ export const AgentEvent = Schema.Union([
     usage: Schema.NullOr(AgentTurnUsage),
     error: Schema.NullOr(Schema.String),
   }),
+  Schema.TaggedStruct("drain.ended", {}),
   Schema.TaggedStruct("item.updated", { item: AgentEventItem }),
   Schema.TaggedStruct("content.delta", {
     providerItemId: Schema.String,

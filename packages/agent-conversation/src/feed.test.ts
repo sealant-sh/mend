@@ -90,6 +90,83 @@ describe("buildAgentConversation", () => {
     ]);
   });
 
+  it("interleaves saved steers, preserves delivery evidence and hides provider echoes", () => {
+    const first = conversation.turns.find((turn) => turn.id === "turn-1");
+    if (first === undefined) throw new Error("missing turn");
+    const deliveries = [
+      { _tag: "Sending" },
+      { _tag: "Accepted", evidence: "provider-acknowledged" },
+      { _tag: "Accepted", evidence: "transport-written" },
+      { _tag: "Unknown", reason: "restart" },
+      { _tag: "NotSent", reason: "turn-ended" },
+    ] as const;
+    for (const delivery of deliveries) {
+      const steer = {
+        id: "steer-1",
+        turnId: first.id,
+        ordinal: 0,
+        author: "alice",
+        input: "Keep the shape",
+        createdAt: "2026-08-21T10:00:00.700Z",
+        delivery,
+      };
+      const entries = buildAgentConversation({
+        ...conversation,
+        turns: [{ ...first, steers: [steer] }],
+      });
+      expect(entries.map((entry) => entry.key)).toEqual([
+        "turn:turn-1",
+        "request:request-1",
+        "steer:steer-1",
+        "item:assistant-1",
+        "item:orphan-warning",
+      ]);
+      expect(entries.find((entry) => entry.kind === "steer")).toEqual({
+        kind: "steer",
+        key: "steer:steer-1",
+        steer,
+      });
+    }
+  });
+
+  it("renders a carried steer once, as a turn marked with its steer origin", () => {
+    const first = conversation.turns.find((turn) => turn.id === "turn-1");
+    if (first === undefined) throw new Error("missing turn");
+    const steer = {
+      id: "carried",
+      turnId: first.id,
+      ordinal: 0,
+      author: "alice",
+      input: "next words",
+      createdAt: "2026-08-21T10:00:01.500Z",
+      delivery: { _tag: "Queued", turnId: "next", reason: "turn-ended" } as const,
+    };
+    const next = {
+      ...first,
+      id: "next",
+      ordinal: 3,
+      input: steer.input,
+      status: "queued",
+      fromSteer: steer.id,
+    };
+    const entries = buildAgentConversation({
+      ...conversation,
+      turns: [{ ...first, steers: [steer] }, next],
+    });
+    expect(entries.filter((entry) => entry.kind === "steer")).toEqual([]);
+    expect(entries.find((entry) => entry.key === "turn:next")).toEqual({
+      kind: "turn",
+      key: "turn:next",
+      turn: next,
+      fromSteer: steer,
+    });
+    expect(entries.find((entry) => entry.key === "turn:turn-1")).toEqual({
+      kind: "turn",
+      key: "turn:turn-1",
+      turn: { ...first, steers: [steer] },
+    });
+  });
+
   it("replaces cursor updates in place and appends new items", () => {
     const original = conversation.items.find((item) => item.id === "assistant-1");
     const seed = conversation.items.find((item) => item.id === "orphan-warning");

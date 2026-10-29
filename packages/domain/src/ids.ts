@@ -39,6 +39,11 @@ export type ProjectId = typeof ProjectId.Type;
 export const SessionId = Schema.String.pipe(Schema.brand("SessionId"));
 export type SessionId = typeof SessionId.Type;
 
+export const AgentTurnSteerId = Schema.String.check(Schema.isUUID()).pipe(
+  Schema.brand("AgentTurnSteerId"),
+);
+export type AgentTurnSteerId = typeof AgentTurnSteerId.Type;
+
 export const WorktreeId = Schema.String.pipe(Schema.brand("WorktreeId"));
 export type WorktreeId = typeof WorktreeId.Type;
 

@@ -3,12 +3,14 @@ import {
   ClaudeAdapter,
   CodexAdapter,
   type AgentBackgroundWork,
+  type AgentControlCheckpoint,
   type AgentQuiescence,
   type AgentRehydrateOptions,
   type AgentSession,
 } from "@mend/agent-protocol";
 import {
   AgentConversationRepo,
+  AgentTurnNotFoundError,
   type AgentRequestAlreadyResolvedError,
   type AgentRequestNotFoundError,
   SessionProcessesRepo,
@@ -29,6 +31,8 @@ import {
   CONVERSATION_WAIT_BOUNDS_MS,
   STARTED_BEFORE_STEERING,
   UNREPORTED_WORK_REFUSAL,
+  type AgentTurnSteer,
+  type TurnSteerQueueReason,
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
@@ -37,12 +41,27 @@ import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
 import { HAND_OVER_NOT_NOW } from "./conversation-steps.ts";
+import {
+  makeTurnSteering,
+  openSteerGate,
+  type InvalidTurnSteerError,
+  type TurnSteerForbiddenError,
+  type TurnSteerKeyConflictError,
+  type SteerTurnInput,
+} from "./protocol-steer.ts";
 
 /** A live protocol process or provider request cannot be addressed by this Mend process. */
 export class ProtocolHostNotLiveError extends Schema.TaggedError<ProtocolHostNotLiveError>()(
   "ProtocolHostNotLiveError",
   { processId: Schema.String },
 ) {}
+
+export type TurnSteerError =
+  | ProtocolHostNotLiveError
+  | AgentTurnNotFoundError
+  | TurnSteerForbiddenError
+  | InvalidTurnSteerError
+  | TurnSteerKeyConflictError;
 
 /** Hooks that return protocol observations to the owning session engine. */
 export interface ProtocolHostHooks {
@@ -53,11 +72,10 @@ export interface ProtocolHostHooks {
    * queued turn runs as, and the hand-over to another person's process. Absent: every turn is
    * sent to this process, as before.
    */
-  readonly steering?: ProtocolSteering;
+  readonly sharedControl?: ProtocolSharedControl;
 }
 
-/** What the next queued turn of a person's process needs (`ProtocolSteering.decide`). */
-export type SteeringDecision =
+export type SharedControlDecision =
   | { readonly kind: "send" }
   /** Another person's turn, or this person's in the neutral context: a new process runs it. */
   | { readonly kind: "hand-over"; readonly sender: string }
@@ -81,8 +99,8 @@ export interface ConversationWait {
   readonly work: ReadonlyArray<AgentBackgroundWork>;
 }
 
-export interface ProtocolSteering {
-  readonly decide: (turn: AgentTurn) => Effect.Effect<SteeringDecision>;
+export interface ProtocolSharedControl {
+  readonly decide: (turn: AgentTurn) => Effect.Effect<SharedControlDecision>;
   /** The waiting line changed; null once nothing holds the turn any more. */
   readonly waiting: (wait: ConversationWait | null) => Effect.Effect<void>;
   /**
@@ -202,9 +220,11 @@ interface HostedProcess {
   readonly pipe: InteractiveSession;
   readonly hooks: ProtocolHostHooks;
   readonly dispatchPermit: Semaphore.Semaphore;
+  readonly steerPermit: Semaphore.Semaphore;
   readonly abort: AbortController;
   /** Non-null while a rehydrate replay is still behind its high water — dispatch waits on it. */
   readonly gate: Deferred.Deferred<void> | null;
+  readonly steerGate: Deferred.Deferred<void> | null;
   /**
    * The login the workspace holds (docs/adr/0013, "The host remembers what the workspace holds"):
    * the one it launched with, or the person the process runs as (docs/adr/0016).
@@ -215,6 +235,7 @@ interface HostedProcess {
   handingOverTo: string | null;
   /** The process was told to stop: a turn its harness opens now ends with it. */
   stopping: boolean;
+  steerHolds: number;
 }
 
 /**
@@ -256,6 +277,7 @@ export class ProtocolHost extends Context.Service<
       author: string | null,
       launchCorrelationId?: string | null,
     ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError>;
+    readonly steerTurn: (input: SteerTurnInput) => Effect.Effect<AgentTurnSteer, TurnSteerError>;
     readonly interruptTurn: (turnId: AgentTurnId) => Effect.Effect<void, ProtocolHostNotLiveError>;
     readonly respondRequest: (
       request: AgentRequest,
@@ -357,10 +379,16 @@ export const ProtocolHostLive: Layer.Layer<
           for (;;) {
             // A hand-over holds the queue: the waiting turn keeps its place, and so do the turns
             // behind it (decision 6).
-            if (entry.handingOverTo !== null) return;
+            if (
+              hosted.get(entry.process.id) !== entry ||
+              entry.stopping ||
+              entry.steerHolds > 0 ||
+              entry.handingOverTo !== null
+            )
+              return;
             const turn = yield* conversations.claimNextTurn(entry.process.id);
             if (turn === null) return;
-            const steering = entry.hooks.steering;
+            const steering = entry.hooks.sharedControl;
             if (steering !== undefined) {
               const decision = yield* steering.decide(turn);
               if (decision.kind === "refuse") {
@@ -499,7 +527,7 @@ export const ProtocolHostLive: Layer.Layer<
       entry: HostedProcess,
       turn: AgentTurn,
       sender: string,
-      steering: ProtocolSteering,
+      steering: ProtocolSharedControl,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (entry.handingOverTo !== null) return;
@@ -572,13 +600,16 @@ export const ProtocolHostLive: Layer.Layer<
                * monitor's event, a goal's turn).
                */
               const stillQuiescent = Effect.gen(function* () {
-                if (hosted.get(entry.process.id) !== entry) return false;
+                if (hosted.get(entry.process.id) !== entry || entry.steerHolds > 0) return false;
                 if (!(yield* stillWanted)) return false;
                 const looked = yield* entry.adapter.quiescence().pipe(Effect.result);
                 if (looked._tag === "Failure") return false;
                 const work = looked.success.work.filter((item) => item.kind !== "cron");
                 return (
-                  !looked.success.openTurn && work.length === 0 && looked.success.settleMs === 0
+                  entry.steerHolds === 0 &&
+                  !looked.success.openTurn &&
+                  work.length === 0 &&
+                  looked.success.settleMs === 0
                 );
               });
               const handed = yield* steering
@@ -691,6 +722,9 @@ export const ProtocolHostLive: Layer.Layer<
           yield* Effect.forkIn(dispatchNext(entry), scope);
           return;
         }
+        case "drain.ended":
+          yield* Effect.forkIn(dispatchNext(entry), scope);
+          return;
         case "item.updated": {
           const turn = yield* lookupTurn(entry.process.sessionId, event.item.providerTurnId);
           // A background task outlives the turn that started it and keeps reporting there.
@@ -776,6 +810,7 @@ export const ProtocolHostLive: Layer.Layer<
       // rebuilds the accumulation state exactly. (Today attach only ever runs at process
       // creation; boot ends live protocol rows rather than re-attaching.)
       let currentOutputSequence = 0n;
+      let projectedOutputSequence: bigint | null = null;
       let currentEventIndex = 0;
       const output = Stream.fromAsyncIterable(
         input.pipe.output({ from: 0n, signal: abort.signal }),
@@ -813,6 +848,10 @@ export const ProtocolHostLive: Layer.Layer<
               }),
           ),
         ),
+        acknowledgeOutput: () =>
+          Effect.sync(() => {
+            projectedOutputSequence = currentOutputSequence;
+          }),
         close: () => Effect.sync(() => abort.abort()),
       };
       let activeEntry: HostedProcess | null = null;
@@ -834,6 +873,25 @@ export const ProtocolHostLive: Layer.Layer<
         }
         return projectEvent(activeEntry, event, position);
       };
+      // Only Claude replays its controls; Codex acknowledges a steer on the wire.
+      const controlJournal =
+        input.process.harness === "claude"
+          ? {
+              recorded: yield* conversations.protocolControls(input.process.id),
+              record: (control: AgentControlCheckpoint) =>
+                conversations.recordProtocolControl(input.process.id, control).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AgentProtocolError({
+                        adapter: "claude",
+                        operation: "controlJournal.record",
+                        message: cause.message,
+                        cause,
+                      }),
+                  ),
+                ),
+            }
+          : undefined;
       const adapter = yield* adapterFor(input.process.harness)
         .start(transport, {
           cwd: input.cwd,
@@ -844,6 +902,7 @@ export const ProtocolHostLive: Layer.Layer<
           effort: input.effort,
           permissionMode: input.permissionMode,
           onEvent,
+          ...(controlJournal === undefined ? {} : { controlJournal }),
           rehydrate:
             rehydrateInput === null
               ? undefined
@@ -857,18 +916,22 @@ export const ProtocolHostLive: Layer.Layer<
           Effect.mapError((cause) => toPlatformError("start", cause)),
         );
       const gate = rehydrateInput === null ? null : yield* Deferred.make<void>();
+      const steerGate = rehydrateInput === null ? null : yield* Deferred.make<void>();
       const entry: HostedProcess = {
         process: input.process,
         adapter,
         pipe: input.pipe,
         hooks: input.hooks,
         dispatchPermit: Semaphore.makeUnsafe(1),
+        steerPermit: Semaphore.makeUnsafe(1),
         abort,
         gate,
+        steerGate,
         holds: launchLogin(input.runsAs ?? input.launchedWithLoginOf),
         runsAs: input.runsAs ?? null,
         handingOverTo: null,
         stopping: false,
+        steerHolds: 0,
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
@@ -890,7 +953,7 @@ export const ProtocolHostLive: Layer.Layer<
       }
       // Synchronous with the emptiness check above: nothing can enqueue between it and this.
       flushed = true;
-      if (rehydrateInput === null || gate === null) {
+      if (rehydrateInput === null || gate === null || steerGate === null) {
         yield* dispatchNext(entry);
         return;
       }
@@ -910,6 +973,15 @@ export const ProtocolHostLive: Layer.Layer<
           yield* Deferred.succeed(gate, undefined);
           if (hosted.get(input.process.id) === entry) yield* dispatchNext(entry);
         }),
+        scope,
+      );
+      yield* Effect.forkIn(
+        openSteerGate(
+          steerGate,
+          () =>
+            projectedOutputSequence !== null && projectedOutputSequence >= rehydrateInput.highWater,
+          () => hosted.get(input.process.id) === entry,
+        ),
         scope,
       );
     });
@@ -953,6 +1025,7 @@ export const ProtocolHostLive: Layer.Layer<
       );
       // A response caught mid-delivery reads `sending` forever; make it answerable again.
       yield* conversations.resetSendingResponses(input.process.id);
+      yield* conversations.recoverSendingSteers(input.process.id);
       yield* attachInternal(input, {
         replayProviderTurnIds,
         resolvedProviderRequestIds,
@@ -960,12 +1033,7 @@ export const ProtocolHostLive: Layer.Layer<
       });
     });
 
-    const submitTurn = Effect.fn("ProtocolHost.submitTurn")(function* (
-      sessionId: SessionId,
-      input: string,
-      author: string | null,
-      launchCorrelationId: string | null = null,
-    ) {
+    const placeTurn = Effect.fnUntraced(function* (sessionId: SessionId) {
       const rows = yield* processes.listForSession(sessionId);
       const process = rows.findLast(
         (candidate) =>
@@ -973,51 +1041,95 @@ export const ProtocolHostLive: Layer.Layer<
           candidate.exitedAt === null &&
           hosted.has(candidate.id),
       );
-      if (process === undefined) {
-        // Between a hand-over's stop and the next start: the turn queues on the conversation,
-        // and the next process takes it (decision 6).
-        const between = handingOver.get(sessionId);
-        if (between !== undefined) {
-          const queued = yield* conversations
-            .submitTurn(sessionId, between, input, author, launchCorrelationId)
-            .pipe(
-              Effect.catchTag("SessionStoppingError", () =>
-                Effect.fail(new ProtocolHostNotLiveError({ processId: between })),
-              ),
-            );
-          // The next process may have attached meanwhile: the turn moves onto it, never left on
-          // the stopped one.
-          const next = [...hosted.values()].find(
-            (candidate) =>
-              candidate.process.sessionId === sessionId && candidate.process.id !== between,
-          );
-          if (next !== undefined) {
-            yield* takeQueuedTurns(sessionId, next.process.id);
-            yield* dispatchNext(next);
-          }
-          return queued;
+      if (process !== undefined) return { _tag: "Hosted", processId: process.id } as const;
+      const between = handingOver.get(sessionId);
+      return between === undefined ? null : ({ _tag: "Between", processId: between } as const);
+    });
+
+    const dispatchPlaced = (
+      sessionId: SessionId,
+      place: { readonly _tag: "Hosted" | "Between"; readonly processId: SessionProcessId },
+      dispatch: (entry: HostedProcess) => Effect.Effect<void>,
+    ): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        if (place._tag === "Hosted") {
+          const entry = hosted.get(place.processId);
+          if (entry === undefined) return false;
+          yield* dispatch(entry);
+          return true;
         }
-        return yield* new ProtocolHostNotLiveError({ processId: sessionId });
-      }
+        // The next process may have attached meanwhile: the turn moves onto it, never left on
+        // the stopped one.
+        const next = [...hosted.values()].find(
+          (candidate) =>
+            candidate.process.sessionId === sessionId && candidate.process.id !== place.processId,
+        );
+        if (next !== undefined) {
+          yield* takeQueuedTurns(sessionId, next.process.id);
+          yield* dispatch(next);
+        }
+        return true;
+      });
+
+    const submitTurn = Effect.fn("ProtocolHost.submitTurn")(function* (
+      sessionId: SessionId,
+      input: string,
+      author: string | null,
+      launchCorrelationId: string | null = null,
+    ) {
+      const place = yield* placeTurn(sessionId);
+      if (place === null) return yield* new ProtocolHostNotLiveError({ processId: sessionId });
       // A stop that began after the host was read above is not raced: the idle stop's claim and
       // this admission take the same lock, and a claimed session refuses the turn. The next
       // message resumes the session instead.
       const turn = yield* conversations
-        .submitTurn(sessionId, process.id, input, author, launchCorrelationId)
+        .submitTurn(sessionId, place.processId, input, author, launchCorrelationId)
         .pipe(
           Effect.catchTag("SessionStoppingError", () =>
-            Effect.fail(new ProtocolHostNotLiveError({ processId: process.id })),
+            Effect.fail(new ProtocolHostNotLiveError({ processId: place.processId })),
           ),
         );
-      const entry = hosted.get(process.id);
-      if (entry === undefined) {
-        // Detached while the turn was being queued (a user stop does not take the lock): nothing
-        // will ever dispatch it, so it is cancelled and refused, never acknowledged.
+      if (!(yield* dispatchPlaced(sessionId, place, dispatchNext))) {
         yield* conversations.cancelOpenForTurn(turn.id);
-        return yield* new ProtocolHostNotLiveError({ processId: process.id });
+        return yield* new ProtocolHostNotLiveError({ processId: place.processId });
       }
-      yield* dispatchNext(entry);
       return turn;
+    });
+
+    const carrySteer = Effect.fn("ProtocolHost.carrySteer")(function* (
+      steer: AgentTurnSteer,
+      reason: TurnSteerQueueReason,
+    ) {
+      const place = yield* placeTurn(steer.sessionId);
+      const receipt = yield* conversations.queueTurnSteer(
+        steer.id,
+        place?.processId ?? null,
+        reason,
+      );
+      if (receipt.delivery._tag !== "Queued" || place === null) return receipt;
+      const live = yield* dispatchPlaced(steer.sessionId, place, (entry) =>
+        Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid),
+      );
+      return live ? receipt : yield* conversations.withdrawTurnSteer(steer.id);
+    });
+
+    const { steerTurn } = makeTurnSteering({
+      conversations,
+      hosted: (processId) => hosted.get(processId),
+      requireLive: (turn) =>
+        placeTurn(turn.sessionId).pipe(
+          Effect.flatMap((place) =>
+            place?._tag === "Hosted"
+              ? Effect.void
+              : Effect.fail(new ProtocolHostNotLiveError({ processId: turn.processId })),
+          ),
+        ),
+      carryToNextTurn: carrySteer,
+      released: (entry) =>
+        hosted.get(entry.process.id) === entry
+          ? Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid)
+          : Effect.void,
+      scope,
     });
 
     const interruptTurn = Effect.fn("ProtocolHost.interruptTurn")(function* (turnId: AgentTurnId) {
@@ -1144,6 +1256,7 @@ export const ProtocolHostLive: Layer.Layer<
       attach,
       rehydrate,
       submitTurn,
+      steerTurn,
       interruptTurn,
       respondRequest,
       detach,
