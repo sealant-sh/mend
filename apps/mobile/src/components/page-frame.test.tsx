@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { pageThemes } from "@mend/ui/page-theme";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +9,7 @@ import { PageFrame } from "@/components/page-frame";
 import { api, clearConfig, saveConfig } from "@/data/live";
 import { pageHostThemeCall } from "@/data/page-host";
 import { pageOf } from "@/data/pages";
+import { PairingBoundary } from "@/data/pairing-scope";
 import { onlyWebView, resetWebViews, webViews } from "@/test/fake-webview";
 
 vi.mock("react-native-webview", () => import("@/test/fake-webview"));
@@ -30,10 +30,11 @@ if (page === null) throw new Error("no page");
 const MACHINE_A = { url: "https://a.example", token: "token-a", deviceName: null, pairedAt: null };
 const MACHINE_B = { url: "https://b.example", token: "token-b", deviceName: null, pairedAt: null };
 
-const network = { offline: false, frameBody: "", mints: [] as string[] };
+const network = { offline: false, silentHost: "", frameBody: "", mints: [] as string[] };
 const serve = async (input: RequestInfo | URL): Promise<Response> => {
   if (network.offline) throw new TypeError("Network request failed");
   const url = new URL(String(input));
+  if (url.host === network.silentHost) return new Promise(() => undefined);
   if (url.pathname === "/api/pages/page-1/frame") {
     network.mints.push(url.host);
     const body =
@@ -47,11 +48,9 @@ const serve = async (input: RequestInfo | URL): Promise<Response> => {
 
 let root: Root;
 let host: HTMLDivElement;
-let client: QueryClient;
 
 const settle = () => act(() => vi.advanceTimersByTimeAsync(10));
-const show = (node: ReactNode) =>
-  act(() => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>));
+const show = (node: ReactNode) => act(() => root.render(<PairingBoundary>{node}</PairingBoundary>));
 const text = () => host.textContent ?? "";
 const framedUrl = () =>
   /<iframe id="page" src="([^"#]*)/.exec(onlyWebView().props.source?.html ?? "")?.[1];
@@ -61,9 +60,8 @@ beforeEach(async () => {
   Reflect.set(globalThis, "__DEV__", false);
   vi.useFakeTimers();
   vi.stubGlobal("fetch", vi.fn(serve));
-  Object.assign(network, { offline: false, frameBody: "", mints: [] });
+  Object.assign(network, { offline: false, silentHost: "", frameBody: "", mints: [] });
   resetWebViews();
-  client = new QueryClient();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -73,7 +71,6 @@ beforeEach(async () => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
-  client.clear();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -91,6 +88,20 @@ describe("a page under a pairing", () => {
     await act(() => clearConfig());
     await settle();
     expect(webViews.mounted).toEqual([]);
+    expect(text()).toContain("loading page…");
+  });
+
+  it("starts the next pairing reachable though the last one was not", async () => {
+    network.offline = true;
+    show(<PageFrame page={page} />);
+    await settle();
+    expect(text()).toContain("Shown when the phone is back online");
+
+    network.offline = false;
+    network.silentHost = "b.example";
+    await act(() => saveConfig(MACHINE_B));
+    await settle();
+    expect(text()).not.toContain("Shown when the phone is back online");
     expect(text()).toContain("loading page…");
   });
 });
@@ -123,8 +134,7 @@ describe("offline", () => {
     await settle();
     expect(text()).toContain("Shown when the phone is back online");
 
-    act(() => root.render(<QueryClientProvider client={client}>{null}</QueryClientProvider>));
-    client.clear();
+    act(() => root.render(null));
     network.offline = false;
     // A server that answers `null`: reading its URL throws a TypeError in the phone's own code.
     network.frameBody = "null";
@@ -138,7 +148,7 @@ describe("offline", () => {
     show(<PageFrame page={page} />);
     await settle();
     expect(webViews.mounted).toHaveLength(1);
-    act(() => root.render(<QueryClientProvider client={client}>{null}</QueryClientProvider>));
+    act(() => root.render(<PairingBoundary>{null}</PairingBoundary>));
 
     network.offline = true;
     await act(() => api("GET", "/sessions/session-1/transcript").catch(() => undefined));

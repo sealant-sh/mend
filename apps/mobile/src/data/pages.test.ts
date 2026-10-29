@@ -7,13 +7,12 @@ import {
   pageFrameQuery,
   pageOf,
   pageOfItem,
-  pageOfRoute,
+  pageRouteOf,
   pageRouteParams,
   resolvePageUrl,
   transcriptPageOf,
   withPagesInPlace,
 } from "./pages";
-import { pairingKeyOf } from "./pairing-key";
 
 const PAGE_WIRE = {
   id: "page-1",
@@ -131,35 +130,16 @@ describe("pages in the terminal transcript", () => {
 });
 
 describe("the full-screen route", () => {
-  const pairedA = pairingKeyOf({ url: "https://a.example", token: "token-a" });
-
-  it("carries the whole ref and gives it back", () => {
+  it("carries the page's id and session, and nothing the page shows", () => {
     const page = pageOf(PAGE_WIRE);
     if (page === null) throw new Error("no page");
-    expect(pageOfRoute(pageRouteParams(page, pairedA), pairedA)).toEqual(page);
+    expect(pageRouteParams(page)).toEqual({ id: "page-1", session: "session-1" });
+    expect(pageRouteOf(pageRouteParams(page))).toEqual({ id: "page-1", sessionId: "session-1" });
   });
 
-  it("opens nothing from a route missing a field or holding a repeated one", () => {
-    const page = pageOf(PAGE_WIRE);
-    if (page === null) throw new Error("no page");
-    const { title: _title, ...untitled } = pageRouteParams(page, pairedA);
-    expect(pageOfRoute(untitled, pairedA)).toBeNull();
-    const { pairing: _pairing, ...unstamped } = pageRouteParams(page, pairedA);
-    expect(pageOfRoute(unstamped, pairedA)).toBeNull();
-    expect(pageOfRoute({ ...pageRouteParams(page, pairedA), id: ["a", "b"] }, pairedA)).toBeNull();
-    expect(pageOfRoute({ ...pageRouteParams(page, pairedA), height: "tall" }, pairedA)).toBeNull();
-  });
-
-  it("shows nothing of a page opened under another pairing, not even its title", () => {
-    const page = pageOf(PAGE_WIRE);
-    if (page === null) throw new Error("no page");
-    const params = pageRouteParams(page, pairedA);
-    expect(
-      pageOfRoute(params, pairingKeyOf({ url: "https://b.example", token: "token-b" })),
-    ).toBeNull();
-    expect(
-      pageOfRoute(params, pairingKeyOf({ url: "https://a.example", token: "token-c" })),
-    ).toBeNull();
+  it("opens nothing from a route missing its session or holding a repeated id", () => {
+    expect(pageRouteOf({ id: "page-1" })).toBeNull();
+    expect(pageRouteOf({ id: ["a", "b"], session: "session-1" })).toBeNull();
   });
 });
 
@@ -212,37 +192,21 @@ const minter = () => {
 
 describe("the frame URL query", () => {
   const T0 = Date.parse("2026-10-29T12:00:00.000Z");
-  const home = { url: "https://mend.example.com", token: "token-a" };
 
   afterEach(() => {
     vi.useRealTimers();
-  });
-
-  it("never hands one pairing's URL to another, on another machine or another account", async () => {
-    const client = new QueryClient();
-    const { minted, mint } = minter();
-    const first = await client.fetchQuery(pageFrameQuery(home, "page-1", mint("home")));
-    expect(await client.fetchQuery(pageFrameQuery(home, "page-1", mint("home")))).toBe(first);
-    const otherAccount = await client.fetchQuery(
-      pageFrameQuery({ ...home, token: "token-b" }, "page-1", mint("account")),
-    );
-    const otherMachine = await client.fetchQuery(
-      pageFrameQuery({ ...home, url: "http://10.0.0.40:3105" }, "page-1", mint("machine")),
-    );
-    expect(minted).toEqual(["home", "account", "machine"]);
-    expect(new Set([first, otherAccount, otherMachine]).size).toBe(3);
   });
 
   it("reuses a URL while more than five minutes of its life are left by the phone's clock", async () => {
     vi.useFakeTimers({ now: T0, toFake: ["Date"] });
     const client = new QueryClient();
     const { minted, mint } = minter();
-    await client.fetchQuery(pageFrameQuery(home, "page-1", mint("home")));
+    await client.fetchQuery(pageFrameQuery("page-1", mint("home")));
     vi.setSystemTime(T0 + 24 * 60_000);
-    await client.fetchQuery(pageFrameQuery(home, "page-1", mint("home")));
+    await client.fetchQuery(pageFrameQuery("page-1", mint("home")));
     expect(minted).toHaveLength(1);
     vi.setSystemTime(T0 + 25 * 60_000 + 1);
-    await client.fetchQuery(pageFrameQuery(home, "page-1", mint("home")));
+    await client.fetchQuery(pageFrameQuery("page-1", mint("home")));
     expect(minted).toHaveLength(2);
   });
 });

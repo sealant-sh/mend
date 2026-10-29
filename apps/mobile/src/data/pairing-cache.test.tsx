@@ -3,9 +3,10 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ask, AskDialog } from "@/components/ask";
+import { AskDialog, useAsk } from "@/components/ask";
 import { useAgentConversation } from "@/data/agent-conversation";
-import { clearConfig, saveConfig, useSession } from "@/data/live";
+import type { Ask } from "@/data/ask";
+import { clearConfig, loadConfig, saveConfig, useSession } from "@/data/live";
 import { HttpPairingClient, type PairingDevice } from "@/data/pairing-client";
 import { PairingBoundary } from "@/data/pairing-scope";
 
@@ -73,10 +74,8 @@ const pairedAs = (host: string, code: string) => ({
   user: { id: `user-${host}-${code}`, name: host, email: `${host}@example.com` },
 });
 
-/** Every request the phone made, as `host path?query`, with the bearer it carried. */
 let requests: Array<{ readonly line: string; readonly bearer: string | null }> = [];
-/** While set, machine A's owner gets every answer only when the test releases it. */
-let holdOwner: Array<() => void> | null = null;
+let ownerAnswersHeld: Array<() => void> | null = null;
 let ownerItems = [itemA(1, A_REPLY)];
 
 const answerOwner = (url: URL): Response => {
@@ -90,7 +89,6 @@ const answerOwner = (url: URL): Response => {
   return notFound();
 };
 
-// Machine A holds two accounts, machine B one. Only A's owner can read the session.
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(String(input));
   const bearer = new Headers(init?.headers).get("authorization");
@@ -102,12 +100,11 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
     return json(pairedAs(url.host, code));
   }
   if (url.host !== "a.example" || bearer !== `Bearer ${OWNER_TOKEN}`) return notFound();
-  const held = holdOwner;
+  const held = ownerAnswersHeld;
   if (held === null) return answerOwner(url);
   return new Promise((resolve) => held.push(() => resolve(answerOwner(url))));
 };
 
-/** What the session screen reads for one session: its header and its conversation. */
 const SessionReader = ({ sessionId }: { readonly sessionId: string }) => {
   const detail = useSession(sessionId);
   const conversation = useAgentConversation(sessionId, true, true);
@@ -135,7 +132,6 @@ let root: Root;
 let host: HTMLDivElement;
 
 const settle = () => act(() => vi.advanceTimersByTimeAsync(10));
-// The app's own boundary, mounted once as the root layout mounts it; nothing above it.
 const mount = (node: ReactNode) =>
   act(() => root.render(<PairingBoundary>{node}</PairingBoundary>));
 const text = () => document.body.textContent ?? "";
@@ -150,7 +146,6 @@ const itemReadsAfter = (hostName: string) =>
     .filter(({ line }) => line.startsWith(`${hostName} /api/sessions/${SESSION}/items`))
     .map(({ line }) => new URL(`https://${line.split(" ")[1]}`).searchParams.get("after"));
 
-/** Pair as A's owner, open A's session, and see all of it. */
 const readAsOwner = async () => {
   await pair("a.example");
   mount(<SessionReader sessionId={SESSION} />);
@@ -166,7 +161,7 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.stubGlobal("fetch", vi.fn(serve));
   requests = [];
-  holdOwner = null;
+  ownerAnswersHeld = null;
   ownerItems = [itemA(1, A_REPLY)];
   await clearConfig();
   host = document.createElement("div");
@@ -215,14 +210,14 @@ describe("a conversation under a pairing", () => {
 
   it("never takes an answer A's machine sends after the re-pair", async () => {
     await readAsOwner();
-    holdOwner = [];
+    ownerAnswersHeld = [];
     ownerItems = [itemA(1, A_REPLY), itemA(2, A_LATE)];
     await act(() => vi.advanceTimersByTimeAsync(1_000));
-    const held = holdOwner;
+    const held = ownerAnswersHeld;
     expect(held.length).toBeGreaterThan(0);
 
     await pair("b.example");
-    holdOwner = null;
+    ownerAnswersHeld = null;
     await act(async () => {
       for (const release of held) release();
     });
@@ -235,23 +230,55 @@ describe("a conversation under a pairing", () => {
     await pair("b.example");
     await settle();
 
-    holdOwner = [];
+    ownerAnswersHeld = [];
     await pair("a.example");
     expectNothingOfA();
     await settle();
     expectNothingOfA();
     expect(itemReadsAfter("a.example")).toEqual(["0"]);
   });
+
+  it("stays when the same connection is saved again without its trailing slash", async () => {
+    await readAsOwner();
+    const config = await loadConfig();
+    await act(() => saveConfig({ ...config, url: `${config.url}/` }));
+    await act(() => saveConfig(config));
+    expect(text()).toContain(A_HEADER);
+    expect(text()).toContain(A_REPLY);
+  });
 });
+
+let askOfPairing: Ask | null = null;
+const Questions = () => {
+  askOfPairing = useAsk();
+  return <AskDialog />;
+};
+const askNow = (): Ask => {
+  if (askOfPairing === null) throw new Error("no pairing has asked yet");
+  return askOfPairing;
+};
 
 describe("a question on the web dialog", () => {
   it("is not left on screen once the pairing it was asked under ends", async () => {
     await pair("a.example");
-    mount(<AskDialog />);
-    act(() => ask("Stop this session?", A_HEADER, [{ text: "Stop session" }]));
+    mount(<Questions />);
+    act(() => askNow()("Stop this session?", A_HEADER, [{ text: "Stop session" }]));
     expect(text()).toContain(A_HEADER);
 
     await pair("b.example");
     expect(text()).not.toContain(A_HEADER);
+  });
+
+  it("never shows under the next pairing what the last one's late callback asks", async () => {
+    await pair("a.example");
+    mount(<Questions />);
+    const askUnderA = askNow();
+
+    await pair("b.example");
+    act(() => askUnderA("Image not pasted", A_PROMPT));
+    expect(text()).not.toContain(A_PROMPT);
+
+    act(() => askNow()("Image not pasted", "nothing on the clipboard"));
+    expect(text()).toContain("nothing on the clipboard");
   });
 });
