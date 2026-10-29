@@ -479,16 +479,53 @@ export const parseMendToml = (
     };
   });
 
-/** Read and validate the worktree's `mend.toml`. Missing file = nothing declared. */
-export const readMendToml = (worktree: string): Effect.Effect<MendTomlFile, RecipeFileError> =>
-  Effect.gen(function* () {
-    const filePath = path.join(worktree, MEND_TOML);
-    const raw = yield* Effect.tryPromise({
-      try: () => fs.readFile(filePath, "utf8"),
-      catch: () => null,
-    }).pipe(Effect.orElseSucceed(() => null));
-    return raw === null ? EMPTY_MEND_TOML : yield* parseMendToml(raw, filePath);
+export class WorktreeFileError extends Schema.TaggedError<WorktreeFileError>()(
+  "WorktreeFileError",
+  { path: Schema.String, message: Schema.String },
+) {}
+
+const isMissing = (cause: unknown) =>
+  cause instanceof Error &&
+  "code" in cause &&
+  (cause.code === "ENOENT" || cause.code === "ENOTDIR");
+
+/** A path that resolves outside the worktree is never read: `mend.toml` is the agent's to write. */
+export const readWorktreeFile = (
+  worktree: string,
+  relative: string,
+): Effect.Effect<Uint8Array | null, WorktreeFileError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const root = await fs.realpath(worktree);
+      let real: string;
+      try {
+        real = await fs.realpath(path.join(root, relative));
+      } catch (cause) {
+        if (isMissing(cause)) return null;
+        throw cause;
+      }
+      if (real !== root && !real.startsWith(`${root}${path.sep}`)) {
+        throw new Error("resolves outside the worktree");
+      }
+      return new Uint8Array(await fs.readFile(real));
+    },
+    catch: (cause) =>
+      new WorktreeFileError({
+        path: relative,
+        message: `${relative} could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
   });
+
+/** Read and validate the worktree's `mend.toml`. Missing or unreadable = nothing declared. */
+export const readMendToml = (worktree: string): Effect.Effect<MendTomlFile, RecipeFileError> =>
+  readWorktreeFile(worktree, MEND_TOML).pipe(
+    Effect.orElseSucceed(() => null),
+    Effect.flatMap((bytes) =>
+      bytes === null
+        ? Effect.succeed(EMPTY_MEND_TOML)
+        : parseMendToml(new TextDecoder().decode(bytes), path.join(worktree, MEND_TOML)),
+    ),
+  );
 
 /**
  * File + project recipes as ONE declaration set. Collisions are refused at write time (the web
