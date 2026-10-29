@@ -30,3 +30,19 @@ export class PageRef extends Schema.Class<PageRef>("PageRef")({
   height: Schema.Int,
   publishedAt: Timestamp,
 }) {}
+
+export const pageItemProviderId = (id: PageId): string => `mend-page:${id}`;
+
+export const MendPageCallFailure = Schema.Struct({
+  code: Schema.NullOr(Schema.String),
+  message: Schema.String,
+});
+export type MendPageCallFailure = typeof MendPageCallFailure.Type;
+
+export const MendPageCall = Schema.Struct({
+  attachmentId: Schema.NullOr(Schema.String),
+  failure: Schema.NullOr(MendPageCallFailure),
+});
+export type MendPageCall = typeof MendPageCall.Type;
+
+export const MEND_PAGE_CALL_FIELD = "mendPageCall";

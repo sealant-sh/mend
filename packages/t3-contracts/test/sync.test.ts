@@ -21,12 +21,14 @@ const shared = [
   "composerContextLegacy",
   "composerContextReferences",
   "fileLinks",
+  "htmlRender",
   "inlineSkills",
   "keybindings",
   "markdownGithubAlerts",
   "markdownLinks",
   "markdownListIndentation",
   "markdownPipeline",
+  "mcpApp",
   "model",
   "orchestrationV2PendingBackgroundWork",
   "path",
@@ -36,11 +38,13 @@ const shared = [
   "sourceControl",
   "Struct",
   "t3McpToolPresentation",
+  "themePalettes",
   "threadFindText",
   "threadLinks",
   "threadPullRequests",
   "threadSearch",
   "threadTranscript",
+  "toolOutput",
 ];
 const clientRuntime = ["models", "subagentDisplay", "subagentRuntime", "threadSettled"];
 const inventory: ReadonlyArray<{ upstream: string; local: string; bytes: string }> = [

@@ -26,6 +26,11 @@ import type {
   ClaudeControlResponse,
   ClaudeUserMessage,
 } from "./claude-wire.ts";
+import {
+  compactMendPageCall,
+  requestInputWithoutPageHtml,
+  withMendPageResult,
+} from "./mend-page-call.ts";
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
@@ -252,7 +257,8 @@ export const ClaudeAdapter: AgentAdapter = {
         );
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));
-      const updateItem = (item: AgentEventItem): Effect.Effect<void> => {
+      const updateItem = (update: AgentEventItem): Effect.Effect<void> => {
+        const item = compactMendPageCall(update);
         items.set(item.providerItemId, item);
         return publish({ _tag: "item.updated", item });
       };
@@ -408,7 +414,7 @@ export const ClaudeAdapter: AgentAdapter = {
             providerItemId: stringField(input, "tool_use_id"),
             kind: kind === "input" ? "user-input" : "tool-permission",
             title: toolName,
-            detail: { toolName, input, suggestions },
+            detail: { toolName, input: requestInputWithoutPageHtml(toolName, input), suggestions },
             questions: kind === "input" ? questionsFrom(input) : null,
           },
         });
@@ -615,6 +621,28 @@ export const ClaudeAdapter: AgentAdapter = {
         }
       };
 
+      const notePageResults = (envelope: JsonObject): Effect.Effect<void> => {
+        const content = objectField(envelope, "message")?.["content"];
+        if (!Array.isArray(content)) return Effect.void;
+        return Effect.forEach(
+          content,
+          (block) => {
+            if (stringField(block, "type") !== "tool_result") return Effect.void;
+            const call = items.get(stringField(block, "tool_use_id") ?? "");
+            const answered =
+              call === undefined
+                ? null
+                : withMendPageResult(
+                    call,
+                    isObject(block) ? block["content"] : null,
+                    isObject(block) && block["is_error"] === true,
+                  );
+            return answered === null ? Effect.void : updateItem(answered);
+          },
+          { discard: true },
+        );
+      };
+
       const handleMessage = (value: unknown): Effect.Effect<void> => {
         if (!isObject(value)) {
           return publish({ _tag: "runtime.warning", message: "Claude emitted a non-object line." });
@@ -674,7 +702,7 @@ export const ClaudeAdapter: AgentAdapter = {
             return ready.pipe(Effect.andThen(completeContentBlocks(value)));
           case "user":
             noteToolResults(value);
-            return ready;
+            return ready.pipe(Effect.andThen(notePageResults(value)));
           case "control_request":
             return ready.pipe(Effect.andThen(handleControlRequest(value)));
           case "result":

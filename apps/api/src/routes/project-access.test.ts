@@ -1,6 +1,7 @@
 import { MendApi } from "@mend/api-contracts";
+import { pageRefOf } from "@mend/db";
 import { defaultSettings, defaultWorkspaceImage, MendSettings, WorkspaceImage } from "@mend/domain";
-import { AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
+import { AgentTurn, PageRef, Session, SessionProcess } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { HttpApi } from "effect/http-api";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -115,6 +116,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // session or service when the ticket is spent (upgrade-tickets.test.ts).
   "upgradeTickets.mint",
   "upgradeTicketExchange.exchange",
+  "pageView.view",
   "settings.get",
   "dotfiles.get",
   "dotfiles.repository",
@@ -203,7 +205,7 @@ const session =
 const child =
   (
     rule: Rule,
-    kind: "turn" | "request" | "process" | "service" | "worktree" | "change",
+    kind: "turn" | "request" | "process" | "service" | "worktree" | "change" | "page",
     method: Call["method"],
     prefix: string,
     suffix: string,
@@ -512,6 +514,8 @@ const CASES: ReadonlyArray<AccessCase> = [
   ),
   session("project-read", "GET", "/turns")("sessions.listTurns"),
   session("project-read", "GET", "/items")("sessions.listItems"),
+  session("project-read", "GET", "/pages")("pages.listForSession"),
+  child("project-read", "page", "GET", "/api/pages", "/frame?appearance=dark")("pages.frame"),
   session("project-read", "GET", "/requests")("sessions.listAgentRequests"),
   child("steer", "request", "POST", "/api/requests", "/respond", { decision: "accept" })(
     "sessions.respondAgentRequest",
@@ -862,6 +866,8 @@ const ADMITTED: Readonly<
   "sessions.endBackgroundWork": { status: 500, calls: ["engine.endBackgroundWork"] },
   "sessions.listTurns": { status: 200, calls: ["conversation.listTurns"] },
   "sessions.listItems": { status: 500, calls: ["conversation.listItems"] },
+  "pages.listForSession": { status: 200, calls: ["pages.listForSession"] },
+  "pages.frame": { status: 200, calls: [] },
   "sessions.listAgentRequests": { status: 500, calls: ["conversation.listRequests"] },
   "sessions.respondAgentRequest": { status: 500, calls: ["engine.respondRequest"] },
   "sessions.listProcesses": { status: 200, calls: [] },
@@ -1121,6 +1127,17 @@ const admittedBody = (endpoint: string, target: Target): unknown => {
         sharedControlEnabledAt: null,
       }),
     );
+  }
+  if (endpoint === "pages.listForSession") {
+    const page = api.world.pages.get(ids(target).page);
+    if (page === undefined) throw new Error("missing target page fixture");
+    return Schema.encodeSync(Schema.Array(PageRef))([pageRefOf(page)]);
+  }
+  if (endpoint === "pages.frame") {
+    return {
+      url: `/api/page-view?view=${encodeURIComponent(`${ids(target).page}.dark`)}`,
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    };
   }
   return ADMITTED[endpoint]?.body;
 };

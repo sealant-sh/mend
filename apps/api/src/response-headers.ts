@@ -1,5 +1,6 @@
+import { isPageViewTarget, PAGE_VIEW_HEADERS } from "@mend/network";
 import { Cause, Effect, type Layer } from "effect";
-import { HttpRouter, HttpServerError, HttpServerResponse } from "effect/http";
+import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /**
  * Headers the API sets on its own answers (docs/adr/0004, "Errors and browser headers"; MEND-11).
@@ -14,20 +15,27 @@ export const API_RESPONSE_HEADERS: Readonly<Record<string, string>> = {
   "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
 };
 
+export const responseHeadersFor = (target: string): Readonly<Record<string, string>> =>
+  isPageViewTarget(target) ? PAGE_VIEW_HEADERS : API_RESPONSE_HEADERS;
+
 export const apiResponseHeaders: Layer.Layer<never, never, HttpRouter.HttpRouter> =
   HttpRouter.middleware(
     (handler) =>
-      handler.pipe(
-        // A typed failure (a route that does not exist, a request that does not parse) is turned
-        // into its response by the server, outside every middleware, where no header can be set.
-        // It is answered here instead, with the same response the server would have built. An
-        // interruption is the client going away and passes through.
-        Effect.catchCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.failCause(cause)
-            : Effect.map(HttpServerError.causeResponse(cause), ([response]) => response),
+      Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
+        handler.pipe(
+          // A typed failure (a route that does not exist, a request that does not parse) is turned
+          // into its response by the server, outside every middleware, where no header can be set.
+          // It is answered here instead, with the same response the server would have built. An
+          // interruption is the client going away and passes through.
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.map(HttpServerError.causeResponse(cause), ([response]) => response),
+          ),
+          Effect.map((response) =>
+            HttpServerResponse.setHeaders(response, responseHeadersFor(request.url)),
+          ),
         ),
-        Effect.map((response) => HttpServerResponse.setHeaders(response, API_RESPONSE_HEADERS)),
       ),
     { global: true },
   );

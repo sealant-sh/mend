@@ -3257,15 +3257,23 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           );
         return new SessionTranscript({
           sourceHarness: result.sourceHarness,
-          events: result.events.map(
-            (event) =>
-              new TranscriptEvent({
-                kind: event.kind,
-                text: "text" in event ? event.text : null,
-                name: event.kind === "tool" ? event.name : null,
-                command: event.kind === "tool" ? event.command : null,
-                output: event.kind === "tool" ? event.output : null,
-              }),
+          events: result.events.map((event) =>
+            event.kind === "page"
+              ? new TranscriptEvent({
+                  kind: "page",
+                  text: null,
+                  name: null,
+                  command: null,
+                  output: null,
+                  page: event.page,
+                })
+              : new TranscriptEvent({
+                  kind: event.kind,
+                  text: "text" in event ? event.text : null,
+                  name: event.kind === "tool" ? event.name : null,
+                  command: event.kind === "tool" ? event.command : null,
+                  output: event.kind === "tool" ? event.output : null,
+                }),
           ),
         });
       }),

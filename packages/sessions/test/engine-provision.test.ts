@@ -79,6 +79,7 @@ import {
   sealantLaunchLayer,
   secretCipherStubLayer,
   secretFilesLayerOf,
+  sessionPagesLayerOf,
   serviceHostStubLayer,
   forwardAdapterReadyLayer,
   serviceStateLayer,
@@ -1080,6 +1081,7 @@ describe("SessionEngine", () => {
           piProfilesLayerOf(),
           agentMemoryLayerOf(),
           secretFilesLayerOf(),
+          sessionPagesLayerOf(),
         ),
       ),
       Layer.provide(

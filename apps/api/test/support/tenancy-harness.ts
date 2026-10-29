@@ -16,8 +16,11 @@ import {
   ServicesRepo,
   SessionChangeNotFoundError,
   SessionNotFoundError,
+  type SessionPage,
+  SessionPagesRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  pageRefOf,
   SkillNotFoundError,
   SkillsRepo,
   WorktreeChangesRepo,
@@ -30,6 +33,7 @@ import {
   ChangeId,
   FolderId,
   OrganizationId,
+  PageId,
   ProjectId,
   ReferenceId,
   SealantWorkspaceId,
@@ -120,6 +124,7 @@ export const ids = (project: HarnessProject) => ({
   turn: AgentTurnId.make(`turn-${project}`),
   request: AgentRequestId.make(`request-${project}`),
   skill: SkillId.make(`skill-${project}`),
+  page: PageId.make(`page-${project}`),
 });
 
 /** Carol's own session inside alice's shared project, alone in its own worktree. */
@@ -170,6 +175,8 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   "services.byId",
   "conversation.byTurnId",
   "conversation.byRequestId",
+  "pages.byId",
+  "pages.refById",
   // A skill's scope decides whose access applies, so it is read first.
   "skills.byId",
   // A reference's organization decides whether an owner may manage or select it.
@@ -249,7 +256,9 @@ export interface TenancyWorld {
     | SkillsRepo
     | ReferencesRepo
     | FoldersRepo
+    | SessionPagesRepo
   >;
+  readonly pages: Map<PageId, SessionPage>;
   readonly dispose: () => Promise<void>;
 }
 
@@ -361,6 +370,7 @@ export const createTenancyWorld = async (
   const turns = new Map<AgentTurnId, AgentTurn>();
   const requests = new Map<AgentRequestId, AgentRequest>();
   const skills = new Map<SkillId, SkillWithFiles>();
+  const pages = new Map<PageId, SessionPage>();
 
   for (const [key, facts] of Object.entries(PROJECTS)) {
     if (!(key in PROJECTS)) continue;
@@ -464,6 +474,18 @@ export const createTenancyWorld = async (
         updatedAt: NOW,
       }),
     );
+    pages.set(own.page, {
+      id: own.page,
+      sessionId: own.session,
+      callKey: `call-${projectKey}`,
+      accountId: facts.creator,
+      title: `Page of ${projectKey}`,
+      height: 320,
+      html: `<!doctype html><html><head></head><body><p>${projectKey}</p></body></html>`,
+      sha256: "0".repeat(64),
+      bytes: 0,
+      publishedAt: NOW,
+    });
     turns.set(
       own.turn,
       new AgentTurn({
@@ -837,6 +859,23 @@ export const createTenancyWorld = async (
       calls,
     ),
     recording(
+      SessionPagesRepo,
+      "pages",
+      {
+        byId: (id) => Effect.sync(() => pages.get(id) ?? null),
+        refById: (id) =>
+          Effect.sync(() => {
+            const page = pages.get(id);
+            return page === undefined ? null : pageRefOf(page);
+          }),
+        listForSession: (sessionId) =>
+          Effect.sync(() =>
+            [...pages.values()].filter((page) => page.sessionId === sessionId).map(pageRefOf),
+          ),
+      },
+      calls,
+    ),
+    recording(
       FoldersRepo,
       "folders",
       { byId: (id) => found(folderRows, id, () => new FolderNotFoundError({ folderId: id })) },
@@ -877,6 +916,7 @@ export const createTenancyWorld = async (
     services,
     skills,
     turns,
+    pages,
     setVisibility: (key, visibility) => {
       const row = projects.get(ids(key).project);
       if (row !== undefined) projects.set(row.id, new Project({ ...row, visibility }));

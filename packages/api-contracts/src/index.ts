@@ -7,6 +7,7 @@ export * from "./settings.ts";
 export * from "./projects.ts";
 export * from "./project-environment.ts";
 export * from "./sessions.ts";
+export * from "./pages.ts";
 export * from "./skills.ts";
 export * from "./pi-profile.ts";
 export * from "./agent-memory.ts";

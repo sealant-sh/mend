@@ -2,9 +2,10 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
+import { PAGE_VIEW_PATH } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
-import { contentSecurityPolicy, securityHeaders } from "./security-headers.ts";
+import { contentSecurityPolicy, PERMISSIONS_POLICY, securityHeaders } from "./security-headers.ts";
 
 describe("the browser header policy (MEND-11)", () => {
   it("lets only this origin supply scripts, connections, frames and form targets", () => {
@@ -24,18 +25,18 @@ describe("the browser header policy (MEND-11)", () => {
   });
 
   it("claims HSTS only over https", () => {
-    expect(securityHeaders({ pathname: "/", appUrl: "https://mend.example" })).toHaveProperty(
+    expect(securityHeaders({ target: "/", appUrl: "https://mend.example" })).toHaveProperty(
       "strict-transport-security",
       "max-age=31536000",
     );
-    expect(securityHeaders({ pathname: "/", appUrl: "http://localhost:3105" })).not.toHaveProperty(
+    expect(securityHeaders({ target: "/", appUrl: "http://localhost:3105" })).not.toHaveProperty(
       "strict-transport-security",
     );
   });
 
   it("forbids framing everywhere, the terminal embed included", () => {
     for (const pathname of ["/", "/tty-embed", "/api/events"]) {
-      const headers = securityHeaders({ pathname, appUrl: "https://mend.example" });
+      const headers = securityHeaders({ target: pathname, appUrl: "https://mend.example" });
       expect(headers["x-frame-options"]).toBe("DENY");
       expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
     }
@@ -43,7 +44,7 @@ describe("the browser header policy (MEND-11)", () => {
 
   it("the terminal embed still loads under the policy: it is a top-level document", () => {
     // What the embed needs: its own scripts and wasm, its own socket, its own ticket exchange.
-    const headers = securityHeaders({ pathname: "/tty-embed", appUrl: "https://mend.example" });
+    const headers = securityHeaders({ target: "/tty-embed", appUrl: "https://mend.example" });
     const csp = headers["content-security-policy"] ?? "";
     expect(csp).toContain("'wasm-unsafe-eval'");
     expect(csp).toContain("wss://mend.example");
@@ -77,12 +78,46 @@ describe("the browser header policy (MEND-11)", () => {
       "/preview-auth",
       "/api/preview-auth",
     ]) {
-      expect(securityHeaders({ pathname, appUrl: "https://mend.example" })["referrer-policy"]).toBe(
-        "no-referrer",
-      );
+      expect(
+        securityHeaders({ target: pathname, appUrl: "https://mend.example" })["referrer-policy"],
+      ).toBe("no-referrer");
     }
     expect(
-      securityHeaders({ pathname: "/", appUrl: "https://mend.example" })["referrer-policy"],
+      securityHeaders({ target: "/", appUrl: "https://mend.example" })["referrer-policy"],
     ).toBe("strict-origin-when-cross-origin");
+  });
+});
+
+describe("an agent's page (docs/adr/0004, Agent pages)", () => {
+  it("keeps the API's sandbox policy, and only its route may be framed", () => {
+    for (const target of [
+      `${PAGE_VIEW_PATH}?view=token`,
+      `https://mend.example${PAGE_VIEW_PATH}`,
+    ]) {
+      expect(securityHeaders({ target, appUrl: "https://mend.example" })).toEqual({
+        "content-security-policy": "sandbox allow-scripts allow-forms",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": "private, no-store",
+        "permissions-policy": PERMISSIONS_POLICY,
+        "strict-transport-security": "max-age=31536000",
+      });
+    }
+    for (const target of [
+      `${PAGE_VIEW_PATH}/x`,
+      "/api/page-viewer",
+      "/page-view",
+      "/api/pages",
+      "/sessions/%2e%2e/api/page-view?view=token",
+      "/sessions/../api/page-view?view=token",
+      "/api/auth/%2e%2e/page-view?view=token",
+      "//api/page-view?view=token",
+      "/api//page-view?view=token",
+      "/API/page-view?view=token",
+    ]) {
+      const other = securityHeaders({ target, appUrl: "https://mend.example" });
+      expect(other["x-frame-options"], target).toBe("DENY");
+      expect(other["content-security-policy"], target).toContain("frame-ancestors 'none'");
+    }
   });
 });

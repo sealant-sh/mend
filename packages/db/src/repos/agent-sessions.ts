@@ -56,7 +56,7 @@ import {
   projects,
   type StoredUnsavedAnswer,
 } from "../schema/workbench.ts";
-import { agentConversationLockKey } from "./agent-conversation.ts";
+import { lockAgentConversation } from "./agent-conversation.ts";
 
 export class SessionNotFoundError extends Schema.TaggedError<SessionNotFoundError>()(
   "SessionNotFoundError",
@@ -1480,9 +1480,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const claimed = yield* db
           .transaction((tx) =>
             Effect.gen(function* () {
-              yield* tx.execute(
-                sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(id)}))`,
-              );
+              yield* lockAgentConversation(tx, id);
               return yield* tx
                 .update(agentSessions)
                 .set({ idleStoppedAt: yield* DateTime.nowAsDate })

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { backfillFromNative, cursorAtEndOf } from "../src/native-backfill.ts";
+import { convertNativeSession } from "../src/native-convert.ts";
+import { claudePageTranscript, codexPageTranscript, PAGE_HTML } from "./page-transcripts.ts";
+
+const isObject = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const jsonl = (entries: ReadonlyArray<unknown>): string =>
   entries.map((entry) => JSON.stringify(entry)).join("\n");
@@ -190,5 +195,52 @@ describe("cursorAtEndOf", () => {
       lineCount: 7,
     });
     expect(cursorAtEndOf("opencode", "x", "")).toBeNull();
+  });
+});
+
+describe("backfillFromNative · a call to Mend's html_render", () => {
+  const PAGE = "5f2c9a7e-1d3b-4e8a-9c0f-7b6a5d4c3e2f";
+
+  it.each([
+    ["claude", claudePageTranscript([PAGE]), "toolu_page_0"],
+    ["codex", codexPageTranscript([PAGE]), "call_page_0"],
+  ])(
+    "%s: keeps the call and the page it published, never the page's HTML",
+    (harness, native, id) => {
+      const result = backfillFromNative(harness, "sess-pages", native, null);
+      const items = result?.turns.flatMap((turn) => turn.items) ?? [];
+      const call = items.find((item) => item.providerItemId === id);
+      expect(call).toMatchObject({ kind: "tool-call", status: "completed" });
+      expect(call?.data).toMatchObject({ mendPageCall: { attachmentId: PAGE, failure: null } });
+      expect(JSON.stringify(items)).not.toContain("p99");
+      expect(JSON.stringify(items)).not.toContain(PAGE_HTML.slice(0, 20));
+    },
+  );
+});
+
+describe("backfillFromNative · a page call after Mend's own conversion to the other harness", () => {
+  const PAGE = "5f2c9a7e-1d3b-4e8a-9c0f-7b6a5d4c3e2f";
+
+  it.each([
+    ["claude", "codex", claudePageTranscript([PAGE])],
+    ["codex", "claude", codexPageTranscript([PAGE])],
+  ])("%s to %s: keeps the call and its page, never the page's HTML", (source, target, native) => {
+    const converted = convertNativeSession(source, target, native, {
+      cwd: "/workspace/repo",
+      now: "2026-10-29T10:00:00.000Z",
+    });
+    const file = converted?.files.find((entry) => entry.path.endsWith(".jsonl"));
+    expect(file?.content).toContain("p99");
+    const result = backfillFromNative(
+      target,
+      converted?.providerSessionId ?? "",
+      file?.content ?? "",
+      null,
+    );
+    const items = result?.turns.flatMap((turn) => turn.items) ?? [];
+    const calls = items.filter((item) => isObject(item.data) && "mendPageCall" in item.data);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.data).toMatchObject({ mendPageCall: { attachmentId: PAGE, failure: null } });
+    expect(JSON.stringify(items)).not.toContain("p99");
   });
 });

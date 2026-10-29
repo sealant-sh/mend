@@ -214,6 +214,8 @@ describe("SessionPages", () => {
     const unreachable = Layer.succeed(SessionPagesRepo, {
       publish: () => Effect.die(new Error("a page whose check crashed was stored")),
       byId: () => Effect.succeed(null),
+      refById: () => Effect.succeed(null),
+      listForSession: () => Effect.succeed([]),
     });
     const refusal = await Effect.runPromise(
       Effect.gen(function* () {

@@ -18,6 +18,7 @@ import {
   ConversationWaitWork,
   FollowUp,
   LaunchMovedOnReason,
+  PageRef,
   ReviewSlice,
   ServiceBrowserScheme,
   ServiceRecipe,
@@ -82,6 +83,7 @@ export class TranscriptEvent extends Schema.Class<TranscriptEvent>("TranscriptEv
   name: Schema.NullOr(Schema.String),
   command: Schema.NullOr(Schema.String),
   output: Schema.NullOr(Schema.String),
+  page: Schema.optionalKey(PageRef),
 }) {}
 
 export class SessionTranscript extends Schema.Class<SessionTranscript>("SessionTranscript")({

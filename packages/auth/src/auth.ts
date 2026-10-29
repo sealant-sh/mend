@@ -178,6 +178,10 @@ export class Auth extends Context.Service<
 /** How long a handed-over reset link works. */
 export const PASSWORD_RESET_TTL_MS = 24 * 60 * 60 * 1000;
 
+export const authSecret = Config.Redacted("BETTER_AUTH_SECRET").pipe(
+  Config.orElse(() => Config.succeed(Redacted.make("mend-dev-secret-do-not-deploy"))),
+);
+
 /** Postgres-backed Better Auth and paired-device authentication. */
 export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | RegistrationPolicy> =
   Layer.effect(
@@ -188,9 +192,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
           Config.succeed(Redacted.make("postgres://mend:mend@localhost:5434/mend")),
         ),
       );
-      const secret = yield* Config.Redacted("BETTER_AUTH_SECRET").pipe(
-        Config.orElse(() => Config.succeed(Redacted.make("mend-dev-secret-do-not-deploy"))),
-      );
+      const secret = yield* authSecret;
       // Better Auth otherwise reads this ambient variable in addition to its
       // options, which would create a second, unvalidated origin allowlist.
       yield* Config.schema(Schema.Literal(""), "BETTER_AUTH_TRUSTED_ORIGINS").pipe(

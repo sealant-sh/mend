@@ -767,4 +767,45 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
       ),
     );
   });
+  it("publishes one page item through the channel, also after completion, and a retry adds none", async () => {
+    await withChannel(async ({ address, tokens, sql }) => {
+      await sql(
+        "INSERT INTO session_processes (id, session_id, sealant_workspace_id, kind, harness, status) VALUES ('page-protocol', 's-mcp-alice', 'ws-page', 'agent-protocol', 'claude', 'running')",
+      );
+      await sql(
+        "INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status) VALUES ('page-turn', 's-mcp-alice', 'page-protocol', 0, 'chart', 'running')",
+      );
+      try {
+        const client = await connect(address, tokens.alice);
+        const first = resultOf(await client.render(PAGE, "protocol-publish"));
+        await sql("UPDATE agent_turns SET status = 'completed' WHERE id = 'page-turn'");
+        const late = resultOf(await client.render(PAGE, "protocol-late"));
+        expect(resultOf(await client.render(PAGE, "protocol-publish"))).toEqual(first);
+        const items = Schema.decodeUnknownSync(
+          Schema.Array(
+            Schema.Struct({
+              kind: Schema.String,
+              turn_id: Schema.String,
+              provider_item_id: Schema.String,
+              seq: Schema.Number,
+              data: Schema.Unknown,
+            }),
+          ),
+        )(
+          await sql(
+            "SELECT kind, turn_id, provider_item_id, seq, data FROM agent_items WHERE session_id = 's-mcp-alice' ORDER BY seq",
+          ),
+        );
+        expect(
+          items.map((item) => [item.kind, item.turn_id, item.provider_item_id, item.seq]),
+        ).toEqual([
+          ["page", "page-turn", `mend-page:${first.structuredContent?.htmlRender.attachmentId}`, 1],
+          ["page", "page-turn", `mend-page:${late.structuredContent?.htmlRender.attachmentId}`, 2],
+        ]);
+        expect(JSON.stringify(items)).not.toContain(PAGE.html);
+      } finally {
+        await sql("DELETE FROM session_processes WHERE id = 'page-protocol'");
+      }
+    });
+  });
 });

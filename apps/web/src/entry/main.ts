@@ -121,7 +121,7 @@ const proxyRequest = (
         ),
         // The browser header policy, on the app's responses and the API's alike (MEND-11).
         ...securityHeaders({
-          pathname: new URL(request.url ?? "/", "http://mend.local").pathname,
+          target: request.url ?? "/",
           appUrl: publicNetwork.appUrl,
         }),
       };
@@ -134,7 +134,7 @@ const proxyRequest = (
       response.writeHead(502, {
         "content-type": "text/plain",
         ...securityHeaders({
-          pathname: new URL(request.url ?? "/", "http://mend.local").pathname,
+          target: request.url ?? "/",
           appUrl: publicNetwork.appUrl,
         }),
       });

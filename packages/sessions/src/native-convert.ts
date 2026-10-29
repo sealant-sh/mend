@@ -19,6 +19,8 @@
  * claude session files from this store.
  */
 
+import { TOOL_INPUT_ENVELOPE } from "@mend/agent-protocol";
+
 export interface CanonicalSession {
   readonly version: 1;
   /** Harness that actually produced the events. */
@@ -70,7 +72,6 @@ const asText = (content: unknown): string => {
 };
 
 const IMPORT_PREFIX = "imported_";
-const TOOL_INPUT_ENVELOPE = "$mend.toolInput";
 
 const canonicalToolArgs = (
   input: unknown,
@@ -297,8 +298,12 @@ const ingestCodex = (jsonl: string): CanonicalEvent[] => {
         const output =
           typeof p.output === "string"
             ? p.output
-            : ((p.output as { readonly content?: string } | undefined)?.content ??
-              JSON.stringify(p.output ?? ""));
+            : typeof p.output === "object" &&
+                p.output !== null &&
+                "content" in p.output &&
+                typeof p.output.content === "string"
+              ? p.output.content
+              : JSON.stringify(p.output ?? "");
         events.push({ kind: "tool", ...call, output });
       }
     }

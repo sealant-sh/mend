@@ -232,11 +232,11 @@ import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
+import { PageViewTokensLive } from "./page-view-tokens.ts";
 import { PreviewSetupConfig, PreviewSetupConfigLive } from "./preview-config.ts";
 import { PreviewIdentityLive } from "./preview-identity.ts";
 import { servePreviews } from "./preview-serving.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
-import { RawFileTracingDisabledLive } from "./raw-file-privacy.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { RemoteCredentialCheckLive } from "./remote-credential-check.ts";
@@ -256,6 +256,7 @@ import { SlackRunnerLive } from "./slack-runner.ts";
 import { SlackLinkedMentionWorkerLive, SlackSocketsLive } from "./slack-worker.ts";
 import { SshKeyRevocationScheduleLive, SshKeyRevokerLive } from "./ssh-key-revocation.ts";
 import { TenancyConfigLive } from "./tenancy.ts";
+import { UntracedRequestsLive } from "./untraced-requests.ts";
 import { WorkspaceLandingLive } from "./workspace-landing.ts";
 
 /**
@@ -467,7 +468,7 @@ const ServerLive = Layer.unwrap(
       ),
     ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
-      Layer.provide(RawFileTracingDisabledLive),
+      Layer.provide(UntracedRequestsLive),
     );
     return servePreviews(router, {
       setup: previews,
@@ -873,6 +874,7 @@ const MainLive = Layer.unwrap(
               UrlBearersLive,
               ErrorDetailLive,
               PreviewSetupConfigLive,
+              PageViewTokensLive,
             ),
           ),
         ),

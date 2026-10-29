@@ -34,6 +34,7 @@ import {
   WorktreesRepo,
   SessionGitOpsRepo,
   SessionNotFoundError,
+  SessionPagesRepo,
   SessionProcessesRepo,
   SessionRunActiveError,
   SessionRunsRepo,
@@ -121,6 +122,7 @@ import {
   Skill,
   SkillWithFiles,
   Worktree,
+  type PageRef,
   type SessionExtraMount,
   type SessionReferenceMount,
   captureAnswerReplaces,
@@ -280,6 +282,17 @@ export const sealantDeadLayer = Layer.succeed(SealantClient, {
   connectionCheck: () => Effect.die("not in test"),
   resolveWorkspacePackage: () => Effect.die("not in test"),
 });
+
+export const sessionPagesLayerOf = (
+  pages: ReadonlyArray<PageRef> = [],
+): Layer.Layer<SessionPagesRepo> =>
+  Layer.succeed(SessionPagesRepo, {
+    publish: () => Effect.die("not in test"),
+    byId: () => Effect.succeed(null),
+    refById: (id) => Effect.sync(() => pages.find((page) => page.id === id) ?? null),
+    listForSession: (sessionId) =>
+      Effect.sync(() => pages.filter((page) => page.sessionId === sessionId)),
+  });
 
 /** No pool in these worlds — claims miss and the boot sweep sees nothing. */
 export const hotWorkspacesEmptyLayer = Layer.succeed(HotWorkspacesRepo, {
@@ -3524,6 +3537,7 @@ interface EngineOptions {
   readonly seals?: Layer.Layer<CaptureSeals>;
   /** What the host whose Docker runs the workspaces says of user namespaces; nothing unless a test says. */
   readonly hostUserNamespaces?: Layer.Layer<WorkspaceHostUserNamespaces>;
+  readonly pagesLayer?: Layer.Layer<SessionPagesRepo>;
   /** Every log line the engine writes, in order, when a test reads them. */
   readonly logs?: Array<string>;
   /** Every channel token issue and revocation (`issue:<launch>`, `revoke:<session>`, `revokeLaunch:<launch>`). */
@@ -3790,6 +3804,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           options.piProfilesLayer ?? piProfilesLayerOf(),
           options.agentMemoryLayer ?? agentMemoryLayerOf(),
           options.secretFilesLayer ?? secretFilesLayerOf(),
+          options.pagesLayer ?? sessionPagesLayerOf(),
         ),
       ),
       Layer.provide(

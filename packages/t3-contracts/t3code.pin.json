@@ -563,6 +563,11 @@
       "blob": "a6ea063626315352671f7438b559f0a8bf9544de",
       "sha256": "041191afc0113f8a9e18420889b16d56a588faf64ea0a81e326f75f322c92563"
     },
+    "t3-shared/src/htmlRender.ts": {
+      "upstream": "packages/shared/src/htmlRender.ts",
+      "blob": "cb01eab9601df981931af90465ecbac04f6b6a1d",
+      "sha256": "95414ed99e8d45984f83287116184d79ffa896d491ab4fcea8487340c2adbeef"
+    },
     "t3-shared/src/inlineSkills.ts": {
       "upstream": "packages/shared/src/inlineSkills.ts",
       "blob": "b5f4437b7a3d20adbfaff1f624370c0558edb269",
@@ -592,6 +597,11 @@
       "upstream": "packages/shared/src/markdownPipeline.ts",
       "blob": "767ffdf8365459b8d0edfad19a6e750d15c3c1ed",
       "sha256": "77258de8eada65b1dba6a8f0e6ddc72eb4ad2ff25fea85aa32e7773495889af2"
+    },
+    "t3-shared/src/mcpApp.ts": {
+      "upstream": "packages/shared/src/mcpApp.ts",
+      "blob": "5be6c3954f0501ef57ff4d043e5d339db9ffa125",
+      "sha256": "64c0c0760ccfef558db079b4706f0ee4c419f660a5a41f226e720eefc32ebadc"
     },
     "t3-shared/src/model.ts": {
       "upstream": "packages/shared/src/model.ts",
@@ -633,6 +643,11 @@
       "blob": "21f8be3941f95e43937c1ef75858e3101e692fe2",
       "sha256": "4683e9bf0f2a88aab88a6fba279e8fa62d936616fa7e3a250558c6f47e2246d2"
     },
+    "t3-shared/src/themePalettes.ts": {
+      "upstream": "packages/shared/src/themePalettes.ts",
+      "blob": "bff06383aadc155c3f770706ea0a82e94f97d049",
+      "sha256": "d1622e33578c1718540aae9b1e345e41e349be5835b5efdfab5593ca082815d0"
+    },
     "t3-shared/src/threadFindText.ts": {
       "upstream": "packages/shared/src/threadFindText.ts",
       "blob": "a2e5b4dbb982d560a7741cc5ecc317bb4d9b7145",
@@ -657,6 +672,11 @@
       "upstream": "packages/shared/src/threadTranscript.ts",
       "blob": "e8954bc24894d945bfb6a2d34230253aa6cbacf4",
       "sha256": "597fba37cd280ac6fca341c52f9e4940a0b3b221dbb3e9a87952fbe4a92d63f3"
+    },
+    "t3-shared/src/toolOutput.ts": {
+      "upstream": "packages/shared/src/toolOutput.ts",
+      "blob": "be788033d0fbef10a1dbb52bbf4e8cb01f48bf4b",
+      "sha256": "f6babad1cf29c9c297cfc3a5980a25585c94479ac5e34c7baf4440c709a52bfa"
     }
   }
 }
