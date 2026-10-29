@@ -11,11 +11,11 @@ worktree on one project server.
 Yiannis decided the data model on 2026-10-29 ("Should allow both with excellent ux"), accepted the
 recommendations of decisions S1 to S15 the same day, and set the scope: "this is not just about DBs.
 It's about making a network or something that runs any resource in either project and worktree
-level." The decisions G1 to G12 that the general model raises are still his. Where the text depends
-on one, it names it, and the default it assumes is pending. The product words (resource,
-`mend resource`, `MEND_RESOURCE_*`) are decision G9's recommendation. Every other mechanism is a
-proposal. Read against Mend `5d8b1ed32e` and Sealant Core `97076a88`. Amends
-[ADR 0017](0017-live-preview.md) (how a preview's `depends` names a resource).
+level." The decisions G1 to G12 that the general model raised were settled on 2026-10-30, each as
+recommended, within that framing. The product words (resource, `mend resource`, `MEND_RESOURCE_*`)
+are decision G9's. Every other mechanism is a proposal. Read against Mend `5d8b1ed32e` and Sealant
+Core `97076a88`. Amends [ADR 0017](0017-live-preview.md) (how a preview's `depends` names a
+resource).
 
 **What this ADR does not claim.** A resource is a development resource, not production
 infrastructure. Its status says what was observed
@@ -608,9 +608,9 @@ model. Where the restatement goes beyond what he accepted, it is marked as decis
 | S14 | The first slice                               | Postgres with both modes and Redis shared, on Docker, as presets on a project network.                                                                                     |
 | S15 | Test and shadow databases                     | In `own` mode, the worktree's creator role may create databases, and Mend tracks them.                                                                                     |
 
-### Still his
+### Settled 2026-10-30, each as recommended
 
-| #   | Decision                                             | Options                                                                                                                                  | Recommendation and evidence                                                                                                                                                 |
+| #   | Decision                                             | Options                                                                                                                                  | Outcome and evidence                                                                                                                                                        |
 | --- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | G1  | Who may declare an image that is not a preset        | a manager (`canManageProject`); an owner (`canRemoveProject`); any member, approved by a manager                                         | Any member may propose it, in settings or `mend.toml`, and a manager approves it. An image is a command, and ADR 0013 makes commands an owner's to run.                     |
 | G2  | Which images                                         | any image, pinned by digest; only registries the operator lists; presets only in 0.37                                                    | Any image by digest, with the refused options, and an operator setting that may narrow the registries. Presets only would break "any resource".                             |
@@ -635,7 +635,7 @@ order in which env layers merge, are ADR 0019's."
 
 **AGENTS.md**, when this ADR is accepted. The Product Language Contract gains `resource`,
 `project resource`, `worktree resource`, `project network`, `the shared database` and
-`its own database`, as decision G9 settles them. A `Service` keeps its meaning, a session's declared
+`its own database`, as decision G9 settled them. A `Service` keeps its meaning, a session's declared
 port.
 
 ## Platform feedback
@@ -643,7 +643,7 @@ port.
 This PR adds four entries to `PLATFORM-FEEDBACK.md` and corrects one. They give the 2026-10-24
 entries "Workspaces reaching a project's long-running service" and "Service storage that survives
 executor replacement" a concrete surface. Those entries stay, marked as superseded. Where an ask
-depends on a pending decision, the entry names it.
+follows from one of the decisions, the entry names it.
 
 1. **A service resource.** A harness-free workload from any image pinned by digest (G2), with a
    command, ports, env, retained named volumes, a backup volume and limits (G3). No TTL, idempotency
@@ -713,7 +713,7 @@ named, or by the decision named.
 - **Test databases created between sweeps** cannot connect until the next sweep writes their
   `pg_hba.conf` rule. Step 5 settles it, for example with an event trigger.
 - **Conventional names** (`DATABASE_URL`, `PG*`) still override an app's `.env`, and appear or
-  disappear when a second Postgres is added. Step 4 settles it, or decision G11.
+  disappear when a second Postgres is added. Step 4 settles it.
 - **Switching by short name.** A Compose consumer that restarts while another consumer delays the
   move resolves the old target, then follows the move later without a restart. Step 6 settles it.
 - **Rotating a generic resource's secret** has no check that the instance applied it before Mend
