@@ -634,3 +634,13 @@ export const resourceProposalNotices = (declared: {
       : [],
   ),
 ];
+
+/** `resourceProposalNotices` for a terminal: the heading, then one indented line each; empty when none. */
+export const resourceProposalsSection = (
+  declared: Parameters<typeof resourceProposalNotices>[0],
+): ReadonlyArray<string> => {
+  const notices = resourceProposalNotices(declared);
+  return notices.length === 0
+    ? []
+    : [`${RESOURCE_PROPOSALS_HEADING}:`, ...notices.map((notice) => `  ${notice}`)];
+};

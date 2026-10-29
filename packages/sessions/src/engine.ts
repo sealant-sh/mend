@@ -100,6 +100,7 @@ import {
   previewControlDecider,
   previewStartId,
   recipeRefusalLine,
+  resourceProposalsSection,
   PreviewStartRefusal,
   type PreviewStartRequest,
   type ServiceStartCause,
@@ -23595,18 +23596,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           file,
           yield* projectRecipes.listForProject(session.projectId),
         );
+        // The in-workspace helper prints this message as is, so it carries the file's notices.
+        const notRun = (line: string) =>
+          new ServiceStartError({
+            message: [line, ...resourceProposalsSection(declared)].join("\n"),
+          });
         const refusals = declared.refused.filter((refusal) => refusal.name === name);
         if (refusals.length > 0) {
-          return yield* new ServiceStartError({
-            message: `mend.toml refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
-          });
+          return yield* notRun(
+            `mend.toml refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
+          );
         }
         const steps = planStart(declared, name);
         const recipe = steps.at(-1);
         if (recipe === undefined || recipe.name !== name) {
-          return yield* new ServiceStartError({
-            message: `No Service recipe named "${name}" exists in this session.`,
-          });
+          return yield* notRun(`No Service recipe named "${name}" exists in this session.`);
         }
         const key = planKey(sessionId, startId ?? crypto.randomUUID());
         const running = servicePlans.get(key);

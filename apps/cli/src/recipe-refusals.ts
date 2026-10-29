@@ -1,4 +1,4 @@
-import { RESOURCE_PROPOSALS_HEADING, resourceProposalNotices } from "@mend/domain/workbench";
+import { resourceProposalsSection } from "@mend/domain/workbench";
 
 /** One refusal of `GET /sessions/:id/declarations`: the recipe, the key it names, and why. */
 export interface RecipeRefusalDto {
@@ -33,12 +33,8 @@ export const missingRecipeLine = (
   name: string,
   declared: ReadonlyArray<{ readonly name: string }>,
   declarations: ServiceDeclarationsDto | null,
-): string => {
-  const notices = declarations === null ? [] : resourceProposalNotices(declarations);
-  return [
+): string =>
+  [
     recipeLine(name, declared, declarations),
-    ...(notices.length === 0
-      ? []
-      : [`${RESOURCE_PROPOSALS_HEADING}:`, ...notices.map((notice) => `  ${notice}`)]),
+    ...(declarations === null ? [] : resourceProposalsSection(declarations)),
   ].join("\n");
-};
