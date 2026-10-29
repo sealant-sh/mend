@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -13,6 +15,7 @@ import {
   resourceEnvPrefix,
   ResourceName,
   resourceNameIssue,
+  resourceSpecDigest,
   secretEnvNames,
   selectionRefusal,
   WorktreeSelection,
@@ -572,5 +575,67 @@ describe("env name collisions", () => {
 
   it("leaves the conventional names out when two of one engine are in use", () => {
     expect(envNameCollisions([postgres(), postgres({ name: "analytics" })])).toEqual([]);
+  });
+});
+
+describe("a definition's digest", () => {
+  it("is the sha256 of its JSON with sorted keys and no whitespace, limits defaulted", () => {
+    const spec = define({ env: { B: "2", A: { secret: "TOKEN" } } });
+    const canonical =
+      '{"command":null,"env":{"A":{"secret":"TOKEN"},"B":"2"},"exports":{},' +
+      '"image":"rabbitmq:4-management","limits":{"cpu":1,"diskGiB":10,"memoryMiB":1024},' +
+      '"name":"queue","ports":[{"name":"amqp","port":5672,"protocol":"tcp"}],"preset":null,' +
+      '"ready":{"kind":"tcp"},"scope":"project",' +
+      '"volumes":[{"mountPath":"/var/lib/rabbitmq","name":"data"}]}';
+    expect(resourceSpecDigest(spec)).toBe(createHash("sha256").update(canonical).digest("hex"));
+  });
+
+  it("is the same whatever order the keys were written in", () => {
+    const written = decode({
+      exports: {},
+      ready: { kind: "tcp" },
+      volumes: [{ mountPath: "/var/lib/rabbitmq", name: "data" }],
+      env: { A: { secret: "TOKEN" }, B: "2" },
+      ports: [{ protocol: "tcp", port: 5672, name: "amqp" }],
+      limits: { diskGiB: 10, memoryMiB: 1024, cpu: 1 },
+      command: null,
+      image: "rabbitmq:4-management",
+      preset: null,
+      scope: "project",
+      name: "queue",
+    });
+    expect(resourceSpecDigest(written)).toBe(
+      resourceSpecDigest(define({ env: { B: "2", A: { secret: "TOKEN" } } })),
+    );
+  });
+
+  it.each([
+    ["name", { name: "mq" }],
+    ["scope", { scope: "worktree" }],
+    ["preset", { preset: "redis" }],
+    ["image", { image: "rabbitmq:4" }],
+    ["command", { command: ["rabbitmq-server"] }],
+    ["a port", { ports: [{ name: "amqp", port: 5673, protocol: "tcp" }] }],
+    ["an env value", { env: { A: "1" } }],
+    ["an env value's kind", { env: { A: { secret: "A" } } }],
+    ["a volume", { volumes: [{ name: "data", mountPath: "/data" }] }],
+    ["a limit", { limits: { cpu: 2 } }],
+    ["the ready check", { ready: { kind: "command", argv: ["true"] } }],
+    ["an export", { exports: { URL: "amqp://{host}" } }],
+  ])("changes with %s", (_, change) => {
+    const base = define({ env: { A: "0" } });
+    expect(resourceSpecDigest(define({ env: { A: "0" }, ...change }))).not.toBe(
+      resourceSpecDigest(base),
+    );
+  });
+
+  it("orders port and volume lists as written, since their order is part of the definition", () => {
+    const two = [
+      { name: "amqp", port: 5672, protocol: "tcp" },
+      { name: "admin", port: 15672, protocol: "tcp" },
+    ];
+    expect(resourceSpecDigest(define({ ports: two.toReversed() }))).not.toBe(
+      resourceSpecDigest(define({ ports: two })),
+    );
   });
 });

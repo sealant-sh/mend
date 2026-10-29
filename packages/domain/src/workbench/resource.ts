@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { Effect, Schema } from "effect";
 
 import { ResourceDatabaseId, ResourceInstanceId } from "../ids.ts";
@@ -167,6 +169,34 @@ export const ResourceDefinitionInput = Schema.Union([
   WorktreeResourceDefinition,
 ]);
 export type ResourceDefinitionInput = typeof ResourceDefinitionInput.Type;
+
+/** What an approval approves: a sha256, in lower-case hex, of a definition's canonical JSON. */
+export const ResourceSpecDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)).pipe(
+  Schema.brand("ResourceSpecDigest"),
+);
+export type ResourceSpecDigest = typeof ResourceSpecDigest.Type;
+
+/** JSON with every object's keys sorted and no whitespace, so equal values write equal bytes. */
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const fields = Object.entries(value)
+      .filter(([, field]) => field !== undefined)
+      .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, field]) => `${JSON.stringify(key)}:${canonicalJson(field)}`);
+    return `{${fields.join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const encodeDefinition = Schema.encodeSync(ResourceDefinitionInput);
+
+/**
+ * The digest over every field of `spec` as it is stored (ADR 0019, "Approving a definition").
+ * A worktree's selection is not in it (decision S9).
+ */
+export const resourceSpecDigest = (spec: ResourceDefinitionInput): ResourceSpecDigest =>
+  ResourceSpecDigest.make(bytesToHex(sha256(utf8ToBytes(canonicalJson(encodeDefinition(spec))))));
 
 /** Why a definition cannot be approved: the key it names (`ports.http`, `exports.URL`) and why. */
 export const ResourceRefusal = Schema.Struct({ key: Schema.String, message: Schema.String });

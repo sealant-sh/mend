@@ -16,6 +16,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@noble/hashes": "^2.2.0",
     "@sealant/api-contracts": "catalog:",
     "effect": "catalog:"
   },
