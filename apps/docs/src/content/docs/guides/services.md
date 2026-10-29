@@ -153,26 +153,34 @@ The fields, and what Mend refuses in each:
 ## Setup
 
 When a start runs any command, Mend runs `[setup]` first, then the dependencies, then the Service.
-It runs setup again only when something it covers changed: a step, or the contents of an input (an
-input that appears or goes counts). Otherwise the start says
-`setup · unchanged since it last ran here` and goes on.
+It runs setup again only when something it covers changed: a step, the contents of an input (an
+input that appears or goes counts), or the workspace image. Otherwise the start says
+`setup · unchanged since it last ran here` and goes on. `mend service <name> --setup` runs it
+anyway, for example after `git clean -fdx` removed what it installed.
 
-- **Where it is remembered.** Per worktree directory when Mend runs beside your files, which every
-  session in that worktree shares, and per workspace in a captured workspace. Two sessions never run
-  setup in one directory at once: a second start waits for the first and uses its result.
+- **Where it is remembered.** Per worktree when Mend runs beside your files, which every session in
+  that worktree shares, and per workspace in a captured workspace. Removing a worktree forgets it.
+  One start at a time runs setup in one place: a second start waits for the first, then reads its
+  inputs again and uses the first one's result if they still match.
+- **What an input can be.** A file in the repository. One that links outside it, a directory, or
+  anything else that is not a regular file refuses the start and says which. In a captured workspace
+  Mend reads each input there as you, and keeps only its hash, never its contents.
+- **How long a step may run.** Thirty minutes. A step that runs longer is stopped, and the start
+  says so; the next start runs setup again.
 - **When a step fails.** The start stops, and says the step, its exit code and the end of its
   output. Your next start runs setup again. A start Mend makes on its own, such as restarting
   Services after it replaces a workspace, does not: it says setup failed and asks for your start.
 - **When it is refused.** A bad `[setup]` refuses no recipe: they all still list, your start goes on
   without setup and says so, and a start Mend makes on its own is refused.
-- **Stopping it.** Stop the Service, or all of the session's Services, while setup runs: the running
-  step and everything it started end, and the next start runs setup from the beginning.
+- **Stopping it.** Stop the Service (`mend service stop <name>` works before the Service has
+  started), or all of the session's Services, while setup runs: the running step and everything it
+  started end, and the next start runs setup from the beginning.
 - **A restored workspace.** A captured workspace that comes back as a new workspace runs setup at
   its first start, even if the capture already holds what setup made. Mend does not share setup's
   output across workspaces until restoring has been measured against installing.
 
-Setup holds up no other Service's start or stop, however long it takes. `mend service <name> --wait`
-shows each step as it runs.
+Setup holds up no other Service's start or stop, however long it takes, and keeps its workspace
+running while it does. `mend service <name> --wait` shows each step as it runs.
 
 A start with dependencies can take a while, so Mend runs it to the end on its own: closing the
 terminal, pressing Ctrl-C at the spinner, or an edge cutting the request does not stop it. A Stop of
@@ -185,8 +193,8 @@ Each started Service also gets `PORT` (its port) and, when its preview has an ad
 upper-cased and anything outside `A-Z0-9` turned into `_` (`db-main` gives
 `MEND_SERVICE_DB_MAIN_HOST`). A Docker-published dependency gets the host Mend reaches it on. Two
 dependencies that would give the same names refuse the recipe. A restart runs what the Service ran
-before, with the same directory and environment, even after `mend.toml` changed; a new start reads
-the file again. Nothing in the file starts on its own.
+before, with the same directory, environment and dependencies, even after `mend.toml` changed; a new
+start reads the file again. Nothing in the file starts on its own.
 
 A problem with one recipe refuses that recipe alone, naming the key, and the others still run.
 `mend service <name>` tells you why a refused one does not. A key Mend does not know is ignored and
@@ -212,8 +220,9 @@ the result before writing it. A workspace package gets its own `cwd`, a known de
 and when exactly one Service opens in a browser it becomes the `[preview]`. A folder or Compose
 service whose name is not a recipe name gets one (`My_App` becomes `my_app`). With a lockfile at the
 root, it adds a `[setup]` that installs from it without changing it
-(`pnpm install --frozen-lockfile`, `yarn install --immutable`, `bun install --frozen-lockfile` or
-`npm ci`), with the lockfile as its input.
+(`pnpm install --frozen-lockfile`, `yarn install --frozen-lockfile` or, on Yarn 2 and later,
+`yarn install --immutable`, `bun install --frozen-lockfile` or `npm ci`), with the lockfile as its
+input.
 
 ## Records and status
 

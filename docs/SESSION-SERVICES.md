@@ -227,15 +227,17 @@ that preview has no address yet. For each recipe in its `depends`, a Service get
 gives `MEND_SERVICE_DB_MAIN_*`). The host is `127.0.0.1`, or for an `address = "docker"` dependency
 whichever of `127.0.0.1` and the Docker sidecar (`docker`) Mend reaches it on. A recipe whose two
 dependencies give the same names is refused, and a recipe's `env` cannot set them (`MEND_*` is
-Mend's). They are worked out at each start and restart, never recorded with the attempt; a
-dependency not running at a restart is left out. They are process environment, so they reach a
-Service in a standby workspace whose workspace environment was fixed before its worktree was known.
-`depends` starts each dependency first, one start at a time. One already live in the session is not
-started again, but it counts only once it has answered its own `ready` rule: one that never did is
-checked again, within its own timeout, and a command-less one has its port looked at again. A
-command-less one not yet live is adopted and waited for within its `ready.timeout`. The first that
-fails or never answers stops the start with its name, leaving the ones already started running. The
-readiness wait holds nothing another Service's stop needs.
+Mend's). The attempt records which dependencies it was started with, never their addresses: a
+restart binds the same ones, whatever `mend.toml` says by then, at their addresses as they are then.
+A dependency not running at a restart is left out; a restart that cannot look the addresses up says
+so and starts nothing. They are process environment, so they reach a Service in a standby workspace
+whose workspace environment was fixed before its worktree was known. `depends` starts each
+dependency first, one start at a time. One already live in the session is not started again, but it
+counts only once it has answered its own `ready` rule: one that never did is checked again, within
+its own timeout, and a command-less one has its port looked at again. A command-less one not yet
+live is adopted and waited for within its `ready.timeout`. The first that fails or never answers
+stops the start with its name, leaving the ones already started running. The readiness wait holds
+nothing another Service's stop needs.
 
 **One rule says a Service is up.** The recipe's `ready` decides it at the start, at a restart, at
 the 20-second background probe and when the server starts again. A port that accepts a connection is
@@ -253,27 +255,44 @@ dependency, or of all the session's Services, ends the start: nothing after it s
 
 **Setup runs once per place and fingerprint.** A recipe start whose plan runs any command runs
 `[setup]` first, before `depends` and the Service, then the readiness check (ADR 0017, decision 4).
-Each step runs as `sh -lc <step>` in `/workspace/repo`, as the person the Service runs as, one after
-another; a step that exits non-zero stops the start, and the start's error names the step, its exit
-code and the last few KiB of its output. Mend runs it again only when its fingerprint changed: a
-hash of the steps and of each input's bytes (or that it is absent), and, for an executor's copy, the
-executor's platform. The place is the worktree directory when the deployment co-locates it, which
-every session in that worktree shares, or one executor's copy in capture mode.
+Each step runs as `sh -lc <step>` in `/workspace/repo`, one after another, as the person the Service
+runs as and with the same identity their Service gets (`MEND_SESSION_ID` and the rest), its two
+output streams as one. A step that exits non-zero stops the start, and the start's error names the
+step, its exit code and the last few KiB of its output. A step may run for at most 30 minutes, the
+longest Mend waits for one command in a workspace: one that runs longer is stopped and recorded as
+failed, with words saying so. Mend runs setup again only when its fingerprint changed: a hash of the
+steps, of each input's bytes (or that it is absent), of the workspace image's digest, and, for an
+executor's copy, the executor's platform. The place is the worktree when the deployment co-locates
+it, which every session in that worktree shares, or one executor's copy in capture mode.
 
-- The claim is in Postgres (`setup_runs`), so two sessions never run setup in one directory at once,
-  across API processes. A start that finds another start running setup there waits for it, then
-  skips setup if that run left a done stamp for its fingerprint.
-- A done stamp skips setup. Only the last run in a place is kept, so returning to an earlier
-  lockfile runs setup again.
+- An input is read only when it is a regular file that resolves inside the repository: one that
+  links out of it, a directory or a FIFO refuses the start, naming it. In capture mode it is read in
+  the workspace as the person setup runs as, and only its sha256 leaves the workspace, never its
+  bytes.
+- The claim is in Postgres (`setup_runs`), so one start at a time runs setup in a place, across API
+  processes. A start that finds another start running setup there waits for it, then reads its
+  inputs again and skips setup if that run left a done stamp for what it reads now.
+- A run renews its one-minute lease every 20 seconds. One whose renewal fails, or does not answer
+  before its lease would lapse, stops its own processes and fails the start without a stamp. A
+  lapsed run is not run over: the next start stops its processes first, by a marker in their
+  environment, and only then runs setup. If its workspace cannot be reached to do that, the next
+  start waits one more minute after the lease lapsed and then runs setup. That is the one case two
+  runs can overlap in one place: an API process that stopped renewing and could not stop its own
+  run, in a workspace Mend cannot reach, that is still writing two minutes after its last renewal.
+- Only a run whose every step exited 0, under a claim it still held, with no Stop, is stamped done.
+  A done stamp skips setup. Only the last run in a place is kept, so returning to an earlier
+  lockfile runs setup again. `mend service run <name> --setup` runs it even over a done stamp, for a
+  tree whose install went (a `git clean -fdx`). Removing a worktree removes its stamps.
 - A failed setup runs again on a person's or the agent's start, never on an automatic one (an
   executor replacement's restarts, and later the preview's wake): those are refused with the exit
   code and the output. An automatic start over a refused `[setup]` is refused too; a person's start
   goes on without it and says so.
 - A Stop of the start's Services, or of all the session's, during setup ends the running step and
   every process it started, and gives the claim up without a stamp: the next start runs setup again.
-  A claim whose holder died frees the place once its one-minute lease, renewed while setup runs,
-  runs out.
-- Setup holds nothing another Service's start, stop or restart needs, however long it runs.
+  `mend service stop <name>` reaches a Service's first start too, before the Service exists.
+- Setup holds nothing another Service's start, stop or restart needs, however long it runs. It holds
+  its workspace as a running process does: a workspace whose last process ends during setup stays up
+  for setup, and then for the Service it starts.
 - A restart replays the attempt and runs no setup.
 - **A restored capture's first start pays for setup once.** The stamp is keyed by the executor, and
   a new executor restored from a capture is a new place, so its first start runs setup even when the
@@ -285,7 +304,8 @@ every session in that worktree shares, or one executor's copy in capture mode.
   two if it does not.
 
 The start's progress and `mend service run --wait` show setup: waiting on another start, running a
-step, done, unchanged since it last ran, refused, failed or stopped.
+step, done, unchanged since it last ran, refused, failed or stopped. A start's answer carries how
+its setup went too, so `mend service run` says a refused `[setup]` it went on without.
 
 **What a restart runs.** An attempt records its command, `cwd`, the recipe's `env` and its `ready`
 rule. A restart replays those, never the file as it reads now, so a turn that edited `mend.toml`
@@ -303,7 +323,8 @@ Service, when there is exactly one, becomes the `[preview]`. A folder or compose
 is not a recipe name is proposed under one (`My_App` becomes `my_app`). Everything it writes is
 something this server's parser accepts. With a lockfile at the root it writes a `[setup]` that runs
 the package manager's install without rewriting the lockfile (`pnpm install --frozen-lockfile`,
-`yarn install --immutable`, `bun install --frozen-lockfile`, `npm ci`), with the lockfile as its
+`yarn install --frozen-lockfile`, or `--immutable` for Yarn 2 and later, which Yarn 1 ignores while
+it rewrites the lockfile, `bun install --frozen-lockfile`, `npm ci`), with the lockfile as its
 input. A generator for the recipe file, nothing more.
 
 ## How it works

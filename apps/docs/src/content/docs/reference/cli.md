@@ -686,11 +686,14 @@ selection and host-key verification.
 | `mend service stop <name-or-id>`                                              | Stop the process and close its host port                                    |
 
 `mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, `--wait`, `--timeout`
-and `--no-connect`. Mend holds the start for up to a minute until the port answers. `--wait` keeps
-waiting while the Service is still starting, which means its process runs and its port has not
-answered yet (building, installing, booting), up to `--timeout` (a duration as `mend wait` takes it;
-default `10m`). Mend probes a started Service's port every 20 seconds, so the wait ends at the first
-probe that answers. The exit status says how it ended:
+and `--no-connect`, and for a recipe `--setup`, which runs `mend.toml`'s `[setup]` even where it
+already succeeded. `mend service stop <name>` also ends a start of that Service still under way, in
+its setup or a dependency's start, before the Service exists. Mend holds the start for up to a
+minute until the port answers. `--wait` keeps waiting while the Service is still starting, which
+means its process runs and its port has not answered yet (building, installing, booting), up to
+`--timeout` (a duration as `mend wait` takes it; default `10m`). Mend probes a started Service's
+port every 20 seconds, so the wait ends at the first probe that answers. The exit status says how it
+ended:
 
 | Exit  | What was observed                                                                                            |
 | ----- | ------------------------------------------------------------------------------------------------------------ |
