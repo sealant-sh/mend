@@ -58,8 +58,8 @@ describe("resource names", () => {
     },
   );
 
-  it("refuses a name ending in .internal by saying so", () => {
-    expect(resourceNameIssue("db.mend.internal")).toMatch(/\.internal/);
+  it("refuses a dotted name such as one ending in .internal", () => {
+    expect(resourceNameIssue("db.mend.internal")).toMatch(/one DNS label/);
   });
 });
 

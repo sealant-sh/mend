@@ -19,7 +19,6 @@ export const RESERVED_RESOURCE_NAMES: ReadonlyArray<string> = [
 
 /** Why `raw` cannot name a resource, or null when it can. */
 export const resourceNameIssue = (raw: string): string | null => {
-  if (raw.endsWith(".internal")) return "ends in .internal, which a workspace already resolves";
   if (!RESOURCE_NAME.test(raw)) {
     return "is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -)";
   }
