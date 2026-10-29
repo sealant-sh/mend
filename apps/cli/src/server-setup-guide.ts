@@ -1,5 +1,6 @@
 import * as net from "node:net";
 
+import { DEFAULT_TAILNET_PREVIEW_PORTS, writePreviewPorts } from "@mend/network";
 import { type AddressKind, addressKindOf } from "@mend/network/address-kind";
 
 import { KEEP_THE_DATA, leftoverItems, type ServerLeftovers } from "./server-docker-volumes.ts";
@@ -96,10 +97,27 @@ const sameMirrors = (left: ServerMirrors, right: ServerMirrors): boolean =>
   left.docker?.maxSize === right.docker?.maxSize &&
   dockerMirrorLogin(left.docker) === dockerMirrorLogin(right.docker);
 
-const samePreview = (left: ServerPreview | undefined, right: ServerPreview | undefined): boolean =>
-  left?.domain === right?.domain &&
-  left?.certificate === right?.certificate &&
-  left?.key === right?.key;
+const samePreview = (
+  left: ServerPreview | undefined,
+  right: ServerPreview | undefined,
+): boolean => {
+  if (left === undefined || right === undefined) return left === right;
+  switch (left.mode) {
+    case "domain":
+      return (
+        right.mode === "domain" &&
+        left.domain === right.domain &&
+        left.certificate === right.certificate &&
+        left.key === right.key
+      );
+    case "tailnet":
+      return (
+        right.mode === "tailnet" &&
+        left.hostname === right.hostname &&
+        writePreviewPorts(left.ports) === writePreviewPorts(right.ports)
+      );
+  }
+};
 
 /** Equal as settings: the lists as sets, since their order changes nothing the server reads. */
 export const sameSettings = (left: SetupSettings, right: SetupSettings): boolean =>
@@ -119,6 +137,36 @@ export const sameSettings = (left: SetupSettings, right: SetupSettings): boolean
   sameMirrors(left.mirrors, right.mirrors);
 
 // ─── from settings to flags ─────────────────────────────────────────────────
+
+/** The preview flags from one saved preview to another; the tailnet's name is observed, never a flag. */
+const previewFlagsFor = (
+  before: ServerPreview | undefined,
+  after: ServerPreview | undefined,
+): ReadonlyArray<string> => {
+  switch (after?.mode) {
+    case undefined:
+      return before === undefined
+        ? []
+        : [before.mode === "domain" ? "--no-preview-domain" : "--no-preview-tailnet"];
+    case "domain": {
+      const was = before?.mode === "domain" ? before : undefined;
+      return [
+        ...(after.domain === was?.domain ? [] : ["--preview-domain", after.domain]),
+        ...(after.certificate === was?.certificate && after.key === was.key
+          ? []
+          : ["--preview-certificate", after.certificate, "--preview-key", after.key]),
+      ];
+    }
+    case "tailnet": {
+      const ports = writePreviewPorts(after.ports);
+      const was = before?.mode === "tailnet" ? writePreviewPorts(before.ports) : undefined;
+      if (ports === was) return [];
+      return was === undefined && ports === DEFAULT_TAILNET_PREVIEW_PORTS
+        ? ["--preview-tailnet"]
+        : ["--preview-tailnet-ports", ports];
+    }
+  }
+};
 
 /**
  * The fewest flags that take `before` (the saved settings, or a fresh install's defaults) to
@@ -171,22 +219,7 @@ export const flagsFor = (before: SetupSettings, after: SetupSettings): ReadonlyA
         ? ["--no-t3-gateway-origin"]
         : ["--t3-gateway-origin", after.t3GatewayOrigin]),
     );
-  if (after.preview === undefined && before.preview !== undefined)
-    flags.push("--no-preview-domain");
-  if (after.preview !== undefined) {
-    if (after.preview.domain !== before.preview?.domain)
-      flags.push("--preview-domain", after.preview.domain);
-    if (
-      after.preview.certificate !== before.preview?.certificate ||
-      after.preview.key !== before.preview.key
-    )
-      flags.push(
-        "--preview-certificate",
-        after.preview.certificate,
-        "--preview-key",
-        after.preview.key,
-      );
-  }
+  flags.push(...previewFlagsFor(before.preview, after.preview));
   const npmBefore = before.mirrors.npm;
   const npmAfter = after.mirrors.npm;
   if (npmAfter === null && npmBefore !== null) flags.push("--no-npm-mirror");
@@ -282,10 +315,17 @@ const t3Of = (settings: SetupSettings): string => {
       : `on, at ${placement.url}, this machine only`;
 };
 
-const previewsOf = (settings: SetupSettings): string =>
-  settings.preview === undefined
-    ? "off"
-    : `on, at https://<label>.${settings.preview.domain} through the edge, with ${settings.preview.certificate}`;
+const previewsOf = (settings: SetupSettings): string => {
+  const preview = settings.preview;
+  switch (preview?.mode) {
+    case undefined:
+      return "off";
+    case "domain":
+      return `on, at https://<label>.${preview.domain} through the edge, with ${preview.certificate}`;
+    case "tailnet":
+      return `on, at https://${preview.hostname}:<port> through tailscale serve, a port each from ${writePreviewPorts(preview.ports)}`;
+  }
+};
 
 const tenancyOf = (settings: SetupSettings): string =>
   settings.tenancy === "multi" ? "several organizations (multi)" : "one organization (single)";
@@ -358,8 +398,14 @@ export const changeLines = (before: SetupSettings, after: SetupSettings): Readon
 /** An https origin Tailscale Serve forwards, and where to. */
 export interface ServeRoute {
   readonly origin: string;
+  /** The https port it is served on. */
+  readonly port: number;
   /** The port on this machine's loopback it forwards to; null when it goes elsewhere. */
   readonly loopbackPort: number | null;
+  /** `scheme://host:port/path` it forwards to; null unless its only handler is a proxy at `/`. */
+  readonly upstream: string | null;
+  /** How the port listens: Tailscale ends TLS (`https`), plain `http`, a `tcp` forward, or unlisted. */
+  readonly listener: "https" | "http" | "tcp" | null;
   /** Whether Funnel publishes it to the public internet. */
   readonly funnel: boolean;
 }
@@ -369,9 +415,17 @@ export interface TailscaleFacts {
   readonly running: boolean;
   /** MagicDNS name, without the trailing dot. */
   readonly dnsName: string | null;
+  /** The tailnet's MagicDNS suffix (`tailc79e49.ts.net`); Tailscale reports it whether or not MagicDNS is on. */
+  readonly magicDnsSuffix: string | null;
+  readonly magicDns: boolean;
   readonly ipv4: string | null;
   readonly ipv6: string | null;
   readonly serve: ReadonlyArray<ServeRoute>;
+  /**
+   * What this machine serves for each Tailscale Service (`svc:<name>`), by name. Null when
+   * `tailscale serve status --json` was not read.
+   */
+  readonly services: ReadonlyMap<string, ReadonlyArray<ServeRoute>> | null;
 }
 
 const fieldsOf = (value: unknown): ReadonlyMap<string, unknown> =>
@@ -387,52 +441,100 @@ const parseJson = (text: string): unknown => {
   }
 };
 
-/** The loopback port a Serve proxy target names (`http://127.0.0.1:3105`, `localhost:3105`, `3105`). */
+/** A Serve proxy target as a URL: `http://127.0.0.1:3105`, `localhost:3105` or `3105`. */
+const proxyUrlOf = (target: string): URL | null =>
+  URL.parse(
+    /^\d+$/.test(target)
+      ? `http://127.0.0.1:${target}`
+      : /^[a-z+]+:\/\//.test(target)
+        ? target
+        : `http://${target}`,
+  );
+
 const loopbackPortOf = (target: string): number | null => {
-  if (/^\d+$/.test(target)) return Number(target);
-  try {
-    const url = new URL(/^[a-z+]+:\/\//.test(target) ? target : `http://${target}`);
-    if (!isLoopbackName(url.hostname) || url.port === "") return null;
-    return Number(url.port);
-  } catch {
-    return null;
-  }
+  const url = proxyUrlOf(target);
+  if (url === null || !isLoopbackName(url.hostname) || url.port === "") return null;
+  return Number(url.port);
 };
+
+const listenerOf = (handler: ReadonlyMap<string, unknown>): ServeRoute["listener"] =>
+  handler.get("HTTPS") === true
+    ? "https"
+    : handler.get("HTTP") === true
+      ? "http"
+      : typeof handler.get("TCPForward") === "string"
+        ? "tcp"
+        : null;
+
+/**
+ * The https routes of a serve config's `Web` (`host:port` keys, each with its `Handlers`), with the
+ * listener its `TCP` entry gives the port. Funnel is on for a route when the node's `AllowFunnel`,
+ * or a Service's own, names its `host:port`.
+ */
+const serveRoutesOf = (
+  config: ReadonlyMap<string, unknown>,
+  funnels: ReadonlyArray<ReadonlyMap<string, unknown>>,
+): ReadonlyArray<ServeRoute> => {
+  const listeners = fieldsOf(config.get("TCP"));
+  return [...fieldsOf(config.get("Web")).entries()].flatMap(([hostPort, site]) => {
+    const match = /^(.+):(\d+)$/.exec(hostPort);
+    if (match === null) return [];
+    const [, host = "", port = ""] = match;
+    const handlers = fieldsOf(fieldsOf(site).get("Handlers"));
+    const root = fieldsOf(handlers.get("/"));
+    const proxy = root.get("Proxy");
+    const only = handlers.size === 1 && root.size === 1 && typeof proxy === "string";
+    const target = only ? proxyUrlOf(proxy) : null;
+    return [
+      {
+        origin: port === "443" ? `https://${host}` : `https://${host}:${port}`,
+        port: Number(port),
+        loopbackPort: typeof proxy === "string" ? loopbackPortOf(proxy) : null,
+        upstream: target === null ? null : `${target.protocol}//${target.host}${target.pathname}`,
+        listener: listenerOf(fieldsOf(listeners.get(port))),
+        funnel: funnels.some((funnel) => funnel.get(hostPort) === true),
+      },
+    ];
+  });
+};
+
+const dnsNameOf = (value: unknown): string | null =>
+  typeof value === "string" && value !== "" ? value.replace(/\.$/, "") : null;
 
 /** Tailscale's own words, read; null when the status is not Tailscale's JSON. */
 export const tailscaleFactsOf = (status: string, serve: string): TailscaleFacts | null => {
   const fields = fieldsOf(parseJson(status));
   if (!fields.has("BackendState")) return null;
   const self = fieldsOf(fields.get("Self"));
-  const dns = self.get("DNSName");
   const ips = self.get("TailscaleIPs");
   const addresses = Array.isArray(ips)
     ? ips.filter((ip): ip is string => typeof ip === "string")
     : [];
   const ipv4 = addresses.find((ip) => net.isIPv4(ip));
   const ipv6 = addresses.find((ip) => net.isIPv6(ip));
-  const serveFields = fieldsOf(parseJson(serve));
+  const serveJson = parseJson(serve);
+  const serveFields = fieldsOf(serveJson);
   const funnel = fieldsOf(serveFields.get("AllowFunnel"));
-  const routes = [...fieldsOf(serveFields.get("Web")).entries()].flatMap(([hostPort, web]) => {
-    const match = /^(.+):(\d+)$/.exec(hostPort);
-    if (match === null) return [];
-    const [, host = "", port = ""] = match;
-    const root = fieldsOf(fieldsOf(fieldsOf(web).get("Handlers")).get("/"));
-    const proxy = root.get("Proxy");
-    return [
-      {
-        origin: port === "443" ? `https://${host}` : `https://${host}:${port}`,
-        loopbackPort: typeof proxy === "string" ? loopbackPortOf(proxy) : null,
-        funnel: funnel.get(hostPort) === true,
-      },
-    ];
-  });
+  const read = typeof serveJson === "object" && serveJson !== null && !Array.isArray(serveJson);
   return {
     running: fields.get("BackendState") === "Running",
-    dnsName: typeof dns === "string" && dns !== "" ? dns.replace(/\.$/, "") : null,
+    dnsName: dnsNameOf(self.get("DNSName")),
+    magicDnsSuffix: dnsNameOf(fieldsOf(fields.get("CurrentTailnet")).get("MagicDNSSuffix")),
+    magicDns: fieldsOf(fields.get("CurrentTailnet")).get("MagicDNSEnabled") === true,
     ipv4: ipv4 ?? null,
     ipv6: ipv6 ?? null,
-    serve: routes,
+    serve: serveRoutesOf(serveFields, [funnel]),
+    services: read
+      ? new Map(
+          [...fieldsOf(serveFields.get("Services")).entries()].map(([name, service]) => [
+            name,
+            serveRoutesOf(fieldsOf(service), [
+              funnel,
+              fieldsOf(fieldsOf(service).get("AllowFunnel")),
+            ]),
+          ]),
+        )
+      : null,
   };
 };
 
@@ -1178,10 +1280,17 @@ const DECLARATIONS: ReadonlyArray<{
   },
   {
     item: "preview-gateway",
-    text: (settings) =>
-      settings.preview === undefined
-        ? ""
-        : `*.${settings.preview.domain} resolves to this machine's edge, https://<label>.${settings.preview.domain} answers over the certificate you supplied and it chains to a public root, and ${PREVIEW_PUBLISHED} answers nothing from another machine`,
+    text: (settings) => {
+      const preview = settings.preview;
+      switch (preview?.mode) {
+        case undefined:
+          return "";
+        case "domain":
+          return `*.${preview.domain} resolves to this machine's edge, https://<label>.${preview.domain} answers over the certificate you supplied and it chains to a public root, and ${PREVIEW_PUBLISHED} answers nothing from another machine`;
+        case "tailnet":
+          return `from a device on your tailnet https://${preview.hostname}:<port> answers, from one outside it nothing does, Funnel is off for its ports, and ${PREVIEW_PUBLISHED} answers nothing from another machine`;
+      }
+    },
   },
 ];
 
@@ -1457,7 +1566,7 @@ const askPreviews = async (asked: Asked, settings: SetupSettings): Promise<Setup
   if (preview === undefined) return settings;
   const kept = await yesNo(
     asked.io,
-    `Keep live previews at https://<label>.${preview.domain}?`,
+    `Keep live previews at ${preview.mode === "domain" ? `https://<label>.${preview.domain}` : `https://${preview.hostname}:<port>`}?`,
     true,
   );
   return kept

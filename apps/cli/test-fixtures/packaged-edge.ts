@@ -16,7 +16,12 @@ const listed = (key: string): ReadonlyArray<string> => {
 export const packagedEdgeArgs = (): ReadonlyArray<string> => {
   const overlay = renderPreviewOverlay({
     edgeHost: "mend.internal",
-    preview: { domain: "previews.internal", certificate: "/unused.crt", key: "/unused.key" },
+    preview: {
+      mode: "domain",
+      domain: "previews.internal",
+      certificate: "/unused.crt",
+      key: "/unused.key",
+    },
   });
   const group = /^ {4}group_add: \["(\d+)"\]$/m.exec(overlay ?? "")?.[1];
   if (group === undefined) throw new Error("the preview overlay adds the edge to no group");

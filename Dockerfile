@@ -41,10 +41,12 @@ ARG MEND_PREVIEW_SEALANTD_IMAGE=""
 # dev.sealant.mend.network-guard-image label, which `mend server setup` preloads, both read it.
 ARG MEND_NETWORK_GUARD_IMAGE=busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
 # dev.sealant.mend.t3-gateway: this image carries the confined t3code gateway (ADR 0012), which
-# `mend server setup --t3-gateway` checks for before turning it on.
+# `mend server setup --t3-gateway` checks for before turning it on. dev.sealant.mend.previews: what
+# its previews can do (ADR 0017 step 8b), which setup checks before turning such previews on.
 LABEL org.opencontainers.image.title="Mend bundle" \
   org.opencontainers.image.version="${MEND_VERSION}" \
   dev.sealant.mend.t3-gateway="1" \
+  dev.sealant.mend.previews="tailnet-ports,same-site-domain" \
   dev.sealant.mend.network-guard-image="${MEND_NETWORK_GUARD_IMAGE}" \
   dev.sealant.mend.sealant-version="0.40.0-next.763"
 

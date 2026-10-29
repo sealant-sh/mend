@@ -257,6 +257,28 @@ describe("man pages", () => {
       expect(text).not.toMatch(/[—–]/);
     }
   });
+  it("documents previews on the tailnet: the three flags, the https URL they need, gate item 15 and the shared address budget", () => {
+    expect(usageOf("server setup")).toContain(
+      "[--preview-tailnet [--preview-tailnet-ports <list>] | --no-preview-tailnet]",
+    );
+    const setup = renderCommand(findCommand(["server", "setup"])!, 120).replace(/\s+/g, " ");
+    for (const flag of [
+      "--preview-tailnet ",
+      "--preview-tailnet-ports <list>",
+      "--no-preview-tailnet",
+    ])
+      expect(setup).toContain(flag);
+    expect(setup).toContain("Mend's own URL must be https");
+    expect(setup).toContain("tailscale serve --bg --https=443 http://127.0.0.1:3105");
+    expect(setup).toContain(
+      "check from a device on the tailnet and from one outside it, then state it with --declare preview-gateway",
+    );
+    expect(setup).toContain(
+      "all of them share one address's preview budget (MEND_BUDGET_ADDRESS_PREVIEW_REQUESTS_PER_MINUTE, 12000 a minute by default), and each viewer's own account budgets apply after sign-in",
+    );
+    expect(setup).toContain("Refused with --exposure public");
+  });
+
   it("escapes roff and names every page", () => {
     const page = renderManPage(findCommand(["service", "run"])!, "0.17.0");
     expect(page.startsWith('.TH MEND-SERVICE-RUN 1 "" "mend 0.17.0"')).toBe(true);

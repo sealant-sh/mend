@@ -110,6 +110,8 @@ const makeRuntime = (
     readonly imageStatus?: number;
     /** The image's t3code gateway label: absent, an image from before the gateway. */
     readonly gatewayLabel?: string;
+    /** The image's previews label; absent, an image with step 8b's previews. */
+    readonly previewsLabel?: string;
     /** Whether the gateway answers on its loopback port once started. */
     readonly gatewayAnswers?: boolean;
     /** What the host-kernel probe container prints; absent: the probe fails, as on no image. */
@@ -140,6 +142,11 @@ const makeRuntime = (
     readonly edgeValidation?: (
       args: ReadonlyArray<string>,
     ) => Awaited<ReturnType<ServerSetupRuntime["run"]>>;
+    /**
+     * What `tailscale status --json` and `tailscale serve status --json` print, read at each call;
+     * null where the command fails. Absent: tailscale is not installed.
+     */
+    readonly tailscale?: { status: string | null; serve: string | null };
   } = {},
 ): RuntimeControl => {
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
@@ -162,6 +169,12 @@ const makeRuntime = (
       commands.push([command, args]);
       const protocol = daemon.run(command, args, processOptions);
       if (protocol !== undefined) return protocol;
+      if (command === "tailscale") {
+        const said = args[0] === "serve" ? options.tailscale?.serve : options.tailscale?.status;
+        return said === null || said === undefined
+          ? { status: 1, stdout: "", stderr: "tailscale: not available" }
+          : { status: 0, stdout: said, stderr: "" };
+      }
       if (args[0] === "context" && args[1] === "ls") {
         return {
           status: options.contextListStatus ?? 0,
@@ -249,6 +262,13 @@ const makeRuntime = (
       }
       if (args.includes("image") && missing.has(args[args.indexOf("inspect") + 1] ?? "")) {
         return { status: 1, stdout: "", stderr: "No such image" };
+      }
+      if (args.includes("image") && args.some((arg) => arg.includes("dev.sealant.mend.previews"))) {
+        return {
+          status: options.imageStatus ?? 0,
+          stdout: options.previewsLabel ?? "tailnet-ports,same-site-domain",
+          stderr: "",
+        };
       }
       if (args.includes("image") && args.some((arg) => arg.includes("t3-gateway"))) {
         return { status: options.imageStatus ?? 0, stdout: options.gatewayLabel ?? "", stderr: "" };
@@ -3652,6 +3672,442 @@ const checkedIn = (control: RuntimeControl): ReadonlyArray<string> =>
   control.commands
     .filter(([, args]) => args[0] === "--context" && args[2] === "version")
     .map(([, args]) => args[1] ?? "");
+
+const TAILNET = "tailc79e49.ts.net";
+const TAILNET_STATUS = JSON.stringify({
+  BackendState: "Running",
+  Self: { DNSName: `mend-box.${TAILNET}.`, TailscaleIPs: ["100.94.101.28"] },
+  CurrentTailnet: { MagicDNSSuffix: TAILNET, MagicDNSEnabled: true },
+});
+const SERVED_ORIGIN = `https://mend-box.${TAILNET}`;
+const serveOn = (port: number) =>
+  `  tailscale serve --service=svc:mend-preview --https=${port} --yes http://127.0.0.1:3130`;
+const serveOff = (port: number) =>
+  `  tailscale serve --service=svc:mend-preview --https=${port} off`;
+const range = (first: number, last: number): ReadonlyArray<number> =>
+  Array.from({ length: last - first + 1 }, (_, index) => first + index);
+/** `tailscale serve status --json` with the preview Service on these ports, Funnel on some. */
+const serviceServing = (
+  ports: ReadonlyArray<number>,
+  funnel: ReadonlyArray<number> = [],
+  proxy = "http://127.0.0.1:3130",
+) =>
+  JSON.stringify({
+    Services: {
+      "svc:mend-preview": {
+        TCP: Object.fromEntries(ports.map((port) => [`${port}`, { HTTPS: true }])),
+        Web: Object.fromEntries(
+          ports.map((port) => [
+            `mend-preview.${TAILNET}:${port}`,
+            { Handlers: { "/": { Proxy: proxy } } },
+          ]),
+        ),
+      },
+    },
+    AllowFunnel: Object.fromEntries(
+      funnel.map((port) => [`mend-preview.${TAILNET}:${port}`, true]),
+    ),
+  });
+
+/** What one setup run said, which must succeed. */
+const saidBy = async (
+  control: RuntimeControl,
+  flags: ReadonlyArray<string>,
+): Promise<ReadonlyArray<string>> => {
+  const before = control.lines.length;
+  expect(await serverCommand(["setup", ...flags], control.runtime)).toEqual({ _tag: "ok" });
+  return control.lines.slice(before);
+};
+
+describe("mend server setup --preview-tailnet (ADR 0017, decision 6)", () => {
+  /** An install on localhost, then this machine's web port served by Tailscale over https. */
+  const onTailnet = async (suffix: string) => {
+    const configDir = temporaryDirectory(suffix);
+    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    const tailscale: { status: string | null; serve: string | null } = {
+      status: TAILNET_STATUS,
+      serve: null,
+    };
+    const control = makeRuntime({ configDir, tailscale });
+    return { configDir, tailscale, control, runtime: control.runtime };
+  };
+
+  it("refuses an http APP_URL and offers the way to https through tailscale serve, before anything changes", async () => {
+    const { configDir, runtime } = await onTailnet("tailnet-http");
+    const active = activeDirectory(configDir);
+    expect(await serverCommand(["setup", "--preview-tailnet"], runtime)).toEqual({
+      _tag: "error",
+      message:
+        "Previews on the tailnet need Mend's own URL on https, and it is http://localhost:3105. They share Mend's site (every name in one tailnet is one registrable domain under ts.net), and only an https URL gives Mend's cookies the __Host- prefix, which a page on a preview cannot set. Serve Mend's web port over Tailscale on this machine: tailscale serve --bg --https=443 http://127.0.0.1:3105. Then run mend server setup --url https://mend-box.tailc79e49.ts.net --preview-tailnet.",
+    });
+    expect(activeDirectory(configDir)).toBe(active);
+  });
+
+  it("takes an https --url on a loopback bind only for this machine's own name on the tailnet", async () => {
+    const { configDir, runtime } = await onTailnet("tailnet-url");
+    const active = activeDirectory(configDir);
+    for (const url of ["https://mend.example.com", `https://other-box.${TAILNET}`]) {
+      expect(
+        await serverCommand(["setup", "--url", url, "--preview-tailnet"], runtime),
+        url,
+      ).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("must both describe"),
+      });
+    }
+    expect(
+      await serverCommand(["setup", "--url", "https://mend.example.com"], runtime),
+      "no tailnet to serve it",
+    ).toMatchObject({ _tag: "error", message: expect.stringContaining("must both describe") });
+    expect(activeDirectory(configDir)).toBe(active);
+  });
+
+  it("refuses --exposure loopback with Mend's URL on the tailnet", async () => {
+    const { configDir, runtime } = await onTailnet("tailnet-loopback");
+    const active = activeDirectory(configDir);
+    expect(
+      await serverCommand(["setup", "--exposure", "loopback", "--url", SERVED_ORIGIN], runtime),
+    ).toEqual({
+      _tag: "error",
+      message: `--exposure loopback contradicts --url ${SERVED_ORIGIN}: Mend is reached at a name beyond this machine.`,
+    });
+    expect(activeDirectory(configDir)).toBe(active);
+  });
+
+  it("refuses previews on the tailnet on a pinned server from before them, before anything changes", async () => {
+    const { configDir } = await onTailnet("tailnet-old-image");
+    const active = activeDirectory(configDir);
+    const control = makeRuntime({
+      configDir,
+      tailscale: { status: TAILNET_STATUS, serve: null },
+      previewsLabel: "",
+    });
+    expect(
+      await serverCommand(["setup", "--url", SERVED_ORIGIN, "--preview-tailnet"], control.runtime),
+    ).toEqual({
+      _tag: "error",
+      message:
+        "Mend 0.23.0 predates previews on the tailnet (its image's dev.sealant.mend.previews label does not name tailnet-ports), and would refuse MEND_PREVIEW_TAILNET_PORTS at start. Upgrade the server to a version that has them with mend server upgrade --version <version>, then turn them on; or run mend server setup --no-preview-tailnet.",
+    });
+    expect(activeDirectory(configDir)).toBe(active);
+    expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
+  });
+
+  it("serves previews through tailscale serve with no edge, and prints the serve set, the Service and the six Tailscale steps once", async () => {
+    const { configDir, control } = await onTailnet("tailnet-on");
+    const said = await saidBy(control, ["--url", SERVED_ORIGIN, "--preview-tailnet"]);
+    const served = activeDirectory(configDir);
+    expect(serverJson(configDir)).toMatchObject({
+      appUrl: SERVED_ORIGIN,
+      preview: { mode: "tailnet", hostname: `mend-preview.${TAILNET}`, ports: range(20001, 20016) },
+    });
+    const env = readEnv(path.join(served, "server.env"));
+    expect(env.get("MEND_PREVIEW_TAILNET_HOSTNAME")).toBe(`mend-preview.${TAILNET}`);
+    expect(env.get("MEND_PREVIEW_TAILNET_PORTS")).toBe("20001-20016");
+    expect(env.get("MEND_PREVIEW_PUBLISHED")).toBe("127.0.0.1:3130");
+    expect(env.has("MEND_PREVIEW_DOMAIN")).toBe(false);
+    const files = fs.readdirSync(served);
+    expect(files).toContain("compose.preview.yaml");
+    for (const edgeFile of ["Caddyfile.preview", "preview-certificate.pem", "preview-key.pem"])
+      expect(files).not.toContain(edgeFile);
+    expect(control.commands.some(([, args]) => args.includes("validate"))).toBe(false);
+    const up = control.commands.findLast(([, args]) => args.includes("up"))?.[1] ?? [];
+    expect(up).toContain(path.join(served, "compose.preview.yaml"));
+    expect(control.commands.filter(([command]) => command === "tailscale")).toEqual([
+      ["tailscale", ["status", "--json"]],
+      ["tailscale", ["serve", "status", "--json"]],
+    ]);
+    expect(said).toEqual(
+      expect.arrayContaining([
+        `The preview gateway answered at 127.0.0.1:3130, observed from this machine. Its port is published there only; tailscale serve on this machine serves each preview at https://mend-preview.${TAILNET}:<port>.`,
+        `Previews on the tailnet: each at https://mend-preview.${TAILNET}:<port>, a port each from 20001-20016, given when a preview is first opened. The gateway listens on 127.0.0.1:3130, and tailscale serve on this machine forwards each port to it.`,
+      ]),
+    );
+    const head = said.findIndex((line) =>
+      line.startsWith("Mend's container cannot reach tailscaled"),
+    );
+    expect(said[head]).toBe(
+      "Mend's container cannot reach tailscaled, so setup does not run tailscale serve. Run these on this machine (tailscale serve status was not read here, so every port):",
+    );
+    expect(said.slice(head + 1, head + 17)).toEqual(range(20001, 20016).map(serveOn));
+    expect(said[head + 17]).toBe(
+      `In the Tailscale admin console, svc:mend-preview's definition lists these endpoints: ${range(
+        20001,
+        20016,
+      )
+        .map((port) => `tcp:${port}`)
+        .join(",")}`,
+    );
+    const steps = said.slice(head + 19, head + 25);
+    expect(steps.map((step) => step.slice(0, 5))).toEqual([
+      "  1. ",
+      "  2. ",
+      "  3. ",
+      "  4. ",
+      "  5. ",
+      "  6. ",
+    ]);
+    expect(steps.join("\n")).toContain("MagicDNS");
+    expect(steps.join("\n")).toContain(
+      '"your machine names and your tailnet DNS name will be published on a public ledger"',
+    );
+    expect(steps.join("\n")).toContain("svc:mend-preview");
+    expect(steps.join("\n")).toContain("tag");
+    expect(steps.join("\n")).toContain("Approval of this machine");
+    expect(steps.join("\n")).toContain("Grants");
+    expect(said[head + 25]).toBe(
+      "Keep Funnel off for these ports: Funnel would open previews to the internet, outside your tailnet's grants.",
+    );
+  });
+
+  it("on a rerun prints only what changed against the saved ports, then against what tailscale serve showed, and Funnel when it is on", async () => {
+    const { configDir, control, tailscale } = await onTailnet("tailnet-rerun");
+    await saidBy(control, ["--url", SERVED_ORIGIN, "--preview-tailnet"]);
+    // Nothing changed and nothing read: nothing to say about tailscale serve.
+    const unchanged = await saidBy(control, ["--yes"]);
+    expect(unchanged.filter((line) => line.includes("tailscale serve --service"))).toEqual([]);
+    expect(unchanged.some((line) => line.includes("What to turn on in Tailscale"))).toBe(false);
+
+    const moved = await saidBy(control, ["--preview-tailnet-ports", "20001-20004,20020"]);
+    expect(serverJson(configDir).preview.ports).toEqual([20001, 20002, 20003, 20004, 20020]);
+    expect(readEnv(activeFile(configDir, "server.env")).get("MEND_PREVIEW_TAILNET_PORTS")).toBe(
+      "20001-20004,20020",
+    );
+    expect(moved.filter((line) => line.includes("tailscale serve --service"))).toEqual([
+      serveOn(20020),
+      ...range(20005, 20016).map(serveOff),
+    ]);
+    expect(moved).toContain(
+      "Mend's container cannot reach tailscaled, so setup does not run tailscale serve. Run these on this machine (tailscale serve status was not read here, so against the ports setup saved last time):",
+    );
+    expect(moved).toContain(
+      "In the Tailscale admin console, svc:mend-preview's definition lists these endpoints: tcp:20001,tcp:20002,tcp:20003,tcp:20004,tcp:20020",
+    );
+    expect(moved.some((line) => line.includes("What to turn on in Tailscale"))).toBe(false);
+
+    // What tailscale serve holds, read: two ports served, one with Funnel on, one stray, and one
+    // served to something else.
+    tailscale.serve = serviceServing([20001, 20002, 20099], [20002]);
+    const observed = await saidBy(control, ["--yes"]);
+    expect(observed.filter((line) => line.includes("tailscale serve --service"))).toEqual([
+      serveOn(20003),
+      serveOn(20004),
+      serveOn(20020),
+      serveOff(20099),
+    ]);
+    expect(observed).toContain(
+      "Mend's container cannot reach tailscaled, so setup does not run tailscale serve. Run these on this machine (against what tailscale serve status on this machine showed):",
+    );
+    expect(observed).toContain(
+      "Observed: Funnel is on for svc:mend-preview on port 20002, so that preview is open to the internet, not only to your tailnet. Turn Funnel off for it.",
+    );
+
+    tailscale.serve = serviceServing([20001, 20002, 20003, 20004, 20020]);
+    expect(await saidBy(control, ["--yes"])).toContain(
+      "Observed: tailscale serve on this machine serves svc:mend-preview on 20001-20004,20020, every preview port, to the gateway.",
+    );
+  });
+
+  it("off, takes every port off tailscale serve and leaves nothing of the overlay", async () => {
+    const { configDir, control } = await onTailnet("tailnet-off");
+    await saidBy(control, ["--url", SERVED_ORIGIN, "--preview-tailnet-ports", "20001-20003"]);
+    const off = await saidBy(control, ["--no-preview-tailnet"]);
+    const head = off.indexOf(
+      "Previews on the tailnet are off. Take svc:mend-preview off tailscale serve: run these on this machine (tailscale serve status was not read here, so against the ports setup saved last time):",
+    );
+    expect(head).toBeGreaterThanOrEqual(0);
+    expect(off.slice(head + 1, head + 5)).toEqual([
+      ...range(20001, 20003).map(serveOff),
+      "Then remove svc:mend-preview in the Tailscale admin console.",
+    ]);
+    expect(serverJson(configDir)).not.toHaveProperty("preview");
+    expect(fs.readdirSync(activeDirectory(configDir))).not.toContain("compose.preview.yaml");
+    expect(readEnv(activeFile(configDir, "server.env")).has("MEND_PREVIEW_TAILNET_HOSTNAME")).toBe(
+      false,
+    );
+  });
+
+  it("reads a tailnet generation without the edge's files, and refuses one that has them", async () => {
+    const { configDir, control } = await onTailnet("tailnet-generation");
+    await saidBy(control, ["--url", SERVED_ORIGIN, "--preview-tailnet"]);
+    const served = activeDirectory(configDir);
+    await saidBy(control, ["--yes"]);
+    expect(activeDirectory(configDir)).toBe(served);
+    fs.writeFileSync(path.join(served, "Caddyfile.preview"), "*.example.net {\n}\n");
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({
+      _tag: "error",
+      message:
+        "Server generation is corrupt: compose.preview.yaml, Caddyfile.preview and the certificate copies do not match the persisted server config.",
+    });
+  });
+
+  it.each([
+    [
+      "tailscale is not installed",
+      { status: null, serve: null },
+      "Observed: tailscale did not answer on this machine. Previews on the tailnet are served by tailscale serve here: install Tailscale and join this machine to your tailnet (tailscale up), then run mend server setup --preview-tailnet again.",
+    ],
+    [
+      "Tailscale is stopped",
+      { status: JSON.stringify({ BackendState: "Stopped", Self: {} }), serve: null },
+      "Observed: Tailscale on this machine is not running. Start it (tailscale up), then run mend server setup --preview-tailnet again.",
+    ],
+    [
+      "MagicDNS is off",
+      { status: JSON.stringify({ BackendState: "Running", Self: {} }), serve: null },
+      "Turn MagicDNS on in the Tailscale admin console (DNS), then run mend server setup --preview-tailnet again.",
+    ],
+  ])("refuses when %s, saying what to do, before anything changes", async (_, said, words) => {
+    const { configDir, tailscale, runtime } = await onTailnet("tailnet-absent");
+    tailscale.status = said.status;
+    const active = activeDirectory(configDir);
+    expect(
+      await serverCommand(["setup", "--url", SERVED_ORIGIN, "--preview-tailnet"], runtime),
+    ).toMatchObject({ _tag: "error", message: expect.stringContaining(words) });
+    expect(activeDirectory(configDir)).toBe(active);
+  });
+
+  it.each([
+    [
+      ["--preview-tailnet", "--preview-domain", "previews.example.net"],
+      "two ways to serve previews",
+    ],
+    [
+      ["--preview-tailnet-ports", "20001", "--preview-certificate", "/c", "--preview-key", "/k"],
+      "two ways to serve previews",
+    ],
+    [["--preview-tailnet", "--no-preview-tailnet"], "--no-preview-tailnet contradicts"],
+    [
+      ["--preview-tailnet-ports", "20001=p1"],
+      '--preview-tailnet-ports: "20001=p1" pairs a port with a preview',
+    ],
+    [["--preview-tailnet-ports", "20003,20001"], "port 20001 comes after 20003"],
+  ])("refuses %j", async (flags, words) => {
+    const control = makeRuntime({ tailscale: { status: TAILNET_STATUS, serve: null } });
+    expect(await serverCommand(["setup", ...flags], control.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(words),
+    });
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+  });
+
+  it.skipIf(!hasOpenssl)(
+    "refuses a preview domain on Mend's own site on a pinned server from before it, before anything changes",
+    async () => {
+      const configDir = temporaryDirectory("same-site-old-image");
+      const files = makeCertificate(path.dirname(configDir), ["*.previews.example.com"]);
+      expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+        _tag: "ok",
+      });
+      await saidBy(makeRuntime({ configDir }), ["--edge", "mend.example.com"]);
+      const domain = [
+        "--preview-domain",
+        "previews.example.com",
+        "--preview-certificate",
+        files.certificate,
+        "--preview-key",
+        files.key,
+      ];
+      const active = activeDirectory(configDir);
+      const old = makeRuntime({ configDir, previewsLabel: "tailnet-ports" });
+      expect(await serverCommand(["setup", ...domain], old.runtime)).toEqual({
+        _tag: "error",
+        message:
+          "Mend 0.23.0 predates a preview domain on Mend's own site (its image's dev.sealant.mend.previews label does not name same-site-domain), and would refuse MEND_PREVIEW_DOMAIN at start. Upgrade the server to a version that has it with mend server upgrade --version <version>, then turn it on; or run mend server setup --no-preview-domain.",
+      });
+      expect(activeDirectory(configDir)).toBe(active);
+      await saidBy(makeRuntime({ configDir }), domain);
+      expect(serverJson(configDir).preview).toMatchObject({ domain: "previews.example.com" });
+    },
+  );
+
+  it.skipIf(!hasOpenssl)(
+    "replaces a preview domain with the tailnet and says so; the tailnet needs no edge",
+    async () => {
+      const configDir = temporaryDirectory("tailnet-switch");
+      const files = makeCertificate(path.dirname(configDir), ["*.previews.example.net"]);
+      expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+        _tag: "ok",
+      });
+      const control = makeRuntime({
+        configDir,
+        tailscale: { status: TAILNET_STATUS, serve: null },
+      });
+      await saidBy(control, ["--edge", "mend.example.test"]);
+      await saidBy(control, [
+        "--preview-domain",
+        "previews.example.net",
+        "--preview-certificate",
+        files.certificate,
+        "--preview-key",
+        files.key,
+      ]);
+      const switched = await saidBy(control, ["--preview-tailnet"]);
+      expect(switched).toContain(
+        "Previews under previews.example.net move to the tailnet: the edge no longer serves them, and the certificate files stay where they are.",
+      );
+      expect(switched).toContain("This run changes:");
+      expect(serverJson(configDir).preview).toEqual({
+        mode: "tailnet",
+        hostname: `mend-preview.${TAILNET}`,
+        ports: range(20001, 20016),
+      });
+      for (const edgeFile of ["Caddyfile.preview", "preview-certificate.pem", "preview-key.pem"])
+        expect(fs.readdirSync(activeDirectory(configDir))).not.toContain(edgeFile);
+      // The edge was there for the domain; previews on the tailnet do not hold it.
+      await saidBy(control, ["--no-edge", "--url", SERVED_ORIGIN]);
+      expect(serverJson(configDir)).not.toHaveProperty("edgeHost");
+      expect(serverJson(configDir).preview.mode).toBe("tailnet");
+      expect(fs.readdirSync(activeDirectory(configDir))).toContain("compose.preview.yaml");
+    },
+  );
+
+  it.skipIf(!hasOpenssl)(
+    "reads a preview domain saved before the tailnet mode, with no mode, as the domain mode",
+    async () => {
+      const configDir = temporaryDirectory("preview-saved-before");
+      const files = makeCertificate(path.dirname(configDir), ["*.previews.example.net"]);
+      expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
+        _tag: "ok",
+      });
+      const control = makeRuntime({ configDir });
+      await saidBy(control, ["--edge", "mend.example.test"]);
+      await saidBy(control, [
+        "--preview-domain",
+        "previews.example.net",
+        "--preview-certificate",
+        files.certificate,
+        "--preview-key",
+        files.key,
+      ]);
+      const { mode: _mode, ...older } = serverJson(configDir).preview;
+      fs.writeFileSync(
+        activeFile(configDir, "server.json"),
+        `${JSON.stringify({ ...serverJson(configDir), preview: older }, null, 2)}\n`,
+      );
+      expect(older).toEqual({ domain: "previews.example.net", ...files });
+      const said = await saidBy(control, ["--yes"]);
+      expect(said).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^Observed: .* is for \*\.previews\.example\.net, valid until /),
+        ]),
+      );
+      expect(serverJson(configDir).preview).toEqual({
+        mode: "domain",
+        domain: "previews.example.net",
+        ...files,
+      });
+      // The domain mode still needs the edge's site and its copies of the pair.
+      fs.rmSync(activeFile(configDir, "Caddyfile.preview"));
+      expect(await serverCommand(["setup", "--yes"], control.runtime)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("Server generation is corrupt: compose.preview.yaml"),
+      });
+    },
+  );
+});
 
 describe("mend server setup, guided and unasked", () => {
   it("refuses a fresh install with no terminal and no flags, naming the flags, before anything", async () => {
