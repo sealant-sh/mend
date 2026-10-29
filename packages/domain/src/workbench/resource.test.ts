@@ -130,15 +130,15 @@ describe("a definition's shape", () => {
   });
 
   it("takes a literal env value or a project secret by name", () => {
-    const def = define({ env: { USER: "app", PASS: { secret: "rabbitmq-password" } } });
-    expect(def.env).toEqual({ USER: "app", PASS: { secret: "rabbitmq-password" } });
+    const def = define({ env: { USER: "app", PASS: { secret: "RABBITMQ_PASSWORD" } } });
+    expect(def.env).toEqual({ USER: "app", PASS: { secret: "RABBITMQ_PASSWORD" } });
   });
 });
 
 describe("rules across a definition's fields", () => {
   it("accepts the ADR's queue", () => {
     const def = define({
-      env: { RABBITMQ_DEFAULT_PASS: { secret: "rabbitmq-password" } },
+      env: { RABBITMQ_DEFAULT_PASS: { secret: "RABBITMQ_PASSWORD" } },
       exports: { URL: "amqp://app:{env.RABBITMQ_DEFAULT_PASS}@{host}:{port.amqp}/" },
     });
     expect(resourceDefinitionRefusals(def)).toEqual([]);
@@ -181,6 +181,9 @@ describe("rules across a definition's fields", () => {
     ["an export over a named port", { exports: { PORT_AMQP: "{port}" } }, "exports.PORT_AMQP"],
     ["an export of an unknown port", { exports: { URL: "{host}:{port.http}" } }, "exports.URL"],
     ["an export of an env the definition lacks", { exports: { URL: "{env.PASS}" } }, "exports.URL"],
+    ["a secret no project secret can be called", { env: { PASS: { secret: "rabbitmq-password" } } }, "env.PASS.secret"],
+    ["an empty secret name", { env: { PASS: { secret: "" } } }, "env.PASS.secret"],
+    ["a secret in Mend's own namespace", { env: { PASS: { secret: "MEND_TOKEN" } } }, "env.PASS.secret"],
     ["an export with a { never closed", { exports: { URL: "amqp://{host}:{port.amqp" } }, "exports.URL"],
     ["an export with a } never opened", { exports: { URL: "amqp://{host}}" } }, "exports.URL"],
     ["an export with nested braces", { exports: { URL: "amqp://{{host}}:{port.amqp}" } }, "exports.URL"],
@@ -401,7 +404,7 @@ describe("the status line", () => {
     scope: "worktree",
     image: "axllent/mailpit:v1.21",
     ports: [{ name: "smtp", port: 1025, protocol: "tcp" }],
-    env: { MP_UI_AUTH: { secret: "mailpit-auth" } },
+    env: { MP_UI_AUTH: { secret: "MAILPIT_UI_AUTH" } },
   });
 
   const ownCopy: ResourceStatusView = {
@@ -516,7 +519,7 @@ describe("the status line", () => {
     for (const [, view] of lines) {
       const line = resourceStatusLine(view, at);
       expect(line).not.toContain("hunter2-literal");
-      expect(line).not.toContain("mailpit-auth");
+      expect(line).not.toContain("MAILPIT_UI_AUTH");
       expect(line).not.toMatch(/healthy|safe|ready to/i);
     }
   });

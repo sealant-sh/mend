@@ -2,6 +2,8 @@ import { Effect, Schema } from "effect";
 
 import { ResourceDatabaseId, ResourceInstanceId } from "../ids.ts";
 import { observedAgo } from "./landing.ts";
+import { formatProjectEnvironmentIssue } from "./project-environment.ts";
+import { validateProjectSecretName } from "./project-secret.ts";
 import { ENV_NAME } from "./service-recipe.ts";
 
 /** One DNS label on the project network (ADR 0019, "Names"). */
@@ -256,6 +258,22 @@ export const imageReference = (image: string): { repository: string; tag: string
   return { repository: repository.join("/"), tag: tagged ? named.slice(tagAt + 1) : "" };
 };
 
+const envRefusals = (name: string, value: ResourceEnvValue): ReadonlyArray<ResourceRefusal> => {
+  if (!ENV_NAME.test(name)) {
+    return [{ key: `env.${name}`, message: "is not an environment variable name" }];
+  }
+  if (typeof value === "string") return [];
+  const issue = validateProjectSecretName(value.secret);
+  return issue === null
+    ? []
+    : [
+        {
+          key: `env.${name}.secret`,
+          message: `is not a project secret's name. ${formatProjectEnvironmentIssue(issue)}`,
+        },
+      ];
+};
+
 const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> => {
   if (def.preset === null) {
     return def.ready.kind === "preset"
@@ -428,11 +446,7 @@ export const resourceDefinitionRefusals = (
       key: "volumes",
       message: `mounts two volumes at ${path}`,
     })),
-    ...Object.keys(def.env).flatMap((name) =>
-      ENV_NAME.test(name)
-        ? []
-        : [{ key: `env.${name}`, message: "is not an environment variable name" }],
-    ),
+    ...Object.entries(def.env).flatMap(([name, value]) => envRefusals(name, value)),
     ...presetRefusals(def),
     ...Object.entries(def.exports).flatMap(([name, template]) =>
       exportRefusals(def, name, template),
