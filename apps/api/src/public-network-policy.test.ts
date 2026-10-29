@@ -193,10 +193,25 @@ const startServer = async () => {
       request.on("error", reject);
       request.end();
     });
+  /** Node's fetch writes its own Fetch Metadata; a raw request sends exactly these headers. */
+  const get = (path: string, headers: Record<string, string>) =>
+    new Promise<{ readonly status: number; readonly body: string }>((resolve, reject) => {
+      const request = httpRequest(`${baseUrl}${path}`, { agent: false, headers }, (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.on("end", () => resolve({ status: response.statusCode ?? 0, body }));
+      });
+      request.on("error", reject);
+      request.end();
+    });
   return {
     cookie,
     token,
     baseUrl,
+    get,
     upgrade,
     key: () => runtime.runPromise(Effect.flatMap(MendKeys, (keys) => keys.read(session.user.id))),
     bridge: () =>
@@ -290,6 +305,73 @@ describe("the API request-origin boundary over real HTTP and WebSocket handshake
     });
     expect(read.status).toBe(200);
     expect(await read.json()).toMatchObject({ exists: false });
+  });
+  it.each<[string, Record<string, string>]>([
+    ["a fetch", { "sec-fetch-site": "same-site", "sec-fetch-mode": "cors" }],
+    [
+      "a no-cors image",
+      { "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "image" },
+    ],
+    [
+      "an iframe",
+      { "sec-fetch-site": "same-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" },
+    ],
+    [
+      "a cross-site script",
+      { "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "script" },
+    ],
+  ])("refuses %s from a sibling site that carries Mend's cookie", async (_, fetchMetadata) => {
+    const response = await server.get("/api/keys/git", {
+      cookie: server.cookie,
+      ...fetchMetadata,
+    });
+    expect(response.status).toBe(403);
+    expect(response.body).toBe("Cross-site request refused");
+  });
+  it("keeps a sibling site's request that carries only cookies other than Mend's session cookie", async () => {
+    const planted = await server.get("/api/keys/git", {
+      cookie: "xbetter-auth.session_token=planted; other=1",
+      "sec-fetch-site": "same-site",
+      "sec-fetch-mode": "cors",
+    });
+    expect(planted.body).not.toBe("Cross-site request refused");
+  });
+  it("keeps a sibling site's top-level navigation, a request naming an allowed Origin, and one from Mend's own origin", async () => {
+    const navigation = await server.get("/api/keys/git", {
+      cookie: server.cookie,
+      "sec-fetch-site": "same-site",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-dest": "document",
+    });
+    expect(navigation.status).toBe(200);
+    const named = await server.get("/api/keys/git", {
+      cookie: server.cookie,
+      origin: network.appUrl,
+      "sec-fetch-site": "same-site",
+      "sec-fetch-mode": "cors",
+    });
+    expect(named.status).toBe(200);
+    const own = await server.get("/api/keys/git", {
+      cookie: server.cookie,
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-mode": "cors",
+    });
+    expect(own.status).toBe(200);
+  });
+  it("refuses a sibling site's WebSocket upgrade that carries Mend's cookie", async () => {
+    expect(
+      await server.upgrade("/api/keys/bridge/ws?host=browser", {
+        cookie: server.cookie,
+        origin: network.appUrl,
+        "sec-fetch-site": "same-site",
+      }),
+    ).toBe(101);
+    expect(
+      await server.upgrade("/api/keys/bridge/ws?host=browser", {
+        cookie: server.cookie,
+        "sec-fetch-site": "same-site",
+      }),
+    ).toBe(403);
   });
   it.each(["/api/keys/bridge/ws", "/api/tty", "/api/service-tunnel"])(
     "denies actual upgrade attempts to %s before any data-plane work",

@@ -193,6 +193,11 @@ Mend is told the truth about the edge through three settings:
 - Session cookies are `Secure`, `HttpOnly` and `SameSite=Lax` whenever `APP_URL` is `https:`, and
   named `__Host-` (`__Host-better-auth.session_token`): host-only on Mend's host with `Path=/`, so
   no other host on Mend's site can set or replace them. Over `http:` the name has no prefix.
+- A request that carries a cookie and that the browser marks as coming from another site or a
+  sibling host (`Sec-Fetch-Site: same-site` or `cross-site`) is refused with `403` unless it names
+  an allowed `Origin` or is a top-level navigation. A preview on Mend's own site, as on a tailnet's
+  `ts.net` default, then cannot act as the person signed in to Mend through an image, a script or a
+  `fetch`, and a link to Mend from anywhere still opens.
 
 ### The Caddy edge
 

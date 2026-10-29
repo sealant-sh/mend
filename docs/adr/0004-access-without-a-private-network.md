@@ -91,6 +91,9 @@ contract:
   address. Web keeps deleting inbound `Forwarded`, `X-Forwarded-Host` and `X-Forwarded-Proto`.
 - Cookies are `Secure`, `HttpOnly` and `SameSite=Lax` whenever `APP_URL` is `https:`, set explicitly
   and tested, not inferred. Over `https:` their names carry `__Host-` (ADR 0017 delivery step 8b).
+- A cookie-bearing request whose `Sec-Fetch-Site` is `same-site` or `cross-site` is refused unless
+  its `Origin` is allowed or it is a top-level document `GET` or `HEAD`, in the API and in web's
+  tRPC handler, which the API reaches without Fetch Metadata (ADR 0017 delivery step 8b).
 
 **Everything behind Mend stays private.** Core, its registry, Postgres, the bucket's admin surface,
 raw service ports and the Kubernetes API get no new exposure. Core stays a trusted control plane
