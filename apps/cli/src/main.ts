@@ -128,6 +128,10 @@ import {
   WAIT_TIMED_OUT,
   waitForCommand,
   waitForServiceStart,
+  followServicePlan,
+  planStepLine,
+  type ServicePlanOutcome,
+  type ServiceStartProgressSlice,
 } from "./run-scripts.ts";
 import {
   secretFileLines,
@@ -2502,9 +2506,29 @@ const startServiceWaited = async (
   wait: ServiceWait,
   spinner: string,
   start: (startId: string) => Promise<ServiceViewDto>,
+  plan: ((startId: string) => Promise<ServiceStartProgressSlice | null>) | null = null,
 ): Promise<void> => {
   const { name, port } = target;
   const startId = crypto.randomUUID();
+  let stepLine = spinner;
+  const said = new Map<string, string>();
+  const sayStep = (step: ServiceStartProgressSlice["steps"][number]) => {
+    const words = planStepLine(step);
+    if (words === null || said.get(step.name) === step.state) return;
+    said.set(step.name, step.state);
+    stepLine = `${words}…`;
+    if (chrome.isTTY !== true) say(dim(`  ${words}`));
+  };
+  const posting = new AbortController();
+  if (plan !== null) {
+    void (async () => {
+      while (!posting.signal.aborted) {
+        const progress = await plan(startId).catch(() => null);
+        for (const step of progress?.steps ?? []) sayStep(step);
+        await clock.sleep(2000, posting.signal);
+      }
+    })();
+  }
   const after = durationLine(wait.timeoutMs);
   const stillStarting = (processId: string | null, more = ""): Promise<never> =>
     failWith(
@@ -2517,7 +2541,7 @@ const startServiceWaited = async (
       `${name} · process ${processId.slice(0, 8)} ${status} · ${exitCodeText(exitCode)} · before :${port} answered · ${more}`,
     );
   const posted = await withSpinner(
-    spinner,
+    () => stepLine,
     beforeDeadline(
       start(startId).then(
         (view): StartAnswer => ({ ok: true, view }),
@@ -2526,7 +2550,7 @@ const startServiceWaited = async (
       clock,
       wait.deadline,
     ),
-  );
+  ).finally(() => posting.abort());
   if (!posted.done) return stillStarting(null, " · the start request has not returned");
   let attemptId: string | null = null;
   if (posted.value.ok) {
@@ -2569,7 +2593,30 @@ const startServiceWaited = async (
       }
       return failWith(1, errorText(error));
     }
-    say(dim(`  the start got no answer (${errorText(error)}) · looking for the attempt it began…`));
+    const underWay =
+      error instanceof MendRequestError && error.refused?.tag === "ServiceStartUnderWay";
+    say(
+      dim(
+        underWay
+          ? `  ${errorText(error)}`
+          : `  the start got no answer (${errorText(error)}) · looking for the attempt it began…`,
+      ),
+    );
+    if (plan !== null) {
+      const followed = await withSpinner(
+        () => stepLine,
+        followServicePlan({
+          read: () => plan(startId),
+          deadline: wait.deadline,
+          onStep: sayStep,
+          ...clock,
+        }).catch((): ServicePlanOutcome => ({ kind: "unknown" })),
+      );
+      if (followed.kind === "ended") return failWith(1, `${name} · ${followed.message}`);
+      if (followed.kind === "timeout") {
+        return stillStarting(null, " · its dependencies are still starting");
+      }
+    }
   }
   const started = clock.now();
   let line = `${name} · starting · waiting for :${port} to answer…`;
@@ -2660,7 +2707,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       }
       if (recipe.command === null) {
         return fail(
-          `--wait needs a command Mend starts: ${recipe.name} declares only a port, which Mend adopts with one probe · run it without --wait, or give the recipe a command`,
+          `--wait needs a command Mend starts: ${recipe.name} declares only a port, which Mend adopts once it answers within its ready timeout · run it without --wait, or give the recipe a command`,
         );
       }
       return startServiceWaited(
@@ -2670,6 +2717,21 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
         wait,
         `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
         startRecipe,
+        (startId) =>
+          request<ServiceStartProgressSlice>(
+            config,
+            "GET",
+            `/sessions/${session.id}/services/starts/${startId}`,
+          ).catch((error: unknown) => {
+            if (
+              error instanceof MendRequestError &&
+              error.kind === "http" &&
+              error.status === 404
+            ) {
+              return null;
+            }
+            throw error;
+          }),
       );
     }
     const service = await withSpinner(

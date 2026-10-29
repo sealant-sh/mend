@@ -24,6 +24,7 @@ import {
   ReviewSlice,
   ServiceBrowserScheme,
   ServiceDeclarations,
+  ServiceStartProgress,
   ServiceRecipe,
   ServiceView,
   Session,
@@ -467,6 +468,15 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       payload: Schema.Struct({ name: Schema.String, startId: Schema.optional(ServiceStartId) }),
       success: ServiceView,
       error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure, ServiceStartUnderWay],
+    }),
+  )
+  .add(
+    // Where a recipe start stands, by the id its client sent: Mend runs the start's plan to its
+    // end whatever its request does, and a client follows it here.
+    HttpApiEndpoint.get("serviceStart", "/sessions/:id/services/starts/:startId", {
+      params: { id: SessionId, startId: ServiceStartId },
+      success: ServiceStartProgress,
+      error: [NotFound],
     }),
   )
   .add(

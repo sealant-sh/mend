@@ -730,6 +730,92 @@ export const waitForServiceStart = async <V extends ServiceViewSlice>(
 };
 
 /**
+ * The slice of a recipe start's progress (`GET /sessions/:id/services/starts/:startId`) the CLI
+ * reads: each recipe of its plan, dependencies first and the Service asked for last.
+ */
+export interface ServiceStartProgressSlice {
+  readonly service: string;
+  readonly state: string;
+  readonly steps: ReadonlyArray<{
+    readonly name: string;
+    readonly port: number;
+    readonly state: string;
+    readonly reason: string | null;
+  }>;
+  readonly message: string | null;
+}
+
+/** One recipe of a plan as a person reads it. */
+export const planStepLine = (step: ServiceStartProgressSlice["steps"][number]): string | null => {
+  const because = step.reason === null ? "" : ` · ${step.reason}`;
+  switch (step.state) {
+    case "starting":
+      return `${step.name} · starting · waiting for :${step.port} to answer`;
+    case "ready":
+      return `${step.name} · answered on :${step.port}`;
+    case "reused":
+      return `${step.name} · already running · answered on :${step.port}`;
+    case "not-ready":
+      return `${step.name} · :${step.port} has not answered${because}`;
+    case "stopped":
+      return `${step.name} · stopped`;
+    case "failed":
+      return `${step.name} · did not start${because}`;
+    default:
+      return null;
+  }
+};
+
+export type ServicePlanOutcome =
+  | { readonly kind: "began" }
+  | { readonly kind: "ended"; readonly message: string }
+  /** The server has no start under this id: older than plans, or restarted since. */
+  | { readonly kind: "unknown" }
+  | { readonly kind: "timeout" };
+
+/**
+ * Poll a recipe start's plan until the Service asked for begins, the plan ends without it, or the
+ * deadline passes. `onStep` hears each recipe once per state it reaches.
+ */
+export const followServicePlan = async (
+  options: Clock & {
+    readonly read: () => Promise<ServiceStartProgressSlice | null>;
+    readonly deadline: number | null;
+    readonly onStep?: (step: ServiceStartProgressSlice["steps"][number]) => void;
+  },
+): Promise<ServicePlanOutcome> => {
+  const pollMs = options.pollMs ?? 2000;
+  const said = new Map<string, string>();
+  for (;;) {
+    const got = await readThrough(options.read, options, options.deadline);
+    if (!got.done) return { kind: "timeout" };
+    const progress = got.value;
+    if (progress === null) return { kind: "unknown" };
+    for (const step of progress.steps) {
+      if (said.get(step.name) === step.state) continue;
+      said.set(step.name, step.state);
+      options.onStep?.(step);
+    }
+    if (progress.state === "failed" || progress.state === "stopped") {
+      return { kind: "ended", message: progress.message ?? `${progress.service} was not started` };
+    }
+    const target = progress.steps.at(-1)?.state;
+    if (
+      progress.state === "started" ||
+      target === "starting" ||
+      target === "ready" ||
+      target === "not-ready"
+    ) {
+      return { kind: "began" };
+    }
+    const left =
+      options.deadline === null ? pollMs : Math.min(pollMs, options.deadline - options.now());
+    if (left <= 0) return { kind: "timeout" };
+    await options.sleep(left);
+  }
+};
+
+/**
  * One read, retried while it fails without an answer, within the deadline: the value, or
  * `{ done: false }` when the deadline passed first. A refusal is thrown at once.
  */
