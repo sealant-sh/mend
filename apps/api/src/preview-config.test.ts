@@ -203,6 +203,35 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
     expect(refusalOf({ port: "3117", domain: "previews.example.net" })).toBeNull();
   });
 
+  it("refuses the tailnet default while APP_URL is http, and says how to serve it on https", () => {
+    const refused = refusalOf(
+      { port: "3117", tailnetHostname: "mend-preview.tail1234.ts.net" },
+      makePublicNetwork(origin("http://box.tail1234.ts.net:3105"), []),
+    );
+    expect(refused?.variable).toBe("MEND_PREVIEW_TAILNET_HOSTNAME");
+    expect(refused?.message).toContain(
+      "previews on a tailnet need Mend's own APP_URL on https, and it is http://box.tail1234.ts.net:3105",
+    );
+    expect(refused?.message).toContain("tailscale serve --bg --https=443");
+  });
+
+  it("takes a domain over a leftover tailnet hostname with an http APP_URL, and starts", () => {
+    const http = makePublicNetwork(origin("http://mend.example.org:3105"), []);
+    const exit = setupOf(
+      {
+        port: "3117",
+        domain: "previews.example.net",
+        tailnetHostname: "mend-preview.tail1234.ts.net",
+        tailnetPorts: "20001",
+      },
+      http,
+    );
+    expect(Exit.isSuccess(exit) ? exit.value : exit).toMatchObject({
+      _tag: "On",
+      routing: { mode: "domain-https", domain: "previews.example.net", port: 443 },
+    });
+  });
+
   it("refuses a tailnet hostname that is Mend's own host", () => {
     const mend = makePublicNetwork(origin("https://box.tail1234.ts.net"), []);
     const refused = refusalOf(

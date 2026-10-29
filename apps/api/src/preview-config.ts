@@ -6,6 +6,7 @@ import {
   previewDomainConflict,
   type PublicNetwork,
   readPreviewPorts,
+  sessionCookiePrefix,
   writePreviewPorts,
 } from "@mend/network";
 import { Config, Duration, Effect, Layer, Option, Schema } from "effect";
@@ -113,6 +114,22 @@ const apartFromMend = (domain: string, mend: PublicNetwork) => {
   return Effect.void;
 };
 
+const onTailnetBesideMend = (hostname: string, mend: PublicNetwork) => {
+  if (sessionCookiePrefix(mend.appUrl) !== "__Host-") {
+    return refuse(
+      "tailnetHostname",
+      `previews on a tailnet need Mend's own APP_URL on https, and it is ${mend.appUrl}. Every name in one tailnet is one site, and only over https are Mend's cookies __Host-, which a page on a preview cannot set. Serve Mend's web port over Tailscale (tailscale serve --bg --https=443 http://127.0.0.1:<web port>) and set APP_URL to that https origin; mend server setup --preview-tailnet says how`,
+    );
+  }
+  const own = hostsOf(mend).find(({ host }) => host === hostname);
+  return own === undefined
+    ? Effect.void
+    : refuse(
+        "tailnetHostname",
+        `"${hostname}" is Mend's own host (${own.origin}); the gateway needs a name of its own, such as a Tailscale Service`,
+      );
+};
+
 const tailnetPortsOf = (raw: string) => {
   const read = readPreviewPorts(raw);
   return read._tag === "Ports" ? Effect.succeed(read.ports) : refuse("tailnetPorts", read.problem);
@@ -205,23 +222,22 @@ export const previewSetupOf = (
             hostname: yield* dnsNameOf("tailnetHostname", rawHostname),
             ports: yield* tailnetPortsOf(rawPorts ?? DEFAULT_TAILNET_PREVIEW_PORTS),
           };
-    if (tailnet !== null) {
-      const own = hostsOf(mend).find(({ host }) => host === tailnet.hostname);
-      if (own !== undefined) {
-        return yield* refuse(
-          "tailnetHostname",
-          `"${tailnet.hostname}" is Mend's own host (${own.origin}); the gateway needs a name of its own, such as a Tailscale Service`,
-        );
-      }
-    }
-    if (domain !== null) yield* apartFromMend(domain, mend);
-
     const routing: PreviewRouting =
       domain !== null
         ? { mode: "domain-https", domain, port: publicPort }
         : tailnet !== null
           ? { mode: "tailnet-https", hostname: tailnet.hostname, ports: tailnet.ports }
           : { mode: "loopback-http", port };
+    switch (routing.mode) {
+      case "domain-https":
+        yield* apartFromMend(routing.domain, mend);
+        break;
+      case "tailnet-https":
+        yield* onTailnetBesideMend(routing.hostname, mend);
+        break;
+      case "loopback-http":
+        break;
+    }
     return {
       _tag: "On",
       routing,
