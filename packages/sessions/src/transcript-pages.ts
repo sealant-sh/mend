@@ -10,6 +10,17 @@ export interface TranscriptPage {
 
 export type TranscriptEntry = CanonicalEvent | TranscriptPage;
 
+const pageCalledBy = (
+  event: CanonicalEvent,
+  pages: ReadonlyMap<string, PageRef>,
+): PageRef | undefined => {
+  if (event.kind !== "tool" || !isMendPageTool({ name: event.name, namespace: null })) {
+    return undefined;
+  }
+  const id = mendPageReferenceIn(event.output);
+  return id === null ? undefined : pages.get(id);
+};
+
 export const withPages = (
   events: ReadonlyArray<CanonicalEvent>,
   pages: ReadonlyArray<PageRef>,
@@ -17,11 +28,11 @@ export const withPages = (
   const unplaced = new Map<string, PageRef>(pages.map((page) => [page.id, page]));
   const entries: Array<TranscriptEntry> = [];
   for (const event of events) {
-    entries.push(event);
-    if (event.kind !== "tool" || !isMendPageTool({ name: event.name, namespace: null })) continue;
-    const id = mendPageReferenceIn(event.output);
-    const page = id === null ? undefined : unplaced.get(id);
-    if (page === undefined) continue;
+    const page = pageCalledBy(event, unplaced);
+    if (page === undefined) {
+      entries.push(event);
+      continue;
+    }
     unplaced.delete(page.id);
     entries.push({ kind: "page", page });
   }

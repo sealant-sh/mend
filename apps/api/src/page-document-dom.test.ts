@@ -35,6 +35,17 @@ describe("the page document, as a browser parses it", () => {
     expect(document.body.innerHTML).toBe("<p>x</p>");
   });
 
+  it("promises no zoom on an image, and leaves a page's own image cursor alone", () => {
+    const html = `<!doctype html><head><style>.own{cursor:pointer}</style></head><img alt="a"><img class="own" alt="b">`;
+    document.documentElement.innerHTML = parse(
+      pageDocument(html, "light"),
+    ).documentElement.innerHTML;
+    const [plain, own] = document.querySelectorAll("img");
+    if (plain === undefined || own === undefined) throw new Error("no images");
+    expect(getComputedStyle(plain).cursor).toBe("auto");
+    expect(getComputedStyle(own).cursor).toBe("pointer");
+  });
+
   it("adds no second viewport or charset to a page that names its own", () => {
     const html = `<!doctype html><head><meta charset='utf-8'><meta content="width=600" name='viewport'></head>`;
     const document = parse(pageDocument(html, "dark"));

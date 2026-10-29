@@ -122,7 +122,7 @@ const proxyRequest = (
         // The browser header policy, on the app's responses and the API's alike (MEND-11).
         ...securityHeaders({
           target: request.url ?? "/",
-          appUrl: publicNetwork.appUrl,
+          network: publicNetwork,
         }),
       };
       response.writeHead(upstreamResponse.statusCode ?? 502, headers);
@@ -135,7 +135,7 @@ const proxyRequest = (
         "content-type": "text/plain",
         ...securityHeaders({
           target: request.url ?? "/",
-          appUrl: publicNetwork.appUrl,
+          network: publicNetwork,
         }),
       });
     }

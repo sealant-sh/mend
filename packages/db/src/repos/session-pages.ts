@@ -8,7 +8,14 @@ import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
-import { agentItems, agentTurns, sessionPages, sessionProcesses } from "../schema/workbench.ts";
+import { notifyEvent } from "../events.ts";
+import {
+  agentItems,
+  agentSessions,
+  agentTurns,
+  sessionPages,
+  sessionProcesses,
+} from "../schema/workbench.ts";
 import {
   lockAgentConversation,
   nextAgentItemSeq,
@@ -123,6 +130,19 @@ export const SessionPagesRepoLive: Layer.Layer<
           Effect.map((rows) => rows[0] ?? null),
         );
 
+    const notifyPagePublished = Effect.fn("SessionPagesRepo.notifyPagePublished")(function* (
+      sessionId: SessionId,
+    ) {
+      const [session] = yield* db
+        .select({ projectId: agentSessions.projectId })
+        .from(agentSessions)
+        .where(eq(agentSessions.id, sessionId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (session === undefined) return;
+      yield* notifyEvent(pg, { type: "session", sessionId, projectId: session.projectId });
+    });
+
     const publish = Effect.fn("SessionPagesRepo.publish")(function* (page: NewSessionPage) {
       const sha256 = digestOf(page.html);
       const written = yield* db
@@ -151,6 +171,7 @@ export const SessionPagesRepoLive: Layer.Layer<
         );
       if (written !== null) {
         if (written.itemAdded) yield* notifyAgentConversation(db, pg, page.sessionId);
+        yield* notifyPagePublished(page.sessionId);
         return written.row;
       }
       const first = yield* byCall(page.sessionId, page.callKey);

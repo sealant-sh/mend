@@ -9,9 +9,8 @@ import { AuthMiddleware } from "./common.ts";
 export const PageAppearance = Schema.Literals(["light", "dark"]);
 export type PageAppearance = typeof PageAppearance.Type;
 
-// A t3code client reuses a frame URL only while more than five minutes of it are left (its
-// `HtmlRenderFrame`).
 export const PAGE_FRAME_TTL_MS = 30 * 60 * 1000;
+export const PAGE_FRAME_MIN_URL_LIFE_MS = 5 * 60 * 1000;
 
 export class PageFrame extends Schema.Class<PageFrame>("PageFrame")({
   url: Schema.String,

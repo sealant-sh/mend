@@ -55,7 +55,7 @@ export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[]
 export const trpcClient = createTRPCClient<AppRouter>({ links: trpcLinks(trpcUrl) });
 
 /** Hook-side access (components): `const trpc = useTRPC()` → queryOptions/mutationOptions. */
-export const { TRPCProvider, useTRPC } = createTRPCContext<AppRouter>();
+export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
 /** Router-context access (loaders): built once per router beside its QueryClient. */
 export const makeTrpcProxy = (queryClient: QueryClient) =>

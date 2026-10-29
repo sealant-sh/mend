@@ -200,7 +200,6 @@ describe("pages in a live and a settled transcript", () => {
           const transcript = yield* engine.transcript(session.id);
           expect(transcript.events.map((event) => event.kind)).toEqual([
             "user",
-            "tool",
             "page",
             "tool",
             "assistant",
