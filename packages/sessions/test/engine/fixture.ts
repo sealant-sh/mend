@@ -504,6 +504,10 @@ export const sealantLaunchLayer = (
      * A command inside the executor as an effect, asked before `exec`: one that never answers, or
      * fails the way the platform does. Undefined falls through.
      */
+    /** A workspace lookup by id as an effect, asked first: undefined falls through. */
+    readonly getWorkspaceEffect?: (
+      id: string,
+    ) => Effect.Effect<Workspace, SealantPlatformError> | undefined;
     readonly execEffect?: (
       argv: ReadonlyArray<string>,
       options?: PersonExecOptions,
@@ -676,8 +680,9 @@ export const sealantLaunchLayer = (
       }),
     // A rejected lookup is the platform positively saying the workspace is gone (404): what a
     // dead executor reads as. A Core that does not answer at all is `unreachablePlatform` below.
-    getWorkspace: () =>
-      rejectWorkspaceLookup()
+    getWorkspace: (id) =>
+      captureOps?.getWorkspaceEffect?.(id) ??
+      (rejectWorkspaceLookup()
         ? Effect.fail(
             new SealantPlatformError({
               code: "WorkspaceNotFoundError",
@@ -695,7 +700,7 @@ export const sealantLaunchLayer = (
                 cause: null,
               }),
             )
-          : Effect.succeed(workspace),
+          : Effect.succeed(workspace)),
     getRun: (runId) =>
       captureOps?.timeline !== undefined
         ? Effect.succeed({ ...fakeExecRun, id: runId })

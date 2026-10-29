@@ -197,7 +197,7 @@ describe.skipIf(postgres.skip)("setup_runs: the claim and stamp of a site's setu
     });
   });
 
-  it("takes a lapsed claim over without a stop once a whole lease more has passed", async () => {
+  it("never takes a lapsed claim over without its stop, however long ago it lapsed", async () => {
     const site = request({ leaseMs: 100 });
     const result = await run(
       Effect.gen(function* () {
@@ -207,7 +207,7 @@ describe.skipIf(postgres.skip)("setup_runs: the claim and stamp of a site's setu
         return (yield* repo.claim({ ...site, workspaceId: "ws-2" }))._tag;
       }),
     );
-    expect(result).toBe("Claimed");
+    expect(result).toBe("Stale");
   });
 
   it("refuses a lapsed claim its stamp and its renewal even when nobody has claimed since", async () => {

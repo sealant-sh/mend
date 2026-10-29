@@ -107,7 +107,9 @@ const INPUTS_MARK = "--mend-setup-inputs--";
 /**
  * Setup's inputs read in a workspace, as the person setup runs as: the platform, then a line per
  * input with its digest. Only a regular file that resolves inside the repository is read, and only
- * its digest leaves the workspace, never its bytes.
+ * its digest leaves the workspace, never its bytes. The path is checked once to word a refusal,
+ * then the file is opened and the open file itself is checked through `/proc/self/fd`, because an
+ * agent can swap the path for a link out between the first check and the read.
  */
 export const setupInputsArgv = (
   repository: string,
@@ -127,7 +129,12 @@ export const setupInputsArgv = (
     '  case "$real" in "$root"/*) ;; *) echo "refused resolves outside the repository"; continue ;; esac',
     '  if [ -d "$real" ]; then echo "refused is a directory; name a file"; continue; fi',
     '  if [ ! -f "$real" ]; then echo "refused is not a regular file"; continue; fi',
-    '  sum=$(sha256sum < "$real") || { echo "refused could not be read"; continue; }',
+    '  exec 3< "./$input" 2>/dev/null || { echo "refused could not be read"; continue; }',
+    '  opened=$(readlink /proc/self/fd/3 2>/dev/null) || { exec 3<&-; echo "refused could not be read"; continue; }',
+    '  case "$opened" in "$root"/*) ;; *) exec 3<&-; echo "refused resolves outside the repository"; continue ;; esac',
+    '  if [ ! -f /proc/self/fd/3 ]; then exec 3<&-; echo "refused is not a regular file"; continue; fi',
+    '  sum=$(sha256sum <&3) || { exec 3<&-; echo "refused could not be read"; continue; }',
+    "  exec 3<&-",
     '  echo "sha256 ${sum%% *}"',
     "done",
   ].join("\n"),

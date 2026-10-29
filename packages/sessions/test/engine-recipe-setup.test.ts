@@ -16,6 +16,7 @@ import {
   withEngine,
   withPreparedEngineEffect,
   type World,
+  type WorldSetupRun,
 } from "./engine/fixture.ts";
 
 const ownerStart = { kind: "person", userId: "user-fixture" } as const;
@@ -534,6 +535,36 @@ const blockingSetup = (clock: Effect.Success<ReturnType<typeof makeEngineClock>>
   return { steps, stops, execEffect, finishStep };
 };
 
+/** A running claim whose lease ran out ten seconds ago, in workspace `workspaceId`. */
+const lapsedRow = (
+  world: { readonly clock: { now: () => Date } },
+  session: { readonly worktreeId: string },
+  workspaceId: string,
+): WorldSetupRun => ({
+  siteKey: `host:${session.worktreeId}`,
+  fingerprint: "an earlier fingerprint",
+  worktreeId: session.worktreeId,
+  state: "running",
+  claimId: "lapsed-claim",
+  workspaceId,
+  runsAs: "user-fixture",
+  leaseUntil: world.clock.now().getTime() - 10_000,
+  finishedAt: null,
+  exitCode: null,
+  outputTail: null,
+});
+
+/** The platform's answer to a workspace lookup: 404 is gone, anything else is no answer. */
+const workspaceLookup = (status: 404 | 503) =>
+  Effect.fail(
+    new SealantPlatformError({
+      code: status === 404 ? "WorkspaceNotFoundError" : "control_plane_unavailable",
+      status,
+      message: status === 404 ? "workspace not found" : "the control plane did not answer",
+      cause: null,
+    }),
+  );
+
 const layerWith = (
   spawned: ReadonlyArray<string>[],
   ops: Parameters<typeof sealantLaunchLayer>[11],
@@ -698,6 +729,104 @@ describe("one run of [setup] per directory", () => {
         },
       );
     }),
+  );
+
+  it.effect("takes a lapsed claim over once its workspace is gone, with nothing left to stop", () =>
+    Effect.gen(function* () {
+      const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+      const spawned = clock.watched<ReadonlyArray<string>>();
+      const order: string[] = [];
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            write(tmp, session.worktree, "mend.toml", ONE_STEP);
+            world.setupRuns.push(lapsedRow(world, session, "gone-workspace"));
+
+            yield* engine.runServiceRecipe(session.id, "web", ownerStart);
+
+            expect(order).toEqual(["pnpm install --frozen-lockfile"]);
+            expect(world.setupRuns).toMatchObject([{ state: "done" }]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          forwardAdapterLayer: portsAnswer,
+          sealantLayer: layerWith(spawned, {
+            getWorkspaceEffect: (id) =>
+              id === "gone-workspace" ? workspaceLookup(404) : undefined,
+            execEffect: (argv) => {
+              if (setupStopRunOf(argv) !== null) return Effect.succeed(answered(1));
+              const step = setupStepOf(argv);
+              if (step === null) return undefined;
+              return Effect.sync(() => order.push(step)).pipe(Effect.as(answered(0)));
+            },
+          }),
+        },
+      );
+    }),
+  );
+
+  it.effect(
+    "waits on a lapsed claim in a workspace it cannot reach, never running setup beside it, until a Stop",
+    () =>
+      Effect.gen(function* () {
+        const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+        const spawned = clock.watched<ReadonlyArray<string>>();
+        const lookups = clock.watched<string>();
+        const order: string[] = [];
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              write(tmp, session.worktree, "mend.toml", ONE_STEP);
+              world.setupRuns.push(lapsedRow(world, session, "unreachable-workspace"));
+              const starting = yield* engine
+                .runServiceRecipe(session.id, "web", ownerStart)
+                .pipe(Effect.flip, Effect.forkChild);
+
+              yield* clock.untilChanged(() => lookups.length > 0, "looked the workspace up");
+              // Far past its lease and one more: each second it looks again, and never runs beside it.
+              for (let second = 0; second < 150; second += 1) {
+                const looked = lookups.length;
+                yield* TestClock.adjust("1 second");
+                yield* clock.untilChanged(() => lookups.length > looked, "looked again");
+              }
+              expect(order).toEqual([]);
+              expect(world.setupRuns).toMatchObject([
+                { claimId: "lapsed-claim", state: "running" },
+              ]);
+
+              // The request's hold ran out long ago; the plan goes on waiting until the Stop.
+              const held = yield* Fiber.join(starting);
+              expect(held.message).toMatch(/^web waits on setup, which has not finished yet/u);
+              expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+              expect(order).toEqual([]);
+              expect(world.setupRuns).toMatchObject([{ claimId: "lapsed-claim" }]);
+            }),
+          {
+            prepareWorld: clock.prepareWorld,
+            forwardAdapterLayer: portsAnswer,
+            sealantLayer: layerWith(spawned, {
+              getWorkspaceEffect: (id) =>
+                id === "unreachable-workspace"
+                  ? Effect.suspend(() => {
+                      lookups.push(id);
+                      return workspaceLookup(503);
+                    })
+                  : undefined,
+              execEffect: (argv) => {
+                const step = setupStepOf(argv);
+                if (step === null) return undefined;
+                return Effect.sync(() => order.push(step)).pipe(Effect.as(answered(0)));
+              },
+            }),
+          },
+        );
+      }),
   );
 
   it.effect("a Stop as the last step ends never stamps it done, whatever it exits with", () =>

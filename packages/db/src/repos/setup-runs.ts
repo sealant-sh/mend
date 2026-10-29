@@ -37,8 +37,9 @@ export type SetupClaim =
   /** A run whose lease holds is under way here. */
   | { readonly _tag: "Busy" }
   /**
-   * A run whose lease lapsed less than one more lease ago, which nobody has confirmed stopped:
-   * stop its processes, then claim again naming it in `fenced`. Past that, it is taken over.
+   * A run whose lease lapsed, which nobody has confirmed stopped: stop its processes, or learn its
+   * workspace is gone, then claim again naming it in `fenced`. It is never taken over without
+   * that, however long ago it lapsed: a lease cannot stop a command still running.
    */
   | { readonly _tag: "Stale"; readonly claimId: string; readonly workspaceId: string };
 
@@ -65,7 +66,7 @@ export const decideSetupClaim = (
   const running = rows.find((row) => row.state === "running");
   if (running !== undefined) {
     if (running.lapsedMs < 0) return { _tag: "Busy" };
-    if (running.claimId !== request.fenced && running.lapsedMs < request.leaseMs) {
+    if (running.claimId !== request.fenced) {
       return { _tag: "Stale", claimId: running.claimId, workspaceId: running.workspaceId };
     }
   }

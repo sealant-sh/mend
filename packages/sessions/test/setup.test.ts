@@ -122,9 +122,13 @@ describe("readWorktreeFile", () => {
   });
 });
 
-const inWorkspace = (repository: string, inputs: ReadonlyArray<string>) => {
+const inWorkspace = (
+  repository: string,
+  inputs: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv = process.env,
+) => {
   const [command = "sh", ...args] = setupInputsArgv(repository, inputs);
-  const ran = spawnSync(command, args);
+  const ran = spawnSync(command, args, { env });
   // The platform hands an exec's output back decoded as UTF-8.
   return parseSetupInputs(ran.stdout.toString("utf8"), inputs);
 };
@@ -168,6 +172,40 @@ describe("setup's inputs read in a workspace, in a real shell", () => {
       reason: "is a directory; name a file",
     });
     expect(inWorkspace(repository, ["pipe"])).toMatchObject({ reason: "is not a regular file" });
+  });
+});
+
+describe("setup's inputs read in a workspace, while an agent swaps them", () => {
+  it("refuses an input swapped for a link out of the repository between its check and its read", () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mend-setup-private-"));
+    const repository = fs.mkdtempSync(path.join(os.tmpdir(), "mend-setup-inputs-"));
+    const shims = fs.mkdtempSync(path.join(os.tmpdir(), "mend-setup-shims-"));
+    fs.writeFileSync(path.join(outside, "credentials.json"), "a person's token");
+    fs.writeFileSync(path.join(repository, "lock"), "lockfile");
+    // `realpath` answers for the file that is there, then the file becomes a link out: the window
+    // an agent rewriting the worktree races for.
+    fs.writeFileSync(
+      path.join(shims, "realpath"),
+      [
+        "#!/bin/sh",
+        "here=$(pwd -P)",
+        `rm -f "$here/lock" && ln -s ${JSON.stringify(path.join(outside, "credentials.json"))} "$here/lock"`,
+        'echo "$here/lock"',
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    const read = inWorkspace(repository, ["lock"], {
+      ...process.env,
+      PATH: `${shims}:${process.env["PATH"] ?? ""}`,
+    });
+
+    expect(read).toEqual({
+      _tag: "Refused",
+      path: "lock",
+      reason: "resolves outside the repository",
+    });
+    for (const directory of [outside, repository, shims]) fs.rmSync(directory, { recursive: true });
   });
 });
 

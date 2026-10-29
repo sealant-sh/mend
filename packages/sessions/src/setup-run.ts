@@ -72,6 +72,12 @@ const report = (
 const withOutput = (words: string, tail: string | null) =>
   tail === null || tail === "" ? words : `${words}\n--- output ---\n${tail}`;
 
+/** Where a lapsed claim's processes are, as far as the platform answers. */
+type LapsedWorkspace =
+  | { readonly _tag: "Reached"; readonly workspace: Workspace }
+  | { readonly _tag: "Gone" }
+  | { readonly _tag: "Unreached" };
+
 const pause = (plan: SetupPlan) =>
   Effect.raceFirst(
     Effect.sleep(Duration.millis(SETUP_BUSY_POLL_MS)),
@@ -183,15 +189,34 @@ export const makeSetupRunner = Effect.gen(function* () {
       }
       if (claim._tag !== "Stale") return claim;
       yield* report(plan, "waiting", null, "an earlier setup here stopped answering · ending it");
-      const where =
+      const where: LapsedWorkspace =
         claim.workspaceId === workspaceId
-          ? run.workspace
-          : yield* sealant
-              .getWorkspace(claim.workspaceId)
-              .pipe(Effect.orElseSucceed((): Workspace | null => null));
-      // Its processes are known stopped, or it is taken over once a whole lease more has passed.
-      if (where !== null && (yield* stopRun(where, claim.claimId))) fenced = claim.claimId;
-      else yield* pause(plan);
+          ? { _tag: "Reached", workspace: run.workspace }
+          : yield* sealant.getWorkspace(claim.workspaceId).pipe(
+              Effect.map((workspace): LapsedWorkspace => ({ _tag: "Reached", workspace })),
+              Effect.catch((error) =>
+                Effect.succeed<LapsedWorkspace>(
+                  error.status === 404 || error.code === "WorkspaceNotFoundError"
+                    ? { _tag: "Gone" }
+                    : { _tag: "Unreached" },
+                ),
+              ),
+            );
+      // Taken over only once its processes are known stopped, or gone with their workspace.
+      if (
+        where._tag === "Gone" ||
+        (where._tag === "Reached" && (yield* stopRun(where.workspace, claim.claimId)))
+      ) {
+        fenced = claim.claimId;
+        continue;
+      }
+      yield* report(
+        plan,
+        "waiting",
+        null,
+        "an earlier setup here can't be reached to stop it · waiting until it ends or its workspace does",
+      );
+      yield* pause(plan);
     }
   });
 

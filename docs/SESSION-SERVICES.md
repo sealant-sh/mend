@@ -274,11 +274,11 @@ it, which every session in that worktree shares, or one executor's copy in captu
   inputs again and skips setup if that run left a done stamp for what it reads now.
 - A run renews its one-minute lease every 20 seconds. One whose renewal fails, or does not answer
   before its lease would lapse, stops its own processes and fails the start without a stamp. A
-  lapsed run is not run over: the next start stops its processes first, by a marker in their
-  environment, and only then runs setup. If its workspace cannot be reached to do that, the next
-  start waits one more minute after the lease lapsed and then runs setup. That is the one case two
-  runs can overlap in one place: an API process that stopped renewing and could not stop its own
-  run, in a workspace Mend cannot reach, that is still writing two minutes after its last renewal.
+  lapsed run is never run over: the next start stops its processes first, by a marker in their
+  environment, and only then runs setup. If the platform says the run's workspace is gone, its
+  processes went with it, and setup runs. If the workspace cannot be reached at all, the next start
+  waits, saying so, until the run can be stopped or its workspace ends. A Stop ends that wait. Two
+  runs never run setup in one place at once.
 - Only a run whose every step exited 0, under a claim it still held, with no Stop, is stamped done.
   A done stamp skips setup. Only the last run in a place is kept, so returning to an earlier
   lockfile runs setup again. `mend service run <name> --setup` runs it even over a done stamp, for a
