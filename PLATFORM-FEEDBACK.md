@@ -109,6 +109,127 @@ top.
   in output, so a resource's rotated password reaches one process and no Mend or platform record
   keeps it.
 
+## 2026-10-29 · 0.40.0-next.763 · Client-defined package layers, and an image capability report
+
+ADR 0020 (proposed) gives a session a screen: Xvnc, a window manager, Chromium and fonts in the
+workspace. Mend needs to add them to whatever image a project already uses, and to know before
+launch whether an image has them. The words "screen" and "display" are Mend's. This entry asks for
+nothing named after them.
+
+- **Today:** a create takes `os` (`fedora`, `arch`, `nix` or `ubuntu`) or `baseImage`, never both,
+  plus `packages` (`dist/types.d.ts:150`, `:798-811`). A managed family resolves portable package
+  names. A custom base passes them "verbatim" to its own `apt`, `apk`, `dnf` or `pacman` (SDK
+  `README.md:430-433`). `workspaces.inspectImage` reports `imageKey`, `planHash`, the published
+  image's `reference`, `digestReference` and `digest`, and `personLayout` (`:1422-1440`). No
+  capability other than the per-person layout is reported, and nothing names a set of packages as a
+  unit.
+- **Mend today:** ADR 0020 proposes a **Screen** toggle that adds a package set to the project's
+  image through `packages`, with one name list per family. Mend's own setting is the only record
+  that an image has the set. Whether every family resolves the names is untested, and nix is
+  unknown. The prototype ran Chromium with `--no-sandbox`
+  (`docs/experiments/computer-use.md:292-293`), and whether a person's process may create the user
+  namespaces Chromium's sandbox needs is untested on every executor.
+- **Needed:** a named, versioned package layer that the client defines, with its package names per
+  family and for custom bases (for example
+  `layers: [{ name: "mend-display", version: 1, packages: { ubuntu: [...], fedora: [...] } }]`),
+  resolved by the platform and pinned by digest. A `capabilities` list on the inspected image that
+  names the layers it holds, which Mend reads before it offers **Start screen**. A documented
+  answer, per executor, on whether a process run as a person (a uid in 40001-49999) may create user
+  namespaces.
+
+## 2026-10-29 · 0.40.0-next.763 · Images keyed by the base's digest, and the custom-base contract
+
+These are the computer-use prototype's Core findings of 2026-10-07, observed on SDK 0.39.0-next.696
+and not reproduced since. They were recorded only on branch `feat/desktop-pilot` and never reached
+this file (`docs/experiments/computer-use.md:243-251`, `:262-263`). Each "Today" line reads the
+types and README of the SDK named above, which neither confirm nor rule out the finding. Reproduce
+at least the mutable-tag case before filing.
+
+- **A rebuilt mutable tag is not picked up.** After the custom base `mend-desktop:pilot-v2` was
+  rebuilt under the same tag, an already compiled workspace image kept the old base, and changing
+  the setup commands did not invalidate it either (`computer-use.md:245-246`). **Today:**
+  `baseImage` takes "this arbitrary OCI image reference" (`dist/types.d.ts:798-808`), and
+  `inspectImage` reports a `planHash`, "one per distinct build input" (`:1435-1436`). Neither says
+  whether a tag is resolved to a digest before the plan is hashed. **Mend today:** a new tag per
+  revision. **Needed:** resolve the base reference to a digest at plan time and include it in the
+  plan hash, and document when a tag is re-resolved.
+- **The build user.** A base that left `USER node` active failed the harness install with npm
+  `EACCES`, and returning to root fixed it. **Today:** the SDK README's base-image contract names a
+  POSIX shell, Node.js with npm, and git (`README.md:423-428`), and says nothing of the build user.
+  **Needed:** the contract names the user the build runs as, or the build switches to root itself.
+- **`curl` and a misleading error.** The next build lacked `curl`. The pi install failed with
+  `curl: not found` while the workspace reported `custom-base-missing-shell`, as if `/bin/sh` were
+  missing. **Today:** the contract does not list `curl`. **Needed:** the contract lists every tool
+  each harness install uses, and the error names the failing build step instead of treating any
+  `/bin/sh -c` failure as a missing shell.
+- **The control socket path.** A control directory under Mend's application data made
+  `sealant-<uuid>/control.sock` longer than Linux's Unix socket path limit, and flush failed with
+  `connect EINVAL` (`computer-use.md:247-248`). **Today:** no public type or README line states the
+  maximum length. **Needed:** validate the whole generated socket path before creating the
+  workspace, and report the maximum control-directory length.
+
+## 2026-10-29 · 0.40.0-next.763 · What a session-bound forward accepts, and a leader's exit
+
+ADR 0020 (proposed) dials a screen's X server with `{ flow: "bounded", session }`, so that the bytes
+reach that screen and no other listener on the port. The screen's session also starts a window
+manager and a browser that must not outlive the X server.
+
+- **Today:** a bound forward reaches the port "only when a process of that session holds it", and
+  "resets with `owner-exited` once the session's leader exits" (`dist/types.d.ts:1484-1495`). The
+  refusals `peer-mismatch`, `binding-unverifiable` and `binding-unsupported` exist
+  (`@sealant/api-contracts`, `dist/core-api/workspace-forward.d.ts:22`). Neither says whether a
+  listener opened by a child or grandchild of the session's leader counts as "a process of that
+  session". No public type or README line says what happens to a session's other processes when its
+  leader exits.
+- **Mend today:** the screen's script forks one child and then `exec`s Xvnc, so the leader itself
+  holds the port. That works only for a single listener started last. Live previews (ADR 0017) bind
+  a Service attempt's session the same way (`apps/api/src/preview-pools.ts:170`), where a dev server
+  often listens from a child of `sh -c`. The child kills its own process group when the display
+  goes, because nothing documented does it.
+- **Needed:** the documented rule, and a test with a leader that forks a listener. If descendants do
+  not count, an option that includes them (`{ session, descendants: true }`), with the same reset
+  when the leader exits. A documented answer on whether a leader's exit ends its session's other
+  processes, and an option that does if it does not.
+
+## 2026-10-29 · 0.40.0-next.763 · A keyed start for a supporting process, with lookup
+
+ADR 0020 (proposed) starts one screen process per session on a display reserved for that session. If
+the answer to `sessions.open` is lost (an API restart, a dropped socket), Mend cannot tell whether
+the process started, and a second X server on the same display would fail.
+
+- **Today:** `sessions.open(argv, options)` takes no idempotency key (`dist/types.d.ts:1997`,
+  `SessionOptions` at `:1562-1597`). `SessionOptions.metadata` is documented as "stored verbatim and
+  echoed on reads" (`:1572-1573`), but `InteractiveSession` and `InteractiveSessionStatus` carry no
+  metadata field (`:1930-1964`, `:1913-1922`), so no read echoes it, and `sessions.list()` (`:2001`)
+  cannot find a session by a key Mend chose. Workspace creation already has the shape Mend needs:
+  `idempotencyKey`, `createState(key)` and `cancelCreate(key)` (`:920-950`).
+- **Mend today:** the engine marks a process exited when its open fails
+  (`packages/sessions/src/engine.ts:23023`), but a lost answer is neither a failure nor a success.
+  ADR 0020 proposes that Mend reap by display through `sealant.exec` as the person, killing the
+  process named in `/tmp/.X<n>-lock`, and open again on the same display. That kills a screen that
+  did start, and it works only because an X server leaves a lock file. A Service attempt has no such
+  handle.
+- **Needed:** an `idempotencyKey` on `sessions.open`, a `sessions.findByKey(key)` that answers
+  absent, starting, running (with the session and run ids) or ended, and a cancel that makes sure a
+  delayed open with the key never starts. A repeated key with a different argv, user or cwd is
+  refused. Separately, either echo `metadata` on reads, as its comment says, or correct the comment.
+
+## 2026-10-29 · 0.40.0-next.763 · A memory limit per PTY session
+
+A screen (ADR 0020, proposed) runs Xvnc, a window manager and Chromium as one PTY session in the
+same workspace as the agent. A heavy page can take enough memory for the kernel to kill the agent
+instead of the browser.
+
+- **Today:** `SessionOptions` takes `cwd`, `env`, `cols`, `rows`, `term`, `mode`, `metadata` and
+  `user`, and nothing that bounds a session's resources (`dist/types.d.ts:1562-1597`). Neither
+  `CreateOptions` nor any other public type takes a memory or CPU limit. A session that dies reports
+  `exitCode` and `exitSignal` only (`:1913-1922`), so an OOM kill reads as signal 9 with no reason.
+- **Mend today:** nothing bounds the screen. ADR 0020 proposes measuring a live screen's memory and
+  stating it beside the Environment's **Screen** toggle.
+- **Needed:** an optional `limits: { memoryBytes }` on `sessions.open`, enforced by placing the
+  session's process tree in its own cgroup, and an exit reason `oom` when the limit kills it. The
+  workspace's other sessions keep running.
+
 ## 2026-10-26 · 0.40.0-next.763 · A per-project, per-person home a capture workspace can mount
 
 A Mend workspace window gets a fresh VS Code server home (`~/.vscode-server`) in every session, so
