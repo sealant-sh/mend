@@ -524,6 +524,14 @@ describe("secret env names", () => {
     expect([...secretEnvNames([bind(queue)])]).toEqual(["MEND_RESOURCE_QUEUE_URL"]);
   });
 
+  it("marks an export it cannot parse, which approval refuses anyway", () => {
+    const queue = define({
+      env: { PASS: { secret: "RABBITMQ_PASSWORD" } },
+      exports: { URL: "amqp://{env.PASS" },
+    });
+    expect([...secretEnvNames([bind(queue)])]).toEqual(["MEND_RESOURCE_QUEUE_URL"]);
+  });
+
   it("marks a preset's URL and password, and the conventional names that carry them", () => {
     expect([...secretEnvNames([bind(postgres())])]).toEqual([
       "MEND_RESOURCE_DB_URL",

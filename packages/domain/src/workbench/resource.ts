@@ -238,7 +238,7 @@ const exportRefusals = (
     }));
 };
 
-/** Whether an env value carries a credential, which keeps it out of `launch_env`, logs and lines. */
+/** Whether an env value carries a credential, which keeps it out of `launch_env`, logs and status lines. */
 export type ResourceEnvKind = "secret" | "plain";
 
 /**
@@ -370,11 +370,14 @@ export const onlyOfItsEngine = (
 ): boolean =>
   def.preset !== null && bound.filter((other) => other.preset === def.preset).length === 1;
 
-/** An export built from a secret env value is itself a secret (ADR 0019, "Env"). */
+/**
+ * An export built from a secret env value is itself a secret (ADR 0019, "Env"). One that does not
+ * parse is taken as secret, since what it names is unknown.
+ */
 const exportKind = (def: ResourceDefinitionInput, template: string): ResourceEnvKind => {
   const parsed = parseTemplate(template);
-  const placeholders = parsed.ok ? parsed.placeholders : [];
-  return placeholders.some((placeholder) => {
+  if (!parsed.ok) return "secret";
+  return parsed.placeholders.some((placeholder) => {
     const value = placeholder.startsWith("env.")
       ? def.env[placeholder.slice("env.".length)]
       : undefined;
