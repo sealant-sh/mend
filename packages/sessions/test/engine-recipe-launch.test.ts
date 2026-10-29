@@ -322,7 +322,7 @@ describe("a recipe's launch", () => {
 
           const refused = (yield* helperPrints("api")).split("\n");
           expect(refused.slice(0, 2)).toEqual([
-            "mend: mend.toml refuses api: api · cwd · is absolute; name a directory inside the repository",
+            "mend: mend.toml refuses api: api · cwd · is absolute; name a path inside the repository",
             "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings):",
           ]);
         }),

@@ -19,6 +19,7 @@ import {
   type ServiceAddress,
   type ServiceHostPolicy,
   ServiceRecipe,
+  SetupDeclaration,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
@@ -42,6 +43,10 @@ import { readResourceProposals } from "./resource-proposals.ts";
  * env = { NODE_ENV = "development" }
  * ready = { http = "/", timeout = "120s" }
  * depends = ["db"]
+ *
+ * [setup]
+ * run = ["pnpm install --frozen-lockfile"]
+ * inputs = ["pnpm-lock.yaml"]
  *
  * [service.db]
  * # no command: an already-listening port to adopt
@@ -68,6 +73,7 @@ export interface MendTomlFile {
   readonly ignored: ReadonlyArray<IgnoredDeclaration>;
   /** `[preview].service` as written; checked against the merged recipes. */
   readonly preview: string | null;
+  readonly setup: SetupDeclaration | null;
 }
 
 export const EMPTY_MEND_TOML: MendTomlFile = {
@@ -76,6 +82,7 @@ export const EMPTY_MEND_TOML: MendTomlFile = {
   refused: [],
   ignored: [],
   preview: null,
+  setup: null,
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -234,6 +241,9 @@ const READERS: { readonly [K in keyof RecipeFields]: KeyReader<K> } = {
       } else if (isRecord(entry) && typeof entry["shared"] === "string") {
         refused = true;
         context.refuse("depends", sharedServiceRefusal(entry["shared"]));
+      } else if (isRecord(entry) && typeof entry["resource"] === "string") {
+        refused = true;
+        context.refuse("depends", sharedServiceRefusal(entry["resource"]));
       } else if (typeof entry === "string" && RECIPE_NAME.test(entry)) {
         if (!names.includes(entry)) names.push(entry);
       } else {
@@ -246,6 +256,75 @@ const READERS: { readonly [K in keyof RecipeFields]: KeyReader<K> } = {
 };
 
 const isRecipeKey = (key: string): key is keyof RecipeFields => Object.hasOwn(READERS, key);
+
+const readSetupRun = (value: unknown, context: KeyContext): SetupDeclaration["run"] | undefined => {
+  if (value === undefined) {
+    context.refuse("setup.run", 'is required: a list of shell commands, such as ["pnpm install"]');
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    context.refuse("setup.run", "must be a list of shell commands");
+    return undefined;
+  }
+  const steps: string[] = [];
+  value.forEach((entry: unknown, index) => {
+    if (typeof entry === "string" && entry.trim() !== "") steps.push(entry.trim());
+    else context.refuse("setup.run", `command ${index + 1} must be a non-empty shell command`);
+  });
+  const [first, ...more] = steps;
+  if (first === undefined) {
+    if (value.length === 0) context.refuse("setup.run", "must list at least one command");
+    return undefined;
+  }
+  return steps.length === value.length ? [first, ...more] : undefined;
+};
+
+const readSetupInput = (
+  entry: unknown,
+): { readonly path: RepoRelativePath } | { readonly issue: string } => {
+  if (typeof entry !== "string") return { issue: "is not a path" };
+  const read = repoRelativePathOf(entry);
+  if (!read.ok) return { issue: read.issue };
+  return read.path === null
+    ? { issue: "is the repository itself; name a file in it" }
+    : { path: read.path };
+};
+
+const readSetupInputs = (
+  value: unknown,
+  context: KeyContext,
+): ReadonlyArray<RepoRelativePath> | undefined => {
+  if (!Array.isArray(value)) {
+    context.refuse("setup.inputs", "must be a list of repository-relative file paths");
+    return undefined;
+  }
+  const paths: RepoRelativePath[] = [];
+  let refused = false;
+  for (const entry of value) {
+    const read = readSetupInput(entry);
+    if ("issue" in read) {
+      refused = true;
+      context.refuse("setup.inputs", `${JSON.stringify(entry)} ${read.issue}`);
+    } else if (!paths.includes(read.path)) {
+      paths.push(read.path);
+    }
+  }
+  return refused ? undefined : paths;
+};
+
+const readSetup = (value: unknown, context: KeyContext): SetupDeclaration | null => {
+  if (!isRecord(value)) {
+    context.refuse("setup", 'must be a table: [setup] run = ["pnpm install"]');
+    return null;
+  }
+  const { run, inputs = [], ...rest } = value;
+  for (const key of Object.keys(rest)) context.ignore(`setup.${key}`);
+  const steps = readSetupRun(run, context);
+  const paths = readSetupInputs(inputs, context);
+  return steps === undefined || paths === undefined
+    ? null
+    : new SetupDeclaration({ run: steps, inputs: paths });
+};
 
 type Draft = { -readonly [K in keyof RecipeFields]: RecipeFields[K] };
 
@@ -331,7 +410,7 @@ export const parseMendToml = (
       });
     }
     if (!isRecord(parsed)) return EMPTY_MEND_TOML;
-    const { service: services = {}, preview, ...rest } = parsed;
+    const { service: services = {}, preview, setup: setupTable, ...rest } = parsed;
     if (!isRecord(services)) {
       return yield* new RecipeFileError({
         path: filePath,
@@ -383,7 +462,21 @@ export const parseMendToml = (
         }
       }
     }
-    return { recipes, resources: resources.proposals, refused, ignored, preview: previewService };
+    const setup =
+      setupTable === undefined
+        ? null
+        : readSetup(setupTable, {
+            refuse: (key, message) => refused.push(new RecipeRefusal({ name: null, key, message })),
+            ignore: (key) => ignored.push(new IgnoredDeclaration({ name: null, key })),
+          });
+    return {
+      recipes,
+      resources: resources.proposals,
+      refused,
+      ignored,
+      preview: previewService,
+      setup,
+    };
   });
 
 /** Read and validate the worktree's `mend.toml`. Missing file = nothing declared. */
@@ -489,6 +582,7 @@ export const resolveDeclarations = (
     refused,
     ignored: file.ignored,
     preview,
+    setup: file.setup,
   });
 };
 

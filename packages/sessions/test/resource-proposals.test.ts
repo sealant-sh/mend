@@ -454,7 +454,7 @@ describe("the workspace note on mend.toml", () => {
     );
     expect(declarationsNote(declared)).toBe(
       "Refused in mend.toml (fix these before running them):\n\n" +
-        "- api · cwd · is absolute; name a directory inside the repository\n\n" +
+        "- api · cwd · is absolute; name a path inside the repository\n\n" +
         "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings):\n\n" +
         "- resource.web.ports.http · must be a port in 1..65535\n" +
         "- resource.web.healthcheck · is ignored: this Mend does not read it\n\n",

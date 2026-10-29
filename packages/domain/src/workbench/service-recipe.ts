@@ -9,7 +9,7 @@ const segmentsOf = (raw: string) =>
 /** Why `raw` is not a path inside the repository, or null when it is one. */
 export const repoRelativePathIssue = (raw: string): string | null => {
   if (raw.includes("\0")) return "contains a NUL byte";
-  if (raw.startsWith("/")) return "is absolute; name a directory inside the repository";
+  if (raw.startsWith("/")) return "is absolute; name a path inside the repository";
   if (segmentsOf(raw).includes("..")) return "leaves the repository (..)";
   return null;
 };
@@ -151,6 +151,17 @@ export class IgnoredDeclaration extends Schema.Class<IgnoredDeclaration>("Ignore
   key: Schema.String,
 }) {}
 
+/**
+ * `[setup]` (ADR 0017, decision 4): commands a recipe start runs first in the worktree, in order,
+ * once per place and fingerprint. The fingerprint covers `run` and the bytes of each of `inputs`,
+ * so editing a command or a lockfile runs setup again.
+ */
+export class SetupDeclaration extends Schema.Class<SetupDeclaration>("SetupDeclaration")({
+  run: Schema.NonEmptyArray(Schema.String),
+  /** Files, repository-relative, whose bytes join the fingerprint; an absent one counts too. */
+  inputs: Schema.Array(RepoRelativePath),
+}) {}
+
 /** `[preview]`: the Service a worktree's preview shows. */
 export class PreviewDeclaration extends Schema.Class<PreviewDeclaration>("PreviewDeclaration")({
   service: Schema.String,
@@ -165,7 +176,20 @@ export class ServiceDeclarations extends Schema.Class<ServiceDeclarations>("Serv
   refused: Schema.Array(RecipeRefusal),
   ignored: Schema.Array(IgnoredDeclaration),
   preview: Schema.NullOr(PreviewDeclaration),
+  /** `[setup]` when the file declares one Mend can run; a refused one is in `refused`. */
+  setup: Schema.NullOr(SetupDeclaration).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
 }) {}
+
+export const setupRefusalsOf = (
+  refused: ReadonlyArray<RecipeRefusal>,
+): ReadonlyArray<RecipeRefusal> =>
+  refused.filter(
+    (refusal) =>
+      refusal.name === null && (refusal.key === "setup" || refusal.key.startsWith("setup.")),
+  );
 
 export const ServiceStartStepState = Schema.Literals([
   "waiting",
