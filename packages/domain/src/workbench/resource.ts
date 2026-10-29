@@ -1,5 +1,6 @@
 import { Effect, Schema } from "effect";
 
+import { ResourceDatabaseId, ResourceInstanceId } from "../ids.ts";
 import { EnvName } from "./service-recipe.ts";
 
 /** One DNS label on the project network (ADR 0019, "Names"). */
@@ -228,6 +229,27 @@ export const defaultChoiceFor = (def: PolicySubject): WorktreeChoice | null => {
   const policy = scopePolicyFor(def);
   return policy.kind === "choose" ? policy.default : null;
 };
+
+/** A selection's revision: a switch, or a reset of the shared data, makes a new one. */
+export const SelectionRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
+  Schema.brand("SelectionRevision"),
+);
+export type SelectionRevision = typeof SelectionRevision.Type;
+
+/** What `own` names: a database on the project instance for a database preset, else an instance. */
+export const OwnTarget = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("database"), database: ResourceDatabaseId }),
+  Schema.Struct({ kind: Schema.Literal("instance"), instance: ResourceInstanceId }),
+]);
+export type OwnTarget = typeof OwnTarget.Type;
+
+/** A project resource's choice for one worktree. A worktree resource has no selection. */
+export const WorktreeSelection = Schema.Union([
+  Schema.Struct({ mode: Schema.Literal("off"), revision: SelectionRevision }),
+  Schema.Struct({ mode: Schema.Literal("shared"), revision: SelectionRevision }),
+  Schema.Struct({ mode: Schema.Literal("own"), revision: SelectionRevision, target: OwnTarget }),
+]);
+export type WorktreeSelection = typeof WorktreeSelection.Type;
 
 /** Every rule across fields of a definition, each refusal naming its key. Empty when it may run. */
 export const resourceDefinitionRefusals = (

@@ -50,6 +50,14 @@ export type WorktreeId = typeof WorktreeId.Type;
 export const PreviewId = Schema.String.pipe(Schema.brand("PreviewId"));
 export type PreviewId = typeof PreviewId.Type;
 
+/** A database a database preset keeps on its project instance (ADR 0019). */
+export const ResourceDatabaseId = Schema.String.pipe(Schema.brand("ResourceDatabaseId"));
+export type ResourceDatabaseId = typeof ResourceDatabaseId.Type;
+
+/** One running instance of a resource definition (ADR 0019). */
+export const ResourceInstanceId = Schema.String.pipe(Schema.brand("ResourceInstanceId"));
+export type ResourceInstanceId = typeof ResourceInstanceId.Type;
+
 const base32 = "abcdefghijklmnopqrstuvwxyz234567";
 const lastOf128Bits = [...base32].filter((_, value) => value % 4 === 0).join("");
 

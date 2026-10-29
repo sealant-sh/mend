@@ -8,6 +8,7 @@ import {
   resourceDefinitionRefusals,
   ResourceName,
   resourceNameIssue,
+  WorktreeSelection,
 } from "./resource.ts";
 
 const decode = Schema.decodeUnknownSync(ResourceDefinitionInput);
@@ -183,5 +184,32 @@ describe("the scope policy", () => {
     ] as const) {
       expect(resourceDefinitionRefusals(define({ scope, preset, name }))).toEqual([]);
     }
+  });
+});
+
+describe("a worktree's selection", () => {
+  const read = Schema.decodeUnknownSync(WorktreeSelection);
+
+  it("reads each mode, with own naming a database or an instance", () => {
+    expect(read({ mode: "off", revision: 1 }).mode).toBe("off");
+    expect(read({ mode: "shared", revision: 2 }).mode).toBe("shared");
+    expect(
+      read({ mode: "own", revision: 3, target: { kind: "database", database: "d1" } }),
+    ).toEqual({ mode: "own", revision: 3, target: { kind: "database", database: "d1" } });
+    expect(
+      read({ mode: "own", revision: 3, target: { kind: "instance", instance: "i1" } }),
+    ).toEqual({ mode: "own", revision: 3, target: { kind: "instance", instance: "i1" } });
+  });
+
+  it.each([
+    ["own without a target", { mode: "own", revision: 1 }],
+    ["a negative revision", { mode: "shared", revision: -1 }],
+    ["a mode outside off, shared and own", { mode: "copy", revision: 1 }],
+    [
+      "a database target carrying an instance",
+      { mode: "own", revision: 1, target: { kind: "database", instance: "i1" } },
+    ],
+  ])("refuses %s", (_, raw) => {
+    expect(() => read(raw)).toThrow();
   });
 });
