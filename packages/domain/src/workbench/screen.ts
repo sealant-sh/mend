@@ -12,6 +12,7 @@ import {
   ViewerConnectionId,
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { observedAgo } from "./landing.ts";
 
 /** ADR 0020's D7 and D13 defaults. */
 export const SCREEN_LIMITS = {
@@ -353,4 +354,64 @@ export const transitionInput = (
         ? UNCHANGED
         : changed({ _tag: "AwaitingAgent", epoch }, false);
   }
+};
+
+const PAUSED: Record<ScreenLapse, string> = {
+  "lease-lapsed": "no heartbeat",
+  disconnected: "connection lost",
+  revoked: "access revoked",
+  restart: "Mend restarted",
+};
+
+const ENDED: Record<ScreenEndReason, string> = {
+  idle: `ended after ${SCREEN_LIMITS.idleStopMs / 60_000} min idle`,
+  "session-stopped": "ended · session stopped",
+  "process-exited": "ended · screen process exited",
+  "workspace-ended": "ended · workspace ended",
+};
+
+const DEGRADED: Record<ScreenDegraded, string> = {
+  "client-failed": "degraded · an app failed to start",
+  "decoder-refused": "degraded · screen stream refused",
+};
+
+const inputLine = (input: ScreenInput, nameOf: (userId: string) => string): string => {
+  switch (input._tag) {
+    case "Agent":
+      return "agent has input";
+    case "Fencing":
+      return input.to._tag === "Person"
+        ? `${nameOf(input.by)} taking over`
+        : "handing back to the agent";
+    case "Person":
+      return `${nameOf(input.userId)} has input`;
+    case "Paused":
+      return `input paused · ${PAUSED[input.reason]}`;
+    case "AwaitingAgent":
+      return "waiting for the agent's next look";
+  }
+};
+
+export interface ScreenStatusFacts {
+  readonly life: ScreenLife;
+  readonly input: ScreenInput;
+  readonly lastFrameAt: Date | null;
+  readonly viewers: number;
+  readonly now: Date;
+  readonly nameOf: (userId: string) => string;
+}
+
+/** `screen · agent has input · frame 3 s ago`: what Mend observed, on every surface. */
+export const screenStatusLine = (facts: ScreenStatusFacts): string => {
+  if (facts.life._tag === "Starting") return "screen · starting";
+  if (facts.life._tag === "Ended") return `screen · ${ENDED[facts.life.reason]}`;
+  return [
+    "screen",
+    inputLine(facts.input, facts.nameOf),
+    facts.lastFrameAt === null
+      ? "no frame yet"
+      : `frame ${observedAgo(facts.lastFrameAt, facts.now)}`,
+    ...(facts.life.degraded === null ? [] : [DEGRADED[facts.life.degraded]]),
+    ...(facts.viewers > 0 ? [`${facts.viewers} watching`] : []),
+  ].join(" · ");
 };
