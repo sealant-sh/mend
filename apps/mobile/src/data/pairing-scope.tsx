@@ -32,13 +32,22 @@ export const PairingBoundary = ({ children }: { readonly children: ReactNode }):
 };
 
 // A pairing outlives the screens under it: a web history step can mount the root layout afresh.
-let held: { readonly key: PairingKey; readonly client: QueryClient } | null = null;
+interface Held {
+  readonly key: PairingKey;
+  readonly client: QueryClient;
+  readonly asker: Asker;
+}
+let held: Held | null = null;
 
-const clientOf = (key: PairingKey): QueryClient => {
+const heldFor = (key: PairingKey): Held => {
   if (held?.key !== key) {
-    held = { key, client: new QueryClient({ defaultOptions: { queries: { retry: 1 } } }) };
+    held = {
+      key,
+      client: new QueryClient({ defaultOptions: { queries: { retry: 1 } } }),
+      asker: createAsker({ os: Platform.OS, alert: Alert.alert }),
+    };
   }
-  return held.client;
+  return held;
 };
 
 const PairingScope = ({
@@ -50,8 +59,7 @@ const PairingScope = ({
   readonly config: MendConfig;
   readonly children: ReactNode;
 }): ReactNode => {
-  const [client] = useState(() => clientOf(pairingKey));
-  const [asker] = useState(() => createAsker({ os: Platform.OS, alert: Alert.alert }));
+  const [{ client, asker }] = useState(() => heldFor(pairingKey));
   // Once another pairing holds the cache, cancels the ended one's fetches and pending retries.
   useEffect(
     () => () => {
