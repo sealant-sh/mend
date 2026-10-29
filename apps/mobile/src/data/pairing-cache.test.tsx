@@ -246,6 +246,23 @@ describe("a conversation under a pairing", () => {
     expect(text()).toContain(A_HEADER);
     expect(text()).toContain(A_REPLY);
   });
+
+  it("stays when the screens above the pairing mount afresh", async () => {
+    await readAsOwner();
+    ownerAnswersHeld = [];
+    await act(() =>
+      root.render(
+        <div key="remounted">
+          <PairingBoundary>
+            <SessionReader sessionId={SESSION} />
+          </PairingBoundary>
+        </div>,
+      ),
+    );
+    expect(text()).toContain(A_HEADER);
+    expect(text()).toContain(A_PROMPT);
+    expect(text()).toContain(A_REPLY);
+  });
 });
 
 let askOfPairing: Ask | null = null;
