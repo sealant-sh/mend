@@ -326,7 +326,9 @@ settings, the ready check and the exports, and it adds what a generic image cann
   the instance, and delivery tests an abrupt kill after acknowledged writes on each.
 - **Versions.** A minor version change restarts the instance on its volumes. A major version change
   is an operation, never a restart: dump, a new instance on new volumes, restore, move the pointer,
-  keep the old instance stopped until a person purges it.
+  keep the old instance stopped until a person purges it. Before the dump, Mend fences the old
+  instance against new consumers and ends the ones that remain, as worktree removal does, so no
+  write lands after the dump. The old instance stays stopped until the new one has the restore.
 - **A shared database can be damaged by any worktree on it.** A migration from any worktree can
   alter or drop a table another worktree created, through the shared database's owner role. The
   status line says so. Point-in-time recovery for Postgres ships with shared mode (Durability).
