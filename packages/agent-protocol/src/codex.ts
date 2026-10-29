@@ -20,6 +20,7 @@ import {
   undelivered,
   type CodexRpcFailure,
 } from "./codex-steer.ts";
+import { compactMendPageCall } from "./mend-page-call.ts";
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
@@ -368,7 +369,8 @@ export const CodexAdapter: AgentAdapter = {
         result: unknown,
       ): Effect.Effect<void, AgentProtocolError> => send({ id, result });
 
-      const updateItem = (item: AgentEventItem): Effect.Effect<void> => {
+      const updateItem = (update: AgentEventItem): Effect.Effect<void> => {
+        const item = compactMendPageCall(update);
         items.set(item.providerItemId, item);
         return publish({ _tag: "item.updated", item });
       };

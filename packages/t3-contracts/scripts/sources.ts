@@ -14,12 +14,14 @@ const T3_SHARED_FILES = [
   "composerContextLegacy",
   "composerContextReferences",
   "fileLinks",
+  "htmlRender",
   "inlineSkills",
   "keybindings",
   "markdownGithubAlerts",
   "markdownLinks",
   "markdownListIndentation",
   "markdownPipeline",
+  "mcpApp",
   "model",
   "orchestrationV2PendingBackgroundWork",
   "path",
@@ -29,11 +31,13 @@ const T3_SHARED_FILES = [
   "sourceControl",
   "Struct",
   "t3McpToolPresentation",
+  "themePalettes",
   "threadFindText",
   "threadLinks",
   "threadPullRequests",
   "threadSearch",
   "threadTranscript",
+  "toolOutput",
 ];
 
 const CLIENT_RUNTIME_STATE_FILES = [

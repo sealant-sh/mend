@@ -1,4 +1,4 @@
-import { contentBlockKind } from "@mend/agent-protocol";
+import { compactMendPageCall, contentBlockKind, withMendPageResult } from "@mend/agent-protocol";
 import type { BackfillTurnInput } from "@mend/db";
 import type { AgentEventItem, NativeIngestCursor } from "@mend/domain/workbench";
 
@@ -60,6 +60,19 @@ interface OpenTurn {
   readonly items: AgentEventItem[];
 }
 
+const notePageResult = (
+  open: OpenTurn | null,
+  callId: string | null,
+  output: unknown,
+  failed: boolean,
+): void => {
+  if (open === null || callId === null) return;
+  const at = open.items.findIndex((item) => item.providerItemId === callId);
+  const call = open.items[at];
+  const answered = call === undefined ? null : withMendPageResult(call, output, failed);
+  if (answered !== null) open.items[at] = answered;
+};
+
 const backfillClaude = (
   providerSessionId: string,
   jsonl: string,
@@ -115,6 +128,17 @@ const backfillClaude = (
     const message = entry["message"];
     if (type === "user") {
       const content = isObject(message) ? message["content"] : null;
+      if (Array.isArray(content)) {
+        for (const part of content) {
+          if (stringField(part, "type") !== "tool_result" || !isObject(part)) continue;
+          notePageResult(
+            open,
+            stringField(part, "tool_use_id"),
+            part["content"],
+            part["is_error"] === true,
+          );
+        }
+      }
       const text = textOf(content).trim();
       if (text === "" || text.startsWith("<command-")) continue;
       close();
@@ -145,15 +169,17 @@ const backfillClaude = (
         (messageId === null
           ? `${open.providerTurnId}:block:${streamIndex}`
           : `${messageId}:block:${streamIndex}`);
-      open.items.push({
-        providerItemId,
-        providerTurnId: open.providerTurnId,
-        kind: contentBlockKind(blockType, stringField(block, "name")),
-        status: "completed",
-        title: blockType === "tool_use" ? stringField(block, "name") : null,
-        text: stringField(block, "text") ?? stringField(block, "thinking") ?? null,
-        data: block,
-      });
+      open.items.push(
+        compactMendPageCall({
+          providerItemId,
+          providerTurnId: open.providerTurnId,
+          kind: contentBlockKind(blockType, stringField(block, "name")),
+          status: "completed",
+          title: blockType === "tool_use" ? stringField(block, "name") : null,
+          text: stringField(block, "text") ?? stringField(block, "thinking") ?? null,
+          data: block,
+        }),
+      );
     }
   }
   close();
@@ -250,15 +276,21 @@ const backfillCodex = (
     if (payloadType === "function_call" || payloadType === "custom_tool_call") {
       const name = stringField(payload, "name") ?? "tool";
       const shell = name === "exec_command" || name === "shell";
-      open.items.push({
-        providerItemId: stringField(payload, "call_id") ?? `rollout:${index}`,
-        providerTurnId: open.providerTurnId,
-        kind: shell ? "command-execution" : "tool-call",
-        status: "completed",
-        title: name,
-        text: null,
-        data: payload,
-      });
+      open.items.push(
+        compactMendPageCall({
+          providerItemId: stringField(payload, "call_id") ?? `rollout:${index}`,
+          providerTurnId: open.providerTurnId,
+          kind: shell ? "command-execution" : "tool-call",
+          status: "completed",
+          title: name,
+          text: null,
+          data: payload,
+        }),
+      );
+      continue;
+    }
+    if (payloadType === "function_call_output") {
+      notePageResult(open, stringField(payload, "call_id"), payload["output"], false);
     }
   }
   close();

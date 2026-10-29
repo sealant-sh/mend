@@ -47,6 +47,7 @@ import {
   agentTurns,
   sessionProcesses,
 } from "../schema/workbench.ts";
+import { pageItemRow, pagesWithoutItems, publishedPageIdOf } from "./page-items.ts";
 
 /** A requested protocol turn does not exist. */
 export class AgentTurnNotFoundError extends Schema.TaggedError<AgentTurnNotFoundError>()(
@@ -63,13 +64,10 @@ export class SessionStoppingError extends Schema.TaggedError<SessionStoppingErro
   { sessionId: Schema.String },
 ) {}
 
-/**
- * The per-session lock turn admission and the idle stop's claim both take, so one of them always
- * sees the other: a claim never lands while a turn is being queued, and a turn is never queued
- * once a claim has landed (`SessionsRepo.claimIdleStop`).
- */
-export const agentConversationLockKey = (sessionId: SessionId): string =>
-  `mend:agent-conversation:${sessionId}`;
+export const lockAgentConversation = (tx: Pick<MendDatabase, "execute">, sessionId: SessionId) =>
+  tx.execute(
+    sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`,
+  );
 
 /** A requested agent-to-human request does not exist. */
 export class AgentRequestNotFoundError extends Schema.TaggedError<AgentRequestNotFoundError>()(
@@ -287,6 +285,35 @@ const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn => new AgentTurn
 const toItem = (row: typeof agentItems.$inferSelect): AgentItem => new AgentItem(row);
 const toRequest = (row: typeof agentRequests.$inferSelect): AgentRequest => new AgentRequest(row);
 
+export const nextAgentItemSeq = Effect.fn("AgentConversationRepo.nextAgentItemSeq")(function* (
+  tx: Pick<MendDatabase, "select">,
+  sessionId: SessionId,
+) {
+  const [position] = yield* tx
+    .select({ value: max(agentItems.seq) })
+    .from(agentItems)
+    .where(eq(agentItems.sessionId, sessionId));
+  return (position?.value ?? 0) + 1;
+});
+
+export const notifyAgentConversation = Effect.fn("AgentConversationRepo.notify")(function* (
+  db: Pick<MendDatabase, "select">,
+  pg: PgClient.PgClient,
+  sessionId: SessionId,
+) {
+  const [row] = yield* db
+    .select({ projectId: agentSessions.projectId })
+    .from(agentSessions)
+    .where(eq(agentSessions.id, sessionId))
+    .limit(1)
+    .pipe(Effect.orDie);
+  yield* notifyEvent(pg, {
+    type: "agent-conversation",
+    sessionId,
+    projectId: row?.projectId ?? "",
+  });
+});
+
 /** Cancel queued turns and their open requests in the caller's transaction, without events. */
 export const cancelOpenTurnRows = Effect.fn("AgentConversationRepo.cancelOpenTurnRows")(function* (
   db: Pick<MendDatabase, "update">,
@@ -329,19 +356,7 @@ export const AgentConversationRepoLive: Layer.Layer<
     const db = yield* MendDB;
     const pg = yield* PgClient.PgClient;
 
-    const notify = Effect.fn("AgentConversationRepo.notify")(function* (sessionId: SessionId) {
-      const [row] = yield* db
-        .select({ projectId: agentSessions.projectId })
-        .from(agentSessions)
-        .where(eq(agentSessions.id, sessionId))
-        .limit(1)
-        .pipe(Effect.orDie);
-      yield* notifyEvent(pg, {
-        type: "agent-conversation",
-        sessionId,
-        projectId: row?.projectId ?? "",
-      });
-    });
+    const notify = (sessionId: SessionId) => notifyAgentConversation(db, pg, sessionId);
 
     const submitTurn = Effect.fn("AgentConversationRepo.submitTurn")(function* (
       sessionId: SessionId,
@@ -353,9 +368,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       const created = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(sessionId)}))`,
-            );
+            yield* lockAgentConversation(tx, sessionId);
             // Under the lock the idle stop's claim also takes: a claim that landed is seen here,
             // and a claim after this commits sees the queued turn and does not land. A settled
             // session has no agent to take a turn either; a resume reopens it first.
@@ -554,9 +567,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           Effect.gen(function* () {
             // The conversation lock orders the ordinal against submitTurn; the process lock
             // orders the running turn against claimNextTurn.
-            yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(sessionId)}))`,
-            );
+            yield* lockAgentConversation(tx, sessionId);
             yield* tx.execute(
               sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-process:${processId}`}))`,
             );
@@ -799,9 +810,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       const item = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${input.sessionId}`}))`,
-            );
+            yield* lockAgentConversation(tx, input.sessionId);
             const [existing] = yield* tx
               .select()
               .from(agentItems)
@@ -822,11 +831,7 @@ export const AgentConversationRepoLive: Layer.Layer<
             ) {
               return toItem(existing);
             }
-            const [position] = yield* tx
-              .select({ value: max(agentItems.seq) })
-              .from(agentItems)
-              .where(eq(agentItems.sessionId, input.sessionId));
-            const nextSequence = (position?.value ?? 0) + 1;
+            const nextSequence = yield* nextAgentItemSeq(tx, input.sessionId);
             if (existing !== undefined) {
               const [updated] = yield* tx
                 .update(agentItems)
@@ -1131,9 +1136,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(sessionId)}))`,
-            );
+            yield* lockAgentConversation(tx, sessionId);
             const running = yield* tx
               .select({ id: agentItems.id })
               .from(agentItems)
@@ -1145,18 +1148,13 @@ export const AgentConversationRepoLive: Layer.Layer<
                 ),
               )
               .orderBy(asc(agentItems.seq));
-            const [position] = yield* tx
-              .select({ value: max(agentItems.seq) })
-              .from(agentItems)
-              .where(eq(agentItems.sessionId, sessionId));
-            let seq = position?.value ?? 0;
+            let seq = yield* nextAgentItemSeq(tx, sessionId);
             const now = yield* DateTime.nowAsDate;
             for (const task of running) {
-              seq += 1;
               yield* tx
                 .update(agentItems)
                 .set({
-                  seq,
+                  seq: seq++,
                   status: "completed",
                   data: sql`jsonb_set(${agentItems.data}, '{status}', '"stopped"')`,
                   updatedAt: now,
@@ -1208,9 +1206,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       const landed = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(sessionId)}))`,
-            );
+            yield* lockAgentConversation(tx, sessionId);
             const existing = yield* tx
               .select({ providerTurnId: agentTurns.providerTurnId })
               .from(agentTurns)
@@ -1222,13 +1218,18 @@ export const AgentConversationRepoLive: Layer.Layer<
               .select({ value: max(agentTurns.ordinal) })
               .from(agentTurns)
               .where(eq(agentTurns.sessionId, sessionId));
-            const [itemPosition] = yield* tx
-              .select({ value: max(agentItems.seq) })
-              .from(agentItems)
-              .where(eq(agentItems.sessionId, sessionId));
             let ordinal = (turnPosition?.value ?? -1) + 1;
-            let seq = (itemPosition?.value ?? 0) + 1;
+            let seq = yield* nextAgentItemSeq(tx, sessionId);
             const now = yield* DateTime.nowAsDate;
+            const unshown = yield* pagesWithoutItems(
+              tx,
+              sessionId,
+              turns
+                .filter((turn) => !seen.has(turn.providerTurnId))
+                .flatMap((turn) =>
+                  turn.items.flatMap((item) => publishedPageIdOf(item.data) ?? []),
+                ),
+            );
             let count = 0;
             for (const turn of turns) {
               if (seen.has(turn.providerTurnId)) continue;
@@ -1271,6 +1272,17 @@ export const AgentConversationRepoLive: Layer.Layer<
                     data: item.data,
                   })
                   .onConflictDoNothing();
+                const page = unshown.get(publishedPageIdOf(item.data) ?? "");
+                if (page === undefined) continue;
+                unshown.delete(page.id);
+                yield* tx.insert(agentItems).values(
+                  pageItemRow(page, {
+                    processId,
+                    turnId: turnRow.id,
+                    seq: seq++,
+                    eventIndex: eventIndex++,
+                  }),
+                );
               }
               count += 1;
             }

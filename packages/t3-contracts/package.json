@@ -8,16 +8,19 @@
   "exports": {
     ".": "./src/index.ts",
     "./client-rpc-permissions": "./src/clientRpcPermissions.ts",
+    "./html-render": "./t3-shared/src/htmlRender.ts",
     "./keybindings": "./t3-shared/src/keybindings.ts",
     "./pending-background-work": "./t3-shared/src/orchestrationV2PendingBackgroundWork.ts",
     "./pin": "./t3code.pin.json",
     "./relay": "./src/relay.ts",
     "./server-settings": "./t3-shared/src/serverSettings.ts",
     "./settings": "./src/settings.ts",
+    "./theme-palettes": "./t3-shared/src/themePalettes.ts",
     "./thread-find-text": "./t3-shared/src/threadFindText.ts",
     "./thread-search": "./t3-shared/src/threadSearch.ts",
     "./thread-settled": "./client-runtime/threadSettled.ts",
-    "./thread-transcript": "./t3-shared/src/threadTranscript.ts"
+    "./thread-transcript": "./t3-shared/src/threadTranscript.ts",
+    "./tool-output": "./t3-shared/src/toolOutput.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

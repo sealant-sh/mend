@@ -354,6 +354,36 @@ recorded above in the amendment of 2026-10-24:
   headless Chromium (refused without `data:`, loaded with it); no browser runs in CI, so that
   observation is not repeated on every change.
 
+### Agent pages (added 2026-10-25)
+
+An agent in a session can publish an HTML page with Mend's `html_render` tool, and every client
+shows it inline in the conversation. The page is the agent's own markup and script. Mend serves it
+from its API origin, on one route, so that a frame or a phone's WebView can load it by URL:
+
+- **The route.** `GET /api/page-view?view=<token>`. The token is the only credential. It is an HMAC,
+  under a key derived from `BETTER_AUTH_SECRET`, that names one page, one account and one
+  appearance, and it expires thirty minutes after `GET /api/pages/:id/frame` minted it. That route
+  needs the caller's sign-in and project read access to the page's session. Every load of the page
+  checks again that the named account may read the session, so removing a member, or making the
+  project private, refuses their next load. The token travels in the query, which neither the API's
+  log nor the edge's records. The API records no trace span for the route, and any other span
+  records the `view` parameter as redacted.
+- **The headers.** The answer carries `Content-Security-Policy: sandbox allow-scripts allow-forms`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and
+  `Cache-Control: private, no-store`, and no `X-Frame-Options` and no `frame-ancestors`. This is the
+  one exception to the header policy above. The API's header middleware and the web front give it to
+  this exact path, read from the request target as the client sent it, with no dot segment resolved,
+  and to no other. Tests hold every other path to the policy as it was.
+- **Why it is not executor-served HTML.** The CSP `sandbox` directive without `allow-same-origin`
+  makes the browser run the document in an opaque origin, whether a frame loads it or a WebView
+  loads it top-level. The page cannot read Mend's cookies or storage, and Mend's origin does not
+  trust its requests: they carry `Origin: null`, which the origin policy refuses for writes. That is
+  the property the rule against executor-served HTML under the authenticated origin protects. The
+  rule stands for everything else an executor serves.
+- **What a leaked URL gives.** The page can read its own URL, token included. The token loads only
+  that page, for that account and appearance, until it expires, and only while the account may still
+  read the session. It grants nothing the page did not already hold.
+
 ### Event stream lifecycle
 
 A test through the real `/api/events` route: streams open, one is torn down with an event published
@@ -398,7 +428,9 @@ builds one Sealant client per user (#105), so Core's `SEALANT_REQUIRE_OWNER_SCOP
 - Older first-party clients that still send `?token=` keep working for one release under
   `MEND_URL_BEARERS=accept`, then stop.
 - Raw service forwards stay loopback-only on a `public` instance and are reached through the
-  authenticated tunnel. Executor-served HTML is never served under the authenticated origin.
+  authenticated tunnel. Executor-served HTML is never served under the authenticated origin. An
+  agent's page, served sandboxed into an opaque origin on `/api/page-view`, is not executor-served
+  HTML ("Agent pages").
 
 ## Delivery
 

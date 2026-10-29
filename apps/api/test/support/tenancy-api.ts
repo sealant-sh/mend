@@ -98,6 +98,7 @@ import {
   Logger,
   Tracer,
   Queue,
+  Redacted,
   Schema,
   Scope,
   Stream,
@@ -121,7 +122,8 @@ import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
-import { rawFilePrivacy, RawFileTracingDisabledLive } from "../../src/raw-file-privacy.ts";
+import { PageViewTokens } from "../../src/page-view-tokens.ts";
+import { rawFilePrivacy } from "../../src/raw-file-privacy.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
@@ -135,6 +137,7 @@ import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
+import { UntracedRequestsLive } from "../../src/untraced-requests.ts";
 import { createTenancyWorld, type HarnessUser, type TenancyWorld } from "./tenancy-harness.ts";
 import { recording } from "./tenancy-harness.ts";
 
@@ -183,6 +186,15 @@ const network = makePublicNetwork(
   [],
 );
 
+export const clearPageViewTokens: PageViewTokens["Service"] = {
+  issue: (grant) =>
+    Effect.succeed({
+      token: Redacted.make(`${grant.pageId}.${grant.appearance}`),
+      expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+    }),
+  read: () => Effect.succeed(null),
+};
+
 /**
  * The whole Mend API over the tenancy world. Every service outside the authorization reads is a
  * recording mock with no implementation, so a handler that gets past authorization records the
@@ -198,6 +210,7 @@ export const createTenancyApi = async (
     /** Also serve the API behind the Node HTTP adapter Mend runs on, at `nodeOrigin`. */
     readonly node?: boolean;
     readonly urlBearers?: "accept" | "refuse";
+    readonly pageViewTokens?: PageViewTokens["Service"];
     readonly clock?: () => number;
     /** Effect-owned request deadlines, when a test drives them with TestClock. */
     readonly effectClock?: Clock.Clock;
@@ -271,6 +284,7 @@ export const createTenancyApi = async (
       makeUpgradeTicketsMemory(options.clock, options.revokedCredentials),
     ),
     Layer.succeed(UrlBearers, { mode: options.urlBearers ?? "accept" }),
+    Layer.succeed(PageViewTokens, options.pageViewTokens ?? clearPageViewTokens),
   );
   const budgetsLayer = Layer.succeed(Budgets, makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...limits }));
   const calls = world.calls;
@@ -541,7 +555,7 @@ export const createTenancyApi = async (
     rawFilePrivacy,
     options.browserHeaders ? apiResponseHeaders : Layer.empty,
   ).pipe(
-    Layer.provideMerge(RawFileTracingDisabledLive),
+    Layer.provideMerge(UntracedRequestsLive),
     Layer.provide(authorization),
     Layer.provide(HttpServer.layerServices),
   );

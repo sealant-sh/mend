@@ -1,3 +1,4 @@
+import { isShownAsPage } from "@mend/agent-conversation/pages";
 import {
   CheckpointRef,
   CheckpointScopeId,
@@ -264,6 +265,7 @@ const attachmentOf = (image: StoredImage): ChatAttachment => ({
 
 /** The turn item one Mend item is shown as, or null for one already shown another way. */
 const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem | null => {
+  if (item.kind === "page" || isShownAsPage(item)) return null;
   const streaming = item.status === "in-progress";
   const data = item.data;
   switch (item.kind) {

@@ -1,3 +1,5 @@
+import { isPageViewTarget, PAGE_VIEW_HEADERS, requestPathOf } from "@mend/network";
+
 /**
  * The browser header policy (docs/adr/0004, "Errors and browser headers"; MEND-11). Set by the
  * front on every response it relays, the app's and the API's alike, so there is one policy and one
@@ -18,8 +20,7 @@
  *   WebView as a top-level document, which this does not touch.
  */
 export interface SecurityHeaderInput {
-  /** The request's path, for the few paths that differ. */
-  readonly pathname: string;
+  readonly target: string;
   /** The exact browser origin (`APP_URL`). */
   readonly appUrl: string;
 }
@@ -45,7 +46,7 @@ export const contentSecurityPolicy = (appUrl: string): string =>
   ].join("; ");
 
 /** Every browser feature Mend does not use, off. Clipboard stays: the terminal pastes. */
-const PERMISSIONS_POLICY = [
+export const PERMISSIONS_POLICY = [
   "accelerometer=()",
   "camera=()",
   "geolocation=()",
@@ -65,21 +66,33 @@ const isCredentialedPage = (pathname: string): boolean =>
   pathname === "/preview-auth" ||
   pathname === "/api/preview-auth";
 
-export const securityHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>> => ({
+/**
+ * Only over https: on plain http the header is ignored by browsers and would be a false claim. For
+ * this host only: `includeSubDomains` on an apex `APP_URL` would pin every sibling host the
+ * operator runs to https for a year, which is not Mend's to decide.
+ */
+const transportHeaders = (appUrl: string): Readonly<Record<string, string>> =>
+  appUrl.startsWith("https://") ? { "strict-transport-security": "max-age=31536000" } : {};
+
+const appHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>> => ({
   "content-security-policy": contentSecurityPolicy(input.appUrl),
   "x-content-type-options": "nosniff",
   // For browsers that predate frame-ancestors.
   "x-frame-options": "DENY",
-  "referrer-policy": isCredentialedPage(input.pathname)
+  "referrer-policy": isCredentialedPage(requestPathOf(input.target))
     ? "no-referrer"
     : "strict-origin-when-cross-origin",
   "permissions-policy": PERMISSIONS_POLICY,
   "cross-origin-opener-policy": "same-origin",
   "cross-origin-resource-policy": "same-origin",
-  // Only over https: on plain http the header is ignored by browsers and would be a false claim.
-  // For this host only: `includeSubDomains` on an apex `APP_URL` would pin every sibling host the
-  // operator runs to https for a year, which is not Mend's to decide.
-  ...(input.appUrl.startsWith("https://")
-    ? { "strict-transport-security": "max-age=31536000" }
-    : {}),
+  ...transportHeaders(input.appUrl),
 });
+
+export const securityHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>> =>
+  isPageViewTarget(input.target)
+    ? {
+        ...PAGE_VIEW_HEADERS,
+        "permissions-policy": PERMISSIONS_POLICY,
+        ...transportHeaders(input.appUrl),
+      }
+    : appHeaders(input);

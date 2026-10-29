@@ -5,7 +5,8 @@
   "description": "How a protocol-mode session reads as a conversation: turns, items and requests, platform-free",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./pages": "./src/pages.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

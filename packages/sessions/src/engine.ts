@@ -37,6 +37,7 @@ import {
   ProjectServiceRecipesRepo,
   PreviewsRepo,
   SessionProcessesRepo,
+  SessionPagesRepo,
   type NewSessionProcess,
   type NewSessionRun,
   SessionRunsRepo,
@@ -647,6 +648,7 @@ import {
   skillsKeptDir,
   vacateSkillsExec,
 } from "./skills.ts";
+import { type TranscriptEntry, withPages } from "./transcript-pages.ts";
 import { mayWorkIn, WorkspaceCaller } from "./workspace-caller.ts";
 import {
   parseHomeFileOutcomes,
@@ -2952,7 +2954,7 @@ export class SessionEngine extends Context.Service<
     readonly transcript: (sessionId: SessionId) => Effect.Effect<
       {
         readonly sourceHarness: string;
-        readonly events: ReadonlyArray<import("./native-convert.ts").CanonicalEvent>;
+        readonly events: ReadonlyArray<TranscriptEntry>;
       },
       SessionNotFoundError
     >;
@@ -3030,6 +3032,7 @@ type SessionEngineRequirements =
   | SecretFilesRepo
   | SessionRunsRepo
   | SessionProcessesRepo
+  | SessionPagesRepo
   | ServicesRepo
   | ServiceForwardsRepo
   | ServiceObservationsRepo
@@ -7891,6 +7894,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const secretFiles = yield* SecretFilesRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
+      const sessionPages = yield* SessionPagesRepo;
 
       // ── Pickups: secrets reach a workspace over the channel, never through argv ──────────
       // The platform keeps every exec's argv in plaintext for good (review of mend#552/#553,
@@ -19792,9 +19796,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
           }
         }
-        if (native === null) return { sourceHarness: harness, events: [] };
-        const canonical = ingestNativeSession(harness, native, "/workspace/repo");
-        return { sourceHarness: harness, events: canonical?.events ?? [] };
+        const canonical =
+          native === null ? null : ingestNativeSession(harness, native, "/workspace/repo");
+        const pages = yield* sessionPages.listForSession(sessionId).pipe(Effect.orDie);
+        return { sourceHarness: harness, events: withPages(canonical?.events ?? [], pages) };
       });
 
       /**

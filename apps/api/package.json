@@ -28,6 +28,8 @@
     "@mend/sessions": "workspace:*",
     "@mend/slack": "workspace:*",
     "@mend/store": "workspace:*",
+    "@mend/t3-contracts": "workspace:*",
+    "@mend/ui": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
@@ -39,6 +41,7 @@
     "@types/ws": "catalog:",
     "esbuild": "catalog:",
     "fast-check": "catalog:",
+    "jsdom": "catalog:",
     "playwright-core": "catalog:",
     "tsx": "catalog:",
     "vite": "catalog:start",

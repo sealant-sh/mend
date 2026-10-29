@@ -8,6 +8,7 @@ import {
   conversationActivity,
   EMPTY_CONVERSATION,
   isHarnessTurn,
+  isShownAsPage,
   itemFailed,
   itemName,
   openTurnOf,
@@ -157,6 +158,7 @@ const TurnRow = memo(function TurnRow({
 
 function ItemRow({ item }: { readonly item: AgentItemDto }) {
   const { colors } = useEvidenceTheme();
+  if (item.kind === "page" || isShownAsPage(item)) return null;
   const task = agentTaskOf(item);
   if (task !== null) {
     return <TaskCard task={task} />;

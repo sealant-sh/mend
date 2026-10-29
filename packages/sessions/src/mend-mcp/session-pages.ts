@@ -1,13 +1,13 @@
 import { Worker } from "node:worker_threads";
 
 import {
+  pageRefOf,
   type SessionPageConflictError,
   SessionPagesRepo,
-  type SessionPage,
   type SessionPageSessionNotFoundError,
   type SessionPageStorageError,
 } from "@mend/db";
-import { PageRef, clampPageHeight } from "@mend/domain/workbench";
+import { type PageRef, clampPageHeight } from "@mend/domain/workbench";
 import { Duration, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -95,15 +95,6 @@ const checkPageOnWorker = (worker: URL, page: PageInput): Effect.Effect<void, Pa
     }),
   );
 
-const refOf = (row: SessionPage): PageRef =>
-  new PageRef({
-    id: row.id,
-    sessionId: row.sessionId,
-    title: row.title,
-    height: row.height,
-    publishedAt: row.publishedAt,
-  });
-
 export const sessionPagesLayer = (
   checkWorker: URL,
 ): Layer.Layer<SessionPages, never, SessionPagesRepo> =>
@@ -126,7 +117,7 @@ export const sessionPagesLayer = (
           title: page.title.trim() || "Page",
           height: clampPageHeight(page.height),
         });
-        return refOf(row);
+        return pageRefOf(row);
       });
 
       return { publish };

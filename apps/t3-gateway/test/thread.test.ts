@@ -514,6 +514,48 @@ describe("Mend's items as turn items", () => {
       items,
     );
 
+  it("leaves out a page and the call its page replaces, and keeps a call that failed", () => {
+    const call = (id: string, attachmentId: string | null) =>
+      item({
+        id,
+        kind: "tool-call",
+        title: "mcp__mend__html_render",
+        status: attachmentId === null ? "failed" : "completed",
+        data: {
+          type: "tool_use",
+          name: "mcp__mend__html_render",
+          input: { title: "Latency", height: 420 },
+          mendPageCall: {
+            attachmentId,
+            failure: attachmentId === null ? { code: "invalid_request", message: "vh" } : null,
+          },
+        },
+      });
+    const { turnItems } = projectionWith([
+      call("item-published", "page-1"),
+      item({
+        id: "item-page",
+        kind: "page",
+        title: "Latency",
+        data: {
+          id: "page-1",
+          sessionId: "session-1",
+          title: "Latency",
+          height: 420,
+          publishedAt: "2026-10-04T09:00:02.000Z",
+        },
+      }),
+      call("item-refused", null),
+    ]);
+    assert.deepStrictEqual(
+      turnItems.map((entry) => [entry.id, entry.type]),
+      [
+        ["input:turn-1", "user_message"],
+        ["item-refused", "dynamic_tool"],
+      ],
+    );
+  });
+
   it("reads codex's own item shapes", () => {
     const { turnItems } = projectionWith([
       item({
