@@ -633,6 +633,7 @@ import {
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
 import {
   checkReady,
+  type DependencyAddress,
   explicitLaunch,
   type LaunchSpec,
   PreviewUrls,
@@ -1485,6 +1486,7 @@ interface ServiceStart {
   readonly launch: LaunchSpec;
   /** The file's `[preview]` when it was read for this start, for `MEND_PREVIEW_URL`. */
   readonly filePreview: string | null;
+  readonly dependencies: ReadonlyArray<DependencyAddress>;
 }
 
 type StartOutcome =
@@ -23073,6 +23075,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly argv: ReadonlyArray<string>;
         readonly launch: ServiceLaunch;
         readonly filePreview: string | null;
+        readonly dependencies: ReadonlyArray<DependencyAddress>;
         readonly runsAs: string | null;
         readonly launchCorrelationId: string | null;
       }) {
@@ -23112,6 +23115,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 recipe: launch.env,
                 port: service.workspacePort,
                 previewUrl,
+                dependencies: start.dependencies,
                 person: startAs?.env ?? {},
               }),
               ...(startAs === null ? {} : { user: startAs.user }),
@@ -23201,6 +23205,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv: launch.argv,
           launch,
           filePreview: start.filePreview,
+          dependencies: start.dependencies,
           runsAs,
           launchCorrelationId,
         });
@@ -23321,6 +23326,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             declarationSource,
             launch: explicitLaunch(argv),
             filePreview: null,
+            dependencies: [],
           },
           cause,
           startId,
@@ -23414,6 +23420,58 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * Where each of `names` answers inside the session's workspace, as a dependent Service's
+       * env gives it. A docker one is reached on loopback when Docker publishes there, else on the
+       * sidecar; one not running, or not answering, is left out.
+       */
+      const dependencyAddressesOf = Effect.fn("SessionEngine.dependencyAddressesOf")(function* (
+        sessionId: SessionId,
+        names: ReadonlyArray<string>,
+      ) {
+        const addresses: DependencyAddress[] = [];
+        for (const name of names) {
+          const live = yield* liveServiceNamed(sessionId, name);
+          if (live === null) continue;
+          const { service } = live;
+          const port = service.workspacePort;
+          if (service.address === "loopback") {
+            addresses.push({ name, host: "127.0.0.1", port });
+            continue;
+          }
+          const workspaceId = (yield* sessions.byId(sessionId)).sealantWorkspaceId;
+          if (workspaceId === null) continue;
+          const probed = yield* forwardAdapter.probe(portTarget(workspaceId, port), {
+            purpose: "readiness",
+          });
+          if (probed.kind === "ready") {
+            addresses.push({
+              name,
+              host: probed.arrival.route === "docker" ? "docker" : "127.0.0.1",
+              port,
+            });
+          }
+        }
+        return addresses;
+      });
+
+      /** A restart's dependencies are its recipe's as the file reads now: only their addresses. */
+      const restartDependencyAddressesOf = (service: Service) =>
+        service.declarationSource !== "recipe-file" &&
+        service.declarationSource !== "recipe-project"
+          ? Effect.succeed([])
+          : sessions.byId(service.sessionId).pipe(
+              Effect.flatMap(declarationsOf),
+              Effect.map(
+                (declared) =>
+                  declared.recipes.find(
+                    (recipe) => recipe.name === service.name && recipe.shadowedBy === null,
+                  )?.depends ?? [],
+              ),
+              Effect.flatMap((names) => dependencyAddressesOf(service.sessionId, names)),
+              Effect.orElseSucceed((): ReadonlyArray<DependencyAddress> => []),
+            );
+
+      /**
        * One recipe of a plan, started or met: a dependency already live is waited for (never
        * started again), an adopt-only recipe is adopted and its port waited for, and anything else
        * starts. The Service asked for is always started: one live by now is refused as a name
@@ -23485,6 +23543,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             declarationSource,
             launch: recipeLaunch({ ...recipe, command }),
             filePreview,
+            dependencies: yield* dependencyAddressesOf(sessionId, recipe.depends),
           },
           cause,
           startId,
@@ -23948,6 +24007,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         serviceId: ServiceId,
         cause: AcceptedStart,
         filePreview: string | null,
+        dependencies: ReadonlyArray<DependencyAddress>,
       ) {
         const service = yield* services.byId(serviceId);
         if (service === null) return yield* new ServiceNotFoundError({ processId: serviceId });
@@ -23991,6 +24051,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv: previous.argv,
           launch,
           filePreview,
+          dependencies,
           runsAs: yield* services.startedByOf(service.id),
           launchCorrelationId: null,
         });
@@ -24008,8 +24069,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   Effect.flatMap(filePreviewOf),
                   Effect.orElseSucceed(() => null),
                 );
+          const dependencies = service === null ? [] : yield* restartDependencyAddressesOf(service);
           const started = yield* withServiceLifecycle(
-            restartServiceUnlocked(serviceId, cause, filePreview),
+            restartServiceUnlocked(serviceId, cause, filePreview, dependencies),
           );
           const verdict = yield* awaitAttemptReady(started);
           const { view } = yield* withServiceLifecycle(
@@ -24686,6 +24748,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv: step.source.argv,
           launch: (yield* processes.launchOf(step.source.id)) ?? DEFAULT_SERVICE_LAUNCH,
           filePreview: null,
+          dependencies: yield* restartDependencyAddressesOf(service),
           runsAs: starter,
           launchCorrelationId: step.correlation,
         }).pipe(Effect.mapError((error) => previewRefused("command-failed", error.message)));

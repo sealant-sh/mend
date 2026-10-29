@@ -154,6 +154,8 @@ describe("a recipe's launch", () => {
                 NODE_ENV: "development",
                 PORT: "3000",
                 MEND_PREVIEW_URL: "http://web-label.localhost:3200",
+                MEND_SERVICE_DB_HOST: "127.0.0.1",
+                MEND_SERVICE_DB_PORT: "5432",
               },
             },
           ]);
@@ -1359,6 +1361,10 @@ describe("serviceProcessEnv", () => {
         recipe: { A: "recipe", B: "recipe", HOME: "/recipe" },
         port: 3000,
         previewUrl: "https://x.example",
+        dependencies: [
+          { name: "db", host: "127.0.0.1", port: 5432 },
+          { name: "search.v2", host: "docker", port: 9200 },
+        ],
         person: { HOME: "/home/maria", MEND_SESSION_ID: "s1" },
       }),
     ).toEqual({
@@ -1368,7 +1374,137 @@ describe("serviceProcessEnv", () => {
       HOME: "/home/maria",
       PORT: "3000",
       MEND_PREVIEW_URL: "https://x.example",
+      MEND_SERVICE_DB_HOST: "127.0.0.1",
+      MEND_SERVICE_DB_PORT: "5432",
+      MEND_SERVICE_SEARCH_V2_HOST: "docker",
+      MEND_SERVICE_SEARCH_V2_PORT: "9200",
       MEND_SESSION_ID: "s1",
     });
+  });
+});
+
+/** Every probe answers; the ports in `docker` only on the Docker sidecar. */
+const routedForwards = (docker: ReadonlySet<number>): Layer.Layer<ForwardAdapter> =>
+  Layer.succeed(ForwardAdapter, {
+    probe: (target) =>
+      Effect.succeed(
+        docker.has(target.port)
+          ? { ...readyRecord(target), arrival: { route: "docker", proof: { kind: "port" } } }
+          : readyRecord(target),
+      ),
+    open: () => Effect.die("no HTTP rule in these recipes"),
+  });
+
+const WEB_DB_CACHE = `
+[service.web]
+command = "pnpm dev"
+port = 3000
+depends = ["db", "cache"]
+
+[service.db]
+command = "postgres"
+port = 5432
+
+[service.cache]
+command = "docker compose up cache"
+port = 6379
+address = "docker"
+`;
+
+describe("a dependency's address in a Service's env", () => {
+  it("is each dependency's host and port as it is reached, recomputed at a restart, never recorded", async () => {
+    const created: CreateOptions[] = [];
+    const opened: Array<SessionOptions | PersonSessionOptions> = [];
+    const docker = new Set<number>();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const { engine, session } = yield* provisionIn(project);
+          yield* engine.launch(session.id, ["codex"]);
+          writeMendToml(tmp, session.worktree, WEB_DB_CACHE);
+          const before = opened.length;
+
+          const web = yield* engine.runServiceRecipe(session.id, "web", ownerStart);
+
+          expect(opened.slice(before).map((options) => options.env)).toEqual([
+            { PORT: "5432" },
+            { PORT: "6379" },
+            {
+              PORT: "3000",
+              MEND_SERVICE_DB_HOST: "127.0.0.1",
+              MEND_SERVICE_DB_PORT: "5432",
+              MEND_SERVICE_CACHE_HOST: "127.0.0.1",
+              MEND_SERVICE_CACHE_PORT: "6379",
+            },
+          ]);
+          const attempt = web.service.currentAttemptId;
+          expect(attempt === null ? undefined : world.launches.get(attempt)?.env).toEqual({});
+
+          // Docker now publishes cache on its sidecar only.
+          docker.add(6379);
+          yield* engine.restartService(web.service.id, ownerStart);
+          expect(opened.at(-1)?.env).toEqual({
+            PORT: "3000",
+            MEND_SERVICE_DB_HOST: "127.0.0.1",
+            MEND_SERVICE_DB_PORT: "5432",
+            MEND_SERVICE_CACHE_HOST: "docker",
+            MEND_SERVICE_CACHE_PORT: "6379",
+          });
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+        ),
+        forwardAdapterLayer: routedForwards(docker),
+      },
+    );
+  });
+
+  it("refuses a recipe two of whose dependencies would set the same names", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const { engine, session } = yield* provisionIn(project);
+          yield* engine.launch(session.id, ["codex"]);
+          writeMendToml(
+            tmp,
+            session.worktree,
+            [
+              "[service.web]",
+              'command = "pnpm dev"',
+              "port = 3000",
+              'depends = ["db-1", "db_1"]',
+              "[service.db-1]",
+              'command = "postgres"',
+              "port = 5432",
+              "[service.db_1]",
+              'command = "postgres"',
+              "port = 5433",
+            ].join("\n"),
+          );
+          const before = spawned.length;
+
+          const error = yield* engine
+            .runServiceRecipe(session.id, "web", ownerStart)
+            .pipe(Effect.flip);
+
+          expect(error.message).toBe(
+            "mend.toml refuses web: web · depends · names db-1 and db_1, which both set MEND_SERVICE_DB_1_HOST",
+          );
+          expect(spawned.slice(before)).toEqual([]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned) },
+    );
   });
 });

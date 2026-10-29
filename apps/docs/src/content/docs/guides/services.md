@@ -180,9 +180,13 @@ one of its Services does. `mend service <name> --wait` follows it and names each
 starts and answers, for as long as `--timeout` allows.
 
 Each started Service also gets `PORT` (its port) and, when its preview has an address,
-`MEND_PREVIEW_URL`. A restart runs what the Service ran before, with the same directory and
-environment, even after `mend.toml` changed; a new start reads the file again. Nothing in the file
-starts on its own.
+`MEND_PREVIEW_URL`. For each recipe it `depends` on it gets `MEND_SERVICE_<NAME>_HOST` and
+`MEND_SERVICE_<NAME>_PORT`, where that dependency answers inside the workspace, with the name
+upper-cased and anything outside `A-Z0-9` turned into `_` (`db-main` gives
+`MEND_SERVICE_DB_MAIN_HOST`). A Docker-published dependency gets the host Mend reaches it on. Two
+dependencies that would give the same names refuse the recipe. A restart runs what the Service ran
+before, with the same directory and environment, even after `mend.toml` changed; a new start reads
+the file again. Nothing in the file starts on its own.
 
 A problem with one recipe refuses that recipe alone, naming the key, and the others still run.
 `mend service <name>` tells you why a refused one does not. A key Mend does not know is ignored and

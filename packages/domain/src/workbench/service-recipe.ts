@@ -250,6 +250,10 @@ export class ServiceStartProgress extends Schema.Class<ServiceStartProgress>(
   ),
 }) {}
 
+/** `MEND_SERVICE_<NAME>`: the recipe name upper-cased, each character outside `[A-Z0-9]` a `_`. */
+export const dependencyEnvPrefix = (name: string): string =>
+  `MEND_SERVICE_${name.toUpperCase().replace(/[^A-Z0-9]/gu, "_")}`;
+
 /** A refusal as a person reads it: `web · cwd · is absolute; …`. */
 export const recipeRefusalLine = (refusal: RecipeRefusal): string =>
   [refusal.name ?? "mend.toml", refusal.key, refusal.message].join(" · ");

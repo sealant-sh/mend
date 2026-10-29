@@ -3,6 +3,7 @@ import * as path from "node:path";
 
 import {
   DEFAULT_RECIPE_READY,
+  dependencyEnvPrefix,
   ENV_NAME,
   IgnoredDeclaration,
   parseDuration,
@@ -582,6 +583,19 @@ export const resolveDeclarations = (
         refuse(recipe.name, `names ${dependency}, which no recipe declares`);
         break;
       }
+    }
+  }
+
+  for (const recipe of runnable.values()) {
+    const named = new Map<string, string>();
+    for (const dependency of recipe.depends) {
+      const prefix = dependencyEnvPrefix(dependency);
+      const earlier = named.get(prefix);
+      if (earlier !== undefined) {
+        refuse(recipe.name, `names ${earlier} and ${dependency}, which both set ${prefix}_HOST`);
+        break;
+      }
+      named.set(prefix, dependency);
     }
   }
 

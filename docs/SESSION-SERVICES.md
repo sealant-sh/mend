@@ -218,17 +218,24 @@ read whole: the recipes, each refusal with its key, the ignored keys, `[preview]
 names the refused recipes with their reasons.
 
 **How a recipe runs.** The process gets the recipe's `env`, then `PORT` (its `port`), then
-`MEND_PREVIEW_URL`, then Mend's own names for the person it runs as, each over the one before.
-`MEND_PREVIEW_URL` is the Service's own preview's address when it is a browser Service, else the
-`[preview]` Service's, and is unset, never empty, when previews are off or that preview has no
-address yet. They are process environment, so they reach a Service in a standby workspace whose
-workspace environment was fixed before its worktree was known. `depends` starts each dependency
-first, one start at a time. One already live in the session is not started again, but it counts only
-once it has answered its own `ready` rule: one that never did is checked again, within its own
-timeout, and a command-less one has its port looked at again. A command-less one not yet live is
-adopted and waited for within its `ready.timeout`. The first that fails or never answers stops the
-start with its name, leaving the ones already started running. The readiness wait holds nothing
-another Service's stop needs.
+`MEND_PREVIEW_URL` and each dependency's address, then Mend's own names for the person it runs as,
+each over the one before. `MEND_PREVIEW_URL` is the Service's own preview's address when it is a
+browser Service, else the `[preview]` Service's, and is unset, never empty, when previews are off or
+that preview has no address yet. For each recipe in its `depends`, a Service gets
+`MEND_SERVICE_<NAME>_HOST` and `MEND_SERVICE_<NAME>_PORT`, where it answers inside the workspace:
+`<NAME>` is the recipe's name upper-cased with each character outside `A-Z0-9` an `_` (`db-main`
+gives `MEND_SERVICE_DB_MAIN_*`). The host is `127.0.0.1`, or for an `address = "docker"` dependency
+whichever of `127.0.0.1` and the Docker sidecar (`docker`) Mend reaches it on. A recipe whose two
+dependencies give the same names is refused, and a recipe's `env` cannot set them (`MEND_*` is
+Mend's). They are worked out at each start and restart, never recorded with the attempt; a
+dependency not running at a restart is left out. They are process environment, so they reach a
+Service in a standby workspace whose workspace environment was fixed before its worktree was known.
+`depends` starts each dependency first, one start at a time. One already live in the session is not
+started again, but it counts only once it has answered its own `ready` rule: one that never did is
+checked again, within its own timeout, and a command-less one has its port looked at again. A
+command-less one not yet live is adopted and waited for within its `ready.timeout`. The first that
+fails or never answers stops the start with its name, leaving the ones already started running. The
+readiness wait holds nothing another Service's stop needs.
 
 **One rule says a Service is up.** The recipe's `ready` decides it at the start, at a restart, at
 the 20-second background probe and when the server starts again. A port that accepts a connection is
@@ -282,8 +289,8 @@ step, done, unchanged since it last ran, refused, failed or stopped.
 
 **What a restart runs.** An attempt records its command, `cwd`, the recipe's `env` and its `ready`
 rule. A restart replays those, never the file as it reads now, so a turn that edited `mend.toml`
-changes nothing until a new start. `PORT`, `MEND_PREVIEW_URL` and the person's names are worked out
-again at each start.
+changes nothing until a new start. `PORT`, `MEND_PREVIEW_URL`, the dependencies' addresses and the
+person's names are worked out again at each start.
 
 Project recipes, the machine-local ones the web app adds, keep their four fields: no `cwd`, `env`,
 `ready`, `host`, `address` or `depends`.
@@ -583,7 +590,6 @@ runs that full stack and ships something usable on its own.
 - Host port allocation range. A stable Service prefers its previous port and reports endpoint
   movement when that port is occupied.
 - The friendly-address lookup (`session:port`), if ever; this is presentation only.
-- The recipe digest and its approval (ADR 0017, delivery 9c), and a session dependency's address in
-  the environment (`MEND_SERVICE_<NAME>_HOST`/`_PORT`).
+- The recipe digest and its approval (ADR 0017, delivery 9c).
 - Sharing setup's output across workspaces, once a project's restore has been measured against its
   install (ADR 0017, decision 4).

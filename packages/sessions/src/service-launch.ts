@@ -5,6 +5,7 @@ import * as tls from "node:tls";
 import type { WorktreeId } from "@mend/domain";
 import {
   DEFAULT_SERVICE_LAUNCH,
+  dependencyEnvPrefix,
   type RecipeEnv,
   type RecipeReady,
   type RepoRelativePath,
@@ -54,15 +55,21 @@ export const WORKSPACE_REPO = "/workspace/repo";
 export const serviceCwdOf = (cwd: RepoRelativePath | null): string | undefined =>
   cwd === null ? undefined : `${WORKSPACE_REPO}/${cwd}`;
 
+/** Where a session dependency answers from inside the workspace. */
+export interface DependencyAddress {
+  readonly name: string;
+  readonly host: string;
+  readonly port: number;
+}
+
 /**
  * A Service process's environment, each layer over the one before (the workspace's and the
  * project's are the workspace's own, beneath all of these):
  *
  * 1. `sharedBinding`: what a bound shared service provides (P-SLNT-46); nothing binds one yet.
  * 2. `recipe`: the recipe's own `env`, which may not name `MEND_*` or `PORT`.
- * 3. Mend's: `PORT`, and `MEND_PREVIEW_URL` when a preview has an address (unset, never empty,
- *    when none does). A session dependency's address (`MEND_SERVICE_<NAME>_HOST`/`_PORT`) is not
- *    set yet; it waits on Yiannis's answer, and when it comes it joins this layer.
+ * 3. Mend's: `PORT`, `MEND_PREVIEW_URL` when a preview has an address (unset, never empty, when
+ *    none does), and `MEND_SERVICE_<NAME>_HOST`/`_PORT` for each dependency.
  * 4. `person`: Mend's identity plumbing for a person executor, last so nothing shadows it.
  */
 export const serviceProcessEnv = (layers: {
@@ -70,12 +77,19 @@ export const serviceProcessEnv = (layers: {
   readonly recipe: RecipeEnv;
   readonly port: number;
   readonly previewUrl: string | null;
+  readonly dependencies: ReadonlyArray<DependencyAddress>;
   readonly person: Readonly<Record<string, string>>;
 }): Readonly<Record<string, string>> => ({
   ...layers.sharedBinding,
   ...layers.recipe,
   PORT: String(layers.port),
   ...(layers.previewUrl === null ? {} : { MEND_PREVIEW_URL: layers.previewUrl }),
+  ...Object.fromEntries(
+    layers.dependencies.flatMap(({ name, host, port }) => [
+      [`${dependencyEnvPrefix(name)}_HOST`, host],
+      [`${dependencyEnvPrefix(name)}_PORT`, String(port)],
+    ]),
+  ),
   ...layers.person,
 });
 

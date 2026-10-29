@@ -156,6 +156,12 @@ service = "web"
     ["cwd", 'cwd = "a\\u0000b"', "cwd", /NUL/],
     ["cwd", "cwd = 3", "cwd", /repository-relative/],
     ["env", 'env = { MEND_X = "1" }', "env.MEND_X", /MEND_\* names are Mend's/],
+    [
+      "env",
+      'env = { MEND_SERVICE_DB_HOST = "db.local" }',
+      "env.MEND_SERVICE_DB_HOST",
+      /MEND_\* names are Mend's/,
+    ],
     ["env", 'env = { PORT = "3000" }', "env.PORT", /PORT is Mend's/],
     ["env", "env = { X = 1 }", "env.X", /string/],
     ["env", 'env = { "1X" = "a" }', "env.1X", /not an environment variable name/],

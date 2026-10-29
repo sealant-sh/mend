@@ -1806,6 +1806,8 @@ const servicesLayer = (world: World) =>
           browserScheme: input.browserScheme ?? null,
           bindAddresses: input.bindAddresses ?? null,
           preferredHostPort: input.preferredHostPort ?? null,
+          hostPolicy: input.hostPolicy ?? "rewrite",
+          address: input.address ?? "loopback",
           currentAttemptId: null,
           currentForwardId: null,
           attemptHistoryComplete: input.attemptHistoryComplete ?? true,
