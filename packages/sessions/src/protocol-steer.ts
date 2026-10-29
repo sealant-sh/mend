@@ -180,7 +180,7 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
     const turn = yield* conversations.byTurnId(input.turnId);
     if (turn === null) return yield* new AgentTurnNotFoundError({ turnId: input.turnId });
     const sender = turnSteerSender(turn);
-    if (sender === null || sender !== input.sender)
+    if (sender !== input.sender)
       return yield* new TurnSteerForbiddenError({
         turnId: turn.id,
         reason: sender === null ? "no-sender" : "not-sender",

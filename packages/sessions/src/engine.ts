@@ -19311,9 +19311,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
       const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => {
-        const steering = sharedControlFor(agentProcess);
+        const sharedControl = sharedControlFor(agentProcess);
         return {
-          ...(steering === undefined ? {} : { sharedControl: steering }),
+          ...(sharedControl === undefined ? {} : { sharedControl }),
           onRequestChanged: (changedSessionId) =>
             reconcileSession(changedSessionId, { sweep: false }).pipe(
               Effect.catchTag("SessionNotFoundError", () => Effect.void),
