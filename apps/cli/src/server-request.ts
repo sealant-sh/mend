@@ -29,8 +29,9 @@ export class MendRequestError extends Error {
       readonly tag: string | null;
       readonly body?: unknown;
     } | null = null,
+    options?: { readonly cause: unknown },
   ) {
-    super(message);
+    super(message, options);
     this.name = "MendRequestError";
     this.kind = kind;
     this.status = status;
@@ -71,6 +72,26 @@ export const noAnswerOf = (error: unknown): NoAnswer => {
   return "unreachable";
 };
 
+/** Codes that prove a connection never opened, so the server cannot have seen the request. */
+const NEVER_CONNECTED_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/** Whether a thrown `fetch` proves the request never left: any other failure may have reached it. */
+export const neverConnected = (error: unknown): boolean => {
+  const cause =
+    typeof error === "object" && error !== null && "cause" in error ? error.cause : null;
+  if (cause instanceof AggregateError && cause.errors.length > 0)
+    return cause.errors.every((attempt) => neverConnected({ cause: attempt }));
+  const code = codeOf(cause) ?? codeOf(error);
+  return code !== null && NEVER_CONNECTED_CODES.has(code);
+};
+
 /** Seconds as the CLI says them elsewhere: `42s`, `5 min`. */
 export const spoken = (ms: number): string => {
   const seconds = Math.round(ms / 1000);
@@ -99,9 +120,18 @@ export const noAnswerError = (
   serverUrl: string,
   call: string,
   waitedMs: number,
+  status: number | null = null,
 ): MendRequestError => {
   const kind = noAnswerOf(error);
-  return new MendRequestError(kind, noAnswerMessage(kind, serverUrl, call, waitedMs));
+  return new MendRequestError(
+    kind,
+    noAnswerMessage(kind, serverUrl, call, waitedMs),
+    status,
+    null,
+    {
+      cause: error,
+    },
+  );
 };
 
 /**

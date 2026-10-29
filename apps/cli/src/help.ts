@@ -53,6 +53,8 @@ export interface CommandDoc {
   readonly see?: ReadonlyArray<string>;
   /** Kept out of the index and man index (the installer's renderer). */
   readonly hidden?: boolean;
+  /** The command parses its own flags, `--` included; the global flag gate leaves it alone. */
+  readonly parsesOwnFlags?: true;
 }
 
 const project = (what = "the project"): OptionDoc => ({
@@ -396,6 +398,32 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
     ],
     see: ["logs", "wait", "codex"],
+  },
+  {
+    name: "message",
+    section: "sessions",
+    summary: "send words to a session",
+    synopsis: ["<session> <text|-> [--queue] [--json]", '<session> [--queue] [--json] -- "<text>"'],
+    parsesOwnFlags: true,
+    description: [
+      "Sends words to a live conversation. Send steers your running turn by default. The per-person setting Send steers the running turn turns that off; then Send creates a turn that waits behind work already running.",
+      "A message during another person's turn becomes a new turn. --queue always creates a new turn. Neither changes who may control the session. A stopped or terminal-mode session is refused: resume it first.",
+      "The session is an id, an unambiguous id prefix, or the worktree name accepted by mend logs. Both arguments are required. Use - to read all text from stdin, or -- before text beginning with a dash. Whitespace and newlines are preserved.",
+      "Prints what Mend observed and returns without waiting for the agent to finish. Exit 0 means accepted or recorded as a turn; 1 means refused, not sent, or an observed failed, cancelled or interrupted turn; 2 means delivery or the request outcome is not confirmed and prints the request key. A new invocation sends a new message. The command does not retry or poll.",
+    ],
+    options: [
+      { flag: "--queue", text: "create a new turn instead of steering the running turn" },
+      { flag: "--json", text: "print the versioned receipt or error as JSON" },
+    ],
+    examples: [
+      {
+        command: 'mend message 7bd9 "Keep the public response shape."',
+        text: "send with your setting",
+      },
+      { command: 'mend message 7bd9 --queue "Then add the migration."', text: "leave a next turn" },
+      { command: "mend message 7bd9 - < follow-up.txt", text: "read the words from stdin" },
+    ],
+    see: ["sessions", "logs", "wait"],
   },
   {
     name: "logs",

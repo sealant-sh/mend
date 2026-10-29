@@ -131,7 +131,9 @@ const resolve = (argv: ReadonlyArray<string>): Resolved => {
   if (first === undefined) return pageNamed("ui", []);
   const root = ROOT_PAGES.get(first);
   if (root !== undefined) return pageNamed(root, argv.slice(1));
-  if (first === "qr" || isFlag(first)) return { kind: "ungated" };
+  if (first === "qr" || isFlag(first) || findCommand([first])?.parsesOwnFlags === true) {
+    return { kind: "ungated" };
+  }
   if (!COMMANDS.some((doc) => firstWordOf(doc) === first || doc.aliases?.includes(first))) {
     return { kind: "ungated" };
   }

@@ -204,6 +204,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "main.ts projectsCommand": { pages: ["projects"] },
   "main.ts refreshCommand": { pages: ["refresh"] },
   "main.ts modelsCommand": { pages: ["models"] },
+  "message.ts parseMessageArguments": { pages: ["message"] },
   "main.ts sessionsCommand": { pages: ["sessions"] },
   "main.ts worktreesCommand": { pages: ["worktrees"] },
   "main.ts dashboard": CHILD,
@@ -386,7 +387,7 @@ const mainFunctionSource = (): string => {
 };
 
 const DISPATCHED_WORD = /\bcase "([^"]+)":|command === "([^"]+)"/g;
-const FREE_TEXT: ReadonlySet<string> = new Set(["qr"]);
+const FREE_TEXT: ReadonlySet<string> = new Set(["qr", "message"]);
 
 describe("the regression lever", () => {
   const literals = flagLiterals();
@@ -409,6 +410,14 @@ describe("the regression lever", () => {
       const child = new Set(reads.childArgv ?? []);
       for (const literal of literals.get(key) ?? []) {
         if (child.has(literal)) continue;
+        const ownParser = docs.find((doc) => doc?.parsesOwnFlags === true);
+        if (ownParser !== undefined && ownParser !== null) {
+          expect(
+            literal === "--" || spellingsOf([ownParser]).has(literal),
+            `${key}: ${literal} is not a row of ${ownParser.name}`,
+          ).toBe(true);
+          continue;
+        }
         const root = ROOT_PAGES.get(literal);
         const argvs =
           root !== undefined && reads.pages.includes(root)
@@ -437,8 +446,9 @@ describe("the regression lever", () => {
     expect(words.length).toBeGreaterThan(40);
     expect(words).toContain("server");
     for (const word of words) {
-      if (FREE_TEXT.has(word)) continue;
-      expect(flagRefusal([word, "--surely-not-a-flag"]), word).not.toBeNull();
+      const refusal = flagRefusal([word, "--surely-not-a-flag"]);
+      if (FREE_TEXT.has(word)) expect(refusal, word).toBeNull();
+      else expect(refusal, word).not.toBeNull();
     }
   });
 });

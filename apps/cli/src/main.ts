@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
+import { text as streamText } from "node:stream/consumers";
 
 import {
   AMBIENT_REMOVED_GUIDANCE,
@@ -87,6 +88,7 @@ import { type Download, landCommand, pickSession, pullCommand } from "./landing.
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { throwawayLoginDir } from "./login-dir.ts";
 import { loginCommand } from "./login.ts";
+import { messageCommand } from "./message.ts";
 import { modelCatalogJson, modelCatalogLines, type HarnessModelCatalogDto } from "./models.ts";
 import { nodeVersionIssue, quietSqliteWarning } from "./node-runtime.ts";
 import {
@@ -388,13 +390,14 @@ const mendCliHome = (): string => {
 
 const CONFIG_PATH = path.join(mendCliHome(), "cli.json");
 
+/** The CLI's config; throws when `cli.json` cannot be read. */
 const loadConfig = (): CliConfig => {
   let fileConfig: Partial<CliConfig> = {};
   if (fs.existsSync(CONFIG_PATH)) {
     try {
       fileConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")) as Partial<CliConfig>;
     } catch {
-      fail(`could not parse ${CONFIG_PATH}`);
+      throw new Error(`could not parse ${CONFIG_PATH}`);
     }
   }
   const configuredUrl = process.env["MEND_URL"] ?? fileConfig.url ?? null;
@@ -488,6 +491,7 @@ const request = async <T>(
   method: "GET" | "POST" | "PUT" | "DELETE",
   route: string,
   body?: unknown,
+  redirect: RequestRedirect = "follow",
 ): Promise<T> => {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
@@ -498,6 +502,7 @@ const request = async <T>(
     response = await fetch(`${config.url}/api${route}`, {
       method,
       headers,
+      redirect,
       // Spread, not `body: null` — fresh oxlint rejects a body key on GETs.
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -519,7 +524,7 @@ const request = async <T>(
   try {
     text = await response.text();
   } catch (error) {
-    throw noAnswerError(error, config.url, call, Date.now() - started);
+    throw noAnswerError(error, config.url, call, Date.now() - started, response.status);
   }
   if (!response.ok) {
     let parsed: unknown = null;
@@ -4670,6 +4675,7 @@ _mend() {
     'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode' 'pi:new session + pi'
     'run:new session + arbitrary command'
     'logs:recorded terminal output of a session' 'wait:wait for the command of a session to end'
+    'message:send words to a session'
     'attach:reattach to a running session' 'stop:stop the agent — record and review remain'
     'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
@@ -4710,7 +4716,7 @@ _mend() {
     handoff)
       compadd -- --with --project --yes
       ;;
-    shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait)
+    shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait|message)
       local -a sessions
       sessions=(\${(f)"$(command mend __complete session 2>/dev/null | tr '\\t' ':')"})
       (( \${#sessions} )) && _describe 'session' sessions
@@ -4723,7 +4729,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait message attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -4744,7 +4750,7 @@ const BASH_COMPLETIONS = `_mend() {
     handoff)
       COMPREPLY=( $(compgen -W "--with --project --yes" -- "$cur") )
       ;;
-    shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait)
+    shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait|message)
       COMPREPLY=( $(compgen -W "$(command mend __complete session 2>/dev/null | cut -f1)" -- "$cur") )
       ;;
   esac
@@ -5144,21 +5150,26 @@ const supervisedRun = async (
  * The session a word names, settled ones included: a full id is read directly; a prefix of the id,
  * or a worktree's name, is looked for in every project, as `mend land` does.
  */
-const resolveAnySession = async (config: CliConfig, word: string): Promise<SessionDto> => {
+const resolveAnySession = async (
+  config: CliConfig,
+  word: string,
+  read: typeof request = api,
+  refuse: (message: string) => never = fail,
+): Promise<SessionDto> => {
   if (isSessionId(word)) {
-    return (await api<SessionDetailLiteDto>(config, "GET", `/sessions/${word}`)).session;
+    return (await read<SessionDetailLiteDto>(config, "GET", `/sessions/${word}`)).session;
   }
-  const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
+  const projects = await read<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
   const details = await Promise.all(
     projects.map((project) =>
-      api<ProjectDetailDto>(config, "GET", `/projects/${project.id}?deadEnds=include`),
+      read<ProjectDetailDto>(config, "GET", `/projects/${project.id}?deadEnds=include`),
     ),
   );
   const picked = pickSession(
     details.flatMap((detail) => detail.sessions),
     word,
   );
-  if ("error" in picked) return fail(picked.error);
+  if ("error" in picked) return refuse(picked.error);
   return picked.session;
 };
 
@@ -6288,7 +6299,36 @@ const main = async () => {
     if (result._tag === "error") return fail(result.message);
     return;
   }
-  const config = loadConfig();
+  if (command === "message") {
+    process.exitCode = await messageCommand(rest, {
+      connect: () => {
+        const config = loadConfig();
+        return {
+          resolveSession: (word) =>
+            resolveAnySession(config, word, request, (message) => {
+              throw new Error(message);
+            }),
+          // A redirect after the POST is an answer: a follow-up hop's failure says nothing of the first.
+          post: (route, body) => request<unknown>(config, "POST", route, body, "manual"),
+        };
+      },
+      readStdin: () => streamText(process.stdin),
+      uuid: crypto.randomUUID,
+      stdout: (text) => {
+        process.stdout.write(text);
+      },
+      stderr: (text) => {
+        process.stderr.write(text);
+      },
+    });
+    return;
+  }
+  let config: CliConfig;
+  try {
+    config = loadConfig();
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
   switch (command) {
     case "adopt":
       return adopt(config, rest);
