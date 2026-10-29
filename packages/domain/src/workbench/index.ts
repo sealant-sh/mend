@@ -34,6 +34,7 @@ export * from "./change.ts";
 export * from "./checkpoint.ts";
 export * from "./connected-credential.ts";
 export * from "./default-login.ts";
+export * from "./duration.ts";
 export * from "./context.ts";
 export * from "./dotenv.ts";
 export * from "./folder.ts";

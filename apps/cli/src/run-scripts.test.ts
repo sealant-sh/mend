@@ -1,4 +1,4 @@
-import { serviceStartCorrelation } from "@mend/domain/workbench";
+import { durationLine, parseDuration, serviceStartCorrelation } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,10 +7,8 @@ import {
   endLine,
   exitStatusOf,
   followLogs,
-  durationLine,
   isSessionId,
   type LogPage,
-  parseDuration,
   parseLogsArgs,
   parseWaitArgs,
   pickProcess,
