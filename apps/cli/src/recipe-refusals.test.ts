@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { missingRecipeLine } from "./recipe-refusals.ts";
+import { approvedVersionLine, missingRecipeLine } from "./recipe-refusals.ts";
 
 describe("mend service run <name> with no recipe to run", () => {
   it("says why mend.toml refuses it, key by key", () => {
@@ -49,5 +49,18 @@ describe("mend service run <name> with no recipe to run", () => {
         "  resource.web.ports.http · must be a port in 1..65535\n" +
         "  resource.web.healthcheck · is ignored: this Mend does not read it",
     );
+  });
+});
+
+describe("a start that ran a recipe's approved version", () => {
+  it("says the recipe changed and whose Start runs it", () => {
+    expect(approvedVersionLine({ service: { name: "web" }, approvedVersion: true })).toBe(
+      "web · recipe changed · the owner's Start runs it",
+    );
+  });
+
+  it("says nothing when it ran the file, or the server is older", () => {
+    expect(approvedVersionLine({ service: { name: "web" }, approvedVersion: false })).toBeNull();
+    expect(approvedVersionLine({ service: { name: "web" } })).toBeNull();
   });
 });

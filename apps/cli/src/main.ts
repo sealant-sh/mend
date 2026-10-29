@@ -99,7 +99,11 @@ import {
 import { type ApiCall, pairCommand, qrCommand, type T3GatewayDto } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
 import { isTerminalGone, leaveRawMode } from "./raw-mode.ts";
-import { missingRecipeLine, type ServiceDeclarationsDto } from "./recipe-refusals.ts";
+import {
+  approvedVersionLine,
+  missingRecipeLine,
+  type ServiceDeclarationsDto,
+} from "./recipe-refusals.ts";
 import {
   beforeDeadline,
   type CommandDetail,
@@ -2079,6 +2083,8 @@ interface ServiceViewDto {
   readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
   /** A recipe start's answer: how its `[setup]` went; absent from older servers. */
   readonly setup?: ServiceStartSetupSlice | null;
+  /** A start's or restart's answer: it ran the recipe's approved version; absent from older servers. */
+  readonly approvedVersion?: boolean;
 }
 
 interface ProcessLogPageDto {
@@ -2938,11 +2944,14 @@ const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) =>
   const needle = args.find((a) => !a.startsWith("--"));
   if (needle === undefined) return fail(usageOf("service restart"));
   const service = await findLiveService(config, needle);
-  const restarted = await withSpinner(
+  const view = await withSpinner(
     `restarting ${service.label ?? service.id.slice(0, 8)}…`,
-    mutateService(config, "POST", `/services/${service.id}/restart`),
+    api<ServiceViewDto>(config, "POST", `/services/${service.id}/restart`),
   );
+  const restarted = flattenService(view);
   say(`${green("✓")} restarted · ${restarted.status}`);
+  const approved = approvedVersionLine(view);
+  if (approved !== null) say(`${amber("!")} ${approved}`);
   printServiceEndpoint(config, restarted);
 };
 
