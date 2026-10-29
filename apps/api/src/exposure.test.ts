@@ -448,7 +448,24 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
     );
     const http = previewOf(sibling("http://mend.example.com"));
     expect(http?.established).toBe("open");
-    expect(http?.fix).toContain("set APP_URL to https");
+    expect(http?.fix).toContain("set APP_URL to an https origin");
+    expect(http?.fix, "no Tailscale advice for a domain behind an edge").not.toContain("tailscale");
+  });
+
+  it("refuses the tailnet default under a public exposure, whatever was declared", () => {
+    const posture: ExposurePosture = {
+      ...closed,
+      exposure: "public",
+      preview: TAILNET_PREVIEW,
+      declared: ["preview-gateway"],
+    };
+    const item = previewOf(posture);
+    expect(item?.established).toBe("open");
+    expect(item?.detail).toContain(
+      "open: previews are on a tailnet, and MEND_EXPOSURE is public: a tailnet's names are one site, not a registrable domain of the previews' own",
+    );
+    expect(exposureRefusal("public", evaluateExposureGate(posture))).toContain("preview-gateway:");
+    expect(previewOf({ ...posture, exposure: "private" })?.established).toBe("declared");
   });
 
   it("names a non-default public port, and reads a statement that cannot describe the listener as open", () => {
@@ -506,7 +523,7 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
     expect(item?.detail).toContain(
       "open: Mend's cookies are named better-auth.session_token, not __Host-, and every preview is Mend's own site: APP_URL is http",
     );
-    expect(item?.fix).toContain("set APP_URL to https");
+    expect(item?.fix).toContain("set APP_URL to an https origin");
     expect(exposureRefusal("private", evaluateExposureGate(posture))).toBeNull();
     expect(exposureRefusal("public", evaluateExposureGate(posture))).toContain("preview-gateway:");
   });

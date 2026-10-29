@@ -340,7 +340,7 @@ const hostCookieFact = (posture: ExposurePosture): PreviewFact => {
     : {
         established: "open",
         said: `Mend's cookies are named ${cookie.name}, not __Host-, and every preview is Mend's own site: APP_URL is ${new URL(posture.appUrl).protocol.slice(0, -1)}`,
-        fix: "set APP_URL to https, such as Mend's web port served by tailscale serve --https=443 on this machine",
+        fix: "set APP_URL to an https origin",
       };
 };
 
@@ -422,6 +422,16 @@ const routingOf = (
             said: `previews are https at https://${routing.hostname}:<port>, a port each from ${writePreviewPorts(routing.ports)}`,
           },
           hostCookieFact(posture),
+          posture.exposure === "public"
+            ? {
+                established: "open",
+                said: "previews are on a tailnet, and MEND_EXPOSURE is public: a tailnet's names are one site, not a registrable domain of the previews' own",
+                fix: "keep the exposure private on a tailnet, or serve previews under a registrable domain of their own (MEND_PREVIEW_DOMAIN, behind the edge)",
+              }
+            : {
+                established: "observed",
+                said: `previews are on a tailnet, under MEND_EXPOSURE=${posture.exposure}`,
+              },
         ],
         outside: {
           unobservable: `the Tailscale steps for ${routing.hostname} (MagicDNS, HTTPS certificates, the Service and its ports, a tag on this host, its approval, and grants for the people who open previews), and who reaches the published listener`,
