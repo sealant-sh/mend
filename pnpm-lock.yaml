@@ -835,9 +835,15 @@ importers:
       '@types/react':
         specifier: 'catalog:'
         version: 19.2.17
+      '@types/react-dom':
+        specifier: 'catalog:'
+        version: 19.2.3(@types/react@19.2.17)
       babel-preset-expo:
         specifier: ~57.0.5
         version: 57.0.5(@babel/core@7.29.7)(@babel/runtime@7.29.7)(expo@57.0.9)(react-refresh@0.18.0)
+      jsdom:
+        specifier: 'catalog:'
+        version: 28.1.0(@noble/hashes@2.2.0)
       playwright-core:
         specifier: 'catalog:'
         version: 1.64.0

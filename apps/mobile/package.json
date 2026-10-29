@@ -73,7 +73,9 @@
     "@mend/test-ci": "workspace:*",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
     "babel-preset-expo": "~57.0.5",
+    "jsdom": "catalog:",
     "playwright-core": "catalog:",
     "typescript": "~6.0.3",
     "vitest": "catalog:"

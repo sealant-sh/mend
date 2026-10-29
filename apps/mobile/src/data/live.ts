@@ -15,10 +15,11 @@ import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import { Platform } from "react-native";
 
-import { failureLogLine, failureWords } from "@/data/failure-words";
+import { failureLogLine, failureWords, NO_ANSWER } from "@/data/failure-words";
 import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
 import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
+import { heard, Unreachable } from "@/data/reachability";
 import type { CheckpointDto } from "@/data/review-state";
 import type {
   ConversationWaitDto,
@@ -329,7 +330,11 @@ const send = async (method: Method, route: string, body?: unknown): Promise<Resp
       authorization: `Bearer ${config.token}`,
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }).catch((cause: unknown) => {
+    heard(false);
+    throw new Unreachable(NO_ANSWER, { cause });
   });
+  heard(true);
   if (!response.ok) {
     let parsed: unknown = null;
     try {
@@ -718,25 +723,6 @@ export const useWorkspaceRetirement = (sessionId: string, enabled: boolean) =>
     retry: false,
   });
 
-export interface TranscriptEventDto {
-  readonly kind: string;
-  readonly text: string | null;
-  readonly name: string | null;
-  readonly command: string | null;
-  readonly output: string | null;
-}
-
-export const useTranscript = (sessionId: string, live: boolean) =>
-  useQuery({
-    queryKey: ["transcript", sessionId],
-    queryFn: () =>
-      api<{ readonly sourceHarness: string; readonly events: ReadonlyArray<TranscriptEventDto> }>(
-        "GET",
-        `/sessions/${sessionId}/transcript`,
-      ),
-    refetchInterval: live ? 1_500 : false,
-  });
-
 // ─── github discovery (the server host's own gh CLI answers) ────────────────
 
 export interface GhStatusDto {
@@ -795,7 +781,7 @@ export const useAdoptProject = () => {
         // cloning. Only on a dropped connection (never on an answered
         // failure), watch the project list for the name instead of failing
         // blind.
-        if (!(error instanceof TypeError)) throw error;
+        if (!(error instanceof Unreachable)) throw error;
         const startedAt = Date.now();
         while (Date.now() - startedAt < ADOPT_WATCH_MS) {
           await new Promise((resolve) => setTimeout(resolve, ADOPT_POLL_MS));

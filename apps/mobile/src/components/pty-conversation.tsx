@@ -10,11 +10,13 @@ import { useKeyboardState } from "react-native-keyboard-controller";
 import { EvButton } from "@/components/button";
 import { ComposerField, ComposerTextInput } from "@/components/composer";
 import { MendMarkdown } from "@/components/markdown";
+import { PageEntry } from "@/components/page-entry";
 import { ComposerDock, usePaneEdges } from "@/components/pane";
 import { SessionPullRequest } from "@/components/pull-request-card";
 import { MonoText, UiText } from "@/components/typography";
-import { loadConfig, useSession, useTranscript, type TranscriptEventDto } from "@/data/live";
+import { loadConfig, useSession } from "@/data/live";
 import { newestPullRequest } from "@/data/pull-requests";
+import { useTranscript, type TranscriptEventDto } from "@/data/transcript";
 import { useTtySocket, type TtyTarget } from "@/data/tty-socket";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
@@ -28,11 +30,15 @@ const sameEvent = (a: TranscriptEventDto, b: TranscriptEventDto): boolean =>
   a.text === b.text &&
   a.name === b.name &&
   a.command === b.command &&
-  a.output === b.output;
+  a.output === b.output &&
+  a.page?.id === b.page?.id;
 
 const EventRow = memo(
   function EventRow({ event }: { readonly event: TranscriptEventDto }) {
     const { colors } = useEvidenceTheme();
+    if (event.page !== null) {
+      return <PageEntry page={event.page} />;
+    }
     if (event.kind === "user" && event.text !== null) {
       return (
         <View
@@ -223,7 +229,10 @@ export function PtyConversation({
 
   const feed = useMemo<ReadonlyArray<FeedEntry>>(
     () => [
-      ...serverEvents.map((event, index) => ({ key: `s${index}`, event })),
+      ...serverEvents.map((event, index) => ({
+        key: event.page === null ? `s${index}` : `page:${event.page.id}`,
+        event,
+      })),
       ...pendingSends.map((pending) => ({
         key: `p${pending.id}`,
         event: {
@@ -232,6 +241,7 @@ export function PtyConversation({
           name: null,
           command: null,
           output: null,
+          page: null,
         },
       })),
     ],
@@ -263,8 +273,11 @@ export function PtyConversation({
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         style={{ flex: 1 }}
+        // LegendList's web build spreads this style onto a DOM element, where `paddingHorizontal`
+        // is not a CSS property and the rows would meet the screen's edges.
         contentContainerStyle={{
-          paddingHorizontal: 16,
+          paddingLeft: 16,
+          paddingRight: 16,
           paddingTop: spacing.xs,
           paddingBottom: bottomPad,
           gap: 10,

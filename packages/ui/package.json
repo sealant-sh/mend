@@ -8,6 +8,7 @@
     "./styles/globals.css": "./src/styles/globals.css",
     "./tokens": "./src/tokens.ts",
     "./page-theme": "./src/page-theme.ts",
+    "./page-frame": "./src/page-frame.ts",
     "./sheet": "./src/components/sheet.tsx",
     "./modal": "./src/components/modal.tsx",
     "./context-menu": "./src/components/context-menu.tsx",

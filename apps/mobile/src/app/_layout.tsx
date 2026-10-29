@@ -108,6 +108,7 @@ export default function RootLayout() {
               <Stack.Screen name="session/[id]" options={{ title: "Session" }} />
               <Stack.Screen name="review/[id]" options={{ title: "Review" }} />
               <Stack.Screen name="diff/[id]" options={{ title: "Diff" }} />
+              <Stack.Screen name="page/[id]" options={{ title: "Page" }} />
             </Stack>
             <AskDialog />
           </ThemeProvider>

@@ -1,16 +1,19 @@
-import { PAGE_FRAME_MIN_URL_LIFE_MS, PAGE_FRAME_TTL_MS } from "@mend/api-contracts";
-import type { PageRef } from "@mend/domain/workbench";
 import {
-  HTML_RENDER_MAX_FIT_HEIGHT,
-  HTML_RENDER_MIN_HEIGHT,
-  htmlRenderResult,
-  htmlRenderShortcutsMessage,
-  htmlRenderThemeFragment,
-  htmlRenderThemeMessage,
-  readHtmlRenderKeyDown,
-  readHtmlRenderLinkRequest,
-} from "@mend/t3-contracts/html-render";
+  PAGE_FRAME_MIN_URL_LIFE_MS,
+  PAGE_FRAME_TTL_MS,
+  type PageRef,
+} from "@mend/domain/workbench";
+import { htmlRenderShortcutsMessage, readHtmlRenderKeyDown } from "@mend/t3-contracts/html-render";
 import { Modal, ModalHeader } from "@mend/ui/modal";
+import {
+  PAGE_FRAME_SANDBOX,
+  fitPageHeight,
+  openPageLink,
+  pageFrameSrc,
+  pageThemeMessage,
+  readPageFrameRequest,
+  usePageLoadDeadline,
+} from "@mend/ui/page-frame";
 import { pageThemes, type PageTheme } from "@mend/ui/page-theme";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -25,29 +28,11 @@ import {
 import { useResolvedDark } from "#/lib/theme";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
-const LOAD_TIMEOUT_MS = 15_000;
 const NEAR_VIEWPORT = "600px 0px";
 const ESCAPE_SHORTCUT = htmlRenderShortcutsMessage(
   [{ key: "escape", metaKey: false, ctrlKey: false, shiftKey: false, altKey: false }],
   [],
 );
-
-const fitHeight = (height: number) =>
-  Math.min(HTML_RENDER_MAX_FIT_HEIGHT, Math.max(HTML_RENDER_MIN_HEIGHT, Math.ceil(height)));
-
-// t3code's reader drops a height of 0, which its bootstrap reports for a page whose content is all
-// fixed-position; that page still loaded.
-const reportedHeight = (data: unknown): number | undefined => {
-  if (typeof data !== "object" || data === null) return undefined;
-  if (!("jsonrpc" in data) || data.jsonrpc !== "2.0") return undefined;
-  if (!("method" in data) || data.method !== "ui/notifications/size-changed") return undefined;
-  if (!("params" in data) || typeof data.params !== "object" || data.params === null) {
-    return undefined;
-  }
-  if (!("height" in data.params)) return undefined;
-  const { height } = data.params;
-  return typeof height === "number" && Number.isFinite(height) && height >= 0 ? height : undefined;
-};
 
 const useNearViewport = (box: RefObject<HTMLElement | null>) => {
   const [near, setNear] = useState(false);
@@ -97,7 +82,7 @@ export function PageFrame({
           onLoadError={() => (attempt === 0 ? retry() : setFailed(true))}
         />
       ) : (
-        <div style={{ height: fitHeight(page.height) }} />
+        <div style={{ height: fitPageHeight(page.height) }} />
       )}
     </div>
   );
@@ -128,7 +113,7 @@ function PageLoader({
   });
   const [src, setSrc] = useState<string | null>(null);
   if (src === null && frame.data !== undefined && !frame.isStale) {
-    setSrc(`${frame.data.url.split("#", 1)[0]}${htmlRenderThemeFragment(theme)}`);
+    setSrc(pageFrameSrc(frame.data.url, theme));
   }
   if (src === null) {
     return frame.isError ? (
@@ -179,47 +164,35 @@ function PageDocument({
   readonly onLoadError: () => void;
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const [height, setHeight] = useState(() => fitHeight(page.height));
-  const answered = useRef(false);
-  const loadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [height, setHeight] = useState(() => fitPageHeight(page.height));
+  const loaded = usePageLoadDeadline(onLoadError);
   const escape = useEffectEvent(() => onEscape?.());
 
   useLayoutEffect(() => {
     const receive = (event: MessageEvent<unknown>) => {
       const frameWindow = frameRef.current?.contentWindow;
       if (frameWindow == null || event.source !== frameWindow) return;
-      const contentHeight = reportedHeight(event.data);
-      if (contentHeight !== undefined) {
-        answered.current = true;
-        clearTimeout(loadTimer.current);
-        setHeight(fitHeight(contentHeight));
-        return;
-      }
       if (readHtmlRenderKeyDown(event.data)?.key === "Escape") {
         escape();
         return;
       }
-      const link = readHtmlRenderLinkRequest(event.data);
-      const url = link === undefined ? null : URL.parse(link.url);
-      if (link === undefined || url === null) return;
-      if (
-        document.activeElement !== frameRef.current ||
-        navigator.userActivation?.isActive === false
-      )
+      const request = readPageFrameRequest(event.data);
+      if (request?.kind === "size") {
+        loaded();
+        setHeight(fitPageHeight(request.height));
         return;
-      window.open(url.href, "_blank", "noopener,noreferrer");
-      frameWindow.postMessage(htmlRenderResult(link.id), "*");
+      }
+      if (request?.kind === "link" && frameRef.current !== null) {
+        openPageLink(frameRef.current, request);
+      }
     };
     window.addEventListener("message", receive);
-    return () => {
-      window.removeEventListener("message", receive);
-      clearTimeout(loadTimer.current);
-    };
-  }, []);
+    return () => window.removeEventListener("message", receive);
+  }, [loaded]);
 
   useEffect(() => {
     // A sandboxed document has an opaque origin, so postMessage requires "*".
-    frameRef.current?.contentWindow?.postMessage(htmlRenderThemeMessage(theme), "*");
+    frameRef.current?.contentWindow?.postMessage(pageThemeMessage(theme), "*");
   }, [theme]);
 
   return (
@@ -227,18 +200,15 @@ function PageDocument({
       ref={frameRef}
       src={src}
       title={page.title}
-      sandbox="allow-scripts allow-forms"
+      sandbox={PAGE_FRAME_SANDBOX}
       referrerPolicy="no-referrer"
       className="block w-full border-0 bg-background"
       style={{ height, colorScheme: theme.appearance }}
       onLoad={() => {
         const frameWindow = frameRef.current?.contentWindow;
-        frameWindow?.postMessage(htmlRenderThemeMessage(theme), "*");
+        frameWindow?.postMessage(pageThemeMessage(theme), "*");
         // A focused frame keeps its keys, so the page passes Escape on only once it is told to.
         if (onEscape !== undefined) frameWindow?.postMessage(ESCAPE_SHORTCUT, "*");
-        // Browsers fire iframe load even for HTTP failures. The injected bootstrap reports size.
-        clearTimeout(loadTimer.current);
-        if (!answered.current) loadTimer.current = setTimeout(onLoadError, LOAD_TIMEOUT_MS);
       }}
     />
   );
