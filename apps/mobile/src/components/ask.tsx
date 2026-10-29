@@ -1,11 +1,9 @@
 // `useAsk`: every confirm-first action and every notice in the app goes through it (data/ask.ts).
-// On a phone it is `Alert.alert`. On the web build, where that does nothing, `AskDialog` (mounted
-// once per pairing, in the root layout) shows the question in the app's own panel, same words and
-// buttons.
 
 import { useSyncExternalStore } from "react";
-import { Modal, Pressable, StyleSheet, View } from "react-native";
+import { Platform, Pressable, StyleSheet, View } from "react-native";
 
+import { AskLayer } from "@/components/ask-layer";
 import { EvButton, type ButtonVariant } from "@/components/button";
 import { UiText } from "@/components/typography";
 import type { Ask, AskButton } from "@/data/ask";
@@ -28,11 +26,9 @@ export function AskDialog() {
   const question = useSyncExternalStore(asker.subscribe, asker.showing, () => null);
   if (question === null) return null;
   const dismiss = () => asker.dismiss(question.id);
-  // Two buttons sit side by side; a longer list of choices stacks, as a phone's alert does.
-  const stacked = question.buttons.length > 2;
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={dismiss}>
+    <AskLayer onRequestClose={dismiss}>
       <Pressable
         onPress={dismiss}
         style={{
@@ -69,16 +65,18 @@ export function AskDialog() {
             </UiText>
           )}
           <View
-            style={
-              stacked
-                ? { marginTop: 8, gap: 8 }
-                : { marginTop: 8, flexDirection: "row", justifyContent: "flex-end", gap: 8 }
-            }
+            style={{
+              marginTop: 8,
+              flexDirection: "row",
+              flexWrap: "wrap",
+              justifyContent: "flex-end",
+              gap: 8,
+            }}
           >
             {question.buttons.map((button, index) => (
               <EvButton
                 key={`${index}:${button.text ?? ""}`}
-                size="sm"
+                size={Platform.OS === "web" ? "sm" : "md"}
                 variant={variantOf(button, question.buttons)}
                 label={button.text ?? "OK"}
                 onPress={() => asker.answer(question.id, button)}
@@ -87,6 +85,6 @@ export function AskDialog() {
           </View>
         </Pressable>
       </Pressable>
-    </Modal>
+    </AskLayer>
   );
 }

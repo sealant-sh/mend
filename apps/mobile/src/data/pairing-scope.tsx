@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { Alert, Platform } from "react-native";
+import { Keyboard } from "react-native";
 
 import { createAsker, type Asker } from "@/data/ask";
 import { useConfig, type MendConfig } from "@/data/live";
@@ -44,7 +44,7 @@ const heldFor = (key: PairingKey): Held => {
     held = {
       key,
       client: new QueryClient({ defaultOptions: { queries: { retry: 1 } } }),
-      asker: createAsker({ os: Platform.OS, alert: Alert.alert }),
+      asker: createAsker({ beforeAsk: () => Keyboard.dismiss() }),
     };
   }
   return held;
