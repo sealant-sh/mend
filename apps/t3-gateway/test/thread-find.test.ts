@@ -1,5 +1,6 @@
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
+import { Worker } from "node:worker_threads";
 
 import {
   AuthSessionId,
@@ -33,7 +34,7 @@ import { findsInThread } from "../src/server-config.ts";
 import { MendClientFetchLive } from "../src/server.ts";
 import { GatewayStateLive, type BearerSession } from "../src/state.ts";
 import { FIND_CACHE_LIMITS, makeThreadFinder } from "../src/thread-find.ts";
-import { afterAll, assert, describe, it } from "./support/effect-vitest.ts";
+import { afterAll, assert, describe, it, vi } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { inlineFindParser, recordingFindParser } from "./support/find-parser.ts";
 import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
@@ -493,24 +494,31 @@ describe("find in a thread, as a shared gateway runs it", () => {
         const slow = withQuestion(small, slowToParse(PARSED_TEXT_LIMIT));
         const parser = yield* FindParser;
         const search = { threadId: THREAD, query: "needle" };
+        const posted = vi.spyOn(Worker.prototype, "postMessage");
+        const terminated = vi.spyOn(Worker.prototype, "terminate");
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            posted.mockRestore();
+            terminated.mockRestore();
+          }),
+        );
         const abandoned = yield* makeThreadFinder(parser)
           .searchThread(slow, search)
           .pipe(Effect.forkChild);
-        yield* Effect.sleep("500 millis");
-        const asked = performance.now();
+        yield* Effect.sleep("5 millis").pipe(
+          Effect.repeat({ until: () => posted.mock.calls.length > 0 }),
+        );
         const exit = yield* Fiber.interrupt(abandoned).pipe(Effect.andThen(Fiber.await(abandoned)));
-        const stopped = performance.now() - asked;
         assert.isTrue(Exit.hasInterrupts(exit));
-        assert.isBelow(stopped, 50);
-
-        const cpu = process.cpuUsage();
-        yield* Effect.sleep("1 second");
-        const { user, system } = process.cpuUsage(cpu);
-        assert.isBelow((user + system) / 1_000, 200, "CPU spent in the second after the interrupt");
+        const [slowParse] = posted.mock.contexts;
+        assert.deepInclude(posted.mock.calls[0]?.[0], { text: slowToParse(PARSED_TEXT_LIMIT) });
+        // That parse takes seconds: the find ends its worker rather than wait it out.
+        assert.deepStrictEqual(terminated.mock.contexts, [slowParse]);
 
         const next = yield* makeThreadFinder(parser).searchThread(small, search);
         assert.strictEqual(next.totalMatches, 2);
-      }).pipe(Effect.provide(sharedParser)),
+        assert.notInclude(posted.mock.contexts.slice(1), slowParse);
+      }).pipe(Effect.scoped, Effect.provide(sharedParser)),
     ),
   );
 
