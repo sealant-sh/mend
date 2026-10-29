@@ -113,9 +113,20 @@ describe("a definition's shape", () => {
     ["a mount path that leaves /", { volumes: [{ name: "data", mountPath: "/var/../etc" }] }],
     ["the root as a mount path", { volumes: [{ name: "data", mountPath: "/" }] }],
     ["an empty probe command", { ready: { kind: "command", argv: [] } }],
+    ["a probe command with no executable", { ready: { kind: "command", argv: [""] } }],
+    ["a probe argument with a NUL byte", { ready: { kind: "command", argv: ["check", "a\0b"] } }],
+    ["a command with no executable", { command: [""] }],
+    ["a command argument with a NUL byte", { command: ["rabbitmq-server", "a\0b"] }],
     ["a reserved name", { name: "postgres" }],
   ])("refuses %s", (_, overrides) => {
     expect(() => define(overrides)).toThrow();
+  });
+
+  it("takes an empty argument after the executable", () => {
+    expect(define({ ready: { kind: "command", argv: ["sh", "-c", ""] } }).ready).toEqual({
+      kind: "command",
+      argv: ["sh", "-c", ""],
+    });
   });
 
   it("takes a literal env value or a project secret by name", () => {

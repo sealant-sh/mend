@@ -92,10 +92,21 @@ export const ResourceLimits = Schema.Struct({
 });
 export type ResourceLimits = typeof ResourceLimits.Type;
 
+/** An executable and its arguments; a later argument may be empty. */
+const Argv = Schema.NonEmptyArray(
+  Schema.String.check(
+    Schema.makeFilter((value: string) => (value.includes("\0") ? "has a NUL byte" : undefined)),
+  ),
+).check(
+  Schema.makeFilter((argv: readonly [string, ...Array<string>]) =>
+    argv[0] === "" ? "names no executable" : undefined,
+  ),
+);
+
 /** A TCP accept on the first TCP port, a probe command, or the preset's own check. */
 export const ResourceReady = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("tcp") }),
-  Schema.Struct({ kind: Schema.Literal("command"), argv: Schema.NonEmptyArray(Schema.String) }),
+  Schema.Struct({ kind: Schema.Literal("command"), argv: Argv }),
   Schema.Struct({ kind: Schema.Literal("preset") }),
 ]);
 export type ResourceReady = typeof ResourceReady.Type;
@@ -114,7 +125,7 @@ export const ResourceDefinitionInput = Schema.Struct({
   preset: Schema.NullOr(ResourcePreset),
   image: Schema.String.check(Schema.isMinLength(1)),
   /** Null keeps the image's entrypoint. */
-  command: Schema.NullOr(Schema.NonEmptyArray(Schema.String)),
+  command: Schema.NullOr(Argv),
   ports: Schema.Array(ResourcePort),
   /** Keys are refused by name in `resourceDefinitionRefusals`; a checked key would be dropped. */
   env: Schema.Record(Schema.String, ResourceEnvValue),
