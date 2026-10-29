@@ -743,7 +743,36 @@ export interface ServiceStartProgressSlice {
     readonly reason: string | null;
   }>;
   readonly message: string | null;
+  /** `[setup]` in the plan; absent from a server before 0.37's setup, null with none declared. */
+  readonly setup?: ServiceStartSetupSlice | null;
 }
+
+export interface ServiceStartSetupSlice {
+  readonly state: string;
+  readonly step: string | null;
+  readonly reason: string | null;
+}
+
+export const planSetupLine = (setup: ServiceStartSetupSlice): string | null => {
+  switch (setup.state) {
+    case "waiting":
+      return setup.reason === null ? null : `setup · waiting · ${setup.reason}`;
+    case "running":
+      return setup.step === null ? "setup · running" : `setup · running \`${setup.step}\``;
+    case "ran":
+      return "setup · done";
+    case "unchanged":
+      return "setup · unchanged since it last ran here · not run";
+    case "refused":
+      return `setup · refused · ${setup.reason ?? "mend.toml refuses [setup]"} · started without it`;
+    case "failed":
+      return `setup · did not finish${setup.reason === null ? "" : ` · ${setup.reason}`}`;
+    case "stopped":
+      return "setup · stopped";
+    default:
+      return null;
+  }
+};
 
 /** One recipe of a plan as a person reads it. */
 export const planStepLine = (step: ServiceStartProgressSlice["steps"][number]): string | null => {
@@ -782,15 +811,22 @@ export const followServicePlan = async (
     readonly read: () => Promise<ServiceStartProgressSlice | null>;
     readonly deadline: number | null;
     readonly onStep?: (step: ServiceStartProgressSlice["steps"][number]) => void;
+    readonly onSetup?: (setup: ServiceStartSetupSlice) => void;
   },
 ): Promise<ServicePlanOutcome> => {
   const pollMs = options.pollMs ?? 2000;
   const said = new Map<string, string>();
+  let setupSaid: string | null = null;
   for (;;) {
     const got = await readThrough(options.read, options, options.deadline);
     if (!got.done) return { kind: "timeout" };
     const progress = got.value;
     if (progress === null) return { kind: "unknown" };
+    const setup = progress.setup ?? null;
+    if (setup !== null && setupSaid !== `${setup.state} ${setup.step}`) {
+      setupSaid = `${setup.state} ${setup.step}`;
+      options.onSetup?.(setup);
+    }
     for (const step of progress.steps) {
       if (said.get(step.name) === step.state) continue;
       said.set(step.name, step.state);

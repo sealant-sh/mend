@@ -51,6 +51,25 @@ const portFromScript = (script: string): { port: number; guessed: boolean } | nu
   return guessed === null ? null : { port: guessed, guessed: true };
 };
 
+export interface SetupProposal {
+  readonly run: string;
+  readonly input: string;
+}
+
+const LOCKFILE_INSTALLS: ReadonlyArray<readonly [string, string]> = [
+  ["pnpm-lock.yaml", "pnpm install --frozen-lockfile"],
+  ["yarn.lock", "yarn install --immutable"],
+  ["bun.lock", "bun install --frozen-lockfile"],
+  ["bun.lockb", "bun install --frozen-lockfile"],
+  ["package-lock.json", "npm ci"],
+  ["npm-shrinkwrap.json", "npm ci"],
+];
+
+export const proposeSetup = (rootFiles: ReadonlyArray<string>): SetupProposal | null => {
+  const found = LOCKFILE_INSTALLS.find(([lockfile]) => rootFiles.includes(lockfile));
+  return found === undefined ? null : { run: found[1], input: found[0] };
+};
+
 const packageManagerOf = (lockfiles: ReadonlyArray<string>): string => {
   if (lockfiles.includes("pnpm-lock.yaml")) return "pnpm";
   if (lockfiles.includes("yarn.lock")) return "yarn";
@@ -260,7 +279,21 @@ export const proposeFromWorkspacePackage = (
  * The proposal as the file the user will commit, with a `[preview]` when exactly one proposal is
  * something to open in a browser.
  */
-export const renderMendToml = (proposals: ReadonlyArray<ServiceProposal>): string => {
+export const renderMendToml = (
+  proposals: ReadonlyArray<ServiceProposal>,
+  setup: SetupProposal | null = null,
+): string => {
+  const setupBlock =
+    setup === null
+      ? []
+      : [
+          [
+            `# ${setup.input}: runs before a recipe starts, again when it changes`,
+            "[setup]",
+            `run = [${JSON.stringify(setup.run)}]`,
+            `inputs = [${JSON.stringify(setup.input)}]`,
+          ].join("\n"),
+        ];
   const blocks = proposals.map((proposal) =>
     [
       `# ${proposal.source.replace(/[\r\n]+/g, " ")}`,
@@ -281,7 +314,7 @@ export const renderMendToml = (proposals: ReadonlyArray<ServiceProposal>): strin
     browsers.length === 1 && browsers[0] !== undefined
       ? [`[preview]\nservice = ${JSON.stringify(browsers[0].name)}`]
       : [];
-  return `${[...blocks, ...preview].join("\n\n")}\n`;
+  return `${[...setupBlock, ...blocks, ...preview].join("\n\n")}\n`;
 };
 
 export interface RepositoryManifests {

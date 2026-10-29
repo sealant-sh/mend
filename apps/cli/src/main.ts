@@ -129,9 +129,11 @@ import {
   waitForCommand,
   waitForServiceStart,
   followServicePlan,
+  planSetupLine,
   planStepLine,
   type ServicePlanOutcome,
   type ServiceStartProgressSlice,
+  type ServiceStartSetupSlice,
 } from "./run-scripts.ts";
 import {
   secretFileLines,
@@ -151,6 +153,7 @@ import { ServerStoreError, whenServerLockReleased } from "./server-store.ts";
 import {
   isComposeFile,
   proposeForRepository,
+  proposeSetup,
   renderMendToml,
   workspaceGlobs,
 } from "./service-init.ts";
@@ -2519,11 +2522,20 @@ const startServiceWaited = async (
     stepLine = `${words}…`;
     if (chrome.isTTY !== true) say(dim(`  ${words}`));
   };
+  let setupSaid: string | null = null;
+  const saySetup = (setup: ServiceStartSetupSlice) => {
+    const words = planSetupLine(setup);
+    if (words === null || setupSaid === words) return;
+    setupSaid = words;
+    stepLine = `${words}…`;
+    if (chrome.isTTY !== true) say(dim(`  ${words}`));
+  };
   const posting = new AbortController();
   if (plan !== null) {
     void (async () => {
       while (!posting.signal.aborted) {
         const progress = await plan(startId).catch(() => null);
+        if (progress?.setup !== undefined && progress.setup !== null) saySetup(progress.setup);
         for (const step of progress?.steps ?? []) sayStep(step);
         await clock.sleep(2000, posting.signal);
       }
@@ -2609,12 +2621,13 @@ const startServiceWaited = async (
           read: () => plan(startId),
           deadline: wait.deadline,
           onStep: sayStep,
+          onSetup: saySetup,
           ...clock,
         }).catch((): ServicePlanOutcome => ({ kind: "unknown" })),
       );
       if (followed.kind === "ended") return failWith(1, `${name} · ${followed.message}`);
       if (followed.kind === "timeout") {
-        return stillStarting(null, " · its dependencies are still starting");
+        return stillStarting(null, " · its setup or dependencies are still starting");
       }
     }
   }
@@ -2929,7 +2942,7 @@ const serviceInit = async (args: ReadonlyArray<string>) => {
       "nothing to propose — no server-ish package.json script with a nameable port, no compose ports",
     );
   }
-  const toml = renderMendToml(proposals);
+  const toml = renderMendToml(proposals, proposeSetup(rootFiles));
   say(dim(`proposed ${target}:`));
   say("");
   // The preview loses URL credentials a package script carries; the file written keeps the
