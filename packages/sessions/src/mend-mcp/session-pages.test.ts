@@ -8,6 +8,75 @@ import { SessionPages, sessionPagesLayer } from "./session-pages.ts";
 
 const refusalOf = (html: string) => checkPage({ html, title: "Page" })?.reason ?? null;
 
+const hostile = (n: number): ReadonlyArray<string> => [
+  `<img src="${"/".repeat(n)}`,
+  `url(${"/".repeat(n)}`,
+  `<img srcset="${" ,".repeat(n / 2)}`,
+  " src=".repeat(n / 5),
+  `<style>${"1".repeat(n)}`,
+  `<style>${"1e".repeat(n / 2)}`,
+  "<a ".repeat(Math.floor(n / 3)),
+  '<img alt="'.repeat(n / 10),
+  `<img src="${"&#".repeat(n / 2)}">`,
+  `<svg><image href="${"/".repeat(n)}`,
+  `<script>"/${"a".repeat(n)}`,
+  `<script>${"'/".repeat(n / 2)}`,
+  `<p style="${"url(".repeat(n / 4)}">`,
+];
+
+// The work a check does, as the characters it reads and the subject lengths its scans may cover:
+// counted, not timed, so a loaded machine cannot pass for growth or hide it.
+const workOf = (pages: ReadonlyArray<string>): number => {
+  let work = 0;
+  const strings = String.prototype;
+  const regexps = RegExp.prototype;
+  const kept = {
+    charAt: strings.charAt,
+    charCodeAt: strings.charCodeAt,
+    codePointAt: strings.codePointAt,
+    indexOf: strings.indexOf,
+    exec: regexps.exec,
+    matchAll: regexps[Symbol.matchAll],
+  };
+  strings.charAt = function (this: string, position: number) {
+    work += 1;
+    return kept.charAt.call(this, position);
+  };
+  strings.charCodeAt = function (this: string, position: number) {
+    work += 1;
+    return kept.charCodeAt.call(this, position);
+  };
+  strings.codePointAt = function (this: string, position: number) {
+    work += 1;
+    return kept.codePointAt.call(this, position);
+  };
+  strings.indexOf = function (this: string, search: string, from?: number) {
+    work += this.length - (from ?? 0);
+    return kept.indexOf.call(this, search, from);
+  };
+  regexps.exec = function (this: RegExp, subject: string) {
+    work += subject.length - (this.global || this.sticky ? this.lastIndex : 0);
+    return kept.exec.call(this, subject);
+  };
+  regexps[Symbol.matchAll] = function (this: RegExp, subject: string) {
+    work += subject.length;
+    return kept.matchAll.call(this, subject);
+  };
+  try {
+    for (const html of pages) refusalOf(html);
+  } finally {
+    Object.assign(strings, {
+      charAt: kept.charAt,
+      charCodeAt: kept.charCodeAt,
+      codePointAt: kept.codePointAt,
+      indexOf: kept.indexOf,
+    });
+    regexps.exec = kept.exec;
+    regexps[Symbol.matchAll] = kept.matchAll;
+  }
+  return work;
+};
+
 describe("checkPage", () => {
   it.each([
     "<img src=/tmp/shot.png>",
@@ -128,27 +197,12 @@ describe("checkPage", () => {
     expect(refusalOf("<p>100vh is a CSS unit</p>")).toBeNull();
   });
 
-  it("stays linear on half a megabyte of hostile input", () => {
-    const run = "/".repeat(500_000);
-    const started = performance.now();
-    for (const html of [
-      `<img src="${run}`,
-      `url(${run}`,
-      `<img srcset="${" ,".repeat(250_000)}`,
-      " src=".repeat(100_000),
-      `<style>${"1".repeat(500_000)}`,
-      `<style>${"1e".repeat(250_000)}`,
-      "<a ".repeat(170_000),
-      '<img alt="'.repeat(50_000),
-      `<img src="${"&#".repeat(250_000)}">`,
-      `<svg><image href="${run}`,
-      `<script>"/${"a".repeat(500_000)}`,
-      `<script>${"'/".repeat(250_000)}`,
-      `<p style="${"url(".repeat(125_000)}">`,
-    ]) {
-      refusalOf(html);
-    }
-    expect(performance.now() - started).toBeLessThan(1_000);
+  it("does linear work on hostile input", () => {
+    const small = workOf(hostile(5_000));
+    const large = workOf(hostile(20_000));
+    expect(small).toBeGreaterThan(5_000);
+    // Quadrupling the input quadruples linear work and multiplies quadratic work by 16.
+    expect(large / small).toBeLessThan(6);
   });
 });
 
