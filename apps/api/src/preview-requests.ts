@@ -1,5 +1,10 @@
 import { TAILNET_PORT_QUIET_HOURS } from "@mend/db";
-import { NO_SUCH_PREVIEW } from "@mend/network";
+import {
+  type BrowserRequest,
+  isDocumentNavigation,
+  NO_SUCH_PREVIEW,
+  siblingRequestAdmitted,
+} from "@mend/network";
 import { Brand } from "effect";
 
 import type {
@@ -61,24 +66,13 @@ export const strictQuery = (
   return values;
 };
 
-export interface BrowserHead {
-  readonly method: string;
-  readonly upgrade: boolean;
+export interface BrowserHead extends BrowserRequest {
   readonly origins: ReadonlyArray<string>;
-  readonly fetchSite: string | undefined;
-  readonly fetchMode: string | undefined;
-  readonly fetchDest: string | undefined;
   readonly sentFetchMetadata: boolean;
   readonly acceptsHtml: boolean;
 }
 
 const FETCH_SITES = new Set(["none", "same-origin", "same-site", "cross-site"]);
-
-export const isDocumentNavigation = (head: BrowserHead): boolean =>
-  head.method === "GET" &&
-  !head.upgrade &&
-  head.fetchMode === "navigate" &&
-  head.fetchDest === "document";
 
 /**
  * Browsers send Fetch Metadata only to an origin they trust, and one that does not trust
@@ -94,11 +88,8 @@ export const browserAdmits = (head: BrowserHead, own: PreviewOrigin): boolean =>
   if (origin !== undefined && origin !== own) return false;
   const safe = (head.method === "GET" || head.method === "HEAD") && !head.upgrade;
   if (origin === undefined && !safe) return false;
-  if (head.fetchSite === undefined) return true;
-  if (!FETCH_SITES.has(head.fetchSite)) return false;
-  return head.fetchSite === "same-site" || head.fetchSite === "cross-site"
-    ? isDocumentNavigation(head)
-    : true;
+  if (head.fetchSite !== undefined && !FETCH_SITES.has(head.fetchSite)) return false;
+  return siblingRequestAdmitted(head);
 };
 
 export interface PreviewAnswer {
