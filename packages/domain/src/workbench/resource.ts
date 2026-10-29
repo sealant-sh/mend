@@ -295,7 +295,8 @@ export const imageReference = (image: string): { repository: string; tag: string
   const tagged = tagAt > named.lastIndexOf("/");
   const segments = (tagged ? named.slice(0, tagAt) : named).split("/");
   const [first = "", ...rest] = segments;
-  const isHost = rest.length > 0 && (first.includes(".") || first.includes(":") || first === "localhost");
+  const isHost =
+    rest.length > 0 && (first.includes(".") || first.includes(":") || first === "localhost");
   const path = isHost ? rest : segments;
   const repository = path.length === 2 && path[0] === "library" ? path.slice(1) : path;
   return { repository: repository.join("/"), tag: tagged ? named.slice(tagAt + 1) : "" };
@@ -374,7 +375,9 @@ const exportKind = (def: ResourceDefinitionInput, template: string): ResourceEnv
   const parsed = parseTemplate(template);
   const placeholders = parsed.ok ? parsed.placeholders : [];
   return placeholders.some((placeholder) => {
-    const value = placeholder.startsWith("env.") ? def.env[placeholder.slice("env.".length)] : undefined;
+    const value = placeholder.startsWith("env.")
+      ? def.env[placeholder.slice("env.".length)]
+      : undefined;
     return value !== undefined && typeof value !== "string";
   })
     ? "secret"
@@ -421,10 +424,7 @@ export const resourceEnvNames = (
   bound: ReadonlyArray<ResourceBinding>,
 ): ReadonlyMap<ResourceName, ReadonlyArray<string>> =>
   new Map(
-    bound.map((binding) => [
-      binding.definition.name,
-      envOf(binding, bound).map(([name]) => name),
-    ]),
+    bound.map((binding) => [binding.definition.name, envOf(binding, bound).map(([name]) => name)]),
   );
 
 /** The env names among `resourceEnvNames` that carry a credential. */

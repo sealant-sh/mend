@@ -118,7 +118,10 @@ describe("a definition's shape", () => {
       "a port name over 15 characters",
       { ports: [{ name: `a${"b".repeat(15)}`, port: 1, protocol: "tcp" }] },
     ],
-    ["a port name with two dashes in a row", { ports: [{ name: "a--b", port: 1, protocol: "tcp" }] }],
+    [
+      "a port name with two dashes in a row",
+      { ports: [{ name: "a--b", port: 1, protocol: "tcp" }] },
+    ],
     ["a port name that ends in a dash", { ports: [{ name: "amqp-", port: 1, protocol: "tcp" }] }],
     ["a relative mount path", { volumes: [{ name: "data", mountPath: "var/lib" }] }],
     ["a mount path that leaves /", { volumes: [{ name: "data", mountPath: "/var/../etc" }] }],
@@ -202,12 +205,28 @@ describe("rules across a definition's fields", () => {
       "ready",
     ],
     ["no check on a resource with a TCP port", { ready: { kind: "none" } }, "ready"],
-    ["a secret no project secret can be called", { env: { PASS: { secret: "rabbitmq-password" } } }, "env.PASS.secret"],
+    [
+      "a secret no project secret can be called",
+      { env: { PASS: { secret: "rabbitmq-password" } } },
+      "env.PASS.secret",
+    ],
     ["an empty secret name", { env: { PASS: { secret: "" } } }, "env.PASS.secret"],
-    ["a secret in Mend's own namespace", { env: { PASS: { secret: "MEND_TOKEN" } } }, "env.PASS.secret"],
-    ["an export with a { never closed", { exports: { URL: "amqp://{host}:{port.amqp" } }, "exports.URL"],
+    [
+      "a secret in Mend's own namespace",
+      { env: { PASS: { secret: "MEND_TOKEN" } } },
+      "env.PASS.secret",
+    ],
+    [
+      "an export with a { never closed",
+      { exports: { URL: "amqp://{host}:{port.amqp" } },
+      "exports.URL",
+    ],
     ["an export with a } never opened", { exports: { URL: "amqp://{host}}" } }, "exports.URL"],
-    ["an export with nested braces", { exports: { URL: "amqp://{{host}}:{port.amqp}" } }, "exports.URL"],
+    [
+      "an export with nested braces",
+      { exports: { URL: "amqp://{{host}}:{port.amqp}" } },
+      "exports.URL",
+    ],
     [
       "an env key that is not an env name",
       { env: { "discovery.type": "single-node" } },
@@ -225,10 +244,18 @@ describe("rules across a definition's fields", () => {
     ["exports on a preset", postgres({ exports: { URL: "postgres://{host}" } }), "exports"],
     ["a worktree Redis", redis({ scope: "worktree" }), "scope"],
     ["a Postgres preset on a Redis image", postgres({ image: "redis:8" }), "image"],
-    ["a Postgres preset on an image of another name", postgres({ image: "ghcr.io/x/custom-pg:17" }), "image"],
+    [
+      "a Postgres preset on an image of another name",
+      postgres({ image: "ghcr.io/x/custom-pg:17" }),
+      "image",
+    ],
     ["a MySQL preset on a Postgres image", mysql({ image: "postgres:17" }), "image"],
     ["a Redis preset on a MySQL image", redis({ image: "mariadb:11" }), "image"],
-    ["a preset with a probe command", postgres({ ready: { kind: "command", argv: ["true"] } }), "ready"],
+    [
+      "a preset with a probe command",
+      postgres({ ready: { kind: "command", argv: ["true"] } }),
+      "ready",
+    ],
     ["a preset with a TCP check", redis({ ready: { kind: "tcp" } }), "ready"],
   ])("refuses %s by its key", (_, def, key) => {
     expect(resourceDefinitionRefusals(def).map((refusal) => refusal.key)).toEqual([key]);
@@ -322,19 +349,56 @@ describe("a worktree's selection", () => {
   it.each([
     ["shared on a Postgres preset", postgres(), { mode: "shared", revision: 1 }],
     ["off on a Redis preset", redis(), { mode: "off", revision: 1 }],
-    ["own as a database on a Postgres preset", postgres(), { mode: "own", revision: 1, target: database }],
-    ["own as a database on a MySQL preset", mysql(), { mode: "own", revision: 1, target: database }],
-    ["own as an instance of another image", define(), { mode: "own", revision: 1, target: instance }],
+    [
+      "own as a database on a Postgres preset",
+      postgres(),
+      { mode: "own", revision: 1, target: database },
+    ],
+    [
+      "own as a database on a MySQL preset",
+      mysql(),
+      { mode: "own", revision: 1, target: database },
+    ],
+    [
+      "own as an instance of another image",
+      define(),
+      { mode: "own", revision: 1, target: instance },
+    ],
   ])("takes %s", (_, def, raw) => {
     expect(selectionRefusal(def, read(raw))).toBeNull();
   });
 
   it.each([
-    ["own on Redis, which offers shared and off", redis(), { mode: "own", revision: 1, target: instance }, "mode"],
-    ["own as an instance on a Postgres preset", postgres(), { mode: "own", revision: 1, target: instance }, "target"],
-    ["own as a database on another image", define(), { mode: "own", revision: 1, target: database }, "target"],
-    ["any selection of a worktree resource", define({ scope: "worktree" }), { mode: "shared", revision: 1 }, "selection"],
-    ["any selection of a refused worktree Redis", redis({ scope: "worktree" }), { mode: "off", revision: 1 }, "selection"],
+    [
+      "own on Redis, which offers shared and off",
+      redis(),
+      { mode: "own", revision: 1, target: instance },
+      "mode",
+    ],
+    [
+      "own as an instance on a Postgres preset",
+      postgres(),
+      { mode: "own", revision: 1, target: instance },
+      "target",
+    ],
+    [
+      "own as a database on another image",
+      define(),
+      { mode: "own", revision: 1, target: database },
+      "target",
+    ],
+    [
+      "any selection of a worktree resource",
+      define({ scope: "worktree" }),
+      { mode: "shared", revision: 1 },
+      "selection",
+    ],
+    [
+      "any selection of a refused worktree Redis",
+      redis({ scope: "worktree" }),
+      { mode: "off", revision: 1 },
+      "selection",
+    ],
   ])("refuses %s by its key", (_, def, raw, key) => {
     expect(selectionRefusal(def, read(raw))?.key).toBe(key);
   });
@@ -352,7 +416,10 @@ describe("a worktree's selection", () => {
   });
 });
 
-const bind = (definition: ResourceDefinitionInput, mode: "shared" | "own" = "shared"): ResourceBinding =>
+const bind = (
+  definition: ResourceDefinitionInput,
+  mode: "shared" | "own" = "shared",
+): ResourceBinding =>
   definition.scope === "worktree" ? { definition, mode: "worktree" } : { definition, mode };
 
 const namesOf = (bound: ReadonlyArray<ResourceBinding>, name: string) =>

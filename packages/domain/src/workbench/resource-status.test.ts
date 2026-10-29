@@ -124,7 +124,10 @@ const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
     {
       kind: "observed",
       definition: dns,
-      use: { kind: "worktree", instance: { kind: "running", probe: { kind: "not-probed" }, secret: "applied" } },
+      use: {
+        kind: "worktree",
+        instance: { kind: "running", probe: { kind: "not-probed" }, secret: "applied" },
+      },
       observedAt,
     },
     "@dns · coredns 1 · worktree · running · not probed · observed 3 s ago",
@@ -181,7 +184,11 @@ const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
   ],
   [
     "a secret changed and not applied",
-    sharedQueue({ kind: "running", probe: { kind: "answered", check: "TCP 5672" }, secret: "changed-not-applied" }),
+    sharedQueue({
+      kind: "running",
+      probe: { kind: "answered", check: "TCP 5672" },
+      secret: "changed-not-applied",
+    }),
     "@queue · rabbitmq 4 · project · shared · reached by 3 worktrees · running · answered TCP 5672 · secret changed · not applied · consumers keep the applied one · observed 3 s ago",
   ],
   [
@@ -210,12 +217,20 @@ const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
   ],
   [
     "a launch on a runtime without resources",
-    { kind: "launched-without", definition: db, because: { kind: "blocked", reason: "needs-newer-sealant" } },
+    {
+      kind: "launched-without",
+      definition: db,
+      because: { kind: "blocked", reason: "needs-newer-sealant" },
+    },
     "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
   ],
   [
     "a launch without an instance whose data volume is missing",
-    { kind: "launched-without", definition: db, because: { kind: "blocked", reason: "data-volume-missing" } },
+    {
+      kind: "launched-without",
+      definition: db,
+      because: { kind: "blocked", reason: "data-volume-missing" },
+    },
     "@db · blocked · data volume missing · this session starts without it",
   ],
   [
@@ -274,9 +289,19 @@ describe("the status line", () => {
   it("cannot be built for a use its definition's scope does not have", () => {
     const views: ReadonlyArray<ResourceStatusView> = [
       // @ts-expect-error A worktree resource has its own instance and no shared use.
-      { kind: "observed", definition: mail, use: { kind: "shared", worktrees: 2, instance: running("TCP 1025") }, observedAt },
+      {
+        kind: "observed",
+        definition: mail,
+        use: { kind: "shared", worktrees: 2, instance: running("TCP 1025") },
+        observedAt,
+      },
       // @ts-expect-error A project resource is reached through a worktree's selection.
-      { kind: "observed", definition: queue, use: { kind: "worktree", instance: running("TCP 5672") }, observedAt },
+      {
+        kind: "observed",
+        definition: queue,
+        use: { kind: "worktree", instance: running("TCP 5672") },
+        observedAt,
+      },
       // @ts-expect-error A worktree resource has no selection to switch.
       { kind: "switched", definition: mail, use: { kind: "off" }, restarted: [], waitingFor: [] },
     ];
@@ -287,7 +312,11 @@ describe("the status line", () => {
 describe("clock times in the status line", () => {
   const copiedAt = (time: string): ResourceStatusView => ({
     ...ownCopy,
-    use: { kind: "own", start: { kind: "copied", at: new Date(time) }, instance: running("SELECT 1") },
+    use: {
+      kind: "own",
+      start: { kind: "copied", at: new Date(time) },
+      instance: running("SELECT 1"),
+    },
   });
 
   it("reads them in the reader's time zone", () => {
