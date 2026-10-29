@@ -697,6 +697,33 @@ providers.
 - **The earlier plan's bridge over the session channel** (Obsidian, "Mend live preview plan" §4).
   ADR 0017 withdrew it, because it is a relay that stands in for a missing platform feature.
 
+## Known gaps
+
+The second review left these open. None loses data as written. Each is settled in the build step
+named, or by the decision named.
+
+- **Snapshot retention.** "The last seven nightly snapshots are kept" reads as deletion by age,
+  against "Purge is the only act that destroys data". Step 8 settles it.
+- **WAL, dumps and generations** have no bounded retention, so a full backup volume can stop the
+  primary. Step 8 sets a bound and a warning.
+- **`mend resource exec` from inside a workspace** contradicts "a call from inside a workspace can
+  only read status or make the agent's copy". Step 4 settles which calls a workspace may make.
+- **Instance-to-instance reach** names a `depends` that `ResourceDefinition` does not have. Step 6
+  adds the field and its approval.
+- **Test databases created between sweeps** cannot connect until the next sweep writes their
+  `pg_hba.conf` rule. Step 5 settles it, for example with an event trigger.
+- **Conventional names** (`DATABASE_URL`, `PG*`) still override an app's `.env`, and appear or
+  disappear when a second Postgres is added. Step 4 settles it, or decision G11.
+- **Switching by short name.** A Compose consumer that restarts while another consumer delays the
+  move resolves the old target, then follows the move later without a restart. Step 6 settles it.
+- **Rotating a generic resource's secret** has no check that the instance applied it before Mend
+  exports it. Step 6 settles it.
+- **The agent's copy** is also a reset of its own target, which the table forbids it. Step 5 settles
+  it.
+- **Docker enforcement of the reach rules**, and workspace egress to the internet, are not named in
+  the matrix. The Sealant network step names them.
+- **The session-dependency env seam** stays with the previews thread (ADR 0017 step 9).
+
 ## Consequences
 
 - Nothing runs until Sealant ships the service resource, the project network and the project
