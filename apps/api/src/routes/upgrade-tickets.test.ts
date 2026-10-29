@@ -122,6 +122,18 @@ describe("an upgrade ticket", () => {
     });
     expect(unauthenticated.status).toBe(401);
   });
+
+  it("cannot be minted by a client for a target only the server mints", async () => {
+    api = await createTenancyApi();
+    const renewal = await mint(api, "carol", { target: "tty-renew", session: sharedA.session });
+    expect(renewal).toMatchObject({ status: 400 });
+    const preview = await mint(api, "carol", {
+      target: "preview",
+      preview: "pv-1",
+      origin: "https://k7f2.preview.example",
+    });
+    expect(preview).toMatchObject({ status: 400 });
+  });
 });
 
 const exchange = (on: TenancyApi, ticket: string, session: string) =>

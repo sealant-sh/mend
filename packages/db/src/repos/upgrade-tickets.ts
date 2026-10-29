@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import type { UpgradeTicketTarget as ClientUpgradeTicketTarget } from "@mend/api-contracts";
 import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { Clock, DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -29,18 +30,11 @@ export const UPGRADE_TICKET_TTL_MS = 30_000;
 export const UPGRADE_RENEWAL_TTL_MS = 12 * 60 * 60 * 1000;
 
 /**
- * What a ticket opens. `tty-embed` opens the embed page, which exchanges it for a `tty` ticket and
- * a `tty-renew` ticket; `tty-renew` is exchanged the same way when the page reconnects.
+ * What a ticket opens: every target a client may mint, plus the two only the server mints.
+ * `tty-embed` opens the embed page, which exchanges it for a `tty` ticket and a `tty-renew` ticket;
+ * `tty-renew` is exchanged the same way when the page reconnects.
  */
-export const UPGRADE_TICKET_TARGETS = [
-  "tty",
-  "service-tunnel",
-  "keys-bridge",
-  "tty-embed",
-  "tty-renew",
-  "preview",
-] as const;
-export type UpgradeTicketTarget = (typeof UPGRADE_TICKET_TARGETS)[number];
+export type UpgradeTicketTarget = ClientUpgradeTicketTarget | "tty-renew" | "preview";
 
 export const hashUpgradeTicket = (ticket: string): string =>
   createHash("sha256").update(ticket, "utf8").digest("hex");
