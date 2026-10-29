@@ -17,6 +17,7 @@ import {
   ResolvedGitAuthor,
   Session,
   PiProfile,
+  currentAgentProcess,
 } from "@mend/domain/workbench";
 import { LinuxIdentity } from "@mend/domain/workbench";
 import type { HarnessLayout } from "@mend/domain/workbench";
@@ -46,6 +47,7 @@ import {
   REMOTE_SSH_ROOT_UNSUPPORTED_WORDS,
   REMOTE_SSH_ROOT_WORDS,
 } from "../src/harness-layout-steps.ts";
+import { MEND_AGENT_PROCESS_ENV } from "../src/mend-mcp/caller.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { failureText, lifecycleLayer, memoryHotPool } from "./engine/capture-fixture.ts";
 import {
@@ -2604,6 +2606,28 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
         }),
     });
   });
+
+  it.each(["person", "shared"] as const)(
+    "tells each agent process the id of its own row where it opens, in a %s executor",
+    async (flag) => {
+      await livePersonJoin({
+        flag,
+        inspect: (_engine, join) =>
+          Effect.sync(() => {
+            expect(join.joinFailure).toBeNull();
+            const agentOf = (session: Session) =>
+              currentAgentProcess(
+                [...join.world.processes.values()].filter((row) => row.sessionId === session.id),
+              )?.id;
+            const named = join.opened.flatMap((options) => {
+              const id = options.env?.[MEND_AGENT_PROCESS_ENV];
+              return id === undefined ? [] : [id];
+            });
+            expect(named).toEqual([agentOf(join.holder), agentOf(join.joined)]);
+          }),
+      });
+    },
+  );
 
   it("mints no token for a member prepare does not make; they get theirs at their first process", async () => {
     await livePersonJoin({

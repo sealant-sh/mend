@@ -939,7 +939,9 @@ describe("SessionEngine", () => {
             "user-1",
           );
 
-          expect(openedOptions).toEqual([{ mode: "pipe" }]);
+          expect(openedOptions).toEqual([
+            { mode: "pipe", env: { MEND_AGENT_PROCESS_ID: attached[0]?.process.id } },
+          ]);
           // Codex's memory is on in every Codex session Mend starts (docs/adr/0009, "Codex").
           // Its shell snapshot is off: it writes exported values into the harness home. Its
           // background server is off: it copies Codex's release into the harness home.

@@ -68,7 +68,7 @@ import {
   type ServiceId,
   SessionGitOpId,
   SessionId,
-  type SessionProcessId,
+  SessionProcessId,
   type ProjectId,
   type WorkspaceImage,
   WorktreeId,
@@ -231,6 +231,7 @@ import {
   type DotfilesArchive,
   type DotfilesBootstrap,
   PersonLayoutPlatform,
+  type PersonSessionOptions,
   type ProcessUser,
   SealantClient,
   SealantPlatformError,
@@ -465,7 +466,11 @@ import {
   type SessionMovedOnError,
 } from "./launch-admission.ts";
 import { LAUNCH_UNDER_WAY_WORDS, makeLaunchGate } from "./launch-gate.ts";
-import { agentProcessRefOf, McpCallerUnavailableError } from "./mend-mcp/caller.ts";
+import {
+  agentProcessRefOf,
+  MEND_AGENT_PROCESS_ENV,
+  McpCallerUnavailableError,
+} from "./mend-mcp/caller.ts";
 import { withMendMcp } from "./mend-mcp/launch.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
@@ -981,10 +986,29 @@ interface LaunchRecords {
   readonly recordsRun: boolean;
   /** The process row, made from the one an agent launch writes. */
   readonly process: (agent: NewSessionProcess) => NewSessionProcess;
+  /** What the opened process is told of its own row, which its MCP calls name. */
+  readonly processEnv: (id: SessionProcessId) => Readonly<Record<string, string>>;
   /** The session once its process runs: `running`, or what the fold reads. */
   readonly opened: (sessionId: SessionId) => Effect.Effect<void, SessionNotFoundError>;
   readonly supervise: (sessionId: SessionId, sealantRunId: SealantRunId) => Effect.Effect<void>;
 }
+
+const launchOpenOptions = (input: {
+  readonly pipe: boolean;
+  readonly person: {
+    readonly user: ProcessUser;
+    readonly env: Readonly<Record<string, string>>;
+  } | null;
+  readonly env: Readonly<Record<string, string>>;
+}): PersonSessionOptions | undefined => {
+  const env = { ...input.person?.env, ...input.env };
+  const options = {
+    ...(input.pipe ? { mode: "pipe" as const } : {}),
+    ...(input.person === null ? {} : { user: input.person.user }),
+    ...(Object.keys(env).length === 0 ? {} : { env }),
+  };
+  return Object.keys(options).length === 0 ? undefined : options;
+};
 
 interface AgentEnd {
   readonly how: "exited" | "stopped";
@@ -17267,6 +17291,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         agent: {
           recordsRun: true,
           process: (agent: NewSessionProcess): NewSessionProcess => agent,
+          processEnv: (id: SessionProcessId) => ({ [MEND_AGENT_PROCESS_ENV]: id }),
           opened: (sessionId: SessionId) => sessions.reopen(sessionId, "running"),
           supervise: (sessionId: SessionId, sealantRunId: SealantRunId) =>
             forkSupervision(sessionId, sealantRunId).pipe(Effect.asVoid),
@@ -17283,6 +17308,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             argv: agent.argv,
             runsAs: agent.runsAs ?? null,
           }),
+          processEnv: () => ({}),
           opened: (sessionId: SessionId) =>
             reconcileSession(sessionId, { sweep: false }).pipe(Effect.asVoid),
           supervise: () => Effect.void,
@@ -18631,19 +18657,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? Effect.void
             : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
         );
+        const records = launchRecords[plan.role];
+        const processId = SessionProcessId.make(crypto.randomUUID());
         const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
           Effect.andThen(
             sealant.openSession(
               workspace,
               startedArgv,
-              protocolStart === null && startAs === null
-                ? undefined
-                : {
-                    ...(protocolStart === null ? {} : { mode: "pipe" as const }),
-                    ...(startAs === null
-                      ? {}
-                      : { user: startAs.user, env: inConversation?.env ?? startAs.env }),
-                  },
+              launchOpenOptions({
+                pipe: protocolStart !== null,
+                person:
+                  startAs === null
+                    ? null
+                    : { user: startAs.user, env: inConversation?.env ?? startAs.env },
+                env: records.processEnv(processId),
+              }),
             ),
           ),
           Effect.tapError(() => releaseTake),
@@ -18654,7 +18682,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           settleOnFailure,
         );
         const sealantRunId = SealantRunId.make(pty.runId);
-        const records = launchRecords[plan.role];
         if (records.recordsRun) {
           // Refused in words only over a run of the session still live, which the gates above
           // rule out: the PTY just opened closes, and its executor goes as after any failed
@@ -18698,6 +18725,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const launchedProcess = yield* processes
           .create(
             records.process({
+              id: processId,
               sessionId,
               sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
               sealantSessionId: pty.id,
@@ -20525,19 +20553,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   resumePath: inConversation.resumePath,
                   terminal: protocolStart === null,
                 });
+          const records = launchRecords[plan.role];
+          const processId = SessionProcessId.make(crypto.randomUUID());
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
               sealant.openSession(
                 workspace,
                 startedArgv,
-                protocolStart === null && startAs === null
-                  ? undefined
-                  : {
-                      ...(protocolStart === null ? {} : { mode: "pipe" as const }),
-                      ...(startAs === null
-                        ? {}
-                        : { user: startAs.user, env: inConversation?.env ?? startAs.env }),
-                    },
+                launchOpenOptions({
+                  pipe: protocolStart !== null,
+                  person:
+                    startAs === null
+                      ? null
+                      : { user: startAs.user, env: inConversation?.env ?? startAs.env },
+                  env: records.processEnv(processId),
+                }),
               ),
             ),
             Effect.tapError(() => releaseRetainedTake),
@@ -20546,7 +20576,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           const sealantRunId = SealantRunId.make(pty.runId);
-          const records = launchRecords[plan.role];
           if (records.recordsRun) {
             const previousRun = yield* sessionRuns.latestForSession(sessionId);
             // Refused in words only over a run of the session still live: the PTY just opened in
@@ -20586,6 +20615,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const agentProcess = yield* processes
             .create(
               records.process({
+                id: processId,
                 sessionId,
                 sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
                 sealantSessionId: pty.id,
