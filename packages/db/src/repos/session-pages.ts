@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
-import { PageId, type SessionId } from "@mend/domain";
+import { PageId, type SessionId, type SessionProcessId } from "@mend/domain";
 import { type AgentTurnStatus, type PageRef, currentAgentProcess } from "@mend/domain/workbench";
 import { and, asc, desc, eq, notInArray } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -33,6 +33,8 @@ export interface NewSessionPage {
   readonly sessionId: SessionId;
   readonly callKey: string;
   readonly accountId: string | null;
+  /** The agent process that made the page, whose latest turn takes it; null: the session's agent. */
+  readonly agentProcessId: SessionProcessId | null;
   readonly title: string;
   readonly height: number;
   readonly html: string;
@@ -84,12 +86,15 @@ const NEVER_RAN: Array<AgentTurnStatus> = ["queued", "cancelled"];
 const ensurePageItem = Effect.fn("SessionPagesRepo.ensurePageItem")(function* (
   tx: Tx,
   page: SessionPage,
+  madeBy: SessionProcessId | null,
 ) {
   const rows = yield* tx
     .select()
     .from(sessionProcesses)
     .where(eq(sessionProcesses.sessionId, page.sessionId));
-  const agent = currentAgentProcess(rows.map(toSessionProcess));
+  const processes = rows.map(toSessionProcess);
+  const agent =
+    processes.find((process) => process.id === madeBy) ?? currentAgentProcess(processes);
   if (agent === null) return false;
   yield* lockAgentConversation(tx, page.sessionId);
   const missing = yield* pagesWithoutItems(tx, page.sessionId, [page.id]);
@@ -143,7 +148,10 @@ export const SessionPagesRepoLive: Layer.Layer<
       yield* notifyEvent(pg, { type: "session", sessionId, projectId: session.projectId });
     });
 
-    const publish = Effect.fn("SessionPagesRepo.publish")(function* (page: NewSessionPage) {
+    const publish = Effect.fn("SessionPagesRepo.publish")(function* ({
+      agentProcessId,
+      ...page
+    }: NewSessionPage) {
       const sha256 = digestOf(page.html);
       const written = yield* db
         .transaction((tx) =>
@@ -159,7 +167,10 @@ export const SessionPagesRepoLive: Layer.Layer<
               .onConflictDoNothing({ target: [sessionPages.sessionId, sessionPages.callKey] })
               .returning();
             if (inserted === undefined) return null;
-            return { row: inserted, itemAdded: yield* ensurePageItem(tx, inserted) };
+            return {
+              row: inserted,
+              itemAdded: yield* ensurePageItem(tx, inserted, agentProcessId),
+            };
           }),
         )
         .pipe(
@@ -188,7 +199,7 @@ export const SessionPagesRepoLive: Layer.Layer<
         });
       }
       const repaired = yield* db
-        .transaction((tx) => ensurePageItem(tx, first))
+        .transaction((tx) => ensurePageItem(tx, first, agentProcessId))
         .pipe(Effect.mapError(storageFailed));
       if (repaired) yield* notifyAgentConversation(db, pg, page.sessionId);
       return first;

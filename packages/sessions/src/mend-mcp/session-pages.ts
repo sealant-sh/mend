@@ -113,6 +113,7 @@ export const sessionPagesLayer = (
           sessionId: caller.sessionId,
           callKey,
           accountId: caller.accountId,
+          agentProcessId: null,
           html: page.html,
           title: page.title.trim() || "Page",
           height: clampPageHeight(page.height),

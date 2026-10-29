@@ -52,10 +52,15 @@ const CONFLICT_PROCESS = SessionProcessId.make("p-items-conflict");
 const TERMINAL = SessionId.make("s-items-terminal");
 const TERMINAL_PROCESS = SessionProcessId.make("p-items-terminal");
 
-const newPage = (sessionId: SessionId, callKey: string) => ({
+const newPage = (
+  sessionId: SessionId,
+  callKey: string,
+  agentProcessId: SessionProcessId | null = null,
+) => ({
   sessionId,
   callKey,
   accountId: "alice",
+  agentProcessId,
   title: `Page ${callKey}`,
   height: 320,
   html: `<!doctype html><p>${"x".repeat(4096)}</p>`,
@@ -264,6 +269,36 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
     expect(result.ptyItems).toEqual([]);
     expect(result.switchedItems).toEqual([]);
     expect(result.listed.map((ref) => ref.id)).toEqual([result.switched.id]);
+  });
+
+  it("lands in the turn of the agent process that made it after another became the session's agent, never in another session's", async () => {
+    const OLD_PROCESS = SessionProcessId.make("p-items-old-protocol");
+    const result = await run(
+      Effect.gen(function* () {
+        const pages = yield* SessionPagesRepo;
+        const [old] = yield* (yield* AgentConversationRepo).listTurns(SWITCHED);
+        const fromOld = yield* pages.publish(newPage(SWITCHED, "call-from-old", OLD_PROCESS));
+        const retried = yield* pages.publish(newPage(SWITCHED, "call-from-old", OLD_PROCESS));
+        const foreign = yield* pages.publish(
+          newPage(SWITCHED, "call-naming-another-session", PROTOCOL_PROCESS),
+        );
+        return {
+          old,
+          fromOld,
+          retried,
+          foreign,
+          switched: yield* pageItems(SWITCHED),
+          protocol: yield* pageItems(PROTOCOL),
+        };
+      }),
+    );
+    expect(result.retried.id).toBe(result.fromOld.id);
+    expect(
+      result.switched.map((item) => [item.provider_item_id, item.process_id, item.turn_id]),
+    ).toEqual([[`mend-page:${result.fromOld.id}`, OLD_PROCESS, result.old?.id]]);
+    expect(result.protocol.map((item) => item.provider_item_id)).not.toContain(
+      `mend-page:${result.foreign.id}`,
+    );
   });
 
   it("tells a terminal session's clients of each new page, though it adds no item, and of no retry", async () => {
