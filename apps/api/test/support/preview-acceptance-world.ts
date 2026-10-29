@@ -67,11 +67,18 @@ const Routing = Schema.Union([
     domain: Schema.String,
     port: Schema.Number,
   }),
+  Schema.Struct({
+    mode: Schema.Literal("tailnet-https"),
+    hostname: Schema.String,
+    ports: Schema.Array(Schema.Number),
+  }),
 ]);
 
 export const AcceptanceGatewayOptions = Schema.Struct({
   databaseUrl: Schema.String,
   routing: Routing,
+  /** Mend's own origin, where a preview with no grant sends its viewer to sign in. */
+  appUrl: Schema.optional(Schema.String),
   port: Schema.Number,
   startHoldMs: Schema.optional(Schema.Number),
   bodyCapBytes: Schema.optional(Schema.Number),
@@ -182,7 +189,7 @@ export const acceptanceGateway = (
     yield* Layer.build(
       servePreviews(Layer.empty, {
         setup: { _tag: "On", routing: options.routing, gateway: settings },
-        appUrl: APP_URL,
+        appUrl: options.appUrl ?? APP_URL,
         trustedProxies: [],
         identity: PreviewIdentityLive,
       }).pipe(
