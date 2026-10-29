@@ -84,6 +84,10 @@ log beyond what started it.
 Recipes live in a `mend.toml` at the repository root, one table per Service:
 
 ```toml
+[setup]
+run = ["pnpm install --frozen-lockfile"]
+inputs = ["pnpm-lock.yaml"]
+
 [service.web]
 command = "pnpm dev --port 3000 --host 127.0.0.1"
 port = 3000
@@ -138,9 +142,37 @@ The fields, and what Mend refuses in each:
   started again, but Mend waits for it to answer its own `ready` first. The first that fails or
   never answers stops the start and says which, and the ones already started keep running. A name no
   recipe has, the recipe itself, and a cycle are refused. Shared services (`"@db"`,
-  `{ shared = "db" }`) are not available yet, and say so.
+  `{ shared = "db" }`, `{ resource = "db" }`) are not available yet, and say so.
 - `[preview]` names the Service the worktree's preview shows. It must be a recipe with
   `browserScheme = "http"`.
+- `[setup]` is what a start runs before anything else: `run` is a list of shell commands, run in
+  order at the repository root as the person the Service runs as, and `inputs` lists files whose
+  contents decide when to run them again. An empty `run`, a step that is not a string, and an input
+  path that is absolute, has `..` or names the repository itself are refused.
+
+## Setup
+
+When a start runs any command, Mend runs `[setup]` first, then the dependencies, then the Service.
+It runs setup again only when something it covers changed: a step, or the contents of an input (an
+input that appears or goes counts). Otherwise the start says
+`setup · unchanged since it last ran here` and goes on.
+
+- **Where it is remembered.** Per worktree directory when Mend runs beside your files, which every
+  session in that worktree shares, and per workspace in a captured workspace. Two sessions never run
+  setup in one directory at once: a second start waits for the first and uses its result.
+- **When a step fails.** The start stops, and says the step, its exit code and the end of its
+  output. Your next start runs setup again. A start Mend makes on its own, such as restarting
+  Services after it replaces a workspace, does not: it says setup failed and asks for your start.
+- **When it is refused.** A bad `[setup]` refuses no recipe: they all still list, your start goes on
+  without setup and says so, and a start Mend makes on its own is refused.
+- **Stopping it.** Stop the Service, or all of the session's Services, while setup runs: the running
+  step and everything it started end, and the next start runs setup from the beginning.
+- **A restored workspace.** A captured workspace that comes back as a new workspace runs setup at
+  its first start, even if the capture already holds what setup made. Mend does not share setup's
+  output across workspaces until restoring has been measured against installing.
+
+Setup holds up no other Service's start or stop, however long it takes. `mend service <name> --wait`
+shows each step as it runs.
 
 A start with dependencies can take a while, so Mend runs it to the end on its own: closing the
 terminal, pressing Ctrl-C at the spinner, or an edge cutting the request does not stop it. A Stop of
@@ -174,7 +206,10 @@ code.
 the result before writing it. A workspace package gets its own `cwd`, a known dev server gets
 `browserScheme = "http"`, a Compose service gets `address = "docker"` (a UDP one stays on loopback),
 and when exactly one Service opens in a browser it becomes the `[preview]`. A folder or Compose
-service whose name is not a recipe name gets one (`My_App` becomes `my_app`).
+service whose name is not a recipe name gets one (`My_App` becomes `my_app`). With a lockfile at the
+root, it adds a `[setup]` that installs from it without changing it
+(`pnpm install --frozen-lockfile`, `yarn install --immutable`, `bun install --frozen-lockfile` or
+`npm ci`), with the lockfile as its input.
 
 ## Records and status
 

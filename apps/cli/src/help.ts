@@ -773,7 +773,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "scaffold mend.toml from package.json and compose ports",
     synopsis: ["[--yes]"],
     description: [
-      'Writes a mend.toml in the current repository with one Service per script and exposed port it can find. A workspace package\'s server runs in its own directory (cwd), a known dev server gets browserScheme = "http", a compose service gets address = "docker", and the one browser Service, when there is exactly one, becomes the [preview]. Edit it afterwards; sessions read it from their worktree.',
+      'Writes a mend.toml in the current repository with one Service per script and exposed port it can find. A workspace package\'s server runs in its own directory (cwd), a known dev server gets browserScheme = "http", a compose service gets address = "docker", and the one browser Service, when there is exactly one, becomes the [preview]. With a lockfile at the root it adds a [setup] that installs from it (pnpm install --frozen-lockfile, yarn install --immutable, bun install --frozen-lockfile or npm ci), run before a recipe starts and again when the lockfile changes. Edit it afterwards; sessions read it from their worktree.',
     ],
     options: [{ flag: "--yes", text: "write without asking" }],
     see: ["service run"],

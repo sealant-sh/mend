@@ -587,6 +587,11 @@ across workspaces.** The options weighed:
 | Dependency output shared across workspaces | Faster only when restoring beats installing.                                | Storage, quotas, retention, and entries per platform. | The existing project dependency cache gains complete immutable keys (inputs, command, image, OS, architecture, libc, layout) and a trusted writer. Setup's other effects still run in each workspace. |
 | A package download mirror only             | Installs still run, with fewer downloads.                                   | The existing npm mirror.                              | No new cache. The image digest joins the fingerprint.                                                                                                                                                 |
 
+**As built (delivery 9b).** The stamp is a `setup_runs` row per site and fingerprint, and an
+executor's copy is keyed by its workspace id. A restored capture lands in a new executor, so its
+first start runs setup once even when the capture holds the output; the table's "reuses its output"
+holds only for a site that is kept. Nothing is shared until the measurement below.
+
 **Why.** Share output across workspaces only after measuring the project's own restore against its
 install. A lockfile hash alone is not a key, because scripts, the platform, the runtime, the image
 and the person's layout change the result.

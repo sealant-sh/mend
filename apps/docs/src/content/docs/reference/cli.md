@@ -711,10 +711,10 @@ server older than the CLI stamps no id: a start whose answer an edge cut is then
 command that exits inside the server's minute reads as the refusal the server answers with, both
 exit `1`.
 
-A recipe whose `depends` start first runs to its end on the server whatever happens to the command:
-Ctrl-C at the spinner, or an edge cutting the request, leaves it going, and a Stop of one of its
-Services ends it. `--wait` follows it, with a line for each dependency as it starts and answers, for
-as long as `--timeout` allows.
+A recipe whose `[setup]` or `depends` run first runs to its end on the server whatever happens to
+the command: Ctrl-C at the spinner, or an edge cutting the request, leaves it going, and a Stop of
+one of its Services ends it. `--wait` follows it, with a line for setup's steps and for each
+dependency as it starts and answers, for as long as `--timeout` allows.
 
 A waited start returns and opens no tunnel; `mend service connect` reaches the port. `--wait` takes
 TCP ports only (UDP has no probe), and not a recipe that declares only a port, which Mend adopts
