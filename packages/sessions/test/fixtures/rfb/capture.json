@@ -1,0 +1,7 @@
+{
+  "password": "mendcap1",
+  "clientHandshake": 30,
+  "xvnc": "1.15.0+dfsg-2.1~deb13u1",
+  "novnc": "1.7.0",
+  "chromium": "156.0.8078.73"
+}
