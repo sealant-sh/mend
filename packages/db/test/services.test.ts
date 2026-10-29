@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, ServiceId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectId, SealantWorkspaceId, ServiceId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import { RepoRelativePath, type ServiceLaunch } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -8,6 +9,7 @@ import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { ServicesRepo, ServicesRepoLive } from "../src/repos/services.ts";
+import { SessionProcessesRepo, SessionProcessesRepoLive } from "../src/repos/session-processes.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 /** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
@@ -21,11 +23,13 @@ const scratchUrl = (() => {
 })();
 const adminLayer = PgClient.layer({ url: Redacted.make(ADMIN_URL) });
 const scratchLayer = PgClient.layer({ url: Redacted.make(scratchUrl) });
-const reposLayer = Layer.mergeAll(ServicesRepoLive, SessionsRepoLive).pipe(
-  Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))),
-);
+const reposLayer = Layer.mergeAll(
+  ServicesRepoLive,
+  SessionsRepoLive,
+  SessionProcessesRepoLive,
+).pipe(Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))));
 
-type Repos = ServicesRepo | SessionsRepo | SqlClient.SqlClient;
+type Repos = ServicesRepo | SessionsRepo | SessionProcessesRepo | SqlClient.SqlClient;
 
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
@@ -150,5 +154,63 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
       }),
     );
     expect(result).toEqual({ before: null, after: "user-maria", service: "person" });
+  });
+
+  it("records an attempt's launch for its restart, and a Service's host policy and address (0143)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const services = yield* ServicesRepo;
+        const processes = yield* SessionProcessesRepo;
+        const service = yield* services.create({
+          sessionId: HELD,
+          name: "wp",
+          declarationSource: "recipe-file",
+          workspacePort: 8080,
+          transport: "tcp",
+          browserScheme: "http",
+          bindAddresses: ["127.0.0.1"],
+          hostPolicy: "preserve",
+          address: "docker",
+        });
+        const attempt = (launch: ServiceLaunch | null) =>
+          processes.create({
+            sessionId: HELD,
+            sealantWorkspaceId: SealantWorkspaceId.make("ws-1"),
+            sealantSessionId: null,
+            serviceId: service.id,
+            kind: "service",
+            label: "wp",
+            argv: ["sh", "-c", "docker compose up"],
+            launch,
+          });
+        const launched = yield* attempt({
+          cwd: RepoRelativePath.make("deploy/wp"),
+          env: { WP_ENV: "local" },
+          ready: { _tag: "Http", path: "/wp-login.php", timeoutMs: 120_000 },
+        });
+        const explicit = yield* attempt(null);
+        yield* sql`
+          INSERT INTO services (id, session_id, name, declaration_source, workspace_port)
+          VALUES ('svc-older', ${HELD}, 'older', 'explicit-run', 3002)`;
+        return {
+          service: (yield* services.byId(service.id)) ?? null,
+          older: (yield* services.byId(ServiceId.make("svc-older"))) ?? null,
+          launch: yield* processes.launchOf(launched.id),
+          explicit: yield* processes.launchOf(explicit.id),
+        };
+      }),
+    );
+    expect(result.service).toMatchObject({ hostPolicy: "preserve", address: "docker" });
+    expect(result.older, "a row from before 0143").toMatchObject({
+      hostPolicy: "rewrite",
+      address: "loopback",
+    });
+    expect(result.launch).toEqual({
+      cwd: "deploy/wp",
+      env: { WP_ENV: "local" },
+      ready: { _tag: "Http", path: "/wp-login.php", timeoutMs: 120_000 },
+    });
+    expect(result.explicit, "an attempt with no recorded launch").toBeNull();
   });
 });

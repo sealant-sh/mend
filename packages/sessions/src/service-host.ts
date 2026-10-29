@@ -12,6 +12,7 @@ import * as Context from "effect/Context";
 
 import { forwardSockets, relayForwardSocket } from "./forward-node.ts";
 import { ForwardAdapter, type ForwardDialRecord, portTarget } from "./forward.ts";
+import { checkReady, type ReadyCheck, type ReadyVerdict, TCP_READY } from "./service-launch.ts";
 
 /**
  * The host side of a Service (docs/SESSION-SERVICES.md): one ordinary TCP
@@ -65,6 +66,8 @@ export interface ServiceStartInput {
    * deployments where the platform requires an owner assertion (service-key auth).
    */
   readonly ownerUserId: string | null;
+  /** The current attempt's `ready` rule; the background probe asks it. A TCP accept if absent. */
+  readonly ready?: ReadyCheck;
 }
 
 export interface ServiceHostBinding {
@@ -349,12 +352,23 @@ export const ServiceHostLive: Layer.Layer<
       );
     };
 
+    const observeVerdict = (input: ServiceStartInput, verdict: ReadyVerdict): Promise<void> => {
+      if (verdict._tag === "Ready") return observe(input, "reachable", "probe");
+      if (verdict.issue?.reason === "cancelled") return Promise.resolve();
+      return observe(input, "unreachable", "probe", verdict.reason);
+    };
+
     const observeDial = (
       input: ServiceStartInput,
       record: ForwardDialRecord,
       source: ServiceObservationSource,
     ): Promise<void> => {
-      if (record.kind === "ready") return observe(input, "reachable", source);
+      // A connection accepted is no HTTP answer: only the probe says an HTTP-ready Service is up.
+      if (record.kind === "ready") {
+        return input.ready?._tag === "Http"
+          ? Promise.resolve()
+          : observe(input, "reachable", source);
+      }
       // A dial given up because the client left says nothing about the Service.
       if (record.issue.reason === "cancelled") return Promise.resolve();
       return observe(input, "unreachable", source, record.issue.reason);
@@ -490,8 +504,8 @@ export const ServiceHostLive: Layer.Layer<
               stopSync(input.serviceId);
               return;
             }
-            const record = yield* adapter.probe(target, { purpose: "readiness" });
-            yield* Effect.promise(() => observeDial(input, record, "probe"));
+            const verdict = yield* checkReady(adapter, target, input.ready ?? TCP_READY);
+            yield* Effect.promise(() => observeVerdict(input, verdict));
           }).pipe(asSealantUser(input.ownerUserId), Effect.ignore),
         );
         active.set(input.serviceId, {

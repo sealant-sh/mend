@@ -130,7 +130,7 @@ import {
   type CapturePosition,
   withoutAgentStarting,
 } from "@mend/domain/workbench";
-import type { AgentWait, HarnessLayout } from "@mend/domain/workbench";
+import type { AgentWait, HarnessLayout, ServiceLaunch } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
   PersonLayoutPlatform,
@@ -156,6 +156,8 @@ import {
   CaptureRuntimeLive,
   CaptureSeals,
   CaptureSealsNone,
+  type PreviewUrls,
+  PreviewUrlsNone,
   CaptureRuntimeOff,
   CaptureUploadPolicyDefault,
   DotfilesCloner,
@@ -417,7 +419,10 @@ export const sealantLaunchLayer = (
     readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void>;
     /** A faithful process hook: the harness writes through HOME after relocation. */
     readonly beforeOpen?: (argv: ReadonlyArray<string>) => void;
-    /** Holds the agent's open on the platform until it completes (a slow PTY start). */
+    /**
+     * Holds the agent's open on the platform until it completes (a slow PTY start); `openFails`
+     * is read once it does, so a held open can still fail.
+     */
     readonly aroundOpen?: () => Effect.Effect<void>;
     /**
      * `workspaces.findByIdempotencyKey` (Core's next SDK); absent answers `unsupported`, as the
@@ -698,26 +703,28 @@ export const sealantLaunchLayer = (
     startHarnessInWorkspace: () => Effect.die("not in test"),
     waitRun: () => captureOps?.waitRun?.() ?? Effect.die("not in test"),
     openSession: (_workspace, argv, options) =>
-      captureOps?.openFails?.() === true
-        ? Effect.fail(
-            new SealantPlatformError({
-              code: "session_open_failed",
-              status: 500,
-              message: "the platform did not open the session",
-              cause: null,
-            }),
-          )
-        : (captureOps?.aroundOpen?.() ?? Effect.void).pipe(
-            Effect.andThen(
-              Effect.sync(() => {
-                assertAgentNamesMendMcpOnce(argv);
-                captureOps?.beforeOpen?.(argv);
-                spawned?.push(argv);
-                if (options !== undefined) openedOptions?.push(options);
-                return openPty(options?.mode ?? "pty");
-              }),
-            ),
+      (captureOps?.aroundOpen?.() ?? Effect.void).pipe(
+        Effect.andThen(
+          Effect.suspend(() =>
+            captureOps?.openFails?.() === true
+              ? Effect.fail(
+                  new SealantPlatformError({
+                    code: "session_open_failed",
+                    status: 500,
+                    message: "the platform did not open the session",
+                    cause: null,
+                  }),
+                )
+              : Effect.sync(() => {
+                  assertAgentNamesMendMcpOnce(argv);
+                  captureOps?.beforeOpen?.(argv);
+                  spawned?.push(argv);
+                  if (options !== undefined) openedOptions?.push(options);
+                  return openPty(options?.mode ?? "pty");
+                }),
           ),
+        ),
+      ),
     forwardUdp: () => Effect.die("not in test"),
     openForward: () => Effect.die("not in test"),
     stopWorkspace: (target, options) =>
@@ -1428,6 +1435,8 @@ export interface World {
   readonly serviceForwards: Map<string, ServiceForward>;
   readonly serviceObservations: Map<string, ServiceObservation>;
   readonly reachedAttempts: Set<string>;
+  /** Each Service attempt's recorded launch (`launch_cwd`, `launch_env`, `launch_ready`). */
+  readonly launches: Map<string, ServiceLaunch>;
   controlSeq: number;
   readonly previews: Map<string, Preview>;
   readonly previewControls: Map<string, PreviewControl>;
@@ -1526,6 +1535,7 @@ export const makeWorld = (): World => ({
   serviceForwards: new Map(),
   serviceObservations: new Map(),
   reachedAttempts: new Set(),
+  launches: new Map(),
   controlSeq: 0,
   previews: new Map(),
   previewControls: new Map(),
@@ -1592,8 +1602,9 @@ export const sessionProcessesLayer = (world: World) => {
       }),
     );
   };
+  const { launches } = world;
   return Layer.succeed(SessionProcessesRepo, {
-    create: (input: NewSessionProcess) =>
+    create: ({ launch, ...input }: NewSessionProcess) =>
       Effect.sync(() => {
         const process = new SessionProcess({
           ...input,
@@ -1615,9 +1626,11 @@ export const sessionProcessesLayer = (world: World) => {
           updatedAt: world.clock.now(),
         });
         world.processes.set(process.id, process);
+        if (launch !== undefined && launch !== null) launches.set(process.id, launch);
         return process;
       }),
     byId: (id) => Effect.succeed(world.processes.get(id) ?? null),
+    launchOf: (id) => Effect.succeed(launches.get(id) ?? null),
     byLaunchCorrelation: (correlationId) =>
       Effect.succeed(
         [...world.processes.values()].find(
@@ -3559,6 +3572,8 @@ interface EngineOptions {
   readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
   readonly forwardAdapterLayer?: Layer.Layer<ForwardAdapter>;
   readonly serviceHostLayer?: Layer.Layer<ServiceHost>;
+  /** Where previews are reached, for `MEND_PREVIEW_URL`; nowhere unless a test says. */
+  readonly previewUrls?: Layer.Layer<PreviewUrls>;
   /** Every account's Mend key; one shared stub path unless a test says. */
   readonly instanceRolesLayer?: Layer.Layer<InstanceRolesRepo>;
   readonly mendKeysLayer?: Layer.Layer<MendKeys>;
@@ -3591,6 +3606,10 @@ interface EngineOptions {
   readonly sessionReads?: Array<string>;
   /** Wraps the sessions repo the engine reads, so a case can hold one reader inside its read. */
   readonly wrapSessions?: (inner: SessionsRepo["Service"]) => SessionsRepo["Service"];
+  /** Wraps the process rows the engine reads and writes, so a case can hold one write. */
+  readonly wrapProcesses?: (
+    inner: SessionProcessesRepo["Service"],
+  ) => SessionProcessesRepo["Service"];
 }
 
 /** Run a live adapter scenario, including AbortSignal-driven interruption. */
@@ -3751,7 +3770,14 @@ export const withPreparedEngineEffect = <B, A, E>(
         ),
       ),
       Layer.provide(sessionRunsLayer(world)),
-      Layer.provide(sessionProcessesLayer(world)),
+      Layer.provide(
+        options.wrapProcesses === undefined
+          ? sessionProcessesLayer(world)
+          : Layer.effect(
+              SessionProcessesRepo,
+              Effect.map(SessionProcessesRepo, options.wrapProcesses),
+            ).pipe(Layer.provide(sessionProcessesLayer(world))),
+      ),
       Layer.provide(
         Layer.mergeAll(
           options.conversationLayer ?? agentConversationStubLayer,
@@ -3797,6 +3823,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
           options.seals ?? CaptureSealsNone,
           options.hostUserNamespaces ?? WorkspaceHostUserNamespacesUnobserved,
+          options.previewUrls ?? PreviewUrlsNone,
         ),
       ),
       Layer.provide(

@@ -23,6 +23,8 @@ import {
   PageRef,
   ReviewSlice,
   ServiceBrowserScheme,
+  ServiceDeclarations,
+  ServiceStartProgress,
   ServiceRecipe,
   ServiceView,
   Session,
@@ -71,6 +73,17 @@ import {
  * Service is refused; another Service's ids are not seen. A server older than the field ignores it.
  */
 export const ServiceStartId = Schema.String.check(Schema.isUUID());
+
+/**
+ * A recipe start still waiting on a dependency when its request's hold ran out (ADR 0017,
+ * delivery 9). Mend goes on with it; `GET /sessions/:id/services/starts/:startId` says where it
+ * stands. 504, so a client older than that route reads it as a start that may still be working.
+ */
+export class ServiceStartUnderWay extends Schema.TaggedError<ServiceStartUnderWay>()(
+  "ServiceStartUnderWay",
+  { message: Schema.String },
+  { httpApiStatus: 504 },
+) {}
 
 export const RespondAgentRequest = Schema.Union([
   Schema.Struct({ decision: AgentApprovalDecision }),
@@ -454,7 +467,16 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: Schema.Struct({ name: Schema.String, startId: Schema.optional(ServiceStartId) }),
       success: ServiceView,
-      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure],
+      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure, ServiceStartUnderWay],
+    }),
+  )
+  .add(
+    // Where a recipe start stands, by the id its client sent: Mend runs the start's plan to its
+    // end whatever its request does, and a client follows it here.
+    HttpApiEndpoint.get("serviceStart", "/sessions/:id/services/starts/:startId", {
+      params: { id: SessionId, startId: ServiceStartId },
+      success: ServiceStartProgress,
+      error: [NotFound],
     }),
   )
   .add(
@@ -462,6 +484,16 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.get("listRecipes", "/sessions/:id/recipes", {
       params: { id: SessionId },
       success: Schema.Array(ServiceRecipe),
+      error: [NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    // The same file read whole (ADR 0017, delivery 9): the recipes, each refused one with the key
+    // it names, the keys this server ignores, and [preview]. A file that is not TOML fails as a
+    // StoreFailure naming it.
+    HttpApiEndpoint.get("declarations", "/sessions/:id/declarations", {
+      params: { id: SessionId },
+      success: ServiceDeclarations,
       error: [NotFound, StoreFailure],
     }),
   )

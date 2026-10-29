@@ -275,6 +275,7 @@ const processesLayer = (rows: ReadonlyArray<SessionProcess> = [agentProcess]) =>
   Layer.succeed(SessionProcessesRepo, {
     create: () => Effect.die("not in test"),
     byId: (id) => Effect.succeed(rows.find((row) => row.id === id) ?? null),
+    launchOf: () => Effect.succeed(null),
     byLaunchCorrelation: () => Effect.succeed(null),
     listForSession: () => Effect.succeed(rows),
     listForSessions: () => Effect.succeed(rows),

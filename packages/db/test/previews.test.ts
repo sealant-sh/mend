@@ -158,6 +158,8 @@ const dormant = (sourceAttemptId: string) => ({
   workspaceId: null,
 });
 
+const LOOPBACK = { host: "rewrite", dial: "session-bound" } as const;
+
 describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
@@ -204,6 +206,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           _tag: "Bound",
           serviceId: "svc-shared-1",
           attemptId: "att-shared-1",
+          ...LOOPBACK,
         });
         expect(first.preview).toMatchObject({
           worktreeId: worktree,
@@ -230,6 +233,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           _tag: "Bound",
           serviceId: "svc-shared-2",
           attemptId: "att-shared-2",
+          ...LOOPBACK,
         });
         yield* sql`UPDATE session_processes SET exited_at = now() WHERE id = 'att-shared-2'`;
         const [stopped] = yield* previews.ensureForWorktree(worktree);
@@ -334,7 +338,10 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           ["adopted", { _tag: "Unbound", reason: "no-recorded-command" }],
           ["recipe", { _tag: "Unbound", reason: "no-live-attempt" }],
           ["tls", { _tag: "Unbound", reason: "https-unsupported" }],
-          ["web", { _tag: "Bound", serviceId: "svc-schemes-1", attemptId: "att-schemes-1" }],
+          [
+            "web",
+            { _tag: "Bound", serviceId: "svc-schemes-1", attemptId: "att-schemes-1", ...LOOPBACK },
+          ],
         ]);
       }),
     );
@@ -386,10 +393,15 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         yield* someoneWaitsOnALock.pipe(Effect.ensuring(release));
         const rows = yield* Fiber.join(reader);
         expect(rows.map((row) => [row.preview.id, row.binding])).toEqual([
-          ["racing-docs", { _tag: "Bound", serviceId: "docs", attemptId: "docs-1" }],
+          ["racing-docs", { _tag: "Bound", serviceId: "docs", attemptId: "docs-1", ...LOOPBACK }],
           [
             "racing-web",
-            { _tag: "Bound", serviceId: "svc-snapshot-1", attemptId: "att-snapshot-1" },
+            {
+              _tag: "Bound",
+              serviceId: "svc-snapshot-1",
+              attemptId: "att-snapshot-1",
+              ...LOOPBACK,
+            },
           ],
         ]);
       }),
@@ -426,6 +438,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           _tag: "Bound",
           serviceId: "svc-tolerant-1",
           attemptId: "att-tolerant-1",
+          ...LOOPBACK,
         });
       }),
     );
@@ -557,6 +570,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
               workspaceId: "ws-1",
               port: 3000,
               platformSessionId: "pty-att-bound-1",
+              ...LOOPBACK,
             },
           },
         });

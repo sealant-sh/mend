@@ -60,6 +60,7 @@ import {
   TurnSteerKeyConflict,
   WorkspaceReplaceRefused,
   SessionNotLive,
+  ServiceStartUnderWay,
   SettingsFailure,
   StoreFailure,
   SessionTranscript,
@@ -147,6 +148,7 @@ import {
   startsInTerminal,
   Session,
   type SessionStatus,
+  RECIPE_NAME,
   RepositoryCloneUrl,
   repositoryCloneUrlIssue,
 } from "@mend/domain/workbench";
@@ -160,7 +162,6 @@ import {
   DotfilesResolveError,
   FollowUpDelivery,
   LAUNCH_ADMISSION,
-  RECIPE_NAME,
   type ReadStamp,
   SessionEngine,
   startFromBase,
@@ -2902,6 +2903,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
                 Effect.fail(new StoreFailure({ message: error.message })),
               ServiceStartError: (error) =>
                 Effect.fail(new StoreFailure({ message: error.message })),
+              ServiceStartUnderWayError: (error) =>
+                Effect.fail(new ServiceStartUnderWay({ message: error.message })),
             }),
           );
       }),
@@ -2913,6 +2916,34 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         // beside the worktree when co-located, else from the session's live workspace.
         const engine = yield* SessionEngine;
         return yield* engine.listServiceRecipes(session.id).pipe(
+          Effect.catchTags({
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
+            RecipeFileError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+            SealantPlatformError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+          }),
+        );
+      }),
+    )
+    .handle("serviceStart", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        const progress = yield* (yield* SessionEngine)
+          .serviceStartProgress(session.id, params.startId)
+          .pipe(
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+          );
+        if (progress === null) return yield* new NotFound({ id: params.startId });
+        return progress;
+      }),
+    )
+    .handle("declarations", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        return yield* (yield* SessionEngine).serviceDeclarations(session.id).pipe(
           Effect.catchTags({
             SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
             ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),

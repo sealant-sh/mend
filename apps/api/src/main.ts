@@ -236,6 +236,7 @@ import { PageViewTokensLive } from "./page-view-tokens.ts";
 import { PreviewSetupConfig, PreviewSetupConfigLive } from "./preview-config.ts";
 import { PreviewIdentityLive } from "./preview-identity.ts";
 import { servePreviews } from "./preview-serving.ts";
+import { PreviewUrlsLive } from "./preview-urls.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
@@ -407,6 +408,7 @@ const SessionEngineLayer = SessionEngineBaseLive.pipe(
   // Whether this host's kernel lets workspaces' Docker services start: a launch on one that
   // refuses fails before it builds (the machine view's `userNamespaces`, read the same way).
   Layer.provide(WorkspaceHostUserNamespacesLive),
+  Layer.provide(PreviewUrlsLive.pipe(Layer.provide(PreviewSetupConfigLive))),
 );
 // The capture store (docs/adr/0002-session-capture-store.md): the bucket and the git runner
 // over it, plus the pointer repositories. Built for every install except one that opted back

@@ -55,6 +55,7 @@
     "@mend/domain": "workspace:*",
     "@mend/local-git": "workspace:*",
     "@mend/network": "workspace:*",
+    "@mend/sessions": "workspace:*",
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@mend/workspace-ssh": "workspace:*",

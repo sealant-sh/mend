@@ -46,6 +46,8 @@ const view = (patch: Partial<ServiceViewDto> = {}): ServiceViewDto => ({
     attemptHistoryComplete: true,
     forwardHistoryComplete: true,
     observationHistoryComplete: true,
+    hostPolicy: "rewrite",
+    address: "loopback",
     createdAt: "2026-08-20T00:00:00.000Z",
     updatedAt: "2026-08-20T00:00:00.000Z",
   },

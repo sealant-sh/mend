@@ -85,21 +85,33 @@ Recipes live in a `mend.toml` at the repository root, one table per Service:
 
 ```toml
 [service.web]
-command = "pnpm dev"
+command = "pnpm dev --port 3000 --host 127.0.0.1"
 port = 3000
 browserScheme = "http"
+cwd = "apps/web"
+env = { NODE_ENV = "development" }
+ready = { http = "/", timeout = "120s" }
+depends = ["db"]
 
 [service.db]
-# no command: adopt a listener something else starts (a compose sidecar, a daemon)
+command = "docker compose up db"
 port = 5432
+address = "docker"
+
+[service.cache]
+# no command: adopt a listener something else starts (a compose sidecar, a daemon)
+port = 6379
 
 [service.game]
 command = "node server.js"
 port = 9000
 protocol = "udp"
+
+[preview]
+service = "web"
 ```
 
-The fields:
+The fields, and what Mend refuses in each:
 
 - `port` is the only required field: where the process listens inside the workspace, 1–65535.
 - `command` is the shell command Mend supervises. Leave it out for an adopt-only recipe: Mend binds
@@ -107,6 +119,43 @@ The fields:
 - `protocol` is `"tcp"` unless you say `"udp"`.
 - `browserScheme` (`"http"` or `"https"`) is what gives a Service its Open action. TCP alone never
   implies HTTP, and a UDP recipe cannot declare one.
+- `cwd` is the directory the command runs in, relative to the repository root. An absolute path, a
+  path with `..`, and one with a NUL byte are refused.
+- `env` sets the recipe's own environment variables, strings only. `MEND_*` names and `PORT` are
+  Mend's, and are refused.
+- `ready` says when the Service is up. `{ http = "/health" }` waits for any HTTP answer for that
+  path (a 403 counts), over TLS for an `https` Service, whose own certificate Mend takes without
+  checking it. `{ timeout = "2m" }` changes how long to wait, from 1 second to 10 minutes, for an
+  adopted port too. Without it, Mend waits up to a minute for the port to accept. An HTTP check is
+  refused on UDP and on a recipe with no command. The same rule holds after the start: a port that
+  only accepts connections never reads as up for an HTTP check.
+- `host` is the `Host` your app sees on a preview's requests: `"rewrite"` (the default,
+  `localhost:<port>`) or `"preserve"` (the preview's own host, for an app that builds its links from
+  it, such as WordPress). It needs `browserScheme = "http"`.
+- `address = "docker"` marks a port Docker publishes, as a compose service's. Mend dials it by port,
+  never claiming its process, and its preview says `port-scoped`.
+- `depends` names recipes of the same session to start first, in order. One already running is not
+  started again, but Mend waits for it to answer its own `ready` first. The first that fails or
+  never answers stops the start and says which, and the ones already started keep running. A name no
+  recipe has, the recipe itself, and a cycle are refused. Shared services (`"@db"`,
+  `{ shared = "db" }`) are not available yet, and say so.
+- `[preview]` names the Service the worktree's preview shows. It must be a recipe with
+  `browserScheme = "http"`.
+
+A start with dependencies can take a while, so Mend runs it to the end on its own: closing the
+terminal, pressing Ctrl-C at the spinner, or an edge cutting the request does not stop it. A Stop of
+one of its Services does. `mend service <name> --wait` follows it and names each dependency as it
+starts and answers, for as long as `--timeout` allows.
+
+Each started Service also gets `PORT` (its port) and, when its preview has an address,
+`MEND_PREVIEW_URL`. A restart runs what the Service ran before, with the same directory and
+environment, even after `mend.toml` changed; a new start reads the file again. Nothing in the file
+starts on its own.
+
+A problem with one recipe refuses that recipe alone, naming the key, and the others still run.
+`mend service <name>` tells you why a refused one does not. A key Mend does not know is ignored and
+listed, never refused. These keys are read from Mend 0.37 on: an older server ignores them, runs the
+command at the repository root, and does not say so.
 
 The table name is the lookup key (`mend service web`): lowercase letters and digits plus `.`, `_`,
 and `-`, up to 64 characters.
@@ -116,12 +165,16 @@ workspace (the default store) the worktree lives only in the workspace, so Mend 
 `/workspace/repo/mend.toml` from the live workspace. A session with no live workspace lists only the
 project's recipes, and `mend service <name>` asks you to resume it first. Two things follow. An
 agent can add a recipe as part of its change, and the addition reviews like any other edit. And two
-sessions on different branches can carry different recipes. A malformed file is a named error, never
-a guess; a missing file means no declared recipes. Recipes declared on the project in the web app
-join the same set, and on a name collision the file wins, because it travels with the code.
+sessions on different branches can carry different recipes. A file that is not valid TOML is a named
+error, never a guess; a missing file means no declared recipes. Recipes declared on the project in
+the web app join the same set, and on a name collision the file wins, because it travels with the
+code.
 
 `mend service init` scaffolds the file from the package and Compose files it finds, and shows you
-the result before writing it.
+the result before writing it. A workspace package gets its own `cwd`, a known dev server gets
+`browserScheme = "http"`, a Compose service gets `address = "docker"` (a UDP one stays on loopback),
+and when exactly one Service opens in a browser it becomes the `[preview]`. A folder or Compose
+service whose name is not a recipe name gets one (`My_App` becomes `my_app`).
 
 ## Records and status
 

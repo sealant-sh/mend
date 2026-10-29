@@ -1,4 +1,4 @@
-import { serviceStartCorrelation } from "@mend/domain/workbench";
+import { parseDuration, serviceStartCorrelation } from "@mend/domain/workbench";
 
 import { GATEWAY_STATUSES, MendRequestError } from "./server-request.ts";
 
@@ -507,41 +507,7 @@ export const parseWaitArgs = (args: ReadonlyArray<string>): Parsed<WaitArgs> => 
   };
 };
 
-const DURATION_UNIT_MS: Readonly<Record<string, number>> = { s: 1000, m: 60_000, h: 3_600_000 };
-
-/**
- * A `--timeout` in milliseconds, or null when it is not one: `90` and `90s` are seconds, `5m`
- * minutes, `1h` hours, fractions allowed (`.5`, `1.5m`), above 0. `mend wait` and `mend service run --wait` read
- * it the same way.
- */
-export const parseDuration = (text: string): number | null => {
-  const trimmed = text.trim();
-  const unit = DURATION_UNIT_MS[trimmed.slice(-1)];
-  // A bare number is seconds, read as `mend wait` always read it (`.5`, `1e2`).
-  const amount =
-    unit === undefined
-      ? trimmed === ""
-        ? Number.NaN
-        : Number(trimmed)
-      : /^(?:\d+\.?\d*|\.\d+)$/u.test(trimmed.slice(0, -1))
-        ? Number(trimmed.slice(0, -1))
-        : Number.NaN;
-  const ms = Math.ceil(amount * (unit ?? 1000));
-  return Number.isFinite(ms) && ms > 0 ? ms : null;
-};
-
 export const DURATION_ISSUE = "--timeout takes a duration above 0: 90 or 90s, 5m, 1h";
-
-/** `10 min`, `90 s`, `1 h 30 min`: a duration as the CLI says it. */
-export const durationLine = (ms: number): string => {
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds} s`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  if (minutes < 60) return rest === 0 ? `${minutes} min` : `${minutes} min ${rest} s`;
-  const hours = Math.floor(minutes / 60);
-  return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
-};
 
 /**
  * The exit status `mend wait` and `mend service run --wait` give when the timeout passed first, as
@@ -759,6 +725,92 @@ export const waitForServiceStart = async <V extends ServiceViewSlice>(
     const left =
       options.deadline === null ? pollMs : Math.min(pollMs, options.deadline - options.now());
     if (left <= 0) return { kind: "timeout", last };
+    await options.sleep(left);
+  }
+};
+
+/**
+ * The slice of a recipe start's progress (`GET /sessions/:id/services/starts/:startId`) the CLI
+ * reads: each recipe of its plan, dependencies first and the Service asked for last.
+ */
+export interface ServiceStartProgressSlice {
+  readonly service: string;
+  readonly state: string;
+  readonly steps: ReadonlyArray<{
+    readonly name: string;
+    readonly port: number;
+    readonly state: string;
+    readonly reason: string | null;
+  }>;
+  readonly message: string | null;
+}
+
+/** One recipe of a plan as a person reads it. */
+export const planStepLine = (step: ServiceStartProgressSlice["steps"][number]): string | null => {
+  const because = step.reason === null ? "" : ` · ${step.reason}`;
+  switch (step.state) {
+    case "starting":
+      return `${step.name} · starting · waiting for :${step.port} to answer`;
+    case "ready":
+      return `${step.name} · answered on :${step.port}`;
+    case "reused":
+      return `${step.name} · already running · answered on :${step.port}`;
+    case "not-ready":
+      return `${step.name} · :${step.port} has not answered${because}`;
+    case "stopped":
+      return `${step.name} · stopped`;
+    case "failed":
+      return `${step.name} · did not start${because}`;
+    default:
+      return null;
+  }
+};
+
+export type ServicePlanOutcome =
+  | { readonly kind: "began" }
+  | { readonly kind: "ended"; readonly message: string }
+  /** The server has no start under this id: older than plans, or restarted since. */
+  | { readonly kind: "unknown" }
+  | { readonly kind: "timeout" };
+
+/**
+ * Poll a recipe start's plan until the Service asked for begins, the plan ends without it, or the
+ * deadline passes. `onStep` hears each recipe once per state it reaches.
+ */
+export const followServicePlan = async (
+  options: Clock & {
+    readonly read: () => Promise<ServiceStartProgressSlice | null>;
+    readonly deadline: number | null;
+    readonly onStep?: (step: ServiceStartProgressSlice["steps"][number]) => void;
+  },
+): Promise<ServicePlanOutcome> => {
+  const pollMs = options.pollMs ?? 2000;
+  const said = new Map<string, string>();
+  for (;;) {
+    const got = await readThrough(options.read, options, options.deadline);
+    if (!got.done) return { kind: "timeout" };
+    const progress = got.value;
+    if (progress === null) return { kind: "unknown" };
+    for (const step of progress.steps) {
+      if (said.get(step.name) === step.state) continue;
+      said.set(step.name, step.state);
+      options.onStep?.(step);
+    }
+    if (progress.state === "failed" || progress.state === "stopped") {
+      return { kind: "ended", message: progress.message ?? `${progress.service} was not started` };
+    }
+    const target = progress.steps.at(-1)?.state;
+    if (
+      progress.state === "started" ||
+      target === "starting" ||
+      target === "ready" ||
+      target === "not-ready"
+    ) {
+      return { kind: "began" };
+    }
+    const left =
+      options.deadline === null ? pollMs : Math.min(pollMs, options.deadline - options.now());
+    if (left <= 0) return { kind: "timeout" };
     await options.sleep(left);
   }
 };

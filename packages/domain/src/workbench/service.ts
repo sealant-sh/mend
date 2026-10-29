@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   SealantWorkspaceId,
@@ -9,6 +9,7 @@ import {
   SessionProcessId,
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { ServiceAddress, ServiceHostPolicy } from "./service-recipe.ts";
 import { SessionProcess } from "./session-process.ts";
 
 /** How a stable Service declaration entered one session. */
@@ -49,6 +50,16 @@ export class Service extends Schema.Class<Service>("Service")({
   attemptHistoryComplete: Schema.Boolean,
   forwardHistoryComplete: Schema.Boolean,
   observationHistoryComplete: Schema.Boolean,
+  /** The Host its preview's requests carry; older servers omit it. */
+  hostPolicy: ServiceHostPolicy.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("rewrite" as const)),
+    Schema.withConstructorDefault(Effect.succeed("rewrite" as const)),
+  ),
+  /** `docker`: dialled port-scoped, never bound to a process; older servers omit it. */
+  address: ServiceAddress.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("loopback" as const)),
+    Schema.withConstructorDefault(Effect.succeed("loopback" as const)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

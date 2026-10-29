@@ -11,8 +11,10 @@ import {
   Service,
   ServiceForward,
   ServiceObservation,
+  type ServiceAddress,
   type ServiceBrowserScheme,
   type ServiceDeclarationSource,
+  type ServiceHostPolicy,
   type ServiceObservationSource,
   type ServiceTargetState,
   type ServiceTransport,
@@ -44,6 +46,8 @@ export interface NewService {
   readonly attemptHistoryComplete?: boolean;
   readonly forwardHistoryComplete?: boolean;
   readonly observationHistoryComplete?: boolean;
+  readonly hostPolicy?: ServiceHostPolicy;
+  readonly address?: ServiceAddress;
 }
 
 /** Stable Service declarations and their current attempt/forward pointers. */
@@ -197,6 +201,8 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
             attemptHistoryComplete: input.attemptHistoryComplete ?? true,
             forwardHistoryComplete: input.forwardHistoryComplete ?? true,
             observationHistoryComplete: input.observationHistoryComplete ?? true,
+            hostPolicy: input.hostPolicy ?? "rewrite",
+            address: input.address ?? "loopback",
           })
           .returning()
           .pipe(Effect.orDie);

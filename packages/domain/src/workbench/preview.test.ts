@@ -103,6 +103,8 @@ const idle = (owner: Service, recordedCommand = false): PreviewTarget => ({
   workspaceId: SealantWorkspaceId.make("workspace"),
 });
 
+const LOOPBACK = { host: "rewrite", dial: "session-bound" } as const;
+
 describe("preview bindings", () => {
   it("does not resolve a removed preview, even with live rows", () => {
     expect(
@@ -164,6 +166,15 @@ describe("preview bindings", () => {
       _tag: "Bound",
       serviceId: first.id,
       attemptId: older.liveAttempt?.id,
+      ...LOOPBACK,
+    });
+  });
+  it("carries the Service's Host policy, and dials a docker Service port-scoped", () => {
+    const web = service("service", { hostPolicy: "preserve", address: "docker" });
+    expect(resolvePreviewBinding(preview, [live(web)])).toMatchObject({
+      _tag: "Bound",
+      host: "preserve",
+      dial: "port-scoped",
     });
   });
   it("binds a starting attempt and refuses a live attempt without a command", () => {
@@ -172,6 +183,7 @@ describe("preview bindings", () => {
       _tag: "Bound",
       serviceId: web.id,
       attemptId: SessionProcessId.make("attempt-service"),
+      ...LOOPBACK,
     });
     expect(resolvePreviewBinding(preview, [live(web, { argv: [] })])).toEqual(
       unbound("no-recorded-command"),
@@ -182,13 +194,19 @@ describe("preview bindings", () => {
     const second = service("second");
     const older = live(first);
     const newer = live(second, { createdAt: new Date(at.getTime() + 1) });
-    const bound = { _tag: "Bound", serviceId: first.id, attemptId: older.liveAttempt?.id };
+    const bound = {
+      _tag: "Bound",
+      serviceId: first.id,
+      attemptId: older.liveAttempt?.id,
+      ...LOOPBACK,
+    };
     expect(resolvePreviewBinding(preview, [newer, older])).toEqual(bound);
     expect(resolvePreviewBinding(preview, [older, newer])).toEqual(bound);
     expect(resolvePreviewBinding(preview, [idle(first, true), newer])).toEqual({
       _tag: "Bound",
       serviceId: second.id,
       attemptId: newer.liveAttempt?.id,
+      ...LOOPBACK,
     });
   });
   it("an HTTPS attempt keeps its precedence over a later HTTP Service", () => {
@@ -211,7 +229,12 @@ describe("preview bindings", () => {
             .flatMap((target) => (target.liveAttempt === null ? [] : [target.liveAttempt]))
             .toSorted((a, b) => (a.id < b.id ? -1 : 1))[0];
           if (oldest === undefined) throw new Error("missing generated attempt");
-          const expected = { _tag: "Bound", serviceId: oldest.serviceId, attemptId: oldest.id };
+          const expected = {
+            _tag: "Bound",
+            serviceId: oldest.serviceId,
+            attemptId: oldest.id,
+            ...LOOPBACK,
+          };
           expect(resolvePreviewBinding(preview, targets)).toEqual(expected);
           expect(resolvePreviewBinding(preview, targets.toReversed())).toEqual(expected);
         },
@@ -415,6 +438,7 @@ describe("gateway resolution", () => {
         workspaceId: SealantWorkspaceId.make("workspace"),
         port: 3000,
         platformSessionId: "pty",
+        ...LOOPBACK,
       },
     });
     const unhandled = selectPreviewTarget(preview, [live(web, { sealantSessionId: null })]);

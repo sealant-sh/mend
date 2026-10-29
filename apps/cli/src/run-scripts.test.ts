@@ -1,4 +1,4 @@
-import { serviceStartCorrelation } from "@mend/domain/workbench";
+import { durationLine, parseDuration, serviceStartCorrelation } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,10 +7,8 @@ import {
   endLine,
   exitStatusOf,
   followLogs,
-  durationLine,
   isSessionId,
   type LogPage,
-  parseDuration,
   parseLogsArgs,
   parseWaitArgs,
   pickProcess,
@@ -23,6 +21,9 @@ import {
   type ServiceStartRead,
   type ServiceViewSlice,
   waitForCommand,
+  followServicePlan,
+  planStepLine,
+  type ServiceStartProgressSlice,
   waitForServiceStart,
 } from "./run-scripts.ts";
 import { MendRequestError } from "./server-request.ts";
@@ -862,5 +863,77 @@ describe("pickServiceAttempt", () => {
       processId: "attempt-c",
     });
     expect(pickServiceAttempt([live], "api", null)).toMatchObject({ named: false });
+  });
+});
+
+const planAt = (
+  db: string,
+  web: string,
+  state = "running",
+  message: string | null = null,
+): ServiceStartProgressSlice => ({
+  service: "web",
+  state,
+  steps: [
+    { name: "db", port: 5432, state: db, reason: null },
+    { name: "web", port: 3000, state: web, reason: null },
+  ],
+  message,
+});
+
+describe("followServicePlan", () => {
+  it("follows a dependency that takes six minutes, past the request's five, then the Service's own start", async () => {
+    const clock = fakeClock();
+    const said: Array<string> = [];
+    // db answers at 6 min, past the CLI's five-minute wait for any one answer; web begins after.
+    const progressAt = (now: number) =>
+      now < 360_000
+        ? planAt("starting", "waiting")
+        : now < 362_000
+          ? planAt("ready", "waiting")
+          : planAt("ready", "starting");
+    const followed = await followServicePlan({
+      read: async () => progressAt(clock.now()),
+      deadline: 900_000,
+      onStep: (step) => {
+        const line = planStepLine(step);
+        if (line !== null) said.push(line);
+      },
+      ...clock,
+    });
+    expect(followed).toEqual({ kind: "began" });
+    expect(clock.now()).toBeGreaterThan(300_000);
+    expect(said).toEqual([
+      "db · starting · waiting for :5432 to answer",
+      "db · answered on :5432",
+      "web · starting · waiting for :3000 to answer",
+    ]);
+
+    const answered = await waitForServiceStart({
+      read: async () => startRead(serviceOf(clock.now() < 380_000 ? "unreachable" : "reachable")),
+      target: unpinned,
+      deadline: 900_000,
+      ...clock,
+    });
+    expect(answered).toMatchObject({ kind: "answered", processId: "attempt-a" });
+  });
+
+  it("ends with the server's words when a dependency does not start, or a Stop comes first", async () => {
+    const clock = fakeClock();
+    expect(
+      await followServicePlan({
+        read: async () =>
+          planAt("not-ready", "waiting", "failed", "db did not start, so web was not started · x"),
+        deadline: null,
+        ...clock,
+      }),
+    ).toEqual({ kind: "ended", message: "db did not start, so web was not started · x" });
+  });
+
+  it("says unknown when the server has no start under the id", async () => {
+    const clock = fakeClock();
+    expect(await followServicePlan({ read: async () => null, deadline: null, ...clock })).toEqual({
+      kind: "unknown",
+    });
   });
 });

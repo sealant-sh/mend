@@ -396,6 +396,20 @@ describe("the preview gateway relays to the app", () => {
       ),
   );
 
+  it.live('asks a host = "preserve" app as the preview\'s own host', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { world } = yield* relayWorld();
+        world.targets.resolutions.set(PREVIEWS.web.id, bound({ host: "preserve" }));
+        const reply = yield* getAs(world, world.cookieFor("carol", "web"), "/");
+        expect(reply.status, "the app answered").toBe(200);
+        expect(decodeDigest(reply.body).headers["host"], "Host is the preview's host").toBe(
+          world.hostOf("web"),
+        );
+      }),
+    ),
+  );
+
   it.live("reuses one viewer's forward across keep-alive requests and never shares it", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -793,6 +807,32 @@ describe("the preview gateway relays to the app", () => {
         ).toEqual([{ kind: "session", session: PLATFORM_SESSION }]);
       }),
     ),
+  );
+
+  it.live(
+    "dials a docker-hosted Service by port, on to the Docker route after loopback refuses",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const forwards = localForwards([
+            {
+              workspaceId: WORKSPACE,
+              port: APP_PORT,
+              entry: { kind: "refused", reason: "connection-refused" },
+            },
+          ]);
+          const world = yield* gatewayWorld({ forwards: forwards.layer });
+          world.targets.resolutions.set(PREVIEWS.web.id, bound({ dial: "port-scoped" }));
+          yield* getAs(world, world.cookieFor("carol", "web"), "/");
+          expect(
+            forwards.opens.map((open) => open.destination),
+            "a port-scoped dial, never one claiming the process",
+          ).toEqual([
+            { route: "loopback", binding: { kind: "port" } },
+            { route: "docker", binding: { kind: "port" } },
+          ]);
+        }),
+      ),
   );
 
   it.live(

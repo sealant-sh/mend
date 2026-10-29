@@ -8,6 +8,10 @@ import {
 } from "@mend/domain";
 import {
   AgentWait,
+  RecipeEnv,
+  RecipeReady,
+  RepoRelativePath,
+  type ServiceLaunch,
   SessionProcess,
   type ProtocolLaunchOptions,
   type SessionProcessKind,
@@ -54,6 +58,8 @@ export interface NewSessionProcess {
    * decision 1); absent or null: root.
    */
   readonly runsAs?: string | null;
+  /** Service attempts: how it was launched, replayed by a restart (0143). */
+  readonly launch?: ServiceLaunch | null;
 }
 
 /**
@@ -67,6 +73,8 @@ export class SessionProcessesRepo extends Context.Service<
   {
     readonly create: (input: NewSessionProcess) => Effect.Effect<SessionProcess>;
     readonly byId: (id: SessionProcessId) => Effect.Effect<SessionProcess | null>;
+    /** A Service attempt's recorded launch; null for other kinds and attempts from before 0143. */
+    readonly launchOf: (id: SessionProcessId) => Effect.Effect<ServiceLaunch | null>;
     readonly byLaunchCorrelation: (correlationId: string) => Effect.Effect<SessionProcess | null>;
     readonly listForSession: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<SessionProcess>>;
     /** Every row of several sessions in one read — list surfaces derive `currentAgent` from it. */
@@ -143,10 +151,20 @@ export class SessionProcessesRepo extends Context.Service<
 >()("@mend/db/SessionProcessesRepo") {}
 
 const decodeWaiting = Schema.decodeUnknownOption(AgentWait);
+const decodeLaunch = Schema.decodeUnknownOption(
+  Schema.Struct({
+    cwd: Schema.NullOr(RepoRelativePath),
+    env: Schema.NullOr(RecipeEnv),
+    ready: RecipeReady,
+  }),
+);
 const encodeWaiting = Schema.encodeSync(AgentWait);
 
 export const toSessionProcess = ({
   reachedAt: _reachedAt,
+  launchCwd: _launchCwd,
+  launchEnv: _launchEnv,
+  launchReady: _launchReady,
   ...row
 }: typeof sessionProcesses.$inferSelect): SessionProcess =>
   new SessionProcess({
@@ -179,11 +197,17 @@ export const SessionProcessesRepoLive: Layer.Layer<
       });
     });
 
-    const create = Effect.fn("SessionProcessesRepo.create")(function* (input: NewSessionProcess) {
+    const create = Effect.fn("SessionProcessesRepo.create")(function* ({
+      launch,
+      ...input
+    }: NewSessionProcess) {
       const [created] = yield* db
         .insert(sessionProcesses)
         .values({
           ...input,
+          launchCwd: launch?.cwd ?? null,
+          launchEnv: launch?.env ?? null,
+          launchReady: launch?.ready ?? null,
           id: input.id ?? SessionProcessId.make(crypto.randomUUID()),
           harness: input.harness ?? null,
           providerSessionId: input.providerSessionId ?? null,
@@ -223,6 +247,26 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .limit(1)
         .pipe(Effect.orDie);
       return row === undefined ? null : toSessionProcess(row);
+    });
+
+    const launchOf = Effect.fn("SessionProcessesRepo.launchOf")(function* (id: SessionProcessId) {
+      const [row] = yield* db
+        .select({
+          cwd: sessionProcesses.launchCwd,
+          env: sessionProcesses.launchEnv,
+          ready: sessionProcesses.launchReady,
+        })
+        .from(sessionProcesses)
+        .where(eq(sessionProcesses.id, id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined || row.ready === null) return null;
+      return Option.getOrNull(
+        Option.map(
+          decodeLaunch(row),
+          (launch): ServiceLaunch => ({ ...launch, env: launch.env ?? {} }),
+        ),
+      );
     });
 
     const byLaunchCorrelation = Effect.fn("SessionProcessesRepo.byLaunchCorrelation")(function* (
@@ -492,6 +536,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
     return {
       create,
       byId,
+      launchOf,
       byLaunchCorrelation,
       listForSession,
       listForSessions,
