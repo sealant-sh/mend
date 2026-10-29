@@ -256,6 +256,22 @@ describe.skipIf(postgres.skip)("setup_runs: the claim and stamp of a site's setu
     });
   });
 
+  it("takes back a claim's done stamp on discard, and only that claim's", async () => {
+    const site = request();
+    const other = request();
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* SetupRunsRepo;
+        const claimId = claimed(yield* repo.claim(site));
+        yield* repo.finish(claimId, done);
+        yield* repo.finish(claimed(yield* repo.claim(other)), done);
+        yield* repo.discard(claimId);
+        return { site: (yield* repo.claim(site))._tag, other: (yield* repo.claim(other))._tag };
+      }),
+    );
+    expect(result).toEqual({ site: "Claimed", other: "Done" });
+  });
+
   it("forgets a worktree's stamps when the worktree is removed", async () => {
     const site = request({ worktreeId: OTHER_WORKTREE });
     const result = await run(

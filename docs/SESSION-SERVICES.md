@@ -283,9 +283,10 @@ it, which every session in that worktree shares, or one executor's copy in captu
   start waits, saying so, until the run can be stopped or its workspace ends. A Stop ends that wait.
   Two runs never run setup in one place at once.
 - Only a run whose every step exited 0, under a claim it still held, with no Stop, is stamped done.
-  A done stamp skips setup. Only the last run in a place is kept, so returning to an earlier
-  lockfile runs setup again. `mend service run <name> --setup` runs it even over a done stamp, for a
-  tree whose install went (a `git clean -fdx`). Removing a worktree removes its stamps.
+  A Stop that comes while the stamp is written takes it back. A done stamp skips setup. Only the
+  last run in a place is kept, so returning to an earlier lockfile runs setup again.
+  `mend service run <name> --setup` runs it even over a done stamp, for a tree whose install went (a
+  `git clean -fdx`). Removing a worktree removes its stamps.
 - A failed setup runs again on a person's or the agent's start, never on an automatic one (an
   executor replacement's restarts, and later the preview's wake): those are refused with the exit
   code and the output. An automatic start over a refused `[setup]` is refused too; a person's start

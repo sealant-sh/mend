@@ -107,6 +107,8 @@ export class SetupRunsRepo extends Context.Service<
     readonly renew: (claimId: string, leaseMs: number) => Effect.Effect<boolean>;
     readonly finish: (claimId: string, outcome: SetupOutcome) => Effect.Effect<boolean>;
     readonly release: (claimId: string) => Effect.Effect<void>;
+    /** Takes back what a claim left, its stamp included. */
+    readonly discard: (claimId: string) => Effect.Effect<void>;
   }
 >()("@mend/db/SetupRunsRepo") {}
 
@@ -211,6 +213,10 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       yield* db.delete(setupRuns).where(and(eq(setupRuns.claimId, claimId), running));
     }, Effect.orDie);
 
-    return { claim, busy, runningIn, renew, finish, release };
+    const discard = Effect.fn("SetupRunsRepo.discard")(function* (claimId: string) {
+      yield* db.delete(setupRuns).where(eq(setupRuns.claimId, claimId));
+    }, Effect.orDie);
+
+    return { claim, busy, runningIn, renew, finish, release, discard };
   }),
 );

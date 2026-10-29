@@ -336,6 +336,11 @@ export const makeSetupRunner = Effect.gen(function* () {
     if (!(yield* setupRuns.finish(claimId, { state: "done", exitCode: 0, outputTail: tail }))) {
       return yield* notRun(LOST_WORDS);
     }
+    // A Stop that came while the stamp was written takes it back.
+    if (plan.stopped()) {
+      yield* setupRuns.discard(claimId);
+      return yield* notRun(SETUP_STOPPED);
+    }
     yield* report(plan, "ran");
   });
 

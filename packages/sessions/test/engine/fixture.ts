@@ -1451,6 +1451,8 @@ export interface World {
   /** Each Service attempt's recorded launch (`launch_cwd`, `launch_env`, `launch_ready`). */
   readonly launches: Map<string, ServiceLaunch>;
   readonly setupRuns: Array<WorldSetupRun>;
+  /** Runs before a setup stamp is written, so a test can hold the write. */
+  setupFinishing: (() => Effect.Effect<void>) | undefined;
   controlSeq: number;
   readonly previews: Map<string, Preview>;
   readonly previewControls: Map<string, PreviewControl>;
@@ -1551,6 +1553,7 @@ export const makeWorld = (): World => ({
   reachedAttempts: new Set(),
   launches: new Map(),
   setupRuns: [],
+  setupFinishing: undefined,
   controlSeq: 0,
   previews: new Map(),
   previewControls: new Map(),
@@ -2208,17 +2211,22 @@ export const setupRunsLayer = (world: World) => {
         return row !== undefined;
       }),
     finish: (claimId, outcome) =>
-      Effect.sync(() => {
-        const row = held(claimId);
-        if (row === undefined) return false;
-        row.state = outcome.state;
-        row.finishedAt = world.clock.now();
-        row.exitCode = outcome.exitCode;
-        row.outputTail = outcome.outputTail;
-        return true;
-      }),
+      Effect.suspend(() => world.setupFinishing?.() ?? Effect.void).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            const row = held(claimId);
+            if (row === undefined) return false;
+            row.state = outcome.state;
+            row.finishedAt = world.clock.now();
+            row.exitCode = outcome.exitCode;
+            row.outputTail = outcome.outputTail;
+            return true;
+          }),
+        ),
+      ),
     release: (claimId) =>
       Effect.sync(() => drop((row) => !(row.claimId === claimId && row.state === "running"))),
+    discard: (claimId) => Effect.sync(() => drop((row) => row.claimId !== claimId)),
   });
 };
 
