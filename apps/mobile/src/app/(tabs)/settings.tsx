@@ -13,13 +13,12 @@ import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
 import { failureLogLine, failureWords } from "@/data/failure-words";
-import { clearConfig, saveConfig } from "@/data/live";
+import { clearConfig, registerPush, saveConfig } from "@/data/live";
 import {
   type NotificationSettingsDto,
   useNotificationSettings,
   useSetNotificationSettings,
 } from "@/data/notification-settings";
-import { enablePushNotifications } from "@/data/notifications";
 import { serverUrlOf } from "@/data/pairing-key";
 import { usePairing } from "@/data/pairing-scope";
 import type { ThemePreference } from "@/data/preferences";
@@ -313,8 +312,8 @@ export default function SettingsScreen() {
               <EvButton variant="ghost" label="Unpair" onPress={() => void clearConfig()} />
             </View>
             <MonoText tone="faint">
-              Unpair clears the URL and token on this phone only. The machine keeps the device until
-              you revoke it there — Settings → Devices.
+              Unpair clears the URL and token on this phone and asks the machine to stop notifying
+              it. The machine keeps the device until you revoke it there — Settings → Devices.
             </MonoText>
           </View>
         </Panel>
@@ -432,7 +431,7 @@ export default function SettingsScreen() {
               }
               onPress={() => {
                 setPush({ state: "registering" });
-                void enablePushNotifications().then((result) =>
+                void registerPush(config).then((result) =>
                   setPush(
                     result.state === "registered"
                       ? { state: "registered" }

@@ -13,7 +13,7 @@ import { EvButton } from "@/components/button";
 import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { MonoText, UiText } from "@/components/typography";
-import { enablePushNotifications } from "@/data/notifications";
+import { registerPush } from "@/data/live";
 import type { PairPayload } from "@/data/pairing";
 import {
   claimPairing,
@@ -73,7 +73,7 @@ export default function PairScreen() {
     }
     setClaim({ state: "paired", detail: `${outcome.config.url} · ${outcome.config.deviceName}` });
     // The push token belongs to whichever user this phone now speaks as.
-    void enablePushNotifications();
+    void registerPush(outcome.config);
     router.replace("/");
   };
 

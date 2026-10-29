@@ -4,7 +4,7 @@
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 
-import { isSavedConfig, saveConfig } from "@/data/live";
+import { isCurrentPairing, saveConfig } from "@/data/live";
 import type { PairOutcome } from "@/data/pairing-client";
 import { HttpPairingClient } from "@/data/pairing-client";
 import { normalizeBaseUrl, normalizeCode, type PairPayload } from "@/data/pairing-code";
@@ -38,7 +38,7 @@ const pairedBy = new Map<string, Extract<PairOutcome, { readonly state: "paired"
 export const claimPairing = (payload: PairPayload): Promise<PairOutcome> => {
   const link = `${normalizeBaseUrl(payload.url)}\n${normalizeCode(payload.code)}`;
   const paired = pairedBy.get(link);
-  if (paired !== undefined && isSavedConfig(paired.config)) return Promise.resolve(paired);
+  if (paired !== undefined && isCurrentPairing(paired.config)) return Promise.resolve(paired);
   const held = claiming.get(link);
   if (held !== undefined) return held;
   const claim = pairing.claim(payload, { name: deviceLabel(), platform: devicePlatform() });

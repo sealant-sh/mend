@@ -18,6 +18,7 @@ vi.mock("@react-native-async-storage/async-storage", async () => ({
   default: (await import("@/test/memory-storage")).storage,
 }));
 vi.mock("expo-secure-store", async () => (await import("@/test/memory-storage")).secureStore);
+vi.mock("expo-notifications", () => ({}));
 
 const page = pageOf({
   id: "page-1",

@@ -18,8 +18,16 @@ import { Platform } from "react-native";
 import { failureLogLine, failureWords, NO_ANSWER } from "@/data/failure-words";
 import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
+import {
+  clearTray,
+  forgetDevice,
+  grantedPushToken,
+  mintPushToken,
+  postDevice,
+  type PushRegistration,
+} from "@/data/notifications";
 import { pageKey, pagesOf } from "@/data/pages";
-import { pairingKeyOf } from "@/data/pairing-key";
+import { pairingKeyOf, type PairingKey } from "@/data/pairing-key";
 import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
 import { heard, Unreachable } from "@/data/reachability";
 import type { CheckpointDto } from "@/data/review-state";
@@ -33,7 +41,7 @@ import { ACTIVE, toneOf } from "@/data/status-tone";
 
 // ─── config ─────────────────────────────────────────────────────────────────
 
-export interface MendConfig {
+export interface Connection {
   readonly url: string;
   readonly token: string;
   /** The name the machine recorded for this device when it paired. */
@@ -42,7 +50,11 @@ export interface MendConfig {
   readonly pairedAt: string | null;
 }
 
-const EMPTY: MendConfig = { url: "", token: "", deviceName: null, pairedAt: null };
+export interface MendConfig extends Connection {
+  readonly pushToken: string | null;
+}
+
+const EMPTY: MendConfig = { url: "", token: "", deviceName: null, pairedAt: null, pushToken: null };
 
 const readString = (value: unknown): string | null =>
   typeof value === "string" && value !== "" ? value : null;
@@ -65,6 +77,7 @@ const parseConfig = (raw: string): MendConfig | null => {
       token: value.token,
       deviceName: "deviceName" in value ? readString(value.deviceName) : null,
       pairedAt: "pairedAt" in value ? readString(value.pairedAt) : null,
+      pushToken: "pushToken" in value ? readString(value.pushToken) : null,
     };
   } catch {
     return null;
@@ -138,20 +151,79 @@ export const loadConfig = async (): Promise<MendConfig> => {
   return current ?? EMPTY;
 };
 
-export const saveConfig = async (config: MendConfig): Promise<void> => {
-  current = config;
-  notifyConfig();
-  await writeStoredConfig(JSON.stringify(config));
+const samePairing = (a: Pick<Connection, "url" | "token">, b: Pick<Connection, "url" | "token">) =>
+  pairingKeyOf(a) === pairingKeyOf(b);
+
+export const isCurrentPairing = (connection: Pick<Connection, "url" | "token">): boolean =>
+  current !== null && current.token !== "" && samePairing(current, connection);
+
+// ─── a pairing ends ─────────────────────────────────────────────────────────
+
+let farewells: Promise<void> = Promise.resolve();
+
+const farewell = async (ended: MendConfig): Promise<void> => {
+  const unregister = async () => {
+    // Phones paired before the record kept the token still hold a pairing without one.
+    const pushToken = ended.pushToken ?? (await grantedPushToken());
+    if (pushToken !== null) await forgetDevice(ended, pushToken);
+  };
+  await Promise.allSettled([unregister(), clearTray()]);
 };
 
-/** Forget the machine on this device. The machine keeps its own record. */
-export const clearConfig = async (): Promise<void> => {
-  current = EMPTY;
-  notifyConfig();
-  await removeStoredConfig();
+const endPairing = (ended: MendConfig): void => {
+  farewells = farewells.then(() => farewell(ended));
 };
 
-export const isSavedConfig = (config: MendConfig): boolean => current === config;
+const write = async (next: Connection | null): Promise<void> => {
+  await hydrated;
+  const before = current ?? EMPTY;
+  const kept = next !== null && samePairing(before, next);
+  const after: MendConfig =
+    next === null ? EMPTY : { ...next, pushToken: kept ? before.pushToken : null };
+  settle(after);
+  if (before.token !== "" && !kept) endPairing(before);
+  await (next === null ? removeStoredConfig() : writeStoredConfig(JSON.stringify(after)));
+};
+
+export const saveConfig = (connection: Connection): Promise<void> => write(connection);
+
+/** Forget the machine on this device, and ask it to stop pushing here. It keeps the device. */
+export const clearConfig = (): Promise<void> => write(null);
+
+const keepPushToken = async (pushToken: string): Promise<void> => {
+  const next: MendConfig = { ...(current ?? EMPTY), pushToken };
+  settle(next);
+  await writeStoredConfig(JSON.stringify(next));
+};
+
+let registering: { readonly key: PairingKey; readonly done: Promise<PushRegistration> } | null =
+  null;
+
+export const registerPush = (connection: Connection): Promise<PushRegistration> => {
+  const key = pairingKeyOf(connection);
+  if (registering?.key === key) return registering.done;
+  const done = (async (): Promise<PushRegistration> => {
+    if (connection.url === "") return { state: "unavailable", reason: "set the server URL first" };
+    const minted = await mintPushToken();
+    if (minted.state !== "minted") return minted;
+    await farewells;
+    if (!isCurrentPairing(connection)) {
+      return {
+        state: "unavailable",
+        reason: "the pairing changed meanwhile — enable notifications again",
+      };
+    }
+    const posted = await postDevice(connection, minted.token);
+    if (posted.state !== "registered") return posted;
+    if (isCurrentPairing(connection)) await keepPushToken(posted.token);
+    else endPairing({ ...connection, pushToken: posted.token });
+    return posted;
+  })().finally(() => {
+    if (registering?.done === done) registering = null;
+  });
+  registering = { key, done };
+  return done;
+};
 
 /** null until the stored config has been read — see the note on `current`. */
 export const useConfig = (): MendConfig | null =>

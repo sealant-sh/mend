@@ -13,6 +13,7 @@ vi.mock("@react-native-async-storage/async-storage", async () => ({
   default: (await import("@/test/memory-storage")).storage,
 }));
 vi.mock("expo-secure-store", async () => (await import("@/test/memory-storage")).secureStore);
+vi.mock("expo-notifications", () => ({}));
 vi.mock("expo", () => ({
   requireNativeView: () => {
     throw new Error("no native terminal in this binary");
