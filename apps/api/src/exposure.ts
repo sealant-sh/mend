@@ -345,31 +345,43 @@ const hostCookieFact = (posture: ExposurePosture): PreviewFact => {
 };
 
 /** A preview domain apart from Mend's host; beside it on one registrable domain, Mend's site. */
-const domainFacts = (posture: ExposurePosture, domain: string): ReadonlyArray<PreviewFact> => {
+const domainFacts = (
+  posture: ExposurePosture,
+  domain: string,
+): { readonly facts: ReadonlyArray<PreviewFact>; readonly site: string | null } => {
   const appHost = new URL(posture.appUrl).hostname;
   const overlap = previewDomainOverlap(domain, appHost);
   if (overlap === null)
-    return [
-      {
-        established: "observed",
-        said: `APP_URL's host ${appHost} is not ${domain}, above or under it, or on its registrable domain`,
-      },
-    ];
+    return {
+      facts: [
+        {
+          established: "observed",
+          said: `APP_URL's host ${appHost} is not ${domain}, above or under it, or on its registrable domain`,
+        },
+      ],
+      site: null,
+    };
   if (overlap.kind === "same-site")
-    return [
+    return {
+      facts: [
+        {
+          established: "observed",
+          said: `APP_URL's host ${appHost} is beside ${domain} on the registrable domain ${overlap.site}, so every preview is Mend's own site`,
+        },
+        hostCookieFact(posture),
+      ],
+      site: overlap.site,
+    };
+  return {
+    facts: [
       {
-        established: "observed",
-        said: `APP_URL's host ${appHost} is beside ${domain} on the registrable domain ${overlap.site}, so every preview is Mend's own site`,
+        established: "open",
+        said: `APP_URL's host ${appHost} is ${overlap.kind === "holds" ? "under" : "above"} ${domain}`,
+        fix: "set MEND_PREVIEW_DOMAIN to a domain apart from Mend's",
       },
-      hostCookieFact(posture),
-    ];
-  return [
-    {
-      established: "open",
-      said: `APP_URL's host ${appHost} is ${overlap.kind === "holds" ? "under" : "above"} ${domain}`,
-      fix: "set MEND_PREVIEW_DOMAIN to a domain apart from Mend's",
-    },
-  ];
+    ],
+    site: null,
+  };
 };
 
 const routingOf = (
@@ -396,20 +408,25 @@ const routingOf = (
         ],
         outside: null,
       };
-    case "domain-https":
+    case "domain-https": {
+      const { facts, site } = domainFacts(posture, routing.domain);
       return {
         facts: [
-          ...domainFacts(posture, routing.domain),
+          ...facts,
           {
             established: "observed",
             said: `previews are https at https://<label>.${routing.domain}${routing.port === 443 ? "" : `:${routing.port}`}`,
           },
         ],
         outside: {
-          unobservable: `the wildcard DNS and certificate for *.${routing.domain}, and who reaches the published listener`,
-          howToVerify: `https://<label>.${routing.domain} from another network, over a certificate that chains to a public root, and ${reached} answering nothing from another machine`,
+          unobservable:
+            site === null
+              ? `the wildcard DNS and certificate for *.${routing.domain}, and who reaches the published listener`
+              : `the wildcard DNS and certificate for *.${routing.domain}, who reaches the published listener, and that no other host on ${site} keeps a session in a cookie without __Host-, since a page on a preview can set cookies every host on ${site} receives`,
+          howToVerify: `https://<label>.${routing.domain} from another network, over a certificate that chains to a public root, and ${reached} answering nothing from another machine${site === null ? "" : `, and each other host on ${site} keeping its sessions in __Host- cookies or none`}`,
         },
       };
+    }
     case "tailnet-https":
       return {
         facts: [

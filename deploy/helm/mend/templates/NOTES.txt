@@ -38,8 +38,9 @@ fails, as during the API Pod's Recreate upgrade. error-log-level: crit in the co
 ConfigMap keeps it out, for every Ingress that controller serves (docs/KUBERNETES.md has the trade-off).
 mend operator exposure lists preview-gateway as open until you checked DNS, the certificate and who
 reaches the gateway from another network, and listed preview-gateway in exposure.declared.
-A preview domain beside Mend's host on one registrable domain is allowed: Mend's cookies are
-__Host- whenever web.appUrl is https. This chart has no tailnet mode.
+A preview domain beside Mend's host on one registrable domain is allowed while web.appUrl is
+https, where Mend's cookies are __Host-; over http the API refuses it at start. This chart has no
+tailnet mode.
 {{- end }}
 
 Pair the Sealant chart. Workspace Pods ({{ .Values.networkPolicies.workspaceNamespace }}) reach the

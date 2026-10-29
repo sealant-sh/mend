@@ -40,15 +40,19 @@ const APART =
 export const previewDomainProblem = (
   domain: string,
   mend: ReadonlyArray<{ readonly host: string; readonly what: string }>,
+  appUrl: string,
 ): string | null => {
+  const cookies = sessionCookiePrefix(appUrl);
   for (const { host, what } of mend) {
-    const overlap = previewDomainConflict(domain, host);
+    const overlap = previewDomainConflict(domain, host, cookies);
     if (overlap === null) continue;
     switch (overlap.kind) {
       case "holds":
         return `--preview-domain ${domain} holds ${what} ${host}. ${APART}`;
       case "under":
         return `--preview-domain ${domain} is under ${what} ${host}. ${APART}`;
+      case "same-site":
+        return `--preview-domain ${domain} is on Mend's own site, ${overlap.site}, and Mend's URL is ${appUrl}. Over http Mend's cookies cannot be __Host-, so a page on a preview could set a session cookie Mend reads as its own: a preview domain on Mend's own site needs Mend's URL on https. Serve Mend over https, or give previews a registrable domain of their own.`;
     }
   }
   return null;
@@ -294,10 +298,11 @@ const resolveDomain = (
       `--preview-domain needs --preview-certificate <file> and --preview-key <file>: a certificate for *.${domain} and its key. The packaged edge cannot issue a wildcard; issue one over DNS-01 elsewhere (docs/operations/preview-gateway.md).`,
     );
   }
-  const problem = previewDomainProblem(domain, [
-    { host: mend.edgeHost, what: "the edge's host" },
-    ...mend.hosts,
-  ]);
+  const problem = previewDomainProblem(
+    domain,
+    [{ host: mend.edgeHost, what: "the edge's host" }, ...mend.hosts],
+    mend.appUrl,
+  );
   if (problem !== null) throw setupError(problem);
   refuseGatewayPortTaken(mend);
   if (mend.exposure === "public" && !mend.declared.includes("preview-gateway")) {

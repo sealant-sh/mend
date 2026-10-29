@@ -95,8 +95,9 @@ const hostsOf = (mend: PublicNetwork) =>
   mend.allowedOrigins.map((origin) => ({ origin, host: new URL(origin).hostname }));
 
 const apartFromMend = (domain: string, mend: PublicNetwork) => {
+  const cookies = sessionCookiePrefix(mend.appUrl);
   for (const { origin, host } of hostsOf(mend)) {
-    const overlap = previewDomainConflict(domain, host);
+    const overlap = previewDomainConflict(domain, host, cookies);
     if (overlap === null) continue;
     switch (overlap.kind) {
       case "holds":
@@ -108,6 +109,11 @@ const apartFromMend = (domain: string, mend: PublicNetwork) => {
         return refuse(
           "domain",
           `"${domain}" is under Mend's own host ${host} (${origin}); previews need a domain apart from Mend's`,
+        );
+      case "same-site":
+        return refuse(
+          "domain",
+          `"${domain}" is on Mend's own site, ${overlap.site}, and APP_URL is ${mend.appUrl}: a preview domain on Mend's own site needs Mend's APP_URL on https. Over http Mend's cookies cannot be __Host-, and a page on a preview could set a session cookie Mend reads as its own. Serve Mend over https, or give previews a registrable domain of their own`,
         );
     }
   }

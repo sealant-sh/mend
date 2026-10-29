@@ -464,13 +464,17 @@ origin's host, or sits above or below one; a preview Ingress without TLS; and
 no issuer. A wildcard certificate needs the ACME DNS-01 challenge: cert-manager with a DNS-01 solver
 for your provider, or a `kubernetes.io/tls` Secret you supply.
 
-A preview domain on Mend's own site renders and starts. Mend's own site is Mend's registrable
-domain: a preview domain such as `previews.example.com` beside `mend.example.com` shares
-`example.com`, so a page on a preview can set cookies for `example.com`. Mend's cookies are
-`__Host-` whenever `web.appUrl` is https, so such a page can neither set nor replace them, and Mend
-refuses a request carrying its cookie from a sibling site unless it is a top-level navigation. The
-public exposure gate's `preview-gateway` item observes the `__Host-` prefix for this layout. The
-chart has no tailnet mode.
+A preview domain on Mend's own site renders, and the API starts with it while `web.appUrl` is https.
+Mend's own site is Mend's registrable domain: a preview domain such as `previews.example.com` beside
+`mend.example.com` shares `example.com`, so a page on a preview can set cookies for `example.com`.
+Mend's cookies are `__Host-` whenever `web.appUrl` is https, so such a page can neither set nor
+replace them, and Mend refuses a request carrying its cookie from a sibling site unless it is a
+top-level navigation. Over http they cannot be `__Host-`, so the API refuses this layout at start;
+the chart cannot tell a registrable domain without the Public Suffix List, so it renders. The public
+exposure gate's `preview-gateway` item observes the `__Host-` prefix for this layout. Every other
+host on `example.com` receives the cookies a preview's page sets, so give previews a registrable
+domain of their own if any of those hosts keeps a session in a cookie without `__Host-`. The chart
+has no tailnet mode.
 
 With `exposure.mode: public`, the chart refuses to render previews until `exposure.declared` lists
 `preview-gateway`, because the API refuses a public start while that item is open. Verify first

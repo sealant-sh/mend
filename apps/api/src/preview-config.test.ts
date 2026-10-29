@@ -232,6 +232,19 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
     });
   });
 
+  it("refuses a preview domain on Mend's own site while APP_URL is http, and says why", () => {
+    const http = makePublicNetwork(origin("http://mend.example.com"), []);
+    const refused = refusalOf({ port: "3117", domain: "previews.example.com" }, http);
+    expect(refused?.variable).toBe("MEND_PREVIEW_DOMAIN");
+    expect(refused?.message).toContain(
+      "is on Mend's own site, example.com, and APP_URL is http://mend.example.com",
+    );
+    expect(refused?.message).toContain(
+      "a preview domain on Mend's own site needs Mend's APP_URL on https",
+    );
+    expect(refusalOf({ port: "3117", domain: "previews.example.net" }, http)).toBeNull();
+  });
+
   it("refuses a tailnet hostname that is Mend's own host", () => {
     const mend = makePublicNetwork(origin("https://box.tail1234.ts.net"), []);
     const refused = refusalOf(

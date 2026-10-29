@@ -20,15 +20,23 @@ describe("a preview domain beside one of Mend's hosts", () => {
     expect(previewDomainOverlap(domain, host)).toEqual(overlap);
   });
 
-  it("refuses an equal, parent or child domain, and allows a sibling on Mend's own site", () => {
-    expect(previewDomainConflict("mend.example.com", "mend.example.com")).toEqual({
-      kind: "holds",
+  it("refuses an equal, parent or child domain, and a sibling on Mend's own site only without __Host- cookies", () => {
+    for (const cookies of ["__Host-", ""] as const) {
+      expect(previewDomainConflict("mend.example.com", "mend.example.com", cookies)).toEqual({
+        kind: "holds",
+      });
+      expect(previewDomainConflict("example.com", "mend.example.com", cookies)).toEqual({
+        kind: "holds",
+      });
+      expect(
+        previewDomainConflict("previews.mend.example.com", "mend.example.com", cookies),
+      ).toEqual({ kind: "under" });
+      expect(previewDomainConflict("previews.example.net", "mend.example.com", cookies)).toBeNull();
+    }
+    expect(previewDomainConflict("previews.example.com", "mend.example.com", "__Host-")).toBeNull();
+    expect(previewDomainConflict("previews.example.com", "mend.example.com", "")).toEqual({
+      kind: "same-site",
+      site: "example.com",
     });
-    expect(previewDomainConflict("example.com", "mend.example.com")).toEqual({ kind: "holds" });
-    expect(previewDomainConflict("previews.mend.example.com", "mend.example.com")).toEqual({
-      kind: "under",
-    });
-    expect(previewDomainConflict("previews.example.com", "mend.example.com")).toBeNull();
-    expect(previewDomainConflict("previews.example.net", "mend.example.com")).toBeNull();
   });
 });

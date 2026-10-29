@@ -446,6 +446,9 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
     expect(https?.detail).toContain(
       "observed: Mend's cookies are named __Host- (__Host-better-auth.session_token)",
     );
+    expect(https?.detail).toContain(
+      "declared: the wildcard DNS and certificate for *.previews.example.com, who reaches the published listener, and that no other host on example.com keeps a session in a cookie without __Host-, since a page on a preview can set cookies every host on example.com receives (MEND_EXPOSURE_DECLARED)",
+    );
     const http = previewOf(sibling("http://mend.example.com"));
     expect(http?.established).toBe("open");
     expect(http?.fix).toContain("set APP_URL to an https origin");

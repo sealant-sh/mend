@@ -15,7 +15,7 @@ import { parseAllDocuments } from "yaml";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const chart = path.join(root, "deploy/helm/mend");
 const SIBLING =
-  "A preview domain beside Mend's host on one registrable domain is allowed: Mend's cookies are __Host- whenever web.appUrl is https.";
+  "A preview domain beside Mend's host on one registrable domain is allowed while web.appUrl is https, where Mend's cookies are __Host-; over http the API refuses it at start.";
 const helmAvailable = spawnSync("helm", ["version", "--short"], { encoding: "utf8" }).status === 0;
 const skip = helmAvailable ? false : "helm is not on PATH";
 
@@ -988,11 +988,17 @@ test("docs/KUBERNETES.md says what the API does with a preview on Mend's own sit
   const section = docs.slice(docs.indexOf("## Live previews"), docs.indexOf("## Request bodies"));
   const said = section.replace(/\s+/g, " ");
   assert.ok(
-    said.includes("A preview domain on Mend's own site renders and starts."),
+    said.includes(
+      "A preview domain on Mend's own site renders, and the API starts with it while `web.appUrl` is https.",
+    ),
     "the same-site sentence",
   );
   assert.ok(said.includes("observes the `__Host-` prefix for this layout"));
   assert.ok(said.includes("such as `previews.example.com` beside `mend.example.com`"));
+  assert.ok(
+    said.includes("Every other host on `example.com` receives the cookies a preview's page sets"),
+    "the operator's other hosts on the site",
+  );
   assert.ok(!/\bapart\b/.test(section), "no pair is called apart");
   assert.match(said, /`error-log-level`/);
   assert.match(said, /ingress-nginx itself is not verified live/);

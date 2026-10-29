@@ -41,15 +41,25 @@ describe("a preview domain beside Mend's hosts", () => {
     ["a domain under it", "previews.mend.example.com", "is under the edge's host mend.example.com"],
     ["the t3code gateway's origin", "t3.example.org", "holds the t3code gateway's origin"],
   ])("refuses %s", (_, domain, words) => {
-    expect(previewDomainProblem(domain, mend)).toContain(words);
+    expect(previewDomainProblem(domain, mend, "https://mend.example.com")).toContain(words);
   });
 
-  it("takes a sibling on Mend's own site", () => {
-    expect(previewDomainProblem("previews.example.com", mend)).toBeNull();
+  it("takes a sibling on Mend's own site while Mend's URL is https", () => {
+    expect(
+      previewDomainProblem("previews.example.com", mend, "https://mend.example.com"),
+    ).toBeNull();
+  });
+
+  it("refuses a sibling on Mend's own site while Mend's URL is http, and says why", () => {
+    expect(previewDomainProblem("previews.example.com", mend, "http://mend.example.com")).toBe(
+      "--preview-domain previews.example.com is on Mend's own site, example.com, and Mend's URL is http://mend.example.com. Over http Mend's cookies cannot be __Host-, so a page on a preview could set a session cookie Mend reads as its own: a preview domain on Mend's own site needs Mend's URL on https. Serve Mend over https, or give previews a registrable domain of their own.",
+    );
   });
 
   it("takes a registrable domain of its own", () => {
-    expect(previewDomainProblem("previews.example.net", mend)).toBeNull();
+    expect(
+      previewDomainProblem("previews.example.net", mend, "http://mend.example.com"),
+    ).toBeNull();
   });
 });
 
