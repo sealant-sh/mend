@@ -3711,6 +3711,42 @@ const previewPortsMigration = Effect.gen(function* () {
     EXECUTE FUNCTION preview_ports_release()`;
 });
 
+const turnSteersMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE agent_turn_steers (
+    id uuid PRIMARY KEY,
+    session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    process_id text NOT NULL REFERENCES session_processes(id) ON DELETE CASCADE,
+    turn_id text NOT NULL REFERENCES agent_turns(id) ON DELETE CASCADE,
+    author text NOT NULL REFERENCES "user"(id) ON DELETE RESTRICT,
+    ordinal integer NOT NULL CHECK (ordinal >= 0),
+    input text NOT NULL CHECK (length(btrim(input)) > 0),
+    delivery jsonb NOT NULL CHECK (delivery->>'_tag' IS NOT NULL AND delivery->>'_tag' IN ('Sending','Accepted','Queued','Unknown','NotSent')),
+    queued_turn_id text REFERENCES agent_turns(id),
+    client_steer_id uuid,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT agent_turn_steers_turn_ordinal_key UNIQUE (turn_id, ordinal),
+    CONSTRAINT agent_turn_steers_author_client_key UNIQUE (author, client_steer_id),
+    CONSTRAINT agent_turn_steers_queued_check CHECK (
+      (delivery->>'_tag' = 'Queued') = (queued_turn_id IS NOT NULL)
+      AND (delivery->>'_tag' <> 'Queued' OR (delivery->>'turnId' IS NOT NULL AND delivery->>'turnId' = queued_turn_id))
+    )
+  )`;
+  yield* sql`CREATE INDEX agent_turn_steers_session_idx ON agent_turn_steers(session_id, turn_id, ordinal)`;
+  yield* sql`CREATE INDEX agent_turn_steers_process_idx ON agent_turn_steers(process_id)`;
+  yield* sql`CREATE TABLE agent_protocol_control_journal (
+    process_id text NOT NULL REFERENCES session_processes(id) ON DELETE CASCADE,
+    ordinal integer NOT NULL CHECK (ordinal >= 0),
+    control_id text NOT NULL,
+    provider_turn_id text NOT NULL,
+    after_output_line integer NOT NULL CHECK (after_output_line >= 0),
+    action text NOT NULL CHECK (action IN ('steer-now','interrupt','not-written')),
+    PRIMARY KEY (process_id, ordinal),
+    CONSTRAINT agent_protocol_control_journal_control_key UNIQUE (process_id, control_id, action)
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3854,4 +3890,5 @@ export const migrations = {
   "0139_preview_controls": previewControlsMigration,
   "0140_session_pages": sessionPagesMigration,
   "0141_preview_ports": previewPortsMigration,
+  "0142_turn_steers": turnSteersMigration,
 };

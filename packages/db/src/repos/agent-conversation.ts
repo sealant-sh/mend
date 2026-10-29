@@ -3,6 +3,7 @@ import {
   AgentItemId,
   AgentRequestId,
   AgentTurnId,
+  AgentTurnSteerId,
   type ChangeLandingId,
   type SessionId,
   type SessionProcessId,
@@ -11,6 +12,12 @@ import {
   AgentItem,
   AgentRequest,
   AgentTurn,
+  AgentTurnSteer,
+  AgentTurnSteerDelivery,
+  AgentProtocolControl,
+  ConversationTurn,
+  turnSteerSender,
+  type TurnSteerQueueReason,
   OPEN_AGENT_TURN_STATUSES,
   type AgentApprovalDecision,
   type AgentEventItem,
@@ -45,6 +52,8 @@ import {
   agentRequests,
   agentSessions,
   agentTurns,
+  agentTurnSteers,
+  agentProtocolControlJournal,
   sessionProcesses,
 } from "../schema/workbench.ts";
 import { pageItemRow, pagesWithoutItems, publishedPageIdOf } from "./page-items.ts";
@@ -121,6 +130,18 @@ export type ResolveAgentRequestInput =
   | { readonly decision: AgentApprovalDecision; readonly answers?: never }
   | { readonly answers: AgentInputAnswers; readonly decision?: never };
 
+export interface AdmitTurnSteerInput {
+  readonly turnId: AgentTurnId;
+  readonly author: string;
+  readonly input: string;
+  readonly clientSteerId: string | null;
+}
+
+export class AgentControlJournalError extends Schema.TaggedError<AgentControlJournalError>()(
+  "AgentControlJournalError",
+  { message: Schema.String, cause: Schema.Defect() },
+) {}
+
 /**
  * Durable structured conversation state. Provider identities are database keys so replay updates
  * existing rows. `seq` is a session-wide change-feed cursor, not conversation order: every applied
@@ -147,6 +168,36 @@ export class AgentConversationRepo extends Context.Service<
       providerTurnId: string,
     ) => Effect.Effect<AgentTurn | null>;
     readonly listTurns: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<AgentTurn>>;
+    readonly listConversationTurns: (
+      sessionId: SessionId,
+    ) => Effect.Effect<ReadonlyArray<ConversationTurn>>;
+    readonly admitTurnSteer: (
+      input: AdmitTurnSteerInput,
+    ) => Effect.Effect<
+      { readonly steer: AgentTurnSteer; readonly created: boolean },
+      AgentTurnNotFoundError
+    >;
+    readonly steerByClientId: (
+      author: string,
+      clientSteerId: string,
+    ) => Effect.Effect<AgentTurnSteer | null>;
+    readonly settleTurnSteer: (
+      id: AgentTurnSteerId,
+      delivery: Exclude<AgentTurnSteerDelivery, { readonly _tag: "Sending" | "Queued" }>,
+    ) => Effect.Effect<AgentTurnSteer>;
+    readonly queueTurnSteer: (
+      id: AgentTurnSteerId,
+      processId: SessionProcessId | null,
+      reason: TurnSteerQueueReason,
+    ) => Effect.Effect<AgentTurnSteer>;
+    readonly recoverSendingSteers: (processId?: SessionProcessId) => Effect.Effect<void>;
+    readonly recordProtocolControl: (
+      processId: SessionProcessId,
+      control: AgentProtocolControl,
+    ) => Effect.Effect<void, AgentControlJournalError>;
+    readonly protocolControls: (
+      processId: SessionProcessId,
+    ) => Effect.Effect<ReadonlyArray<AgentProtocolControl>>;
     /** Every queued or running turn, oldest first. */
     readonly openTurns: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<AgentTurn>>;
     readonly claimNextTurn: (processId: SessionProcessId) => Effect.Effect<AgentTurn | null>;
@@ -280,6 +331,12 @@ export class AgentConversationRepo extends Context.Service<
     ) => Effect.Effect<void>;
   }
 >()("@mend/db/AgentConversationRepo") {}
+
+const toSteer = (row: typeof agentTurnSteers.$inferSelect): AgentTurnSteer =>
+  new AgentTurnSteer({
+    ...row,
+    delivery: Schema.decodeUnknownSync(AgentTurnSteerDelivery)(row.delivery),
+  });
 
 const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn => new AgentTurn(row);
 const toItem = (row: typeof agentItems.$inferSelect): AgentItem => new AgentItem(row);
@@ -499,6 +556,314 @@ export const AgentConversationRepoLive: Layer.Layer<
         .orderBy(asc(agentTurns.ordinal))
         .pipe(Effect.orDie);
       return rows.map(toTurn);
+    });
+
+    const listConversationTurns = Effect.fn("AgentConversationRepo.listConversationTurns")(
+      function* (sessionId: SessionId) {
+        // One snapshot keeps a Queued receipt and the turn displaying its words together.
+        const rows = yield* db
+          .select({ turn: agentTurns, steer: agentTurnSteers })
+          .from(agentTurns)
+          .leftJoin(agentTurnSteers, eq(agentTurnSteers.turnId, agentTurns.id))
+          .where(eq(agentTurns.sessionId, sessionId))
+          .orderBy(asc(agentTurns.ordinal), asc(agentTurnSteers.ordinal))
+          .pipe(Effect.orDie);
+        const grouped = new Map<
+          AgentTurnId,
+          { turn: typeof agentTurns.$inferSelect; steers: Array<AgentTurnSteer> }
+        >();
+        const origins = new Map<AgentTurnId, AgentTurnSteerId>();
+        for (const row of rows) {
+          const entry = grouped.get(row.turn.id) ?? { turn: row.turn, steers: [] };
+          if (row.steer !== null) {
+            const steer = toSteer(row.steer);
+            entry.steers.push(steer);
+            if (steer.queuedTurnId !== null) origins.set(steer.queuedTurnId, steer.id);
+          }
+          grouped.set(row.turn.id, entry);
+        }
+        return [...grouped.values()].map(
+          ({ turn, steers }) =>
+            new ConversationTurn({
+              ...turn,
+              steerSender: turnSteerSender(turn),
+              steers,
+              fromSteer: origins.get(turn.id) ?? null,
+            }),
+        );
+      },
+    );
+
+    const steerByClientId = Effect.fn("AgentConversationRepo.steerByClientId")(function* (
+      author: string,
+      clientSteerId: string,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(agentTurnSteers)
+        .where(
+          and(eq(agentTurnSteers.author, author), eq(agentTurnSteers.clientSteerId, clientSteerId)),
+        )
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toSteer(row);
+    });
+
+    const admitTurnSteer = Effect.fn("AgentConversationRepo.admitTurnSteer")(function* (
+      input: AdmitTurnSteerInput,
+    ) {
+      const clientSteerId = input.clientSteerId?.toLowerCase() ?? null;
+      const turn = yield* byTurnId(input.turnId);
+      if (turn === null) return yield* new AgentTurnNotFoundError({ turnId: input.turnId });
+      const admitted = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            // The key is global to its author, including retries naming another session.
+            if (clientSteerId !== null) {
+              yield* tx.execute(
+                sql`select pg_advisory_xact_lock(hashtext(${`mend:steer:${input.author}:${clientSteerId}`}))`,
+              );
+              const [existing] = yield* tx
+                .select()
+                .from(agentTurnSteers)
+                .where(
+                  and(
+                    eq(agentTurnSteers.author, input.author),
+                    eq(agentTurnSteers.clientSteerId, clientSteerId),
+                  ),
+                )
+                .limit(1);
+              if (existing !== undefined) return { steer: toSteer(existing), created: false };
+            }
+            yield* lockAgentConversation(tx, turn.sessionId);
+            const [target] = yield* tx
+              .select()
+              .from(agentTurns)
+              .where(eq(agentTurns.id, turn.id))
+              .for("update");
+            if (target === undefined) return null;
+            const [position] = yield* tx
+              .select({ value: max(agentTurnSteers.ordinal) })
+              .from(agentTurnSteers)
+              .where(eq(agentTurnSteers.turnId, turn.id));
+            const [row] = yield* tx
+              .insert(agentTurnSteers)
+              .values({
+                id: AgentTurnSteerId.make(crypto.randomUUID()),
+                sessionId: target.sessionId,
+                processId: target.processId,
+                turnId: target.id,
+                author: input.author,
+                ordinal: (position?.value ?? -1) + 1,
+                input: input.input,
+                delivery: { _tag: "Sending" },
+                clientSteerId,
+              })
+              .returning();
+            if (row === undefined) return yield* Effect.die("steer insert returned no row");
+            return { steer: toSteer(row), created: true };
+          }),
+        )
+        .pipe(Effect.orDie);
+      if (admitted === null) return yield* new AgentTurnNotFoundError({ turnId: input.turnId });
+      if (admitted.created) yield* notify(admitted.steer.sessionId);
+      return admitted;
+    });
+
+    const settleTurnSteer = Effect.fn("AgentConversationRepo.settleTurnSteer")(function* (
+      id: AgentTurnSteerId,
+      delivery: Exclude<AgentTurnSteerDelivery, { readonly _tag: "Sending" | "Queued" }>,
+    ) {
+      const [changed] = yield* db
+        .update(agentTurnSteers)
+        .set({ delivery, updatedAt: yield* DateTime.nowAsDate })
+        .where(
+          and(eq(agentTurnSteers.id, id), sql`${agentTurnSteers.delivery}->>'_tag' = 'Sending'`),
+        )
+        .returning()
+        .pipe(Effect.orDie);
+      if (changed !== undefined) {
+        yield* notify(changed.sessionId);
+        return toSteer(changed);
+      }
+      const [row] = yield* db
+        .select()
+        .from(agentTurnSteers)
+        .where(eq(agentTurnSteers.id, id))
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* Effect.die("steer disappeared");
+      return toSteer(row);
+    });
+
+    const queueTurnSteer = Effect.fn("AgentConversationRepo.queueTurnSteer")(function* (
+      id: AgentTurnSteerId,
+      processId: SessionProcessId | null,
+      reason: TurnSteerQueueReason,
+    ) {
+      const [saved] = yield* db
+        .select()
+        .from(agentTurnSteers)
+        .where(eq(agentTurnSteers.id, id))
+        .pipe(Effect.orDie);
+      if (saved === undefined) return yield* Effect.die("steer disappeared");
+      const result = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx.execute(
+              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(saved.sessionId)}))`,
+            );
+            const [row] = yield* tx
+              .select()
+              .from(agentTurnSteers)
+              .where(eq(agentTurnSteers.id, id))
+              .for("update");
+            if (row === undefined) return yield* Effect.die("steer disappeared");
+            if (row.delivery._tag !== "Sending") return { steer: toSteer(row), changed: false };
+            const [session] = yield* tx
+              .select()
+              .from(agentSessions)
+              .where(eq(agentSessions.id, row.sessionId));
+            let delivery: AgentTurnSteerDelivery;
+            let queuedTurnId: AgentTurnId | null = null;
+            if (
+              processId === null ||
+              session === undefined ||
+              session.idleStoppedAt !== null ||
+              session.settledAt !== null
+            ) {
+              delivery = {
+                _tag: "NotSent",
+                reason,
+                message: "The session can no longer take a turn. Your words are saved.",
+              };
+            } else {
+              const correlation = `steer:${id}`;
+              const [existing] = yield* tx
+                .select()
+                .from(agentTurns)
+                .where(
+                  and(
+                    eq(agentTurns.sessionId, row.sessionId),
+                    eq(agentTurns.launchCorrelationId, correlation),
+                  ),
+                )
+                .limit(1);
+              queuedTurnId = existing?.id ?? AgentTurnId.make(crypto.randomUUID());
+              if (existing === undefined) {
+                const [position] = yield* tx
+                  .select({ value: max(agentTurns.ordinal) })
+                  .from(agentTurns)
+                  .where(eq(agentTurns.sessionId, row.sessionId));
+                yield* tx.insert(agentTurns).values({
+                  id: queuedTurnId,
+                  sessionId: row.sessionId,
+                  processId,
+                  input: row.input,
+                  author: row.author,
+                  ordinal: (position?.value ?? -1) + 1,
+                  status: "queued",
+                  launchCorrelationId: correlation,
+                });
+              }
+              delivery = { _tag: "Queued", turnId: queuedTurnId, reason };
+            }
+            const [changed] = yield* tx
+              .update(agentTurnSteers)
+              .set({ delivery, queuedTurnId, updatedAt: yield* DateTime.nowAsDate })
+              .where(
+                and(
+                  eq(agentTurnSteers.id, id),
+                  sql`${agentTurnSteers.delivery}->>'_tag' = 'Sending'`,
+                ),
+              )
+              .returning();
+            if (changed === undefined) return yield* Effect.die("locked steer disappeared");
+            return { steer: toSteer(changed), changed: true };
+          }),
+        )
+        .pipe(Effect.orDie);
+      if (result.changed) yield* notify(result.steer.sessionId);
+      return result.steer;
+    });
+
+    const recoverSendingSteers = Effect.fn("AgentConversationRepo.recoverSendingSteers")(function* (
+      processId?: SessionProcessId,
+    ) {
+      const rows = yield* db
+        .update(agentTurnSteers)
+        .set({
+          delivery: { _tag: "Unknown", reason: "restart" },
+          updatedAt: yield* DateTime.nowAsDate,
+        })
+        .where(
+          and(
+            sql`${agentTurnSteers.delivery}->>'_tag' = 'Sending'`,
+            processId === undefined ? undefined : eq(agentTurnSteers.processId, processId),
+          ),
+        )
+        .returning({ sessionId: agentTurnSteers.sessionId })
+        .pipe(Effect.orDie);
+      for (const sessionId of new Set(rows.map((row) => row.sessionId))) yield* notify(sessionId);
+    });
+
+    const recordProtocolControl = Effect.fn("AgentConversationRepo.recordProtocolControl")(
+      function* (processId: SessionProcessId, control: AgentProtocolControl) {
+        yield* db
+          .insert(agentProtocolControlJournal)
+          .values({ processId, ...control })
+          .onConflictDoNothing()
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new AgentControlJournalError({
+                  message: "The agent control could not be recorded.",
+                  cause,
+                }),
+            ),
+          );
+        const [stored] = yield* db
+          .select()
+          .from(agentProtocolControlJournal)
+          .where(
+            and(
+              eq(agentProtocolControlJournal.processId, processId),
+              eq(agentProtocolControlJournal.ordinal, control.ordinal),
+            ),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new AgentControlJournalError({
+                  message: "The recorded agent control could not be read.",
+                  cause,
+                }),
+            ),
+          );
+        if (
+          stored === undefined ||
+          stored.controlId !== control.controlId ||
+          stored.providerTurnId !== control.providerTurnId ||
+          stored.afterOutputLine !== control.afterOutputLine ||
+          stored.action !== control.action
+        ) {
+          return yield* new AgentControlJournalError({
+            message: "The agent control conflicts with its recorded position.",
+            cause: null,
+          });
+        }
+      },
+    );
+
+    const protocolControls = Effect.fn("AgentConversationRepo.protocolControls")(function* (
+      processId: SessionProcessId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(agentProtocolControlJournal)
+        .where(eq(agentProtocolControlJournal.processId, processId))
+        .orderBy(asc(agentProtocolControlJournal.ordinal))
+        .pipe(Effect.orDie);
+      return rows.map((row) => Schema.decodeUnknownSync(AgentProtocolControl)(row));
     });
 
     const openTurns = Effect.fn("AgentConversationRepo.openTurns")(function* (
@@ -795,7 +1160,11 @@ export const AgentConversationRepoLive: Layer.Layer<
         .update(agentTurns)
         .set({ status, usage, error, endedAt: yield* DateTime.nowAsDate })
         .where(
-          and(eq(agentTurns.sessionId, sessionId), eq(agentTurns.providerTurnId, providerTurnId)),
+          and(
+            eq(agentTurns.sessionId, sessionId),
+            eq(agentTurns.providerTurnId, providerTurnId),
+            inArray(agentTurns.status, ["queued", "running"]),
+          ),
         )
         .returning()
         .pipe(Effect.orDie);
@@ -1367,6 +1736,14 @@ export const AgentConversationRepoLive: Layer.Layer<
       byLaunchCorrelation,
       byProviderTurnId,
       listTurns,
+      listConversationTurns,
+      admitTurnSteer,
+      steerByClientId,
+      settleTurnSteer,
+      queueTurnSteer,
+      recoverSendingSteers,
+      recordProtocolControl,
+      protocolControls,
       openTurns,
       claimNextTurn,
       openHarnessTurn,

@@ -9,6 +9,7 @@ import {
 } from "@mend/domain";
 import type {
   AgentItemId,
+  AgentTurnSteerId,
   AuditEventId,
   SessionControlEventId,
   AgentRequestId,
@@ -85,6 +86,8 @@ import type {
   AgentRequestKind,
   AgentRequestStatus,
   AgentTurnOrigin,
+  AgentTurnSteerDelivery,
+  AgentProtocolControl,
   AgentTurnStatus,
   AgentTurnUsage,
   AutomationChoice,
@@ -150,6 +153,7 @@ import {
   timestamp,
   unique,
   uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
 import type { Schema } from "effect";
 
@@ -1771,6 +1775,64 @@ export const agentTurns = pgTable(
       .where(sql`${table.status} = 'running'`),
     index("agent_turns_session_created_idx").on(table.sessionId, table.ordinal),
     index("agent_turns_process_status_idx").on(table.processId, table.status, table.ordinal),
+  ],
+);
+
+export const agentTurnSteers = pgTable(
+  "agent_turn_steers",
+  {
+    id: uuid().$type<AgentTurnSteerId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    processId: text()
+      .$type<SessionProcessId>()
+      .notNull()
+      .references(() => sessionProcesses.id, { onDelete: "cascade" }),
+    turnId: text()
+      .$type<AgentTurnId>()
+      .notNull()
+      .references(() => agentTurns.id, { onDelete: "cascade" }),
+    author: text().notNull(),
+    ordinal: integer().notNull(),
+    input: text().notNull(),
+    delivery: jsonb().$type<AgentTurnSteerDelivery>().notNull(),
+    queuedTurnId: text()
+      .$type<AgentTurnId>()
+      .references(() => agentTurns.id),
+    clientSteerId: uuid(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("agent_turn_steers_turn_ordinal_key").on(table.turnId, table.ordinal),
+    unique("agent_turn_steers_author_client_key").on(table.author, table.clientSteerId),
+    index("agent_turn_steers_session_idx").on(table.sessionId, table.turnId, table.ordinal),
+    index("agent_turn_steers_process_idx").on(table.processId),
+  ],
+);
+
+export const agentProtocolControlJournal = pgTable(
+  "agent_protocol_control_journal",
+  {
+    processId: text()
+      .$type<SessionProcessId>()
+      .notNull()
+      .references(() => sessionProcesses.id, { onDelete: "cascade" }),
+    ordinal: integer().notNull(),
+    controlId: text().notNull(),
+    providerTurnId: text().notNull(),
+    afterOutputLine: integer().notNull(),
+    action: text().$type<AgentProtocolControl["action"]>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.processId, table.ordinal] }),
+    unique("agent_protocol_control_journal_control_key").on(
+      table.processId,
+      table.controlId,
+      table.action,
+    ),
   ],
 );
 
