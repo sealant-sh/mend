@@ -13,6 +13,7 @@ import {
   resourceNameIssue,
   resourceStatusLine,
   type ResourceStatusView,
+  selectionRefusal,
   WorktreeSelection,
 } from "./resource.ts";
 
@@ -312,6 +313,29 @@ describe("a worktree's selection", () => {
     expect(
       read({ mode: "own", revision: 3, target: { kind: "instance", instance: "i1" } }),
     ).toEqual({ mode: "own", revision: 3, target: { kind: "instance", instance: "i1" } });
+  });
+
+  const database = { kind: "database", database: "d1" };
+  const instance = { kind: "instance", instance: "i1" };
+
+  it.each([
+    ["shared on a Postgres preset", postgres(), { mode: "shared", revision: 1 }],
+    ["off on a Redis preset", redis(), { mode: "off", revision: 1 }],
+    ["own as a database on a Postgres preset", postgres(), { mode: "own", revision: 1, target: database }],
+    ["own as a database on a MySQL preset", mysql(), { mode: "own", revision: 1, target: database }],
+    ["own as an instance of another image", define(), { mode: "own", revision: 1, target: instance }],
+  ])("takes %s", (_, def, raw) => {
+    expect(selectionRefusal(def, read(raw))).toBeNull();
+  });
+
+  it.each([
+    ["own on Redis, which offers shared and off", redis(), { mode: "own", revision: 1, target: instance }, "mode"],
+    ["own as an instance on a Postgres preset", postgres(), { mode: "own", revision: 1, target: instance }, "target"],
+    ["own as a database on another image", define(), { mode: "own", revision: 1, target: database }, "target"],
+    ["any selection of a worktree resource", define({ scope: "worktree" }), { mode: "shared", revision: 1 }, "selection"],
+    ["any selection of a refused worktree Redis", redis({ scope: "worktree" }), { mode: "off", revision: 1 }, "selection"],
+  ])("refuses %s by its key", (_, def, raw, key) => {
+    expect(selectionRefusal(def, read(raw))?.key).toBe(key);
   });
 
   it.each([

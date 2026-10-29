@@ -272,6 +272,10 @@ export const RESOURCE_PRESETS: {
   },
 };
 
+/** Whether `own` is a database on the project instance rather than an instance of its own. */
+export const isDatabasePreset = (def: PolicySubject): boolean =>
+  def.preset !== null && RESOURCE_PRESETS[def.preset].database;
+
 /**
  * An image reference's repository and tag: `docker.io/library/postgres:17@sha256:…` is
  * `postgres` and `17`. A registry host is dropped, so a mirror's `postgres` is still `postgres`.
@@ -465,6 +469,36 @@ export const WorktreeSelection = Schema.Union([
 ]);
 export type WorktreeSelection = typeof WorktreeSelection.Type;
 
+/** Why `selection` is not one the policy offers this definition, or null when it is. */
+export const selectionRefusal = (
+  def: ResourceDefinitionInput,
+  selection: WorktreeSelection,
+): ResourceRefusal | null => {
+  if (def.scope === "worktree") {
+    return {
+      key: "selection",
+      message: `is for a project resource, and @${def.name} is a worktree resource with no choice`,
+    };
+  }
+  const choices = choicesFor(def);
+  if (!choices.includes(selection.mode)) {
+    return {
+      key: "mode",
+      message: `is ${selection.mode}, and @${def.name} offers ${choices.join(", ")}`,
+    };
+  }
+  if (selection.mode !== "own") return null;
+  const target = isDatabasePreset(def) ? "database" : "instance";
+  if (selection.target.kind === target) return null;
+  return {
+    key: "target",
+    message:
+      target === "database"
+        ? `is an instance, and own for @${def.name} is a database on the project instance`
+        : `is a database, and own for @${def.name} is an instance of its own`,
+  };
+};
+
 /** Every rule across fields of a definition, each refusal naming its key. Empty when it may run. */
 export const resourceDefinitionRefusals = (
   def: ResourceDefinitionInput,
@@ -543,22 +577,19 @@ const engineOf = (image: string): string => {
   return major === undefined ? repository : `${repository} ${major}`;
 };
 
-const isDatabase = (def: ResourceDefinitionInput) =>
-  def.preset !== null && RESOURCE_PRESETS[def.preset].database;
-
 const SHARED_DATABASE_WARNING = "any worktree on shared can change or drop its tables";
 
 const useParts = (def: ResourceDefinitionInput, use: ResourceUse, clock: (at: Date) => string) => {
   switch (use.kind) {
     case "shared":
-      return [isDatabase(def) ? "shared database" : "shared"];
+      return [isDatabasePreset(def) ? "shared database" : "shared"];
     case "off":
       return ["off"];
     case "worktree":
       return [use.state];
     case "own":
       return [
-        isDatabase(def) ? "its own database" : "its own instance",
+        isDatabasePreset(def) ? "its own database" : "its own instance",
         ...originParts(use.start, clock),
       ];
   }
@@ -578,7 +609,7 @@ const originParts = (start: ResourceOwnStart, clock: (at: Date) => string) => {
 };
 
 const warningsOf = (def: ResourceDefinitionInput, use: ResourceUse) =>
-  use.kind === "shared" && isDatabase(def) ? [SHARED_DATABASE_WARNING] : [];
+  use.kind === "shared" && isDatabasePreset(def) ? [SHARED_DATABASE_WARNING] : [];
 
 /**
  * The one status line every client shows for a resource (ADR 0019, decision S5): what was
