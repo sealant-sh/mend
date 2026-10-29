@@ -13,13 +13,15 @@ import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
 import { failureLogLine, failureWords } from "@/data/failure-words";
-import { clearConfig, saveConfig, useConfig } from "@/data/live";
+import { clearConfig, saveConfig } from "@/data/live";
 import {
   type NotificationSettingsDto,
   useNotificationSettings,
   useSetNotificationSettings,
 } from "@/data/notification-settings";
 import { enablePushNotifications } from "@/data/notifications";
+import { serverUrlOf } from "@/data/pairing-key";
+import { usePairing } from "@/data/pairing-scope";
 import type { ThemePreference } from "@/data/preferences";
 import { setDisplayPreferences, TEXT_SCALES, useDisplayPreferences } from "@/data/preferences";
 import { useSecretFiles } from "@/data/secret-files";
@@ -196,12 +198,12 @@ export default function SettingsScreen() {
   const { colors } = useEvidenceTheme();
   const router = useRouter();
   const display = useDisplayPreferences();
-  const config = useConfig();
+  const { config } = usePairing();
   // The stored config is the truth; a draft only exists once something is
   // typed under Advanced. No effect, no copy that goes stale on save.
   const [draft, setDraft] = useState<{ readonly url: string; readonly token: string } | null>(null);
-  const [advanced, setAdvanced] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const handTyped = config.deviceName === null && config.pairedAt === null;
+  const [advanced, setAdvanced] = useState(handTyped && config.url !== "");
   const [push, setPush] = useState<
     | { readonly state: "idle" }
     | { readonly state: "registering" }
@@ -215,18 +217,10 @@ export default function SettingsScreen() {
     | { readonly state: "bad"; readonly detail: string }
   >({ state: "idle" });
 
-  // Nothing is known about this phone until AsyncStorage answers — see live.ts.
-  // Rendering "Not paired" before that flashes the wrong panel on every launch.
-  if (config === null) {
-    return (
-      <Screen topInset>
-        <ScreenHeader eyebrow="mend" title="Settings" meta="reading this device" />
-      </Screen>
-    );
-  }
-
   const url = draft?.url ?? config.url;
   const token = draft?.token ?? config.token;
+  const typed = { url: serverUrlOf(url), token: token.trim() };
+  const saved = typed.url === config.url && typed.token === config.token;
   const paired = config.url !== "" && config.token !== "";
 
   /** Test what's typed (not only what's saved): health first, then an authed call. */
@@ -279,12 +273,11 @@ export default function SettingsScreen() {
     fontSize: 14,
   };
 
-  const pairedLine =
-    config.deviceName === null && config.pairedAt === null
-      ? "token entered by hand"
-      : `${config.deviceName ?? "this device"}${
-          config.pairedAt === null ? "" : ` · paired ${config.pairedAt.slice(0, 10)}`
-        }`;
+  const pairedLine = handTyped
+    ? "token entered by hand"
+    : `${config.deviceName ?? "this device"}${
+        config.pairedAt === null ? "" : ` · paired ${config.pairedAt.slice(0, 10)}`
+      }`;
 
   return (
     <Screen topInset>
@@ -317,18 +310,7 @@ export default function SettingsScreen() {
                 onPress={() => router.push("/pair")}
                 style={{ flex: 1 }}
               />
-              <EvButton
-                variant="ghost"
-                label="Unpair"
-                onPress={() => {
-                  void clearConfig().then(() => {
-                    setDraft(null);
-                    setCheck({ state: "idle" });
-                    setSaved(false);
-                    return undefined;
-                  });
-                }}
-              />
+              <EvButton variant="ghost" label="Unpair" onPress={() => void clearConfig()} />
             </View>
             <MonoText tone="faint">
               Unpair clears the URL and token on this phone only. The machine keeps the device until
@@ -379,10 +361,7 @@ export default function SettingsScreen() {
             <UiText>Server URL (one this phone can reach)</UiText>
             <TextInput
               value={url}
-              onChangeText={(next) => {
-                setDraft({ url: next, token });
-                setSaved(false);
-              }}
+              onChangeText={(next) => setDraft({ url: next, token })}
               placeholder="https://mend.example.com"
               autoCapitalize="none"
               autoCorrect={false}
@@ -391,10 +370,7 @@ export default function SettingsScreen() {
             <UiText>Bearer token</UiText>
             <TextInput
               value={token}
-              onChangeText={(next) => {
-                setDraft({ url, token: next });
-                setSaved(false);
-              }}
+              onChangeText={(next) => setDraft({ url, token: next })}
               placeholder="token"
               autoCapitalize="none"
               autoCorrect={false}
@@ -404,17 +380,10 @@ export default function SettingsScreen() {
             <EvButton
               variant="outline"
               label={saved ? "Saved" : "Save"}
+              disabled={saved}
               onPress={() => {
-                void saveConfig({
-                  url: url.trim().replace(/\/$/, ""),
-                  token: token.trim(),
-                  deviceName: null,
-                  pairedAt: null,
-                }).then(() => {
-                  setDraft(null);
-                  setSaved(true);
-                  return undefined;
-                });
+                setDraft(null);
+                void saveConfig({ ...typed, deviceName: null, pairedAt: null });
               }}
             />
             <MonoText tone="faint">

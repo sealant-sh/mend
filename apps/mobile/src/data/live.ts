@@ -18,6 +18,8 @@ import { Platform } from "react-native";
 import { failureLogLine, failureWords, NO_ANSWER } from "@/data/failure-words";
 import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
+import { pageKey, pagesOf } from "@/data/pages";
+import { pairingKeyOf } from "@/data/pairing-key";
 import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
 import { heard, Unreachable } from "@/data/reachability";
 import type { CheckpointDto } from "@/data/review-state";
@@ -70,12 +72,13 @@ const parseConfig = (raw: string): MendConfig | null => {
 };
 
 // One store, read two ways: `loadConfig()` for the fetch path (awaits the
-// first read off disk) and `useConfig()` for screens (re-renders on save,
-// no effect). Hydrated once at import, same pattern as preferences.ts.
+// first read off disk) and `useConfig()` for the pairing boundary (re-renders
+// on save, no effect; screens read `usePairing()`). Hydrated once at import,
+// same pattern as preferences.ts.
 //
 // null is a third state, not a missing value: "the store has not answered
-// yet". Screens that render "not paired" have to wait for it, or a phone that
-// is paired flashes the pairing panel on every cold start.
+// yet". The boundary renders nothing until it answers, or a phone that is
+// paired flashes the pairing panel on every cold start.
 let current: MendConfig | null = null;
 const configListeners = new Set<() => void>();
 const notifyConfig = (): void => {
@@ -147,6 +150,8 @@ export const clearConfig = async (): Promise<void> => {
   notifyConfig();
   await removeStoredConfig();
 };
+
+export const isSavedConfig = (config: MendConfig): boolean => current === config;
 
 /** null until the stored config has been read — see the note on `current`. */
 export const useConfig = (): MendConfig | null =>
@@ -331,10 +336,10 @@ const send = async (method: Method, route: string, body?: unknown): Promise<Resp
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   }).catch((cause: unknown) => {
-    heard(false);
+    heard(pairingKeyOf(config), false);
     throw new Unreachable(NO_ANSWER, { cause });
   });
-  heard(true);
+  heard(pairingKeyOf(config), true);
   if (!response.ok) {
     let parsed: unknown = null;
     try {
@@ -577,18 +582,14 @@ export type HarnessModelCatalogDto = HarnessModelCatalogView;
 
 /**
  * Every harness's models, from the server: the one list the phone's picker draws. Nothing on the
- * phone names a model of its own. Keyed by the server, so a phone that pairs with another machine
- * never offers the first machine's list or sends its default.
+ * phone names a model of its own.
  */
-export const useHarnessModels = () => {
-  const config = useConfig();
-  return useQuery({
-    queryKey: ["harness-models", config?.url ?? ""],
-    enabled: config !== null && config.url !== "",
+export const useHarnessModels = () =>
+  useQuery({
+    queryKey: ["harness-models"],
     queryFn: () => api<ReadonlyArray<HarnessModelCatalogDto>>("GET", "/harnesses/models"),
     staleTime: 60_000,
   });
-};
 
 export const useProjectBranches = (projectId: string | null, enabled: boolean) =>
   useQuery({
@@ -627,6 +628,19 @@ export const useAllSessions = () => {
     refetchInterval: 8_000,
   });
 };
+
+export const usePage = (route: { readonly id: string; readonly sessionId: string } | null) =>
+  useQuery({
+    queryKey: pageKey(route?.sessionId ?? "", route?.id ?? ""),
+    enabled: route !== null,
+    queryFn: async () => {
+      const pages = await api<unknown>(
+        "GET",
+        `/sessions/${encodeURIComponent(route?.sessionId ?? "")}/pages`,
+      );
+      return pagesOf(pages).find((page) => page.id === route?.id) ?? null;
+    },
+  });
 
 export const useSession = (id: string | null) =>
   useQuery({

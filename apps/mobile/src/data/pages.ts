@@ -10,11 +10,12 @@ import {
 import { PAGE_FRAME_MIN_URL_LIFE_MS, PAGE_FRAME_TTL_MS, PageRef } from "@mend/domain/workbench";
 import { Option, Schema } from "effect";
 
-import { sha256Hex } from "@/lib/sha256";
-
 const decodePage = Schema.decodeUnknownOption(PageRef);
 
 export const pageOf = (value: unknown): PageRef | null => Option.getOrNull(decodePage(value));
+
+export const pagesOf = (value: unknown): ReadonlyArray<PageRef> =>
+  Array.isArray(value) ? value.flatMap((entry) => pageOf(entry) ?? []) : [];
 
 export const pageOfItem = (item: AgentItemDto): PageRef | null =>
   item.kind === "page" ? pageOf(item.data) : null;
@@ -41,15 +42,10 @@ export interface PageConnection {
   readonly token: string;
 }
 
-export const pageFrameKey = (connection: PageConnection, pageId: string) =>
-  ["page-frame", sha256Hex(`${connection.url}\n${connection.token}`), pageId] as const;
+export const pageFrameKey = (pageId: string) => ["page-frame", pageId] as const;
 
-export const pageFrameQuery = (
-  connection: PageConnection,
-  pageId: string,
-  mint: () => Promise<string>,
-) => ({
-  queryKey: pageFrameKey(connection, pageId),
+export const pageFrameQuery = (pageId: string, mint: () => Promise<string>) => ({
+  queryKey: pageFrameKey(pageId),
   queryFn: mint,
   staleTime: PAGE_FRAME_TTL_MS - PAGE_FRAME_MIN_URL_LIFE_MS,
 });
@@ -81,36 +77,15 @@ export const transcriptPageOf = (event: {
   readonly page?: unknown;
 }): PageRef | null => (event.kind === "page" ? pageOf(event.page) : null);
 
-export const pageRouteParams = (page: PageRef) => ({
-  id: page.id,
-  session: page.sessionId,
-  title: page.title,
-  height: String(page.height),
-  published: page.publishedAt.toISOString(),
-});
+export const pageKey = (sessionId: string, pageId: string) =>
+  ["session", sessionId, "page", pageId] as const;
 
-export const pageOfRoute = (params: {
+export const pageRouteParams = (page: PageRef) => ({ id: page.id, session: page.sessionId });
+
+export const pageRouteOf = (params: {
   readonly id?: string | ReadonlyArray<string>;
   readonly session?: string | ReadonlyArray<string>;
-  readonly title?: string | ReadonlyArray<string>;
-  readonly height?: string | ReadonlyArray<string>;
-  readonly published?: string | ReadonlyArray<string>;
-}): PageRef | null => {
-  const { id, session, title, height, published } = params;
-  if (
-    typeof id !== "string" ||
-    typeof session !== "string" ||
-    typeof title !== "string" ||
-    typeof height !== "string" ||
-    typeof published !== "string"
-  ) {
-    return null;
-  }
-  return pageOf({
-    id,
-    sessionId: session,
-    title,
-    height: Number(height),
-    publishedAt: published,
-  });
-};
+}): { readonly id: string; readonly sessionId: string } | null =>
+  typeof params.id === "string" && typeof params.session === "string"
+    ? { id: params.id, sessionId: params.session }
+    : null;

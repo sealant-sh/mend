@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 
-import { ask } from "@/components/ask";
+import { useAsk } from "@/components/ask";
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
 import { usePaneEdges } from "@/components/pane";
 import { MonoText, UiText } from "@/components/typography";
@@ -68,6 +68,7 @@ export function TerminalPane({
   readonly processId?: string;
 }) {
   const { colors } = useEvidenceTheme();
+  const ask = useAsk();
   const pane = usePaneEdges();
   // Only the owner types in a session's terminals, even while control is shared (docs/adr/0013).
   const detail = useSession(sessionId);

@@ -27,10 +27,10 @@ import {
   annotationDetail,
   toSession,
   useAllSessions,
-  useConfig,
   useSessionActions,
 } from "@/data/live";
 import { watchSession } from "@/data/notification-presence";
+import { usePairing } from "@/data/pairing-scope";
 import { usePosture } from "@/data/use-posture";
 import { spacing, useEvidenceTheme } from "@/theme/evidence";
 
@@ -63,7 +63,7 @@ export default function NowScreen() {
   // Null until the person chooses: open flat previews, upright lists.
   const [previewChoice, setPreviewChoice] = useState<boolean | null>(null);
   const preview = posture !== "compact" && (previewChoice ?? posture === "landscape");
-  const config = useConfig();
+  const { config } = usePairing();
   const all = useAllSessions();
   const { remove, removeSettled } = useSessionActions();
   const [renaming, setRenaming] = useState<RenameTarget | null>(null);
@@ -101,17 +101,6 @@ export default function NowScreen() {
     }
     setPicked(id);
   };
-
-  // The stored config has not been read off disk yet: neither panel is true
-  // yet, so show the header alone rather than flash "not paired" at a phone
-  // that is paired.
-  if (config === null) {
-    return (
-      <Screen topInset>
-        <ScreenHeader eyebrow="mend" title="Now" meta="reading this device" />
-      </Screen>
-    );
-  }
 
   // Nothing to inbox until this phone has a machine to ask.
   if (config.url === "" || config.token === "") {

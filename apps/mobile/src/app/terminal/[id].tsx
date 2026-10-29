@@ -5,7 +5,7 @@ import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-rou
 import { useCallback } from "react";
 import { Pressable } from "react-native";
 
-import { ask } from "@/components/ask";
+import { useAsk } from "@/components/ask";
 import { TerminalPane } from "@/components/terminal-pane";
 import { MonoText } from "@/components/typography";
 import { useSessionActions } from "@/data/live";
@@ -14,6 +14,7 @@ import { watchSession } from "@/data/notification-presence";
 export default function TerminalScreen() {
   const { id, process } = useLocalSearchParams<{ id: string; process?: string }>();
   const router = useRouter();
+  const ask = useAsk();
   // The session's terminal counts as the session on screen: its pushes stay silent here.
   useFocusEffect(useCallback(() => watchSession(id), [id]));
   const { stopShell } = useSessionActions();

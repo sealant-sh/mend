@@ -1,18 +1,18 @@
-// `ask`: every confirm-first action and every notice in the app goes through it (data/ask.ts).
+// `useAsk`: every confirm-first action and every notice in the app goes through it (data/ask.ts).
 // On a phone it is `Alert.alert`. On the web build, where that does nothing, `AskDialog` (mounted
-// once, in the root layout) shows the question in the app's own panel, same words and buttons.
+// once per pairing, in the root layout) shows the question in the app's own panel, same words and
+// buttons.
 
 import { useSyncExternalStore } from "react";
-import { Alert, Modal, Platform, Pressable, StyleSheet, View } from "react-native";
+import { Modal, Pressable, StyleSheet, View } from "react-native";
 
 import { EvButton, type ButtonVariant } from "@/components/button";
 import { UiText } from "@/components/typography";
-import { createAsker, type AskButton } from "@/data/ask";
+import type { Ask, AskButton } from "@/data/ask";
+import { usePairing } from "@/data/pairing-scope";
 import { radius, useEvidenceTheme } from "@/theme/evidence";
 
-const asker = createAsker({ os: Platform.OS, alert: Alert.alert });
-
-export const ask = asker.ask;
+export const useAsk = (): Ask => usePairing().asker.ask;
 
 /** The one consequential choice is filled; Cancel stays quiet (DESIGN.md §5). */
 const variantOf = (button: AskButton, buttons: ReadonlyArray<AskButton>): ButtonVariant => {
@@ -24,6 +24,7 @@ const variantOf = (button: AskButton, buttons: ReadonlyArray<AskButton>): Button
 
 export function AskDialog() {
   const { colors, shadow } = useEvidenceTheme();
+  const { asker } = usePairing();
   const question = useSyncExternalStore(asker.subscribe, asker.showing, () => null);
   if (question === null) return null;
   const dismiss = () => asker.dismiss(question.id);
