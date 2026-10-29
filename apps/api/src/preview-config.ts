@@ -1,11 +1,13 @@
 import { isIP } from "node:net";
 
-import { PreviewId } from "@mend/domain";
 import {
+  DEFAULT_TAILNET_PREVIEW_PORTS,
   NetworkConfig,
   previewDomainOverlap,
   type PublicNetwork,
+  readPreviewPorts,
   SAME_SITE_PREVIEW_REASON,
+  writePreviewPorts,
 } from "@mend/network";
 import { Config, Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -117,29 +119,10 @@ const apartFromMend = (domain: string, mend: PublicNetwork) => {
   return Effect.void;
 };
 
-/** `port=previewId` pairs, comma-separated: one preview per port and one port per preview. */
-const tailnetPortsOf = (raw: string) =>
-  Effect.gen(function* () {
-    const ports: Array<{ readonly port: number; readonly previewId: PreviewId }> = [];
-    for (const entry of raw.split(",").map((part) => part.trim())) {
-      const [rawPort = "", previewId = "", ...rest] = entry.split("=").map((part) => part.trim());
-      if (rest.length > 0 || !/^[A-Za-z0-9_-]+$/.test(previewId)) {
-        return yield* refuse(
-          "tailnetPorts",
-          `"${entry}" is not port=previewId, such as 20001=pv_0123`,
-        );
-      }
-      const port = yield* portOf("tailnetPorts", rawPort);
-      if (ports.some((known) => known.port === port)) {
-        return yield* refuse("tailnetPorts", `port ${port} is listed twice`);
-      }
-      if (ports.some((known) => known.previewId === previewId)) {
-        return yield* refuse("tailnetPorts", `preview ${previewId} is given two ports`);
-      }
-      ports.push({ port, previewId: PreviewId.make(previewId) });
-    }
-    return ports;
-  });
+const tailnetPortsOf = (raw: string) => {
+  const read = readPreviewPorts(raw);
+  return read._tag === "Ports" ? Effect.succeed(read.ports) : refuse("tailnetPorts", read.problem);
+};
 
 const decodeDuration = Schema.decodeUnknownOption(Schema.DurationFromString);
 
@@ -166,8 +149,9 @@ const bodyCapOf = (raw: string): Effect.Effect<PreviewBodyCap, PreviewConfigRefu
 /**
  * The preview setup `env` describes, checked against Mend's own origins. Nothing set: previews are
  * off. A listen port alone: loopback, `http://<label>.localhost:<port>`. A domain: one host per
- * preview behind an edge on `MEND_PREVIEW_PUBLIC_PORT`. A tailnet hostname: one port per preview
- * on that name. A domain takes over from a tailnet hostname (decision 6).
+ * preview behind an edge on `MEND_PREVIEW_PUBLIC_PORT`. A tailnet hostname: a port per preview on
+ * that name, from `MEND_PREVIEW_TAILNET_PORTS` or the default set. A domain takes over from a
+ * tailnet hostname (decision 6).
  */
 export const previewSetupOf = (
   env: PreviewEnvironment,
@@ -220,18 +204,12 @@ export const previewSetupOf = (
     if (rawPorts !== undefined && rawHostname === undefined) {
       return yield* refuse("tailnetHostname", "is required with MEND_PREVIEW_TAILNET_PORTS");
     }
-    if (rawHostname !== undefined && rawPorts === undefined) {
-      return yield* refuse(
-        "tailnetPorts",
-        "is required with MEND_PREVIEW_TAILNET_HOSTNAME: list each preview's port as port=previewId",
-      );
-    }
     const tailnet =
-      rawHostname === undefined || rawPorts === undefined
+      rawHostname === undefined
         ? null
         : {
             hostname: yield* dnsNameOf("tailnetHostname", rawHostname),
-            ports: yield* tailnetPortsOf(rawPorts),
+            ports: yield* tailnetPortsOf(rawPorts ?? DEFAULT_TAILNET_PREVIEW_PORTS),
           };
     if (tailnet !== null) {
       const own = hostsOf(mend).find(({ host }) => host === tailnet.hostname);
@@ -290,6 +268,9 @@ export const loadPreviewSetup: Effect.Effect<
         : {
             gateway: `${setup.gateway.bind}:${setup.gateway.port}`,
             routing: setup.routing.mode,
+            ...(setup.routing.mode === "tailnet-https"
+              ? { tailnetPorts: writePreviewPorts(setup.routing.ports) }
+              : {}),
             startHoldMs: setup.gateway.startHoldMs,
           },
     ),

@@ -87,7 +87,7 @@ const PREVIEWS = {
 } as const;
 type PreviewKey = keyof typeof PREVIEWS;
 const originOf = (key: PreviewKey) => {
-  const origin = previewOriginOf(ROUTING, PREVIEWS[key]);
+  const origin = previewOriginOf(ROUTING, { label: PREVIEWS[key].label, tailnetPort: null });
   if (origin === null) throw new Error("a domain routing addresses every preview");
   return origin;
 };

@@ -3,6 +3,7 @@ import {
   NetworkConfig,
   previewDomainOverlap,
   SAME_SITE_PREVIEW_REASON,
+  writePreviewPorts,
   trustedProxyCidrs,
   trustsEveryAddress,
 } from "@mend/network";
@@ -411,7 +412,7 @@ const routingOf = (
           },
           {
             established: "observed",
-            said: `previews are https at https://${routing.hostname}:<port>`,
+            said: `previews are https at https://${routing.hostname}:<port>, a port each from ${writePreviewPorts(routing.ports)}`,
           },
           hostCookieFact(posture),
         ],

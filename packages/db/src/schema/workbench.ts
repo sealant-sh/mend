@@ -576,6 +576,24 @@ export const previewGrants = pgTable(
 );
 
 /**
+ * The tailnet default's port pool (ADR 0017, decision 6): a port some preview was given. A port
+ * holds the preview in `previewId`; a freed one has none and the time it was freed. `lastUsedAt` is
+ * the last time a connection to the port's preview was open; `reused`, that the port held another
+ * preview before this one. Removing a preview frees its port, by a trigger in the migration.
+ */
+export const previewPorts = pgTable("preview_ports", {
+  port: integer().primaryKey(),
+  previewId: text()
+    .$type<PreviewId>()
+    .unique()
+    .references(() => previews.id, { onDelete: "set null" }),
+  assignedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  releasedAt: timestamp({ mode: "date", withTimezone: true }),
+  lastUsedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  reused: boolean().notNull().default(false),
+});
+
+/**
  * A preview's control (ADR 0017, Decision log 6): whether a person stopped it. No row is
  * automatic at revision 0; the revision moves only when the state does. The stop facts are set
  * exactly when the state is `stopped` (a CHECK in the migration); `stoppedSeq` is the Stop's place

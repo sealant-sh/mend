@@ -1,4 +1,4 @@
-import { PreviewId, PreviewLabel } from "@mend/domain";
+import { PreviewLabel } from "@mend/domain";
 import type { PreviewUndelivered } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
@@ -17,14 +17,10 @@ const HOSTED: CookiePolicy = { mode: "host-per-preview" };
 const OWN_PORT: CookiePolicy = { mode: "tailnet-ports", label: LABEL };
 
 const tailnetOrigin = previewOriginOf(
-  {
-    mode: "tailnet-https",
-    hostname: "mend-preview.tail1234.ts.net",
-    ports: [{ port: 20001, previewId: PreviewId.make("pv-1") }],
-  },
-  { id: PreviewId.make("pv-1"), label: LABEL },
+  { mode: "tailnet-https", hostname: "mend-preview.tail1234.ts.net", ports: [20001] },
+  { label: LABEL, tailnetPort: 20001 },
 );
-if (tailnetOrigin === null) throw new Error("the tailnet routing assigns pv-1 a port");
+if (tailnetOrigin === null) throw new Error("the tailnet routing serves port 20001");
 
 const TO: ForwardRequest = { origin: tailnetOrigin, port: 5173, cookies: OWN_PORT, upgrade: false };
 
@@ -172,7 +168,7 @@ describe("the request head an application receives", () => {
   it("states the scheme and host of a loopback preview", () => {
     const origin = previewOriginOf(
       { mode: "loopback-http", port: 3110 },
-      { id: PreviewId.make("pv-1"), label: LABEL },
+      { label: LABEL, tailnetPort: null },
     );
     if (origin === null) throw new Error("loopback addresses every preview");
     const sent = forwardRequestHead([["Host", "x"]], { ...TO, origin, cookies: HOSTED });

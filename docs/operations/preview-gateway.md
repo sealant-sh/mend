@@ -11,17 +11,17 @@ runs (`MEND_MODE=all` or `api`) and never in `MEND_MODE=worker`.
 The API reads them once, at start. A malformed value, or a combination that cannot run, stops the
 API with a message that names the variable. An empty value counts as unset.
 
-| Variable                        | Default     | What it sets                                                                                                                                       |
-| ------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_PREVIEW_PORT`             | unset (off) | The gateway's listen port. Required once any `MEND_PREVIEW_*` variable is set.                                                                     |
-| `MEND_PREVIEW_BIND`             | `127.0.0.1` | The address it listens on, an IP address or `localhost`.                                                                                           |
-| `MEND_PREVIEW_DOMAIN`           | unset       | The preview domain. Each preview is `https://<label>.<domain>`, behind an edge. Takes over from a tailnet hostname.                                |
-| `MEND_PREVIEW_PUBLIC_PORT`      | `443`       | The port browsers use on the edge, with `MEND_PREVIEW_DOMAIN` only.                                                                                |
-| `MEND_PREVIEW_TAILNET_HOSTNAME` | unset       | The gateway's name on a tailnet, such as `mend-preview.<tailnet>.ts.net`. Never Mend's own host.                                                   |
-| `MEND_PREVIEW_TAILNET_PORTS`    | unset       | Each preview's port on that name, as `port=previewId`, comma-separated. One preview per port and one port per preview. Required with the hostname. |
-| `MEND_PREVIEW_START_HOLD`       | `3 minutes` | How long a request waits for a stopped preview to start, such as `90 seconds`. At least 1 second.                                                  |
-| `MEND_PREVIEW_BODY_BYTES`       | unset       | A cap on one request body, in bytes, counted as it streams. Unset means no cap.                                                                    |
-| `MEND_PREVIEW_PUBLISHED`        | unset       | Where the gateway's port is published, `<address>:<port>`, as setup states it. Read only by the public exposure gate's `preview-gateway` item.     |
+| Variable                        | Default       | What it sets                                                                                                                                               |
+| ------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_PREVIEW_PORT`             | unset (off)   | The gateway's listen port. Required once any `MEND_PREVIEW_*` variable is set.                                                                             |
+| `MEND_PREVIEW_BIND`             | `127.0.0.1`   | The address it listens on, an IP address or `localhost`.                                                                                                   |
+| `MEND_PREVIEW_DOMAIN`           | unset         | The preview domain. Each preview is `https://<label>.<domain>`, behind an edge. Takes over from a tailnet hostname.                                        |
+| `MEND_PREVIEW_PUBLIC_PORT`      | `443`         | The port browsers use on the edge, with `MEND_PREVIEW_DOMAIN` only.                                                                                        |
+| `MEND_PREVIEW_TAILNET_HOSTNAME` | unset         | The gateway's name on a tailnet, such as `mend-preview.<tailnet>.ts.net`. Never Mend's own host.                                                           |
+| `MEND_PREVIEW_TAILNET_PORTS`    | `20001-20016` | The ports Mend gives previews on that name, as ports and ranges, comma-separated in ascending order, such as `20001-20016` or `20001,20003`. At most 1000. |
+| `MEND_PREVIEW_START_HOLD`       | `3 minutes`   | How long a request waits for a stopped preview to start, such as `90 seconds`. At least 1 second.                                                          |
+| `MEND_PREVIEW_BODY_BYTES`       | unset         | A cap on one request body, in bytes, counted as it streams. Unset means no cap.                                                                            |
+| `MEND_PREVIEW_PUBLISHED`        | unset         | Where the gateway's port is published, `<address>:<port>`, as setup states it. Read only by the public exposure gate's `preview-gateway` item.             |
 
 How browsers reach a preview follows from what is set:
 
@@ -38,9 +38,16 @@ How browsers reach a preview follows from what is set:
   Mend's cookies to move to `__Host-` names, which ships in ADR 0017 step 8b with the tailnet
   default. Until then, use a preview domain on a registrable domain of its own, or loopback
   (`*.localhost`).
-- **On a tailnet, with a hostname and its ports.** A preview is
-  `https://<MEND_PREVIEW_TAILNET_HOSTNAME>:<its port>`. The port list is explicit, because Mend does
-  not assign ports yet (delivery step 8). The API refuses a hostname equal to Mend's own host.
+- **On a tailnet, with a hostname.** A preview is
+  `https://<MEND_PREVIEW_TAILNET_HOSTNAME>:<its port>`. Mend gives a preview a port from
+  `MEND_PREVIEW_TAILNET_PORTS` the first time someone opens it, never sooner, and the preview keeps
+  it until it is removed with its worktree or project. A removed preview's port goes back to the
+  set, and Mend reuses the ports never used first, then the one freed longest ago. The assignments
+  live in the database, so a new preview needs no restart and every API process agrees. A preview
+  whose port left the set gets a port of the current set the next time it is opened. When every port
+  holds a preview, opening another answers `503` with a page that says how many ports the set has.
+  The API refuses a hostname equal to Mend's own host, and the `port=previewId` form that earlier
+  builds read, with a message that says what changed.
 
 ### Browsers on loopback
 

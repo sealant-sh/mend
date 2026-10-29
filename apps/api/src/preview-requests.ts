@@ -1,7 +1,13 @@
+import { TAILNET_PORT_QUIET_HOURS } from "@mend/db";
 import { NO_SUCH_PREVIEW } from "@mend/network";
 import { Brand } from "effect";
 
-import type { PreviewNoIdentity, PreviewNotFound, PreviewUnavailable } from "./preview-identity.ts";
+import type {
+  PreviewNoIdentity,
+  PreviewNotFound,
+  PreviewPoolFull,
+  PreviewUnavailable,
+} from "./preview-identity.ts";
 import type { PreviewOrigin } from "./preview-routing.ts";
 
 export type PreviewPath = string & Brand.Brand<"PreviewPath">;
@@ -119,8 +125,15 @@ export const redirect = (
   headers: Readonly<Record<string, string>> = {},
 ): PreviewAnswer => answer(status, "", { location, ...headers });
 
+const nextMinuteUtc = (at: Date): string =>
+  new Date(Math.ceil(at.getTime() / 60_000) * 60_000)
+    .toISOString()
+    .slice(0, 16)
+    .replace("T", " ")
+    .concat(" UTC");
+
 export const refusalAnswer = (
-  error: PreviewNoIdentity | PreviewNotFound | PreviewUnavailable,
+  error: PreviewNoIdentity | PreviewNotFound | PreviewUnavailable | PreviewPoolFull,
 ): PreviewAnswer => {
   switch (error._tag) {
     case "PreviewNoIdentity":
@@ -129,6 +142,11 @@ export const refusalAnswer = (
       return answer(404, NO_SUCH_PREVIEW);
     case "PreviewUnavailable":
       return answer(503, "Previews are unavailable right now.");
+    case "PreviewPoolFull":
+      return answer(
+        503,
+        `No preview port is free. All ${error.size} ports this server serves previews on had a preview open within the last ${TAILNET_PORT_QUIET_HOURS} hours, and a port goes to another preview only after ${TAILNET_PORT_QUIET_HOURS} hours with no connection to its own. The next one frees at ${nextMinuteUtc(error.nextFreeAt)} at the earliest, if its preview stays closed until then. The operator can serve more ports (mend server setup --preview-tailnet-ports).`,
+      );
   }
 };
 

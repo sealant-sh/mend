@@ -57,7 +57,12 @@ import {
   PREVIEW_TIMING,
   PreviewConfig,
 } from "../../src/preview-identity.ts";
-import { grantCookieOf, previewOriginOf, type PreviewRouting } from "../../src/preview-routing.ts";
+import {
+  grantCookieOf,
+  previewOriginOf,
+  type PreviewPlace,
+  type PreviewRouting,
+} from "../../src/preview-routing.ts";
 import { type PreviewStartFailed, PreviewTargets } from "../../src/preview-targets.ts";
 import { makeProject } from "./tenancy-harness.ts";
 
@@ -91,15 +96,23 @@ export const MEMBERS: ReadonlyArray<Viewer> = [
   { userId: "dave", organizationId: ORG, role: "member" },
 ];
 
+const PREVIEW_KEYS: ReadonlyArray<PreviewKey> = ["web", "docs"];
+const keyOf = (id: string) => PREVIEW_KEYS.find((key) => PREVIEWS[key].id === id);
+
+/** The port each preview holds on the tailnet, as the pool would have given them. */
+export const TAILNET_PORTS: Record<PreviewKey, number> = { web: 20001, docs: 20002 };
+
+export const placeOf = (key: PreviewKey): PreviewPlace => ({
+  label: PREVIEWS[key].label,
+  tailnetPort: TAILNET_PORTS[key],
+});
+
 export const ROUTINGS = {
   domain: { mode: "domain-https", domain: "preview.test", port: 443 },
   tailnet: {
     mode: "tailnet-https",
     hostname: "mend-preview.tail.ts.net",
-    ports: [
-      { port: 20001, previewId: PREVIEWS.web.id },
-      { port: 20002, previewId: PREVIEWS.docs.id },
-    ],
+    ports: [TAILNET_PORTS.web, TAILNET_PORTS.docs],
   },
 } as const satisfies Record<string, PreviewRouting>;
 
@@ -223,7 +236,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
     let minted = 0;
 
     const originOf = (key: PreviewKey): string => {
-      const origin = previewOriginOf(routing, PREVIEWS[key]);
+      const origin = previewOriginOf(routing, placeOf(key));
       if (origin === null) throw new Error(`the routing addresses ${key}`);
       return origin;
     };
@@ -232,7 +245,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
     const cookieFor = (userId: string, key: PreviewKey): string => {
       const secret = `mpg_${String(++minted).padStart(43, "0")}`;
       const preview = PREVIEWS[key];
-      const origin = previewOriginOf(routing, preview);
+      const origin = previewOriginOf(routing, placeOf(key));
       if (origin === null) throw new Error(`the routing addresses ${key}`);
       grants.set(secret, {
         previewId: preview.id,
@@ -296,6 +309,30 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       previewOfService: () => Effect.die("unused"),
       gatewaySnapshot: () => Effect.die("unused"),
       gatewaySnapshots: () => Effect.die("unused"),
+      assignTailnetPort: (id) => {
+        const key = keyOf(id);
+        return Effect.succeed(
+          key === undefined ? { _tag: "Removed" } : { _tag: "Assigned", port: TAILNET_PORTS[key] },
+        );
+      },
+      tailnetPorts: (ids) =>
+        Effect.succeed(
+          new Map(
+            ids.flatMap((id): Array<[PreviewId, number]> => {
+              const key = keyOf(id);
+              return key === undefined ? [] : [[id, TAILNET_PORTS[key]]];
+            }),
+          ),
+        ),
+      byTailnetPort: (held) => {
+        const key = PREVIEW_KEYS.find((candidate) => TAILNET_PORTS[candidate] === held);
+        return Effect.succeed(
+          key === undefined ? null : { preview: PREVIEWS[key], renewDue: false },
+        );
+      },
+      renewTailnetPort: () => Effect.succeed("Renewed"),
+      touchTailnetPorts: () => Effect.void,
+      tailnetPortReused: () => Effect.succeed(false),
     };
 
     const access = Layer.mock(ProjectAccess, {

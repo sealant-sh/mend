@@ -22,13 +22,14 @@ import {
   selectPreviewTarget,
   type Service,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
 import { Context, Crypto, DateTime, Effect, Layer, Schema } from "effect";
 
 import { type MendDatabase, MendDB } from "../client.ts";
 import {
   agentSessions,
   previewControls,
+  previewPorts,
   previews,
   projects,
   services,
@@ -73,8 +74,58 @@ export class PreviewsRepo extends Context.Service<
     readonly gatewaySnapshots: (
       ids: ReadonlyArray<PreviewId>,
     ) => Effect.Effect<ReadonlyMap<PreviewId, PreviewGatewaySnapshot>>;
+    /**
+     * The kept preview's port on the tailnet default: the one it holds if `ports` has it, else the
+     * first never used, else the least recently used port whose preview, removed or not, has had
+     * no open connection for `TAILNET_PORT_QUIET_HOURS`. Idempotent, and serialized with every
+     * other assignment, so concurrent opens agree. An assignment outside `ports` is released and
+     * replaced.
+     */
+    readonly assignTailnetPort: (
+      id: PreviewId,
+      ports: ReadonlyArray<number>,
+    ) => Effect.Effect<TailnetPortAssignment>;
+    /** The ports the previews hold now, whatever set they came from; a preview with none is absent. */
+    readonly tailnetPorts: (
+      ids: ReadonlyArray<PreviewId>,
+    ) => Effect.Effect<ReadonlyMap<PreviewId, number>>;
+    readonly byTailnetPort: (port: number) => Effect.Effect<TailnetPortHolder | null>;
+    /**
+     * Stamps `port` used now if `id` still holds it, else answers Moved. Serialized with every
+     * assignment, so an assignment after it finds the port in use, and one before it wins.
+     */
+    readonly renewTailnetPort: (port: number, id: PreviewId) => Effect.Effect<"Renewed" | "Moved">;
+    /** A connection to each of these previews is open now: their ports were used. */
+    readonly touchTailnetPorts: (ids: ReadonlyArray<PreviewId>) => Effect.Effect<void>;
+    /** Whether `port` held another preview before it held `id`. */
+    readonly tailnetPortReused: (port: number, id: PreviewId) => Effect.Effect<boolean>;
   }
 >()("@mend/db/PreviewsRepo") {}
+
+/**
+ * How long a port's preview, removed or not, goes with no open connection before the port can go
+ * to another preview (ADR 0017, decision 6). A page of the old
+ * preview still open in a browser would otherwise run on the new preview's origin.
+ */
+export const TAILNET_PORT_QUIET_HOURS = 24;
+
+/**
+ * A connection is admitted without renewing its port's stamp while the stamp is younger than
+ * this: the port is then at least 23 hours from any reclaim, and an open one is stamped each pass.
+ */
+export const TAILNET_PORT_RENEW_AFTER_HOURS = TAILNET_PORT_QUIET_HOURS / 24;
+
+/** The preview on a port, and whether an admission renews the port before serving it. */
+export interface TailnetPortHolder {
+  readonly preview: Preview;
+  readonly renewDue: boolean;
+}
+
+export type TailnetPortAssignment =
+  | { readonly _tag: "Assigned"; readonly port: number }
+  /** Every port was used within the quiet period; the first can go to another preview at `nextFreeAt`. */
+  | { readonly _tag: "PoolFull"; readonly size: number; readonly nextFreeAt: Date }
+  | { readonly _tag: "Removed" };
 
 export type PreviewControlRequest =
   | Omit<Extract<PreviewControlIntent, { readonly _tag: "Stop" }>, "seq">
@@ -471,7 +522,161 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         return (yield* gatewaySnapshots([id])).get(id) ?? null;
       });
 
+      const assignTailnetPort = Effect.fn("PreviewsRepo.assignTailnetPort")(function* (
+        id: PreviewId,
+        ports: ReadonlyArray<number>,
+      ) {
+        return yield* db.transaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx.execute(sql`select pg_advisory_xact_lock(hashtext('mend:preview-ports'))`);
+            // Held until commit, so a removal of this preview waits and its trigger then frees
+            // the port this transaction gave it.
+            const [kept] = yield* tx
+              .select({ id: previews.id })
+              .from(previews)
+              .where(and(eq(previews.id, id), isNotNull(previews.worktreeId)))
+              .for("share");
+            if (kept === undefined) return { _tag: "Removed" } satisfies TailnetPortAssignment;
+            const [held] = yield* tx
+              .select({ port: previewPorts.port })
+              .from(previewPorts)
+              .where(eq(previewPorts.previewId, id));
+            if (held !== undefined) {
+              if (ports.includes(held.port)) {
+                return { _tag: "Assigned", port: held.port } satisfies TailnetPortAssignment;
+              }
+              yield* tx
+                .update(previewPorts)
+                .set({ previewId: null, releasedAt: sql`now()` })
+                .where(eq(previewPorts.port, held.port));
+            }
+            const inSet = inArray(previewPorts.port, [...ports]);
+            const known = new Set(
+              (yield* tx.select({ port: previewPorts.port }).from(previewPorts).where(inSet)).map(
+                (row) => row.port,
+              ),
+            );
+            const fresh = ports.find((port) => !known.has(port));
+            if (fresh !== undefined) {
+              yield* tx.insert(previewPorts).values({
+                port: fresh,
+                previewId: id,
+                assignedAt: sql`now()`,
+                lastUsedAt: sql`now()`,
+              });
+              return { _tag: "Assigned", port: fresh } satisfies TailnetPortAssignment;
+            }
+            // Removal ends every open connection, so a removed preview's quiet starts then.
+            const quietSince = sql`GREATEST(${previewPorts.lastUsedAt}, COALESCE(${previewPorts.releasedAt}, ${previewPorts.lastUsedAt}))`;
+            const quietEnds = sql<Date>`${quietSince} + make_interval(hours => ${TAILNET_PORT_QUIET_HOURS})`;
+            const [quiet] = yield* tx
+              .select({ port: previewPorts.port })
+              .from(previewPorts)
+              .where(and(inSet, sql`${quietEnds} <= now()`))
+              .orderBy(asc(previewPorts.lastUsedAt), asc(previewPorts.port))
+              .limit(1);
+            if (quiet === undefined) {
+              const [next] = yield* tx
+                .select({ at: sql<Date>`min(${quietEnds})`.mapWith(previewPorts.lastUsedAt) })
+                .from(previewPorts)
+                .where(inSet);
+              if (next === undefined) return yield* Effect.die("an empty preview port set");
+              return {
+                _tag: "PoolFull",
+                size: ports.length,
+                nextFreeAt: next.at,
+              } satisfies TailnetPortAssignment;
+            }
+            yield* tx
+              .update(previewPorts)
+              .set({
+                previewId: id,
+                assignedAt: sql`now()`,
+                releasedAt: null,
+                lastUsedAt: sql`now()`,
+                reused: true,
+              })
+              .where(eq(previewPorts.port, quiet.port));
+            return { _tag: "Assigned", port: quiet.port } satisfies TailnetPortAssignment;
+          }),
+        );
+      }, Effect.catchTags(queryErrorsDie));
+
+      const touchTailnetPorts = Effect.fn("PreviewsRepo.touchTailnetPorts")(function* (
+        ids: ReadonlyArray<PreviewId>,
+      ) {
+        if (ids.length === 0) return;
+        yield* db
+          .update(previewPorts)
+          .set({ lastUsedAt: sql`now()` })
+          .where(inArray(previewPorts.previewId, [...new Set(ids)]));
+      }, Effect.orDie);
+
+      const tailnetPortReused = Effect.fn("PreviewsRepo.tailnetPortReused")(function* (
+        port: number,
+        id: PreviewId,
+      ) {
+        const [row] = yield* db
+          .select({ reused: previewPorts.reused })
+          .from(previewPorts)
+          .where(and(eq(previewPorts.port, port), eq(previewPorts.previewId, id)));
+        return row?.reused ?? false;
+      }, Effect.orDie);
+
+      const tailnetPorts = Effect.fn("PreviewsRepo.tailnetPorts")(function* (
+        ids: ReadonlyArray<PreviewId>,
+      ) {
+        if (ids.length === 0) return new Map<PreviewId, number>();
+        const rows = yield* db
+          .select({ previewId: previewPorts.previewId, port: previewPorts.port })
+          .from(previewPorts)
+          .where(inArray(previewPorts.previewId, [...new Set(ids)]));
+        return new Map(
+          rows.flatMap((row) => (row.previewId === null ? [] : [[row.previewId, row.port]])),
+        );
+      }, Effect.orDie);
+
+      const byTailnetPort = Effect.fn("PreviewsRepo.byTailnetPort")(function* (port: number) {
+        const [row] = yield* db
+          .select({
+            preview: previews,
+            renewDue: sql<boolean>`${previewPorts.lastUsedAt} <= now() - make_interval(hours => ${TAILNET_PORT_RENEW_AFTER_HOURS})`,
+          })
+          .from(previewPorts)
+          .innerJoin(previews, eq(previews.id, previewPorts.previewId))
+          .where(eq(previewPorts.port, port))
+          .limit(1);
+        if (row === undefined) return null;
+        return {
+          preview: yield* decodePreview(row.preview),
+          renewDue: row.renewDue,
+        } satisfies TailnetPortHolder;
+      }, Effect.orDie);
+
+      const renewTailnetPort = Effect.fn("PreviewsRepo.renewTailnetPort")(function* (
+        port: number,
+        id: PreviewId,
+      ) {
+        return yield* db.transaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx.execute(sql`select pg_advisory_xact_lock(hashtext('mend:preview-ports'))`);
+            const renewed = yield* tx
+              .update(previewPorts)
+              .set({ lastUsedAt: sql`now()` })
+              .where(and(eq(previewPorts.port, port), eq(previewPorts.previewId, id)))
+              .returning({ port: previewPorts.port });
+            return renewed.length === 0 ? "Moved" : "Renewed";
+          }),
+        );
+      }, Effect.orDie);
+
       return {
+        assignTailnetPort,
+        tailnetPorts,
+        byTailnetPort,
+        renewTailnetPort,
+        touchTailnetPorts,
+        tailnetPortReused,
         ensureForWorktree,
         resolveByLabel,
         byId,

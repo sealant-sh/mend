@@ -1,4 +1,3 @@
-import { PreviewId } from "@mend/domain";
 import { SAME_SITE_PREVIEW_REASON } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
@@ -56,7 +55,7 @@ const TAILNET_PREVIEW: PreviewPosture = {
   routing: {
     mode: "tailnet-https",
     hostname: "mend-preview.tail1234.ts.net",
-    ports: [{ port: 20001, previewId: PreviewId.make("pv_1") }],
+    ports: [20001],
   },
   bind: "127.0.0.1",
   port: 3130,

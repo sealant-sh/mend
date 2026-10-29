@@ -77,16 +77,26 @@ const exchange = (head: PreviewRequestHead, routing: PreviewRouting, origin: Pre
     if (query === null || !isUpgradeTicket(ticket) || path === null) {
       return answer(400, "Bad request.");
     }
+    const cookie = grantCookieOf(routing, origin);
+    const held = readGrantCookie(valuesOf(head.headers, "cookie"), cookie.name);
     const identity = yield* PreviewIdentity;
-    return yield* identity.exchangeTicket({ origin, ticket: Redacted.make(ticket) }).pipe(
-      Effect.match({
-        onFailure: refusalAnswer,
-        onSuccess: (issued) =>
-          redirect(303, `${COOKIE_CHECK}?path=${encodeURIComponent(path)}`, {
-            "set-cookie": setGrantCookie(grantCookieOf(routing, origin), issued.grant),
-          }),
-      }),
-    );
+    return yield* identity
+      .exchangeTicket({
+        origin,
+        ticket: Redacted.make(ticket),
+        presented: held === "repeated" ? null : held,
+      })
+      .pipe(
+        Effect.match({
+          onFailure: refusalAnswer,
+          onSuccess: (issued) =>
+            redirect(303, `${COOKIE_CHECK}?path=${encodeURIComponent(path)}`, {
+              "set-cookie": setGrantCookie(cookie, issued.grant),
+              // "cookies" is left out so the grant cookie this response sets survives.
+              ...(issued.clearSiteData ? { "clear-site-data": '"cache", "storage"' } : {}),
+            }),
+        }),
+      );
   });
 
 const checkCookieKept = (

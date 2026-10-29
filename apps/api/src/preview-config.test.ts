@@ -78,15 +78,22 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
       {
         port: "3117",
         tailnetHostname: "mend-preview.tail1234.ts.net",
-        tailnetPorts: "20001=pv_web, 20002=pv_docs",
+        tailnetPorts: "20001-20003, 20010",
       },
       {
         mode: "tailnet-https",
         hostname: "mend-preview.tail1234.ts.net",
-        ports: [
-          { port: 20001, previewId: "pv_web" },
-          { port: 20002, previewId: "pv_docs" },
-        ],
+        ports: [20001, 20002, 20003, 20010],
+      },
+      { bind: "127.0.0.1", port: 3117, ...defaults },
+    ],
+    [
+      "a tailnet name alone, on the default sixteen ports",
+      { port: "3117", tailnetHostname: "mend-preview.tail1234.ts.net" },
+      {
+        mode: "tailnet-https",
+        hostname: "mend-preview.tail1234.ts.net",
+        ports: Array.from({ length: 16 }, (_, index) => 20001 + index),
       },
       { bind: "127.0.0.1", port: 3117, ...defaults },
     ],
@@ -96,7 +103,7 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
         port: "3117",
         domain: "previews.example.net",
         tailnetHostname: "mend-preview.tail1234.ts.net",
-        tailnetPorts: "20001=pv_web",
+        tailnetPorts: "20001",
       },
       { mode: "domain-https", domain: "previews.example.net", port: 443 },
       { bind: "127.0.0.1", port: 3117, ...defaults },
@@ -142,45 +149,25 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
     ["a body cap with a unit", { port: "3117", bodyBytes: "1MiB" }, "bodyBytes", "positive"],
     [
       "tailnet ports without a hostname",
-      { port: "3117", tailnetPorts: "20001=pv_web" },
+      { port: "3117", tailnetPorts: "20001" },
       "tailnetHostname",
       "is required",
     ],
     [
-      "a tailnet hostname without ports",
-      { port: "3117", tailnetHostname: "mend-preview.tail1234.ts.net" },
+      "the port=previewId form from before Mend assigned ports",
+      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "20001=pv_web" },
       "tailnetPorts",
-      "is required",
-    ],
-    [
-      "a tailnet entry that is not port=previewId",
-      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "20001" },
-      "tailnetPorts",
-      "is not port=previewId",
+      "pairs a port with a preview, the form before Mend assigned ports itself",
     ],
     [
       "a tailnet port listed twice",
-      {
-        port: "3117",
-        tailnetHostname: "mend-preview.t.ts.net",
-        tailnetPorts: "20001=pv_web,20001=pv_docs",
-      },
+      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "20001,20001" },
       "tailnetPorts",
       "port 20001 is listed twice",
     ],
     [
-      "a preview given two tailnet ports",
-      {
-        port: "3117",
-        tailnetHostname: "mend-preview.t.ts.net",
-        tailnetPorts: "20001=pv_web,20002=pv_web",
-      },
-      "tailnetPorts",
-      "preview pv_web is given two ports",
-    ],
-    [
       "a tailnet port out of range",
-      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "99999=pv_web" },
+      { port: "3117", tailnetHostname: "mend-preview.t.ts.net", tailnetPorts: "99999" },
       "tailnetPorts",
       "not a TCP port",
     ],
@@ -223,7 +210,7 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
   it("refuses a tailnet hostname that is Mend's own host", () => {
     const mend = makePublicNetwork(origin("https://box.tail1234.ts.net"), []);
     const refused = refusalOf(
-      { port: "3117", tailnetHostname: "box.tail1234.ts.net", tailnetPorts: "20001=pv_web" },
+      { port: "3117", tailnetHostname: "box.tail1234.ts.net", tailnetPorts: "20001" },
       mend,
     );
     expect(refused?.variable).toBe("MEND_PREVIEW_TAILNET_HOSTNAME");
@@ -233,7 +220,7 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
         {
           port: "3117",
           tailnetHostname: "mend-preview.tail1234.ts.net",
-          tailnetPorts: "20001=pv_web",
+          tailnetPorts: "20001",
         },
         mend,
       )._tag,
