@@ -276,6 +276,23 @@ const askNow = (): Ask => {
   if (askOfPairing === null) throw new Error("no pairing has asked yet");
   return askOfPairing;
 };
+const press = (label: string) => {
+  const target = [...document.body.querySelectorAll<HTMLElement>("*")].find(
+    (element) => element.children.length === 0 && element.textContent === label,
+  );
+  if (target === undefined) throw new Error(`no ${label} button on screen`);
+  act(() => target.click());
+};
+const remountQuestions = () =>
+  act(() =>
+    root.render(
+      <div key="remounted">
+        <PairingBoundary>
+          <Questions />
+        </PairingBoundary>
+      </div>,
+    ),
+  );
 
 describe("a question on the web dialog", () => {
   it("is not left on screen once the pairing it was asked under ends", async () => {
@@ -299,5 +316,32 @@ describe("a question on the web dialog", () => {
 
     act(() => askNow()("Image not pasted", "nothing on the clipboard"));
     expect(text()).toContain("nothing on the clipboard");
+  });
+
+  it("stays, with its buttons working, when the screens above the pairing mount afresh", async () => {
+    await pair("a.example");
+    mount(<Questions />);
+    const stop = vi.fn();
+    const later = vi.fn();
+    act(() => askNow()("Stop this session?", A_HEADER, [{ text: "Stop session", onPress: stop }]));
+    const askBeforeRemount = askNow();
+    expect(text()).toContain(A_HEADER);
+
+    remountQuestions();
+    expect(text()).toContain(A_HEADER);
+    press("Stop session");
+    expect(stop).toHaveBeenCalledOnce();
+    expect(text()).not.toContain(A_HEADER);
+
+    act(() =>
+      askBeforeRemount("Image not pasted", A_PROMPT, [{ text: "Try again", onPress: later }]),
+    );
+    expect(text()).toContain(A_PROMPT);
+    press("Try again");
+    expect(later).toHaveBeenCalledOnce();
+
+    act(() => askBeforeRemount("Image not pasted", A_REPLY));
+    await pair("b.example");
+    expect(text()).not.toContain(A_REPLY);
   });
 });
