@@ -346,6 +346,24 @@ const appUrlApartFact = (appHost: string, domain: string): PreviewFact => {
       };
 };
 
+/** The session cookie as Auth names it, from the same input. */
+const mendCookieOf = (posture: ExposurePosture) => sessionCookiePolicy({ appUrl: posture.appUrl });
+
+/** On Mend's own site a sibling page can set cookies Mend's host receives, unless they are `__Host-`. */
+const hostCookieFact = (posture: ExposurePosture): PreviewFact => {
+  const cookie = mendCookieOf(posture);
+  return cookie.prefix === "__Host-"
+    ? {
+        established: "observed",
+        said: `Mend's cookies are named __Host- (${cookie.name}), so a preview on Mend's own site cannot set or replace them`,
+      }
+    : {
+        established: "open",
+        said: `Mend's cookies are named ${cookie.name}, not __Host-, and every preview is Mend's own site: APP_URL is ${new URL(posture.appUrl).protocol.slice(0, -1)}`,
+        fix: "set APP_URL to https, such as Mend's web port served by tailscale serve --https=443 on this machine",
+      };
+};
+
 const routingOf = (
   posture: ExposurePosture,
   routing: PreviewRouting,
@@ -395,11 +413,7 @@ const routingOf = (
             established: "observed",
             said: `previews are https at https://${routing.hostname}:<port>`,
           },
-          {
-            established: "open",
-            said: "Mend's cookies are not named __Host-, and on the tailnet default every preview is Mend's own site",
-            fix: "Mend's cookies move to __Host- names in ADR 0017 delivery step 8b; until it ships, use a preview domain of your own (MEND_PREVIEW_DOMAIN)",
-          },
+          hostCookieFact(posture),
         ],
         outside: {
           unobservable: `the Tailscale steps for ${routing.hostname} (MagicDNS, HTTPS certificates, the Service and its ports, a tag on this host, its approval, and grants for the people who open previews), and who reaches the published listener`,
@@ -476,7 +490,7 @@ const previewGateway = (posture: ExposurePosture, preview: PreviewPosture): Expo
 
 export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<ExposureOutcome> => {
   const plainOrigins = posture.allowedOrigins.filter((origin) => !isHttps(origin));
-  const cookie = sessionCookiePolicy({ appUrl: posture.appUrl });
+  const cookie = mendCookieOf(posture);
   // All of them, `operator-present` included: until the first account exists, registration is
   // open to whoever arrives first, and on the Internet that is not the owner. Create the first
   // account over a private path, then declare `public`.

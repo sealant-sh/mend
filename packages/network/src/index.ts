@@ -1,6 +1,7 @@
 export * from "./address-kind.ts";
 export * from "./client-address.ts";
 export * from "./page-view.ts";
+export * from "./session-cookie.ts";
 export * from "./public-network.ts";
 export * from "./redact.ts";
 export * from "./redact-detail.ts";

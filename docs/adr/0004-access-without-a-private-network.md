@@ -90,7 +90,7 @@ contract:
   audit). It takes the rightmost entry that is not a trusted hop, so a client cannot choose its own
   address. Web keeps deleting inbound `Forwarded`, `X-Forwarded-Host` and `X-Forwarded-Proto`.
 - Cookies are `Secure`, `HttpOnly` and `SameSite=Lax` whenever `APP_URL` is `https:`, set explicitly
-  and tested, not inferred.
+  and tested, not inferred. Over `https:` their names carry `__Host-` (ADR 0017 delivery step 8b).
 
 **Everything behind Mend stays private.** Core, its registry, Postgres, the bucket's admin surface,
 raw service ports and the Kubernetes API get no new exposure. Core stays a trusted control plane
@@ -201,9 +201,10 @@ Not observable by this build. Reported, never inferred, and they do not block st
     and where the gateway listens against where setup published its port (`MEND_PREVIEW_PUBLISHED`).
     Carried: the bounded forward of the pinned SDK. With a preview domain, the wildcard DNS, its
     certificate and who reaches the listener are `open` until declared; on the tailnet default, the
-    Tailscale steps are, and the item also stays `open` until every Mend cookie's name carries
-    `__Host-` (ADR 0017 delivery step 8b). A fact observed open is never closed by a statement. An
-    open item refuses a `public` start, as item 14 does. Added 2026-10-28 with ADR 0017 step 8a.
+    Tailscale steps are, and the item observes that every Mend cookie's name carries `__Host-`,
+    which needs an `https:` `APP_URL` (ADR 0017 delivery step 8b). A fact observed open is never
+    closed by a statement. An open item refuses a `public` start, as item 14 does. Added 2026-10-28
+    with ADR 0017 step 8a.
 
 Items 11 and 12, 14 where it is not observed, and 15 where it needs a look from outside, stay `open`
 until the operator, having verified them from outside, names them in `MEND_EXPOSURE_DECLARED` (the

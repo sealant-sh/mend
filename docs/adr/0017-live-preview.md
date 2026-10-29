@@ -504,12 +504,12 @@ The options weighed:
 **Why the separate domain.** ADR 0004 asks only for a separate origin (`:363-364`), so the subdomain
 option is allowed. Its cost is what a sibling host can do. A page on a same-site host can set a
 cookie for the parent domain from its own JavaScript, and a same-site request back to Mend carries
-Mend's `SameSite=Lax` cookie. Mend's cookie is `__Secure-` today, not `__Host-`
-(`packages/auth/src/auth.ts:119-149`). The separate domain keeps preview pages away from Mend, but
-not from each other. The Public Suffix List entry closes that gap, and it is how `vercel.app` and
-`github.io` give each customer a site of its own. Without the entry, a page on one preview can set
-cookies that another preview's app reads, and the gateway's `Origin` rule above is what stops one
-preview acting as a viewer of another.
+Mend's `SameSite=Lax` cookie. Mend's cookie was `__Secure-` when this was decided, not `__Host-`
+(`packages/auth/src/auth.ts:119-149`); delivery step 8b names it `__Host-` on every https `APP_URL`.
+The separate domain keeps preview pages away from Mend, but not from each other. The Public Suffix
+List entry closes that gap, and it is how `vercel.app` and `github.io` give each customer a site of
+its own. Without the entry, a page on one preview can set cookies that another preview's app reads,
+and the gateway's `Origin` rule above is what stops one preview acting as a viewer of another.
 
 **Evidence and costs shared by every wildcard option.** Let's Encrypt issues a wildcard only over
 DNS-01, and the packaged edge is stock `caddy:2.10-alpine`, which has no DNS provider module

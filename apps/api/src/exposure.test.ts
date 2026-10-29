@@ -468,7 +468,7 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
     );
   });
 
-  it("on the tailnet default, open while Mend's cookies are not __Host-, even when the Tailscale steps are declared", () => {
+  it("on the tailnet default, observes the __Host- session cookie Auth sets over https", () => {
     const posture: ExposurePosture = {
       ...closed,
       exposure: "private",
@@ -476,17 +476,33 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
       declared: ["preview-gateway"],
     };
     const item = previewOf(posture);
-    expect(item?.established).toBe("open");
+    expect(item?.established).toBe("declared");
     expect(item?.detail).toContain(
       "observed: APP_URL's host mend.example is not the gateway's name mend-preview.tail1234.ts.net",
     );
     expect(item?.detail).toContain(
-      "open: Mend's cookies are not named __Host-, and on the tailnet default every preview is Mend's own site",
+      "observed: Mend's cookies are named __Host- (__Host-better-auth.session_token)",
     );
     expect(item?.detail).toContain(
       "declared: the Tailscale steps for mend-preview.tail1234.ts.net",
     );
-    expect(item?.fix).toContain("ADR 0017 delivery step 8b");
+  });
+
+  it("on the tailnet default, open while APP_URL is http, so Mend's cookies cannot be __Host-", () => {
+    const posture: ExposurePosture = {
+      ...closed,
+      exposure: "private",
+      appUrl: "http://mend.tail1234.ts.net:3105",
+      allowedOrigins: ["http://mend.tail1234.ts.net:3105"],
+      preview: TAILNET_PREVIEW,
+      declared: ["preview-gateway"],
+    };
+    const item = previewOf(posture);
+    expect(item?.established).toBe("open");
+    expect(item?.detail).toContain(
+      "open: Mend's cookies are named better-auth.session_token, not __Host-, and every preview is Mend's own site: APP_URL is http",
+    );
+    expect(item?.fix).toContain("set APP_URL to https");
     expect(exposureRefusal("private", evaluateExposureGate(posture))).toBeNull();
     expect(exposureRefusal("public", evaluateExposureGate(posture))).toContain("preview-gateway:");
   });

@@ -1,3 +1,4 @@
+import { sessionCookiePolicy } from "@mend/auth";
 import type { PreviewGatewayResolution } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
@@ -14,6 +15,9 @@ import {
   send,
   WORKSPACE,
 } from "./support/preview-gateway-world.ts";
+
+/** Mend's own session cookie: an app behind a preview may use the same name, and keeps it. */
+const MEND_SESSION_COOKIE = sessionCookiePolicy({ appUrl: "https://mend.example.com" }).name;
 
 /**
  * Every refusal and stripping rule of the preview gateway (ADR 0017, "What the gateway strips and
@@ -135,14 +139,14 @@ const ROWS: ReadonlyArray<Row> = [
     rule: "only the grant is held back: the app's own cookies and Authorization reach it untouched",
     ask: (world) =>
       get("/echo-headers", (w) => ({
-        cookie: `${w.cookieFor("carol", "web")}; better-auth.session_token=s1; __Secure-better-auth.session_token=s2; app=1`,
+        cookie: `${w.cookieFor("carol", "web")}; better-auth.session_token=s1; __Secure-better-auth.session_token=s2; ${MEND_SESSION_COOKIE}=s3; app=1`,
         authorization: "Bearer mend-or-app",
         "x-mend-invitation": "inv_1",
       }))(world),
     holds: (seen) => {
       const headers = appSaw(seen);
       expect(headers["cookie"], "every cookie but the grant").toBe(
-        "better-auth.session_token=s1; __Secure-better-auth.session_token=s2; app=1",
+        `better-auth.session_token=s1; __Secure-better-auth.session_token=s2; ${MEND_SESSION_COOKIE}=s3; app=1`,
       );
       expect(headers["authorization"], "Authorization as sent").toBe("Bearer mend-or-app");
       expect(headers["x-mend-invitation"], "an app header of any name").toBe("inv_1");
