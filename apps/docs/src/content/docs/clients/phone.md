@@ -53,7 +53,9 @@ server refuses the app's requests (`Origin not allowed`).
 
 The server mints a token for the phone and lists the device under Settings → Devices, where you
 revoke it. The web build keeps the token in the browser's storage. **Unpair** in the app's Settings
-clears it on the phone only. Settings → **Advanced** takes a server URL and bearer token typed by
+clears it on the phone, asks the machine to stop sending the phone notifications, and clears the
+ones already delivered; the device stays listed until you revoke it. Pairing with another machine
+does the same for the last one. Settings → **Advanced** takes a server URL and bearer token typed by
 hand instead, such as one from **Mint a token by hand** in the web app.
 
 ## What it does

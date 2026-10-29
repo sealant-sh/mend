@@ -15,7 +15,8 @@ desktop app) is a listed device under Settings → Devices, and revoking one end
 - `claim-mobile` claims a code in the phone app, by deep link, scan or typed URL and code.
 - `device-list` lists every device with its platform, pairing day and last use.
 - `revoke` ends one device's token from the list.
-- `unpair-mobile` clears the URL and token on the phone only; the server keeps the device.
+- `unpair-mobile` clears the URL and token on the phone and unregisters its push token on the
+  machine (`DELETE /api/devices/:token`); the server keeps the device.
 - `qr-render` is the hidden `mend qr <text>` the installer prints its QR with.
 
 ## How to get to it (user POV)
