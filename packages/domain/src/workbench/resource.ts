@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 
 import { ResourceDatabaseId, ResourceInstanceId } from "../ids.ts";
 import { observedAgo } from "./landing.ts";
-import { EnvName } from "./service-recipe.ts";
+import { ENV_NAME } from "./service-recipe.ts";
 
 /** One DNS label on the project network (ADR 0019, "Names"). */
 export const RESOURCE_NAME = /^[a-z][a-z0-9-]{0,30}$/;
@@ -101,7 +101,7 @@ export const ResourceReady = Schema.Union([
 export type ResourceReady = typeof ResourceReady.Type;
 
 /** An export's name, the suffix after `MEND_RESOURCE_<NAME>_`. */
-export const ResourceExportName = Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]*$/));
+export const RESOURCE_EXPORT_NAME = /^[A-Z][A-Z0-9_]*$/;
 
 /**
  * A resource as declared and not yet approved (ADR 0019): from project settings, `mend resource`
@@ -116,12 +116,13 @@ export const ResourceDefinitionInput = Schema.Struct({
   /** Null keeps the image's entrypoint. */
   command: Schema.NullOr(Schema.NonEmptyArray(Schema.String)),
   ports: Schema.Array(ResourcePort),
-  env: Schema.Record(EnvName, ResourceEnvValue),
+  /** Keys are refused by name in `resourceDefinitionRefusals`; a checked key would be dropped. */
+  env: Schema.Record(Schema.String, ResourceEnvValue),
   volumes: Schema.Array(ResourceVolume),
   limits: ResourceLimits.pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
   ready: ResourceReady,
   /** Templates over `{host}`, `{port}`, `{port.<name>}` and `{env.<NAME>}`. */
-  exports: Schema.Record(ResourceExportName, Schema.String),
+  exports: Schema.Record(Schema.String, Schema.String),
 });
 export type ResourceDefinitionInput = typeof ResourceDefinitionInput.Type;
 
@@ -150,6 +151,9 @@ const exportRefusals = (
   template: string,
 ): ReadonlyArray<ResourceRefusal> => {
   const key = `exports.${name}`;
+  if (!RESOURCE_EXPORT_NAME.test(name)) {
+    return [{ key, message: "is not an export name (an upper-case letter, then A-Z, 0-9 or _)" }];
+  }
   if (addressSuffixes(def).includes(name)) {
     return [{ key, message: "is set by Mend for every resource" }];
   }
@@ -334,6 +338,11 @@ export const resourceDefinitionRefusals = (
       key: "volumes",
       message: `mounts two volumes at ${path}`,
     })),
+    ...Object.keys(def.env).flatMap((name) =>
+      ENV_NAME.test(name)
+        ? []
+        : [{ key: `env.${name}`, message: "is not an environment variable name" }],
+    ),
     ...(def.ready.kind === "preset" && def.preset === null
       ? [{ key: "ready", message: "is a preset's own check, and this resource has no preset" }]
       : []),

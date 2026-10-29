@@ -143,6 +143,13 @@ describe("rules across a definition's fields", () => {
     ["an export of an unknown port", { exports: { URL: "{host}:{port.http}" } }, "exports.URL"],
     ["an export of an env the definition lacks", { exports: { URL: "{env.PASS}" } }, "exports.URL"],
     ["a worktree Redis", { preset: "redis", name: "cache", scope: "worktree" }, "scope"],
+    [
+      "an env key that is not an env name",
+      { env: { "discovery.type": "single-node" } },
+      "env.discovery.type",
+    ],
+    ["an export key in lower case", { exports: { url: "{host}" } }, "exports.url"],
+    ["an export key that starts with _", { exports: { _HOST: "{host}" } }, "exports._HOST"],
   ])("refuses %s by its key", (_, overrides, key) => {
     expect(resourceDefinitionRefusals(define(overrides)).map((refusal) => refusal.key)).toEqual([
       key,
