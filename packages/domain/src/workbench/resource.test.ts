@@ -11,6 +11,8 @@ import {
   resourceEnvPrefix,
   ResourceName,
   resourceNameIssue,
+  resourceStatusLine,
+  type ResourceStatusView,
   WorktreeSelection,
 } from "./resource.ts";
 
@@ -325,5 +327,139 @@ describe("env name collisions", () => {
 
   it("leaves the conventional names out when two of one engine are in use", () => {
     expect(envNameCollisions([postgres("db"), postgres("analytics")])).toEqual([]);
+  });
+});
+
+describe("the status line", () => {
+  const now = new Date("2026-10-30T14:30:03Z");
+  const at = { now, timeZone: "UTC" };
+  const threeSecondsAgo = new Date("2026-10-30T14:30:00Z");
+  const queue = define({
+    env: { RABBITMQ_DEFAULT_USER: "app", RABBITMQ_DEFAULT_PASS: "hunter2-literal" },
+    exports: { URL: "amqp://app:{env.RABBITMQ_DEFAULT_PASS}@{host}:{port.amqp}/" },
+  });
+  const mail = define({
+    name: "mail",
+    scope: "worktree",
+    image: "axllent/mailpit:v1.21",
+    ports: [{ name: "smtp", port: 1025, protocol: "tcp" }],
+    env: { MP_UI_AUTH: { secret: "mailpit-auth" } },
+  });
+
+  const ownCopy: ResourceStatusView = {
+    kind: "observed",
+    definition: postgres(),
+    use: { kind: "own", start: { kind: "copied", at: new Date("2026-10-30T14:02:00Z") } },
+    observedAt: threeSecondsAgo,
+  };
+
+  const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
+    [
+      "a worktree's own database copied from shared",
+      ownCopy,
+      "@db · postgres 17 · project · its own database · copied from shared 14:02 · observed 3 s ago",
+    ],
+    [
+      "a shared instance and how many worktrees reach it",
+      {
+        kind: "observed",
+        definition: queue,
+        use: { kind: "shared", worktrees: 3 },
+        observedAt: threeSecondsAgo,
+      },
+      "@queue · rabbitmq 4 · project · shared · reached by 3 worktrees · observed 3 s ago",
+    ],
+    [
+      "a worktree resource",
+      {
+        kind: "observed",
+        definition: mail,
+        use: { kind: "worktree", state: "running" },
+        observedAt: threeSecondsAgo,
+      },
+      "@mail · mailpit · worktree · running · observed 3 s ago",
+    ],
+    [
+      "an instance a person stopped",
+      { kind: "stopped-by", definition: postgres(), by: "Maria" },
+      "@db · stopped by Maria · this session starts without it",
+    ],
+    [
+      "a switch to the shared database",
+      {
+        kind: "switched",
+        definition: postgres(),
+        use: { kind: "shared", worktrees: 2 },
+        restarted: [],
+        waitingFor: [],
+      },
+      "@db · shared database · any worktree on shared can change or drop its tables",
+    ],
+    [
+      "a switch that restarted a Service",
+      {
+        kind: "switched",
+        definition: postgres(),
+        use: { kind: "shared", worktrees: 2 },
+        restarted: ["web"],
+        waitingFor: [],
+      },
+      "@db · shared database · restarted web · any worktree on shared can change or drop its tables",
+    ],
+    [
+      "a switch waiting for a terminal",
+      {
+        kind: "switched",
+        definition: queue,
+        use: { kind: "own", start: { kind: "empty" } },
+        restarted: [],
+        waitingFor: ["mend claude, pid 4211"],
+      },
+      "@queue · its own instance · empty · waiting for mend claude, pid 4211 to restart",
+    ],
+    [
+      "a shared database in the list, with its warning",
+      {
+        kind: "observed",
+        definition: postgres(),
+        use: { kind: "shared", worktrees: 1 },
+        observedAt: threeSecondsAgo,
+      },
+      "@db · postgres 17 · project · shared database · reached by 1 worktree · any worktree on shared can change or drop its tables · observed 3 s ago",
+    ],
+    [
+      "an own instance from a snapshot, labelled crash-consistent",
+      {
+        kind: "observed",
+        definition: queue,
+        use: { kind: "own", start: { kind: "snapshot", at: new Date("2026-10-30T09:15:00Z") } },
+        observedAt: threeSecondsAgo,
+      },
+      "@queue · rabbitmq 4 · project · its own instance · snapshot of shared 09:15 · crash-consistent · observed 3 s ago",
+    ],
+    [
+      "a worktree that runs its own infra",
+      { kind: "observed", definition: redis(), use: { kind: "off" }, observedAt: threeSecondsAgo },
+      "@cache · redis 8 · project · off · observed 3 s ago",
+    ],
+  ];
+
+  it.each(lines)("says %s", (_, view, line) => {
+    expect(resourceStatusLine(view, at)).toBe(line);
+  });
+
+  it("reads clock times in the reader's time zone", () => {
+    expect(resourceStatusLine(ownCopy, { now, timeZone: "Europe/Athens" })).toContain(
+      "copied from shared 16:02",
+    );
+  });
+
+  it("never prints a credential or a verdict", () => {
+    for (const [, view] of lines) {
+      const line = resourceStatusLine(view, at);
+      expect(line).not.toContain("hunter2-literal");
+      expect(line).not.toContain("mailpit-auth");
+      expect(line).not.toMatch(/healthy|safe|ready to/i);
+    }
   });
 });

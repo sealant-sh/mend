@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 
 import { ResourceDatabaseId, ResourceInstanceId } from "../ids.ts";
+import { observedAgo } from "./landing.ts";
 import { EnvName } from "./service-recipe.ts";
 
 /** One DNS label on the project network (ADR 0019, "Names"). */
@@ -20,9 +21,10 @@ export const RESERVED_RESOURCE_NAMES: ReadonlyArray<string> = [
 export const resourceNameIssue = (raw: string): string | null => {
   if (raw.endsWith(".internal")) return "ends in .internal, which a workspace already resolves";
   if (!RESOURCE_NAME.test(raw)) {
-    return "is not one DNS label: a lowercase letter, then up to 30 lowercase letters, digits or -";
+    return "is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -)";
   }
-  if (RESERVED_RESOURCE_NAMES.includes(raw)) return "is reserved: a workspace already resolves it";
+  if (RESERVED_RESOURCE_NAMES.includes(raw))
+    return "is reserved, because a workspace already resolves it";
   return null;
 };
 
@@ -267,7 +269,7 @@ export const RESOURCE_SCOPE_POLICY: {
     redis: {
       kind: "refused",
       message:
-        "is project only for Redis until Redis gets an instance per worktree; declare it with scope project",
+        "is worktree, and a worktree's own Redis comes in a later step; declare Redis with scope project",
     },
     other: PER_WORKTREE,
   },
@@ -343,4 +345,133 @@ export const resourceDefinitionRefusals = (
       exportRefusals(def, name, template),
     ),
   ];
+};
+
+/** How an own database or instance began. A snapshot of an unknown image is crash-consistent. */
+export type ResourceOwnStart =
+  | { readonly kind: "empty" }
+  | { readonly kind: "copied"; readonly at: Date }
+  | { readonly kind: "snapshot"; readonly at: Date }
+  | { readonly kind: "seed"; readonly seed: string };
+
+/** What one worktree observed of one resource. */
+export type ResourceUse =
+  | { readonly kind: "shared"; readonly worktrees: number }
+  | { readonly kind: "own"; readonly start: ResourceOwnStart }
+  | { readonly kind: "off" }
+  | { readonly kind: "worktree"; readonly state: "starting" | "running" | "stopped" };
+
+/** The status line's input. The line reads a definition's name, image and scope, never its env. */
+export type ResourceStatusView =
+  | {
+      readonly kind: "observed";
+      readonly definition: ResourceDefinitionInput;
+      readonly use: ResourceUse;
+      readonly observedAt: Date;
+    }
+  /** A launch found the instance stopped by a person; launches never start it. */
+  | {
+      readonly kind: "stopped-by";
+      readonly definition: ResourceDefinitionInput;
+      readonly by: string;
+    }
+  /** A switch of the worktree's selection, with the processes it restarted and still waits for. */
+  | {
+      readonly kind: "switched";
+      readonly definition: ResourceDefinitionInput;
+      readonly use: ResourceUse;
+      readonly restarted: ReadonlyArray<string>;
+      readonly waitingFor: ReadonlyArray<string>;
+    };
+
+/** `postgres:17` → `postgres 17`, `rabbitmq:4-management` → `rabbitmq 4`, `axllent/mailpit:v1.21` → `mailpit`. */
+const engineOf = (image: string): string => {
+  const [repository = image, tag = ""] =
+    (image.split("@")[0] ?? image).split("/").at(-1)?.split(":") ?? [];
+  const major = /^\d+/.exec(tag)?.[0];
+  return major === undefined ? repository : `${repository} ${major}`;
+};
+
+const isDatabase = (def: ResourceDefinitionInput) =>
+  def.preset !== null && RESOURCE_PRESETS[def.preset].database;
+
+const SHARED_DATABASE_WARNING = "any worktree on shared can change or drop its tables";
+
+const useParts = (def: ResourceDefinitionInput, use: ResourceUse, clock: (at: Date) => string) => {
+  switch (use.kind) {
+    case "shared":
+      return [isDatabase(def) ? "shared database" : "shared"];
+    case "off":
+      return ["off"];
+    case "worktree":
+      return [use.state];
+    case "own":
+      return [
+        isDatabase(def) ? "its own database" : "its own instance",
+        ...originParts(use.start, clock),
+      ];
+  }
+};
+
+const originParts = (start: ResourceOwnStart, clock: (at: Date) => string) => {
+  switch (start.kind) {
+    case "empty":
+      return ["empty"];
+    case "copied":
+      return [`copied from shared ${clock(start.at)}`];
+    case "snapshot":
+      return [`snapshot of shared ${clock(start.at)}`, "crash-consistent"];
+    case "seed":
+      return [`from seed ${start.seed}`];
+  }
+};
+
+const warningsOf = (def: ResourceDefinitionInput, use: ResourceUse) =>
+  use.kind === "shared" && isDatabase(def) ? [SHARED_DATABASE_WARNING] : [];
+
+/**
+ * The one status line every client shows for a resource (ADR 0019, decision S5): what was
+ * observed and when, never a verdict and never a credential. Clock times read in `timeZone`.
+ */
+export const resourceStatusLine = (
+  view: ResourceStatusView,
+  at: { readonly now: Date; readonly timeZone?: string | undefined },
+): string => {
+  const clock = (time: Date) =>
+    new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZone: at.timeZone,
+    }).format(time);
+  const def = view.definition;
+  const parts = ((): ReadonlyArray<string> => {
+    switch (view.kind) {
+      case "stopped-by":
+        return [`stopped by ${view.by}`, "this session starts without it"];
+      case "switched":
+        return [
+          ...useParts(def, view.use, clock),
+          ...(view.restarted.length > 0 ? [`restarted ${view.restarted.join(", ")}`] : []),
+          ...(view.waitingFor.length > 0
+            ? [`waiting for ${view.waitingFor.join(", ")} to restart`]
+            : []),
+          ...warningsOf(def, view.use),
+        ];
+      case "observed":
+        return [
+          engineOf(def.image),
+          def.scope,
+          ...useParts(def, view.use, clock),
+          ...(view.use.kind === "shared"
+            ? [
+                `reached by ${view.use.worktrees} ${view.use.worktrees === 1 ? "worktree" : "worktrees"}`,
+              ]
+            : []),
+          ...warningsOf(def, view.use),
+          `observed ${observedAgo(view.observedAt, at.now)}`,
+        ];
+    }
+  })();
+  return [`@${def.name}`, ...parts].join(" · ");
 };
