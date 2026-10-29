@@ -58,16 +58,43 @@ export interface SetupProposal {
 
 const LOCKFILE_INSTALLS: ReadonlyArray<readonly [string, string]> = [
   ["pnpm-lock.yaml", "pnpm install --frozen-lockfile"],
-  ["yarn.lock", "yarn install --immutable"],
+  ["yarn.lock", "yarn install --frozen-lockfile"],
   ["bun.lock", "bun install --frozen-lockfile"],
   ["bun.lockb", "bun install --frozen-lockfile"],
   ["package-lock.json", "npm ci"],
   ["npm-shrinkwrap.json", "npm ci"],
 ];
 
-export const proposeSetup = (rootFiles: ReadonlyArray<string>): SetupProposal | null => {
+/**
+ * Yarn 2 and later (a `.yarnrc.yml`, or `packageManager` naming yarn@2+) install with
+ * `--immutable`; Yarn 1 only knows `--frozen-lockfile`, and takes `--immutable` as an unknown flag
+ * it ignores, rewriting `yarn.lock` as it installs.
+ */
+const yarnBerry = (rootFiles: ReadonlyArray<string>, packageJson: string | null) => {
+  if (rootFiles.includes(".yarnrc.yml")) return true;
+  let manifest: unknown = null;
+  try {
+    manifest = packageJson === null ? null : JSON.parse(packageJson);
+  } catch {
+    return false;
+  }
+  const packageManager =
+    typeof manifest === "object" && manifest !== null && "packageManager" in manifest
+      ? manifest.packageManager
+      : null;
+  return typeof packageManager === "string" && /^yarn@([2-9]|\d{2,})\./u.test(packageManager);
+};
+
+export const proposeSetup = (
+  rootFiles: ReadonlyArray<string>,
+  packageJson: string | null,
+): SetupProposal | null => {
   const found = LOCKFILE_INSTALLS.find(([lockfile]) => rootFiles.includes(lockfile));
-  return found === undefined ? null : { run: found[1], input: found[0] };
+  if (found === undefined) return null;
+  const [input, run] = found;
+  return input === "yarn.lock" && yarnBerry(rootFiles, packageJson)
+    ? { run: "yarn install --immutable", input }
+    : { run, input };
 };
 
 const packageManagerOf = (lockfiles: ReadonlyArray<string>): string => {

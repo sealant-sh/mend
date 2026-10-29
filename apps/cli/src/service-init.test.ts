@@ -216,20 +216,33 @@ describe("[setup] from a lockfile", () => {
     source: "package.json",
   } as const;
   it.each([
-    [["pnpm-lock.yaml", "package.json"], "pnpm install --frozen-lockfile", "pnpm-lock.yaml"],
-    [["yarn.lock"], "yarn install --immutable", "yarn.lock"],
-    [["bun.lock"], "bun install --frozen-lockfile", "bun.lock"],
-    [["bun.lockb"], "bun install --frozen-lockfile", "bun.lockb"],
-    [["package-lock.json"], "npm ci", "package-lock.json"],
-  ])("from %j: %s, with the lockfile as its input", (rootFiles, run, input) => {
-    const declared = parsedBack(renderMendToml([api], proposeSetup(rootFiles)));
+    [["pnpm-lock.yaml", "package.json"], null, "pnpm install --frozen-lockfile", "pnpm-lock.yaml"],
+    [["yarn.lock"], null, "yarn install --frozen-lockfile", "yarn.lock"],
+    [["yarn.lock", ".yarnrc.yml"], null, "yarn install --immutable", "yarn.lock"],
+    [
+      ["yarn.lock", "package.json"],
+      '{"packageManager":"yarn@4.5.0"}',
+      "yarn install --immutable",
+      "yarn.lock",
+    ],
+    [
+      ["yarn.lock", "package.json"],
+      '{"packageManager":"yarn@1.22.22"}',
+      "yarn install --frozen-lockfile",
+      "yarn.lock",
+    ],
+    [["bun.lock"], null, "bun install --frozen-lockfile", "bun.lock"],
+    [["bun.lockb"], null, "bun install --frozen-lockfile", "bun.lockb"],
+    [["package-lock.json"], null, "npm ci", "package-lock.json"],
+  ])("from %j and %s: %s, with the lockfile as its input", (rootFiles, packageJson, run, input) => {
+    const declared = parsedBack(renderMendToml([api], proposeSetup(rootFiles, packageJson)));
     expect(declared.refused).toEqual([]);
     expect(declared.setup).toMatchObject({ run: [run], inputs: [input] });
   });
 
   it("writes none without a lockfile", () => {
-    expect(proposeSetup(["package.json", "README.md"])).toBeNull();
-    expect(renderMendToml([api], proposeSetup(["package.json"]))).not.toContain("[setup]");
+    expect(proposeSetup(["package.json", "README.md"], null)).toBeNull();
+    expect(renderMendToml([api], proposeSetup(["package.json"], null))).not.toContain("[setup]");
   });
 });
 
@@ -327,7 +340,7 @@ describe("every proposal init makes", () => {
             composeFiles,
           });
           if (proposals.length === 0) return;
-          const setup = proposeSetup(rootFiles);
+          const setup = proposeSetup(rootFiles, root === null ? null : packageJsonOf(root));
           const declared = parsedBack(renderMendToml(proposals, setup));
           expect(declared.refused).toEqual([]);
           expect(declared.ignored).toEqual([]);

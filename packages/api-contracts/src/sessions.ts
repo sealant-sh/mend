@@ -465,9 +465,24 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     // Resolve the declaration on the server so recipe provenance is a trusted fact.
     HttpApiEndpoint.post("runServiceRecipe", "/sessions/:id/services/recipe", {
       params: { id: SessionId },
-      payload: Schema.Struct({ name: Schema.String, startId: Schema.optional(ServiceStartId) }),
+      payload: Schema.Struct({
+        name: Schema.String,
+        startId: Schema.optional(ServiceStartId),
+        /** Run `[setup]` even where it already succeeded for its fingerprint. */
+        setup: Schema.optional(Schema.Literals(["always"])),
+      }),
       success: ServiceView,
       error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure, ServiceStartUnderWay],
+    }),
+  )
+  .add(
+    // A Stop by a Service's name that no live Service answers: it ends each start under way in
+    // the session that would start that Service, during its setup or a dependency's start.
+    HttpApiEndpoint.post("stopServiceStarts", "/sessions/:id/services/starts/stop", {
+      params: { id: SessionId },
+      payload: Schema.Struct({ name: Schema.String }),
+      success: Schema.Struct({ ended: Schema.Int }),
+      error: [NotFound, SessionNotSteerable],
     }),
   )
   .add(
