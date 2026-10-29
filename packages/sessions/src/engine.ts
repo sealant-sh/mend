@@ -598,6 +598,7 @@ import {
   RecipeFileError,
   resolveDeclarations,
 } from "./recipes.ts";
+import { declarationsNote } from "./resource-proposals.ts";
 import {
   HOT_POOL_MAX_OWNERS,
   HOT_POOL_RECENT_OWNER_WINDOW,
@@ -13146,11 +13147,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ` — start one with \`mend service run <name>\`.\n\n`) +
           (read instanceof RecipeFileError
             ? `mend.toml declares nothing this session can run: ${read.message}\n\n`
-            : declared.refused.length === 0
-              ? ""
-              : `Refused in mend.toml (fix these before running them):\n\n` +
-                declared.refused.map((refusal) => `- ${recipeRefusalLine(refusal)}`).join("\n") +
-                `\n\n`);
+            : declarationsNote(declared));
         const servicesSection =
           `## Mend Services\n\n` +
           `For any long-running server (dev server, database), use ` +

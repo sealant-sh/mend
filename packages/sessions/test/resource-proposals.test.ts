@@ -4,6 +4,7 @@ import {
   ServiceRecipe,
 } from "@mend/domain/workbench";
 import {
+  declarationsNote,
   type MendTomlFile,
   parseMendToml,
   readResourceProposals,
@@ -303,7 +304,12 @@ describe("[resource.*] proposals in mend.toml", () => {
   });
 
   it("names the table, not a name key, when the table's name is refused", () => {
-    const file = parse(["[resource.Queue]", 'name = "queue"', 'image = "rabbitmq:4"', "ports = { amqp = 5672 }"]);
+    const file = parse([
+      "[resource.Queue]",
+      'name = "queue"',
+      'image = "rabbitmq:4"',
+      "ports = { amqp = 5672 }",
+    ]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
       "mend.toml · resource.Queue · is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -, not ending in -)",
     ]);
@@ -318,7 +324,10 @@ describe("[resource.*] proposals in mend.toml", () => {
       'ready = { cmd = ["probe"], interval = "5s" }',
       'env = { PASS = { secrt = "PASSWORD", rotate = true } }',
     ]);
-    expect(refusedKeys(file).toSorted()).toEqual(["resource.queue.env.PASS", "resource.queue.ready"]);
+    expect(refusedKeys(file).toSorted()).toEqual([
+      "resource.queue.env.PASS",
+      "resource.queue.ready",
+    ]);
     expect(file.ignored.map((ignored) => ignored.key).toSorted()).toEqual([
       "resource.queue.env.PASS.rotate",
       "resource.queue.env.PASS.secrt",
@@ -341,7 +350,11 @@ describe("[resource.*] proposals in mend.toml", () => {
           "limits = { memoryMiB = 1.5 }",
         ]),
       ).toSorted(),
-    ).toEqual(["resource.cache.exports", "resource.cache.limits.memoryMiB", "resource.cache.scope"]);
+    ).toEqual([
+      "resource.cache.exports",
+      "resource.cache.limits.memoryMiB",
+      "resource.cache.scope",
+    ]);
   });
 
   it("does not refuse an export for naming a port that is itself refused", () => {
@@ -367,7 +380,12 @@ describe("[resource.*] proposals in mend.toml", () => {
   });
 
   it("refuses a preset image with no tag or digest, and reads one pinned by digest", () => {
-    const untagged = parse(["[resource.db]", 'preset = "postgres"', 'image = "postgres"', "ports = { pg = 5432 }"]);
+    const untagged = parse([
+      "[resource.db]",
+      'preset = "postgres"',
+      'image = "postgres"',
+      "ports = { pg = 5432 }",
+    ]);
     expect(untagged.resources).toEqual([]);
     expect(untagged.refused.map(recipeRefusalLine)).toEqual([
       'mend.toml · resource.db.image · has no tag or digest, and the postgres preset runs the version its image names, such as "postgres:<tag>"',
@@ -413,5 +431,41 @@ describe("readResourceProposals", () => {
       refused: [{ key: "resource.web.ports.http", message: "must be a port in 1..65535" }],
       ignored: [{ key: "resource.web.weight" }],
     });
+  });
+});
+
+describe("the workspace note on mend.toml", () => {
+  it("lists recipes to fix, then resource proposals' refusals and ignored keys under their own heading", () => {
+    const declared = resolveDeclarations(
+      parse([
+        "future = 1",
+        "",
+        "[service.api]",
+        'command = "node api.js"',
+        "port = 4000",
+        'cwd = "/srv/api"',
+        "",
+        "[resource.web]",
+        'image = "nginx:1.27"',
+        "ports = { http = 0 }",
+        "healthcheck = true",
+      ]),
+      [],
+    );
+    expect(declarationsNote(declared)).toBe(
+      "Refused in mend.toml (fix these before running them):\n\n" +
+        "- api · cwd · is absolute; name a directory inside the repository\n\n" +
+        "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings):\n\n" +
+        "- resource.web.ports.http · must be a port in 1..65535\n" +
+        "- resource.web.healthcheck · is ignored: this Mend does not read it\n\n",
+    );
+  });
+
+  it("says nothing of proposals when the file has none to report", () => {
+    expect(
+      declarationsNote(
+        resolveDeclarations(parse(["[service.web]", 'command = "pnpm dev"', "port = 3000"]), []),
+      ),
+    ).toBe("");
   });
 });

@@ -1,8 +1,11 @@
 import {
   envNameCollisions,
   imageReference,
+  isResourceProposalKey,
   ProjectResourceDefinition,
+  recipeRefusalLine,
   RESOURCE_PRESETS,
+  RESOURCE_PROPOSALS_HEADING,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
   resourceEnvPrefix,
@@ -10,11 +13,13 @@ import {
   ResourceLimits,
   resourceNameIssue,
   ResourcePort,
+  resourceProposalNotices,
   ResourcePreset,
   ResourceReady,
   type ResourceRefusal,
   ResourceScope,
   ResourceVolume,
+  type ServiceDeclarations,
 } from "@mend/domain/workbench";
 import { Option, Schema } from "effect";
 
@@ -439,3 +444,17 @@ export const readResourceProposals = (value: unknown): ResourceProposals => {
   }
   return { proposals: read.filter((def) => !collided.has(def.name)), refused, ignored };
 };
+
+const noteSection = (heading: string, lines: ReadonlyArray<string>): string =>
+  lines.length === 0 ? "" : `${heading}:\n\n${lines.map((line) => `- ${line}`).join("\n")}\n\n`;
+
+/** The workspace note on what `mend.toml` refuses or ignores: recipes to fix, then proposals. */
+export const declarationsNote = (
+  declared: Pick<ServiceDeclarations, "refused" | "ignored">,
+): string =>
+  noteSection(
+    "Refused in mend.toml (fix these before running them)",
+    declared.refused
+      .filter((refusal) => !isResourceProposalKey(refusal.key))
+      .map(recipeRefusalLine),
+  ) + noteSection(RESOURCE_PROPOSALS_HEADING, resourceProposalNotices(declared));

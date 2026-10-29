@@ -608,3 +608,29 @@ export const resourceDefinitionRefusals = (
     ),
   ];
 };
+
+/** A `mend.toml` key a `[resource.*]` proposal owns (decision S8): `resource`, or one under it. */
+export const isResourceProposalKey = (key: string): boolean =>
+  key === "resource" || key.startsWith("resource.");
+
+/** Heads `resourceProposalNotices`; true of every proposal, refused or not. */
+export const RESOURCE_PROPOSALS_HEADING =
+  "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings)";
+
+/**
+ * A file's refusals and ignored keys under `[resource]`, one line each, keyed in full:
+ * `resource.db.ports.pg · must be a port in 1..65535`. Empty when there is none.
+ */
+export const resourceProposalNotices = (declared: {
+  readonly refused: ReadonlyArray<{ readonly key: string; readonly message: string }>;
+  readonly ignored: ReadonlyArray<{ readonly key: string }>;
+}): ReadonlyArray<string> => [
+  ...declared.refused.flatMap((refusal) =>
+    isResourceProposalKey(refusal.key) ? [`${refusal.key} · ${refusal.message}`] : [],
+  ),
+  ...declared.ignored.flatMap((ignored) =>
+    isResourceProposalKey(ignored.key)
+      ? [`${ignored.key} · is ignored: this Mend does not read it`]
+      : [],
+  ),
+];
