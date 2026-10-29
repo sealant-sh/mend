@@ -6,8 +6,11 @@ import { formatProjectEnvironmentIssue } from "./project-environment.ts";
 import { validateProjectSecretName } from "./project-secret.ts";
 import { ENV_NAME } from "./service-recipe.ts";
 
-/** One DNS label on the project network (ADR 0019, "Names"). */
-export const RESOURCE_NAME = /^[a-z][a-z0-9-]{0,30}$/;
+/** One DNS label on the project network (ADR 0019, "Names"), which never ends in `-`. */
+export const RESOURCE_NAME = /^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$/;
+
+const NOT_A_LABEL =
+  "is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -, not ending in -)";
 
 /** Names a workspace already resolves. */
 export const RESERVED_RESOURCE_NAMES: ReadonlyArray<string> = [
@@ -19,18 +22,19 @@ export const RESERVED_RESOURCE_NAMES: ReadonlyArray<string> = [
   "postgres",
 ];
 
-/** Why `raw` cannot name a resource, or null when it can. */
+/** Why `raw` cannot name a new resource, or null when it can. */
 export const resourceNameIssue = (raw: string): string | null => {
-  if (!RESOURCE_NAME.test(raw)) {
-    return "is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -)";
-  }
+  if (!RESOURCE_NAME.test(raw)) return NOT_A_LABEL;
   if (RESERVED_RESOURCE_NAMES.includes(raw))
     return "is reserved, because a workspace already resolves it";
   return null;
 };
 
+/** Reserved names are refused when declared, not here, so a stored name reads when the list grows. */
 export const ResourceName = Schema.String.pipe(
-  Schema.check(Schema.makeFilter((value: string) => resourceNameIssue(value) ?? undefined)),
+  Schema.check(
+    Schema.makeFilter((value: string) => (RESOURCE_NAME.test(value) ? undefined : NOT_A_LABEL)),
+  ),
   Schema.brand("ResourceName"),
 );
 export type ResourceName = typeof ResourceName.Type;
@@ -41,11 +45,17 @@ export type ResourcePreset = typeof ResourcePreset.Type;
 export const ResourceScope = Schema.Literals(["project", "worktree"]);
 export type ResourceScope = typeof ResourceScope.Type;
 
-/** A port's or a volume's name: a label too, so `_PORT_<NAME>` is an env name. */
-const PartName = Schema.String.check(Schema.isPattern(RESOURCE_NAME));
+/** A volume's name: a label too. */
+const VolumeName = Schema.String.check(Schema.isPattern(RESOURCE_NAME));
+
+/** An IANA service name, as a Kubernetes port name must be; `_PORT_<NAME>` is an env name. */
+const PortName = Schema.String.check(
+  Schema.isPattern(/^[a-z](-?[a-z0-9])*$/),
+  Schema.isMaxLength(15),
+);
 
 export const ResourcePort = Schema.Struct({
-  name: PartName,
+  name: PortName,
   port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
   protocol: Schema.Literals(["tcp", "udp"]),
 });
@@ -68,7 +78,7 @@ const isMountPath = (value: string) =>
     .every((segment) => segment !== "" && segment !== "." && segment !== "..");
 
 export const ResourceVolume = Schema.Struct({
-  name: PartName,
+  name: VolumeName,
   mountPath: Schema.String.check(
     Schema.makeFilter((value: string) =>
       isMountPath(value) ? undefined : "an absolute, normalized path below /",
@@ -429,7 +439,9 @@ export const resourceDefinitionRefusals = (
   def: ResourceDefinitionInput,
 ): ReadonlyArray<ResourceRefusal> => {
   const policy = scopePolicyFor(def);
+  const nameIssue = resourceNameIssue(def.name);
   return [
+    ...(nameIssue === null ? [] : [{ key: "name", message: nameIssue }]),
     ...(policy.kind === "refused" ? [{ key: "scope", message: policy.message }] : []),
     ...(def.ports.length === 0
       ? [{ key: "ports", message: "names no port, and a resource is reached on one" }]

@@ -75,7 +75,7 @@ describe("resource names", () => {
     },
   );
 
-  it.each(["", "Db", "2db", "-db", "db_main", "db.main", `a${"b".repeat(31)}`])(
+  it.each(["", "Db", "2db", "-db", "db-", "db_main", "db.main", `a${"b".repeat(31)}`])(
     "refuses %j, which is not one DNS label",
     (name) => {
       expect(resourceNameIssue(name)).toMatch(/DNS label/);
@@ -84,10 +84,13 @@ describe("resource names", () => {
   );
 
   it.each(["docker", "localhost", "host", "mend", "garage", "postgres"])(
-    "refuses %s, which a workspace already resolves",
+    "refuses to declare %s, which a workspace already resolves, and still reads a stored one",
     (name) => {
       expect(resourceNameIssue(name)).toMatch(/reserved/);
-      expect(Schema.is(ResourceName)(name)).toBe(false);
+      expect(Schema.is(ResourceName)(name)).toBe(true);
+      expect(resourceDefinitionRefusals(define({ name })).map((refusal) => refusal.key)).toEqual([
+        "name",
+      ]);
     },
   );
 
@@ -109,6 +112,12 @@ describe("a definition's shape", () => {
   it.each([
     ["a port of 0", { ports: [{ name: "amqp", port: 0, protocol: "tcp" }] }],
     ["a port above 65535", { ports: [{ name: "amqp", port: 65536, protocol: "tcp" }] }],
+    [
+      "a port name over 15 characters",
+      { ports: [{ name: `a${"b".repeat(15)}`, port: 1, protocol: "tcp" }] },
+    ],
+    ["a port name with two dashes in a row", { ports: [{ name: "a--b", port: 1, protocol: "tcp" }] }],
+    ["a port name that ends in a dash", { ports: [{ name: "amqp-", port: 1, protocol: "tcp" }] }],
     ["a relative mount path", { volumes: [{ name: "data", mountPath: "var/lib" }] }],
     ["a mount path that leaves /", { volumes: [{ name: "data", mountPath: "/var/../etc" }] }],
     ["the root as a mount path", { volumes: [{ name: "data", mountPath: "/" }] }],
@@ -117,9 +126,13 @@ describe("a definition's shape", () => {
     ["a probe argument with a NUL byte", { ready: { kind: "command", argv: ["check", "a\0b"] } }],
     ["a command with no executable", { command: [""] }],
     ["a command argument with a NUL byte", { command: ["rabbitmq-server", "a\0b"] }],
-    ["a reserved name", { name: "postgres" }],
   ])("refuses %s", (_, overrides) => {
     expect(() => define(overrides)).toThrow();
+  });
+
+  it("takes a port name of 15 characters", () => {
+    const name = `a${"b".repeat(14)}`;
+    expect(define({ ports: [{ name, port: 1, protocol: "tcp" }] }).ports[0]?.name).toBe(name);
   });
 
   it("takes an empty argument after the executable", () => {
