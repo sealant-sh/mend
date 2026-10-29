@@ -66,6 +66,7 @@ export * from "./repository.ts";
 export * from "./review-comment.ts";
 export * from "./review-slice.ts";
 export * from "./review-target.ts";
+export * from "./screen.ts";
 export * from "./secret-file.ts";
 export * from "./service-recipe.ts";
 export * from "./service.ts";
