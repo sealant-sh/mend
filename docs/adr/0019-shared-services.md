@@ -355,7 +355,7 @@ image = "rabbitmq:4-management"
 scope = "project"
 ports = { amqp = 5672 }
 volumes = { data = "/var/lib/rabbitmq" }
-env = { RABBITMQ_DEFAULT_USER = "app", RABBITMQ_DEFAULT_PASS = { secret = "rabbitmq-password" } }
+env = { RABBITMQ_DEFAULT_USER = "app", RABBITMQ_DEFAULT_PASS = { secret = "RABBITMQ_PASSWORD" } }
 exports = { URL = "amqp://app:{env.RABBITMQ_DEFAULT_PASS}@{host}:{port.amqp}/" }
 
 [service.web]
