@@ -48,6 +48,14 @@ spec:
   ingress:
     - from:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} } }
+      {{- if .Values.preview.enabled }}
+      # Ingress rules add up, so with previews on this rule names the API's other ports and the
+      # preview port is left to the controller's rule below.
+      ports:
+        - { protocol: TCP, port: 3101 }
+        - { protocol: TCP, port: {{ .Values.sessionChannel.port }} }
+        - { protocol: TCP, port: {{ .Values.serviceHost.portMin }}, endPort: {{ .Values.serviceHost.portMax }} }
+      {{- end }}
     - from:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.networkPolicies.workspaceNamespace }} } }
           podSelector: { matchLabels: { app.kubernetes.io/managed-by: sealant, app.kubernetes.io/component: workspace } }
@@ -65,6 +73,15 @@ spec:
         - ipBlock: { cidr: {{ . }} }
         {{- end }}
       ports: [{ protocol: TCP, port: 3101 }]
+    {{- end }}
+    {{- if .Values.preview.enabled }}
+    # Only the ingress controller's Pods reach the preview port. One selector with namespace AND
+    # label, as for web.
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.ingress.controller.namespace | quote }} } }
+          podSelector:
+            matchLabels: {{ toYaml .Values.ingress.controller.podLabels | nindent 14 }}
+      ports: [{ protocol: TCP, port: {{ .Values.preview.port }} }]
     {{- end }}
     {{- if and .Values.serviceHost.expose.enabled .Values.networkPolicies.clientCidrs }}
     - from:

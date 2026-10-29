@@ -168,6 +168,9 @@ catalogs:
     tailwindcss:
       specifier: ^4.1.18
       version: 4.3.2
+    tldts:
+      specifier: ^7.4.6
+      version: 7.4.6
     tsx:
       specifier: ^4.23.12
       version: 4.23.12
@@ -1447,6 +1450,9 @@ importers:
       effect:
         specifier: 'catalog:'
         version: 4.0.5
+      tldts:
+        specifier: 'catalog:'
+        version: 7.4.6
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'

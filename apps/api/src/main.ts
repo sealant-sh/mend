@@ -226,7 +226,7 @@ import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
-import { loadPreviewSetup } from "./preview-config.ts";
+import { PreviewSetupConfig, PreviewSetupConfigLive } from "./preview-config.ts";
 import { PreviewIdentityLive } from "./preview-identity.ts";
 import { servePreviews } from "./preview-serving.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
@@ -437,7 +437,7 @@ const ServerLive = Layer.unwrap(
     const budgets = yield* Budgets;
     const trustedProxies = yield* trustedProxyCidrs;
     const errorDetail = yield* ErrorDetail;
-    const previews = yield* loadPreviewSetup;
+    const { setup: previews } = yield* PreviewSetupConfig;
     const router = HttpRouter.serve(
       Layer.mergeAll(
         MendApiLive,
@@ -853,7 +853,13 @@ const MainLive = Layer.unwrap(
       Layer.provide(
         ExposureConfigLive.pipe(
           Layer.provideMerge(
-            Layer.mergeAll(TenancyConfigLive, BudgetsLive, UrlBearersLive, ErrorDetailLive),
+            Layer.mergeAll(
+              TenancyConfigLive,
+              BudgetsLive,
+              UrlBearersLive,
+              ErrorDetailLive,
+              PreviewSetupConfigLive,
+            ),
           ),
         ),
       ),

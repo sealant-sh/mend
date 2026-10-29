@@ -1,5 +1,6 @@
 import { isUpgradeTicket } from "@mend/db";
 import type { PreviewId } from "@mend/domain";
+import { NO_SUCH_PREVIEW } from "@mend/network";
 import { Effect, Redacted, type Scope } from "effect";
 
 import {
@@ -16,8 +17,9 @@ import {
   browserAdmits,
   type BrowserHead,
   headRefusal,
-  isDocumentNavigation,
+  membersOf,
   mustNotForward,
+  opensSignIn,
   parsePreviewPath,
   PREVIEW_ROOT,
   type PreviewAnswer,
@@ -60,6 +62,10 @@ const browserOf = (head: PreviewRequestHead): BrowserHead => ({
   fetchSite: valuesOf(head.headers, "sec-fetch-site")[0],
   fetchMode: valuesOf(head.headers, "sec-fetch-mode")[0],
   fetchDest: valuesOf(head.headers, "sec-fetch-dest")[0],
+  sentFetchMetadata: head.headers.some(([name]) => name.toLowerCase().startsWith("sec-fetch-")),
+  acceptsHtml: membersOf(head.headers, "accept").some(
+    (member) => member.split(";")[0]?.trim() === "text/html",
+  ),
 });
 
 const exchange = (head: PreviewRequestHead, routing: PreviewRouting, origin: PreviewOrigin) =>
@@ -120,7 +126,7 @@ export const servePreviewRequest = <E, R>(
     const hosts = valuesOf(head.headers, "host");
     if (hosts.length !== 1) return answer(400, "Bad request.");
     const origin = reachedPreviewOrigin(routing, hosts[0] ?? "");
-    if (origin === null) return answer(404, "No such preview.");
+    if (origin === null) return answer(404, NO_SUCH_PREVIEW);
     const browser = browserOf(head);
     if (!browserAdmits(browser, origin)) return answer(403, "Refused.");
     const refusedHead = headRefusal(head);
@@ -143,7 +149,7 @@ export const servePreviewRequest = <E, R>(
           Effect.succeed(
             refused._tag === "PreviewNoIdentity" &&
               refused.previewId !== null &&
-              isDocumentNavigation(browser)
+              opensSignIn(browser)
               ? redirect(
                   302,
                   signInAt(

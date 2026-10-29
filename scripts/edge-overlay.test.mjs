@@ -144,12 +144,42 @@ test("the Caddyfile routes everything to web, unbuffered", () => {
 
 const MEND_HOST = "mend.internal";
 const GATEWAY_HOST = "t3.mend.internal";
+const PREVIEW_DOMAIN = "previews.internal";
+const PREVIEW_HOST = `p1.${PREVIEW_DOMAIN}`;
+
+const previewCertificate = (scratch) => {
+  const certificate = path.join(scratch, "preview.crt");
+  const key = path.join(scratch, "preview.key");
+  const made = spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "2",
+      "-subj",
+      `/CN=*.${PREVIEW_DOMAIN}`,
+      "-addext",
+      `subjectAltName=DNS:*.${PREVIEW_DOMAIN}`,
+      "-keyout",
+      key,
+      "-out",
+      certificate,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(made.status, 0, `openssl: ${made.stderr}`);
+  return { certificate, key };
+};
 
 /**
- * The edge as a packaged install runs it: the repository's Caddyfile, with the t3code gateway's
- * site (`Caddyfile.t3`) mounted where it imports sites from, both sites as hostnames on Caddy's
- * one HTTPS listener and its port-80 redirect. A `.internal` name gets its certificate from
- * Caddy's own CA, so automatic HTTPS runs without ACME or public DNS. Behind it, a Caddy stub of
+ * A `.internal` name gets its certificate from Caddy's own CA, so automatic HTTPS runs without
+ * ACME or public DNS. Behind the edge, a Caddy stub of
  * Mend's web tier and the gateway answers 404 for `X-Stub: 404`, cuts a 200 short for
  * `X-Stub: abort`, redirects to the request's own URL with userinfo for `X-Stub: redirect`, and
  * otherwise echoes what reached it.
@@ -220,7 +250,7 @@ const startEdge = async (t) => {
   writeFileSync(
     upstream,
     [
-      ":3105, :3120 {",
+      ":3105, :3120, :3130 {",
       "\t@missing header X-Stub 404",
       "\thandle @missing {",
       '\t\trespond "Not Found" 404',
@@ -245,9 +275,17 @@ const startEdge = async (t) => {
   // What the stub reloads to stop answering on 3105 and 3120: the edge's next dial is refused.
   const idle = path.join(scratch, "idle.Caddyfile");
   writeFileSync(idle, ":9999 {\n\trespond 204\n}\n");
-  const { T3_GATEWAY_CADDYFILE } = await import("../apps/cli/src/server-edge.ts");
+  const { PREVIEW_CADDYFILE, T3_GATEWAY_CADDYFILE } =
+    await import("../apps/cli/src/server-edge.ts");
   const gatewaySite = path.join(scratch, "Caddyfile.t3");
   writeFileSync(gatewaySite, T3_GATEWAY_CADDYFILE);
+  const previewSite = path.join(scratch, "Caddyfile.preview");
+  writeFileSync(previewSite, PREVIEW_CADDYFILE);
+  const preview = previewCertificate(scratch);
+  const { copyPreviewKey, packagedEdgeArgs } =
+    await import("../apps/cli/test-fixtures/packaged-edge.ts");
+  const previewKey = path.join(scratch, "preview-key.pem");
+  copyPreviewKey(preview.key, previewKey);
   const create = async (name, mounts, extra) => {
     const container = (
       await docker(
@@ -287,12 +325,18 @@ const startEdge = async (t) => {
     [
       [path.join(directory, "Caddyfile"), "/etc/caddy/Caddyfile"],
       [gatewaySite, "/etc/caddy/sites/t3code-gateway.caddy"],
+      [previewSite, "/etc/caddy/sites/preview.caddy"],
+      [preview.certificate, "/etc/caddy/preview/certificate.pem"],
+      [previewKey, "/etc/caddy/preview/key.pem"],
     ],
     [
+      ...packagedEdgeArgs(),
       "-e",
       `MEND_EDGE_HOST=${MEND_HOST}`,
       "-e",
       `MEND_T3_GATEWAY_EDGE_HOST=${GATEWAY_HOST}`,
+      "-e",
+      `MEND_PREVIEW_DOMAIN=${PREVIEW_DOMAIN}`,
       "-p",
       "127.0.0.1::80",
       "-p",
@@ -305,6 +349,7 @@ const startEdge = async (t) => {
     https: Number(published["443/tcp"][0].HostPort),
   };
   let ca;
+  const previewCa = readFileSync(preview.certificate, "utf8");
   // Resolves once the response closes; `complete` is false for one cut short. The Host header is
   // sent as given; SNI is the name a client would derive from it.
   const request = ({ scheme = "https", host, target, method = "GET", headers = {} }) =>
@@ -326,7 +371,7 @@ const startEdge = async (t) => {
           headers: { ...headers, Host: host },
           ...(scheme === "https"
             ? {
-                ca,
+                ca: [ca, previewCa],
                 servername: host
                   .replace(/(:\d+)?$/, "")
                   .replace(/\.$/, "")
@@ -360,7 +405,7 @@ const startEdge = async (t) => {
     }
     if (ca !== undefined) {
       const answers = await Promise.all(
-        [MEND_HOST, GATEWAY_HOST].map((host) => request({ host, target: "/ready" })),
+        [MEND_HOST, GATEWAY_HOST, PREVIEW_HOST].map((host) => request({ host, target: "/ready" })),
       );
       ready = answers.every((answer) => answer.status === 200);
     }
@@ -407,15 +452,22 @@ const isMendLine = (entry) =>
   entry.logger === "http.log.access.mend" || entry.logger === "http.log.error.mend";
 
 test(
-  "actual Caddy runs the edge's Caddyfile with and without the gateway's site, and only Mend's named log keeps a uri",
+  "actual Caddy runs the edge's Caddyfile with and without the gateway's and the previews' sites, and only Mend's named log keeps a uri",
   { timeout: 60_000 },
   async (t) => {
     if (skipCaddy(t)) return;
     const image = edgeImage();
     const scratch = mkdtempSync(path.join(tmpdir(), "mend-caddy-adapt-"));
     t.after(() => rmSync(scratch, { recursive: true, force: true }));
-    const { T3_GATEWAY_CADDYFILE } = await import("../apps/cli/src/server-edge.ts");
+    const { PREVIEW_CADDYFILE, T3_GATEWAY_CADDYFILE } =
+      await import("../apps/cli/src/server-edge.ts");
     writeFileSync(path.join(scratch, "Caddyfile.t3"), T3_GATEWAY_CADDYFILE);
+    writeFileSync(path.join(scratch, "Caddyfile.preview"), PREVIEW_CADDYFILE);
+    const preview = previewCertificate(scratch);
+    const mount = (source, target) => [
+      "--mount",
+      `type=bind,source=${source},target=${target},readonly`,
+    ];
     const caddy = (command, withGateway) => {
       const result = spawnSync(
         "docker",
@@ -429,12 +481,19 @@ test(
           "MEND_EDGE_HOST=mend.example.com",
           "-e",
           "MEND_T3_GATEWAY_EDGE_HOST=t3.mend.example.com",
+          "-e",
+          "MEND_PREVIEW_DOMAIN=previews.example.net",
           "--mount",
           `type=bind,source=${path.join(directory, "Caddyfile")},target=/etc/caddy/Caddyfile,readonly`,
           ...(withGateway
             ? [
-                "--mount",
-                `type=bind,source=${path.join(scratch, "Caddyfile.t3")},target=/etc/caddy/sites/t3code-gateway.caddy,readonly`,
+                ...mount(
+                  path.join(scratch, "Caddyfile.t3"),
+                  "/etc/caddy/sites/t3code-gateway.caddy",
+                ),
+                ...mount(path.join(scratch, "Caddyfile.preview"), "/etc/caddy/sites/preview.caddy"),
+                ...mount(preview.certificate, "/etc/caddy/preview/certificate.pem"),
+                ...mount(preview.key, "/etc/caddy/preview/key.pem"),
               ]
             : []),
           image,
@@ -480,7 +539,12 @@ test(
         {
           names: {
             "mend.example.com": ["mend"],
-            ...(withGateway ? { "t3.mend.example.com": ["t3code-gateway"] } : {}),
+            ...(withGateway
+              ? {
+                  "t3.mend.example.com": ["t3code-gateway"],
+                  "*.previews.example.net": ["preview"],
+                }
+              : {}),
           },
           logs: {
             default: { include: "everything not named elsewhere", ...uriFree },
@@ -491,7 +555,10 @@ test(
               referer: "delete",
             },
             ...(withGateway
-              ? { "t3code-gateway": { include: ["http.log.access.t3code-gateway"], ...uriFree } }
+              ? {
+                  "t3code-gateway": { include: ["http.log.access.t3code-gateway"], ...uriFree },
+                  preview: { include: ["http.log.access.preview"], ...uriFree },
+                }
               : {}),
           },
         },
@@ -502,7 +569,7 @@ test(
 );
 
 test(
-  "actual Caddy access logs keep Mend's paths without their queries, hold no uri for the t3code gateway, and redact credential headers, while forwarding everything",
+  "actual Caddy access logs keep Mend's paths without their queries, hold no uri for the t3code gateway or a preview, and redact credential headers, while forwarding everything",
   { timeout: 60_000 },
   async (t) => {
     if (skipCaddy(t)) return;
@@ -546,6 +613,7 @@ test(
     const sites = [
       { name: "mend", host: MEND_HOST },
       { name: "gateway", host: GATEWAY_HOST },
+      { name: "preview", host: PREVIEW_HOST },
     ];
     const headers = {
       Referer: "https://SYN_REF_USER:SYN_REF_PASSWORD@example.invalid/path?ticket=SYN_REFERER",
@@ -594,7 +662,7 @@ test(
         assert.deepEqual(entry.request.headers.Cookie, ["REDACTED"]);
         assert.deepEqual(entry.resp_headers["Set-Cookie"], ["REDACTED"]);
       }
-      if (site.name === "gateway") {
+      if (site.name !== "mend") {
         assert.deepEqual([...new Set(access.map((entry) => entry.request.uri))], ["REDACTED"]);
         continue;
       }
@@ -633,7 +701,7 @@ const leaksIn = (logs) =>
   ].toSorted();
 
 test(
-  "actual Caddy logs no asset token, file name or query value from either site, for a 200, a 404, a redirect, a response cut short, a failed dial and port 80, in any spelling",
+  "actual Caddy logs no asset token, file name, ticket or query value from any site, for a 200, a 404, a redirect, a response cut short, a failed dial and port 80, in any spelling",
   { timeout: 180_000 },
   async (t) => {
     if (skipCaddy(t)) return;
@@ -676,9 +744,15 @@ test(
       `/api/assets/%61st_${rest}/%2E%2E/%2E%2E/%2E%2E/projects/private-name.png`,
     ];
     const kept = ["/api/projects", "/api/worktrees/w1/contents?path=SYNQ_README"];
+    const exchanges = [
+      "/__mend/auth?ticket=mut_SYNQ_TICKET&path=%2Fprivate-dir%2Fprivate-name",
+      "/__mend/signed-in?path=%2Fprivate-name",
+      "/private-dir/private-name?SYNQ_APP=1",
+    ];
     const sites = [
       { name: "mend", host: MEND_HOST, targets: [...queries, ...kept] },
       { name: "gateway", host: GATEWAY_HOST, targets: [...queries, ...assets] },
+      { name: "preview", host: PREVIEW_HOST, targets: [...queries, ...exchanges] },
     ];
     const expected = {
       ok: [200, true],
@@ -738,8 +812,9 @@ test(
       assert.ok(count((e) => isAccess(e) && e.status === 200) >= 2 * n, site.name);
       assert.equal(count((e) => e.resp_headers?.Location !== undefined) > 0, site.name === "mend");
     }
-    const [mend, gateway] = sites;
+    const [mend, gateway, previewSite] = sites;
     assert.deepEqual([...new Set(of(gateway).map((entry) => entry.request.uri))], ["REDACTED"]);
+    assert.deepEqual([...new Set(of(previewSite).map((entry) => entry.request.uri))], ["REDACTED"]);
     for (const entry of of(mend)) {
       if (!isMendLine(entry)) {
         assert.equal(entry.request.uri, "REDACTED", entry.logger);
@@ -927,6 +1002,82 @@ test(
           ? "http://127.0.0.1:3120"
           : "https://t3.mend.example.com",
       );
+    }
+  },
+);
+
+test(
+  "previews behind the edge: the gateway's port stays on loopback, and the edge mounts their site and setup's copies of the certificate",
+  { skip },
+  async () => {
+    const { previewEnvLines, renderPreviewOverlay } =
+      await import("../apps/cli/src/server-edge.ts");
+    const scratch = mkdtempSync(path.join(tmpdir(), "mend-preview-overlay-"));
+    try {
+      const posture = {
+        bind: "127.0.0.1",
+        appUrl: "https://mend.example.com",
+        edgeHost: "mend.example.com",
+        exposure: "public",
+        preview: {
+          domain: "previews.example.net",
+          certificate: path.join(scratch, "previews.crt"),
+          key: path.join(scratch, "previews.key"),
+        },
+      };
+      const file = path.join(scratch, "compose.preview.yaml");
+      writeFileSync(file, renderPreviewOverlay(posture));
+      const env = Object.fromEntries(
+        previewEnvLines(posture).map((line) => [
+          line.slice(0, line.indexOf("=")),
+          line.slice(line.indexOf("=") + 1),
+        ]),
+      );
+      const result = render({ MEND_PORT: "3105", ...env }, [file]);
+      assert.equal(result.status, 0, result.stderr);
+      const compose = JSON.parse(result.stdout);
+      const beyondLoopback = Object.entries(compose.services).flatMap(([name, service]) =>
+        (service.ports ?? [])
+          .filter((port) => (port.host_ip ?? "0.0.0.0") !== "127.0.0.1")
+          .map((port) => `${name}:${port.published}`),
+      );
+      assert.deepEqual([...new Set(beyondLoopback)].toSorted(), ["edge:443", "edge:80"]);
+      assert.deepEqual(
+        compose.services.mend.ports
+          .filter((port) => port.target === 3130)
+          .map((port) => `${port.host_ip}:${port.published}`),
+        ["127.0.0.1:3130"],
+      );
+      const mend = compose.services.mend.environment;
+      assert.deepEqual(
+        [
+          mend.MEND_PREVIEW_PORT,
+          mend.MEND_PREVIEW_BIND,
+          mend.MEND_PREVIEW_DOMAIN,
+          mend.MEND_PREVIEW_PUBLISHED,
+        ],
+        ["3130", "0.0.0.0", "previews.example.net", "127.0.0.1:3130"],
+      );
+      assert.equal(compose.services.edge.environment.MEND_PREVIEW_DOMAIN, "previews.example.net");
+      const mounts = Object.fromEntries(
+        compose.services.edge.volumes.map((volume) => [volume.target, volume]),
+      );
+      for (const target of [
+        "/etc/caddy/sites/preview.caddy",
+        "/etc/caddy/preview/certificate.pem",
+        "/etc/caddy/preview/key.pem",
+      ])
+        assert.equal(mounts[target]?.read_only, true, target);
+      assert.equal(
+        mounts["/etc/caddy/preview/key.pem"].source,
+        path.join(directory, "preview-key.pem"),
+      );
+      assert.deepEqual(compose.services.edge.group_add, [String(process.getegid())]);
+      const unset = render({ MEND_PORT: "3105", ...env, MEND_PREVIEW_DOMAIN: "" }, [file]);
+      assert.notEqual(unset.status, 0);
+      assert.match(unset.stderr, /MEND_PREVIEW_DOMAIN/);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
     }
   },
 );

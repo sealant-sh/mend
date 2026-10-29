@@ -14,8 +14,35 @@ Allow only the observed workspace source CIDRs in networkPolicies.sessionChannel
 The chart creates no load balancer; route only to healthy nodes hosting the API Pod.
 {{- end }}
 
-No Ingress is created. Port-forward the web tier:
+{{- if .Values.ingress.enabled }}
+
+Ingress {{ .Release.Name }}-web: https://{{ .Values.ingress.host }} → {{ .Release.Name }}-web:3105, TLS from Secret {{ .Values.ingress.tls.secretName }}.
+The controller must keep the query strings of /api/tty, /api/service-tunnel, /api/keys/bridge/ws
+and /tty-embed out of its logs (docs/KUBERNETES.md).
+{{- else }}
+
+No Ingress is created for Mend. Port-forward the web tier:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-web 3105:3105
+{{- end }}
+{{- if .Values.preview.enabled }}
+
+Previews: https://<label>.{{ .Values.preview.domain }} → {{ .Release.Name }}-preview:{{ .Values.preview.port }} (the API Pod's preview gateway),
+through Ingress {{ .Release.Name }}-preview, TLS from Secret {{ .Values.preview.ingress.tls.secretName }} for *.{{ .Values.preview.domain }}.
+The chart installs no issuer: a wildcard certificate needs DNS-01 (cert-manager with a DNS-01 solver,
+or a Secret you supply). Point *.{{ .Values.preview.domain }} at the controller.
+The controller must stream request and response bodies, keep a request open for the start hold, and
+keep the preview hosts' URIs out of its access log: /__mend/auth carries a single-use ticket in its
+query. {{ if .Values.preview.ingress.annotations }}preview.ingress.annotations carries what you set for that.{{ else }}preview.ingress.annotations is empty, so your controller's defaults apply: check them (docs/KUBERNETES.md has the ingress-nginx set).{{ end }}
+ingress-nginx's error log at its default level, notice, holds the ticket when the dial to the gateway
+fails, as during the API Pod's Recreate upgrade. error-log-level: crit in the controller
+ConfigMap keeps it out, for every Ingress that controller serves (docs/KUBERNETES.md has the trade-off).
+mend operator exposure lists preview-gateway as open until you checked DNS, the certificate and who
+reaches the gateway from another network, and listed preview-gateway in exposure.declared.
+The chart cannot tell whether {{ .Values.preview.domain }} shares Mend's registrable domain; the API
+refuses it at start if it does.
+Previews on Mend's own site need Mend's cookies to move to __Host- names, which ships in ADR 0017 step 8b with the tailnet default.
+Until then, use a preview domain on a registrable domain of its own, or loopback (*.localhost).
+{{- end }}
 
 Pair the Sealant chart. Workspace Pods ({{ .Values.networkPolicies.workspaceNamespace }}) reach the
 session channel and PUT/GET captures against the bucket directly; both are governed by the Sealant

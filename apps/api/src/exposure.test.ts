@@ -1,3 +1,5 @@
+import { PreviewId } from "@mend/domain";
+import { SAME_SITE_PREVIEW_REASON } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,10 +7,12 @@ import {
   exposureGatePasses,
   exposureRefusal,
   type ExposurePosture,
+  type PreviewPosture,
 } from "./exposure.ts";
 
 /** A posture in which every item this build can observe is closed. */
 const closed: ExposurePosture = {
+  exposure: "public",
   appUrl: "https://mend.example",
   allowedOrigins: ["https://mend.example"],
   trustedProxies: ["10.244.0.0/16"],
@@ -32,8 +36,31 @@ const open = (posture: ExposurePosture) =>
 const t3GatewayOf = (posture: ExposurePosture) =>
   evaluateExposureGate(posture).find((outcome) => outcome.id === "t3code-gateway");
 
+const previewOf = (posture: ExposurePosture) =>
+  evaluateExposureGate(posture).find((outcome) => outcome.id === "preview-gateway");
+
 const workspaceSshOf = (posture: ExposurePosture) =>
   evaluateExposureGate(posture).find((outcome) => outcome.id === "workspace-ssh");
+
+const LOOPBACK_PREVIEW: PreviewPosture = {
+  routing: { mode: "loopback-http", port: 3130 },
+  bind: "127.0.0.1",
+  port: 3130,
+};
+const DOMAIN_PREVIEW: PreviewPosture = {
+  routing: { mode: "domain-https", domain: "previews.example.net", port: 443 },
+  bind: "0.0.0.0",
+  port: 3130,
+};
+const TAILNET_PREVIEW: PreviewPosture = {
+  routing: {
+    mode: "tailnet-https",
+    hostname: "mend-preview.tail1234.ts.net",
+    ports: [{ port: 20001, previewId: PreviewId.make("pv_1") }],
+  },
+  bind: "127.0.0.1",
+  port: 3130,
+};
 
 describe("the public exposure gate", () => {
   it("with everything observable closed, only what no build can observe stays open", () => {
@@ -304,12 +331,163 @@ describe("the public exposure gate", () => {
   });
 
   it("never words an outcome as a verdict", () => {
-    const words = evaluateExposureGate(closed)
+    const words = [
+      closed,
+      { ...closed, preview: { ...DOMAIN_PREVIEW, published: "127.0.0.1:3130" } },
+      { ...closed, preview: TAILNET_PREVIEW, declared: ["preview-gateway" as const] },
+      { ...closed, preview: LOOPBACK_PREVIEW },
+    ]
+      .flatMap(evaluateExposureGate)
       .flatMap((outcome) => [outcome.detail, outcome.fix ?? ""])
       .join(" ")
       .toLowerCase();
     for (const verdict of ["safe", "secure enough", "ready for", "approved", "passed"]) {
       expect(words).not.toContain(verdict);
     }
+  });
+});
+
+describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
+  it("is listed only while the gateway is on, after the t3code gateway and before reassessment", () => {
+    expect(previewOf(closed)).toBeUndefined();
+    const ids = evaluateExposureGate({
+      ...closed,
+      t3Gateway: true,
+      preview: DOMAIN_PREVIEW,
+    }).map((outcome) => outcome.id);
+    expect(ids.slice(-3)).toEqual(["t3code-gateway", "preview-gateway", "reassessment"]);
+  });
+
+  it("on loopback under a loopback exposure, every fact is observed or carried: nothing to state", () => {
+    const item = previewOf({ ...closed, exposure: "loopback", preview: LOOPBACK_PREVIEW });
+    expect(item).toMatchObject({
+      established: "observed",
+      fix: null,
+      blocksStart: true,
+      observable: true,
+    });
+    expect(item?.detail).toBe(
+      [
+        "observed: previews are plain http at http://<label>.localhost:3130, on loopback under MEND_EXPOSURE=loopback",
+        "carried: the SDK this build pins has the bounded forward the gateway starts on",
+        "observed: it listens on 127.0.0.1:3130, published nowhere else that was said (MEND_PREVIEW_PUBLISHED unset)",
+      ].join("; "),
+    );
+  });
+
+  it.each<[string, Partial<ExposurePosture>]>([
+    ["a private exposure", { exposure: "private" }],
+    ["a public exposure", { exposure: "public" }],
+    [
+      "a listener beyond loopback",
+      { exposure: "loopback", preview: { ...LOOPBACK_PREVIEW, bind: "0.0.0.0" } },
+    ],
+    [
+      "a port published beyond loopback",
+      { exposure: "loopback", preview: { ...LOOPBACK_PREVIEW, published: "10.0.0.5:3130" } },
+    ],
+  ])("plain http previews are open under %s, and no statement closes them", (_, change) => {
+    const posture: ExposurePosture = {
+      ...closed,
+      preview: LOOPBACK_PREVIEW,
+      declared: ["preview-gateway"],
+      ...change,
+    };
+    const item = previewOf(posture);
+    expect(item?.established).toBe("open");
+    expect(item?.detail).toContain("open: previews are plain http");
+    expect(item?.fix).toContain("set MEND_PREVIEW_DOMAIN");
+  });
+
+  it("with a domain, open until the operator states DNS, the certificate and the reach, and a public start waits", () => {
+    const posture: ExposurePosture = {
+      ...closed,
+      preview: { ...DOMAIN_PREVIEW, published: "127.0.0.1:3130" },
+    };
+    const item = previewOf(posture);
+    expect(item).toMatchObject({ established: "open", blocksStart: true, observable: false });
+    expect(item?.detail).toBe(
+      [
+        "observed: APP_URL's host mend.example is not previews.example.net, above or under it, or on its registrable domain",
+        "observed: previews are https at https://<label>.previews.example.net",
+        "carried: the SDK this build pins has the bounded forward the gateway starts on",
+        "observed: it listens on 0.0.0.0:3130, its port published on 127.0.0.1:3130 (MEND_PREVIEW_PUBLISHED)",
+        "open: the wildcard DNS and certificate for *.previews.example.net, and who reaches the published listener; only a look from another network sees it",
+      ].join("; "),
+    );
+    expect(item?.fix).toBe(
+      "what would verify it: https://<label>.previews.example.net from another network, over a certificate that chains to a public root, and 127.0.0.1:3130 answering nothing from another machine; then add preview-gateway to MEND_EXPOSURE_DECLARED",
+    );
+    expect(exposureRefusal("private", evaluateExposureGate(posture))).toBeNull();
+    expect(exposureRefusal("public", evaluateExposureGate(posture))).toContain("preview-gateway:");
+
+    const stated: ExposurePosture = { ...posture, declared: ["preview-gateway"] };
+    expect(previewOf(stated)).toMatchObject({ established: "declared", fix: null });
+    expect(previewOf(stated)?.detail).toContain(
+      "declared: the wildcard DNS and certificate for *.previews.example.net, and who reaches the published listener (MEND_EXPOSURE_DECLARED); this process cannot check it",
+    );
+    expect(exposureRefusal("public", evaluateExposureGate(stated))).toBeNull();
+  });
+
+  it("never reads clean for a preview domain on Mend's own site, whatever was declared", () => {
+    const item = previewOf({
+      ...closed,
+      appUrl: "https://mend.example.com",
+      allowedOrigins: ["https://mend.example.com"],
+      declared: ["preview-gateway"],
+      preview: {
+        ...DOMAIN_PREVIEW,
+        routing: { mode: "domain-https", domain: "previews.example.com", port: 443 },
+      },
+    });
+    expect(item?.established).toBe("open");
+    expect(item?.detail).toContain(
+      "open: APP_URL's host mend.example.com shares the registrable domain example.com with previews.example.com, so a page on a preview can set cookies Mend's host receives",
+    );
+    expect(item?.fix).toContain(SAME_SITE_PREVIEW_REASON);
+  });
+
+  it("names a non-default public port, and reads a statement that cannot describe the listener as open", () => {
+    expect(
+      previewOf({
+        ...closed,
+        preview: {
+          ...DOMAIN_PREVIEW,
+          routing: { mode: "domain-https", domain: "previews.example.net", port: 8443 },
+        },
+      })?.detail,
+    ).toContain("observed: previews are https at https://<label>.previews.example.net:8443");
+    const stale = previewOf({
+      ...closed,
+      declared: ["preview-gateway"],
+      preview: { ...DOMAIN_PREVIEW, bind: "127.0.0.1", published: "203.0.113.7:3130" },
+    });
+    expect(stale?.established).toBe("open");
+    expect(stale?.detail).toContain(
+      "open: it listens on 127.0.0.1:3130, and MEND_PREVIEW_PUBLISHED says 203.0.113.7:3130: that statement is not this listener's",
+    );
+  });
+
+  it("on the tailnet default, open while Mend's cookies are not __Host-, even when the Tailscale steps are declared", () => {
+    const posture: ExposurePosture = {
+      ...closed,
+      exposure: "private",
+      preview: TAILNET_PREVIEW,
+      declared: ["preview-gateway"],
+    };
+    const item = previewOf(posture);
+    expect(item?.established).toBe("open");
+    expect(item?.detail).toContain(
+      "observed: APP_URL's host mend.example is not the gateway's name mend-preview.tail1234.ts.net",
+    );
+    expect(item?.detail).toContain(
+      "open: Mend's cookies are not named __Host-, and on the tailnet default every preview is Mend's own site",
+    );
+    expect(item?.detail).toContain(
+      "declared: the Tailscale steps for mend-preview.tail1234.ts.net",
+    );
+    expect(item?.fix).toContain("ADR 0017 delivery step 8b");
+    expect(exposureRefusal("private", evaluateExposureGate(posture))).toBeNull();
+    expect(exposureRefusal("public", evaluateExposureGate(posture))).toContain("preview-gateway:");
   });
 });

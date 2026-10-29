@@ -3,7 +3,7 @@ import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { servePreviewRequest } from "./preview-host.ts";
-import { PreviewConfig, PreviewIdentity } from "./preview-identity.ts";
+import { PreviewConfig, PreviewIdentity, PreviewNoIdentity } from "./preview-identity.ts";
 import type { HeaderPair } from "./preview-requests.ts";
 import { previewOriginOf, type PreviewRouting } from "./preview-routing.ts";
 
@@ -161,5 +161,62 @@ describe("preview admission before anything reaches the application", () => {
     ],
   ])("admits %s", async (_, method, target, headers) => {
     expect(await admit(method, target, headers)).toEqual({ status: null, reachedViewer: true });
+  });
+});
+
+describe("a request with no grant", () => {
+  const PREVIEW = PreviewId.make("pv-1");
+  const answerWithoutGrant = (method: string, extra: ReadonlyArray<HeaderPair>) => {
+    const identity = Layer.succeed(PreviewIdentity, {
+      issueTicket: () => unreached,
+      exchangeTicket: () => unreached,
+      withViewer: () =>
+        Effect.fail(new PreviewNoIdentity({ reason: "missing-grant", previewId: PREVIEW })),
+    });
+    const config = Layer.succeed(PreviewConfig, {
+      appUrl: "https://mend.example",
+      routing: ROUTING,
+    });
+    return Effect.runPromise(
+      servePreviewRequest({ method, target: "/pricing", headers: [["Host", HOST], ...extra] }, () =>
+        Effect.succeed(undefined),
+      ).pipe(Effect.provide(Layer.merge(identity, config))),
+    );
+  };
+  const signIn = `https://mend.example/preview-auth?preview=${PREVIEW}&path=%2Fpricing`;
+  const HTML: HeaderPair = ["Accept", "text/html,application/xhtml+xml,*/*;q=0.8"];
+
+  it.each<readonly [string, string, ReadonlyArray<HeaderPair>, number, string | undefined]>([
+    [
+      "a navigation with Fetch Metadata",
+      "GET",
+      [
+        ["Sec-Fetch-Site", "none"],
+        ["Sec-Fetch-Mode", "navigate"],
+        ["Sec-Fetch-Dest", "document"],
+        HTML,
+      ],
+      302,
+      signIn,
+    ],
+    ["a navigation from a browser that sends no Fetch Metadata", "GET", [HTML], 302, signIn],
+    [
+      "a fetch for JSON with no Fetch Metadata",
+      "GET",
+      [["Accept", "application/json"]],
+      401,
+      undefined,
+    ],
+    [
+      "a fetch for HTML that is not a navigation",
+      "GET",
+      [["Sec-Fetch-Mode", "cors"], ["Sec-Fetch-Dest", "empty"], HTML],
+      401,
+      undefined,
+    ],
+    ["a form post asking for HTML", "POST", [["Origin", ORIGIN], HTML], 401, undefined],
+  ])("%s", async (_, method, headers, status, location) => {
+    const answer = await answerWithoutGrant(method, headers);
+    expect([answer?.status, answer?.headers["location"]]).toEqual([status, location]);
   });
 });

@@ -431,6 +431,105 @@ What to check, because the chart cannot:
   the Internet, and the Ingress's certificate, renewal and port 80 redirect. The report marks them
   `declared` and says the server cannot check them.
 
+## Live previews
+
+Each preview is `https://<label>.<preview domain>`, on a registrable domain of its own
+([ADR 0017](adr/0017-live-preview.md)). The preview gateway runs in the API Pod. With
+`preview.enabled`, the chart renders:
+
+- `MEND_PREVIEW_PORT`, `MEND_PREVIEW_BIND=0.0.0.0` and `MEND_PREVIEW_DOMAIN` on the API container,
+  and a `preview` container port (3130 by default, `preview.port`);
+- a ClusterIP Service, `<release>-preview`, to that port;
+- a second Ingress, `<release>-preview`, for `*.<preview domain>`: one label, TLS from
+  `preview.ingress.tls.secretName`, and the preview Service as its only backend;
+- a NetworkPolicy rule admitting the ingress controller's Pods (`ingress.controller`, namespace and
+  labels in one selector) to the gateway's port only. With previews on, the release namespace's own
+  Pods keep the API's other ports (3101, the session channel, the Service host range) and no longer
+  reach every port, so only the controller reaches the gateway.
+
+```yaml
+# values.yaml
+preview:
+  enabled: true
+  domain: previews.example.net
+  ingress:
+    tls:
+      secretName: previews-tls # *.previews.example.net
+    annotations: {} # your controller's streaming, timeout and access-log settings
+```
+
+The chart refuses to render a domain that is `ingress.host`, `web.appUrl`'s host or an allowed
+origin's host, or sits above or below one; a preview Ingress without TLS; and
+`MEND_PREVIEW_PUBLIC_PORT` other than 443 in `extraEnv`, because the Ingress serves 443. It installs
+no issuer. A wildcard certificate needs the ACME DNS-01 challenge: cert-manager with a DNS-01 solver
+for your provider, or a `kubernetes.io/tls` Secret you supply.
+
+A preview domain on Mend's own site renders, and the API refuses it at start. Mend's own site is
+Mend's registrable domain: a preview domain such as `previews.example.com` beside `mend.example.com`
+shares `example.com`, so a page on a preview can set cookies for `example.com` that Mend's own host
+receives. A template cannot read the Public Suffix List, so only the API checks this. Previews on
+Mend's own site need Mend's cookies to move to `__Host-` names, which ships in ADR 0017 step 8b with
+the tailnet default. Until then, use a preview domain on a registrable domain of its own, or
+loopback (`*.localhost`).
+
+With `exposure.mode: public`, the chart refuses to render previews until `exposure.declared` lists
+`preview-gateway`, because the API refuses a public start while that item is open. Verify first
+under `exposure.mode: private`, from another network: the wildcard DNS for `*.<preview domain>`
+points at the ingress controller, the certificate for `*.<preview domain>` chains to a public root,
+`https://<label>.<preview domain>` answers, and the API Pod's preview port answers nothing from
+outside the cluster. Then add `preview-gateway` to `exposure.declared` and switch to `public`.
+
+What to set on the controller, because the chart cannot know which one you run:
+
+- **Streaming and time.** Request and response bodies pass through unbuffered, and a request may
+  wait as long as `MEND_PREVIEW_START_HOLD` (3 minutes by default) while a stopped preview starts.
+- **Logs.** `/__mend/auth` on a preview host carries a single-use ticket in its query, and the app's
+  own paths and queries are the app's. Keep the preview hosts' URIs out of the access log, or log
+  the path without the query (`$uri`, never `$request_uri` or `$request`).
+
+ingress-nginx stopped receiving releases in March 2026, so these are an example rather than a
+default. Its annotations for the preview Ingress:
+
+```yaml
+preview:
+  ingress:
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "0"
+      nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+      nginx.ingress.kubernetes.io/proxy-buffering: "off"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+      nginx.ingress.kubernetes.io/enable-access-log: "false"
+```
+
+That keeps the access log clean, and the error log is a separate setting. When the controller cannot
+reach the gateway, as while the API Pod is replaced during a `Recreate` upgrade, nginx logs the
+failed connect at `error` with the whole request line, `/__mend/auth?ticket=…` included. Its
+`error-log-level` key in the controller ConfigMap decides whether that line is kept:
+
+```yaml
+# The ingress-nginx controller ConfigMap
+data:
+  error-log-level: crit
+```
+
+- **Scope.** The level is controller-wide: it applies to every Ingress the controller serves.
+  ingress-nginx has no annotation that sets an error-log level for one Ingress.
+- **Recommended value.** `crit`. The default, `notice`, keeps the failed connect's line, ticket
+  included. The preview acceptance test runs plain nginx at both levels against a refused upstream:
+  the ticket is in the log at `notice` and absent at `crit`.
+- **Trade-off.** At `crit` the controller's own `error` and `warn` lines go too, for every Ingress,
+  such as upstream connect failures and configuration warnings, so debugging other apps gets harder.
+  The alternative is to keep `notice` and accept that the error log holds unspent tickets during
+  dial failures: treat the controller's error log, and wherever it is shipped, as a credential sink.
+
+ingress-nginx itself is not verified live: the acceptance test runs plain nginx with the same
+directive, not the controller.
+
+`mend operator exposure` lists the gate's `preview-gateway` item as open until you checked, from
+another network, that `*.<preview domain>` resolves to the controller, that its certificate chains
+to a public root, and who reaches the gateway, then listed `preview-gateway` in `exposure.declared`.
+
 ## Request bodies at the ingress
 
 Mend refuses a request body over its own budget before decoding it: 1 MiB, 24 MiB on the routes that

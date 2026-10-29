@@ -282,6 +282,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "server-setup.ts initGarage": CHILD,
   "server-setup.ts removeStrayService": CHILD,
   "server-setup.ts startCompose": CHILD,
+  "server-setup.ts validateEdge": CHILD,
   "server-setup.ts guideObservations": CHILD,
   "server-setup.ts mendIn": CHILD,
   "server-setup.ts observeDockerEngines": CHILD,

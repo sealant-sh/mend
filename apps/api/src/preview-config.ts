@@ -1,8 +1,14 @@
 import { isIP } from "node:net";
 
 import { PreviewId } from "@mend/domain";
-import { NetworkConfig, type PublicNetwork } from "@mend/network";
-import { Config, Duration, Effect, Option, Schema } from "effect";
+import {
+  NetworkConfig,
+  previewDomainOverlap,
+  type PublicNetwork,
+  SAME_SITE_PREVIEW_REASON,
+} from "@mend/network";
+import { Config, Duration, Effect, Layer, Option, Schema } from "effect";
+import * as Context from "effect/Context";
 
 import {
   PREVIEW_GATEWAY_DEFAULTS,
@@ -86,25 +92,26 @@ const dnsNameOf = (variable: PreviewVariable, raw: string) => {
 const hostsOf = (mend: PublicNetwork) =>
   mend.allowedOrigins.map((origin) => ({ origin, host: new URL(origin).hostname }));
 
-const under = (name: string, parent: string) => name.endsWith(`.${parent}`);
-
-/**
- * Previews must not share a host with Mend or sit above or below one of Mend's hosts: a page on a
- * preview could then act as Mend's site (docs/adr/0017, decision 1).
- */
 const apartFromMend = (domain: string, mend: PublicNetwork) => {
   for (const { origin, host } of hostsOf(mend)) {
-    if (host === domain || under(host, domain)) {
-      return refuse(
-        "domain",
-        `"${domain}" holds Mend's own origin ${origin} (APP_URL or MEND_ALLOWED_ORIGINS); previews need a domain apart from Mend's`,
-      );
-    }
-    if (under(domain, host)) {
-      return refuse(
-        "domain",
-        `"${domain}" is under Mend's own host ${host} (${origin}); previews need a domain apart from Mend's`,
-      );
+    const overlap = previewDomainOverlap(domain, host);
+    if (overlap === null) continue;
+    switch (overlap.kind) {
+      case "holds":
+        return refuse(
+          "domain",
+          `"${domain}" holds Mend's own origin ${origin} (APP_URL or MEND_ALLOWED_ORIGINS); previews need a domain apart from Mend's`,
+        );
+      case "under":
+        return refuse(
+          "domain",
+          `"${domain}" is under Mend's own host ${host} (${origin}); previews need a domain apart from Mend's`,
+        );
+      case "same-site":
+        return refuse(
+          "domain",
+          `"${domain}" shares the registrable domain ${overlap.site} with Mend's own origin ${origin} (APP_URL or MEND_ALLOWED_ORIGINS), so a page on a preview can set cookies Mend's host receives. ${SAME_SITE_PREVIEW_REASON}`,
+        );
     }
   }
   return Effect.void;
@@ -289,3 +296,17 @@ export const loadPreviewSetup: Effect.Effect<
   );
   return setup;
 });
+
+export class PreviewSetupConfig extends Context.Service<
+  PreviewSetupConfig,
+  { readonly setup: PreviewSetup }
+>()("@mend/api/PreviewSetupConfig") {}
+
+export const PreviewSetupConfigLive: Layer.Layer<
+  PreviewSetupConfig,
+  PreviewConfigRefused | Config.ConfigError,
+  NetworkConfig
+> = Layer.effect(
+  PreviewSetupConfig,
+  Effect.map(loadPreviewSetup, (setup) => ({ setup })),
+);

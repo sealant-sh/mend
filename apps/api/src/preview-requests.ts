@@ -1,3 +1,4 @@
+import { NO_SUCH_PREVIEW } from "@mend/network";
 import { Brand } from "effect";
 
 import type { PreviewNoIdentity, PreviewNotFound, PreviewUnavailable } from "./preview-identity.ts";
@@ -61,6 +62,8 @@ export interface BrowserHead {
   readonly fetchSite: string | undefined;
   readonly fetchMode: string | undefined;
   readonly fetchDest: string | undefined;
+  readonly sentFetchMetadata: boolean;
+  readonly acceptsHtml: boolean;
 }
 
 const FETCH_SITES = new Set(["none", "same-origin", "same-site", "cross-site"]);
@@ -70,6 +73,14 @@ export const isDocumentNavigation = (head: BrowserHead): boolean =>
   !head.upgrade &&
   head.fetchMode === "navigate" &&
   head.fetchDest === "document";
+
+/**
+ * Browsers send Fetch Metadata only to an origin they trust, and one that does not trust
+ * `x.localhost` sends none: a navigation there reads as a GET asking for HTML.
+ */
+export const opensSignIn = (head: BrowserHead): boolean =>
+  isDocumentNavigation(head) ||
+  (head.method === "GET" && !head.upgrade && !head.sentFetchMetadata && head.acceptsHtml);
 
 export const browserAdmits = (head: BrowserHead, own: PreviewOrigin): boolean => {
   if (head.origins.length > 1) return false;
@@ -115,7 +126,7 @@ export const refusalAnswer = (
     case "PreviewNoIdentity":
       return answer(401, "Not signed in to this preview.");
     case "PreviewNotFound":
-      return answer(404, "No such preview.");
+      return answer(404, NO_SUCH_PREVIEW);
     case "PreviewUnavailable":
       return answer(503, "Previews are unavailable right now.");
   }

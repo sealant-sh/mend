@@ -6,6 +6,7 @@ import {
   browserAdmits,
   type BrowserHead,
   mustNotForward,
+  opensSignIn,
   parsePreviewPath,
   strictQuery,
 } from "./preview-requests.ts";
@@ -25,6 +26,8 @@ const head = (overrides: Partial<BrowserHead>): BrowserHead => ({
   fetchSite: undefined,
   fetchMode: undefined,
   fetchDest: undefined,
+  sentFetchMetadata: false,
+  acceptsHtml: false,
   ...overrides,
 });
 
@@ -147,5 +150,70 @@ describe("which browser requests may act with a grant", () => {
     ["malformed Fetch Metadata", head({ fetchSite: "elsewhere" }), false],
   ])("%s: %s", (_name, request, admitted) => {
     expect(browserAdmits(request, own)).toBe(admitted);
+  });
+});
+
+const optional = <A>(values: ReadonlyArray<A>) =>
+  fc.option(fc.constantFrom(...values), { nil: undefined });
+
+describe("which requests without a grant are sent to sign in", () => {
+  const navigation = {
+    fetchSite: "cross-site",
+    fetchMode: "navigate",
+    fetchDest: "document",
+    sentFetchMetadata: true,
+  } as const;
+
+  it.each([
+    ["a navigation with Fetch Metadata", head(navigation), true],
+    [
+      "a GET for HTML from a browser that sent no Fetch Metadata",
+      head({ acceptsHtml: true }),
+      true,
+    ],
+    ["a GET for anything else without Fetch Metadata", head({}), false],
+    [
+      "a GET for HTML with Fetch Metadata that is not a navigation",
+      head({
+        fetchSite: "same-origin",
+        fetchMode: "cors",
+        sentFetchMetadata: true,
+        acceptsHtml: true,
+      }),
+      false,
+    ],
+    ["a POST for HTML without Fetch Metadata", head({ method: "POST", acceptsHtml: true }), false],
+    [
+      "an upgrade for HTML without Fetch Metadata",
+      head({ upgrade: true, acceptsHtml: true }),
+      false,
+    ],
+  ])("%s: %s", (_name, request, signIn) => {
+    expect(opensSignIn(request)).toBe(signIn);
+  });
+
+  it("changes nothing about which requests are admitted", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          method: fc.constantFrom("GET", "HEAD", "POST", "PUT"),
+          upgrade: fc.boolean(),
+          origins: fc.array(fc.constantFrom(OWN, "https://other.preview.example", "null"), {
+            maxLength: 2,
+          }),
+          fetchSite: optional(["none", "same-origin", "same-site", "cross-site", "elsewhere"]),
+          fetchMode: optional(["navigate", "cors", "no-cors"]),
+          fetchDest: optional(["document", "image", "empty"]),
+        }),
+        fc.boolean(),
+        fc.boolean(),
+        (fields, sentFetchMetadata, acceptsHtml) => {
+          const plain = browserAdmits(head(fields), OWN);
+          expect(browserAdmits(head({ ...fields, sentFetchMetadata, acceptsHtml }), OWN)).toBe(
+            plain,
+          );
+        },
+      ),
+    );
   });
 });

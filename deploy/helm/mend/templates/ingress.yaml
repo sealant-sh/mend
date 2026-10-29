@@ -35,3 +35,33 @@ spec:
                 name: {{ .Release.Name }}-web
                 port: { number: 3105 }
 {{- end }}
+{{- if .Values.preview.enabled }}
+{{- $domain := .Values.preview.domain }}
+---
+# A networking/v1 wildcard host matches exactly one label, as the gateway does.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-preview
+  labels: {{ include "mend.labels" . | nindent 4 }}
+  {{- with .Values.preview.ingress.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with (.Values.preview.ingress.className | default .Values.ingress.className) }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  tls:
+    - hosts: [{{ printf "*.%s" $domain | quote }}]
+      secretName: {{ .Values.preview.ingress.tls.secretName | quote }}
+  rules:
+    - host: {{ printf "*.%s" $domain | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-preview
+                port: { number: {{ .Values.preview.port }} }
+{{- end }}

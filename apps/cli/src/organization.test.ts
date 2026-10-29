@@ -396,6 +396,31 @@ describe("operator", () => {
     );
   });
 
+  it("prints the preview gateway's item with each fact's own word, and counts it as refusing a public start", () => {
+    const detail = [
+      "observed: APP_URL's host mend.example.com is neither previews.example.net nor under it",
+      "carried: the SDK this build pins has the bounded forward the gateway starts on",
+      "open: the wildcard DNS and certificate for *.previews.example.net, and who reaches the published listener; only a look from another network sees it",
+    ].join("; ");
+    const lines = renderExposure({
+      declared: "public",
+      items: [
+        {
+          id: "preview-gateway",
+          established: "open",
+          detail,
+          fix: "what would verify it: https://<label>.previews.example.net from another network; then add preview-gateway to MEND_EXPOSURE_DECLARED",
+          blocksStart: true,
+        },
+      ],
+    });
+    expect(lines[1]).toContain(`· preview-gateway  open      ${detail}`);
+    expect(lines[1]).toContain("then add preview-gateway to MEND_EXPOSURE_DECLARED");
+    expect(lines.at(-1)).toBe(
+      "1 of 1 items open · 1 refuse a public start; MEND_EXPOSURE=public refuses to start · 0 do not",
+    );
+  });
+
   it("lists organizations and says when one has no owner", () => {
     expect(
       renderOrganizations([

@@ -15,7 +15,8 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "tldts": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

@@ -2,6 +2,7 @@ import * as net from "node:net";
 
 import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY } from "./server-edge-files.ts";
 import { MIRRORS_COMPOSE_FILE, runsMirrors, type ServerMirrors } from "./server-mirrors.ts";
+import { storeFileGroup } from "./server-store.ts";
 
 /**
  * The edge and the posture of a packaged install (docs/adr/0004-access-without-a-private-network.md
@@ -44,6 +45,15 @@ export const DEFAULT_T3_GATEWAY_PORT = 3120;
 export const T3_GATEWAY_CADDYFILE_NAME = "Caddyfile.t3";
 export const T3_GATEWAY_CADDY_SITE = "/etc/caddy/sites/t3code-gateway.caddy";
 
+export const PREVIEW_COMPOSE_FILE = "compose.preview.yaml";
+export const PREVIEW_GATEWAY_PORT = 3130;
+export const PREVIEW_CADDYFILE_NAME = "Caddyfile.preview";
+export const PREVIEW_CADDY_SITE = "/etc/caddy/sites/preview.caddy";
+export const PREVIEW_CERTIFICATE_TARGET = "/etc/caddy/preview/certificate.pem";
+export const PREVIEW_KEY_TARGET = "/etc/caddy/preview/key.pem";
+export const PREVIEW_CERTIFICATE_COPY_NAME = "preview-certificate.pem";
+export const PREVIEW_KEY_COPY_NAME = "preview-key.pem";
+
 export { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY };
 
 /**
@@ -56,6 +66,7 @@ export const DECLARABLE_ITEMS = [
   "edge-tls",
   "workspace-ssh",
   "t3code-gateway",
+  "preview-gateway",
 ] as const;
 export type DeclarableItem = (typeof DECLARABLE_ITEMS)[number];
 
@@ -86,6 +97,17 @@ export interface ServerPosture {
   readonly t3GatewayPort?: number;
   /** The host the edge serves the gateway on, its own origin (`--t3-gateway-origin`). */
   readonly t3GatewayOrigin?: string;
+  readonly preview?: ServerPreview;
+}
+
+/**
+ * A wildcard certificate needs ACME DNS-01, which the packaged Caddy image cannot do, so the
+ * operator supplies one issued elsewhere.
+ */
+export interface ServerPreview {
+  readonly domain: string;
+  readonly certificate: string;
+  readonly key: string;
 }
 
 /** `<address>:<port>` as Compose and the gate read it: IPv6 in brackets. */
@@ -235,10 +257,21 @@ export const t3GatewayEnvLines = (posture: ServerPosture): ReadonlyArray<string>
   ];
 };
 
+export const PREVIEW_PUBLISHED = publishedAddress("127.0.0.1", PREVIEW_GATEWAY_PORT);
+
+export const previewEnvLines = (posture: ServerPosture): ReadonlyArray<string> =>
+  posture.preview === undefined
+    ? []
+    : [
+        `MEND_PREVIEW_DOMAIN=${posture.preview.domain}`,
+        `MEND_PREVIEW_PUBLISHED=${PREVIEW_PUBLISHED}`,
+      ];
+
 /** The `KEY=value` lines the posture and the edge add to `server.env`. */
 export const postureEnvLines = (posture: ServerPosture): ReadonlyArray<string> => [
   ...(posture.edgeHost === undefined ? [] : [`MEND_EDGE_HOST=${posture.edgeHost}`]),
   ...t3GatewayEnvLines(posture),
+  ...previewEnvLines(posture),
   ...postureEnvironment(posture).map(([key, value]) => `${key}=${value}`),
 ];
 
@@ -348,6 +381,62 @@ export const T3_GATEWAY_CADDYFILE = [
   "",
 ].join("\n");
 
+export const renderPreviewOverlay = (posture: ServerPosture): string | undefined => {
+  if (posture.preview === undefined) return undefined;
+  return [
+    "# Written by mend server setup --preview-domain: live previews (docs/adr/0017), each at",
+    "# https://<label>.<domain>, served by the edge with setup's copy of the certificate you supplied.",
+    "# The gateway's port is published on this machine's loopback only. mend server setup",
+    "# --no-preview-domain removes it.",
+    "services:",
+    "  mend:",
+    "    environment:",
+    `      MEND_PREVIEW_PORT: "${PREVIEW_GATEWAY_PORT}"`,
+    "      # Where the edge's container reaches it, on the edge network.",
+    "      MEND_PREVIEW_BIND: 0.0.0.0",
+    `      MEND_PREVIEW_DOMAIN: ${required("MEND_PREVIEW_DOMAIN")}`,
+    `      MEND_PREVIEW_PUBLISHED: ${required("MEND_PREVIEW_PUBLISHED")}`,
+    "    ports:",
+    `      - "127.0.0.1:${PREVIEW_GATEWAY_PORT}:${PREVIEW_GATEWAY_PORT}"`,
+    "  edge:",
+    "    environment:",
+    `      MEND_PREVIEW_DOMAIN: ${required("MEND_PREVIEW_DOMAIN")}`,
+    `    group_add: ["${storeFileGroup()}"]`,
+    "    volumes:",
+    `      - ./${PREVIEW_CADDYFILE_NAME}:${PREVIEW_CADDY_SITE}:ro`,
+    `      - ./${PREVIEW_CERTIFICATE_COPY_NAME}:${PREVIEW_CERTIFICATE_TARGET}:ro`,
+    `      - ./${PREVIEW_KEY_COPY_NAME}:${PREVIEW_KEY_TARGET}:ro`,
+    "",
+  ].join("\n");
+};
+
+export const PREVIEW_CADDYFILE = [
+  "# Written by mend server setup --preview-domain: live previews (docs/adr/0017), one host each",
+  "# under the preview domain, apart from Mend's own origin.",
+  "*.{$MEND_PREVIEW_DOMAIN} {",
+  "\t# A wildcard needs DNS-01, so its certificate is issued elsewhere and supplied.",
+  `\ttls ${PREVIEW_CERTIFICATE_TARGET} ${PREVIEW_KEY_TARGET}`,
+  "",
+  `\treverse_proxy mend:${PREVIEW_GATEWAY_PORT} {`,
+  "\t\t# Event streams, hot reload and downloads go out as they arrive.",
+  "\t\tflush_interval -1",
+  "\t\ttransport http {",
+  "\t\t\t# A request held for a stopped preview waits for it to start.",
+  "\t\t\tresponse_header_timeout 10m",
+  "\t\t}",
+  "\t}",
+  "",
+  "\t# No uri, no Location and no Referer: the sign-in exchange carries a ticket in its query,",
+  "\t# and an app's own paths and queries are its own. uri-free is the Caddyfile's snippet; Caddy's",
+  "\t# error lines about these requests go to its default log, which holds neither.",
+  "\tlog preview {",
+  "\t\toutput stdout",
+  "\t\timport uri-free",
+  "\t}",
+  "}",
+  "",
+].join("\n");
+
 /** The overlay files a generation holds beside `compose.yaml`, in the order Compose merges them. */
 export const composeOverlays = (
   posture: ServerPosture & { readonly mirrors?: ServerMirrors },
@@ -356,6 +445,7 @@ export const composeOverlays = (
   ...(renderPostureOverlay(posture) === undefined ? [] : [POSTURE_COMPOSE_FILE]),
   ...(runsMirrors(posture.mirrors) ? [MIRRORS_COMPOSE_FILE] : []),
   ...(posture.t3GatewayPort === undefined ? [] : [T3_GATEWAY_COMPOSE_FILE]),
+  ...(posture.preview === undefined ? [] : [PREVIEW_COMPOSE_FILE]),
 ];
 
 // ── what `mend server status` says ─────────────────────────────────────────
@@ -429,6 +519,11 @@ export const declaredPostureLines = (posture: ServerPosture): ReadonlyArray<stri
     ? []
     : [`edge · ${posture.edgeHost} · ${EDGE_IMAGE} on 80 and 443 · Mend's own port on loopback`]),
   ...t3GatewayDeclaredLines(posture),
+  ...(posture.preview === undefined
+    ? []
+    : [
+        `previews · https://<label>.${posture.preview.domain} · served by the edge with setup's copy of ${posture.preview.certificate} · the gateway's port published on ${PREVIEW_PUBLISHED} only`,
+      ]),
   `exposure · declared ${posture.exposure ?? "private"}${posture.exposure === undefined ? " · the default, not set on this install" : ""}`,
   `tenancy · declared ${posture.tenancy ?? "single"}${posture.tenancy === undefined ? " · the default, not set on this install" : ""}`,
   ...(posture.sshBind === undefined || posture.sshPort === undefined

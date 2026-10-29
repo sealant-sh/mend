@@ -8,6 +8,8 @@ import {
   DEFAULT_T3_GATEWAY_PORT,
   type DeclarableItem,
   type Exposure,
+  PREVIEW_PUBLISHED,
+  type ServerPreview,
   parseEdgeHost,
   publishedAddress,
   t3GatewayBeyondMachine,
@@ -55,6 +57,7 @@ export interface SetupSettings {
   readonly t3GatewayPort: number | undefined;
   /** The host the edge serves the gateway on; only with an edge. */
   readonly t3GatewayOrigin: string | undefined;
+  readonly preview: ServerPreview | undefined;
   readonly mirrors: ServerMirrors;
 }
 
@@ -93,6 +96,11 @@ const sameMirrors = (left: ServerMirrors, right: ServerMirrors): boolean =>
   left.docker?.maxSize === right.docker?.maxSize &&
   dockerMirrorLogin(left.docker) === dockerMirrorLogin(right.docker);
 
+const samePreview = (left: ServerPreview | undefined, right: ServerPreview | undefined): boolean =>
+  left?.domain === right?.domain &&
+  left?.certificate === right?.certificate &&
+  left?.key === right?.key;
+
 /** Equal as settings: the lists as sets, since their order changes nothing the server reads. */
 export const sameSettings = (left: SetupSettings, right: SetupSettings): boolean =>
   left.bind === right.bind &&
@@ -107,6 +115,7 @@ export const sameSettings = (left: SetupSettings, right: SetupSettings): boolean
   sameSet(left.declared, right.declared) &&
   left.t3GatewayPort === right.t3GatewayPort &&
   left.t3GatewayOrigin === right.t3GatewayOrigin &&
+  samePreview(left.preview, right.preview) &&
   sameMirrors(left.mirrors, right.mirrors);
 
 // ─── from settings to flags ─────────────────────────────────────────────────
@@ -162,6 +171,22 @@ export const flagsFor = (before: SetupSettings, after: SetupSettings): ReadonlyA
         ? ["--no-t3-gateway-origin"]
         : ["--t3-gateway-origin", after.t3GatewayOrigin]),
     );
+  if (after.preview === undefined && before.preview !== undefined)
+    flags.push("--no-preview-domain");
+  if (after.preview !== undefined) {
+    if (after.preview.domain !== before.preview?.domain)
+      flags.push("--preview-domain", after.preview.domain);
+    if (
+      after.preview.certificate !== before.preview?.certificate ||
+      after.preview.key !== before.preview.key
+    )
+      flags.push(
+        "--preview-certificate",
+        after.preview.certificate,
+        "--preview-key",
+        after.preview.key,
+      );
+  }
   const npmBefore = before.mirrors.npm;
   const npmAfter = after.mirrors.npm;
   if (npmAfter === null && npmBefore !== null) flags.push("--no-npm-mirror");
@@ -257,6 +282,11 @@ const t3Of = (settings: SetupSettings): string => {
       : `on, at ${placement.url}, this machine only`;
 };
 
+const previewsOf = (settings: SetupSettings): string =>
+  settings.preview === undefined
+    ? "off"
+    : `on, at https://<label>.${settings.preview.domain} through the edge, with ${settings.preview.certificate}`;
+
 const tenancyOf = (settings: SetupSettings): string =>
   settings.tenancy === "multi" ? "several organizations (multi)" : "one organization (single)";
 
@@ -280,6 +310,7 @@ const rowsOf = (settings: SetupSettings): ReadonlyArray<readonly [string, string
   ["exposure", exposureOf(settings)],
   ["workspace SSH", sshOf(settings)],
   ["T3 Code gateway", t3Of(settings)],
+  ["live previews", previewsOf(settings)],
   ["organizations", tenancyOf(settings)],
   ["mirrors", mirrorsOf(settings.mirrors)],
   ["you declared", declaredOf(settings)],
@@ -296,6 +327,7 @@ export const settingsLines = (settings: SetupSettings): ReadonlyArray<string> =>
         (label !== "you declared" ||
           settings.exposure === "public" ||
           settings.declared.length > 0) &&
+        (label !== "live previews" || settings.preview !== undefined) &&
         (label !== "extra origins" || settings.allowedOrigins.length > 0),
     )
     .map(([label, value]) => `  ${label.padEnd(LABEL_WIDTH)}${value}`);
@@ -705,12 +737,13 @@ const toThisMachine = (settings: SetupSettings): SetupSettings => ({
   sshBind: undefined,
   edgeHost: undefined,
   t3GatewayOrigin: undefined,
+  preview: undefined,
   appUrl:
     settings.edgeHost === undefined && isLoopbackName(new URL(settings.appUrl).hostname)
       ? settings.appUrl
       : `http://localhost:${settings.appPort}`,
   exposure: "loopback",
-  declared: without(settings.declared, "workspace-ssh"),
+  declared: without(without(settings.declared, "workspace-ssh"), "preview-gateway"),
 });
 
 /** This machine's own IPv4 addresses that are public: published there, Mend answers the internet. */
@@ -847,6 +880,8 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
         : (settings.sshBind ?? settings.bind),
     edgeHost: undefined,
     t3GatewayOrigin: undefined,
+    preview: undefined,
+    declared: without(settings.declared, "preview-gateway"),
     appUrl,
     exposure: "private",
   });
@@ -1141,6 +1176,13 @@ const DECLARATIONS: ReadonlyArray<{
         : `the T3 Code gateway on ${published} answers only the networks that should reach it`;
     },
   },
+  {
+    item: "preview-gateway",
+    text: (settings) =>
+      settings.preview === undefined
+        ? ""
+        : `*.${settings.preview.domain} resolves to this machine's edge, https://<label>.${settings.preview.domain} answers over the certificate you supplied and it chains to a public root, and ${PREVIEW_PUBLISHED} answers nothing from another machine`,
+  },
 ];
 
 /**
@@ -1160,11 +1202,12 @@ const askDeclarations = async (asked: Asked, settings: SetupSettings): Promise<S
   const { io } = asked;
   io.write("");
   io.write(
-    "Mend cannot observe these from inside. mend operator exposure lists each as open until you state you checked it from outside; none of them stops a start. Say yes only to what you checked.",
+    `Mend cannot observe these from inside. mend operator exposure lists each as open until you state you checked it from outside.${settings.preview === undefined ? "" : " Under a public exposure, Mend does not start while preview-gateway is open."} Say yes only to what you checked.`,
   );
   let declared = settings.declared;
   for (const { item, text } of DECLARATIONS) {
     if (item === "t3code-gateway" && !t3NeedsStatement(settings)) continue;
+    if (item === "preview-gateway" && settings.preview === undefined) continue;
     const checked = await yesNo(
       io,
       `  ${item}: ${text(settings)}. Checked?`,
@@ -1394,6 +1437,7 @@ const askOrigins = async (asked: Asked, settings: SetupSettings): Promise<SetupS
 const walk = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
   let next = await askReach(asked, settings);
   next = await askT3(asked, next);
+  next = await askPreviews(asked, next);
   if (next.exposure === "public") {
     asked.io.write("");
     asked.io.write(
@@ -1406,7 +1450,24 @@ const walk = async (asked: Asked, settings: SetupSettings): Promise<SetupSetting
   return askTenancy(asked, next);
 };
 
-type Topic = "reach" | "ssh" | "t3" | "declared" | "mirrors" | "tenancy" | "origins";
+type Topic = "reach" | "ssh" | "t3" | "previews" | "declared" | "mirrors" | "tenancy" | "origins";
+
+const askPreviews = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
+  const preview = settings.preview;
+  if (preview === undefined) return settings;
+  const kept = await yesNo(
+    asked.io,
+    `Keep live previews at https://<label>.${preview.domain}?`,
+    true,
+  );
+  return kept
+    ? settings
+    : {
+        ...settings,
+        preview: undefined,
+        declared: without(settings.declared, "preview-gateway"),
+      };
+};
 
 const changeOne = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
   let next = settings;
@@ -1426,6 +1487,9 @@ const changeOne = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
               },
             ]),
         { label: "the T3 Code gateway", detail: t3Of(next), value: "t3" },
+        ...(next.preview === undefined
+          ? []
+          : [{ label: "live previews", detail: previewsOf(next), value: "previews" as const }]),
         ...(next.exposure === "public"
           ? [
               {
@@ -1444,6 +1508,7 @@ const changeOne = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
     if (topic === "reach") next = await askReach(asked, next);
     else if (topic === "ssh") next = await askSsh(asked, next);
     else if (topic === "t3") next = await askT3(asked, next);
+    else if (topic === "previews") next = await askPreviews(asked, next);
     else if (topic === "declared") next = await askDeclarations(asked, next);
     else if (topic === "mirrors") next = await askMirrors(asked, next, false);
     else if (topic === "tenancy") next = await askTenancy(asked, next);

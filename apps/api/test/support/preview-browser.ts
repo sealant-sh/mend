@@ -1,4 +1,4 @@
-import { chromium, type Page } from "playwright-core";
+import { type Browser, chromium, firefox, type Page } from "playwright-core";
 
 export interface ChromiumOptions {
   readonly loopbackHosts?: ReadonlyArray<string>;
@@ -31,3 +31,10 @@ export const openInChromium = async (
     throw error;
   }
 };
+
+export type BrowserKind = "chromium" | "firefox";
+
+export const launchBrowser = (kind: BrowserKind): Promise<Browser> =>
+  kind === "chromium"
+    ? chromium.launch({ headless: true, args: ["--no-sandbox"] })
+    : firefox.launch({ headless: true });

@@ -14,7 +14,9 @@ import {
   parseEdgeHost,
   postureEnvironment,
   postureEnvLines,
+  PREVIEW_CADDYFILE,
   renderPostureOverlay,
+  renderPreviewOverlay,
   renderT3GatewayOverlay,
   T3_GATEWAY_CADDYFILE,
   t3GatewayEnvLines,
@@ -425,6 +427,61 @@ describe("where the t3code gateway is published (ADR 0012, ADR 0004)", () => {
   });
 });
 
+describe("previews behind the edge (ADR 0017)", () => {
+  const posture = {
+    bind: "127.0.0.1",
+    appUrl: "https://mend.example.com",
+    edgeHost: "mend.example.com",
+    preview: {
+      domain: "previews.example.net",
+      certificate: "/etc/mend/previews.crt",
+      key: "/etc/mend/previews.key",
+    },
+  };
+
+  it("off, adds nothing", () => {
+    expect(renderPreviewOverlay({ edgeHost: "mend.example.com" })).toBeUndefined();
+    expect(composeOverlays({ edgeHost: "mend.example.com" })).not.toContain("compose.preview.yaml");
+  });
+
+  it("hands the gateway and the edge the domain, publishes the port on loopback only, and mounts the site and setup's copies", () => {
+    expect(postureEnvLines(posture)).toEqual([
+      "MEND_EDGE_HOST=mend.example.com",
+      "MEND_PREVIEW_DOMAIN=previews.example.net",
+      "MEND_PREVIEW_PUBLISHED=127.0.0.1:3130",
+    ]);
+    expect(composeOverlays(posture).at(-1)).toBe("compose.preview.yaml");
+    const overlay = renderPreviewOverlay(posture) ?? "";
+    expect(overlay).toContain('      MEND_PREVIEW_PORT: "3130"\n      # Where');
+    expect(overlay).toContain("      MEND_PREVIEW_BIND: 0.0.0.0\n");
+    expect(overlay.match(/^ {6}- "[^"]*"$/gm)).toEqual(['      - "127.0.0.1:3130:3130"']);
+    expect(overlay).toContain(`    group_add: ["${process.getegid?.()}"]\n`);
+    for (const mount of [
+      "./Caddyfile.preview:/etc/caddy/sites/preview.caddy:ro",
+      "./preview-certificate.pem:/etc/caddy/preview/certificate.pem:ro",
+      "./preview-key.pem:/etc/caddy/preview/key.pem:ro",
+    ])
+      expect(overlay).toContain(`      - ${mount}\n`);
+    expect(overlay).not.toContain("/etc/mend/");
+    expect(declaredPostureLines(posture)[1]).toBe(
+      "previews · https://<label>.previews.example.net · served by the edge with setup's copy of /etc/mend/previews.crt · the gateway's port published on 127.0.0.1:3130 only",
+    );
+    for (const line of declaredPostureLines(posture)) expect(line).not.toMatch(VERDICTS);
+  });
+
+  it("serves one label under the domain with the supplied certificate, streaming, to the gateway only", () => {
+    expect(PREVIEW_CADDYFILE).toContain("*.{$MEND_PREVIEW_DOMAIN} {\n");
+    expect(PREVIEW_CADDYFILE).toContain(
+      "\ttls /etc/caddy/preview/certificate.pem /etc/caddy/preview/key.pem\n",
+    );
+    expect(PREVIEW_CADDYFILE.match(/^\t*reverse_proxy\s+\S+/gm)).toEqual([
+      "\treverse_proxy mend:3130",
+    ]);
+    for (const setting of ["flush_interval -1", "response_header_timeout 10m"])
+      expect(PREVIEW_CADDYFILE).toContain(`\t${setting}\n`);
+  });
+});
+
 describe("what the edge logs (ADR 0004)", () => {
   // What a client can send, in spellings that clean to a route of their own or to none, and what
   // Mend's log may hold of it: its path, and never its query, its fragment or a target's userinfo.
@@ -486,15 +543,20 @@ describe("what the edge logs (ADR 0004)", () => {
       expect(caddyfile).toContain("\theader -X-Mend-File-*\n");
   });
 
-  it("holds no uri and no Location in every other log, the t3code gateway's among them", () => {
+  it("holds no uri and no Location in every other log, the t3code gateway's and the previews' among them", () => {
     const uriFree = EDGE_CADDYFILE.match(/^\(uri-free\) \{\n([\s\S]*?)^\}$/m)?.[1] ?? "";
     expect(uriFree).toContain("\t\t\trequest>uri replace REDACTED\n");
     expect(uriFree).toContain("\t\t\tresp_headers>Location delete\n");
-    const all = [...logsOf(EDGE_CADDYFILE), ...logsOf(T3_GATEWAY_CADDYFILE)];
+    const all = [
+      ...logsOf(EDGE_CADDYFILE),
+      ...logsOf(T3_GATEWAY_CADDYFILE),
+      ...logsOf(PREVIEW_CADDYFILE),
+    ];
     expect(all.map(({ name }) => name).toSorted()).toEqual([
       "default",
       "mend",
       "mend",
+      "preview",
       "t3code-gateway",
     ]);
     for (const { name, body } of all.filter((log) => log.name !== "mend"))

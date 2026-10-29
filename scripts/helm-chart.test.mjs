@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,8 @@ import { parseAllDocuments } from "yaml";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const chart = path.join(root, "deploy/helm/mend");
+const { SAME_SITE_PREVIEW_REASON: SAME_SITE } =
+  await import("../packages/network/src/preview-domain.ts");
 const helmAvailable = spawnSync("helm", ["version", "--short"], { encoding: "utf8" }).status === 0;
 const skip = helmAvailable ? false : "helm is not on PATH";
 
@@ -635,19 +638,359 @@ test("no Ingress is rendered unless asked for, and exposure defaults to private"
   assert.equal(envOf(result.stdout, "mend-api").get("MEND_URL_BEARERS"), undefined);
 });
 
-test("the Ingress routes one TLS host to the web Service and nothing else", { skip }, () => {
+const ingressesOf = (manifest) =>
+  Object.fromEntries(
+    parseAllDocuments(manifest)
+      .map((document) => document.toJS())
+      .filter((resource) => resource?.kind === "Ingress")
+      .map((ingress) => [
+        ingress.metadata.name,
+        {
+          className: ingress.spec.ingressClassName,
+          tls: ingress.spec.tls.map((entry) => [entry.hosts, entry.secretName]),
+          hosts: ingress.spec.rules.map((rule) => rule.host),
+          backends: ingress.spec.rules.flatMap((rule) =>
+            rule.http.paths.map(
+              (route) => `${route.backend.service.name}:${route.backend.service.port.number}`,
+            ),
+          ),
+          annotations: ingress.metadata.annotations ?? {},
+        },
+      ]),
+  );
+
+test("Mend's Ingress routes one TLS host to the web Service, and nothing else", { skip }, () => {
   const result = withIngress();
   assert.equal(result.status, 0, result.stderr);
-  const ingress = documentOf(result.stdout, "Ingress", "mend-web");
-  assert.match(ingress, /ingressClassName: "nginx"/);
-  assert.match(ingress, /hosts: \["mend\.example\.com"\]\n\s+secretName: "mend-tls"/);
-  assert.match(ingress, /name: mend-web\n\s+port: \{ number: 3105 \}/);
-  // One rule, one path, one backend: the API, Sealant and the session channel are never routed.
-  assert.equal(ingress.match(/backend:/g).length, 1);
-  assert.ok(!ingress.includes("mend-api"));
-  assert.ok(!ingress.includes("3101") && !ingress.includes("3106"));
-  // Exactly one Ingress in the whole render.
-  assert.equal(result.stdout.match(/^kind: Ingress$/gm).length, 1);
+  assert.deepEqual(ingressesOf(result.stdout), {
+    "mend-web": {
+      className: "nginx",
+      tls: [[["mend.example.com"], "mend-tls"]],
+      hosts: ["mend.example.com"],
+      backends: ["mend-web:3105"],
+      annotations: {},
+    },
+  });
+});
+
+test(
+  "with previews, a second Ingress routes one label under the preview domain to the preview Service only",
+  { skip },
+  () => {
+    const result = renderFixture("preview");
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(ingressesOf(result.stdout), {
+      "mend-web": {
+        className: "nginx",
+        tls: [[["mend.example.com"], "mend-tls"]],
+        hosts: ["mend.example.com"],
+        backends: ["mend-web:3105"],
+        annotations: {},
+      },
+      "mend-preview": {
+        className: "nginx",
+        tls: [[["*.previews.example.net"], "previews-tls"]],
+        hosts: ["*.previews.example.net"],
+        backends: ["mend-preview:3130"],
+        annotations: {},
+      },
+    });
+    const service = parseAllDocuments(
+      documentOf(result.stdout, "Service", "mend-preview"),
+    )[0].toJS();
+    assert.deepEqual(service.spec.type, "ClusterIP");
+    assert.deepEqual(service.spec.ports, [{ name: "preview", port: 3130, targetPort: "preview" }]);
+    assert.equal(service.spec.selector["app.kubernetes.io/component"], "api");
+    const api = envOf(result.stdout, "mend-api");
+    assert.equal(api.get("MEND_PREVIEW_PORT"), "3130");
+    assert.equal(api.get("MEND_PREVIEW_BIND"), "0.0.0.0");
+    assert.equal(api.get("MEND_PREVIEW_DOMAIN"), "previews.example.net");
+    assert.equal(api.get("MEND_PREVIEW_START_HOLD"), undefined);
+    assert.match(
+      documentOf(result.stdout, "Deployment", "mend-api"),
+      /- \{ containerPort: 3130, name: preview \}/,
+    );
+    assert.equal(envOf(result.stdout, "mend-web").get("MEND_PREVIEW_PORT"), undefined);
+
+    const annotated = renderFixture(
+      "preview",
+      "preview.ingress.annotations.nginx\\.ingress\\.kubernetes\\.io/proxy-request-buffering=off",
+      "preview.ingress.className=traefik",
+      "preview.startHold=90 seconds",
+    );
+    assert.equal(annotated.status, 0, annotated.stderr);
+    assert.deepEqual(ingressesOf(annotated.stdout)["mend-preview"].annotations, {
+      "nginx.ingress.kubernetes.io/proxy-request-buffering": "off",
+    });
+    assert.equal(ingressesOf(annotated.stdout)["mend-preview"].className, "traefik");
+    assert.deepEqual(ingressesOf(annotated.stdout)["mend-web"].annotations, {});
+    assert.equal(envOf(annotated.stdout, "mend-api").get("MEND_PREVIEW_START_HOLD"), "90 seconds");
+  },
+);
+
+test("no preview object is rendered unless previews are enabled", { skip }, () => {
+  const result = withIngress();
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!result.stdout.includes("mend-preview"));
+  assert.ok(!result.stdout.includes("MEND_PREVIEW_"));
+});
+
+test(
+  "the chart refuses previews that cannot hold: on Mend's host, above or under it, without TLS, on another public port, or without the controller named",
+  { skip },
+  () => {
+    const refusals = [
+      [
+        ["preview.domain=mend.example.com"],
+        /preview\.domain mend\.example\.com holds Mend's host mend\.example\.com/,
+      ],
+      [
+        ["preview.domain=example.com"],
+        /preview\.domain example\.com holds Mend's host mend\.example\.com/,
+      ],
+      [
+        ["preview.domain=p.mend.example.com"],
+        /preview\.domain p\.mend\.example\.com is under Mend's host mend\.example\.com/,
+      ],
+      [
+        [
+          "ingress.enabled=false",
+          "web.appUrl=https://app.example.org",
+          "preview.domain=example.org",
+        ],
+        /holds Mend's host app\.example\.org/,
+      ],
+      [
+        ["web.allowedOrigins={https://alt.previews.example.net}"],
+        /holds Mend's host alt\.previews\.example\.net/,
+      ],
+      [["preview.domain=Previews.Example.Net"], /preview\.domain must be a lowercase DNS name/],
+      [["preview.domain="], /preview\.domain is required/],
+      [["preview.ingress.tls.secretName="], /previews are never routed without TLS/],
+      [
+        ["extraEnv[0].name=MEND_PREVIEW_PUBLIC_PORT", "extraEnv[0].value=8443"],
+        /extraEnv sets MEND_PREVIEW_PUBLIC_PORT=8443/,
+      ],
+      [
+        ["ingress.enabled=false", "ingress.controller.namespace="],
+        /admits the controller's Pods to the preview gateway/,
+      ],
+    ];
+    for (const [settings, reason] of refusals) {
+      const result = renderFixture("preview", ...settings);
+      assert.notEqual(result.status, 0, settings.join(" "));
+      assert.match(result.stderr, reason, settings.join(" "));
+    }
+    for (const settings of [
+      ["preview.domain=previews.example.com"],
+      ["extraEnv[0].name=MEND_PREVIEW_PUBLIC_PORT", "extraEnv[0].value=443"],
+    ]) {
+      const result = renderFixture("preview", ...settings);
+      assert.equal(result.status, 0, `${settings.join(" ")}: ${result.stderr}`);
+    }
+  },
+);
+
+test(
+  "a public install with previews renders only once preview-gateway is declared, and the refusal names what to verify first",
+  { skip },
+  () => {
+    for (const settings of [
+      ["exposure.mode=public"],
+      ["exposure.mode=public", "exposure.declared={core-private,edge-tls}"],
+    ]) {
+      const refused = renderFixture("preview", ...settings);
+      assert.notEqual(refused.status, 0, settings.join(" "));
+      const said = refused.stderr.replace(/\s+/g, " ");
+      for (const fact of [
+        "the wildcard DNS for *.previews.example.net points at the ingress controller",
+        "the certificate for *.previews.example.net chains to a public root",
+        "https://<label>.previews.example.net answers from another network",
+        "add preview-gateway to exposure.declared",
+      ]) {
+        assert.ok(said.includes(fact), `${settings.join(" ")}: ${fact}\n${refused.stderr}`);
+      }
+    }
+    for (const settings of [
+      ["exposure.mode=public", "exposure.declared={preview-gateway}"],
+      ["exposure.mode=private"],
+      ["exposure.mode=public", "preview.enabled=false"],
+    ]) {
+      const result = renderFixture("preview", ...settings);
+      assert.equal(result.status, 0, `${settings.join(" ")}: ${result.stderr}`);
+    }
+  },
+);
+
+test(
+  "NetworkPolicy admits the ingress controller's Pods to the preview gateway's port and to no other port of the API Pod",
+  { skip },
+  () => {
+    const result = renderFixture("preview");
+    assert.equal(result.status, 0, result.stderr);
+    const api = parseAllDocuments(documentOf(result.stdout, "NetworkPolicy", "mend-api"))[0].toJS();
+    const fromController = api.spec.ingress.filter((rule) =>
+      rule.from.some(
+        (peer) =>
+          peer.namespaceSelector?.matchLabels?.["kubernetes.io/metadata.name"] === "ingress-nginx",
+      ),
+    );
+    assert.deepEqual(fromController, [
+      {
+        from: [
+          {
+            namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "ingress-nginx" } },
+            podSelector: { matchLabels: { "app.kubernetes.io/name": "ingress-nginx" } },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: 3130 }],
+      },
+    ]);
+  },
+);
+
+/** Whether a NetworkPolicy's ingress rules admit a Pod (by namespace name and labels) to `port`. */
+const admits = (policy, pod, port) =>
+  policy.spec.ingress.some(
+    (rule) =>
+      rule.from.some((peer) => {
+        if (peer.ipBlock !== undefined) return false;
+        const namespace = peer.namespaceSelector?.matchLabels ?? {};
+        const labels = peer.podSelector?.matchLabels ?? {};
+        return (
+          Object.entries(namespace).every(
+            ([key, value]) => key === "kubernetes.io/metadata.name" && value === pod.namespace,
+          ) && Object.entries(labels).every(([key, value]) => pod.labels[key] === value)
+        );
+      }) &&
+      (rule.ports === undefined ||
+        rule.ports.some((range) => port >= range.port && port <= (range.endPort ?? range.port))),
+  );
+
+for (const [name, settings, refusal] of [
+  [
+    "a preview port equal to the API's 3101",
+    ["preview.port=3101"],
+    /preview\.port 3101 is the API's own port 3101/,
+  ],
+  [
+    "a preview port equal to the session channel's",
+    ["preview.port=3106"],
+    /preview\.port 3106 is the session channel's port/,
+  ],
+  [
+    "a Service host range that covers the preview port",
+    ["serviceHost.portMin=3000"],
+    /preview\.port 3130 is inside the Service host range 3000-43999/,
+  ],
+  [
+    "a preview port inside the Service host range",
+    ["preview.port=43100"],
+    /preview\.port 43100 is inside the Service host range 43100-43999/,
+  ],
+]) {
+  test(
+    `the chart refuses ${name}, which would open the preview port to the release namespace`,
+    { skip },
+    () => {
+      const result = renderFixture("preview", ...settings);
+      assert.notEqual(result.status, 0, result.stdout.slice(0, 200));
+      assert.match(result.stderr, refusal);
+    },
+  );
+}
+
+test(
+  "no Pod but the ingress controller's reaches the preview port, and the release namespace keeps the API's other ports",
+  { skip },
+  () => {
+    const policyOf = (fixture) => {
+      const result = renderFixture(fixture);
+      assert.equal(result.status, 0, result.stderr);
+      return parseAllDocuments(documentOf(result.stdout, "NetworkPolicy", "mend-api"))[0].toJS();
+    };
+    const previews = policyOf("preview");
+    const neighbour = { namespace: "mend", labels: { "app.kubernetes.io/name": "unrelated" } };
+    const controller = {
+      namespace: "ingress-nginx",
+      labels: { "app.kubernetes.io/name": "ingress-nginx" },
+    };
+    assert.equal(admits(previews, neighbour, 3130), false);
+    assert.equal(admits(previews, controller, 3130), true);
+    for (const port of [3101, 3106, 43100, 43999]) {
+      assert.equal(admits(previews, neighbour, port), true, String(port));
+    }
+    assert.equal(admits(previews, controller, 3101), false);
+    const plain = policyOf("obc");
+    assert.equal(admits(plain, neighbour, 3130), true);
+    assert.equal(admits(plain, neighbour, 9999), true);
+  },
+);
+
+test(
+  "NOTES say which Ingresses were created and what the preview controller must do",
+  { skip },
+  (t) => {
+    // `helm install --dry-run=client` still asks Helm 3 for a cluster, and `helm template` never
+    // renders NOTES.txt, so a copy of the chart renders it as a template's value.
+    const notesChart = fs.mkdtempSync(path.join(os.tmpdir(), "mend-chart-notes-"));
+    const copy = path.join(notesChart, "mend");
+    fs.cpSync(chart, copy, { recursive: true });
+    fs.renameSync(path.join(copy, "templates/NOTES.txt"), path.join(copy, "notes-source.txt"));
+    fs.writeFileSync(
+      path.join(copy, "templates/notes-render.yaml"),
+      'notes: |\n{{ tpl (.Files.Get "notes-source.txt") . | indent 2 }}\n',
+    );
+    t.after(() => fs.rmSync(notesChart, { recursive: true, force: true }));
+    const notesOf = (fixture) => {
+      const result = spawnSync(
+        "helm",
+        [
+          "template",
+          "mend",
+          copy,
+          "-n",
+          "mend",
+          "--show-only",
+          "templates/notes-render.yaml",
+          "-f",
+          path.join(chart, `ci/${fixture}-values.yaml`),
+        ],
+        { cwd: root, encoding: "utf8" },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      return parseAllDocuments(result.stdout)[0].toJS().notes;
+    };
+    const plain = notesOf("obc");
+    assert.match(plain, /No Ingress is created for Mend\. Port-forward the web tier/);
+    assert.ok(!plain.includes("Previews:"));
+    const previews = notesOf("preview");
+    assert.ok(!previews.includes("No Ingress is created"));
+    assert.match(previews, /Ingress mend-web: https:\/\/mend\.example\.com → mend-web:3105/);
+    assert.match(
+      previews,
+      /Previews: https:\/\/<label>\.previews\.example\.net → mend-preview:3130/,
+    );
+    assert.match(previews, /The chart installs no issuer: a wildcard certificate needs DNS-01/);
+    assert.match(previews, /\/__mend\/auth carries a single-use ticket in its\nquery/);
+    const said = previews.replace(/\s+/g, " ");
+    assert.ok(said.includes(SAME_SITE), "NOTES say the API refuses a preview on Mend's own site");
+    assert.match(said, /ingress-nginx's error log at its default level, notice, holds the ticket/);
+    assert.match(said, /error-log-level: crit in the controller ConfigMap/);
+    assert.match(said, /every Ingress that controller serves/);
+    assert.ok(!plain.replace(/\s+/g, " ").includes(SAME_SITE));
+  },
+);
+
+test("docs/KUBERNETES.md says what the API does with a preview on Mend's own site", () => {
+  const docs = fs.readFileSync(path.join(root, "docs/KUBERNETES.md"), "utf8");
+  const section = docs.slice(docs.indexOf("## Live previews"), docs.indexOf("## Request bodies"));
+  const said = section.replace(/\s+/g, " ");
+  assert.ok(said.replaceAll("`", "").includes(SAME_SITE), "the same-site sentence");
+  assert.ok(said.includes("such as `previews.example.com` beside `mend.example.com`"));
+  assert.ok(!/\bapart\b/.test(section), "no pair is called apart");
+  assert.match(said, /`error-log-level`/);
+  assert.match(said, /ingress-nginx itself is not verified live/);
 });
 
 test(
@@ -712,16 +1055,58 @@ test(
     assert.notEqual(observable.status, 0);
     assert.match(
       observable.stderr,
-      /exposure\.declared takes only core-private, edge-tls and t3code-gateway/,
+      /exposure\.declared takes only core-private, edge-tls, t3code-gateway and preview-gateway/,
     );
     // The t3code gateway's item, as the docs say it can be declared (review 645-1).
     const gateway = render(...base, "--set", "exposure.declared={t3code-gateway}");
     assert.equal(gateway.status, 0, gateway.stderr);
     assert.match(gateway.stdout, /name: MEND_EXPOSURE_DECLARED, value: "t3code-gateway"/);
+    const preview = render(...base, "--set", "exposure.declared={preview-gateway}");
+    assert.equal(preview.status, 0, preview.stderr);
+    assert.match(preview.stdout, /name: MEND_EXPOSURE_DECLARED, value: "preview-gateway"/);
 
     const unset = render(...base);
     assert.equal(unset.status, 0, unset.stderr);
     assert.ok(!unset.stdout.includes("MEND_EXPOSURE_DECLARED"));
+  },
+);
+
+test(
+  "the chart, the CLI and the docs take exactly the gate items the API lets an operator declare",
+  { skip },
+  async () => {
+    const exposure = fs.readFileSync(path.join(root, "apps/api/src/exposure.ts"), "utf8");
+    const api = [
+      ...(/export const DECLARABLE = \[([^\]]*)\]/.exec(exposure)?.[1] ?? "").matchAll(
+        /"([a-z0-9-]+)"/g,
+      ),
+    ].map(([, id]) => id);
+    assert.ok(api.includes("preview-gateway"), "the API's list is read");
+    const { DECLARABLE_ITEMS } = await import("../apps/cli/src/server-edge.ts");
+    assert.deepEqual([...DECLARABLE_ITEMS].toSorted(), api.toSorted());
+    const docs = fs.readFileSync(
+      path.join(root, "apps/docs/src/content/docs/operate/exposure.md"),
+      "utf8",
+    );
+    const base = ["-f", path.join(chart, "ci/obc-values.yaml")];
+    for (const id of api) assert.ok(docs.includes(`\`${id}\``), `the docs name ${id}`);
+    const allowed = [
+      ...(
+        /has \. \(list ((?:"[a-z0-9-]+" ?)+)\)/.exec(
+          fs.readFileSync(path.join(chart, "templates/api.yaml"), "utf8"),
+        )?.[1] ?? ""
+      ).matchAll(/"([a-z0-9-]+)"/g),
+    ].map(([, id]) => id);
+    // The chart publishes no workspace SSH apart from the web port, so it has nothing to state.
+    assert.deepEqual(
+      api.filter((id) => !allowed.includes(id)),
+      ["workspace-ssh"],
+    );
+    for (const id of allowed) {
+      const stated = render(...base, "--set", `exposure.declared={${id}}`);
+      assert.equal(stated.status, 0, `${id}: ${stated.stderr}`);
+    }
+    assert.notEqual(render(...base, "--set", "exposure.declared={workspace-ssh}").status, 0);
   },
 );
 
