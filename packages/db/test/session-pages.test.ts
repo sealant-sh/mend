@@ -38,6 +38,7 @@ const page = {
   sessionId: SESSION,
   callKey: "call-1",
   accountId: "alice",
+  agentProcessId: null,
   title: "Latency by region",
   height: 420,
   html: "<!doctype html><p>p99 · 41 ms ✓</p>",
@@ -102,7 +103,12 @@ describe.skipIf(postgres.skip)("session pages in Postgres", () => {
     );
     expect(read).toEqual(stored);
     expect(stored).toEqual({
-      ...page,
+      sessionId: page.sessionId,
+      callKey: page.callKey,
+      accountId: page.accountId,
+      title: page.title,
+      height: page.height,
+      html: page.html,
       id: stored.id,
       sha256: stored.sha256,
       bytes: stored.bytes,

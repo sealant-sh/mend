@@ -17,7 +17,12 @@ import * as Context from "effect/Context";
 
 import { CAPTURE_ROUTES, dispatchCaptureRoute, MAX_CAPTURE_BODY_BYTES } from "./capture-channel.ts";
 import { frame, makeFrameFeed, makePushSniffer, type GitTransportPlan } from "./git-transport.ts";
-import { MEND_MCP_CALL_KEY_HEADER, MEND_MCP_PATH } from "./mend-mcp/caller.ts";
+import {
+  agentProcessNamed,
+  MEND_MCP_AGENT_PROCESS_HEADER,
+  MEND_MCP_CALL_KEY_HEADER,
+  MEND_MCP_PATH,
+} from "./mend-mcp/caller.ts";
 import type { MendMcp } from "./mend-mcp/server.ts";
 import type { SessionSocketApi } from "./session-socket.ts";
 
@@ -156,7 +161,9 @@ const relayMcp = async (
     response.writeHead(503, { "content-type": "application/json" });
     response.end(JSON.stringify({ message }));
   };
-  const caller = await Effect.runPromise(Effect.result(api.mcpCaller()));
+  const caller = await Effect.runPromise(
+    Effect.result(api.mcpCaller(agentProcessNamed(request.headers[MEND_MCP_AGENT_PROCESS_HEADER]))),
+  );
   if (caller._tag === "Failure") return unavailable(caller.failure.message);
   if (server === undefined) return unavailable("Mend's MCP server is not running on this instance");
   const method = request.method ?? "GET";

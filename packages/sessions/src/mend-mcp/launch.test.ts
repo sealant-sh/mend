@@ -31,7 +31,7 @@ describe("withMendMcp", () => {
       "-c",
       'mcp_servers.mend.args=["mcp"]',
       "-c",
-      'mcp_servers.mend.env_vars=["MEND_SESSION_ENDPOINT","MEND_SESSION_ID","MEND_SESSION_TOKEN","MEND_SESSION_TOKEN_FILE"]',
+      'mcp_servers.mend.env_vars=["MEND_SESSION_ENDPOINT","MEND_SESSION_ID","MEND_SESSION_TOKEN","MEND_SESSION_TOKEN_FILE","MEND_AGENT_PROCESS_ID"]',
       "-c",
       "mcp_servers.mend.tool_timeout_sec=120",
       "app-server",

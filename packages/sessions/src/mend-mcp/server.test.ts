@@ -53,7 +53,11 @@ describe("Mend's MCP server", () => {
     const answers = await Effect.runPromise(
       Effect.gen(function* () {
         const mcp = yield* MendMcp;
-        const caller = { sessionId: SessionId.make("s-greet"), accountId: "maria" };
+        const caller = {
+          sessionId: SessionId.make("s-greet"),
+          accountId: "maria",
+          agentProcess: null,
+        };
         const opened = yield* mcp.handle(
           post({
             jsonrpc: "2.0",

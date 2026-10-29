@@ -83,7 +83,7 @@ export const mendMcpLayer = <R>(
               method: "DELETE",
               headers: { [MCP_SESSION_HEADER]: mcpSession },
             }),
-            { sessionId, accountId: null },
+            { sessionId, accountId: null, agentProcess: null },
           );
         }).pipe(Effect.asVoid);
 

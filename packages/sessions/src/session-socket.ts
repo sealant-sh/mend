@@ -3,7 +3,7 @@ import * as http from "node:http";
 import type * as net from "node:net";
 import * as path from "node:path";
 
-import type { SessionId } from "@mend/domain";
+import type { SessionId, SessionProcessId } from "@mend/domain";
 import type {
   AgentHookReport,
   ServiceBrowserScheme,
@@ -23,6 +23,8 @@ import {
 import {
   type ChannelCaller,
   type McpCallerUnavailableError,
+  MEND_AGENT_PROCESS_ENV,
+  MEND_MCP_AGENT_PROCESS_HEADER,
   MEND_MCP_CALL_KEY_HEADER,
   MEND_MCP_PATH,
   MEND_MCP_TOOL_TIMEOUT_SECONDS,
@@ -106,7 +108,10 @@ export interface SessionSocketApi {
    * the fact (`agentHookTarget`).
    */
   readonly agentHook: (report: AgentHookReport) => Effect.Effect<AgentHookOutcome>;
-  readonly mcpCaller: () => Effect.Effect<ChannelCaller, McpCallerUnavailableError>;
+  /** Who calls Mend's MCP server, with the session's agent process a request `named`, if any. */
+  readonly mcpCaller: (
+    named: SessionProcessId | null,
+  ) => Effect.Effect<ChannelCaller, McpCallerUnavailableError>;
   /**
    * `mend repo` (docs/adr/0011-repositories-in-a-session.md): the repositories this session
    * holds beside its own worktree, the projects it may add, and adding one. `addRepository`
@@ -356,6 +361,8 @@ const hook = (harness) => {
 const mcp = () => {
   const ROUTE = ${JSON.stringify(MEND_MCP_PATH)};
   const CALL_KEY = ${JSON.stringify(MEND_MCP_CALL_KEY_HEADER)};
+  const AGENT_PROCESS = process.env[${JSON.stringify(MEND_AGENT_PROCESS_ENV)}] || "";
+  const PROCESS_HEADERS = AGENT_PROCESS === "" ? {} : { ${JSON.stringify(MEND_MCP_AGENT_PROCESS_HEADER)}: AGENT_PROCESS };
   const ASK_FOR_MS = ${MCP_BRIDGE_ASK_FOR_MS};
   let initialize = null;
   let initialized = Promise.resolve();
@@ -432,6 +439,7 @@ const mcp = () => {
     new Promise((resolve, reject) => {
       const headers = Object.assign(
         { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        PROCESS_HEADERS,
         fresh || mcpSession === null ? {} : { "mcp-session-id": mcpSession },
         fresh || protocolVersion === null ? {} : { "mcp-protocol-version": protocolVersion },
         extra,
@@ -585,7 +593,7 @@ const mcp = () => {
 
   const close = () => {
     if (mcpSession === null) process.exit(0);
-    const options = transportOptions("DELETE", ROUTE, { "mcp-session-id": mcpSession });
+    const options = transportOptions("DELETE", ROUTE, Object.assign({ "mcp-session-id": mcpSession }, PROCESS_HEADERS));
     if (options === null) process.exit(0);
     const req = transportClient().request(options, (res) => { res.resume(); res.on("end", () => process.exit(0)); });
     req.setTimeout(2000, () => req.destroy());

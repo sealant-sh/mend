@@ -221,7 +221,12 @@ describe("SessionPages", () => {
       Effect.gen(function* () {
         const pages = yield* SessionPages;
         return yield* pages.publish(
-          { sessionId: SessionId.make("s-crash"), accountId: "alice", callKey: "crash" },
+          {
+            sessionId: SessionId.make("s-crash"),
+            accountId: "alice",
+            agentProcess: null,
+            callKey: "crash",
+          },
           { html: "<p>x</p>", title: "Page", height: 400 },
         );
       }).pipe(

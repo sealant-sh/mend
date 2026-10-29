@@ -5,7 +5,11 @@ import * as path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { MEND_MCP_CALL_KEY_HEADER, MEND_MCP_PATH } from "../src/mend-mcp/caller.ts";
+import {
+  MEND_MCP_AGENT_PROCESS_HEADER,
+  MEND_MCP_CALL_KEY_HEADER,
+  MEND_MCP_PATH,
+} from "../src/mend-mcp/caller.ts";
 import { SESSION_HELPER_SCRIPT } from "../src/session-socket.ts";
 import { startMendMcp } from "./mend-mcp-process.ts";
 
@@ -66,15 +70,20 @@ const channel = async (reply: Reply, port = 0) => {
   };
 };
 
-const startBridge = (endpoint: string) =>
+const startBridge = (endpoint: string, env: Record<string, string> = {}) =>
   startMendMcp(helper, {
     MEND_SESSION_ENDPOINT: endpoint,
     MEND_SESSION_ID: SESSION,
     MEND_SESSION_TOKEN: TOKEN,
+    ...env,
   });
 
-const bridge = async (endpoint: string, messages: ReadonlyArray<unknown>) => {
-  const running = startBridge(endpoint);
+const bridge = async (
+  endpoint: string,
+  messages: ReadonlyArray<unknown>,
+  env: Record<string, string> = {},
+) => {
+  const running = startBridge(endpoint, env);
   for (const message of messages) running.send(message);
   return running.end();
 };
@@ -199,6 +208,33 @@ describe("mend mcp", () => {
       });
     } finally {
       await fake.close();
+    }
+  });
+
+  it("names its agent process on every request when the harness says which it is, and names none otherwise", async () => {
+    const process = "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f";
+    const cases = [
+      [{ MEND_AGENT_PROCESS_ID: process }, process],
+      [{}, undefined],
+    ] as const;
+    for (const [env, named] of cases) {
+      const fake = await channel(mcpServer({ sessions: new Set() }));
+      try {
+        const run = await bridge(fake.url, [initialize, initialized, list, render], env);
+        expect(run.stdout).toHaveLength(3);
+        expect(fake.seen.map((entry) => entry.method)).toEqual([
+          "POST",
+          "POST",
+          "POST",
+          "POST",
+          "DELETE",
+        ]);
+        expect(fake.seen.map((entry) => entry.headers[MEND_MCP_AGENT_PROCESS_HEADER])).toEqual(
+          Array(5).fill(named),
+        );
+      } finally {
+        await fake.close();
+      }
     }
   });
 
