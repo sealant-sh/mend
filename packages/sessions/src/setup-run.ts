@@ -3,7 +3,7 @@ import type { WorktreeId } from "@mend/domain";
 import { ServiceStartSetup, type SetupDeclaration } from "@mend/domain/workbench";
 import { type ProcessUser, SealantClient, type SealantPlatformError } from "@mend/sealant";
 import type { Workspace } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Exit, Option, Schema } from "effect";
+import { Deferred, Duration, Effect, Exit, Option, Ref, Schema } from "effect";
 
 import { digestWorktreeFile } from "./recipes.ts";
 import { WORKSPACE_REPO } from "./service-launch.ts";
@@ -61,6 +61,11 @@ export interface SetupRun {
 const SETUP_STOPPED = "a Stop came during setup";
 const LOST_WORDS =
   "setup lost its claim on this directory (its lease was not renewed in time), so its run was stopped and nothing was started · start it again";
+const LOST_UNSTOPPED =
+  "setup lost its claim on this directory (its lease was not renewed in time) and its processes could not be confirmed stopped, so nothing was started · this directory stays claimed until a start here can stop them";
+const UNSTOPPED =
+  "its processes could not be confirmed stopped, so this directory stays claimed until a start here can stop them";
+const claimLost = new SetupNotRun({ message: LOST_WORDS });
 
 const report = (
   plan: SetupPlan,
@@ -112,6 +117,13 @@ export const makeSetupRunner = Effect.gen(function* () {
   const platformFailed = (error: SealantPlatformError) =>
     notRun(`setup did not run · ${error.message}`);
 
+  /** A run's processes, wherever they are, found by their marker; as root, whoever they run as. */
+  const stopRun = (workspace: Workspace, claimId: string) =>
+    sealant.exec(workspace, setupStopArgv(claimId)).pipe(
+      Effect.map((result) => result.exitCode === 0),
+      Effect.orElseSucceed(() => false),
+    );
+
   const fingerprintOf = Effect.fn("SetupRunner.fingerprint")(function* (run: SetupRun) {
     const { copy, setup, workspace } = run;
     const image = yield* sealant
@@ -127,11 +139,20 @@ export const makeSetupRunner = Effect.gen(function* () {
       }
       return setupFingerprint({ run: setup.run, inputs, platform: null, image });
     }
+    const readId = crypto.randomUUID();
     const read = yield* execAs(
       workspace,
       run.person,
-      setupInputsArgv(WORKSPACE_REPO, setup.inputs),
-    ).pipe(Effect.mapError(platformFailed));
+      setupInputsArgv(WORKSPACE_REPO, setup.inputs, readId),
+    ).pipe(
+      Effect.mapError(platformFailed),
+      Effect.raceFirst(
+        Deferred.await(run.plan.stopping).pipe(
+          Effect.andThen(stopRun(workspace, readId)),
+          Effect.andThen(Effect.fail(notRun(SETUP_STOPPED))),
+        ),
+      ),
+    );
     const parsed = read.exitCode === 0 ? parseSetupInputs(read.stdout, setup.inputs) : null;
     if (parsed === null || parsed._tag === "Unreadable") {
       return yield* notRun(
@@ -148,13 +169,6 @@ export const makeSetupRunner = Effect.gen(function* () {
       image,
     });
   });
-
-  /** A run's processes, wherever they are, found by their marker; as root, whoever they run as. */
-  const stopRun = (workspace: Workspace, claimId: string) =>
-    sealant.exec(workspace, setupStopArgv(claimId)).pipe(
-      Effect.map((result) => result.exitCode === 0),
-      Effect.orElseSucceed(() => false),
-    );
 
   /**
    * The site's claim, or what decides this start without one. The fingerprint is read after any
@@ -237,19 +251,26 @@ export const makeSetupRunner = Effect.gen(function* () {
       Effect.flatMap((renewed) =>
         Exit.isSuccess(renewed) && Option.getOrElse(renewed.value, () => false)
           ? Effect.void
-          : Effect.fail(notRun(LOST_WORDS)),
+          : Effect.fail(claimLost),
       ),
       Effect.forever,
     );
 
-  const runStep = (run: SetupRun, claimId: string, step: string) => {
-    const stopProcesses = stopRun(run.workspace, claimId).pipe(Effect.asVoid);
-    return execAs(
-      run.workspace,
-      run.person,
-      setupStepArgv(claimId, step, run.person?.env ?? {}),
-      WORKSPACE_REPO,
-    ).pipe(
+  /** `ended` is false from a step's start until its processes are known to have ended. */
+  const runStep = (run: SetupRun, claimId: string, step: string, ended: Ref.Ref<boolean>) => {
+    const stopProcesses = stopRun(run.workspace, claimId).pipe(
+      Effect.flatMap((stopped) => (stopped ? Ref.set(ended, true) : Effect.void)),
+    );
+    return Ref.set(ended, false).pipe(
+      Effect.andThen(
+        execAs(
+          run.workspace,
+          run.person,
+          setupStepArgv(claimId, step, run.person?.env ?? {}),
+          WORKSPACE_REPO,
+        ),
+      ),
+      Effect.tap(() => Ref.set(ended, true)),
       Effect.map(
         (result): StepEnd => ({
           _tag: "Exited",
@@ -274,29 +295,38 @@ export const makeSetupRunner = Effect.gen(function* () {
     );
   };
 
-  /** Stamped done only when every step exited 0, no Stop came, and the claim was still held. */
-  const runSteps = Effect.fn("SetupRunner.steps")(function* (run: SetupRun, claimId: string) {
+  /**
+   * Stamped done only when every step exited 0, no Stop came, and the claim was still held. A step
+   * whose processes may still run is never stamped failed: its claim is all that fences them.
+   */
+  const runSteps = Effect.fn("SetupRunner.steps")(function* (
+    run: SetupRun,
+    claimId: string,
+    ended: Ref.Ref<boolean>,
+  ) {
     const { plan } = run;
     let tail = "";
     for (const step of run.setup.run) {
       if (plan.stopped()) return yield* notRun(SETUP_STOPPED);
       yield* report(plan, "running", step);
-      const ended = yield* runStep(run, claimId, step);
+      const end = yield* runStep(run, claimId, step, ended);
       if (plan.stopped()) return yield* notRun(SETUP_STOPPED);
-      if (ended._tag === "Exited" && ended.exitCode === 0) {
-        tail = outputTailOf(ended.output);
+      if (end._tag === "Exited" && end.exitCode === 0) {
+        tail = outputTailOf(end.output);
         continue;
       }
       const why =
-        ended._tag === "OverLimit"
+        end._tag === "OverLimit"
           ? `\`${step}\` ran past ${SETUP_STEP_LIMIT_MINUTES} minutes, the longest one setup step may run, so it was stopped`
-          : `\`${step}\` exited ${ended.exitCode}`;
-      const outputTail = ended._tag === "Exited" ? outputTailOf(ended.output) : "";
-      yield* setupRuns.finish(claimId, {
-        state: "failed",
-        exitCode: ended._tag === "Exited" ? ended.exitCode : null,
-        outputTail: outputTail === "" ? why : outputTail,
-      });
+          : `\`${step}\` exited ${end.exitCode}`;
+      const outputTail = end._tag === "Exited" ? outputTailOf(end.output) : "";
+      if (yield* Ref.get(ended)) {
+        yield* setupRuns.finish(claimId, {
+          state: "failed",
+          exitCode: end._tag === "Exited" ? end.exitCode : null,
+          outputTail: outputTail === "" ? why : outputTail,
+        });
+      }
       yield* report(plan, "failed", step, why);
       return yield* notRun(
         withOutput(`setup did not finish, so nothing was started · ${why}`, outputTail),
@@ -318,9 +348,23 @@ export const makeSetupRunner = Effect.gen(function* () {
       return yield* notRun(withOutput(`setup ${why}`, claim.outputTail));
     }
     const { claimId } = claim;
-    yield* runSteps(run, claimId).pipe(
+    const ended = yield* Ref.make(true);
+    yield* runSteps(run, claimId, ended).pipe(
       Effect.raceFirst(holdClaim(claimId)),
-      Effect.ensuring(setupRuns.release(claimId)),
+      Effect.ensuring(
+        Ref.get(ended).pipe(
+          Effect.flatMap((known) => (known ? setupRuns.release(claimId) : Effect.void)),
+        ),
+      ),
+      Effect.catch((error) =>
+        Effect.flatMap(Ref.get(ended), (known) =>
+          Effect.fail(
+            known
+              ? error
+              : notRun(error === claimLost ? LOST_UNSTOPPED : `${error.message} · ${UNSTOPPED}`),
+          ),
+        ),
+      ),
     );
   });
 });

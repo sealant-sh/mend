@@ -784,7 +784,7 @@ describe("SessionEngine capture mode", () => {
           expect(
             execCalls
               .filter((argv) => argv.includes("mend-setup-inputs"))
-              .map((argv) => argv.slice(4)),
+              .map((argv) => argv.slice(6)),
           ).toEqual([["/workspace/repo", "pnpm-lock.yaml"]]);
           expect(setupStepsIn(execCalls)).toEqual(["pnpm install --frozen-lockfile"]);
           const workspaceId = world.sessions.get(session.id)?.sealantWorkspaceId;
@@ -893,6 +893,75 @@ describe("SessionEngine capture mode", () => {
         ),
       },
     );
+
+  it("ends a start whose setup inputs read does not answer once a Stop names it, and stops the read", async () => {
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const stops: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const starting = yield* engine
+            .runServiceRecipe(session.id, "web")
+            .pipe(Effect.flip, Effect.forkChild);
+          const reads = () => execCalls.filter((argv) => argv.includes("mend-setup-inputs"));
+          while (reads().length === 0) yield* Effect.sleep("10 millis");
+
+          expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+          const error = yield* Fiber.join(starting);
+
+          expect(error.message).toBe("a Stop came before web started");
+          expect(stops).toEqual([reads()[0]?.[4]]);
+          expect(world.setupRuns).toEqual([]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            exec: (argv) =>
+              readsToml(argv)
+                ? {
+                    exitCode: 0,
+                    stdout:
+                      '[setup]\nrun = ["pnpm install"]\ninputs = ["pnpm-lock.yaml"]\n' +
+                      '[service.web]\ncommand = "pnpm dev"\nport = 5173\n',
+                    stderr: "",
+                  }
+                : undefined,
+            execEffect: (argv) => {
+              if (argv.includes("mend-setup-inputs")) return Effect.never;
+              const [, , , tag, runId] = argv;
+              if (tag !== "mend-setup-stop" || runId === undefined) return undefined;
+              return Effect.sync(() => stops.push(runId)).pipe(
+                Effect.as({ exitCode: 0, stdout: "", stderr: "" }),
+              );
+            },
+          },
+        ),
+      },
+    );
+  });
 
   it("runs setup again in an executor when only a non-UTF-8 byte of a binary input changes", async () => {
     const execCalls: Array<ReadonlyArray<string>> = [];

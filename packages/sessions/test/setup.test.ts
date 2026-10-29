@@ -127,7 +127,7 @@ const inWorkspace = (
   inputs: ReadonlyArray<string>,
   env: NodeJS.ProcessEnv = process.env,
 ) => {
-  const [command = "sh", ...args] = setupInputsArgv(repository, inputs);
+  const [command = "sh", ...args] = setupInputsArgv(repository, inputs, "read-1");
   const ran = spawnSync(command, args, { env });
   // The platform hands an exec's output back decoded as UTF-8.
   return parseSetupInputs(ran.stdout.toString("utf8"), inputs);
@@ -206,6 +206,42 @@ describe("setup's inputs read in a workspace, while an agent swaps them", () => 
       reason: "resolves outside the repository",
     });
     for (const directory of [outside, repository, shims]) fs.rmSync(directory, { recursive: true });
+  });
+
+  it("refuses an input swapped for a FIFO between its check and its read, without waiting on it", () => {
+    const repository = fs.mkdtempSync(path.join(os.tmpdir(), "mend-setup-inputs-"));
+    const shims = fs.mkdtempSync(path.join(os.tmpdir(), "mend-setup-shims-"));
+    const realpath = spawnSync("sh", ["-c", "command -v realpath"]).stdout.toString().trim();
+    fs.writeFileSync(path.join(repository, "lock.real"), "lockfile");
+    fs.symlinkSync("lock.real", path.join(repository, "lock"));
+    spawnSync("mkfifo", [path.join(repository, "pipe")]);
+    // `realpath` answers for the regular file the link names, then the link names a FIFO no
+    // one writes: opening it waits for a writer that never comes.
+    fs.writeFileSync(
+      path.join(shims, "realpath"),
+      [
+        "#!/bin/sh",
+        `answer=$(${JSON.stringify(realpath)} "$@")`,
+        "here=$(pwd -P)",
+        'rm -f "$here/lock" && ln -s pipe "$here/lock"',
+        'echo "$answer"',
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    const [command = "sh", ...args] = setupInputsArgv(repository, ["lock"], "read-1", 2);
+    const ran = spawnSync(command, args, {
+      env: { ...process.env, PATH: `${shims}:${process.env["PATH"] ?? ""}` },
+      timeout: 15_000,
+    });
+
+    expect(ran.error, "the read ends on its own").toBeUndefined();
+    expect(parseSetupInputs(ran.stdout.toString("utf8"), ["lock"])).toEqual({
+      _tag: "Refused",
+      path: "lock",
+      reason: "could not be read within 2 seconds",
+    });
+    for (const directory of [repository, shims]) fs.rmSync(directory, { recursive: true });
   });
 });
 

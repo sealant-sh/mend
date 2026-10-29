@@ -1050,3 +1050,158 @@ describe("stopping and reporting a first start's [setup]", () => {
     );
   });
 });
+
+describe("a [setup] run whose processes could not be confirmed stopped", () => {
+  const stopUnreached = () =>
+    Effect.fail(platformError("control_plane_unavailable", "the control plane did not answer"));
+
+  it.effect(
+    "keeps its claim after a lost exec and a failed stop, so the next start stops it before its own setup",
+    () =>
+      Effect.gen(function* () {
+        const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+        const spawned = clock.watched<ReadonlyArray<string>>();
+        const order: string[] = [];
+        let platformAnswers = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              write(tmp, session.worktree, "mend.toml", ONE_STEP);
+
+              const error = yield* engine
+                .runServiceRecipe(session.id, "web", ownerStart)
+                .pipe(Effect.flip);
+              const [kept] = world.setupRuns;
+
+              expect(error.message).toContain(
+                "its processes could not be confirmed stopped, so this directory stays claimed until a start here can stop them",
+              );
+              expect(world.setupRuns).toMatchObject([{ state: "running" }]);
+              expect(opensOf(spawned, "pnpm dev")).toEqual([]);
+
+              platformAnswers = true;
+              yield* TestClock.adjust("61 seconds");
+              yield* engine.runServiceRecipe(session.id, "web", ownerStart);
+
+              expect(order).toEqual([
+                "pnpm install --frozen-lockfile",
+                `stop ${kept?.claimId}`,
+                "pnpm install --frozen-lockfile",
+              ]);
+              expect(world.setupRuns).toMatchObject([{ state: "done" }]);
+            }),
+          {
+            prepareWorld: clock.prepareWorld,
+            forwardAdapterLayer: portsAnswer,
+            sealantLayer: layerWith(spawned, {
+              execEffect: (argv) => {
+                const stopped = setupStopRunOf(argv);
+                if (stopped !== null && stopped !== undefined) {
+                  if (!platformAnswers) return stopUnreached();
+                  return Effect.sync(() => order.push(`stop ${stopped}`)).pipe(
+                    Effect.as(answered(0)),
+                  );
+                }
+                const step = setupStepOf(argv);
+                if (step === null) return undefined;
+                return Effect.sync(() => order.push(step)).pipe(
+                  Effect.andThen(
+                    platformAnswers
+                      ? Effect.succeed(answered(0))
+                      : Effect.fail(platformError("transport", "the exec stream closed")),
+                  ),
+                );
+              },
+            }),
+          },
+        );
+      }),
+  );
+
+  it.effect("is never stamped failed after its step ran past the limit and its stop failed", () =>
+    Effect.gen(function* () {
+      const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+      const spawned = clock.watched<ReadonlyArray<string>>();
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            write(tmp, session.worktree, "mend.toml", ONE_STEP);
+
+            const error = yield* engine
+              .runServiceRecipe(session.id, "web", ownerStart)
+              .pipe(Effect.flip);
+
+            expect(error.message).toContain("ran past 30 minutes");
+            expect(error.message).toContain("its processes could not be confirmed stopped");
+            expect(world.setupRuns).toMatchObject([{ state: "running", exitCode: null }]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: layerWith(spawned, {
+            execEffect: (argv) => {
+              if (setupStopRunOf(argv) !== null) return stopUnreached();
+              return setupStepOf(argv) === null
+                ? undefined
+                : Effect.fail(
+                    platformError(
+                      "exec_timeout",
+                      "Timed out waiting for exec run r-1 to complete.",
+                    ),
+                  );
+            },
+          }),
+        },
+      );
+    }),
+  );
+
+  it.effect("keeps its claim after a lost renewal when its stop failed", () =>
+    Effect.gen(function* () {
+      const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+      const spawned = clock.watched<ReadonlyArray<string>>();
+      const steps = clock.watched<string>();
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            write(tmp, session.worktree, "mend.toml", ONE_STEP);
+            const starting = yield* engine
+              .runServiceRecipe(session.id, "web", ownerStart)
+              .pipe(Effect.flip, Effect.forkChild);
+            yield* clock.untilChanged(() => steps.length > 0, "setup running");
+            const [held] = world.setupRuns;
+            if (held === undefined) return yield* Effect.die("no claim");
+            held.leaseUntil = world.clock.now().getTime() - 1;
+
+            yield* TestClock.adjust("20 seconds");
+            const error = yield* Fiber.join(starting);
+
+            expect(error.message).toBe(
+              "setup lost its claim on this directory (its lease was not renewed in time) and its processes could not be confirmed stopped, so nothing was started · this directory stays claimed until a start here can stop them",
+            );
+            expect(world.setupRuns).toMatchObject([{ claimId: held.claimId, state: "running" }]);
+            expect(opensOf(spawned, "pnpm dev")).toEqual([]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          sealantLayer: layerWith(spawned, {
+            execEffect: (argv) => {
+              if (setupStopRunOf(argv) !== null) return stopUnreached();
+              const step = setupStepOf(argv);
+              if (step === null) return undefined;
+              return Effect.sync(() => steps.push(step)).pipe(Effect.andThen(Effect.never));
+            },
+          }),
+        },
+      );
+    }),
+  );
+});

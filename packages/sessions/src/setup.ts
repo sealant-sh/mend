@@ -104,41 +104,58 @@ export const setupStopArgv = (runId: string): ReadonlyArray<string> => [
 
 const INPUTS_MARK = "--mend-setup-inputs--";
 
+/** The longest one input is read for in a workspace, opening it included. */
+export const SETUP_INPUT_READ_SECONDS = 30;
+
 /**
- * Setup's inputs read in a workspace, as the person setup runs as: the platform, then a line per
- * input with its digest. Only a regular file that resolves inside the repository is read, and only
- * its digest leaves the workspace, never its bytes. The path is checked once to word a refusal,
- * then the file is opened and the open file itself is checked through `/proc/self/fd`, because an
- * agent can swap the path for a link out between the first check and the read.
+ * Setup's inputs read in a workspace, as the person setup runs as, marked with `runId` so a Stop
+ * can end the read: the platform, then a line per input with its digest. Only a regular file that
+ * resolves inside the repository is read, and only its digest leaves the workspace, never its
+ * bytes. The path is checked once to word a refusal, then the file is opened and the open file
+ * itself is checked through `/proc/self/fd`, because an agent can swap the path for a link out
+ * between the first check and the read. A shell cannot open without blocking, and a FIFO swapped
+ * in waits for a writer, so each input's open and read run under `timeout`.
  */
 export const setupInputsArgv = (
   repository: string,
   inputs: ReadonlyArray<string>,
+  runId: string,
+  readSeconds: number = SETUP_INPUT_READ_SECONDS,
 ): ReadonlyArray<string> => [
   "sh",
   "-c",
   [
+    `export ${SETUP_RUN_ENV}="$1"`,
+    "seconds=$2",
     PLATFORM_PROBE_SCRIPT,
     `echo ${INPUTS_MARK}`,
-    'cd "$1" || exit 45',
+    'cd "$3" || exit 45',
     "root=$(pwd -P)",
-    "shift",
+    "shift 3",
+    "read_opened='",
+    '  exec 3< "./$2" 2>/dev/null || { echo "refused could not be read"; exit 0; }',
+    '  opened=$(readlink /proc/self/fd/3 2>/dev/null) || { echo "refused could not be read"; exit 0; }',
+    '  case "$opened" in "$1"/*) ;; *) echo "refused resolves outside the repository"; exit 0 ;; esac',
+    '  if [ ! -f /proc/self/fd/3 ]; then echo "refused is not a regular file"; exit 0; fi',
+    '  sum=$(sha256sum <&3) || { echo "refused could not be read"; exit 0; }',
+    '  echo "sha256 ${sum%% *}"',
+    "'",
     "for input do",
     '  if [ ! -e "./$input" ]; then echo absent; continue; fi',
     '  real=$(realpath "./$input" 2>/dev/null) || { echo "refused does not resolve"; continue; }',
     '  case "$real" in "$root"/*) ;; *) echo "refused resolves outside the repository"; continue ;; esac',
     '  if [ -d "$real" ]; then echo "refused is a directory; name a file"; continue; fi',
     '  if [ ! -f "$real" ]; then echo "refused is not a regular file"; continue; fi',
-    '  exec 3< "./$input" 2>/dev/null || { echo "refused could not be read"; continue; }',
-    '  opened=$(readlink /proc/self/fd/3 2>/dev/null) || { exec 3<&-; echo "refused could not be read"; continue; }',
-    '  case "$opened" in "$root"/*) ;; *) exec 3<&-; echo "refused resolves outside the repository"; continue ;; esac',
-    '  if [ ! -f /proc/self/fd/3 ]; then exec 3<&-; echo "refused is not a regular file"; continue; fi',
-    '  sum=$(sha256sum <&3) || { exec 3<&-; echo "refused could not be read"; continue; }',
-    "  exec 3<&-",
-    '  echo "sha256 ${sum%% *}"',
+    '  answer=$(timeout -s KILL "$seconds" sh -c "$read_opened" mend-setup-input "$root" "$input")',
+    '  case "$answer" in',
+    '    "") echo "refused could not be read within $seconds seconds" ;;',
+    '    *) echo "$answer" ;;',
+    "  esac",
     "done",
   ].join("\n"),
   "mend-setup-inputs",
+  runId,
+  String(readSeconds),
   repository,
   ...inputs,
 ];

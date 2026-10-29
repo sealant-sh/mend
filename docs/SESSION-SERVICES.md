@@ -268,17 +268,20 @@ it, which every session in that worktree shares, or one executor's copy in captu
 - An input is read only when it is a regular file that resolves inside the repository: one that
   links out of it, a directory or a FIFO refuses the start, naming it. In capture mode it is read in
   the workspace as the person setup runs as, and only its sha256 leaves the workspace, never its
-  bytes.
+  bytes. An input that does not open and read within 30 seconds (a FIFO swapped in waits for a
+  writer) refuses the start, and a Stop ends the read at once.
 - The claim is in Postgres (`setup_runs`), so one start at a time runs setup in a place, across API
   processes. A start that finds another start running setup there waits for it, then reads its
   inputs again and skips setup if that run left a done stamp for what it reads now.
 - A run renews its one-minute lease every 20 seconds. One whose renewal fails, or does not answer
-  before its lease would lapse, stops its own processes and fails the start without a stamp. A
-  lapsed run is never run over: the next start stops its processes first, by a marker in their
-  environment, and only then runs setup. If the platform says the run's workspace is gone, its
-  processes went with it, and setup runs. If the workspace cannot be reached at all, the next start
-  waits, saying so, until the run can be stopped or its workspace ends. A Stop ends that wait. Two
-  runs never run setup in one place at once.
+  before its lease would lapse, stops its own processes and fails the start without a stamp. A run
+  whose processes could not be confirmed stopped (the workspace did not answer the stop) keeps its
+  claim, and is never stamped failed: the start says so, and the claim lapses for the next start to
+  stop them. A lapsed run is never run over: the next start stops its processes first, by a marker
+  in their environment, and only then runs setup. If the platform says the run's workspace is gone,
+  its processes went with it, and setup runs. If the workspace cannot be reached at all, the next
+  start waits, saying so, until the run can be stopped or its workspace ends. A Stop ends that wait.
+  Two runs never run setup in one place at once.
 - Only a run whose every step exited 0, under a claim it still held, with no Stop, is stamped done.
   A done stamp skips setup. Only the last run in a place is kept, so returning to an earlier
   lockfile runs setup again. `mend service run <name> --setup` runs it even over a done stamp, for a
