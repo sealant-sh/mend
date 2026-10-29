@@ -2222,6 +2222,29 @@ export const serviceObservations = pgTable(
   ],
 );
 
+/** At most one `running` row per site, whatever its fingerprint (ADR 0017, decision 4). */
+export const setupRuns = pgTable(
+  "setup_runs",
+  {
+    siteKey: text().notNull(),
+    fingerprint: text().notNull(),
+    state: text().$type<"running" | "done" | "failed">().notNull(),
+    claimId: uuid().notNull(),
+    runsAs: text(),
+    claimedAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    leaseUntil: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    finishedAt: timestamp({ mode: "date", withTimezone: true }),
+    exitCode: integer(),
+    outputTail: text(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.siteKey, table.fingerprint] }),
+    uniqueIndex("setup_runs_one_running_idx")
+      .on(table.siteKey)
+      .where(sql`${table.state} = 'running'`),
+  ],
+);
+
 /**
  * Every remote git operation a workspace routed through the transport shim
  * (docs/GIT-ACCESS.md): the host opened the authenticated connection, so the

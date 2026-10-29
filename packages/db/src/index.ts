@@ -71,6 +71,7 @@ export * from "./repos/harness-layouts.ts";
 export * from "./repos/session-git-ops.ts";
 export * from "./repos/session-processes.ts";
 export * from "./repos/services.ts";
+export * from "./repos/setup-runs.ts";
 export * from "./repos/session-runs.ts";
 export * from "./repos/settings.ts";
 export * from "./repos/session-pages.ts";
