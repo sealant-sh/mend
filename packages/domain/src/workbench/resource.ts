@@ -239,6 +239,9 @@ const exportRefusals = (
     }));
 };
 
+/** Whether an env value carries a credential, which keeps it out of `launch_env`, logs and lines. */
+export type ResourceEnvKind = "secret" | "plain";
+
 /**
  * What Mend knows of each preset's inside: the image repositories it runs, whether `own` is a
  * database on the project instance, the fixed exports, and the conventional names set when it is
@@ -248,27 +251,34 @@ export const RESOURCE_PRESETS: {
   readonly [P in ResourcePreset]: {
     readonly images: ReadonlyArray<string>;
     readonly database: boolean;
-    readonly exports: ReadonlyArray<string>;
-    readonly conventional: ReadonlyArray<string>;
+    readonly exports: Readonly<Record<string, ResourceEnvKind>>;
+    readonly conventional: Readonly<Record<string, ResourceEnvKind>>;
   };
 } = {
   postgres: {
     images: ["postgres", "pgvector/pgvector", "postgis/postgis"],
     database: true,
-    exports: ["URL", "DATABASE", "USERNAME", "PASSWORD"],
-    conventional: ["DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"],
+    exports: { URL: "secret", DATABASE: "plain", USERNAME: "plain", PASSWORD: "secret" },
+    conventional: {
+      DATABASE_URL: "secret",
+      PGHOST: "plain",
+      PGPORT: "plain",
+      PGUSER: "plain",
+      PGPASSWORD: "secret",
+      PGDATABASE: "plain",
+    },
   },
   mysql: {
     images: ["mysql", "mariadb"],
     database: true,
-    exports: ["URL", "DATABASE", "USERNAME", "PASSWORD"],
-    conventional: [],
+    exports: { URL: "secret", DATABASE: "plain", USERNAME: "plain", PASSWORD: "secret" },
+    conventional: {},
   },
   redis: {
     images: ["redis", "valkey/valkey"],
     database: false,
-    exports: ["URL"],
-    conventional: ["REDIS_URL"],
+    exports: { URL: "secret" },
+    conventional: { REDIS_URL: "secret" },
   },
 };
 
@@ -348,37 +358,102 @@ const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRef
 /** `MEND_RESOURCE_<NAME>_`, with `-` written as `_`. */
 export const resourceEnvPrefix = (name: ResourceName): string => `MEND_RESOURCE_${envPart(name)}_`;
 
-/**
- * Every env name a process gets from one resource: its address, its exports, and, when the caller
- * says it is the only one of its engine in use, the preset's conventional names.
- */
-export const resourceEnvNames = (
+/** How a worktree reaches a resource it uses. A project resource on `off` is not bound. */
+export type ResourceBinding =
+  | { readonly definition: ProjectResourceDefinition; readonly mode: "shared" | "own" }
+  | { readonly definition: WorktreeResourceDefinition; readonly mode: "worktree" };
+
+/** Whether `def` is the one of its preset among `bound`; an image Mend does not know is no engine. */
+export const onlyOfItsEngine = (
   def: ResourceDefinitionInput,
-  use: { readonly onlyOfItsEngine: boolean },
-): ReadonlyArray<string> => {
-  const preset = def.preset === null ? null : RESOURCE_PRESETS[def.preset];
-  const suffixes = [...addressSuffixes(def), ...(preset?.exports ?? Object.keys(def.exports))];
+  bound: ReadonlyArray<ResourceDefinitionInput>,
+): boolean =>
+  def.preset !== null && bound.filter((other) => other.preset === def.preset).length === 1;
+
+/** An export built from a secret env value is itself a secret (ADR 0019, "Env"). */
+const exportKind = (def: ResourceDefinitionInput, template: string): ResourceEnvKind => {
+  const parsed = parseTemplate(template);
+  const placeholders = parsed.ok ? parsed.placeholders : [];
+  return placeholders.some((placeholder) => {
+    const value = placeholder.startsWith("env.") ? def.env[placeholder.slice("env.".length)] : undefined;
+    return value !== undefined && typeof value !== "string";
+  })
+    ? "secret"
+    : "plain";
+};
+
+const envOf = (
+  binding: ResourceBinding,
+  bound: ReadonlyArray<ResourceBinding>,
+): ReadonlyArray<readonly [string, ResourceEnvKind]> => {
+  const def = binding.definition;
+  const prefixed = (suffix: string, kind: ResourceEnvKind): readonly [string, ResourceEnvKind] => [
+    resourceEnvPrefix(def.name) + suffix,
+    kind,
+  ];
+  const address = addressSuffixes(def).map((suffix) => prefixed(suffix, "plain"));
+  if (def.preset === null) {
+    return [
+      ...address,
+      ...Object.entries(def.exports).map(([name, template]) =>
+        prefixed(name, exportKind(def, template)),
+      ),
+    ];
+  }
+  const preset = RESOURCE_PRESETS[def.preset];
+  const only = onlyOfItsEngine(
+    def,
+    bound.map((other) => other.definition),
+  );
   return [
-    ...suffixes.map((suffix) => resourceEnvPrefix(def.name) + suffix),
-    ...(use.onlyOfItsEngine ? (preset?.conventional ?? []) : []),
+    ...address,
+    ...Object.entries(preset.exports).map(([name, kind]) => prefixed(name, kind)),
+    // Test and shadow databases are named server-wide, so each own database needs its suffix (S15).
+    ...(binding.mode === "own" && preset.database ? [prefixed("SUFFIX", "plain")] : []),
+    ...(only ? Object.entries(preset.conventional) : []),
   ];
 };
+
+/**
+ * Every env name a process gets from each resource its worktree binds: the address, the exports,
+ * an own database's suffix, and a preset's conventional names when it is the one of its engine.
+ */
+export const resourceEnvNames = (
+  bound: ReadonlyArray<ResourceBinding>,
+): ReadonlyMap<ResourceName, ReadonlyArray<string>> =>
+  new Map(
+    bound.map((binding) => [
+      binding.definition.name,
+      envOf(binding, bound).map(([name]) => name),
+    ]),
+  );
+
+/** The env names among `resourceEnvNames` that carry a credential. */
+export const secretEnvNames = (bound: ReadonlyArray<ResourceBinding>): ReadonlySet<string> =>
+  new Set(
+    bound.flatMap((binding) =>
+      envOf(binding, bound).flatMap(([name, kind]) => (kind === "secret" ? [name] : [])),
+    ),
+  );
 
 export interface ResourceEnvCollision {
   readonly name: string;
   readonly resources: ReadonlyArray<ResourceName>;
 }
 
+/** The binding that sets the most names: own where the policy offers it. */
+const widestBinding = (def: ResourceDefinitionInput): ResourceBinding =>
+  def.scope === "worktree"
+    ? { definition: def, mode: "worktree" }
+    : { definition: def, mode: choicesFor(def).includes("own") ? "own" : "shared" };
+
 /** Env names two resources in use together would both set (`db`'s `MAIN_URL`, `db-main`'s `URL`). */
 export const envNameCollisions = (
   defs: ReadonlyArray<ResourceDefinitionInput>,
 ): ReadonlyArray<ResourceEnvCollision> => {
   const setBy = new Map<string, ReadonlyArray<ResourceName>>();
-  for (const def of defs) {
-    const onlyOfItsEngine = defs.filter((other) => other.preset === def.preset).length === 1;
-    for (const name of resourceEnvNames(def, { onlyOfItsEngine })) {
-      setBy.set(name, [...(setBy.get(name) ?? []), def.name]);
-    }
+  for (const [resource, names] of resourceEnvNames(defs.map(widestBinding))) {
+    for (const name of names) setBy.set(name, [...(setBy.get(name) ?? []), resource]);
   }
   return [...setBy].flatMap(([name, resources]) =>
     resources.length > 1 ? [{ name, resources }] : [],

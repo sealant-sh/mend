@@ -5,6 +5,8 @@ import {
   choicesFor,
   defaultChoiceFor,
   envNameCollisions,
+  onlyOfItsEngine,
+  type ResourceBinding,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
   resourceEnvNames,
@@ -13,6 +15,7 @@ import {
   resourceNameIssue,
   resourceStatusLine,
   type ResourceStatusView,
+  secretEnvNames,
   selectionRefusal,
   WorktreeSelection,
 } from "./resource.ts";
@@ -351,6 +354,12 @@ describe("a worktree's selection", () => {
   });
 });
 
+const bind = (definition: ResourceDefinitionInput, mode: "shared" | "own" = "shared"): ResourceBinding =>
+  definition.scope === "worktree" ? { definition, mode: "worktree" } : { definition, mode };
+
+const namesOf = (bound: ReadonlyArray<ResourceBinding>, name: string) =>
+  [...resourceEnvNames(bound)].find(([resource]) => resource === name)?.[1];
+
 describe("env names", () => {
   it("writes the name in upper case with - as _", () => {
     expect(resourceEnvPrefix(ResourceName.make("mail-catcher"))).toBe(
@@ -361,6 +370,7 @@ describe("env names", () => {
   it("gives the host, the first port, each named port and the exports", () => {
     const mail = define({
       name: "mail-catcher",
+      scope: "worktree",
       image: "axllent/mailpit:v1.21",
       ports: [
         { name: "smtp", port: 1025, protocol: "tcp" },
@@ -368,7 +378,7 @@ describe("env names", () => {
       ],
       exports: { SMTP_URL: "smtp://{host}:{port.smtp}" },
     });
-    expect(resourceEnvNames(mail, { onlyOfItsEngine: true })).toEqual([
+    expect(namesOf([bind(mail)], "mail-catcher")).toEqual([
       "MEND_RESOURCE_MAIL_CATCHER_HOST",
       "MEND_RESOURCE_MAIL_CATCHER_PORT",
       "MEND_RESOURCE_MAIL_CATCHER_PORT_SMTP",
@@ -377,43 +387,86 @@ describe("env names", () => {
     ]);
   });
 
-  it("gives a Postgres preset its fixed exports, and DATABASE_URL and PG* only when it is the one Postgres", () => {
-    const fixed = [
-      "MEND_RESOURCE_DB_HOST",
-      "MEND_RESOURCE_DB_PORT",
-      "MEND_RESOURCE_DB_PORT_POSTGRES",
-      "MEND_RESOURCE_DB_URL",
-      "MEND_RESOURCE_DB_DATABASE",
-      "MEND_RESOURCE_DB_USERNAME",
-      "MEND_RESOURCE_DB_PASSWORD",
-    ];
-    expect(resourceEnvNames(postgres(), { onlyOfItsEngine: false })).toEqual(fixed);
-    expect(resourceEnvNames(postgres(), { onlyOfItsEngine: true })).toEqual([
+  const fixed = [
+    "MEND_RESOURCE_DB_HOST",
+    "MEND_RESOURCE_DB_PORT",
+    "MEND_RESOURCE_DB_PORT_POSTGRES",
+    "MEND_RESOURCE_DB_URL",
+    "MEND_RESOURCE_DB_DATABASE",
+    "MEND_RESOURCE_DB_USERNAME",
+    "MEND_RESOURCE_DB_PASSWORD",
+  ];
+  const conventional = ["DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"];
+
+  it("gives the one Postgres in use DATABASE_URL and PG*", () => {
+    expect(namesOf([bind(postgres())], "db")).toEqual([...fixed, ...conventional]);
+  });
+
+  it("gives neither of two Postgres in use DATABASE_URL or PG*", () => {
+    const bound = [bind(postgres()), bind(postgres({ name: "analytics" }))];
+    expect(namesOf(bound, "db")).toEqual(fixed);
+  });
+
+  it("counts only the resources in use as the engine's", () => {
+    const bound = [bind(postgres()), bind(redis()), bind(define())];
+    expect(namesOf(bound, "db")).toEqual([...fixed, ...conventional]);
+  });
+
+  it("gives a database preset's own database MEND_RESOURCE_<NAME>_SUFFIX, and shared none", () => {
+    expect(namesOf([bind(postgres(), "own")], "db")).toEqual([
       ...fixed,
-      "DATABASE_URL",
-      "PGHOST",
-      "PGPORT",
-      "PGUSER",
-      "PGPASSWORD",
-      "PGDATABASE",
+      "MEND_RESOURCE_DB_SUFFIX",
+      ...conventional,
     ]);
+    expect(namesOf([bind(mysql(), "own")], "db")).toContain("MEND_RESOURCE_DB_SUFFIX");
+    expect(namesOf([bind(postgres({ scope: "worktree" }))], "db")).not.toContain(
+      "MEND_RESOURCE_DB_SUFFIX",
+    );
+    expect(namesOf([bind(define(), "own")], "queue")).not.toContain("MEND_RESOURCE_QUEUE_SUFFIX");
   });
 
   it("gives Redis _URL, and REDIS_URL only when it is the one Redis", () => {
-    expect(resourceEnvNames(redis(), { onlyOfItsEngine: false })).toContain(
-      "MEND_RESOURCE_CACHE_URL",
-    );
-    expect(resourceEnvNames(redis(), { onlyOfItsEngine: false })).not.toContain("REDIS_URL");
-    expect(resourceEnvNames(redis(), { onlyOfItsEngine: true })).toContain("REDIS_URL");
-    expect(resourceEnvNames(redis(), { onlyOfItsEngine: true })).not.toContain("DATABASE_URL");
+    expect(namesOf([bind(redis())], "cache")).toContain("MEND_RESOURCE_CACHE_URL");
+    expect(namesOf([bind(redis())], "cache")).toContain("REDIS_URL");
+    expect(namesOf([bind(redis())], "cache")).not.toContain("DATABASE_URL");
+    const two = [bind(redis()), bind(redis({ name: "sessions" }))];
+    expect(namesOf(two, "cache")).not.toContain("REDIS_URL");
   });
 
   it("gives an image Mend does not know no conventional names", () => {
-    expect(resourceEnvNames(define(), { onlyOfItsEngine: true })).toEqual([
+    expect(namesOf([bind(define())], "queue")).toEqual([
       "MEND_RESOURCE_QUEUE_HOST",
       "MEND_RESOURCE_QUEUE_PORT",
       "MEND_RESOURCE_QUEUE_PORT_AMQP",
     ]);
+  });
+
+  it("counts no image Mend does not know as the one of its engine", () => {
+    expect(onlyOfItsEngine(define(), [define()])).toBe(false);
+    expect(onlyOfItsEngine(postgres(), [postgres(), define()])).toBe(true);
+  });
+});
+
+describe("secret env names", () => {
+  it("marks an export built from a secret, and not one built from a literal", () => {
+    const queue = define({
+      env: { RABBITMQ_DEFAULT_USER: "app", RABBITMQ_DEFAULT_PASS: { secret: "RABBITMQ_PASSWORD" } },
+      exports: {
+        URL: "amqp://{env.RABBITMQ_DEFAULT_USER}:{env.RABBITMQ_DEFAULT_PASS}@{host}:{port.amqp}/",
+        USER: "{env.RABBITMQ_DEFAULT_USER}",
+      },
+    });
+    expect([...secretEnvNames([bind(queue)])]).toEqual(["MEND_RESOURCE_QUEUE_URL"]);
+  });
+
+  it("marks a preset's URL and password, and the conventional names that carry them", () => {
+    expect([...secretEnvNames([bind(postgres())])]).toEqual([
+      "MEND_RESOURCE_DB_URL",
+      "MEND_RESOURCE_DB_PASSWORD",
+      "DATABASE_URL",
+      "PGPASSWORD",
+    ]);
+    expect([...secretEnvNames([bind(redis())])]).toEqual(["MEND_RESOURCE_CACHE_URL", "REDIS_URL"]);
   });
 });
 
@@ -434,6 +487,13 @@ describe("env name collisions", () => {
     const dbPort = define({ name: "db-port" });
     expect(envNameCollisions([db, dbPort])).toEqual([
       { name: "MEND_RESOURCE_DB_PORT_HOST", resources: ["db", "db-port"] },
+    ]);
+  });
+
+  it("reports an export that lands on a database's suffix, which only own sets", () => {
+    const a = define({ name: "a", exports: { B_SUFFIX: "{host}" } });
+    expect(envNameCollisions([a, postgres({ name: "a-b" })])).toEqual([
+      { name: "MEND_RESOURCE_A_B_SUFFIX", resources: ["a", "a-b"] },
     ]);
   });
 
