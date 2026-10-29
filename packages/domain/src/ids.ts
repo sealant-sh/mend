@@ -179,3 +179,14 @@ export type ChangeLandingId = typeof ChangeLandingId.Type;
 
 export const PageId = Schema.String.pipe(Schema.brand("PageId"));
 export type PageId = typeof PageId.Type;
+
+// ── Screens (docs/adr/0020-guis-in-sessions.md) ──────────────────────────────
+
+export const ScreenId = Schema.String.pipe(Schema.brand("ScreenId"));
+export type ScreenId = typeof ScreenId.Type;
+
+export const ScreenFrameId = Schema.String.pipe(Schema.brand("ScreenFrameId"));
+export type ScreenFrameId = typeof ScreenFrameId.Type;
+
+export const ViewerConnectionId = Schema.String.pipe(Schema.brand("ViewerConnectionId"));
+export type ViewerConnectionId = typeof ViewerConnectionId.Type;
