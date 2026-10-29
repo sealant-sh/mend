@@ -1,7 +1,7 @@
 import { MEND_MCP_SERVER } from "@mend/domain/workbench";
 
 import { MEND_HELPER_PATH } from "../session-socket.ts";
-import { MEND_MCP_TOOL_TIMEOUT_SECONDS } from "./caller.ts";
+import { MEND_AGENT_PROCESS_ENV, MEND_MCP_TOOL_TIMEOUT_SECONDS } from "./caller.ts";
 
 // Attached with `=`: `--mcp-config` takes any number of values, so a separate value would take the
 // prompt after it as a second config (Claude 2.1.308).
@@ -24,6 +24,7 @@ const CODEX_MCP_CONFIG = [
     "MEND_SESSION_ID",
     "MEND_SESSION_TOKEN",
     "MEND_SESSION_TOKEN_FILE",
+    MEND_AGENT_PROCESS_ENV,
   ])}`,
   "-c",
   `mcp_servers.${MEND_MCP_SERVER}.tool_timeout_sec=${MEND_MCP_TOOL_TIMEOUT_SECONDS}`,

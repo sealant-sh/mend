@@ -8,6 +8,15 @@ export const MEND_MCP_CALL_KEY_HEADER = "x-mend-call-key";
 
 export const MEND_MCP_TOOL_TIMEOUT_SECONDS = 120;
 
+/** The variable naming an agent's own process row, set where Mend opens the agent's process. */
+export const MEND_AGENT_PROCESS_ENV = "MEND_AGENT_PROCESS_ID";
+
+/**
+ * The header the staged bridge names its agent process in. It names a process of a caller the
+ * channel already authenticated, and proves nothing on its own.
+ */
+export const MEND_MCP_AGENT_PROCESS_HEADER = "x-mend-agent-process";
+
 export interface Caller {
   readonly sessionId: SessionId;
   readonly accountId: string | null;
