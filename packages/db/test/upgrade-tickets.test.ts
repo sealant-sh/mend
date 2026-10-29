@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
+import { UpgradeTicketTarget as ClientTarget } from "@mend/api-contracts";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -79,6 +80,23 @@ const ticketContract = (
         ));
     }
   }
+
+  it("stores and spends a ticket for every target a client may mint", async () =>
+    runFixture(({ tickets }) =>
+      Effect.gen(function* () {
+        for (const target of ClientTarget.literals) {
+          const minted = yield* tickets.mint({
+            userId: "alice",
+            target,
+            scope: "session=s1",
+            credential: null,
+          });
+          expect(
+            yield* tickets.consume({ ticket: minted.ticket, target, scope: "session=s1" }),
+          ).toMatchObject({ userId: "alice" });
+        }
+      }),
+    ));
 
   it("wrong target, wrong scope and unknown ticket do not spend the correct ticket", async () =>
     runFixture(({ tickets }) =>
