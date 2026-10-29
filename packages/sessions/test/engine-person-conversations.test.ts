@@ -42,6 +42,7 @@ import { describe, expect } from "vitest";
 
 import { CLAUDE_AGENT_HOOKS, claudeSettingsOf } from "../src/claude-settings.ts";
 import { HAND_OVER_NOT_NOW } from "../src/conversation-steps.ts";
+import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import {
   claudeLine,
@@ -663,6 +664,7 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
           "features.daemon_auto_start=false",
           "-c",
           "features.shell_snapshot=false",
+          ...mendMcpFlags("codex"),
           "app-server",
         ]);
         expect(run.attached.at(-1)?.resumePath).toBe(

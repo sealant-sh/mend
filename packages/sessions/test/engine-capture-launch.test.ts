@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -32,6 +32,7 @@ import type { CreateOptions, WorkspaceCaptureStatus } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Tracer } from "effect";
 import { describe, expect } from "vitest";
 
+import { SESSION_HELPER_SCRIPT } from "../src/session-socket.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { restoreConfiguredHarnessHome } from "./engine-capture-launch-fixtures.ts";
 import {
@@ -65,6 +66,18 @@ import {
  * that finds nothing writes no row and logs nothing, so its span's end is the only sign it
  * happened.
  */
+const HELPER_BEFORE_MCP = `#!/usr/bin/env node
+process.stderr.write("mend: this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend land · mend stop · mend hook <claude|codex>\\n");
+process.exit(1);
+`;
+
+const stagingIn = (script: string) => {
+  const found = /node -e '([^']*)' '\/run\/mend' ((?:[A-Za-z0-9+/=]+ ?)+)/.exec(script);
+  return found === null
+    ? null
+    : { program: found[1] ?? "", scripts: (found[2] ?? "").trim().split(" ") };
+};
+
 const makeLaunchClock = Effect.gen(function* () {
   const clock = yield* makeEngineClock(["sessions"], { drivesCheckpointWaits: true });
   let harnessStateLooks = 0;
@@ -1771,6 +1784,112 @@ describe("SessionEngine capture mode", () => {
                       relocation.executorRoot,
                     );
                   }),
+              },
+            ),
+          },
+        );
+      }),
+  );
+
+  it.effect(
+    "restages the helper in a retained executor this Mend did not stage, before a resumed agent starts",
+    () =>
+      Effect.gen(function* () {
+        const spawned: ReadonlyArray<string>[] = [];
+        const clock = yield* makeLaunchClock;
+        const memory = makeMemoryCaptureStore();
+        let runMend = "";
+        const helpersAtOpen: Array<string> = [];
+        let stagingRuns = 0;
+        const helperNow = () =>
+          fs.readFileSync(path.join(runMend, "bin", "mend"), "utf8") === SESSION_HELPER_SCRIPT
+            ? "this Mend's helper"
+            : "an older helper";
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              runMend = path.join(tmp, "executor-run-mend");
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* engine.openShell(session.id);
+              const agent = [...world.processes.values()].find(
+                (process) => process.kind === "agent-pty" && process.exitedAt === null,
+              );
+              if (agent === undefined) throw new Error("launch recorded no agent");
+              yield* engine.stop(session.id);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.status === "idle",
+                "the retained shell to hold the workspace",
+              );
+              const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+              fs.mkdirSync(stateDir, { recursive: true });
+              fs.writeFileSync(
+                path.join(stateDir, "manifest.json"),
+                JSON.stringify({
+                  harness: "codex",
+                  providerSessionId: "11111111-2222-3333-4444-555555555555",
+                  capturedAt: now().toISOString(),
+                }),
+              );
+              const before = spawnSync(
+                process.execPath,
+                [path.join(runMend, "bin", "mend"), "mcp"],
+                {
+                  encoding: "utf8",
+                },
+              );
+              expect(before.stderr).toContain("this workspace helper speaks");
+
+              yield* engine.resumeSession(session.id, null);
+
+              expect(helpersAtOpen).toEqual(["an older helper", "this Mend's helper"]);
+              const stagings = stagingRuns;
+              yield* engine.stop(session.id);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.status === "idle",
+                "the retained shell to hold the workspace again",
+              );
+              yield* engine.resumeSession(session.id, null);
+              expect(stagingRuns).toBe(stagings);
+            }),
+          {
+            captured: memory,
+            prepareWorld: clock.prepareWorld,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            sealantLayer: sealantLaunchLayer(
+              [],
+              undefined,
+              undefined,
+              spawned,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                exec: (argv) => {
+                  const staging = argv[0] === "sh" ? stagingIn(argv[2] ?? "") : null;
+                  if (staging === null) return undefined;
+                  stagingRuns += 1;
+                  if (stagingRuns === 1) {
+                    fs.mkdirSync(path.join(runMend, "bin"), { recursive: true });
+                    fs.writeFileSync(path.join(runMend, "bin", "mend"), HELPER_BEFORE_MCP);
+                    return { exitCode: 1, stdout: "", stderr: "" };
+                  }
+                  execFileSync(process.execPath, [
+                    "-e",
+                    staging.program,
+                    runMend,
+                    ...staging.scripts,
+                  ]);
+                  return { exitCode: 0, stdout: "", stderr: "" };
+                },
+                beforeOpen: (argv) => {
+                  if (argv.some((arg) => arg === "codex")) helpersAtOpen.push(helperNow());
+                },
               },
             ),
           },

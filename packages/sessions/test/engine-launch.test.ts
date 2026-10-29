@@ -31,6 +31,7 @@ import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect";
 import { describe, expect } from "vitest";
 
 import { OPENCODE_SEED } from "../src/harness-seeds.ts";
+import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { lifecycleLayer } from "./engine/capture-fixture.ts";
 import { signalledFixture } from "./engine/clock-fixture.ts";
@@ -942,7 +943,7 @@ describe("SessionEngine", () => {
           // Codex's memory is on in every Codex session Mend starts (docs/adr/0009, "Codex").
           // Its shell snapshot is off: it writes exported values into the harness home. Its
           // background server is off: it copies Codex's release into the harness home.
-          expect(spawned[0]?.slice(-8)).toEqual([
+          expect(spawned[0]?.slice(4)).toEqual([
             "codex",
             "-c",
             "features.shell_snapshot=false",
@@ -950,6 +951,7 @@ describe("SessionEngine", () => {
             "features.daemon_auto_start=false",
             "-c",
             "features.memories=true",
+            ...mendMcpFlags("codex"),
             "app-server",
           ]);
           expect(attached).toHaveLength(1);

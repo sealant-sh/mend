@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./page-check-worker": "./src/mend-mcp/page-check-worker.ts",
     "./testing": "./test/testing.ts"
   },
   "scripts": {
@@ -22,6 +23,7 @@
     "@mend/store": "workspace:*",
     "@sealant/sdk": "catalog:",
     "effect": "catalog:",
+    "parse5": "8.0.1",
     "smol-toml": "1.4.2"
   },
   "devDependencies": {

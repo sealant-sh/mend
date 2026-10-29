@@ -20,6 +20,13 @@ import {
   type GitTransportPlan,
   type GitTransportRequest,
 } from "./git-transport.ts";
+import {
+  type ChannelCaller,
+  type McpCallerUnavailableError,
+  MEND_MCP_CALL_KEY_HEADER,
+  MEND_MCP_PATH,
+  MEND_MCP_TOOL_TIMEOUT_SECONDS,
+} from "./mend-mcp/caller.ts";
 import type { PickupGrant } from "./pickup-tickets.ts";
 import { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
 import {
@@ -29,6 +36,8 @@ import {
 } from "./session-channel.ts";
 import type { AddableProject } from "./session-repositories.ts";
 import type { WorkspaceLandOutcome } from "./workspace-git-hooks.ts";
+
+const MCP_BRIDGE_ASK_FOR_MS = (MEND_MCP_TOOL_TIMEOUT_SECONDS - 10) * 1000;
 
 /**
  * The in-workspace control surface (docs/SESSION-SERVICES.md): one unix
@@ -97,6 +106,7 @@ export interface SessionSocketApi {
    * the fact (`agentHookTarget`).
    */
   readonly agentHook: (report: AgentHookReport) => Effect.Effect<AgentHookOutcome>;
+  readonly mcpCaller: () => Effect.Effect<ChannelCaller, McpCallerUnavailableError>;
   /**
    * `mend repo` (docs/adr/0011-repositories-in-a-session.md): the repositories this session
    * holds beside its own worktree, the projects it may add, and adding one. `addRepository`
@@ -342,8 +352,283 @@ const hook = (harness) => {
   });
 };
 
+// MCP's stdio transport allows nothing but MCP messages on stdout.
+const mcp = () => {
+  const ROUTE = ${JSON.stringify(MEND_MCP_PATH)};
+  const CALL_KEY = ${JSON.stringify(MEND_MCP_CALL_KEY_HEADER)};
+  const ASK_FOR_MS = ${MCP_BRIDGE_ASK_FOR_MS};
+  let initialize = null;
+  let initialized = Promise.resolve();
+  let mcpSession = null;
+  let protocolVersion = null;
+  let renewing = null;
+  let pending = 0;
+  let ended = false;
+  const calls = new Map();
+  const say = (line) => process.stderr.write("mend mcp: " + line + "\\n");
+  const emit = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const isRequest = (message) => isObject(message) && typeof message.method === "string" && "id" in message;
+  const failure = (message, retry) => Object.assign(new Error(message), { retry });
+
+  const callOf = () => {
+    const stops = new Set();
+    return {
+      deadline: Date.now() + ASK_FOR_MS,
+      cancelled: false,
+      stops,
+      cancel() {
+        this.cancelled = true;
+        for (const stop of [...stops]) stop();
+      },
+    };
+  };
+  const pause = (ms, call) =>
+    new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        call.stops.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      call.stops.add(done);
+    });
+
+  const dataOf = (event) =>
+    event
+      .split(/\\r?\\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).replace(/^ /, ""))
+      .join("\\n");
+  const answers = (request, value) =>
+    isObject(value) && value.id === request.id && ("result" in value || "error" in value);
+  const parsedAnswer = (request, data) => {
+    try {
+      return answers(request, JSON.parse(data));
+    } catch {
+      return false;
+    }
+  };
+  const messagesOf = (answer) => {
+    if (answer.text.trim() === "") return [];
+    if (String(answer.headers["content-type"] || "").startsWith("text/event-stream")) {
+      return answer.text
+        .split(/\\r?\\n\\r?\\n/)
+        .map(dataOf)
+        .filter((data) => data !== "")
+        .map((data) => JSON.parse(data));
+    }
+    return [JSON.parse(answer.text)];
+  };
+  const parsedMessages = (answer) => {
+    try {
+      return messagesOf(answer);
+    } catch {
+      return null;
+    }
+  };
+
+  const post = (message, extra, fresh, call) =>
+    new Promise((resolve, reject) => {
+      const headers = Object.assign(
+        { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        fresh || mcpSession === null ? {} : { "mcp-session-id": mcpSession },
+        fresh || protocolVersion === null ? {} : { "mcp-protocol-version": protocolVersion },
+        extra,
+      );
+      const options = transportOptions("POST", ROUTE, headers);
+      if (options === null) { reject(failure(transportUnavailable(), false)); return; }
+      const awaited = isRequest(message);
+      let settled = false;
+      const finish = (settle) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        call.stops.delete(stop);
+        settle();
+      };
+      const req = transportClient().request(options, (res) => {
+        const eventStream = String(res.headers["content-type"] || "").startsWith("text/event-stream");
+        let text = "";
+        let unread = "";
+        const answered = (body) => finish(() => resolve({ status: res.statusCode, headers: res.headers, text: body }));
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          if (settled) return;
+          text += chunk;
+          if (!eventStream || !awaited) return;
+          // An event stream may stay open after the answer, so the answer ends the exchange.
+          unread += chunk;
+          const events = unread.split(/\\r?\\n\\r?\\n/);
+          unread = events.pop();
+          if (events.some((event) => parsedAnswer(message, dataOf(event)))) {
+            answered(text.slice(0, text.length - unread.length));
+            res.destroy();
+          }
+        });
+        res.on("error", () => finish(() => reject(failure(transportDownMessage(), true))));
+        res.on("end", () => answered(text));
+        res.on("close", () => finish(() => reject(failure(transportDownMessage(), true))));
+      });
+      const stop = () => finish(() => { req.destroy(); reject(failure("cancelled", false)); });
+      call.stops.add(stop);
+      const timer = setTimeout(() => finish(() => {
+        req.destroy();
+        reject(failure("Mend did not answer within " + Math.round(ASK_FOR_MS / 1000) + " s", false));
+      }), Math.max(0, call.deadline - Date.now()));
+      req.on("error", () => finish(() => reject(failure(transportDownMessage(), true))));
+      req.end(JSON.stringify(message));
+    });
+
+  const send = async (message, extra, fresh, call) => {
+    for (let attempt = 1; ; attempt++) {
+      if (call.cancelled) throw failure("cancelled", false);
+      let answer = null;
+      let reason;
+      try {
+        answer = await post(message, extra, fresh, call);
+        const complete = answer.status < 200 || answer.status >= 300 || !isRequest(message) ||
+          (parsedMessages(answer) ?? []).some((each) => answers(message, each));
+        if (answer.status !== 503 && complete) return answer;
+        reason = answer.status === 503 ? refusalOf(answer) : "Mend's answer held no reply to this request";
+      } catch (error) {
+        if (!error.retry) throw error;
+        reason = error.message;
+      }
+      const wait = Math.min(250 * 2 ** (attempt - 1), 2000);
+      if (Date.now() + wait >= call.deadline) {
+        if (answer !== null && answer.status === 503) return answer;
+        throw failure(reason, false);
+      }
+      await pause(wait, call);
+    }
+  };
+
+  const adopt = (answer) => {
+    const session = answer.headers["mcp-session-id"];
+    if (typeof session === "string" && session !== "") mcpSession = session;
+    for (const message of parsedMessages(answer) ?? []) {
+      if (isObject(message) && isObject(message.result) && typeof message.result.protocolVersion === "string") {
+        protocolVersion = message.result.protocolVersion;
+      }
+    }
+  };
+
+  const renew = (stale) => {
+    if (mcpSession !== stale) return renewing ?? Promise.resolve();
+    renewing ??= (async () => {
+      const answer = await send(initialize, {}, true, callOf());
+      if (answer.status !== 200 || typeof answer.headers["mcp-session-id"] !== "string") {
+        throw new Error("Mend did not start this MCP session again (HTTP " + answer.status + ")");
+      }
+      adopt(answer);
+      await send({ jsonrpc: "2.0", method: "notifications/initialized" }, {}, false, callOf());
+      say("Mend had forgotten this MCP session; started it again");
+    })().finally(() => { renewing = null; });
+    return renewing;
+  };
+
+  const refusalOf = (answer) => {
+    try {
+      const body = JSON.parse(answer.text);
+      if (isObject(body) && typeof body.message === "string") return body.message;
+    } catch {}
+    return "Mend answered HTTP " + answer.status;
+  };
+
+  const relay = async (message) => {
+    const request = isRequest(message);
+    const call = callOf();
+    const key = request ? JSON.stringify(message.id) : null;
+    if (key !== null) calls.set(key, call);
+    if (isObject(message) && message.method === "notifications/cancelled" && isObject(message.params)) {
+      calls.get(JSON.stringify(message.params.requestId))?.cancel();
+    }
+    const failed = (reason) => {
+      if (request) emit({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: reason } });
+      else say(reason);
+    };
+    const opening = isObject(message) && message.method === "initialize";
+    const extra = isObject(message) && message.method === "tools/call" ? { [CALL_KEY]: require("node:crypto").randomUUID() } : {};
+    try {
+      let answer;
+      if (opening) {
+        initialize = message;
+        const answered = send(message, {}, true, call);
+        initialized = answered.then(() => {}, () => {});
+        answer = await answered;
+        if (answer.status === 200) adopt(answer);
+      } else {
+        await initialized;
+        const used = mcpSession;
+        answer = await send(message, extra, false, call);
+        if (answer.status === 404 && answer.text.trim() === "" && initialize !== null && used !== null) {
+          await renew(used);
+          answer = await send(message, extra, false, call);
+        }
+      }
+      // MCP cancellation: a cancelled request gets no response.
+      if (call.cancelled) return;
+      const parsed = parsedMessages(answer);
+      if (parsed !== null && parsed.length > 0 && parsed.every((m) => isObject(m) && m.jsonrpc === "2.0")) {
+        for (const m of parsed) emit(m);
+        return;
+      }
+      if (answer.status >= 200 && answer.status < 300) return;
+      failed(refusalOf(answer));
+    } catch (error) {
+      if (!call.cancelled) failed(error.message);
+    } finally {
+      if (key !== null && calls.get(key) === call) calls.delete(key);
+    }
+  };
+
+  const close = () => {
+    if (mcpSession === null) process.exit(0);
+    const options = transportOptions("DELETE", ROUTE, { "mcp-session-id": mcpSession });
+    if (options === null) process.exit(0);
+    const req = transportClient().request(options, (res) => { res.resume(); res.on("end", () => process.exit(0)); });
+    req.setTimeout(2000, () => req.destroy());
+    req.on("error", () => process.exit(0));
+    req.end();
+  };
+
+  const accept = (line) => {
+    let message;
+    try { message = JSON.parse(line); } catch {
+      emit({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+      return;
+    }
+    pending++;
+    relay(message).finally(() => {
+      pending--;
+      if (ended && pending === 0) close();
+    });
+  };
+
+  let buffered = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    buffered += chunk;
+    for (let newline = buffered.indexOf("\\n"); newline !== -1; newline = buffered.indexOf("\\n")) {
+      const line = buffered.slice(0, newline).trim();
+      buffered = buffered.slice(newline + 1);
+      if (line !== "") accept(line);
+    }
+  });
+  process.stdin.on("end", () => {
+    ended = true;
+    if (buffered.trim() !== "") accept(buffered.trim());
+    if (pending === 0) close();
+  });
+};
+
 const main = async () => {
   const [group, verb, ...rest] = process.argv.slice(2);
+  if (group === "mcp") {
+    mcp();
+    return;
+  }
   if (group === "hook") {
     hook(verb);
     return;
@@ -436,7 +721,7 @@ const main = async () => {
     return;
   }
   if (group !== "service") {
-    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend land · mend stop · mend hook <claude|codex>");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend land · mend stop · mend hook <claude|codex> · mend mcp");
   }
   try {
     switch (verb) {
@@ -564,8 +849,8 @@ export const workspaceScriptStaging = (
   return (
     `node -e 'const fs=require("fs");const [d,...s]=process.argv.slice(1);` +
     `fs.mkdirSync(d+"/bin",{recursive:true});` +
-    `${JSON.stringify(names)}.forEach((n,i)=>` +
-    `fs.writeFileSync(d+"/bin/"+n,Buffer.from(s[i],"base64"),{mode:0o755}))' ` +
+    `${JSON.stringify(names)}.forEach((n,i)=>{const f=d+"/bin/"+n;` +
+    `fs.writeFileSync(f+".new",Buffer.from(s[i],"base64"),{mode:0o755});fs.renameSync(f+".new",f)})' ` +
     `'${dir.replaceAll("'", "'\\''")}' ${scripts.map(encoded).join(" ")}`
   );
 };
@@ -643,7 +928,7 @@ export const SessionSocketHostLive: Layer.Layer<
         // 2026-09-28 (4) #10).
         const local: SessionSocketApi = { ...api, capture: undefined, captureAs: undefined };
         const server = http.createServer((request, response) => {
-          void handleSessionRequest(local, request, response);
+          void handleSessionRequest(local, request, response, registry.mcp);
         });
         server.on("connect", (request, socket, head) => {
           void handleGitConnect(local, request, socket as net.Socket, head);
@@ -664,6 +949,8 @@ export const SessionSocketHostLive: Layer.Layer<
 
     const stop = Effect.fn("SessionSocketHost.stop")(function* (sessionId: SessionId) {
       yield* Effect.sync(() => stopSync(sessionId));
+      const mcp = registry.mcp();
+      if (mcp !== undefined) yield* mcp.endSession(sessionId);
     });
 
     return { start, stop };

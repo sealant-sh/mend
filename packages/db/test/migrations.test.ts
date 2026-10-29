@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { HARNESS_MODEL_SEED, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 import { Effect, Redacted, Schema } from "effect";
-import { SqlClient } from "effect/sql";
+import { Migrator, SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -2962,5 +2962,56 @@ describe.skipIf(postgres.skip)("0138 kubernetes person layout", () => {
     ];
     expect(result.once).toEqual(kept);
     expect(result.twice).toEqual(kept);
+  });
+});
+
+const migrateWith = (record: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClient>>) =>
+  Migrator.make({})({ loader: Migrator.fromRecord(record), table: "mend_migrations" });
+
+describe.skipIf(postgres.skip)("0140 session pages", () => {
+  const DB = `${SCRATCH_DB}_session_pages`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("reaches a database the migrator already took to 0139", async () => {
+    const tables = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* migrateWith(
+          Object.fromEntries(ORDERED.filter(([name]) => name <= "0139_preview_controls")),
+        );
+        const before = yield* sql<{ readonly name: string | null }>`
+          SELECT to_regclass('session_pages')::text AS name`;
+        yield* migrateWith(migrations);
+        const after = yield* sql<{ readonly name: string | null }>`
+          SELECT to_regclass('session_pages')::text AS name`;
+        const applied = yield* sql<{ readonly name: string }>`
+          SELECT name FROM mend_migrations ORDER BY migration_id DESC LIMIT 1`;
+        return { before: before[0]?.name, after: after[0]?.name, latest: applied[0]?.name };
+      }),
+    );
+    expect(tables).toEqual({ before: null, after: "session_pages", latest: "session_pages" });
   });
 });

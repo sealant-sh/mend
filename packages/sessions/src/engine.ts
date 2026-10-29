@@ -461,6 +461,8 @@ import {
   type SessionMovedOnError,
 } from "./launch-admission.ts";
 import { LAUNCH_UNDER_WAY_WORDS, makeLaunchGate } from "./launch-gate.ts";
+import { McpCallerUnavailableError } from "./mend-mcp/caller.ts";
+import { withMendMcp } from "./mend-mcp/launch.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
   convertNativeSession,
@@ -776,7 +778,7 @@ const promptArgv = (
     }
   })();
   if (tokens === null) return null;
-  const command = `exec ${shellCommand(tokens)} "$prompt"`;
+  const command = `exec ${shellCommand(withMendMcp(tokens))} "$prompt"`;
 
   const encoded = Buffer.from(prompt, "utf8").toString("base64");
   const chunks: string[] = [];
@@ -3095,6 +3097,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const workspaceCaller = yield* WorkspaceCaller;
       // Mend's own stops for lost access are on the organization's record (`reconcileAccess`).
       const audit = yield* AuditEventsRepo;
+      const helperStagedIn = new Set<string>();
 
       // ── Principals ──────────────────────────────────────────────────────────────
       // A session's platform resources belong to its owner's Sealant user. These
@@ -3144,6 +3147,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         stopSession: () => owned(sessionId)(api.stopSession()),
         land: () => owned(sessionId)(api.land()),
         agentHook: (report) => owned(sessionId)(api.agentHook(report)),
+        mcpCaller: api.mcpCaller,
         listRepositories: () => owned(sessionId)(api.listRepositories()),
         addableProjects: () => owned(sessionId)(api.addableProjects()),
         addRepository: (input) => owned(sessionId)(api.addRepository(input)),
@@ -11875,7 +11879,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
             ),
             Effect.tap((result) =>
-              result.exitCode === 0 ? Effect.void : notInstalled({ exitCode: result.exitCode }),
+              result.exitCode !== 0
+                ? notInstalled({ exitCode: result.exitCode })
+                : Effect.sync(() => {
+                    if (input.captured) helperStagedIn.add(workspace.id);
+                  }),
             ),
             Effect.map((result) => result.stdout),
             Effect.catch((error) => notInstalled({ message: error.message }).pipe(Effect.as(""))),
@@ -20023,6 +20031,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
           yield* socketHost.start(sessionId, socketApiFor(sessionId)).pipe(Effect.ignore);
+          if (capture !== null && !helperStagedIn.has(workspace.id)) {
+            const executorLayout = yield* layoutSteps.layoutOfLaunch(
+              yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
+            );
+            yield* sealant
+              .exec(workspace, [
+                "sh",
+                "-c",
+                workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH, {
+                  gitCredentialHelper: executorLayout === "person",
+                }),
+              ])
+              .pipe(
+                Effect.flatMap((result) =>
+                  result.exitCode === 0
+                    ? Effect.sync(() => helperStagedIn.add(workspace.id))
+                    : Effect.logWarning(
+                        "session engine: the mend helper was not restaged in the executor",
+                      ).pipe(Effect.annotateLogs({ sessionId, stderr: result.stderr })),
+                ),
+                Effect.catch((error) =>
+                  Effect.logWarning(
+                    "session engine: the mend helper was not restaged in the executor",
+                  ).pipe(Effect.annotateLogs({ sessionId, message: error.message })),
+                ),
+              );
+          }
           const interactiveShell = asksInteractiveShell(argv);
           // Per-person harness homes (docs/adr/0016): in a person-layout executor the session's
           // owner runs as their own user, made there at their first process (a join's one more
@@ -23150,6 +23185,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // cannot be one of the engine's dependencies.
         land: () => gitHooks.landRequested(sessionId, actor),
         agentHook: (report) => agentHook(sessionId, report),
+        mcpCaller: () =>
+          actor !== null
+            ? Effect.succeed({ sessionId, accountId: actor })
+            : sessions.byId(sessionId).pipe(
+                Effect.map((session) => ({ sessionId, accountId: session.ownerUserId })),
+                Effect.catchDefect(() =>
+                  Effect.fail(
+                    new McpCallerUnavailableError({
+                      message: "session channel: this request could not be answered now",
+                    }),
+                  ),
+                ),
+                Effect.catchTag("SessionNotFoundError", () =>
+                  Effect.die(new Error("this session is no longer in Mend")),
+                ),
+              ),
         // Repositories in a session (docs/adr/0010): the helper's `mend repo` verbs. A refusal
         // reaches the helper as its message.
         listRepositories: () =>

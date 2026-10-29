@@ -27,6 +27,7 @@ import {
   stagedHomeOf,
 } from "./conversation-home.ts";
 import { savedDirOf } from "./harness-layout.ts";
+import { mendMcpFlags } from "./mend-mcp/launch.ts";
 
 const alice = new LinuxIdentity({ accountId: "alice-1", name: "m3kq7xj2a", uid: 40_001 });
 const bob = new LinuxIdentity({ accountId: "bob-2", name: "mb7ezq4fd", uid: 40_002 });
@@ -947,6 +948,7 @@ describe("what a conversation home's process gets", () => {
       }),
     ).toEqual([
       "claude",
+      ...mendMcpFlags("claude"),
       "--print",
       "--resume",
       `/run/mend/conv/${SESSION}/.claude/projects/-workspace-repo/8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11.jsonl`,
@@ -991,6 +993,7 @@ describe("what a conversation home's process gets", () => {
       "features.daemon_auto_start=false",
       "-c",
       "features.shell_snapshot=false",
+      ...mendMcpFlags("codex"),
       "app-server",
     ]);
     const config = codexNeutralConfig({ senderHome: "/home/mb7ezq4fd", model: "gpt-6" });

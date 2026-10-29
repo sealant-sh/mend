@@ -71,6 +71,7 @@ export * from "./session.ts";
 export * from "./session-fold.ts";
 export * from "./session-process.ts";
 export * from "./session-control.ts";
+export * from "./session-page.ts";
 export * from "./session-run.ts";
 export * from "./skill.ts";
 export * from "./slack.ts";

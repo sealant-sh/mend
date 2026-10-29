@@ -15,6 +15,7 @@ import { frame, makeFrameFeed } from "../src/git-transport.ts";
 import {
   SessionChannelNetworkHost,
   SessionChannelNetworkHostLive,
+  SessionChannelRegistry,
   SessionChannelRegistryLive,
   parseChannelCredentials,
 } from "../src/session-channel.ts";
@@ -104,6 +105,7 @@ const api = (seen: unknown[]): SessionSocketApi => ({
     }),
   land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
   agentHook: () => Effect.succeed("ignored"),
+  mcpCaller: () => Effect.die("not in this test"),
   listRepositories: () => Effect.succeed([]),
   addableProjects: () => Effect.succeed([]),
   addRepository: () => Effect.die("not in this test"),
@@ -445,6 +447,70 @@ describe("SessionChannelNetworkHost", () => {
     } finally {
       process.off("unhandledRejection", onRejection);
     }
+  });
+
+  it("cancels an MCP event stream when the client leaves it", async () => {
+    const cancelled = Promise.withResolvers<"cancelled">();
+    const held = (): SessionSocketApi => ({
+      ...api([]),
+      mcpCaller: () => Effect.succeed({ sessionId: SESSION, accountId: null }),
+    });
+    const outcome = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          (yield* SessionChannelRegistry).serveMcp({
+            endSession: () => Effect.void,
+            handle: () =>
+              Effect.succeed(
+                new Response(
+                  new ReadableStream<Uint8Array>({
+                    start: (controller) =>
+                      controller.enqueue(new TextEncoder().encode(": open\n\n")),
+                    cancel: () => cancelled.resolve("cancelled"),
+                  }),
+                  { headers: { "content-type": "text/event-stream" } },
+                ),
+              ),
+          });
+          yield* sockets.start(SESSION, held());
+          const token = yield* tokens.issue(SESSION, SESSION);
+          const [host, port] = (network.address ?? "").split(":");
+          yield* Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                const request = http.request(
+                  {
+                    host,
+                    port: Number(port),
+                    method: "GET",
+                    path: "/session/mcp",
+                    headers: { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION },
+                    agent: false,
+                  },
+                  (response) => response.once("data", () => request.destroy()),
+                );
+                request.on("error", () => undefined);
+                request.on("close", resolve);
+                request.end();
+              }),
+          );
+          return yield* Effect.promise(() =>
+            Promise.race([
+              cancelled.promise,
+              new Promise((resolve) => setTimeout(() => resolve("still open"), 2_000)),
+            ]),
+          );
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+    expect(outcome).toBe("cancelled");
   });
 
   it("tunnels a git op over the network with the same frames as the socket", async () => {

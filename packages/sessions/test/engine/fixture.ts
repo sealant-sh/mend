@@ -697,6 +697,7 @@ export const sealantLaunchLayer = (
         : (captureOps?.aroundOpen?.() ?? Effect.void).pipe(
             Effect.andThen(
               Effect.sync(() => {
+                assertAgentNamesMendMcpOnce(argv);
                 captureOps?.beforeOpen?.(argv);
                 spawned?.push(argv);
                 if (options !== undefined) openedOptions?.push(options);
@@ -1331,6 +1332,20 @@ export const dotfilesClonerLayer = (
       ),
     ),
   );
+
+export const assertAgentNamesMendMcpOnce = (argv: ReadonlyArray<string>): void => {
+  const agent = argv.some(
+    (arg) => arg === "claude" || arg === "codex" || /\bexec (?:claude|codex) /.test(arg),
+  );
+  if (!agent) return;
+  const named =
+    argv.join("\n").split(/"mcpServers":\{"mend"|mcp_servers\.mend\.command=/).length - 1;
+  if (named !== 1 || argv.some((arg) => arg.includes("--strict-mcp-config"))) {
+    throw new Error(
+      `an agent started naming Mend's MCP server ${named} times: ${JSON.stringify(argv)}`,
+    );
+  }
+};
 
 /** Shared gitOpsStubLayer fixture for engine scenarios. */
 export const gitOpsStubLayer = Layer.succeed(SessionGitOpsRepo, {

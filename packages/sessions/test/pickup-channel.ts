@@ -62,6 +62,7 @@ export const startPickupChannel = async (
     stopSession: notHere,
     land: notHere,
     agentHook: notHere,
+    mcpCaller: notHere,
     listRepositories: notHere,
     addableProjects: notHere,
     addRepository: notHere,
@@ -86,7 +87,7 @@ export const startPickupChannel = async (
       }),
   };
   const server = http.createServer((request, response) => {
-    void handleSessionRequest(api, request, response);
+    void handleSessionRequest(api, request, response, () => undefined);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
