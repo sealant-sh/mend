@@ -7,7 +7,7 @@ import SettingsScreen from "@/app/(tabs)/settings";
 import PairScreen from "@/app/pair";
 import { AskDialog, useAsk } from "@/components/ask";
 import type { Ask, AskButton } from "@/data/ask";
-import { clearConfig } from "@/data/live";
+import { clearConfig, loadConfig, saveConfig } from "@/data/live";
 import { PairingBoundary } from "@/data/pairing-scope";
 
 interface OsAlert {
@@ -18,6 +18,7 @@ interface OsAlert {
 
 const phone = vi.hoisted(() => ({
   os: "ios",
+  notificationsAllowed: true,
   /** Alerts the OS shows in its own window: only a press on one of its buttons closes one. */
   alerts: new Array<OsAlert>(),
   /** Notifications delivered and still in the OS tray. */
@@ -42,8 +43,8 @@ vi.mock("react-native", async (importActual) => {
   };
 });
 vi.mock("expo-notifications", () => ({
-  requestPermissionsAsync: async () => ({ granted: true }),
-  getPermissionsAsync: async () => ({ granted: true }),
+  requestPermissionsAsync: async () => ({ granted: phone.notificationsAllowed }),
+  getPermissionsAsync: async () => ({ granted: phone.notificationsAllowed }),
   getExpoPushTokenAsync: async () => ({ data: "ExponentPushToken[this-phone]" }),
   dismissAllNotificationsAsync: async () => {
     phone.tray = [];
@@ -89,9 +90,18 @@ const pushDevicesOf = (machine: string): ReadonlyArray<string> => [
   ...(pushDevices.get(machine) ?? []),
 ];
 
+let requests = new Array<{ readonly machine: string; readonly call: string }>();
+const callsTo = (machine: string): ReadonlyArray<string> =>
+  requests.filter((entry) => entry.machine === machine).map(({ call }) => call);
+const unregistersOf = (machine: string) =>
+  callsTo(machine).filter((call) => call.startsWith("DELETE /api/devices/"));
+const unregisterFailures = new Map<string, "unreachable" | "silent">();
+let registrationGate: Promise<void> | null = null;
+
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(String(input));
   const method = init?.method ?? "GET";
+  requests.push({ machine: url.host, call: `${method} ${url.pathname}` });
   if (url.pathname === "/api/pair") {
     const body: unknown = JSON.parse(String(init?.body));
     const code =
@@ -110,6 +120,7 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
   const devices = pushDevices.get(url.host) ?? new Set<string>();
   pushDevices.set(url.host, devices);
   if (method === "POST" && url.pathname === "/api/devices") {
+    if (registrationGate !== null) await registrationGate;
     const body: unknown = JSON.parse(String(init?.body));
     const token =
       typeof body === "object" && body !== null && "token" in body ? String(body.token) : "";
@@ -118,6 +129,13 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
   }
   const unregister = /^\/api\/devices\/(.+)$/.exec(url.pathname);
   if (method === "DELETE" && unregister?.[1] !== undefined) {
+    if (unregisterFailures.get(url.host) === "unreachable")
+      throw new TypeError("Network request failed");
+    if (unregisterFailures.get(url.host) === "silent") {
+      return new Promise((_, reject) =>
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+      );
+    }
     devices.delete(decodeURIComponent(unregister[1]));
     return new Response(null, { status: 204 });
   }
@@ -147,8 +165,8 @@ const type = (placeholder: string, value: string) => {
 };
 
 /** The pair screen as a scanned `mend://pair` link opens it: claim, then register for push. */
-const pairByLink = async (machine: string) => {
-  route.params = { u: `https://${machine}`, c: OWNER_CODE };
+const pairByLink = async (machine: string, code = OWNER_CODE) => {
+  route.params = { u: `https://${machine}`, c: code };
   act(() => root.render(null));
   show(<PairScreen />);
   await settle();
@@ -167,9 +185,13 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.stubGlobal("fetch", vi.fn(serve));
   phone.os = "ios";
+  phone.notificationsAllowed = true;
   phone.alerts = [];
   phone.tray = [];
   pushDevices.clear();
+  requests = [];
+  unregisterFailures.clear();
+  registrationGate = null;
   route.params = {};
   await clearConfig();
   host = document.createElement("div");
@@ -178,8 +200,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // The pairing's cache outlives an unmount: end the pairing where the boundary sees it.
+  // The pairing's cache outlives an unmount: end the pairing where the boundary sees it, with no
+  // pair screen left to claim its link again.
+  show(null);
   await act(() => clearConfig());
+  await settle();
   act(() => root.unmount());
   host.remove();
   vi.unstubAllGlobals();
@@ -222,6 +247,113 @@ describe("push on a phone whose pairing ends", () => {
 
     expect(pushDevicesOf("a.example")).toEqual([]);
     expect(phone.tray).toEqual([]);
+  });
+
+  it("keeps the phone and the token the machine accepted through a Save of the same pairing", async () => {
+    await pairedToAWithItsPushInTheTray();
+    show(null);
+
+    const saved = await loadConfig();
+    await act(() => saveConfig({ ...saved, deviceName: null, pairedAt: null }));
+    await settle();
+
+    expect(unregistersOf("a.example")).toEqual([]);
+    expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
+    expect(phone.tray).toHaveLength(1);
+
+    phone.notificationsAllowed = false;
+    await act(() => clearConfig());
+    await settle();
+    expect(pushDevicesOf("a.example")).toEqual([]);
+  });
+
+  it("asks the machine once when Unpair runs twice", async () => {
+    await pairedToAWithItsPushInTheTray();
+    show(null);
+
+    await act(() => clearConfig());
+    await act(() => clearConfig());
+    await settle();
+
+    expect(unregistersOf("a.example")).toHaveLength(1);
+    expect(pushDevicesOf("a.example")).toEqual([]);
+  });
+
+  it("clears the tray and unpairs when the machine cannot be reached", async () => {
+    await pairedToAWithItsPushInTheTray();
+    unregisterFailures.set("a.example", "unreachable");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    act(() => root.render(null));
+    show(<SettingsScreen />);
+    press("Unpair");
+    await settle();
+
+    expect(phone.tray).toEqual([]);
+    expect(text()).toContain("Not paired");
+    const logged = warn.mock.calls.flat().join("\n");
+    expect(logged).toContain("DELETE /api/devices");
+    expect(logged).not.toContain(PHONE_TOKEN);
+    expect(logged).not.toContain("token-a.example");
+  });
+
+  it("gives up on a machine that never answers, and the next one still gets the phone", async () => {
+    await pairedToAWithItsPushInTheTray();
+    unregisterFailures.set("a.example", "silent");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await pairByLink("b.example");
+    expect(phone.tray).toEqual([]);
+    expect(pushDevicesOf("b.example")).toEqual([]);
+
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(pushDevicesOf("b.example")).toEqual([PHONE_TOKEN]);
+  });
+
+  it("unregisters a registration the machine accepts after Unpair, and keeps nothing of it", async () => {
+    const registration = Promise.withResolvers<void>();
+    registrationGate = registration.promise;
+    await pairByLink("a.example");
+    show(null);
+
+    await act(() => clearConfig());
+    await settle();
+    registration.resolve();
+    await settle();
+
+    expect(pushDevicesOf("a.example")).toEqual([]);
+    expect(await loadConfig()).toMatchObject({ url: "", token: "", pushToken: null });
+  });
+
+  it("re-pairing on the same machine unregisters the last pairing before registering the next", async () => {
+    await pairedToAWithItsPushInTheTray();
+
+    await pairByLink("a.example", "EFGH6789");
+
+    expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
+    expect(callsTo("a.example")).toEqual([
+      "POST /api/pair",
+      "POST /api/devices",
+      "POST /api/pair",
+      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
+      "POST /api/devices",
+    ]);
+  });
+
+  it("registers once when Enable notifications is pressed again while it runs", async () => {
+    await pairedToAWithItsPushInTheTray();
+    const registration = Promise.withResolvers<void>();
+    registrationGate = registration.promise;
+
+    act(() => root.render(null));
+    show(<SettingsScreen />);
+    press("Enable notifications");
+    press("Registering…");
+    registration.resolve();
+    await settle();
+
+    expect(callsTo("a.example").filter((call) => call === "POST /api/devices")).toHaveLength(2);
+    expect(text()).toContain("registered");
   });
 });
 
