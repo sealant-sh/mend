@@ -32,6 +32,7 @@ import {
   type ResourceApprovalSource,
   type ResourceApproved,
   type ResourceDeclaration,
+  type ResourceDeclaredApproval,
   type ResourceDefinitionInput,
   type ResourceFileRead,
   type ResourceProposalEntry,
@@ -55,6 +56,7 @@ import { readResourceProposals } from "../resource-proposals.ts";
 import { SessionChannelRegistry } from "../session-channel.ts";
 import { stampLabel, WorktreeReads } from "../worktree-reads.ts";
 import {
+  ImageFailureReason,
   imageRefusalLine,
   type ImageResolutionError,
   ResourceImageResolver,
@@ -83,7 +85,7 @@ export class ResourceStaleReadError extends Schema.TaggedError<ResourceStaleRead
 /** The image could not be pinned: `@db · image postgres:17 · … · not approved`. */
 export class ResourceImageRefusedError extends Schema.TaggedError<ResourceImageRefusedError>()(
   "ResourceImageRefusedError",
-  { message: Schema.String, reason: Schema.String },
+  { message: Schema.String, reason: ImageFailureReason },
 ) {}
 
 /** A reader's clock, for the status lines a reply carries. */
@@ -252,6 +254,18 @@ const presetSpec = (input: Extract<ResourceProposalInput, { readonly kind: "pres
       );
 };
 
+/** An approval as a status line names it: whose, and whether for the project or a worktree. */
+const declaredApproval = (
+  approval: ResourceApproval | null,
+  nameOf: (id: string) => string,
+): ResourceDeclaredApproval | null =>
+  approval === null
+    ? null
+    : {
+        by: nameOf(approval.approvedBy),
+        for: approval.worktreeId === null ? "project" : "worktree",
+      };
+
 const changed = (name: string, what: string) =>
   new ResourceStaleReadError({
     message: `@${name} · ${what} changed since you read it · nothing was approved`,
@@ -388,13 +402,7 @@ export const ResourcesLive: Layer.Layer<
           definition.spec,
           {
             kind: "settings",
-            approval:
-              approval === null
-                ? null
-                : {
-                    by: nameOf(approval.approvedBy),
-                    for: approval.worktreeId === null ? "project" : "worktree",
-                  },
+            approval: declaredApproval(approval, nameOf),
           },
           clock,
         ),
@@ -542,10 +550,7 @@ export const ResourcesLive: Layer.Layer<
             definition.spec,
             {
               kind: "settings",
-              approval: {
-                by: nameOf(approval.approvedBy),
-                for: approval.worktreeId === null ? "project" : "worktree",
-              },
+              approval: declaredApproval(approval, nameOf),
             },
             clock,
           ),
@@ -653,13 +658,7 @@ export const ResourcesLive: Layer.Layer<
           listed.definition.spec,
           {
             kind: "settings",
-            approval:
-              approval === null
-                ? null
-                : {
-                    by: nameOf(approval.approvedBy),
-                    for: approval.worktreeId === null ? "project" : "worktree",
-                  },
+            approval: declaredApproval(approval, nameOf),
             choice: stored.selection.mode,
           },
           clock,

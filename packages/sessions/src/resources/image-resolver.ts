@@ -30,18 +30,17 @@ type ImageFailure = keyof typeof FAILURE_WORDS;
 
 const isFailure = (answer: string): answer is ImageFailure => Object.hasOwn(FAILURE_WORDS, answer);
 
+export const ImageFailureReason = Schema.Literals([
+  "not-found",
+  "login-required",
+  "registry-refused",
+  "unavailable",
+  "unverifiable",
+]);
+
 export class ImageResolutionError extends Schema.TaggedError<ImageResolutionError>()(
   "ImageResolutionError",
-  {
-    image: Schema.String,
-    reason: Schema.Literals([
-      "not-found",
-      "login-required",
-      "registry-refused",
-      "unavailable",
-      "unverifiable",
-    ]),
-  },
+  { image: Schema.String, reason: ImageFailureReason },
 ) {}
 
 /** `@db · image postgres:17 · not found in the registry · not approved`. */
