@@ -7,6 +7,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { CaptureStoreRepo, CaptureStoreRepoLive } from "../src/repos/capture-store.ts";
+import {
+  ProjectServiceRecipesRepo,
+  ProjectServiceRecipesRepoLive,
+} from "../src/repos/project-service-recipes.ts";
 import { ProjectsRepo, ProjectsRepoLive } from "../src/repos/projects.ts";
 import {
   RemovalFencesRepo,
@@ -25,14 +29,21 @@ const pool = PgClient.layer({
   transformResultNames: Str.snakeToCamel,
   transformQueryNames: Str.camelToSnake,
 });
-const repos = Layer.mergeAll(ProjectsRepoLive, RemovalFencesRepoLive, CaptureStoreRepoLive).pipe(
-  Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(pool))),
-);
+const repos = Layer.mergeAll(
+  ProjectsRepoLive,
+  RemovalFencesRepoLive,
+  CaptureStoreRepoLive,
+  ProjectServiceRecipesRepoLive,
+).pipe(Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(pool))));
 const run = <A, E>(
   effect: Effect.Effect<
     A,
     E,
-    ProjectsRepo | RemovalFencesRepo | CaptureStoreRepo | SqlClient.SqlClient
+    | ProjectsRepo
+    | RemovalFencesRepo
+    | CaptureStoreRepo
+    | ProjectServiceRecipesRepo
+    | SqlClient.SqlClient
   >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(repos), Effect.scoped));
 const manage = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
@@ -236,6 +247,67 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         expect(
           yield* sql`SELECT n FROM captures WHERE worktree_id = ${consumerTree} ORDER BY n`,
         ).toEqual([{ n: 0 }, { n: 1 }]);
+      }),
+    ));
+
+  it("refuses a project setting written after the project was removed", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const recipes = yield* ProjectServiceRecipesRepo;
+        const id = yield* seed("recipes");
+        // A request that read the project listed, then wrote after the removal committed.
+        yield* keep(id);
+        const late = yield* Effect.exit(
+          recipes.create({
+            projectId: id,
+            name: "web",
+            command: "pnpm dev",
+            port: 3000,
+            protocol: "tcp",
+            browserScheme: "http",
+          }),
+        );
+        expect(Exit.isFailure(late) && isRemovedProject(Cause.squash(late.cause))).toBe(true);
+        expect(
+          yield* sql`SELECT name FROM project_service_recipes WHERE project_id = ${id}`,
+        ).toEqual([]);
+      }),
+    ));
+
+  it("fences every table that holds a project's content, or names why it need not", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        // Written only by a session's work or by a removal itself; their own fences refuse it.
+        const fencedElsewhere = new Set([
+          "agent_sessions",
+          "worktrees",
+          "hot_workspaces",
+          "session_repositories",
+          "project_links",
+          "change_landings",
+          "session_git_ops",
+          "session_changes",
+          "worktree_changes",
+          "store_refs",
+        ]);
+        const rows = yield* sql<{ readonly table: string; readonly fenced: boolean }>`
+          SELECT c.table_name AS table,
+                 EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_proc f ON f.oid = t.tgfoid
+                          WHERE t.tgrelid = (quote_ident(c.table_name))::regclass
+                            AND f.proname = 'project_retention_admit_content') AS fenced
+            FROM information_schema.columns c
+            JOIN information_schema.tables t
+              ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+           WHERE c.table_schema = current_schema() AND c.column_name = 'project_id'
+             AND t.table_type = 'BASE TABLE'
+           ORDER BY c.table_name`;
+        expect(
+          rows
+            .filter((row) => !row.fenced && !fencedElsewhere.has(row.table))
+            .map((row) => row.table),
+        ).toEqual([]);
       }),
     ));
 });

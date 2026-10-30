@@ -4535,6 +4535,46 @@ const projectRetentionMigration = Effect.gen(function* () {
     BEFORE INSERT OR UPDATE ON project_links
     FOR EACH ROW EXECUTE FUNCTION project_retention_link()`;
 
+  // A project's settings and content are written only while it is listed: a request that read
+  // it listed and writes after the removal committed is refused. A cascade from a deletion is
+  // not a write into the project.
+  yield* sql.unsafe(`CREATE FUNCTION project_retention_admit_content() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    DECLARE removed boolean;
+    BEGIN
+      IF pg_trigger_depth() > 1 OR NEW.project_id IS NULL THEN
+        RETURN NEW;
+      END IF;
+      SELECT removed_at IS NOT NULL INTO removed FROM projects WHERE id = NEW.project_id FOR SHARE;
+      IF removed THEN
+        RAISE EXCEPTION 'project % is unavailable; restore a removed project before changing it', NEW.project_id
+          USING ERRCODE = 'MRFRM';
+      END IF;
+      RETURN NEW;
+    END $$`);
+  for (const table of [
+    "agent_memory_files",
+    "agent_memory_import_bases",
+    "agent_memory_versions",
+    "previews",
+    "project_cluster_bindings",
+    "project_environment_variables",
+    "project_folders",
+    "project_mounts",
+    "project_references",
+    "project_secrets",
+    "project_service_recipes",
+    "resource_definitions",
+    "resource_proposals",
+    "skills",
+    "slack_channel_defaults",
+    "slack_user_defaults",
+  ]) {
+    yield* sql.unsafe(`CREATE TRIGGER ${table}_project_retention
+      BEFORE INSERT OR UPDATE ON ${table}
+      FOR EACH ROW EXECUTE FUNCTION project_retention_admit_content()`);
+  }
+
   // Inherited capture objects still need their owner's register/retention guard after purge.
   yield* sql`ALTER TABLE worktree_chain ADD COLUMN orphaned boolean NOT NULL DEFAULT false,
     DROP CONSTRAINT worktree_chain_worktree_id_fkey`;
