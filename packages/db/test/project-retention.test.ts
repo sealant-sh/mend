@@ -655,6 +655,32 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
       }),
     ));
 
+  it("keeps a project whose purge began on its way out: only another purge takes its mark", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        const id = yield* seed("purge-begun");
+        yield* keep(id);
+        const first = yield* takePurgeAs(id, "anna");
+        if (first._tag !== "finish") return yield* Effect.die("expected purge mark");
+        // Its holder stops renewing: the mark lapses, and the project is still being purged.
+        yield* sql`UPDATE projects SET removal_since = now() - interval '10 minutes' WHERE id = ${id}`;
+        yield* fences.release({ kind: "project", id }, first.id);
+        expect({
+          restore: yield* fences.restore(id, "anna"),
+          removal: (yield* fences.take({ kind: "project", id }))._tag,
+          phase: yield* sql`SELECT removal_phase FROM projects WHERE id = ${id}`,
+          next: (yield* takePurgeAs(id, "anna"))._tag,
+        }).toEqual({
+          restore: "purging",
+          removal: "gone",
+          phase: [{ removalPhase: "deleting" }],
+          next: "finish",
+        });
+      }),
+    ));
+
   it("purges only the removal the person confirmed, not one made since under another name", async () =>
     run(
       Effect.gen(function* () {
