@@ -1,3 +1,4 @@
+import { useSecondTick } from "@mend/ui/hooks/use-second-tick";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
@@ -41,7 +42,6 @@ import {
   type SealantConnectionDto,
   type SettingsDto,
 } from "#/lib/api";
-import { useSecondTick } from "#/lib/clock";
 import {
   DOTFILES_MANAGER_OPTIONS,
   repositoryDraft,
