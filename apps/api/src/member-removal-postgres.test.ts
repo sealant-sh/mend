@@ -190,6 +190,49 @@ const admin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 const observe = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(observerLayer)));
+const holdTransaction = async (statement: Effect.Effect<unknown, unknown, SqlClient.SqlClient>) => {
+  const opened = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const ended = observe(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* statement;
+          opened.resolve();
+          yield* Effect.promise(() => release.promise);
+        }),
+      );
+    }),
+  );
+  await Promise.race([opened.promise, ended]);
+  return () => {
+    release.resolve();
+    return ended;
+  };
+};
+const lockWaiters = async (count: number) => {
+  const deadline = performance.now() + 5_000;
+  for (;;) {
+    const waiting = await observe(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql`SELECT count(*)::int AS waiting FROM pg_stat_activity
+          WHERE datname = ${database} AND wait_event_type = 'Lock'`;
+        return Schema.decodeUnknownSync(Schema.Struct({ waiting: Schema.Number }))(rows[0]).waiting;
+      }),
+    );
+    if (waiting >= count) return;
+    if (performance.now() >= deadline) throw new Error(`${count} lock waiters never appeared`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+const revokeOnItsOwnConnection = (userId: string, deviceId: string) =>
+  Effect.runPromiseExit(
+    Effect.flatMap(DevicesRepo, (devices) => devices.revoke(userId, deviceId)).pipe(
+      Effect.provide(DevicesRepoLive.pipe(Layer.provide(MendDBLive), Layer.provide(observerLayer))),
+    ),
+  );
 const remove = Effect.flatMap(MemberRemoval, (removal) => removal.remove(input));
 const input = {
   organizationId: OrganizationId.make("org-test"),
@@ -450,6 +493,26 @@ describe.skipIf(postgres.skip)("member removal with real PostgreSQL", () => {
       Effect.runSync(Deferred.succeed(hold, undefined));
       await completion;
     }
+  });
+
+  it("finishes alongside the removed person revoking their own phone, neither one deadlocked", async () => {
+    notificationFails = false;
+    const resume = await holdTransaction(
+      Effect.flatMap(
+        SqlClient.SqlClient,
+        (sql) => sql`SELECT 1 FROM "session" WHERE id = 'auth-removed' FOR UPDATE`,
+      ),
+    );
+    const removing = runtime.runPromiseExit(remove);
+    await lockWaiters(1);
+    const revoking = revokeOnItsOwnConnection("removed", "device-removed");
+    await lockWaiters(2);
+    await resume();
+
+    const [removal, revoke] = await Promise.all([removing, revoking]);
+    expect.soft(Exit.isSuccess(removal) ? "removed" : Cause.pretty(removal.cause)).toBe("removed");
+    expect.soft(Exit.isSuccess(revoke) ? "revoked" : Cause.pretty(revoke.cause)).toBe("revoked");
+    expect(await runtime.runPromise(state())).toEqual(revoked);
   });
 
   it("preserves the last owner and refuses a membership in another organization", async () => {
