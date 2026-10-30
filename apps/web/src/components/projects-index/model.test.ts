@@ -11,6 +11,7 @@ const project: ProjectDto = {
   organizationId: OrganizationId.make("org-test"),
   visibility: "shared",
   createdByUserId: null,
+  scratchOwnerUserId: null,
   originUrl: "git@github.com:sealant-sh/mend.git",
   storePath: "/home/developer/.local/share/mend/store/mend/repo.git",
   defaultBranch: "main",

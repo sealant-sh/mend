@@ -179,9 +179,17 @@ export class Project extends Schema.Class<Project>("Project")({
   organizationId: OrganizationId,
   /** `private`: its creator only. `shared`: every member of its organization. */
   visibility: ProjectVisibility,
-  /** The account that adopted it; the creator a private project is visible to. */
+  /** The account that adopted or created it; the creator a private project is visible to. */
   createdByUserId: Schema.NullOr(Schema.String),
-  /** Network Git URL used for adoption. Null only for legacy bare-created repositories. */
+  /** Durable per-person scratch identity, independent of the project's name. */
+  scratchOwnerUserId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Network Git URL used for adoption. Null for projects created in Mend and legacy bare-created
+   * repositories.
+   */
   originUrl: Schema.NullOr(Schema.String),
   /**
    * Absolute path of the bare repo inside the store: `<storeRoot>/<projectId>/repo.git` for

@@ -27,6 +27,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
   organizationId: "org-1",
   visibility: "private",
   createdByUserId: "user-1",
+  scratchOwnerUserId: null,
   originUrl: null,
   storePath: "/store/project-1/repo.git",
   defaultBranch: "main",
