@@ -13,6 +13,18 @@ const at = (appUrl: string, ...alternates: ReadonlyArray<string>) =>
     alternates.map((origin) => PublicOrigin.make(origin)),
   );
 
+/** Spellings of a page's path that a router may still serve as that page. */
+const spellings = (target: string) => [
+  target,
+  target.toUpperCase(),
+  `/${target}`,
+  target.replaceAll("/", "//"),
+  target.replace("/", "/%2F"),
+  target.replace(/^\/(\w)/, (_, first: string) => `/%${first.charCodeAt(0).toString(16)}`),
+  target.replace(/(\?|$)/, "/$1"),
+  `https://mend.example${target}`,
+];
+
 describe("the browser header policy (MEND-11)", () => {
   it("lets only this origin supply scripts, connections, frames and form targets", () => {
     const csp = contentSecurityPolicy(at("https://mend.example"));
@@ -76,43 +88,32 @@ describe("the browser header policy (MEND-11)", () => {
     expect(contentSecurityPolicy(at("https://mend.example"))).not.toContain("'unsafe-eval'");
   });
 
-  it("sends no referrer from a page whose URL carries a credential", () => {
-    for (const pathname of [
-      "/tty-embed",
-      "/pair",
-      "/authorize",
-      "/preview-auth",
-      "/api/preview-auth",
-    ]) {
-      expect(
-        securityHeaders({ target: pathname, network: at("https://mend.example") })[
-          "referrer-policy"
-        ],
-      ).toBe("no-referrer");
-    }
-    expect(
-      securityHeaders({ target: "/", network: at("https://mend.example") })["referrer-policy"],
-    ).toBe("strict-origin-when-cross-origin");
-  });
-
-  it("keeps a handed-over link's page out of every cache and every Referer, in either form", () => {
-    for (const target of [
+  it("keeps every page whose URL carries a credential out of caches and Referers, however it is spelled", () => {
+    const pages = [
+      "/tty-embed?ticket=SYN_TICKET",
+      "/pair?code=SYN_CODE",
+      "/authorize?code=SYN_CODE",
+      "/preview-auth?grant=SYN_GRANT",
+      "/api/preview-auth?grant=SYN_GRANT",
       "/join",
       "/join/SYN_INVITATION",
       "/reset",
       "/reset/SYN_RESET",
       "/slack/link",
-      "/slack/link/SYN_SLACK_CODE",
-    ]) {
-      const headers = securityHeaders({ target, network: at("https://mend.example") });
-      expect(headers["referrer-policy"], target).toBe("no-referrer");
-      expect(headers["cache-control"], target).toBe("no-store");
+      "/slack/link/msl_SYN_SLACK_CODE",
+    ];
+    for (const page of pages) {
+      for (const target of spellings(page)) {
+        const headers = securityHeaders({ target, network: at("https://mend.example") });
+        expect.soft(headers["referrer-policy"], target).toBe("no-referrer");
+        expect.soft(headers["cache-control"], target).toBe("no-store");
+      }
     }
-    expect(
-      securityHeaders({ target: "/settings", network: at("https://mend.example") })[
-        "cache-control"
-      ],
-    ).toBeUndefined();
+    for (const target of ["/", "/settings", "/joined", "/slack", "/api/auth/reset-password"]) {
+      const headers = securityHeaders({ target, network: at("https://mend.example") });
+      expect(headers["referrer-policy"], target).toBe("strict-origin-when-cross-origin");
+      expect(headers["cache-control"], target).toBeUndefined();
+    }
   });
 });
 
