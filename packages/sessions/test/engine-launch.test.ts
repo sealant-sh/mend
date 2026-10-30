@@ -14,18 +14,19 @@ import {
   piProfileDigest,
   agentMemoryDigest,
 } from "@mend/db";
-import { SealantWorkspaceId, SessionId, SessionProcessId, ReferenceId } from "@mend/domain";
+import { ReferenceId, said, SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import { Project, SessionProcess, PiProfile, Reference } from "@mend/domain/workbench";
 import { LAUNCH_BOOTING, LAUNCH_PREPARING } from "@mend/domain/workbench";
-import { SealantClient, SealantPlatformError } from "@mend/sealant";
+import { SealantClient, SealantPlatformError, toPlatformError } from "@mend/sealant";
 import { ProtocolHost, SessionEngine, startFromBase } from "@mend/sessions";
 import { harnessHomePathOf, processStatePathOf } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type {
-  CreateOptions,
-  SessionOptions,
-  WorkspacePhase,
-  WorkspaceRuntimeInfo,
+import {
+  type CreateOptions,
+  SealantApiError,
+  type SessionOptions,
+  type WorkspacePhase,
+  type WorkspaceRuntimeInfo,
 } from "@sealant/sdk";
 import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect";
 import { describe, expect } from "vitest";
@@ -368,9 +369,12 @@ describe("SessionEngine", () => {
 
   it("reports the platform's runtime-specific Docker refusal without Kubernetes-only advice", async () => {
     const created: CreateOptions[] = [];
-    const platformCause = new Error("MicroVM capability refusal");
     const platformMessage =
       "This deployment runs workspaces on the 'microvm' runtime, which has no workspace-scoped Docker. Turn Docker off for this workspace.";
+    const platformCause = new SealantApiError(platformMessage, {
+      status: 422,
+      reason: "workspace-docker-unsupported",
+    });
 
     await withEngine(
       (world, tmp) =>
@@ -412,15 +416,7 @@ describe("SessionEngine", () => {
           undefined,
           undefined,
           undefined,
-          () =>
-            Effect.fail(
-              new SealantPlatformError({
-                code: "workspace-docker-unsupported",
-                status: 422,
-                message: platformMessage,
-                cause: platformCause,
-              }),
-            ),
+          () => Effect.fail(toPlatformError(platformCause)),
         ),
         workspaceImage: {
           mode: "family",
@@ -1038,7 +1034,7 @@ describe("SessionEngine", () => {
           );
 
           // POST /sessions/:id/resume after a stop (an idle stop included).
-          yield* engine.stop(session.id, "idle · stopped after 15 min · reply to resume");
+          yield* engine.stop(session.id, said`idle · stopped after 15 min · reply to resume`);
           yield* engine.resumeSession(session.id, null);
           // A follow-up to the stopped session relaunches it.
           yield* engine.stop(session.id);
@@ -1192,7 +1188,7 @@ describe("SessionEngine", () => {
             "user-1",
           );
 
-          yield* engine.stop(session.id, "idle · stopped after 15 min · reply to resume");
+          yield* engine.stop(session.id, said`idle · stopped after 15 min · reply to resume`);
 
           const settled = world.sessions.get(session.id);
           expect(settled?.status).toBe("stopped");

@@ -30,6 +30,7 @@ import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
+import { mendWords, type ReaderLine, ReaderWords, type SaysReaderWords } from "@mend/domain";
 import { Effect, Schema } from "effect";
 
 import { OPENCODE_DATABASE, readOpencodeHome } from "./opencode-state.ts";
@@ -52,9 +53,12 @@ export class HarnessStateNotFoundError extends Schema.TaggedError<HarnessStateNo
   },
 ) {}
 
-export class HarnessStateIOError extends Schema.TaggedError<HarnessStateIOError>()(
-  "HarnessStateIOError",
-  {
+/**
+ * Its message is always Mend's own sentence, naming the session and the harness; the path and the
+ * host's error ride beside it, for the log.
+ */
+export class HarnessStateIOError
+  extends Schema.TaggedError<HarnessStateIOError>()("HarnessStateIOError", {
     sessionId: Schema.String,
     operation: Schema.Literals([
       "read-manifest",
@@ -70,8 +74,13 @@ export class HarnessStateIOError extends Schema.TaggedError<HarnessStateIOError>
     path: Schema.String,
     message: Schema.String,
     cause: Schema.Defect(),
-  },
-) {}
+  })
+  implements SaysReaderWords
+{
+  get [ReaderWords](): ReaderLine {
+    return mendWords(this.message);
+  }
+}
 
 export class HarnessStateInvalidError extends Schema.TaggedError<HarnessStateInvalidError>()(
   "HarnessStateInvalidError",

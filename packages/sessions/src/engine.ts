@@ -83,8 +83,12 @@ import {
   failureReport,
   imageHasScreen,
   lineFailureOf,
+  mendWords,
+  type ReaderLine,
   ReaderWords,
+  said,
   type WorkspaceImage,
+  withoutFullStop,
   workspaceImagePackages,
   WorktreeId,
 } from "@mend/domain";
@@ -272,7 +276,8 @@ import {
   PersonLayoutPlatform,
   type PersonSessionOptions,
   type ProcessUser,
-  restated,
+  curatedError,
+  ledBy,
   SealantClient,
   SealantPlatformError,
   type WorkspaceStopOptions,
@@ -809,17 +814,24 @@ const capturedOpencode = (
  * started (`opencodeLaunchSnapshot`): nothing it starts can be told apart from what was there, so
  * resuming its conversation will be refused.
  */
-const OPENCODE_SNAPSHOT_MISSING =
-  "opencode · could not read its conversations before it started · this session's conversation may not be resumable";
+const OPENCODE_SNAPSHOT_MISSING = said`opencode · could not read its conversations before it started · this session's conversation may not be resumable`;
 
 /** Why a launch stops before the harness home relocation (`evictReservedSecretFiles`). */
-const secretFilesNotSetAside = (why: string) =>
-  new SealantPlatformError({
+const secretFilesNotSetAside = (why: ReaderLine) =>
+  curatedError({
     code: "secret_files_not_set_aside",
     status: null,
-    message: `a secret file under a directory sessions now save could not be taken out of it (${why}); the harness home was not moved, so nothing of it is saved`,
+    words: said`a secret file under a directory sessions now save could not be taken out of it (${why}); the harness home was not moved, so nothing of it is saved`,
     cause: null,
   });
+
+/** As `secretFilesNotSetAside`, for a failure whose own words may be withheld. */
+const secretFilesNotSetAsideBy = (failure: unknown) =>
+  ledBy(
+    said`a secret file under a directory sessions now save could not be taken out of it, so the harness home was not moved and nothing of it is saved`,
+    failure,
+    { code: "secret_files_not_set_aside", status: null },
+  );
 
 /**
  * A harness opened on a prompt, with the model and effort the session was started with
@@ -1077,25 +1089,24 @@ interface AgentEnd {
   readonly how: "exited" | "stopped";
   readonly exitCode: number | null;
   readonly outcome: SessionOutcome;
-  readonly summary: string | null;
+  readonly summary: ReaderLine | null;
 }
 
 type EndRecording = "recorded" | "already-ended" | "held";
 
 const nothingToContinue = () =>
-  new SealantPlatformError({
+  curatedError({
     code: "mode_switch_state_missing",
     status: null,
-    message: "Nothing to continue in a terminal yet · wait for the first reply, then try again",
+    words: said`Nothing to continue in a terminal yet · wait for the first reply, then try again`,
     cause: null,
   });
 
 const savedStateUnreadable = (error: HarnessStateIOError) =>
-  new SealantPlatformError({
+  curatedError({
     code: "mode_switch_state_unreadable",
     status: null,
-    message: `Mend could not read the conversation's saved state (${error.message.replace(/\.+$/, "")}) · nothing was stopped · try again`,
-    uncurated: true,
+    words: said`Mend could not read the conversation's saved state (${withoutFullStop(error[ReaderWords])}) · nothing was stopped · try again`,
     cause: error,
   });
 
@@ -1130,10 +1141,10 @@ const conversationStartOf = (
   const argv = composeProtocolArgv(session.harness, start, providerSessionId ?? undefined);
   return argv instanceof ProtocolHarnessUnsupportedError
     ? Effect.fail(
-        new SealantPlatformError({
+        curatedError({
           code: "conversation_not_handed_over",
           status: null,
-          message: argv.message,
+          words: argv[ReaderWords],
           cause: argv,
         }),
       )
@@ -1142,11 +1153,10 @@ const conversationStartOf = (
 
 const conversationEndedMeanwhile = () =>
   Effect.fail(
-    new SealantPlatformError({
+    curatedError({
       code: "conversation_not_stopped",
       status: null,
-      message:
-        "The conversation ended while the terminal was being opened · resume the session to continue",
+      words: said`The conversation ended while the terminal was being opened · resume the session to continue`,
       cause: null,
     }),
   );
@@ -1246,24 +1256,30 @@ const AGENT_WAIT_MOVE_ATTEMPTS = 3;
  * A launch that did not start, for its session line: refused before anything ran (a login the
  * person has not connected, a layout Mend cannot run), in a join's words, or failed.
  */
-const launchEndLine = (cause: Cause.Cause<unknown>): Effect.Effect<string> => {
+const launchEndLine = (
+  cause: Cause.Cause<unknown>,
+  failed: "launch" | "resume" = "launch",
+): Effect.Effect<ReaderLine> => {
   const failure = lineFailureOf(cause);
   return failure._tag === "Said" &&
     failure.error instanceof SealantPlatformError &&
     (failure.error.code === "person_login_refused" ||
       failure.error.code === "harness_layout_refused")
-    ? Effect.succeed(`launch refused · ${failure.words}`)
-    : failureLine(cause).pipe(Effect.map((words) => `launch failed: ${words}`));
+    ? Effect.succeed(said`launch refused · ${failure.words}`)
+    : failureLine(cause).pipe(
+        Effect.map((words) =>
+          failed === "launch" ? said`launch failed: ${words}` : said`resume failed: ${words}`,
+        ),
+      );
 };
 
-const launchEndOf = (message: string, failure: unknown): Effect.Effect<string> =>
-  failure === undefined
-    ? Effect.succeed(`launch failed: ${message}`)
-    : launchEndLine(Cause.fail(failure));
+/** A session's line read back as it was stored, to be said again. */
+const storedLine = (summary: string | null): ReaderLine | null =>
+  summary === null ? null : mendWords(summary);
 
 /** A steerer's refusal, in a steerer's words ("Connect Claude to steer this session."). */
-const steerWords = (message: string) =>
-  message.replace("to start a session here.", "to steer this session.");
+const steerWords = (words: ReaderLine) =>
+  mendWords(words.replace("to start a session here.", "to steer this session."));
 
 /**
  * The harness's argv with its permission defaults, behind its first-run seed (`harness-seeds.ts`:
@@ -1307,13 +1323,13 @@ const withDotfilesNotApplied = (
   reason: string | null,
 ): ReadonlyArray<SessionDotfilesNotApplied> => {
   if (reason === null) return notApplied;
-  const said = new Set(notApplied.map((entry) => entry.source));
+  const named = new Set(notApplied.map((entry) => entry.source));
   return [
     ...notApplied,
-    ...(resolved.repository === null || said.has("repository")
+    ...(resolved.repository === null || named.has("repository")
       ? []
       : [{ source: "repository" as const, reason }]),
-    ...(resolved.snapshotSha === null || said.has("snapshot")
+    ...(resolved.snapshotSha === null || named.has("snapshot")
       ? []
       : [{ source: "snapshot" as const, reason }]),
   ];
@@ -1377,12 +1393,10 @@ const logAgentMemoryDelivered = (
  * A pi session's harness home could not be made to hold its owner's profile, or none: the launch
  * stops rather than run pi on another person's profile, or on the owner's half delivered.
  */
-const piProfileNotDelivered = (message: string) =>
-  new SealantPlatformError({
+const piProfileNotDelivered = (failure: unknown) =>
+  ledBy(said`the pi profile could not be set up for this session`, failure, {
     code: "PI_PROFILE_NOT_DELIVERED",
     status: null,
-    message: `the pi profile could not be set up for this session: ${message}`,
-    cause: null,
   });
 
 /**
@@ -1404,8 +1418,8 @@ const placesMemoryHome = (reading: CaptureReading, kind: CaptureFlushKind): bool
 };
 
 /** A hand-over that could not finish: the launch fails rather than start on another's memory. */
-const notHandedOver = (message: string, cause: unknown) =>
-  new SealantPlatformError({ code: "AGENT_MEMORY_NOT_HANDED_OVER", status: null, message, cause });
+const notHandedOver = (lead: ReaderLine, failure: unknown) =>
+  ledBy(lead, failure, { code: "AGENT_MEMORY_NOT_HANDED_OVER", status: null });
 
 /** A pi profile directory kept aside, or one that could not be cleared, is said once. */
 const logPiProfileVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
@@ -1699,11 +1713,11 @@ const createAskedAtOf = (key: string): Date | null => {
 };
 
 /** A planned launch's opening prompt no process accepted yet: its plan stays. */
-const OPENING_PROMPT_NOT_DELIVERED = "opening prompt not delivered";
+const OPENING_PROMPT_NOT_DELIVERED = said`opening prompt not delivered`;
 /** How many launches a planned relaunch tries in one process before it only keeps its plan. */
 const PLANNED_LAUNCH_ATTEMPTS = 3;
 /** A launch whose executor was created but never reached its harness, with no words of its own. */
-const LAUNCH_NEVER_RAN_SUMMARY = "launch failed · the harness never started";
+const LAUNCH_NEVER_RAN_SUMMARY = said`launch failed · the harness never started`;
 /**
  * What a run left open under a session that moved on reads once the next run of the session
  * starts: its end was never recorded, and nothing of it is live (`createSessionRun`).
@@ -1714,10 +1728,10 @@ const settledOutcomeOfStatus = (status: SessionStatus): SessionOutcome | null =>
   status === "completed" || status === "failed" || status === "stopped" ? status : null;
 /** A run insert refused over a run of the session that is still live (`createSessionRun`). */
 const runActiveRefusal = (activeRun: SessionRun) =>
-  new SealantPlatformError({
+  curatedError({
     code: "run_active",
     status: 409,
-    message: `a run of this session is still open · ${activeRun.sealantRunId} · nothing started`,
+    words: said`a run of this session is still open · ${mendWords(activeRun.sealantRunId)} · nothing started`,
     cause: null,
   });
 /** Every summary a launch that did not start leaves begins with this. */
@@ -1733,26 +1747,26 @@ const LAUNCH_SUMMARY_PREFIX = "launch ";
  * The custom image's setup commands were not run: the executor laid the worktree down from saved
  * capture `n`, which already holds what they produced (review 2026-09-28 (15) #1).
  */
-const SETUP_SKIPPED_PREFIX = "setup skipped";
-const setupSkippedWords = (n: number) => `${SETUP_SKIPPED_PREFIX} · restored from capture ${n}`;
+const SETUP_SKIPPED_PREFIX = said`setup skipped`;
+const setupSkippedWords = (n: number) => said`${SETUP_SKIPPED_PREFIX} · restored from capture ${n}`;
 /**
  * No dependency install ran: the head's manifest could not be read, so nothing says this
  * executor's platform lacks a restored tree (review 2026-09-28 (16) #1). A read that observed
  * nothing is not evidence that nothing was restored.
  */
-const DEPENDENCY_INSTALL_SKIPPED_PREFIX = "dependency install skipped";
+const DEPENDENCY_INSTALL_SKIPPED_PREFIX = said`dependency install skipped`;
 const dependencyInstallSkippedWords = (n: number) =>
-  `${DEPENDENCY_INSTALL_SKIPPED_PREFIX} · capture ${n} manifest unavailable`;
+  said`${DEPENDENCY_INSTALL_SKIPPED_PREFIX} · capture ${n} manifest unavailable`;
 
 /**
  * Said once, as the launch starts, when a secret file (docs/adr/0010) was not written: the path
  * and the reason the workspace gave, so a session that then lacks `~/.aws/credentials` says why.
  */
-const SECRET_FILES_SUMMARY_PREFIX = "secret files";
+const SECRET_FILES_SUMMARY_PREFIX = said`secret files`;
 const secretFilesRefusedWords = (refused: ReadonlyArray<SecretFileOutcome>) =>
-  `${SECRET_FILES_SUMMARY_PREFIX} · ${refused.length} not written · ${refused
-    .map((outcome) => `~/${outcome.path} · ${outcome.reason ?? "refused"}`)
-    .join(" · ")}`;
+  said`${SECRET_FILES_SUMMARY_PREFIX} · ${refused.length} not written · ${mendWords(
+    refused.map((outcome) => `~/${outcome.path} · ${outcome.reason ?? "refused"}`).join(" · "),
+  )}`;
 /**
  * Said once, as a run in an executor that is not its owner's starts (docs/adr/0010 decision 3): a
  * join, or a later run of a session that joined, in the home of the person whose launch made the
@@ -1762,18 +1776,18 @@ const secretFilesWithheldWords = (
   paths: ReadonlyArray<string>,
   executorOwner: "another person" | "unknown",
 ) =>
-  `${SECRET_FILES_SUMMARY_PREFIX} · ${paths.length} not written · ${
+  said`${SECRET_FILES_SUMMARY_PREFIX} · ${paths.length} not written · ${
     executorOwner === "another person"
-      ? "this workspace is another person's"
-      : "Mend cannot say whose workspace this is"
-  } · ${paths.map((filePath) => `~/${filePath}`).join(" · ")}`;
+      ? said`this workspace is another person's`
+      : said`Mend cannot say whose workspace this is`
+  } · ${mendWords(paths.map((filePath) => `~/${filePath}`).join(" · "))}`;
 
 /**
  * A discard the owner asked that the save under way overtook: it finished, kept everything and
  * ended the workspace, so nothing was discarded (RC 0.36.0-next.768: the session read plain
  * `Stopped`, and nothing said what became of the discard).
  */
-const DISCARD_OVERTAKEN_SUMMARY = "the save finished before the discard, so nothing was discarded";
+const DISCARD_OVERTAKEN_SUMMARY = said`the save finished before the discard, so nothing was discarded`;
 
 const STALE_ON_START_PREFIXES = [
   LAUNCH_SUMMARY_PREFIX,
@@ -1788,21 +1802,19 @@ const STALE_ON_START_PREFIXES = [
 ] as const;
 
 /** A create Core fenced before it made anything, found with no launch asking again. */
-const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
+const LAUNCH_CANCELLED_SUMMARY = said`launch cancelled · nothing was created`;
 /**
  * A launch whose create answer was lost, whose executor Mend found by its key and drained, and
  * which then ended (terminated, or found gone): nothing runs and nothing launches (e2e8 (i)).
  */
-const LAUNCH_INTERRUPTED_SUMMARY =
-  "launch interrupted · the create's answer was lost · its executor ended";
+const LAUNCH_INTERRUPTED_SUMMARY = said`launch interrupted · the create's answer was lost · its executor ended`;
 /**
  * The same launch while its executor's end is not observed: the platform took the stop and still
  * reports the executor (review 2026-09-28 (19) #2). The session reads `stopping` with these words
  * and keeps its row and lease; the reaper settles it `LAUNCH_INTERRUPTED_SUMMARY` once the platform
  * reports the executor gone.
  */
-const LAUNCH_STOP_UNOBSERVED_SUMMARY =
-  "launch interrupted · the create's answer was lost · stop requested · end not observed yet";
+const LAUNCH_STOP_UNOBSERVED_SUMMARY = said`launch interrupted · the create's answer was lost · stop requested · end not observed yet`;
 /**
  * A summary without the plan notice appended to it (`noteCapturePlan`): what it said before a plan
  * waited or was refused; null when the notice was all it said.
@@ -1873,11 +1885,10 @@ const neverShared = (session: Session) =>
   session.sharedControlEnabledAt === null && session.sharedControlEverAt === null;
 
 /** Said when another person's session holds the same conversation (review of mend#567). */
-const PRE_RELEASE_COPY_REFUSED_WORDS =
-  "conversation from before per-person homes not copied · another person's session in this worktree holds it too";
+const PRE_RELEASE_COPY_REFUSED_WORDS = said`conversation from before per-person homes not copied · another person's session in this worktree holds it too`;
 /** Said when a conversation from before per-person homes is over what a start copies. */
 const preReleaseTooLargeWords = (bytes: number) =>
-  `conversation from before per-person homes not copied · ${Math.ceil(bytes / (1024 * 1024))} MB is over the 64 MB a start copies`;
+  said`conversation from before per-person homes not copied · ${Math.ceil(bytes / (1024 * 1024))} MB is over the 64 MB a start copies`;
 
 /** What a person's deliveries leave for the start that waits on them. */
 interface PersonDelivered {
@@ -1930,7 +1941,7 @@ const keptDrainReading = (session: Session) =>
     session.captureRefused,
   ]);
 /** What replaces it once the replacement executor's first heartbeat or register lands. */
-const EXECUTOR_REPLACED_SUMMARY = "picked up · executor replaced";
+const EXECUTOR_REPLACED_SUMMARY = said`picked up · executor replaced`;
 /**
  * How long a checkpoint waits for the lease holder's `capture.flush` before it observes whatever
  * head is registered: a full ship of a large small-class delta, not a cadence window.
@@ -1998,15 +2009,13 @@ const ACCESS_RECONCILE_MS = 60_000;
 const WIND_DOWN_CONCURRENCY = 4;
 
 /** The line of a session stopped because its owner is no longer a member of the organization. */
-export const STOPPED_NOT_MEMBER = "stopped · you are no longer a member of this organization";
+export const STOPPED_NOT_MEMBER = said`stopped · you are no longer a member of this organization`;
 
 /** The line of a joined session stopped because its owner can no longer see the project. */
-export const STOPPED_LOST_SIGHT =
-  "stopped · you can no longer see this project, and this session ran in another person's workspace";
+export const STOPPED_LOST_SIGHT = said`stopped · you can no longer see this project, and this session ran in another person's workspace`;
 
 /** The line of a session stopped because the person whose executor it ran in lost access. */
-export const EXECUTOR_RETIRED =
-  "stopped · the workspace creator is no longer an organization member · start again in a workspace of your own";
+export const EXECUTOR_RETIRED = said`stopped · the workspace creator is no longer an organization member · start again in a workspace of your own`;
 
 /**
  * What becomes of a person's live session in an executor once access changes (reconciliation and
@@ -2023,7 +2032,7 @@ export const EXECUTOR_RETIRED =
 const accessStopReason = (
   access: ExecutorAccess,
   owner: string,
-): { readonly code: string; readonly words: string } | null => {
+): { readonly code: string; readonly words: ReaderLine } | null => {
   if (access.askerRole === null) return { code: "not_member", words: STOPPED_NOT_MEMBER };
   if (owner === access.creatorUserId) return null;
   if (!mayWorkIn(access.askerRole, owner, access.project)) {
@@ -2560,6 +2569,7 @@ type PreviewStartStep =
 const joinStep = (attemptId: SessionProcessId): PreviewStartStep => ({ _tag: "Join", attemptId });
 
 /** A custom-image setup command exited nonzero — the launch fails rather than run half-prepared. */
+/** Its message is Mend's, naming the setup command from the project's own config. */
 export class SessionLaunchSetupError extends Schema.TaggedError<SessionLaunchSetupError>()(
   "SessionLaunchSetupError",
   {
@@ -2567,7 +2577,11 @@ export class SessionLaunchSetupError extends Schema.TaggedError<SessionLaunchSet
     command: Schema.String,
     message: Schema.String,
   },
-) {}
+) {
+  get [ReaderWords](): ReaderLine {
+    return mendWords(this.message);
+  }
+}
 
 /**
  * The workbench session engine (plan §7.2, M1) — the supervisor extracted from
@@ -2962,7 +2976,7 @@ export class SessionEngine extends Context.Service<
      */
     readonly stop: (
       sessionId: SessionId,
-      summary?: string | null,
+      summary?: ReaderLine | null,
     ) => Effect.Effect<void, SessionNotFoundError>;
     /**
      * The second pane (docs/SESSION-SERVICES.md): a shell PTY in the
@@ -3901,10 +3915,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const base = withoutPlanNotice(current.summary);
           const next =
             notice.kind === "planned"
-              ? base
+              ? storedLine(base)
               : base === null
-                ? notice.words
-                : `${base} · ${notice.words}`;
+                ? mendWords(notice.words)
+                : mendWords(`${base} · ${notice.words}`);
           if (next === current.summary) return;
           if (notice.kind !== "planned") {
             yield* Effect.logWarning(`session engine: ${notice.words}`).pipe(
@@ -5430,10 +5444,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.suspend(() =>
           stoppedDuringLaunch.has(sessionId)
             ? Effect.fail(
-                new SealantPlatformError({
+                curatedError({
                   code: "launch_cancelled",
                   status: 409,
-                  message: "stopped while starting · the agent was not started",
+                  words: said`stopped while starting · the agent was not started`,
                   cause: null,
                 }),
               )
@@ -5463,15 +5477,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           deadline: number = clock.currentTimeMillisUnsafe() +
             Duration.toMillis(drainPolicy.leaseWait),
         ) {
-          let said: string | null = null;
+          let spoken: string | null = null;
           while (true) {
             const holder = yield* leaseHolderWorkspace(session, ownLaunch);
             if (stoppedWhileWaiting.has(session.id)) {
-              return yield* new SealantPlatformError({
+              return yield* curatedError({
                 code: "launch_cancelled",
                 status: 409,
-                message:
-                  "stopped while waiting for the previous session in this worktree · nothing launched",
+                words: said`stopped while waiting for the previous session in this worktree · nothing launched`,
                 cause: null,
               });
             }
@@ -5490,7 +5503,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               holder.kind === "held" ||
               clock.currentTimeMillisUnsafe() >= deadline
             ) {
-              if (said !== null) {
+              if (spoken !== null) {
                 yield* Effect.logInfo(
                   `session engine: capture mode · launch waited for the worktree · ${holder.kind}`,
                 ).pipe(Effect.annotateLogs({ sessionId: session.id }));
@@ -5498,7 +5511,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return holder;
             }
             const words = leaseWaitWords(holder);
-            if (words !== said) {
+            if (words !== spoken) {
               // Why, in the platform's words: a 404 while the holder's heartbeat is live is not
               // "not answering", and the line says what was observed.
               yield* Effect.logInfo(
@@ -5514,7 +5527,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }),
               );
               yield* sayLaunchPhase(session.id, words);
-              said = words;
+              spoken = words;
             }
             yield* Effect.sleep(drainPolicy.leaseWaitInterval);
           }
@@ -6398,7 +6411,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           return;
         }
-        yield* sessions.setSummary(sessionId, words);
+        yield* sessions.setSummary(sessionId, mendWords(words));
       });
 
       /** The platform ended it already: nothing to save or stop; tidy up behind it. */
@@ -6936,7 +6949,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * run as each workspace's creator, whoever that is): Services, then shells, then the agent,
        * with `summary` on the line. What the platform would not close stays live (`notStopped`).
        */
-      const endEverythingOf = (sessionId: SessionId, summary: string | null) =>
+      const endEverythingOf = (sessionId: SessionId, summary: ReaderLine | null) =>
         owned(sessionId)(
           Effect.gen(function* () {
             yield* stopServices(sessionId, { kind: "system", reason: "session-ended" }).pipe(
@@ -7039,7 +7052,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * and the others' stops go on (review 3 of mend#558, P3-4).
        */
       const endEach = (
-        targets: ReadonlyArray<{ readonly sessionId: SessionId; readonly summary: string | null }>,
+        targets: ReadonlyArray<{
+          readonly sessionId: SessionId;
+          readonly summary: ReaderLine | null;
+        }>,
       ) =>
         Effect.forEach(
           targets,
@@ -7081,7 +7097,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly workspaceId: SealantWorkspaceId;
           readonly ownExecutor: boolean;
           readonly code: string;
-          readonly words: string;
+          readonly words: ReaderLine;
         }> = [];
         for (const [workspaceId, sessionIds] of inWorkspace) {
           for (const sessionId of sessionIds) {
@@ -7229,10 +7245,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const lookup = yield* lookupWorkspace(workspaceId);
           if (lookup.kind === "unknown") {
             // Nothing is known gone and nothing was stopped: the lease stays with the executor.
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "workspace_unknown",
               status: null,
-              message: `the platform did not answer for the workspace · nothing stopped · ${yield* failureLine(lookup.cause)}`,
+              words: said`the platform did not answer for the workspace · nothing stopped · ${yield* failureLine(lookup.cause)}`,
               cause: null,
             });
           }
@@ -7252,11 +7268,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.logWarning(
               "session engine: discard asked · the platform has not ended the workspace · nothing discarded yet",
             ).pipe(Effect.annotateLogs(annotations));
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "workspace_not_ended",
               status: 409,
-              message:
-                "discard asked · the platform has not ended the workspace · nothing discarded yet · the lease stays with it",
+              words: said`discard asked · the platform has not ended the workspace · nothing discarded yet · the lease stays with it`,
               cause: null,
             });
           }
@@ -7830,9 +7845,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         plan: Extract<RelaunchPlan, { readonly kind: "launch" }>,
       ): Effect.Effect<"done" | "retained"> => {
-        const retain = (why: string) =>
+        const retain = (why: ReaderLine) =>
           Effect.gen(function* () {
-            const words = `${OPENING_PROMPT_NOT_DELIVERED} · ${why}`;
+            const words = said`${OPENING_PROMPT_NOT_DELIVERED} · ${why}`;
             const current = yield* sessions
               .byId(sessionId)
               .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -7882,11 +7897,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
           if (yield* agentIsLive(yield* sessions.byId(sessionId))) {
-            return yield* retain("the agent runs but cannot take it now");
+            return yield* retain(said`the agent runs but cannot take it now`);
           }
           const attempts = (plannedLaunchAttempts.get(sessionId) ?? 0) + 1;
           if (attempts > PLANNED_LAUNCH_ATTEMPTS) {
-            return yield* retain(`${PLANNED_LAUNCH_ATTEMPTS} launches did not take it`);
+            return yield* retain(said`${PLANNED_LAUNCH_ATTEMPTS} launches did not take it`);
           }
           plannedLaunchAttempts.set(sessionId, attempts);
           // A correlation id a process already carries is spent (one process per id): the
@@ -7911,7 +7926,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           plannedLaunchAttempts.delete(sessionId);
           return "done" as const;
-        }).pipe(Effect.catch((error) => retain(`the launch failed · ${error.message}`)));
+        }).pipe(
+          Effect.catch((error) =>
+            failureLine(Cause.fail(error)).pipe(
+              Effect.flatMap((words) => retain(said`the launch failed · ${words}`)),
+            ),
+          ),
+        );
       };
 
       /**
@@ -8719,7 +8740,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const settleSession = Effect.fn("SessionEngine.settleSession")(function* (
         sessionId: SessionId,
         outcome: SessionOutcome,
-        summary: string | null,
+        summary: ReaderLine | null,
       ) {
         yield* sessions.settle(sessionId, outcome, summary);
         yield* settleRunsOfSettled(sessionId);
@@ -8758,7 +8779,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.asVoid(Effect.forkIn(launchGate.runBetween(sessionId)(effect), scope)),
         )(effect);
 
-      const settleFailedLaunch = (sessionId: SessionId, line: Effect.Effect<string>) =>
+      const settleFailedLaunch = (sessionId: SessionId, line: Effect.Effect<ReaderLine>) =>
         line.pipe(
           Effect.flatMap((summary) => settleSession(sessionId, "failed", summary)),
           Effect.asVoid,
@@ -9250,8 +9271,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? "completed"
               : "failed";
         const summary =
-          settled.result.summary ??
-          (outcome === "failed" ? `harness exited with code ${settled.result.exitCode}` : null);
+          settled.result.summary === undefined
+            ? outcome === "failed"
+              ? said`harness exited with code ${settled.result.exitCode}`
+              : null
+            : mendWords(settled.result.summary);
         if (agentProcess !== null) {
           yield* observeAgentEnd(
             agentProcess,
@@ -9319,7 +9343,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * supervisor died): record the failure on the process that carried it, or on the bare run
        * when no process row exists.
        */
-      const failRun = (sessionId: SessionId, sealantRunId: SealantRunId, message: string) =>
+      const failRun = (sessionId: SessionId, sealantRunId: SealantRunId, message: ReaderLine) =>
         Effect.gen(function* () {
           const agentProcess = yield* agentProcessForRun(sessionId, sealantRunId);
           if (agentProcess !== null) {
@@ -9345,7 +9369,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* settleSession(
               sessionId,
               "failed",
-              `run ${sealantRunId} is missing from the session record index`,
+              said`run ${mendWords(sealantRunId)} is missing from the session record index`,
             );
             return;
           }
@@ -9354,7 +9378,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return yield* failRun(
               sessionId,
               sealantRunId,
-              "this session has no owner to run as; start a new session",
+              said`this session has no owner to run as; start a new session`,
             );
           }
           yield* Effect.gen(function* () {
@@ -9380,7 +9404,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.catchDefect((defect) =>
             failureLine(Cause.die(defect)).pipe(
               Effect.flatMap((words) =>
-                failRun(sessionId, sealantRunId, `supervision died: ${words}`),
+                failRun(sessionId, sealantRunId, said`supervision died: ${words}`),
               ),
             ),
           ),
@@ -10593,7 +10617,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 yield* sessions.recordWorkspaceTtlRenewalFailure(
                   sessionId,
                   workspaceId,
-                  error.message,
+                  yield* failureLine(Cause.fail(error)),
                   failedAt,
                 );
                 yield* Effect.logWarning("session engine: workspace TTL renewal failed").pipe(
@@ -11031,7 +11055,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const settledOutcomeOf = Effect.fn("SessionEngine.settledOutcomeOf")(function* (
         sessionId: SessionId,
         rows: ReadonlyArray<SessionProcess>,
-      ): Effect.fn.Return<{ readonly outcome: SessionOutcome; readonly summary: string | null }> {
+      ): Effect.fn.Return<{
+        readonly outcome: SessionOutcome;
+        readonly summary: ReaderLine | null;
+      }> {
         const latestRun = yield* sessionRuns.latestForSession(sessionId);
         if (
           latestRun !== null &&
@@ -11039,14 +11066,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             latestRun.status === "failed" ||
             latestRun.status === "stopped")
         ) {
-          return { outcome: latestRun.status, summary: latestRun.summary };
+          return { outcome: latestRun.status, summary: storedLine(latestRun.summary) };
         }
         const agent = currentAgentProcess(rows);
         const outcome = agent === null ? null : agentProcessOutcome(agent);
         if (agent !== null && outcome !== null) {
           return {
             outcome,
-            summary: agent.exitCode === null ? null : `exited with code ${agent.exitCode}`,
+            summary: agent.exitCode === null ? null : said`exited with code ${agent.exitCode}`,
           };
         }
         return { outcome: "completed", summary: null };
@@ -11111,7 +11138,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             !rows.some((process) => isAgentProcessKind(process.kind));
           if (orphanRunLive || launchInFlight) return liveness;
           const { outcome, summary } = (yield* launchNeverRan(session, rows))
-            ? { outcome: "failed" as const, summary: session.summary ?? LAUNCH_NEVER_RAN_SUMMARY }
+            ? {
+                outcome: "failed" as const,
+                summary: storedLine(session.summary) ?? LAUNCH_NEVER_RAN_SUMMARY,
+              }
             : yield* settledOutcomeOf(sessionId, rows);
           yield* settleSession(sessionId, outcome, summary);
         }
@@ -11547,7 +11577,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* sessions.setStatus(settled.id, lost.outcome);
           }
           if (settled.settledAt !== null && settled.summary !== lost.summary) {
-            yield* sessions.setSummary(settled.id, lost.summary);
+            yield* sessions.setSummary(settled.id, mendWords(lost.summary));
           }
           yield* (
             lost.outcome === "failed"
@@ -11661,7 +11691,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   (ended.harness === "shell" || exitCode === null || exitCode === 0)
                     ? "completed"
                     : "failed",
-                summary: exitCode === null ? null : `exited with code ${exitCode}`,
+                summary: exitCode === null ? null : said`exited with code ${exitCode}`,
               },
               finishIfRecorded(ended, "turn-boundary"),
               {
@@ -12114,10 +12144,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const status = yield* Effect.tryPromise({
               try: () => pty.status(),
               catch: (cause) =>
-                new SealantPlatformError({
+                curatedError({
                   code: "session_status_failed",
                   status: null,
-                  message: "session status failed",
+                  words: said`session status failed`,
                   cause,
                 }),
             }).pipe(Effect.catchTag("SealantPlatformError", () => Effect.succeed(null)));
@@ -12236,9 +12266,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * captured (the co-located store).
          */
         readonly restoredFrom: number | null;
-        /** Told why the launch did not start: its words, and the failure itself. */
-        readonly onFailure: (message: string, failure?: unknown) => Effect.Effect<void>;
-        readonly abandon?: (workspace: Workspace, message: string) => Effect.Effect<void>;
+        /** Told why the launch did not start. */
+        readonly onFailure: (failure: Cause.Cause<unknown>) => Effect.Effect<void>;
+        readonly abandon?: (
+          workspace: Workspace,
+          failure: Cause.Cause<unknown>,
+        ) => Effect.Effect<void>;
         /**
          * The harness this executor is about to start: its files are read once in the background
          * while the setup runs (`forkHarnessWarmup`). Absent for a standby, which serves any.
@@ -12293,15 +12326,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           { harnessHome: HARNESS_HOME_MOUNT_PATH, repo: "/workspace/repo" },
           identityTickets,
         );
-        const stop = (message: string) =>
+        const stop = (failure: Cause.Cause<unknown>) =>
           input
-            .onFailure(message)
+            .onFailure(failure)
             .pipe(
               Effect.ignore,
               Effect.andThen(
                 input.abandon === undefined
                   ? sealant.stopWorkspace(workspace).pipe(Effect.ignore)
-                  : input.abandon(workspace, message),
+                  : input.abandon(workspace, failure),
               ),
             );
         // The helper reaches everyone through PATH, not prompt engineering.
@@ -12371,7 +12404,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   fallback: input.layout.fallback,
                   onSshReset: remoteSshResetLine(sessionId),
                 })
-                .pipe(Effect.tapError((error) => stop(error.message)));
+                .pipe(Effect.tapError((error) => stop(Cause.fail(error))));
         // In the person layout the people exist before the setup commands, which run as the
         // launcher (docs/adr/0016, decision 1); otherwise the setup runs first, as before.
         const person = launchLayout.layout === "person";
@@ -12408,14 +12441,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 setupUser === undefined ? undefined : { user: setupUser },
               )
               .pipe(
-                Effect.tapError((error) =>
-                  input.onFailure(error.message, error).pipe(Effect.ignore),
-                ),
+                Effect.tapError((error) => input.onFailure(Cause.fail(error)).pipe(Effect.ignore)),
               );
             if (result.exitCode !== 0) {
-              const message = `setup command failed (exit ${result.exitCode}): ${command}`;
-              yield* stop(message);
-              return yield* new SessionLaunchSetupError({ sessionId, command, message });
+              const failed = new SessionLaunchSetupError({
+                sessionId,
+                command,
+                message: `setup command failed (exit ${result.exitCode}): ${command}`,
+              });
+              yield* stop(Cause.fail(failed));
+              return yield* failed;
             }
           }
         }
@@ -12601,8 +12636,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly socketDir: string;
         readonly shape: ReturnType<typeof platformShape>;
         readonly ownerUserId: string | null;
-        /** Told why the launch did not start: its words, and the failure itself. */
-        readonly onFailure: (message: string, failure?: unknown) => Effect.Effect<void>;
+        /** Told why the launch did not start. */
+        readonly onFailure: (failure: Cause.Cause<unknown>) => Effect.Effect<void>;
         /**
          * The platform accepted the create: from here on an executor exists. Runs before anything
          * executes in it, so the caller can make the executor addressable first.
@@ -12613,7 +12648,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * says. A capture-mode launch drains it instead: a setup command may already have written
          * work only that executor holds.
          */
-        readonly abandon?: (workspace: Workspace, message: string) => Effect.Effect<void>;
+        readonly abandon?: (
+          workspace: Workspace,
+          failure: Cause.Cause<unknown>,
+        ) => Effect.Effect<void>;
         /**
          * A capture-mode standby: nothing executes in it until it is claimed (`prepareExecutor`
          * runs at claim instead, after the replan).
@@ -12663,11 +12701,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const launchLayout = input.layout?.launch ?? input.standbyPerson ?? SHARED_AS_BEFORE;
         // What the project inherits: its organization's defaults over the instance's.
         const settings = yield* settingsRepo.forOrganization(project.organizationId);
-        const report = <A, E extends { readonly message: string }>(
-          effect: Effect.Effect<A, E>,
-        ): Effect.Effect<A, E> =>
+        const report = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E> =>
           effect.pipe(
-            Effect.tapError((error) => input.onFailure(error.message, error).pipe(Effect.ignore)),
+            Effect.tapError((error) => input.onFailure(Cause.fail(error)).pipe(Effect.ignore)),
           );
         // Before anything is read for the mounts: what they would hold passes the gate first.
         yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(report);
@@ -12899,7 +12935,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const sshAsOwner = sshOwnerAnswer === "yes";
         if (credentialsHome !== undefined && input.createKey === undefined) {
           return yield* layoutRefused(
-            "This launch runs each person as their own user and has no create key to send the launcher's home with, so nothing was created.",
+            said`This launch runs each person as their own user and has no create key to send the launcher's home with, so nothing was created.`,
           );
         }
         let createAsked = false;
@@ -13026,20 +13062,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // queued. Restate it naming what was refused, observationally.
           Effect.mapError((error) => {
             if (error.code === "runtime-env-references-unsupported") {
-              return new SealantPlatformError({
+              return curatedError({
                 code: error.code,
                 status: error.status,
                 cause: error.cause,
-                message:
-                  `launch refused · ${clusterBindingNames.join(", ")}` +
-                  (clusterBindings.serviceAccount === null
-                    ? ""
-                    : ` · service account ${clusterBindings.serviceAccount}`) +
-                  " · cluster bindings do not resolve on this deployment's workspace runtime — remove them in project setup to launch here",
+                words: said`launch refused · ${mendWords(clusterBindingNames.join(", "))}${
+                  clusterBindings.serviceAccount === null
+                    ? said``
+                    : said` · service account ${mendWords(clusterBindings.serviceAccount)}`
+                } · cluster bindings do not resolve on this deployment's workspace runtime — remove them in project setup to launch here`,
               });
             }
             if (error.code === "workspace-docker-unsupported") {
-              return restated(error, `launch refused · Docker · ${error.message}`, {
+              return ledBy(said`launch refused · Docker`, error, {
+                code: error.code,
+                separator: said` · `,
                 cause: error.cause,
               });
             }
@@ -13056,7 +13093,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
           report,
           Effect.onInterrupt(() =>
-            input.onFailure("workspace provisioning was interrupted").pipe(Effect.ignore),
+            input
+              .onFailure(
+                Cause.fail(
+                  curatedError({
+                    code: "workspace_provisioning_interrupted",
+                    status: null,
+                    words: said`workspace provisioning was interrupted`,
+                    cause: null,
+                  }),
+                ),
+              )
+              .pipe(Effect.ignore),
           ),
         );
         if (input.onCreated !== undefined) yield* input.onCreated(workspace);
@@ -13672,12 +13720,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }),
         ]);
         if (result.exitCode === 0) return;
-        return yield* new SealantPlatformError({
-          code: "harness_home_relocation_failed",
-          status: null,
-          message: `Could not place ${session.harness} state in the durable harness root: ${result.stderr}`,
-          cause: null,
-        });
+        return yield* ledBy(
+          said`Could not place ${mendWords(session.harness)} state in the durable harness root`,
+          result.stderr,
+          { code: "harness_home_relocation_failed", status: null },
+        );
       });
 
       /** Stage converted harness files through the mounted worktree into one workspace home. */
@@ -14006,7 +14053,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const outcomes = yield* materializePiProfile(
             harnessHomePathOf(project.storePath, session.id),
             plan,
-          ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
+          ).pipe(Effect.mapError(piProfileNotDelivered));
           yield* logPiProfileVacated(session.id, outcomes);
           return;
         }
@@ -14020,7 +14067,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const prepared = yield* (
           as === undefined ? sealant.exec(workspace, prepare) : execAsPerson(workspace, as, prepare)
-        ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
+        ).pipe(Effect.mapError(piProfileNotDelivered));
         const vacated = parseSkillsVacateOutcomes(prepared.stdout);
         yield* logPiProfileVacated(session.id, vacated);
         if (prepared.exitCode !== 0) {
@@ -14042,7 +14089,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           })),
           "pi-profile",
           as,
-        ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
+        ).pipe(Effect.mapError(piProfileNotDelivered));
       });
 
       /**
@@ -14262,7 +14309,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const read = yield* inOneReadPass(agentMemoryFromCapture(session)).pipe(
               Effect.mapError((error) =>
                 notHandedOver(
-                  `the previous person's memory in this worktree could not be read: ${error.message}`,
+                  said`the previous person's memory in this worktree could not be read`,
                   error,
                 ),
               ),
@@ -14276,7 +14323,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ).pipe(
                 Effect.mapError((error) =>
                   notHandedOver(
-                    `the previous person's memory in this worktree could not be saved for them: ${String(error)}`,
+                    said`the previous person's memory in this worktree could not be saved for them`,
                     error,
                   ),
                 ),
@@ -14291,8 +14338,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           if (result.exitCode !== 0) {
             return yield* notHandedOver(
-              `another person's memory in this worktree could not be moved aside: exit ${result.exitCode}: ${result.stderr.trim()}`,
-              null,
+              said`another person's memory in this worktree could not be moved aside`,
+              `exit ${result.exitCode}: ${result.stderr.trim()}`,
             );
           }
           yield* recordHome;
@@ -14412,19 +14459,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         function* (session: Session, workspace: Workspace) {
           const read = yield* sealant
             .exec(workspace, secretFilesDeliveredExec)
-            .pipe(
-              Effect.mapError((error) =>
-                secretFilesNotSetAside(`the home's record: ${error.message}`),
-              ),
-            );
+            .pipe(Effect.mapError((error) => secretFilesNotSetAsideBy(error)));
           if (read.exitCode !== 0)
-            return yield* secretFilesNotSetAside(`the home's record: exit ${read.exitCode}`);
+            return yield* secretFilesNotSetAside(said`the home's record: exit ${read.exitCode}`);
           const recordText = read.stdout.trim();
           if (recordText === "") return;
           const json = yield* secretCipher
             .decrypt(recordText)
             .pipe(
-              Effect.mapError(() => secretFilesNotSetAside("the home's record does not unseal")),
+              Effect.mapError(() =>
+                secretFilesNotSetAside(said`the home's record does not unseal`),
+              ),
             );
           const record = decodeSecretFilesRecord(json, workspace.id);
           if (record === null) return;
@@ -14435,7 +14480,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const stamp = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
           const result = yield* sealant
             .exec(workspace, secretFilesSetAsideExec(reserved, stamp))
-            .pipe(Effect.mapError((error) => secretFilesNotSetAside(error.message)));
+            .pipe(Effect.mapError((error) => secretFilesNotSetAsideBy(error)));
           const outcomes = parseSecretFileOutcomes(result.stdout);
           const done = new Map(
             outcomes
@@ -14457,7 +14502,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sealant.exec(workspace, secretFilesRecordExec(nextRecord)).pipe(Effect.ignore);
           for (const outcome of done.values()) {
             if (outcome.outcome !== "moved") continue;
-            const words = `secret file ~/${outcome.path} · under a directory sessions now save · moved to ${outcome.movedTo ?? `~/${SECRET_FILES_SET_ASIDE}`}`;
+            const words = said`secret file ${mendWords(`~/${outcome.path}`)} · under a directory sessions now save · moved to ${mendWords(outcome.movedTo ?? `~/${SECRET_FILES_SET_ASIDE}`)}`;
             yield* Effect.logWarning(`session engine: ${words}`).pipe(
               Effect.annotateLogs({ sessionId: session.id, path: `~/${outcome.path}` }),
             );
@@ -14467,11 +14512,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (result.exitCode !== 0 || left.length > 0) {
             const failed = outcomes.filter((outcome) => outcome.outcome === "failed");
             return yield* secretFilesNotSetAside(
-              failed.length > 0
-                ? failed
-                    .map((outcome) => `~/${outcome.path}: ${outcome.reason ?? "failed"}`)
-                    .join("; ")
-                : `exit ${result.exitCode}: ${left.map((file) => `~/${file.path}`).join(", ")}`,
+              mendWords(
+                failed.length > 0
+                  ? failed
+                      .map((outcome) => `~/${outcome.path}: ${outcome.reason ?? "failed"}`)
+                      .join("; ")
+                  : `exit ${result.exitCode}: ${left.map((file) => `~/${file.path}`).join(", ")}`,
+              ),
             );
           }
         },
@@ -14881,10 +14928,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           input.resumeId !== null &&
           (yield* opencodeFromSharedHome(session, workspace.id, input.resumeId))
         ) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "opencode_pre_release",
             status: 409,
-            message: OPENCODE_PRE_RELEASE_REFUSAL,
+            words: mendWords(OPENCODE_PRE_RELEASE_REFUSAL),
             cause: null,
           });
         }
@@ -14961,7 +15008,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             const delivery: PersonDelivery = { ...as, records };
             const firstOrAgent = home.made || input.agent;
-            const said =
+            const delivered =
               (what: string) =>
               <E extends { readonly message: string }, R>(
                 effect: Effect.Effect<void, E, R>,
@@ -14989,12 +15036,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               [
                 firstOrAgent && personal
                   ? deliverSkillsToWorkspace(session, project, workspace, delivery).pipe(
-                      said("skills"),
+                      delivered("skills"),
                     )
                   : Effect.void,
                 input.agent && personal && neverShared(session)
                   ? deliverAgentMemory(session, project, workspace, delivery).pipe(
-                      said("agent memory"),
+                      delivered("agent memory"),
                     )
                   : Effect.void,
                 firstOrAgent
@@ -15003,10 +15050,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         Effect.logWarning("session engine: secret files were not written").pipe(
                           Effect.annotateLogs({ sessionId: session.id, message: error.message }),
                           Effect.andThen(
-                            noteLaunchWords(
-                              session.id,
-                              `${SECRET_FILES_SUMMARY_PREFIX} · not written · ${error.message}`,
-                            ).pipe(Effect.ignore),
+                            failureLine(Cause.fail(error))
+                              .pipe(
+                                Effect.flatMap((words) =>
+                                  noteLaunchWords(
+                                    session.id,
+                                    said`${SECRET_FILES_SUMMARY_PREFIX} · not written · ${words}`,
+                                  ),
+                                ),
+                              )
+                              .pipe(Effect.ignore),
                           ),
                         ),
                       ),
@@ -15039,10 +15092,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       Effect.flatMap((scrub) =>
                         scrub.outcome === "failed"
                           ? Effect.fail(
-                              new SealantPlatformError({
+                              curatedError({
                                 code: "opencode_login_not_removed",
                                 status: null,
-                                message: `opencode's data still holds an in-app login Mend could not remove (${scrub.reason ?? "unknown"}), so opencode was not started; start it again`,
+                                words: said`opencode's data still holds an in-app login Mend could not remove (${mendWords(scrub.reason ?? "unknown")}), so opencode was not started; start it again`,
                                 cause: null,
                               }),
                             )
@@ -15578,7 +15631,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const watchBootstrap = (
         sessionId: SessionId,
-        waited: { readonly words: string | null; readonly watch: DotfilesBootstrap | null },
+        waited: { readonly words: ReaderLine | null; readonly watch: DotfilesBootstrap | null },
       ): Effect.Effect<void> =>
         waited.words === null || waited.watch === null
           ? Effect.void
@@ -15798,13 +15851,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const take = yield* harnessLayouts.takeConversation(sessionId, launchId, replacedProcess);
         if (take.taken) return take.fence;
-        return yield* new SealantPlatformError({
+        return yield* curatedError({
           code: "conversation_held",
           status: 409,
-          message:
+          words:
             take.processId === null
-              ? "Another start of this conversation is under way, so a second one was not started."
-              : "This conversation's agent is still running, and Mend has not seen it end, so a second one was not started.",
+              ? said`Another start of this conversation is under way, so a second one was not started.`
+              : said`This conversation's agent is still running, and Mend has not seen it end, so a second one was not started.`,
           cause: null,
         });
       });
@@ -15841,7 +15894,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const identities = yield* Effect.all([
           harnessLayouts.ensureIdentity(input.conversation.owner),
           harnessLayouts.ensureIdentity(input.sender),
-        ]).pipe(Effect.mapError((error) => layoutRefused(error.message)));
+        ]).pipe(Effect.mapError((error) => layoutRefused(error[ReaderWords])));
         const [owner, sender] = identities;
         const handed = yield* conversationSteps.handOver({
           workspace: input.workspace,
@@ -15881,7 +15934,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (handed.staged.ended > 0) {
           yield* noteLaunchWords(
             input.session.id,
-            `ended ${handed.staged.ended} process${handed.staged.ended === 1 ? "" : "es"} the previous agent left running`,
+            handed.staged.ended === 1
+              ? said`ended 1 process the previous agent left running`
+              : said`ended ${handed.staged.ended} processes the previous agent left running`,
           ).pipe(Effect.ignore);
         }
         return { ...handed, runsAs: sender.accountId };
@@ -15901,11 +15956,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           agentProcess.id,
         );
         if (!bound) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "conversation_fenced",
             status: 409,
-            message:
-              "Another start took this conversation while this one was starting, so this one was stopped.",
+            words: said`Another start took this conversation while this one was starting, so this one was stopped.`,
             cause: null,
           });
         }
@@ -16514,15 +16568,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const retirementRefusalFor = (
         workspaceId: SealantWorkspaceId | null,
         actor: string | null,
-      ): Effect.Effect<string | null> =>
+      ): Effect.Effect<ReaderLine | null> =>
         capture === null || harnessLayoutConfig.flag !== "person" || workspaceId === null
           ? Effect.succeed(null)
           : harnessLayouts.retirementOf(workspaceId).pipe(
               Effect.map((retirement) => {
                 if (retirement === null) return null;
-                if (retirement.state === "retiring") return RETIRING_REFUSAL;
+                if (retirement.state === "retiring") return mendWords(RETIRING_REFUSAL);
                 return actor !== null && actor !== retirement.launcher
-                  ? retirementRefusalOf(retirement.preRelease)
+                  ? mendWords(retirementRefusalOf(retirement.preRelease))
                   : null;
               }),
             );
@@ -16658,10 +16712,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             duration: RETIRE_CHECK_TIMEOUT,
             orElse: () =>
               Effect.fail(
-                new SealantPlatformError({
+                curatedError({
                   code: "retire_check_timeout",
                   status: null,
-                  message: `it did not answer in ${Duration.format(RETIRE_CHECK_TIMEOUT)}`,
+                  words: said`it did not answer in ${mendWords(Duration.format(RETIRE_CHECK_TIMEOUT))}`,
                   cause: null,
                 }),
               ),
@@ -17664,17 +17718,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : yield* resolveExecutorCreate(sessionId, pending, { drain: false });
             if (resolved === "reserved") reusedCreateKey = pending;
             else if (resolved !== "adopted" && resolved !== "cancelled" && resolved !== "gone") {
-              const error = new SealantPlatformError({
+              const words =
+                resolved === "in-flight"
+                  ? said`executor create in flight · this session's create has not answered yet · nothing started`
+                  : said`executor create unresolved · the platform ${resolved === "unsupported" ? said`cannot say` : said`did not say`} whether this session's last create made an executor · nothing started · it may hold work not yet saved`;
+              yield* settleSession(sessionId, "failed", words).pipe(Effect.ignore);
+              return yield* curatedError({
                 code: "executor_create_unresolved",
                 status: 409,
-                message:
-                  resolved === "in-flight"
-                    ? "executor create in flight · this session's create has not answered yet · nothing started"
-                    : `executor create unresolved · the platform ${resolved === "unsupported" ? "cannot say" : "did not say"} whether this session's last create made an executor · nothing started · it may hold work not yet saved`,
+                words,
                 cause: null,
               });
-              yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
-              return yield* error;
             }
           }
         }
@@ -17692,16 +17746,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // fixed launches without a restart.
         const userNamespaces = yield* hostUserNamespaces.observe();
         if (userNamespaces !== null && !userNamespaces.allowed) {
-          const error = new SealantPlatformError({
-            code: "host_user_namespaces_refused",
-            status: 409,
-            message: hostUserNamespacesRefusal(userNamespaces.setting),
-            cause: null,
-          });
-          yield* settleSession(sessionId, "failed", `launch failed: ${error.message}`).pipe(
+          const words = mendWords(hostUserNamespacesRefusal(userNamespaces.setting));
+          yield* settleSession(sessionId, "failed", said`launch failed: ${words}`).pipe(
             Effect.ignore,
           );
-          return yield* error;
+          return yield* curatedError({
+            code: "host_user_namespaces_refused",
+            status: 409,
+            words,
+            cause: null,
+          });
         }
         const project = yield* projects.byId(session.projectId);
         const worktree = worktreePathOf(project.storePath, session.worktree);
@@ -17779,14 +17833,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
             if (outcome === "kept" || outcome === "discarded") {
               const drained = yield* sessions.byId(sessionId);
-              const error = new SealantPlatformError({
+              const words = said`${mendWords(captureStatusLine(drained) ?? "not saved · workspace kept")} · the previous workspace holds captures not yet saved · resume again once it saves, or discard unsaved and stop`;
+              yield* settleSession(sessionId, "stopped", words).pipe(Effect.ignore);
+              return yield* curatedError({
                 code: "capture_not_saved",
                 status: 409,
-                message: `${captureStatusLine(drained) ?? "not saved · workspace kept"} · the previous workspace holds captures not yet saved · resume again once it saves, or discard unsaved and stop`,
+                words,
                 cause: null,
               });
-              yield* settleSession(sessionId, "stopped", error.message).pipe(Effect.ignore);
-              return yield* error;
             }
             // The owner stopped the session while its old executor saved: nothing relaunches.
             const planned = capture === null ? null : yield* sessions.relaunchOf(sessionId);
@@ -17796,10 +17850,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 planned === null ||
                 planIdOf(planned) !== relaunching.get(sessionId))
             ) {
-              return yield* new SealantPlatformError({
+              return yield* curatedError({
                 code: "relaunch_cancelled",
                 status: 409,
-                message: "stopped while the previous workspace saved · nothing relaunched",
+                words: said`stopped while the previous workspace saved · nothing relaunched`,
                 cause: null,
               });
             }
@@ -17827,10 +17881,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (ownerUserId === null) {
           return yield* settleOnFailure(
             Effect.fail(
-              new SealantPlatformError({
+              curatedError({
                 code: "NO_PRINCIPAL",
                 status: null,
-                message: "this session has no owner to run as; start a new session",
+                words: said`this session has no owner to run as; start a new session`,
                 cause: null,
               }),
             ),
@@ -17882,9 +17936,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(
             Effect.tapError((error) =>
               drainHotWorkspace(claimedEntry, { keepWorktree: true }).pipe(
-                Effect.andThen(
-                  settleSession(sessionId, "failed", `launch failed: ${error.message}`),
-                ),
+                Effect.andThen(settleFailedLaunch(sessionId, launchEndLine(Cause.fail(error)))),
                 Effect.ignore,
               ),
             ),
@@ -18006,10 +18058,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ).pipe(
               Effect.catchTag("SessionNotLiveError", (error) =>
                 Effect.fail(
-                  new SealantPlatformError({
+                  curatedError({
                     code: "worktree_leased",
                     status: 409,
-                    message: `the lease holder's executor went away while joining: ${error.sessionId}`,
+                    words: said`the lease holder's executor went away while joining: ${mendWords(error.sessionId)}`,
                     cause: error,
                   }),
                 ),
@@ -18032,14 +18084,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const waitedMinutes = Math.round(
               (clock.currentTimeMillisUnsafe() - waitStartedAt) / 60_000,
             );
-            const error = new SealantPlatformError({
+            const words =
+              waitedMinutes >= 1
+                ? said`${mendWords(message)} · waited ${waitedMinutes} min`
+                : mendWords(message);
+            yield* settleSession(sessionId, "failed", words).pipe(Effect.ignore);
+            return yield* curatedError({
               code: "worktree_leased",
               status: 409,
-              message: waitedMinutes >= 1 ? `${message} · waited ${waitedMinutes} min` : message,
+              words,
               cause: null,
             });
-            yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
-            return yield* error;
           }
         }
         // Capture mode: a worktree without a chain was made before captures — attach it now,
@@ -18047,14 +18102,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // claim, before its lease was taken).
         if (capture !== null && adopted === null) {
           yield* ensureCaptureZero(project.id, session.worktreeId).pipe(
-            Effect.mapError(
-              (error) =>
-                new SealantPlatformError({
-                  code: "capture_backfill_failed",
-                  status: null,
-                  message: `capture 0 could not be registered for worktree ${session.worktree}: ${error._tag === "GitError" ? error.stderr : error.message}`,
-                  cause: error,
-                }),
+            Effect.mapError((error) =>
+              ledBy(
+                said`capture 0 could not be registered for worktree ${mendWords(session.worktree)}`,
+                error._tag === "GitError" ? error.stderr : error,
+                { code: "capture_backfill_failed", status: null },
+              ),
             ),
             settleOnFailure,
           );
@@ -18109,14 +18162,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           launchClaim = yield* capture.repo
             .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS, coldLaunchKey)
             .pipe(
-              Effect.mapError(
-                () =>
-                  new SealantPlatformError({
-                    code: "worktree_leased",
-                    status: 409,
-                    message: "worktree leased · another executor claimed it first",
-                    cause: null,
-                  }),
+              Effect.mapError(() =>
+                curatedError({
+                  code: "worktree_leased",
+                  status: 409,
+                  words: said`worktree leased · another executor claimed it first`,
+                  cause: null,
+                }),
               ),
               settleOnFailure,
             );
@@ -18146,13 +18198,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* workspaceCaller.recorded(workspace.id, session.ownerUserId);
             yield* noteExecutorResource(sessionId, workspace);
           });
-        const abandonExecutor = (workspace: Workspace, message: string) =>
+        const abandonExecutor = (workspace: Workspace, failure: Cause.Cause<unknown>) =>
           capture === null
             ? sealant.stopWorkspace(workspace).pipe(Effect.ignore)
             : Effect.logWarning(
                 "session engine: capture mode · the launch failed after its executor was created · draining it",
               ).pipe(
-                Effect.annotateLogs({ sessionId, workspaceId: workspace.id, message }),
+                Effect.annotateLogs({
+                  sessionId,
+                  workspaceId: workspace.id,
+                  cause: Cause.pretty(failure),
+                }),
                 Effect.andThen(
                   Effect.forkIn(
                     owned(sessionId)(
@@ -18214,10 +18270,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ownerUserId,
             // A launch the owner stopped keeps the stop's words: its build failing afterwards
             // (stood down, or given up on) is not how the session ended.
-            onFailure: (message, failure) =>
+            onFailure: (failure) =>
               stoppedDuringLaunch.has(sessionId)
                 ? Effect.void
-                : settleFailedLaunch(sessionId, launchEndOf(message, failure)),
+                : settleFailedLaunch(sessionId, launchEndLine(failure)),
             onCreated: (workspace) => acceptExecutor(workspace, key),
             abandon: abandonExecutor,
             launchId: key,
@@ -18323,14 +18379,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
             if (outcome === "kept" || outcome === "discarded") {
               const drained = yield* sessions.byId(sessionId);
-              const error = new SealantPlatformError({
+              const words = said`${mendWords(captureStatusLine(drained) ?? "not saved · workspace kept")} · the claimed standby may hold work not yet saved · start again once it saves, or discard unsaved and stop`;
+              yield* settleSession(sessionId, "failed", words).pipe(Effect.ignore);
+              return yield* curatedError({
                 code: "capture_not_saved",
                 status: 409,
-                message: `${captureStatusLine(drained) ?? "not saved · workspace kept"} · the claimed standby may hold work not yet saved · start again once it saves, or discard unsaved and stop`,
+                words,
                 cause: null,
               });
-              yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
-              return yield* error;
             }
             // Only an end the platform confirmed lets another executor start: then its lease is
             // released and the next executor takes a fresh epoch.
@@ -18338,15 +18394,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               SealantWorkspaceId.make(provisioned.workspace.id),
             );
             if (standbyState !== "dead") {
-              const error = new SealantPlatformError({
+              const words = said`the claimed standby's end is not observed yet · it may hold work not yet saved · nothing else started · start again once it has ended`;
+              yield* settleSession(sessionId, "failed", words).pipe(Effect.ignore);
+              return yield* curatedError({
                 code: "capture_not_saved",
                 status: 409,
-                message:
-                  "the claimed standby's end is not observed yet · it may hold work not yet saved · nothing else started · start again once it has ended",
+                words,
                 cause: null,
               });
-              yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
-              return yield* error;
             }
             executorCreated = false;
             const fallbackKey = executorCreateKeyFor(
@@ -18359,14 +18414,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             launchClaim = yield* capture.repo
               .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS, fallbackKey)
               .pipe(
-                Effect.mapError(
-                  () =>
-                    new SealantPlatformError({
-                      code: "worktree_leased",
-                      status: 409,
-                      message: "worktree leased · another executor claimed it first",
-                      cause: null,
-                    }),
+                Effect.mapError(() =>
+                  curatedError({
+                    code: "worktree_leased",
+                    status: 409,
+                    words: said`worktree leased · another executor claimed it first`,
+                    cause: null,
+                  }),
                 ),
                 settleOnFailure,
               );
@@ -18388,8 +18442,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               workspaceImage: provisioned.workspaceImage,
               captured: true,
               restoredFrom: replanned.restoredFrom,
-              onFailure: (message, failure) =>
-                settleFailedLaunch(sessionId, launchEndOf(message, failure)),
+              onFailure: (failure) => settleFailedLaunch(sessionId, launchEndLine(failure)),
               abandon: abandonExecutor,
               warmHarness: session.harness,
               ...(launchLayout.layout === "person" ||
@@ -18464,11 +18517,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .bindWorkspace(workspace, { subpath: session.worktree })
             .pipe(
               Effect.tapError((error) =>
-                settleSession(
+                settleFailedLaunch(
                   sessionId,
-                  "failed",
-                  `launch failed: could not bind the worktree — ${error.message}`,
-                ).pipe(Effect.ignore),
+                  failureLine(Cause.fail(error)).pipe(
+                    Effect.map(
+                      (words) => said`launch failed: could not bind the worktree — ${words}`,
+                    ),
+                  ),
+                ),
               ),
             );
           yield* bindLinkedProjects(workspace, project, ownerUserId);
@@ -18566,9 +18622,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (manifest.harness === session.harness) {
               yield* restore.pipe(
                 Effect.tapError((error) =>
-                  settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
-                    Effect.andThen(abandonExecutor(workspace, error.message)),
-                    Effect.ignore,
+                  settleFailedLaunch(sessionId, launchEndLine(Cause.fail(error), "resume")).pipe(
+                    Effect.andThen(abandonExecutor(workspace, Cause.fail(error))),
                   ),
                 ),
               );
@@ -18608,9 +18663,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ".mend-native-import",
           ).pipe(
             Effect.tapError((error) =>
-              settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
-                Effect.andThen(abandonExecutor(workspace, error.message)),
-                Effect.ignore,
+              settleFailedLaunch(sessionId, launchEndLine(Cause.fail(error), "resume")).pipe(
+                Effect.andThen(abandonExecutor(workspace, Cause.fail(error))),
               ),
             ),
           );
@@ -18689,7 +18743,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     ? manifest.providerSessionId
                     : protocolResumeId,
               }).pipe(
-                Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+                Effect.tapError((error) => abandonExecutor(workspace, Cause.fail(error))),
                 settleOnFailure,
               )
             : null;
@@ -18726,7 +18780,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (!personExecutor) {
           yield* evictReservedSecretFiles(session, workspace).pipe(
             Effect.tapError((error) =>
-              capture === null ? Effect.void : abandonExecutor(workspace, error.message),
+              capture === null ? Effect.void : abandonExecutor(workspace, Cause.fail(error)),
             ),
             settleOnFailure,
           );
@@ -18746,7 +18800,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         } else if (!personExecutor) {
           yield* relocation.pipe(
-            Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+            Effect.tapError((error) => abandonExecutor(workspace, Cause.fail(error))),
             settleOnFailure,
           );
           // Capture mode mounts nothing: the skills the co-located store writes beside the
@@ -18764,7 +18818,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         let codexMemoryOn = true;
         if (!personExecutor) {
           yield* handOverAgentMemory(session, workspace).pipe(
-            Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+            Effect.tapError((error) => abandonExecutor(workspace, Cause.fail(error))),
             settleOnFailure,
           );
           yield* deliverAgentMemory(session, project, workspace).pipe(
@@ -18786,7 +18840,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Every failure stops the launch, and the workspace is reaped in both modes: its id is
           // not on the row yet.
           yield* deliverPiProfile(session, project, workspace).pipe(
-            Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+            Effect.tapError((error) => abandonExecutor(workspace, Cause.fail(error))),
             settleOnFailure,
           );
           // The owner's secret files (docs/adr/0010): into the executor's own home, which no
@@ -18796,9 +18850,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.logWarning("session engine: secret files were not written").pipe(
                 Effect.annotateLogs({ sessionId, message: error.message }),
                 Effect.andThen(
-                  noteLaunchWords(
-                    sessionId,
-                    `${SECRET_FILES_SUMMARY_PREFIX} · not written · ${error.message}`,
+                  failureLine(Cause.fail(error)).pipe(
+                    Effect.flatMap((words) =>
+                      noteLaunchWords(
+                        sessionId,
+                        said`${SECRET_FILES_SUMMARY_PREFIX} · not written · ${words}`,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -18852,7 +18910,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   onSshReset: remoteSshResetLine(sessionId),
                 })
                 .pipe(
-                  Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+                  Effect.tapError((error) => abandonExecutor(workspace, Cause.fail(error))),
                   settleOnFailure,
                 )
             : null;
@@ -18948,7 +19006,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 model: protocolStart?.model ?? null,
                 stop: null,
               }).pipe(
-                Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+                Effect.tapError((error) => abandonExecutor(workspace, Cause.fail(error))),
                 settleOnFailure,
               );
         const startedArgv =
@@ -18998,7 +19056,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Co-located: the workspace's id is not on the row yet — reap it here or it burns
           // until the platform TTL. Capture mode: the row names it (`acceptExecutor`), and it
           // drains before it goes. A stop that came first leaves the same executor behind.
-          Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+          Effect.tapError((error) => abandonExecutor(workspace, Cause.fail(error))),
           settleOnFailure,
         );
         const sealantRunId = SealantRunId.make(pty.runId);
@@ -19016,7 +19074,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }).pipe(
             Effect.tapError((error) =>
               closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id).pipe(
-                Effect.andThen(abandonExecutor(workspace, error.message)),
+                Effect.andThen(abandonExecutor(workspace, Cause.fail(error))),
               ),
             ),
             Effect.onError(() => releaseTake),
@@ -19086,7 +19144,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       how: "stopped",
                       exitCode: null,
                       outcome: "stopped",
-                      summary: "another start took this conversation",
+                      summary: said`another start took this conversation`,
                     },
                     () => Effect.void,
                   ),
@@ -19132,13 +19190,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   yield* closeProcessPty(launchedProcess.sealantWorkspaceId, pty.id).pipe(
                     Effect.ignore,
                   );
+                  const failed = yield* failureLine(Cause.fail(error));
                   yield* observeAgentEnd(
                     launchedProcess,
                     {
                       how: "exited",
                       exitCode: null,
                       outcome: "failed",
-                      summary: `protocol initialization failed: ${error.message}`,
+                      summary: said`protocol initialization failed: ${failed}`,
                     },
                     finishIfRecorded(launchedProcess, "turn-boundary"),
                   ).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
@@ -19164,7 +19223,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* watchBootstrap(sessionId, bootstrapWaited);
         // An optional login Core left out (pi's or opencode's ChatGPT), said once it started.
         for (const words of startAs?.loginsLeftOut ?? []) {
-          yield* noteLaunchWords(sessionId, words).pipe(Effect.ignore);
+          yield* noteLaunchWords(sessionId, mendWords(words)).pipe(Effect.ignore);
         }
         if (setupSkippedFrom !== null) {
           yield* noteLaunchWords(sessionId, setupSkippedWords(setupSkippedFrom));
@@ -19173,7 +19232,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const layoutWords =
           layoutFallback ?? (launchLayout.layout === "shared" ? launchLayout.reason : null);
         if (layoutWords !== null) {
-          yield* noteLaunchWords(sessionId, layoutWords).pipe(Effect.ignore);
+          yield* noteLaunchWords(sessionId, mendWords(layoutWords)).pipe(Effect.ignore);
         }
         // Remote-SSH runs as root while the agent runs as the person: said, whatever the reason.
         if (executorLayout === "person" && launched.remoteSsh !== "owner") {
@@ -19182,7 +19241,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
         if (dependencyInstallSkipped !== null) {
-          yield* noteLaunchWords(sessionId, dependencyInstallSkipped);
+          yield* noteLaunchWords(sessionId, mendWords(dependencyInstallSkipped));
         }
         // Until its record carries output, the agent reads as starting on its new machine, not
         // as a blank screen; supervision takes the words off at its first output
@@ -19191,7 +19250,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocolStart === null && !interactiveShell
             ? agentStartingWords(session.harness, true)
             : null;
-        if (startingWords !== null) yield* noteLaunchWords(sessionId, startingWords);
+        if (startingWords !== null) yield* noteLaunchWords(sessionId, mendWords(startingWords));
         yield* records.supervise(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.
@@ -19205,14 +19264,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* protocolHost
               .submitTurn(sessionId, openingInput, protocolAuthor, correlationId)
               .pipe(
-                Effect.mapError(
-                  (error) =>
-                    new SealantPlatformError({
-                      code: "agent_protocol_not_live",
-                      status: null,
-                      message: `Protocol process did not accept its opening turn: ${error.processId}`,
-                      cause: error,
-                    }),
+                Effect.mapError((error) =>
+                  curatedError({
+                    code: "agent_protocol_not_live",
+                    status: null,
+                    words: said`Protocol process did not accept its opening turn: ${mendWords(error.processId)}`,
+                    cause: error,
+                  }),
                 ),
               );
           }
@@ -19432,11 +19490,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /** Why another person's turn is not sent to a process whose person is not recorded. */
-      const OWNERS_PROCESS_ONLY =
-        "This conversation's agent started before each turn ran on its sender's login, so only its owner sends turns to it. Its next start takes everyone's turns.";
+      const OWNERS_PROCESS_ONLY = said`This conversation's agent started before each turn ran on its sender's login, so only its owner sends turns to it. Its next start takes everyone's turns.`;
 
       /** Why a turn queued before shared control was turned off is not sent (decision 6). */
-      const STEERED_AFTER_SHARING_OFF = "Shared control was turned off, so this turn was not sent.";
+      const STEERED_AFTER_SHARING_OFF = said`Shared control was turned off, so this turn was not sent.`;
 
       /**
        * Shared steering for an agent process that runs as a person (docs/adr/0016, decision 6):
@@ -19527,11 +19584,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               agentProcess.sealantSessionId,
             );
             if (!closed) {
-              return yield* new SealantPlatformError({
+              return yield* curatedError({
                 code: "conversation_not_stopped",
                 status: null,
-                message:
-                  "This conversation's process could not be stopped, so nothing was started. Try again.",
+                words: said`This conversation's process could not be stopped, so nothing was started. Try again.`,
                 cause: null,
               });
             }
@@ -19542,7 +19598,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               how: "stopped",
               exitCode: null,
               outcome: "stopped",
-              summary: `handed over to ${toWhom}`,
+              summary: said`handed over to ${mendWords(toWhom)}`,
             },
             continuation,
           ).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed("already-ended")));
@@ -19605,10 +19661,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const failedBefore = failedHandOvers.get(backoffKey);
             const now = yield* Clock.currentTimeMillis;
             if (failedBefore !== undefined && now - failedBefore.at < HAND_OVER_BACKOFF_MS) {
-              return yield* new SealantPlatformError({
+              return yield* curatedError({
                 code: "conversation_not_handed_over",
                 status: 409,
-                message: `The last hand-over of this conversation failed less than a minute ago${failedBefore.reference === null ? "" : ` (reference ${failedBefore.reference})`}, so this turn was not started and nothing was stopped. Send it again in a minute.`,
+                words: said`The last hand-over of this conversation failed less than a minute ago${failedBefore.reference === null ? said`` : said` (reference ${mendWords(failedBefore.reference)})`}, so this turn was not started and nothing was stopped. Send it again in a minute.`,
                 cause: null,
               });
             }
@@ -19630,10 +19686,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
               const refused = yield* steeringRefusal(session, sender);
               if (refused !== null) {
-                return yield* new SealantPlatformError({
+                return yield* curatedError({
                   code: "person_login_refused",
                   status: 409,
-                  message: refused,
+                  words: mendWords(refused),
                   cause: null,
                 });
               }
@@ -19680,7 +19736,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                             error instanceof SealantPlatformError &&
                             error.code === "conversation_held"
                           ) {
-                            return yield* handOverFailed(HAND_OVER_NOT_NOW, error.message);
+                            return yield* handOverFailed(
+                              HAND_OVER_NOT_NOW,
+                              yield* failureLine(Cause.fail(error)),
+                            );
                           }
                           return yield* Effect.fail(error);
                         }
@@ -19723,10 +19782,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                                   Effect.ignore,
                                 );
                                 // Said on the session line, not only in a log (review 2, P3-2).
-                                const again = (yield* failureLine(cause)).replace(/\.+$/, "");
+                                const again = withoutFullStop(yield* failureLine(cause));
                                 yield* noteLaunchWords(
                                   session.id,
-                                  `stopped · ${nameOf(sender)}'s turn could not start (${words}), and ${nameOf(previous)}'s agent could not be started again: ${again}. Resume the session to continue.`,
+                                  said`stopped · ${mendWords(nameOf(sender))}'s turn could not start (${words}), and ${mendWords(nameOf(previous))}'s agent could not be started again: ${again}. Resume the session to continue.`,
                                 ).pipe(Effect.ignore);
                                 yield* Effect.logWarning(
                                   "session engine: the conversation could not be started again after a failed hand-over",
@@ -19749,13 +19808,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (handedOver.kind === "ending") {
               return yield* handOverFailed(
                 HAND_OVER_NOT_NOW,
-                "The conversation's process is ending, so nothing was stopped.",
+                said`The conversation's process is ending, so nothing was stopped.`,
               );
             }
             if (handedOver.kind === "held") {
               return yield* handOverFailed(
                 HAND_OVER_NOT_NOW,
-                "Another start is replacing the conversation's process, so nothing was stopped.",
+                said`Another start is replacing the conversation's process, so nothing was stopped.`,
               );
             }
             failedHandOvers.delete(backoffKey);
@@ -19763,18 +19822,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (check.endedCrons > 0) {
               yield* noteLaunchWords(
                 session.id,
-                `${check.endedCrons} scheduled prompt${check.endedCrons === 1 ? "" : "s"} of ${nameOf(agentProcess.runsAs ?? sender)}'s ended with their agent after ${nameOf(sender)}'s turn waited 10 minutes`,
+                said`${check.endedCrons} scheduled prompt${check.endedCrons === 1 ? said`` : said`s`} of ${mendWords(nameOf(agentProcess.runsAs ?? sender))}'s ended with their agent after ${mendWords(nameOf(sender))}'s turn waited 10 minutes`,
               ).pipe(Effect.ignore);
             }
           }).pipe(
             Effect.mapError((error) =>
               error instanceof SealantPlatformError
                 ? error
-                : new SealantPlatformError({
+                : ledBy(said`The conversation could not be handed over`, error, {
                     code: "conversation_not_handed_over",
                     status: null,
-                    message: `The conversation could not be handed over: ${error.message}`,
-                    cause: error,
                   }),
             ),
             Effect.ensuring(
@@ -19866,10 +19923,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if ((requested.prompt?.trim() ?? "") !== "") yield* refuseSteeringAt(session, author);
         const rows = yield* processes.listForSession(sessionId);
         if (rows.some(isLiveAgentProcess)) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "session_active",
             status: null,
-            message: "The session already has a live agent process.",
+            words: said`The session already has a live agent process.`,
             cause: null,
           });
         }
@@ -19988,10 +20045,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 refused === null
                   ? Effect.void
                   : Effect.fail(
-                      new SealantPlatformError({
+                      curatedError({
                         code: "person_login_refused",
                         status: 409,
-                        message: refused,
+                        words: mendWords(refused),
                         cause: null,
                       }),
                     ),
@@ -20408,7 +20465,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           yield* sessions.setSummary(sessionId, null);
         } else if (priorSummary !== reopened.summary) {
-          yield* sessions.setSummary(sessionId, priorSummary);
+          yield* sessions.setSummary(sessionId, storedLine(priorSummary));
         }
       });
 
@@ -20418,7 +20475,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const current = yield* sessions.byId(sessionId);
         const next = withoutAgentStarting(current.summary);
-        if (next !== current.summary) yield* sessions.setSummary(sessionId, next);
+        if (next !== current.summary) yield* sessions.setSummary(sessionId, storedLine(next));
       });
 
       /**
@@ -20440,7 +20497,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const before = withoutLaunchPhase(current.summary);
         const next = before === null ? words : `${before} · ${words}`;
-        if (next !== current.summary) yield* sessions.setSummary(sessionId, next);
+        if (next !== current.summary) yield* sessions.setSummary(sessionId, storedLine(next));
       });
 
       /**
@@ -20496,12 +20553,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const noteLaunchWords = Effect.fn("SessionEngine.noteLaunchWords")(function* (
         sessionId: SessionId,
-        words: string,
+        words: ReaderLine,
       ) {
         const current = yield* sessions.byId(sessionId);
         yield* sessions.setSummary(
           sessionId,
-          current.summary === null ? words : `${current.summary} · ${words}`,
+          current.summary === null ? words : said`${mendWords(current.summary)} · ${words}`,
         );
       });
 
@@ -20521,7 +20578,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ).pipe(Effect.ignore);
 
       /** `words` taken off the session line, wherever they are in it; nothing when absent. */
-      const dropLaunchWords = (sessionId: SessionId, words: string): Effect.Effect<void> =>
+      const dropLaunchWords = (sessionId: SessionId, words: ReaderLine): Effect.Effect<void> =>
         Effect.gen(function* () {
           const summary = (yield* sessions.byId(sessionId)).summary;
           if (summary === null || !summary.includes(words)) return;
@@ -20532,19 +20589,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .join("")
             .split(words)
             .join("");
-          yield* sessions.setSummary(sessionId, kept.length === 0 ? null : kept);
+          yield* sessions.setSummary(sessionId, kept.length === 0 ? null : mendWords(kept));
         }).pipe(Effect.ignore);
 
       /** `from` on the session line becomes `to`; said at the end when `from` is gone. */
       const replaceLaunchWords = Effect.fn("SessionEngine.replaceLaunchWords")(function* (
         sessionId: SessionId,
-        from: string,
-        to: string,
+        from: ReaderLine,
+        to: ReaderLine,
       ) {
         const current = yield* sessions.byId(sessionId);
         const summary = current.summary;
         if (summary !== null && summary.includes(from)) {
-          yield* sessions.setSummary(sessionId, summary.replace(from, to));
+          yield* sessions.setSummary(sessionId, mendWords(summary.replace(from, to)));
           return;
         }
         yield* noteLaunchWords(sessionId, to);
@@ -20663,7 +20720,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             isConversationHarness(session.harness)
               ? protocolAuthor
               : session.ownerUserId);
-          const settleUnlessHandedOver = (words: string) =>
+          const settleUnlessHandedOver = (words: ReaderLine) =>
             handOver === null ? settleSession(sessionId, "failed", words) : Effect.void;
           // An executor marked to retire takes nobody but its launcher, and nobody while it is
           // being replaced (docs/adr/0016, decision 14).
@@ -20673,10 +20730,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           if (retired !== null) {
             yield* settleUnlessHandedOver(retired);
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "workspace_retiring",
               status: 409,
-              message: retired,
+              words: retired,
               cause: null,
             });
           }
@@ -20695,15 +20752,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             },
           ).pipe(
             Effect.tapError((error) =>
-              settleUnlessHandedOver(
-                // A start refused before anything ran (a login not connected, a launch Mend
-                // cannot name) is no failed resume: the session never ran here.
-                error.code === "person_login_refused" || error.code === "harness_layout_refused"
-                  ? `launch refused · ${error.message}`
-                  : error.code === "PI_PROFILE_NOT_DELIVERED"
-                    ? `launch failed: ${error.message}`
-                    : `resume failed: ${error.message}`,
-              ).pipe(Effect.ignore),
+              // A start refused before anything ran (a login not connected, a launch Mend cannot
+              // name) is no failed resume: the session never ran here.
+              launchEndLine(
+                Cause.fail(error),
+                error.code === "PI_PROFILE_NOT_DELIVERED" ? "launch" : "resume",
+              ).pipe(Effect.flatMap(settleUnlessHandedOver), Effect.ignore),
             ),
           );
           const startAs = personStart;
@@ -20715,9 +20769,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // captured, or the resume stops here: relocating anyway could save it.
             yield* evictReservedSecretFiles(session, workspace).pipe(
               Effect.tapError((error) =>
-                settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
-                  Effect.ignore,
-                ),
+                settleFailedLaunch(sessionId, launchEndLine(Cause.fail(error), "resume")),
               ),
             );
             const relocation = relocateHarnessHome(session, workspace);
@@ -20735,9 +20787,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               // HOME.
               yield* relocation.pipe(
                 Effect.tapError((error) =>
-                  settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
-                    Effect.ignore,
-                  ),
+                  settleFailedLaunch(sessionId, launchEndLine(Cause.fail(error), "resume")),
                 ),
               );
             }
@@ -20799,9 +20849,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (!piLive) {
               yield* deliverPiProfile(session, project, workspace).pipe(
                 Effect.tapError((error) =>
-                  settleSession(sessionId, "failed", `launch failed: ${error.message}`).pipe(
-                    Effect.ignore,
-                  ),
+                  settleFailedLaunch(sessionId, launchEndLine(Cause.fail(error))),
                 ),
               );
             }
@@ -20903,11 +20951,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     : { beforeStop: handOver.beforeStop }),
                 }).pipe(
                   Effect.tapError((error) =>
-                    settleUnlessHandedOver(
-                      error.code === "person_login_refused"
-                        ? `launch refused · ${error.message}`
-                        : `resume failed: ${error.message}`,
-                    ).pipe(Effect.ignore),
+                    launchEndLine(Cause.fail(error), "resume").pipe(
+                      Effect.flatMap(settleUnlessHandedOver),
+                      Effect.ignore,
+                    ),
                   ),
                 );
           const releaseRetainedTake = Effect.suspend(() =>
@@ -20964,7 +21011,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
             Effect.tapError(() => releaseRetainedTake),
             Effect.tapError((error) =>
-              settleUnlessHandedOver(`resume failed: ${error.message}`).pipe(Effect.ignore),
+              launchEndLine(Cause.fail(error), "resume").pipe(
+                Effect.flatMap(settleUnlessHandedOver),
+                Effect.ignore,
+              ),
             ),
           );
           const sealantRunId = SealantRunId.make(pty.runId);
@@ -21047,14 +21097,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         how: "stopped",
                         exitCode: null,
                         outcome: "stopped",
-                        summary: "another start took this conversation",
+                        summary: said`another start took this conversation`,
                       },
                       () => Effect.void,
                     ),
                   ),
                   // A hand-over's own failure is its waiting turn's, never the session's (review of
                   // mend#572, P3-5).
-                  Effect.andThen(settleUnlessHandedOver(`resume failed: ${error.message}`)),
+                  Effect.andThen(
+                    launchEndLine(Cause.fail(error), "resume").pipe(
+                      Effect.flatMap(settleUnlessHandedOver),
+                    ),
+                  ),
                   Effect.ignore,
                 ),
               ),
@@ -21095,13 +21149,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     yield* closeProcessPty(agentProcess.sealantWorkspaceId, pty.id).pipe(
                       Effect.ignore,
                     );
+                    const failed = yield* failureLine(Cause.fail(error));
                     yield* observeAgentEnd(
                       agentProcess,
                       {
                         how: "exited",
                         exitCode: null,
                         outcome: "failed",
-                        summary: `protocol initialization failed: ${error.message}`,
+                        summary: said`protocol initialization failed: ${failed}`,
                       },
                       finishIfRecorded(agentProcess, "turn-boundary"),
                     ).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
@@ -21121,7 +21176,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* watchBootstrap(sessionId, bootstrapWaited);
           // An optional login Core left out (pi's or opencode's ChatGPT), said once it started.
           for (const words of personStart?.loginsLeftOut ?? []) {
-            yield* noteLaunchWords(sessionId, words).pipe(Effect.ignore);
+            yield* noteLaunchWords(sessionId, mendWords(words)).pipe(Effect.ignore);
           }
           // After the stale words go, which would take a `secret files · …` line with them.
           if (withheldSecretFiles.length > 0) {
@@ -21138,7 +21193,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             protocolStart === null && !interactiveShell
               ? agentStartingWords(session.harness, false)
               : null;
-          if (startingWords !== null) yield* noteLaunchWords(sessionId, startingWords);
+          if (startingWords !== null) yield* noteLaunchWords(sessionId, mendWords(startingWords));
           yield* records.supervise(sessionId, sealantRunId);
           yield* Effect.forkIn(watchProcess(agentProcess), scope);
           yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
@@ -21146,14 +21201,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const openingInput = protocolStart.prompt?.trim() ?? "";
             if (openingInput !== "") {
               yield* protocolHost.submitTurn(sessionId, openingInput, protocolAuthor).pipe(
-                Effect.mapError(
-                  (error) =>
-                    new SealantPlatformError({
-                      code: "agent_protocol_not_live",
-                      status: null,
-                      message: `Protocol process did not accept its opening turn: ${error.processId}`,
-                      cause: error,
-                    }),
+                Effect.mapError((error) =>
+                  curatedError({
+                    code: "agent_protocol_not_live",
+                    status: null,
+                    words: said`Protocol process did not accept its opening turn: ${mendWords(error.processId)}`,
+                    cause: error,
+                  }),
                 ),
               );
             }
@@ -21248,10 +21302,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // is being replaced (decision 14).
         const retired = yield* retirementRefusalFor(session.sealantWorkspaceId, author);
         if (retired !== null) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "workspace_retiring",
             status: 409,
-            message: retired,
+            words: retired,
             cause: null,
           });
         }
@@ -21263,22 +21317,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* protocolHost
               .submitTurn(sessionId, instruction, author, launchCorrelationId)
               .pipe(
-                Effect.mapError(
-                  (error) =>
-                    new SealantPlatformError({
-                      code: "agent_protocol_not_live",
-                      status: null,
-                      message: "The protocol process stopped before the follow-up was queued.",
-                      cause: error,
-                    }),
+                Effect.mapError((error) =>
+                  curatedError({
+                    code: "agent_protocol_not_live",
+                    status: null,
+                    words: said`The protocol process stopped before the follow-up was queued.`,
+                    cause: error,
+                  }),
                 ),
               );
             return yield* sessions.byId(sessionId);
           }
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "session_active",
             status: null,
-            message: "The session became active before this follow-up could be delivered.",
+            words: said`The session became active before this follow-up could be delivered.`,
             cause: null,
           });
         }
@@ -21294,10 +21347,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ).pipe(
             Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
               Effect.fail(
-                new SealantPlatformError({
+                curatedError({
                   code: "unknown_protocol_harness",
                   status: null,
-                  message: error.message,
+                  words: error[ReaderWords],
                   cause: error,
                 }),
               ),
@@ -21307,11 +21360,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A terminal started with someone's words is them typing there, on whatever login the
         // workspace holds: only the owner's follow-up starts one (docs/adr/0013).
         if (author !== null && author !== session.ownerUserId) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "terminal_owner_only",
             status: 403,
-            message:
-              "only the session owner starts its agent in a terminal, even while control is shared; the owner can continue it as a conversation",
+            words: said`only the session owner starts its agent in a terminal, even while control is shared; the owner can continue it as a conversation`,
             cause: null,
           });
         }
@@ -21320,10 +21372,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           effort: session.effort,
         });
         if (argv === null) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "unknown_harness",
             status: null,
-            message: `Harness "${session.harness}" has no known follow-up command.`,
+            words: said`Harness "${mendWords(session.harness)}" has no known follow-up command.`,
             cause: null,
           });
         }
@@ -21351,10 +21403,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           (harness ?? session.harness) === session.harness &&
           !resumesOwnHarness(session.harness)
         ) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "unknown_harness",
             status: null,
-            message: noResumeLine(session.harness),
+            words: mendWords(noResumeLine(session.harness)),
             cause: null,
           });
         }
@@ -21368,41 +21420,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // whose first plan claims epoch + 1 (ADR-0002 "Replacement and pickup").
           const pickup = capture === null ? "live-lease" : yield* confirmDeadExecutor(session);
           if (pickup === "live-lease") {
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "session_active",
               status: null,
-              message: "The session is already live — attach to it instead of resuming.",
+              words: said`The session is already live — attach to it instead of resuming.`,
               cause: null,
             });
           }
           // Only a positively dead executor is picked up: one that still answers holds what it
           // has not shipped, and one the platform did not answer for may too. Nothing is stopped.
           if (pickup === "answering") {
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "executor_paused",
               status: 409,
-              message:
-                "executor paused · lease expired · it still answers · nothing stopped · it resumes once its heartbeat lands",
+              words: said`executor paused · lease expired · it still answers · nothing stopped · it resumes once its heartbeat lands`,
               cause: null,
             });
           }
           if (pickup === "unknown") {
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "executor_unknown",
               status: 409,
-              message:
-                "lease expired · the platform did not answer for the executor · nothing stopped · try again",
+              words: said`lease expired · the platform did not answer for the executor · nothing stopped · try again`,
               cause: null,
             });
           }
           // Ended on its runtime and kept by the platform: its disk may hold work only it has,
           // and the platform may boot it again to save it. Nothing new starts over it.
           if (pickup === "kept") {
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "capture_not_saved",
               status: 409,
-              message:
-                "not saved · executor kept for recovery · nothing started · resume again once it saves, or discard unsaved and stop",
+              words: said`not saved · executor kept for recovery · nothing started · resume again once it saves, or discard unsaved and stop`,
               cause: null,
             });
           }
@@ -21421,10 +21470,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ).pipe(
             Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
               Effect.fail(
-                new SealantPlatformError({
+                curatedError({
                   code: "unknown_protocol_harness",
                   status: null,
-                  message: error.message,
+                  words: error[ReaderWords],
                   cause: error,
                 }),
               ),
@@ -21456,10 +21505,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : launchInternal(sessionId, agentLaunch(["bash"], { state: located }));
         }
         if (!PROMPTABLE_HARNESSES.has(target)) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "unknown_harness",
             status: null,
-            message: `Unknown harness "${target}" — resumable harnesses: ${[...PROMPTABLE_HARNESSES].join(", ")}, shell.`,
+            words: said`Unknown harness "${mendWords(target)}" — resumable harnesses: ${mendWords([...PROMPTABLE_HARNESSES].join(", "))}, shell.`,
             cause: null,
           });
         }
@@ -21584,7 +21633,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const stop = (
         sessionId: SessionId,
-        summary: string | null = null,
+        summary: ReaderLine | null = null,
       ): Effect.Effect<void, SessionNotFoundError> =>
         Effect.uninterruptibleMask((restore) =>
           Effect.suspend(() => {
@@ -21614,7 +21663,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       const stopUnguarded = Effect.fn("SessionEngine.stop")(function* (
         sessionId: SessionId,
-        summary: string | null,
+        summary: ReaderLine | null,
         inFlight: { readonly done: Deferred.Deferred<void>; tail: boolean },
       ) {
         const session = yield* sessions.byId(sessionId);
@@ -21933,9 +21982,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         if (held !== null) return held;
-        yield* settleSession(sessionId, "failed", `hold failed: ${slot.refused}`).pipe(
-          Effect.ignore,
-        );
+        yield* settleSession(
+          sessionId,
+          "failed",
+          said`hold failed: ${mendWords(slot.refused)}`,
+        ).pipe(Effect.ignore);
         return yield* sessions.byId(sessionId);
       });
 
@@ -22063,10 +22114,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             continue;
           }
           if (switched.kind === "held") {
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "session_starting",
               status: 409,
-              message: LAUNCH_UNDER_WAY_WORDS,
+              words: LAUNCH_UNDER_WAY_WORDS,
               cause: null,
             });
           }
@@ -22095,11 +22146,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (pattern === null) return yield* nothingToContinue();
         if (capture !== null) {
           if (yield* workspaceFinalFlushed(session.worktreeId, conversation.sealantWorkspaceId)) {
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "mode_switch_capture_unavailable",
               status: null,
-              message:
-                "The executor is saving its last state and starts nothing more · nothing was stopped",
+              words: said`The executor is saving its last state and starts nothing more · nothing was stopped`,
               cause: null,
             });
           }
@@ -22110,11 +22160,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               "mode switch check",
             ))
           ) {
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "mode_switch_capture_flush_incomplete",
               status: null,
-              message:
-                "The conversation's latest state was not captured · nothing was stopped · try again",
+              words: said`The conversation's latest state was not captured · nothing was stopped · try again`,
               cause: null,
             });
           }
@@ -22209,7 +22258,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               code: "session_status_failed",
               status: null,
               message: `protocol pipe status failed: ${String(cause)}`,
-              uncurated: true,
               cause,
             }),
         });
@@ -22253,10 +22301,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     const nameOf = yield* namesFor(session.id).pipe(
                       Effect.orElseSucceed(() => (id: string) => id),
                     );
-                    return yield* new SealantPlatformError({
+                    return yield* curatedError({
                       code: "conversation_held",
                       status: 409,
-                      message: `${nameOf(waiting.sender)}'s waiting turn took the conversation first, so it was not taken over. Try again once that turn has run.`,
+                      words: said`${mendWords(nameOf(waiting.sender))}'s waiting turn took the conversation first, so it was not taken over. Try again once that turn has run.`,
                       cause: error,
                     });
                   }),
@@ -22287,7 +22335,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const recorded = yield* endAgentProcess(
           agent,
-          { how: "stopped", exitCode: null, outcome: "stopped", summary: `switched to ${to}` },
+          {
+            how: "stopped",
+            exitCode: null,
+            outcome: "stopped",
+            summary: said`switched to ${mendWords(to)}`,
+          },
           step.continuation,
         );
         if (recorded !== "recorded") return null;
@@ -22300,10 +22353,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "mode switch harvest",
         );
         if (!captureReady) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "mode_switch_capture_flush_incomplete",
             status: null,
-            message: "The final agent state was not captured; the mode switch was stopped.",
+            words: said`The final agent state was not captured; the mode switch was stopped.`,
             cause: null,
           });
         }
@@ -22336,7 +22389,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* Effect.gen(function* () {
             const recorded = yield* endAgentProcess(
               conversation,
-              { how: "stopped", exitCode: null, outcome: "stopped", summary: "switched to pty" },
+              {
+                how: "stopped",
+                exitCode: null,
+                outcome: "stopped",
+                summary: said`switched to pty`,
+              },
               continuation,
             );
             if (recorded !== "recorded") {
@@ -22377,14 +22435,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const reattached = yield* reattachConversation(conversation).pipe(Effect.exit);
         if (Exit.isFailure(reattached)) yield* notStopped(conversation);
-        return yield* new SealantPlatformError({
+        return yield* curatedError({
           code: "conversation_not_stopped",
           status: null,
-          message: Exit.isFailure(reattached)
-            ? "The conversation's process could not be stopped, so no terminal was opened · stop the session and resume it"
+          words: Exit.isFailure(reattached)
+            ? said`The conversation's process could not be stopped, so no terminal was opened · stop the session and resume it`
             : conversation.runsAs === null
-              ? "The conversation's process could not be stopped, so no terminal was opened · its open turns were cancelled · the conversation goes on"
-              : "The conversation's process could not be stopped, so no terminal was opened · the conversation goes on",
+              ? said`The conversation's process could not be stopped, so no terminal was opened · its open turns were cancelled · the conversation goes on`
+              : said`The conversation's process could not be stopped, so no terminal was opened · the conversation goes on`,
           cause: null,
         });
       });
@@ -22403,10 +22461,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "mode switch harvest",
         );
         if (!captureReady) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "mode_switch_capture_flush_incomplete",
             status: null,
-            message: "the conversation's last state was not captured",
+            words: said`the conversation's last state was not captured`,
             cause: null,
           });
         }
@@ -22418,10 +22476,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           manifest.harness !== (conversation.harness ?? session.harness) ||
           manifest.providerSessionId !== providerSessionId
         ) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "mode_switch_state_changed",
             status: null,
-            message: `the saved conversation is ${manifest.providerSessionId ?? "none"}, not ${providerSessionId}`,
+            words: said`the saved conversation is ${mendWords(manifest.providerSessionId ?? "none")}, not ${mendWords(providerSessionId)}`,
             cause: null,
           });
         }
@@ -22445,7 +22503,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (stoppedDuringLaunch.has(session.id) || live || as === null) {
             return yield* Effect.failCause(cause);
           }
-          const words = (yield* failureLine(cause)).replace(/\.+$/, "");
+          const words = withoutFullStop(yield* failureLine(cause));
           const restarted = yield* Effect.gen(function* () {
             const workspace = yield* sealant.getWorkspace(conversation.sealantWorkspaceId);
             const next = yield* conversationStartOf(session, conversation, providerSessionId);
@@ -22456,29 +22514,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
           }).pipe(Effect.exit);
           if (Exit.isSuccess(restarted)) {
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "mode_switch_terminal_not_opened",
               status: null,
-              message: `The terminal did not open (${words}) · the conversation goes on`,
+              words: said`The terminal did not open (${words}) · the conversation goes on`,
               cause,
             });
           }
           yield* endOwnership.release(continuation);
           yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
-          const again = (yield* failureLine(restarted.cause)).replace(/\.+$/, "");
+          const again = withoutFullStop(yield* failureLine(restarted.cause));
           yield* noteLaunchWords(
             session.id,
-            `stopped · the terminal did not open (${words}), and the conversation could not be started again: ${again}. Resume the session to continue.`,
+            said`stopped · the terminal did not open (${words}), and the conversation could not be started again: ${again}. Resume the session to continue.`,
           ).pipe(Effect.ignore);
           yield* Effect.logWarning(
             "session engine: the conversation could not be started again after a mode switch",
           ).pipe(
             Effect.annotateLogs({ sessionId: session.id, cause: Cause.pretty(restarted.cause) }),
           );
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "mode_switch_terminal_not_opened",
             status: null,
-            message: `The terminal did not open (${words}), and the conversation could not be started again (${again}) · resume the session to continue`,
+            words: said`The terminal did not open (${words}), and the conversation could not be started again (${again}) · resume the session to continue`,
             cause,
           });
         });
@@ -22531,11 +22589,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }).pipe(
           Effect.catchTag("HarnessStateNotFoundError", () =>
             Effect.fail(
-              new SealantPlatformError({
+              curatedError({
                 code: "mode_switch_state_missing",
                 status: null,
-                message:
-                  "No saved harness state to reopen as a terminal — resume the session instead.",
+                words: said`No saved harness state to reopen as a terminal — resume the session instead.`,
                 cause: null,
               }),
             ),
@@ -22556,10 +22613,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const status = yield* Effect.tryPromise({
           try: () => workspace.status(),
           catch: (cause) =>
-            new SealantPlatformError({
+            curatedError({
               code: "workspace_status_failed",
               status: null,
-              message: "Could not observe the session workspace status.",
+              words: said`Could not observe the session workspace status.`,
               cause,
             }),
         });
@@ -22655,10 +22712,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           openedBy ?? session.ownerUserId,
         );
         if (retired !== null) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "workspace_retiring",
             status: 409,
-            message: retired,
+            words: retired,
             cause: null,
           });
         }
@@ -23076,7 +23133,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   code: "pty_close_failed",
                   status: workspaceMissing(cause) ? 404 : null,
                   message: cause instanceof Error ? cause.message : String(cause),
-                  uncurated: true,
                   cause,
                 }),
             }),
@@ -23110,7 +23166,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if ((session.summary ?? "").includes(words)) return;
         yield* sessions.setSummary(
           process.sessionId,
-          session.summary === null ? words : `${session.summary} · ${words}`,
+          session.summary === null ? mendWords(words) : mendWords(`${session.summary} · ${words}`),
         );
       });
       /**
@@ -23133,7 +23189,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (summary === null || words === null) return;
         const rest =
           summary === words ? "" : summary.replace(` · ${words}`, "").replace(`${words} · `, "");
-        yield* sessions.setSummary(process.sessionId, rest === "" ? null : rest);
+        yield* sessions.setSummary(process.sessionId, rest === "" ? null : mendWords(rest));
       });
 
       /**
@@ -23355,10 +23411,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               session.ownerUserId,
             );
             if (retired !== null) {
-              return yield* new SealantPlatformError({
+              return yield* curatedError({
                 code: "workspace_retiring",
                 status: 409,
-                message: retired,
+                words: retired,
                 cause: null,
               });
             }
@@ -23372,10 +23428,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const [person] =
               row.runsAs === null ? [] : yield* harnessLayouts.identitiesOf([row.runsAs]);
             if (person === undefined) {
-              return yield* new SealantPlatformError({
+              return yield* curatedError({
                 code: "process_person_unknown",
                 status: null,
-                message: "this process has no person to run as",
+                words: said`this process has no person to run as`,
                 cause: null,
               });
             }
@@ -23589,10 +23645,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // marked to retire (decision 14).
         const retired = yield* retirementRefusalFor(workspaceId, runsAs);
         if (retired !== null) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "workspace_retiring",
             status: 409,
-            message: retired,
+            words: retired,
             cause: null,
           });
         }
@@ -24761,10 +24817,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (previous.exitedAt === null && previous.sealantSessionId !== null) {
           if (!(yield* closeProcessPty(previous.sealantWorkspaceId, previous.sealantSessionId))) {
             yield* notStopped(previous);
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "pty_close_failed",
               status: null,
-              message: "the Service's running attempt could not be stopped · nothing restarted",
+              words: said`the Service's running attempt could not be stopped · nothing restarted`,
               cause: null,
             });
           }
@@ -25962,7 +26018,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // ladder attaches all connected accounts, so one skeleton serves any harness.
             shape: platformShape("shell"),
             ownerUserId,
-            onFailure: (message) => hotWorkspaces.setFailed(sessionId, message),
+            onFailure: (failure) =>
+              failureLine(failure).pipe(
+                Effect.flatMap((words) => hotWorkspaces.setFailed(sessionId, words)),
+              ),
             // Its own launch (cross-repo decision 5), asked as the create's idempotency key in
             // capture mode; a claim carries it onto the session with the workspace.
             launchId: standbyLaunchIdOf(sessionId),
@@ -26445,7 +26504,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     code: "session_status_failed",
                     status: null,
                     message: `protocol pipe status failed: ${String(cause)}`,
-                    uncurated: true,
                     cause,
                   }),
               }),
@@ -26584,7 +26642,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             how: "exited",
             exitCode: null,
             outcome: "stopped",
-            summary: "Rehydrate failed after a Mend restart — relaunched by provider id.",
+            summary: said`Rehydrate failed after a Mend restart — relaunched by provider id.`,
           },
           relaunchAfter,
         ).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed<EndRecording>("held")));
@@ -26683,10 +26741,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         gatedLaunch(
           sessionId,
           Effect.fail(
-            new SealantPlatformError({
+            curatedError({
               code: "session_starting",
               status: 409,
-              message: LAUNCH_UNDER_WAY_WORDS,
+              words: LAUNCH_UNDER_WAY_WORDS,
               cause: null,
             }),
           ),
@@ -26833,7 +26891,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* settleSession(
             session.id,
             "failed",
-            "process restarted before the harness started",
+            said`process restarted before the harness started`,
           );
         }
 
@@ -26919,10 +26977,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 return yield* Effect.tryPromise({
                   try: () => candidate.status(),
                   catch: (cause) =>
-                    new SealantPlatformError({
+                    curatedError({
                       code: "workspace_status_failed",
                       status: null,
-                      message: "Could not observe the Service workspace during boot.",
+                      words: said`Could not observe the Service workspace during boot.`,
                       cause,
                     }),
                 });

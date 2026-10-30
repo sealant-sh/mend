@@ -5,9 +5,11 @@ import {
   SealantWorkspaceId,
   SessionId,
   SessionProcessId,
+  mendWords,
+  said,
 } from "@mend/domain";
 import { AgentItem, AgentTurn, SessionProcess, type TurnPayer } from "@mend/domain/workbench";
-import { SealantPlatformError, toPlatformError } from "@mend/sealant";
+import { curatedError, SealantPlatformError, toPlatformError } from "@mend/sealant";
 import { it } from "@mend/test-ci/effect-vitest";
 import { type InteractiveSession, SealantApiError } from "@sealant/sdk";
 import { Effect, Fiber, Layer } from "effect";
@@ -831,7 +833,7 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
           steered.decision.override = (turn) =>
             (turn.author ?? ALICE) === ALICE
               ? { kind: "send" }
-              : { kind: "refuse", words: "Shared control was turned off." };
+              : { kind: "refuse", words: said`Shared control was turned off.` };
         },
         { status: "failed", error: "Shared control was turned off." },
       ),
@@ -1049,10 +1051,10 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
       const words =
         "bob's logins could not be written into this workspace: the write exited with 1. Asked twice; nothing was started for bob.";
       steered.preparation.during = Effect.fail(
-        new SealantPlatformError({
+        curatedError({
           code: "person_login_not_written",
           status: 502,
-          message: words,
+          words: mendWords(words),
           cause: null,
         }),
       );

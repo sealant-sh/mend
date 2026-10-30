@@ -623,9 +623,10 @@ describe("a refusal to run as a person, on a line (SLNT-385)", () => {
       ),
     );
     expect(refusal.code).toBe("user-unsupported");
-    const line = lineFailureOf(Cause.fail(refusal));
-    expect(line._tag).not.toBe("Said");
-    expect(JSON.stringify(line)).not.toContain(WORDS);
+    expect(lineFailureOf(Cause.fail(refusal))).toMatchObject({
+      _tag: "Led",
+      lead: "Nothing was started as this person",
+    });
   });
 });
 

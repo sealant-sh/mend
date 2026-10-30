@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, SessionId, SessionProcessId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectId, said, SessionId, SessionProcessId, Sha, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -168,7 +168,11 @@ describe.skipIf(postgres.skip)("the idle stop's claim, in Postgres", () => {
         expect(yield* sessions.claimIdleStop(RECLAIM, LONG_AGO)).toBe(true);
 
         // The stop settles it; the next reply reopens it, and a later idle spell may claim again.
-        yield* sessions.settle(RECLAIM, "stopped", "idle · stopped after 15 min · reply to resume");
+        yield* sessions.settle(
+          RECLAIM,
+          "stopped",
+          said`idle · stopped after 15 min · reply to resume`,
+        );
         expect(yield* sessions.claimIdleStop(RECLAIM, LONG_AGO)).toBe(false);
         const stopped = yield* sessions.byId(RECLAIM);
         expect(stopped.status).toBe("stopped");

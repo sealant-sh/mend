@@ -5,6 +5,7 @@
  * dotfiles, and the opencode scrub of decision 8a. Everything here runs as the person's own user,
  * into their own home, and is reached only in a person-layout executor.
  */
+import { mendWords, type ReaderLine, said } from "@mend/domain";
 import { linuxHomeOf, type LinuxIdentity } from "@mend/domain/workbench";
 import { Option, Schema } from "effect";
 
@@ -340,8 +341,8 @@ export const parseOpencodeScrub = (stdout: string): ReadonlyArray<OpencodeScrubO
   });
 
 /** The session line when a scrub failed: the database is left as it is (decision 8a). */
-export const opencodeScrubFailedWords = (reason: string): string =>
-  `opencode logins not removed · ${reason}`;
+export const opencodeScrubFailedWords = (reason: string): ReaderLine =>
+  said`opencode logins not removed · ${mendWords(reason)}`;
 
 // ─── install.sh (decision 11) ────────────────────────────────────────────────
 
@@ -355,15 +356,14 @@ export const DOTFILES_APPLY_BOUND_MS = 120_000;
 export const DOTFILES_STILL_APPLYING = `still applying after ${DOTFILES_APPLY_BOUND_MS / 1000} s; Mend puts its links back once they land`;
 
 /** The session line while a person's dotfiles still apply after the bound. */
-export const DOTFILES_STILL_APPLYING_WORDS =
-  "dotfiles still applying · the agent started beside them";
+export const DOTFILES_STILL_APPLYING_WORDS = said`dotfiles still applying · the agent started beside them`;
 
 /** The session line once an apply that outlived the bound has landed and Mend relinked. */
-export const DOTFILES_LANDED_LATE_WORDS = "dotfiles applied after the agent started";
+export const DOTFILES_LANDED_LATE_WORDS = said`dotfiles applied after the agent started`;
 
 /** The session line when an apply that outlived the bound ended without applying. */
-export const dotfilesNotAppliedWords = (reason: string): string =>
-  `dotfiles not applied · ${reason}`;
+export const dotfilesNotAppliedWords = (reason: string): ReaderLine =>
+  said`dotfiles not applied · ${mendWords(reason)}`;
 
 /**
  * How long an agent waits for its person's `install.sh` when it waits at all (the launcher's, and
@@ -372,17 +372,16 @@ export const dotfilesNotAppliedWords = (reason: string): string =>
  */
 export const BOOTSTRAP_WAIT_BOUND_MS = 15 * 60_000;
 
-export const BOOTSTRAP_RUNNING_WORDS = "install.sh running";
+export const BOOTSTRAP_RUNNING_WORDS = said`install.sh running`;
 
 /** The line when a joiner's `install.sh` ends after their agent started (decision 11). */
-export const bootstrapFinishedLateWords = (exitCode: number | null): string =>
+export const bootstrapFinishedLateWords = (exitCode: number | null): ReaderLine =>
   exitCode === 0 || exitCode === null
-    ? "install.sh finished after the agent started"
-    : `install.sh finished after the agent started · exit ${exitCode}`;
+    ? said`install.sh finished after the agent started`
+    : said`install.sh finished after the agent started · exit ${exitCode}`;
 
 /** The line when an agent that waited for `install.sh` started before it ended. */
-export const BOOTSTRAP_STILL_RUNNING_WORDS =
-  "install.sh still running after 15 min · the agent started beside it";
+export const BOOTSTRAP_STILL_RUNNING_WORDS = said`install.sh still running after 15 min · the agent started beside it`;
 
 /**
  * Decision 1's fallback for dotfiles, said on the session line, on a platform that cannot apply a

@@ -6,7 +6,7 @@
  * names people by their Mend account; Core by their Sealant user, which the identity mapping
  * answers from Mend's own table.
  */
-import { workspaceImagePackages, type WorkspaceImage } from "@mend/domain";
+import { mendWords, said, workspaceImagePackages, type WorkspaceImage } from "@mend/domain";
 import { loginChoiceOf } from "@mend/domain/default-login";
 import type {
   CreateOptions,
@@ -20,7 +20,7 @@ import type {
 import { Clock, Duration, Effect, Layer, Option } from "effect";
 
 import { SealantClients, toPlatformError } from "./client.ts";
-import { SealantPlatformError } from "./errors.ts";
+import { curatedError } from "./errors.ts";
 import {
   type HeldHome,
   type ImageLayoutReport,
@@ -49,10 +49,10 @@ const boundedCall = <A>(what: string, home: string, run: () => Promise<A>) =>
       duration: CREDENTIALS_CALL_TIMEOUT,
       orElse: () =>
         Effect.fail(
-          new SealantPlatformError({
+          curatedError({
             code: "credentials_timeout",
             status: null,
-            message: `Sealant did not answer the ${what} of ${home}'s logins within 30 s; nothing is taken as done`,
+            words: said`Sealant did not answer the ${mendWords(what)} of ${mendWords(home)}'s logins within 30 s; nothing is taken as done`,
             cause: null,
           }),
         ),
@@ -342,10 +342,10 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
                 duration: SSH_USER_CALL_TIMEOUT,
                 orElse: () =>
                   Effect.fail(
-                    new SealantPlatformError({
+                    curatedError({
                       code: "ssh_user_timeout",
                       status: null,
-                      message: "Sealant did not answer within 5 s",
+                      words: said`Sealant did not answer within 5 s`,
                       cause: null,
                     }),
                   ),

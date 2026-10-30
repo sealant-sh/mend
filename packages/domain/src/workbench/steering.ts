@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 
+import { said } from "../failure-line.ts";
 import { AgentTurnId, SessionId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 
@@ -85,16 +86,14 @@ export const CONVERSATION_WAIT_BOUNDS_MS: Readonly<
 export const CONVERSATION_UNREPORTED_WAIT_MS = 60_000;
 
 /** Why a waiting turn was not started when the agent never said what it runs. */
-export const UNREPORTED_WORK_REFUSAL =
-  "The agent did not say whether its background work has finished, so this turn was not started and nothing was stopped. The person whose agent it is can end that work, or restart the session.";
+export const UNREPORTED_WORK_REFUSAL = said`The agent did not say whether its background work has finished, so this turn was not started and nothing was stopped. The person whose agent it is can end that work, or restart the session.`;
 
 /**
  * Why another person's turn is not sent to an agent started before shared steering (a Codex
  * initialized without the capability that reports background work): it takes its owner's turns
  * only until it ends or restarts (review 2 of mend#572, P2-1).
  */
-export const STARTED_BEFORE_STEERING =
-  "This agent was started before shared steering, so it takes only its owner's turns until it ends or restarts.";
+export const STARTED_BEFORE_STEERING = said`This agent was started before shared steering, so it takes only its owner's turns until it ends or restarts.`;
 
 const boundWords = (ms: number): string =>
   ms % 60_000 === 0

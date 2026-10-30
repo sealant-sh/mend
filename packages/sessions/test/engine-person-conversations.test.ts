@@ -17,6 +17,7 @@ import {
   SessionId,
   SessionProcessId,
   WorktreeId,
+  said,
 } from "@mend/domain";
 import { AgentRequest, AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
 import {
@@ -1850,7 +1851,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
               }
             }
             if (options.thenIdle === true) {
-              yield* engine.stop(session.id, "idle");
+              yield* engine.stop(session.id, said`idle`);
               // The settle lands off the stop's path; its write to the row is the signal.
               yield* signalled(writes)(
                 () => (world.sessions.get(session.id)?.settledAt ?? null) !== null,

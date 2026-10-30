@@ -1,5 +1,7 @@
 import { linuxLoginNameOf } from "@mend/db";
+import { said } from "@mend/domain";
 import {
+  curatedError,
   PersonLayoutPlatform,
   type PersonLogin,
   SealantClient,
@@ -91,11 +93,11 @@ export const personPlatform = (
         if (failed instanceof SealantPlatformError) return Effect.fail(failed);
         return failed
           ? Effect.fail(
-              new SealantPlatformError({
+              curatedError({
                 code: "control_plane_unavailable",
                 status: 503,
                 // A sentence, as Codex's own refusals are: the session line must not double its stop.
-                message: "Core did not answer.",
+                words: said`Core did not answer.`,
                 cause: null,
               }),
             )

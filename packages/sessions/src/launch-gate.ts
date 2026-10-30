@@ -1,8 +1,8 @@
-import { SealantPlatformError } from "@mend/sealant";
+import { said } from "@mend/domain";
+import { curatedError, type SealantPlatformError } from "@mend/sealant";
 import { Deferred, Effect } from "effect";
 
-export const LAUNCH_UNDER_WAY_WORDS =
-  "starting · a launch of this session is already under way · nothing new started";
+export const LAUNCH_UNDER_WAY_WORDS = said`starting · a launch of this session is already under way · nothing new started`;
 
 /**
  * One launch verb per session at a time (alpha 2026-09-30, 523ce2cb). A resume leaves the settled
@@ -113,10 +113,10 @@ export const makeLaunchGate = (): LaunchGate => {
       runOr(
         sessionId,
         Effect.fail(
-          new SealantPlatformError({
+          curatedError({
             code: "session_starting",
             status: 409,
-            message: LAUNCH_UNDER_WAY_WORDS,
+            words: LAUNCH_UNDER_WAY_WORDS,
             cause: null,
           }),
         ),

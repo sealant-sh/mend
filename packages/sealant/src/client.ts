@@ -1,4 +1,4 @@
-import type { WorkspaceImageOs } from "@mend/domain";
+import { mendWords, type ReaderLine, said, type WorkspaceImageOs } from "@mend/domain";
 import { isChosenDefault, loginChoiceOf, unchosenLoginSummary } from "@mend/domain/default-login";
 import type {
   WorkspaceBind,
@@ -49,7 +49,7 @@ import * as Context from "effect/Context";
 import { ConnectedAccount, type ConnectAccountInput } from "./accounts.ts";
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
-import { restated, SealantPlatformError } from "./errors.ts";
+import { curatedError, ledBy, SealantPlatformError } from "./errors.ts";
 import { type ForwardDestination, type OpenedForward, openWorkspaceForward } from "./forward.ts";
 import { SealantIdentityStore } from "./identity.ts";
 import {
@@ -237,10 +237,10 @@ export const captureStatusOf = (workspace: {
       isCaptureStatus(answer)
         ? Effect.succeed(answer)
         : Effect.fail(
-            new SealantPlatformError({
+            curatedError({
               code: "capture_status_unreadable",
               status: null,
-              message: "the capture status answer is not one Mend can read",
+              words: said`the capture status answer is not one Mend can read`,
               cause: null,
             }),
           ),
@@ -1452,8 +1452,8 @@ const toConnectedAccount = (wire: {
     isDefault: isChosenDefault(wire),
   });
 
-const platformFailure = (code: string, message: string) =>
-  new SealantPlatformError({ code, status: null, message, cause: null });
+const platformFailure = (code: string, words: ReaderLine) =>
+  curatedError({ code, status: null, words, cause: null });
 
 const toSshKey = (wire: {
   readonly sshKeyId: string;
@@ -1518,7 +1518,10 @@ export const SealantClientsLive: Layer.Layer<
       if (recorded !== null) return recorded;
       const user = yield* identities.user(userId);
       if (user === null) {
-        return yield* platformFailure("UNKNOWN_USER", `Mend user ${userId} does not exist`);
+        return yield* platformFailure(
+          "UNKNOWN_USER",
+          said`Mend user ${mendWords(userId)} does not exist`,
+        );
       }
       const ensured = yield* wrap(() => admin.users.ensure({ email: user.email, name: user.name }));
       yield* identities.record(userId, ensured.userId);
@@ -1545,7 +1548,7 @@ export const SealantClientsLive: Layer.Layer<
         case "none":
           return yield* platformFailure(
             "NO_PRINCIPAL",
-            "Sealant call made without a principal (docs/SEALANT-IDENTITY.md)",
+            said`Sealant call made without a principal (docs/SEALANT-IDENTITY.md)`,
           );
       }
     });
@@ -1577,10 +1580,10 @@ export const SealantClientsLive: Layer.Layer<
         input: ConnectAccountInput,
       ) {
         if (input.name !== undefined && input.accountId !== undefined) {
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "connected-account-target-conflict",
             status: 400,
-            message: "A connect names an account or gives its id, not both.",
+            words: said`A connect names an account or gives its id, not both.`,
             cause: null,
           });
         }
@@ -1591,10 +1594,10 @@ export const SealantClientsLive: Layer.Layer<
           const accounts = yield* listOf(ownerUserId);
           const account = accounts.find((candidate) => candidate.id === input.accountId);
           if (account === undefined) {
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "connected-account-not-found",
               status: 404,
-              message: `No connected account ${input.accountId} of yours.`,
+              words: said`No connected account ${mendWords(input.accountId)} of yours.`,
               cause: null,
             });
           }
@@ -1611,10 +1614,10 @@ export const SealantClientsLive: Layer.Layer<
             const [only, ...others] = choice.accounts;
             if (others.length === 0) return { accountId: only.id, makeDefault: true };
             const summary = unchosenLoginSummary(input.provider, choice.accounts.length);
-            return yield* new SealantPlatformError({
+            return yield* curatedError({
               code: "connected-account-ambiguous",
               status: 409,
-              message: `${summary.wordsAndSessionUse} ${summary.remedy}`,
+              words: mendWords(`${summary.wordsAndSessionUse} ${summary.remedy}`),
               cause: null,
             });
           }
@@ -1918,7 +1921,7 @@ export const imageBuildFailure = (error: SealantPlatformError): SealantPlatformE
       : error.code === "workspace_image_build_timeout"
         ? "the workspace image build ran past its time limit, so nothing was started"
         : null;
-  return lead === null ? error : restated(error, `${lead}: ${error.message}`);
+  return lead === null ? error : ledBy(mendWords(lead), error, { code: error.code });
 };
 
 /**
@@ -1950,7 +1953,11 @@ export const toPlatformError = (cause: unknown) => {
     status: cause instanceof SealantApiError ? (cause.status ?? null) : null,
     message: sourceSelection ? SOURCE_SELECTION_REFUSAL : message,
     ...(provider === undefined ? {} : { provider }),
-    ...(sourceSelection || CURATED_CODES.has(code) ? {} : { uncurated: true }),
+    ...(sourceSelection
+      ? { said: mendWords(SOURCE_SELECTION_REFUSAL) }
+      : CURATED_CODES.has(code)
+        ? { said: mendWords(message) }
+        : {}),
     cause,
   });
 };

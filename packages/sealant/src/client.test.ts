@@ -1,4 +1,4 @@
-import { lineFailureOf } from "@mend/domain";
+import { lineFailureOf, said } from "@mend/domain";
 import { claudeCode, type RunChanges, Sealant, SealantApiError, SealantError } from "@sealant/sdk";
 import { Cause, Effect } from "effect";
 import { describe, expect, it } from "vitest";
@@ -20,7 +20,7 @@ import {
   workspaceStopAnswerOf,
   workspaceStopStateOf,
 } from "./client.ts";
-import { SealantPlatformError } from "./errors.ts";
+import { curatedError, ledBy, SealantPlatformError } from "./errors.ts";
 
 /**
  * The engine branches on the platform's STABLE codes (`workspace-docker-unsupported`,
@@ -159,11 +159,36 @@ describe("toPlatformError's words on a line", () => {
     expect(lineOf(error)._tag).toBe("Withheld");
   });
 
+  it("says Mend's lead over another failure only as far as that failure's words were said", () => {
+    const refused = curatedError({
+      code: "login_refused",
+      status: 409,
+      words: said`Connect Claude first.`,
+      cause: null,
+    });
+    expect(
+      lineOf(ledBy(said`Anna's logins could not be written`, refused, { code: "x" })),
+    ).toMatchObject({
+      _tag: "Said",
+      words: "Anna's logins could not be written: Connect Claude first.",
+    });
+    const core = toPlatformError(new SealantApiError(WORDS, { status: 500 }));
+    const led = ledBy(said`Anna's logins could not be written`, core, { code: "x" });
+    expect(led.message).toContain(WORDS);
+    expect(lineOf(led)).toMatchObject({ _tag: "Led", lead: "Anna's logins could not be written" });
+    expect(
+      lineOf(ledBy(said`Asked twice`, led, { code: "x", separator: said` · ` })),
+    ).toMatchObject({
+      _tag: "Led",
+      lead: "Asked twice · Anna's logins could not be written",
+    });
+  });
+
   it("says Mend's own words", () => {
-    const error = new SealantPlatformError({
+    const error = curatedError({
       code: "credentials_timeout",
       status: null,
-      message: "Sealant did not answer within 30 s",
+      words: said`Sealant did not answer within 30 s`,
       cause: null,
     });
     expect(lineOf(error)).toMatchObject({ _tag: "Said", words: error.message });

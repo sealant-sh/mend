@@ -16,7 +16,7 @@ import {
   SettingsRepo,
   RemovalFencesRepo,
 } from "@mend/db";
-import type { ProjectId } from "@mend/domain";
+import { failureLine, type ProjectId, type ReaderLine, said } from "@mend/domain";
 import {
   composeLaunchArgv,
   PROMPTABLE_HARNESSES,
@@ -37,7 +37,7 @@ import {
   startFromBase,
   type LaunchOver,
 } from "@mend/sessions";
-import { Duration, Effect, Fiber, Layer, Option } from "effect";
+import { Cause, Duration, Effect, Fiber, Layer, Option } from "effect";
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
@@ -112,10 +112,23 @@ const launchOverOf = (request: LaunchRequest): LaunchOver =>
       ? Restart
       : NoLiveAgent;
 
+/** The launch failures that settle a session nothing was launched for. */
+const SETTLED_UNLAUNCHED: ReadonlySet<string> = new Set([
+  "LegacyBenchReadOnlyError",
+  "SealantPlatformError",
+  "ProtocolHarnessUnsupportedError",
+  "HarnessStateNotFoundError",
+  "HarnessStateIOError",
+  "HarnessStateInvalidError",
+  "HarnessStateCommandError",
+  "SessionLaunchSetupError",
+  "DotfilesResolveError",
+]);
+
 export const settleIfUnlaunched = Effect.fn("SessionStart.settleIfUnlaunched")(function* (
   sessions: SessionsRepo["Service"],
   session: Session,
-  summary: string,
+  summary: ReaderLine,
 ) {
   const current = yield* sessions
     .byId(session.id)
@@ -265,8 +278,12 @@ export const makeSessionStart = Effect.gen(function* () {
       );
   });
 
-  const settleUnlaunched = (session: Session, message: string) =>
-    settleIfUnlaunched(sessions, session, `launch failed: ${message}`);
+  const settleUnlaunched = (session: Session, failure: unknown) =>
+    failureLine(Cause.fail(failure)).pipe(
+      Effect.flatMap((words) =>
+        settleIfUnlaunched(sessions, session, said`launch failed: ${words}`),
+      ),
+    );
 
   const launchAs = Effect.fn("SessionStart.launchAs")(function* (
     userId: string,
@@ -377,6 +394,13 @@ export const makeSessionStart = Effect.gen(function* () {
       userId,
       launch.pipe(
         Effect.tap(() => (inlineNamePrompt === null ? queueAutoName : Effect.void)),
+        // Settled from the failure itself, before it becomes the caller's answer: its line says
+        // only the words its class approved (SLNT-385).
+        Effect.tapError((error) =>
+          SETTLED_UNLAUNCHED.has(error._tag)
+            ? settleUnlaunched(session, error).pipe(Effect.ignore)
+            : Effect.void,
+        ),
         Effect.catchTag("SessionNotFoundError", () =>
           Effect.fail(new NotFound({ id: session.id })),
         ),
@@ -426,11 +450,6 @@ export const makeSessionStart = Effect.gen(function* () {
           DotfilesResolveError: (error) =>
             Effect.fail(new StoreFailure({ message: error.message })),
         }),
-        Effect.tapError((error) =>
-          error._tag === "StoreFailure"
-            ? settleUnlaunched(session, error.message).pipe(Effect.ignore)
-            : Effect.void,
-        ),
       ),
     );
     // Detached from the caller: a client that goes away, or an answer given before the launch

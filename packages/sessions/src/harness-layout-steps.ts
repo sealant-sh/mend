@@ -8,7 +8,16 @@ import { randomBytes } from "node:crypto";
  * nothing recorded, nothing here reads the store, execs or calls Core.
  */
 import { HarnessLayoutsRepo, type OrganizationsRepo } from "@mend/db";
-import { type OrganizationId, type WorkspaceImage, WorktreeId } from "@mend/domain";
+import {
+  approvedWordsOf,
+  mendWords,
+  type OrganizationId,
+  type ReaderLine,
+  ReaderWords,
+  said,
+  type WorkspaceImage,
+  WorktreeId,
+} from "@mend/domain";
 import {
   DEFAULT_HARNESS_LAYOUT,
   type HarnessLayout,
@@ -26,7 +35,8 @@ import {
   type LoginSkip,
   PersonLayoutPlatform,
   type ProcessUser,
-  restated,
+  curatedError,
+  ledBy,
   SealantPlatformError,
   type SealantClientShape,
   workspaceProcessUserObstacleOf,
@@ -105,18 +115,17 @@ export const SSH_RESET_DELAYS: ReadonlyArray<Duration.Duration> = [1, 2, 4, 8, 1
  * The session line when Core runs SSH sessions as a user but the launcher's person could not be
  * bound there (a refused or unanswered binding, a Core without the route): Remote-SSH stays root.
  */
-export const REMOTE_SSH_ROOT_WORDS = "Remote-SSH: root, Core can't bind your person";
+export const REMOTE_SSH_ROOT_WORDS = said`Remote-SSH: root, Core can't bind your person`;
 
 /** The session line when Core runs no SSH session as a user (an older Core or SDK). */
-export const REMOTE_SSH_ROOT_UNSUPPORTED_WORDS = "Remote-SSH: root, this Sealant runs it as root";
+export const REMOTE_SSH_ROOT_UNSUPPORTED_WORDS = said`Remote-SSH: root, this Sealant runs it as root`;
 
 /** What a person launch's line says when its Remote-SSH runs as root (docs/adr/0016). */
-export const remoteSshRootWords = (reason: "unbound" | "not-taken"): string =>
+export const remoteSshRootWords = (reason: "unbound" | "not-taken"): ReaderLine =>
   reason === "unbound" ? REMOTE_SSH_ROOT_WORDS : REMOTE_SSH_ROOT_UNSUPPORTED_WORDS;
 
 /** The session line while a fallback executor's SSH user is not yet back to root. */
-export const REMOTE_SSH_RESET_PENDING_WORDS =
-  "Remote-SSH unavailable · the workspace's SSH user is not yet back to root · retrying";
+export const REMOTE_SSH_RESET_PENDING_WORDS = said`Remote-SSH unavailable · the workspace's SSH user is not yet back to root · retrying`;
 
 export const HarnessLayoutConfigLive: Layer.Layer<HarnessLayoutConfig, Config.ConfigError> =
   Layer.effect(
@@ -186,9 +195,32 @@ export const SHARED_AS_BEFORE: LaunchLayout = {
   recorded: false,
 };
 
+/**
+ * A login write that failed twice: what it says, and that nothing was started for them, Core's own
+ * words withheld as the first failure's were.
+ */
+const askedTwice = (again: SealantPlatformError, identity: LinuxIdentity) => {
+  const tail = said`Asked twice; nothing was started for ${mendWords(identity.name)}.`;
+  const words = approvedWordsOf(again);
+  return new SealantPlatformError({
+    code: again.code,
+    status: again.status,
+    message: `${again.message} ${tail}`,
+    ...(words === undefined
+      ? {}
+      : {
+          said:
+            typeof words === "string"
+              ? said`${words} ${tail}`
+              : { lead: said`${words.lead} · ${tail}` },
+        }),
+    cause: again,
+  });
+};
+
 /** A launch refused before create, with the line the session settles on (decision 14). */
-export const layoutRefused = (message: string) =>
-  new SealantPlatformError({ code: "harness_layout_refused", status: 409, message, cause: null });
+export const layoutRefused = (words: ReaderLine) =>
+  curatedError({ code: "harness_layout_refused", status: 409, words, cause: null });
 
 /** What prepare found, once the executor exists. */
 export type PrepareOutcome =
@@ -312,8 +344,8 @@ export const loginLeftOutWords = (skip: LoginSkip): string | null =>
     : null;
 
 /** A process refused because its person's needed login is missing (`loginRefusal`). */
-export const loginRefused = (message: string) =>
-  new SealantPlatformError({ code: "person_login_refused", status: 409, message, cause: null });
+export const loginRefused = (words: ReaderLine) =>
+  curatedError({ code: "person_login_refused", status: 409, words, cause: null });
 
 const loginProviderOf = (word: string | undefined): LoginProvider | null => {
   switch (word) {
@@ -428,12 +460,12 @@ export const createLoginRefusal = (
   const refused = refusedAccountOf(error);
   if (refused !== null) {
     return required.includes(refused.provider)
-      ? loginRefused(loginRefusal(refused.provider, refused.reason))
+      ? loginRefused(mendWords(loginRefusal(refused.provider, refused.reason)))
       : null;
   }
   const [provider] = required;
   return provider !== undefined && error.message.toLowerCase().includes("connected account")
-    ? loginRefused(loginRefusal(provider, "connected-account-missing"))
+    ? loginRefused(mendWords(loginRefusal(provider, "connected-account-missing")))
     : null;
 };
 
@@ -1136,7 +1168,7 @@ export const makeHarnessLayoutSteps = (deps: {
         dotfilesBlocked,
         ...(input.standby === undefined ? {} : { standby: input.standby }),
       });
-      if (decision.kind === "refuse") return yield* layoutRefused(decision.message);
+      if (decision.kind === "refuse") return yield* layoutRefused(mendWords(decision.message));
       if (decision.layout === "shared") {
         yield* repo.recordLaunch({
           launchId: input.launchId,
@@ -1162,7 +1194,7 @@ export const makeHarnessLayoutSteps = (deps: {
       }
       const launcher = yield* repo
         .ensureIdentity(input.ownerUserId)
-        .pipe(Effect.mapError((error) => layoutRefused(error.message)));
+        .pipe(Effect.mapError((error) => layoutRefused(error[ReaderWords])));
       const members = yield* membersOf(input.organizationId, input.ownerUserId);
       yield* repo.recordLaunch({
         launchId: input.launchId,
@@ -1386,7 +1418,8 @@ export const makeHarnessLayoutSteps = (deps: {
     const prepared = parseLayoutReport(input.stdout);
     // The restore, not the image: nothing is recorded against the image, and the launch is
     // refused whatever the worktree, since nobody could edit what came back.
-    if (prepared.unowned !== null) return yield* layoutRefused(ownerMapRefusal(prepared.unowned));
+    if (prepared.unowned !== null)
+      return yield* layoutRefused(mendWords(ownerMapRefusal(prepared.unowned)));
     // The workspace's own answer (sealant#343): a person launch runs only where its processes can
     // start as a person. `unsupported` is the image's sealantd, recorded against it like a probe's
     // finding; `unknown` is not a yes, and is not held against the image.
@@ -1405,7 +1438,7 @@ export const makeHarnessLayoutSteps = (deps: {
     // so the launch is refused with words to try again and nothing is recorded against the image.
     const identityFailures = report.failed.filter((entry) => entry.includes(": identity: "));
     if (!report.ready && report.missing.length === 0 && identityFailures.length > 0) {
-      return yield* layoutRefused(identityRefusal(identityFailures));
+      return yield* layoutRefused(mendWords(identityRefusal(identityFailures)));
     }
     if (report.ready) {
       yield* repo.recordCapability({
@@ -1469,8 +1502,8 @@ export const makeHarnessLayoutSteps = (deps: {
     if (layout.onMissing === "refuse") {
       return yield* layoutRefused(
         layout.source === "operator"
-          ? `harnessLayout person was asked for, and this image cannot run per-person users (${missing.join(", ")}).`
-          : `This worktree's sessions are saved per person, and its image cannot run per-person users (${missing.join(", ")}). Pick an image that can, or start a new worktree.`,
+          ? said`harnessLayout person was asked for, and this image cannot run per-person users (${mendWords(missing.join(", "))}).`
+          : said`This worktree's sessions are saved per person, and its image cannot run per-person users (${mendWords(missing.join(", "))}). Pick an image that can, or start a new worktree.`,
       );
     }
     // A wrong prediction never leaves an agent without a login: the create-time home is released
@@ -1506,7 +1539,7 @@ export const makeHarnessLayoutSteps = (deps: {
         harness === null || loginNeedOf(harness).required.includes(provider);
       const refused = written.skipped.find((skip) => needed(skip.provider));
       if (refused !== undefined) {
-        return yield* loginRefused(loginRefusal(refused.provider, refused.reason));
+        return yield* loginRefused(mendWords(loginRefusal(refused.provider, refused.reason)));
       }
     }
     const reason = `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;
@@ -1535,20 +1568,17 @@ export const makeHarnessLayoutSteps = (deps: {
       confirmed: !unchecked,
       ...(unchecked ? { replacing: "unconfirmed" as const } : {}),
     });
-    const refused = (message: string) =>
-      new SealantPlatformError({
-        code: "harness_layout_refused",
-        status: 409,
-        message,
-        cause: input.error,
-      });
+    const refused = (words: ReaderLine) =>
+      curatedError({ code: "harness_layout_refused", status: 409, words, cause: input.error });
     if (layout.onMissing === "refuse") {
       return refused(
-        unchecked
-          ? UNCHECKED_IMAGE_REFUSAL
-          : layout.source === "operator"
-            ? operatorPersonRefusal([lacks])
-            : personLayoutRefusal([lacks]),
+        mendWords(
+          unchecked
+            ? UNCHECKED_IMAGE_REFUSAL
+            : layout.source === "operator"
+              ? operatorPersonRefusal([lacks])
+              : personLayoutRefusal([lacks]),
+        ),
       );
     }
     // A fresh worktree: nothing ran, and it stays without a layout; the image is known now.
@@ -1561,8 +1591,8 @@ export const makeHarnessLayoutSteps = (deps: {
     }
     return refused(
       unchecked
-        ? UNCHECKED_IMAGE_REFUSAL
-        : `This workspace cannot run per-person users (${lacks}), so nothing was started. The next launch here runs as one person.`,
+        ? mendWords(UNCHECKED_IMAGE_REFUSAL)
+        : said`This workspace cannot run per-person users (${mendWords(lacks)}), so nothing was started. The next launch here runs as one person.`,
     );
   });
 
@@ -1654,7 +1684,7 @@ export const makeHarnessLayoutSteps = (deps: {
           .map((provider) => skipped.get(provider))
           .find((skip) => skip !== undefined);
         if (refused !== undefined) {
-          return yield* loginRefused(loginRefusal(refused.provider, refused.reason));
+          return yield* loginRefused(mendWords(loginRefusal(refused.provider, refused.reason)));
         }
         return written.success.skipped;
       }
@@ -1668,19 +1698,21 @@ export const makeHarnessLayoutSteps = (deps: {
       // A put Core refused whole for an account (never a partial one's, sealant#337): its words.
       const refusedWhole = refusedAccountOf(error);
       if (refusedWhole !== null) {
-        return yield* loginRefused(loginRefusal(refusedWhole.provider, refusedWhole.reason));
+        return yield* loginRefused(
+          mendWords(loginRefusal(refusedWhole.provider, refusedWhole.reason)),
+        );
       }
-      return yield* restated(
+      return yield* ledBy(
+        said`${mendWords(identity.name)}'s logins could not be written into this workspace`,
         error,
-        `${identity.name}'s logins could not be written into this workspace: ${error.message}`,
         { code: "person_login_not_written" },
       );
     }
     keepHeldFor(input.workspace.id, input.launchId, identity);
-    return yield* new SealantPlatformError({
+    return yield* curatedError({
       code: "person_login_not_written",
       status: null,
-      message: `${identity.name}'s logins could not be written into this workspace: Core kept refusing`,
+      words: said`${mendWords(identity.name)}'s logins could not be written into this workspace: Core kept refusing`,
       cause: null,
     });
   });
@@ -1694,7 +1726,7 @@ export const makeHarnessLayoutSteps = (deps: {
         !nothingRecorded() &&
         (yield* repo.worktreeLayout(WorktreeId.make(input.worktreeId))).layout === "person"
       ) {
-        return yield* layoutRefused(UNKNOWN_LAUNCH_REFUSAL);
+        return yield* layoutRefused(mendWords(UNKNOWN_LAUNCH_REFUSAL));
       }
       return null;
     }
@@ -1702,7 +1734,7 @@ export const makeHarnessLayoutSteps = (deps: {
     if ((yield* layoutOfLaunch(launchId)) !== "person") return null;
     const identity = yield* repo
       .ensureIdentity(input.accountId)
-      .pipe(Effect.mapError((error) => layoutRefused(error.message)));
+      .pipe(Effect.mapError((error) => layoutRefused(error[ReaderWords])));
     const user = processUserOf(identity);
     const workspaceId = input.workspace.id;
     // Every write its own token, a person already made here included: the token their processes
@@ -1733,12 +1765,11 @@ export const makeHarnessLayoutSteps = (deps: {
       ]),
     );
     if (result.exitCode !== 0) {
-      return yield* new SealantPlatformError({
-        code: "person_user_not_made",
-        status: null,
-        message: `${identity.name} could not be made in this workspace: ${result.stderr.trim()}`,
-        cause: null,
-      });
+      return yield* ledBy(
+        said`${mendWords(identity.name)} could not be made in this workspace`,
+        result.stderr.trim(),
+        { code: "person_user_not_made", status: null },
+      );
     }
     return { identity, user, tokenFile };
   });
@@ -1754,7 +1785,7 @@ export const makeHarnessLayoutSteps = (deps: {
           !nothingRecorded() &&
           (yield* repo.worktreeLayout(WorktreeId.make(input.worktreeId))).layout === "person"
         ) {
-          return yield* layoutRefused(UNKNOWN_LAUNCH_REFUSAL);
+          return yield* layoutRefused(mendWords(UNKNOWN_LAUNCH_REFUSAL));
         }
         return null;
       }
@@ -1775,7 +1806,7 @@ export const makeHarnessLayoutSteps = (deps: {
       }
       const identity = yield* repo
         .ensureIdentity(input.accountId)
-        .pipe(Effect.mapError((error) => layoutRefused(error.message)));
+        .pipe(Effect.mapError((error) => layoutRefused(error[ReaderWords])));
       const workspaceId = input.workspace.id;
       const key = homeKey(workspaceId, linuxHomeOf(identity));
       // The start's whole make-and-POST holds the home's lock, so a release or the startup
@@ -1817,12 +1848,11 @@ export const makeHarnessLayoutSteps = (deps: {
             Effect.gen(function* () {
               const result = yield* sealant.exec(input.workspace, ["sh", "-c", script]);
               if (result.exitCode !== 0) {
-                return yield* new SealantPlatformError({
-                  code: "person_user_not_made",
-                  status: null,
-                  message: `${identity.name} could not be made in this workspace: ${result.stderr.trim()}`,
-                  cause: null,
-                });
+                return yield* ledBy(
+                  said`${mendWords(identity.name)} could not be made in this workspace`,
+                  result.stderr.trim(),
+                  { code: "person_user_not_made", status: null },
+                );
               }
             });
           // Their first process in this executor: their user, home and saved directory
@@ -1866,10 +1896,7 @@ export const makeHarnessLayoutSteps = (deps: {
                         Effect.andThen(write),
                         Effect.mapError((again) =>
                           again.code === "person_login_not_written"
-                            ? restated(
-                                again,
-                                `${again.message} Asked twice; nothing was started for ${identity.name}.`,
-                              )
+                            ? askedTwice(again, identity)
                             : again,
                         ),
                       ),

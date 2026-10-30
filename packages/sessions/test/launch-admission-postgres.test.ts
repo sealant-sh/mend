@@ -8,7 +8,7 @@ import {
   migrations,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { ProjectId, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectId, said, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { Session, isLiveAgentProcess } from "@mend/domain/workbench";
 import { agentRanIn, Expected, refusalOf } from "@mend/sessions";
 import { Effect, Layer, Redacted, Schema } from "effect";
@@ -115,7 +115,7 @@ describe.skipIf(postgres.skip)("the attempt a client saw, through Postgres and t
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const sessions = yield* SessionsRepo;
-        yield* sessions.settle(SESSION, "failed", "launch failed: the platform did not answer");
+        yield* sessions.settle(SESSION, "failed", said`launch failed: the platform did not answer`);
         // Postgres keeps microseconds and a client sees milliseconds: the stored instant is given
         // sub-millisecond digits whatever the clock said, so a comparison at the stored precision
         // would refuse the very attempt the client read.
@@ -144,7 +144,7 @@ describe.skipIf(postgres.skip)("the attempt a client saw, through Postgres and t
         const afterResume = refusalOf(Expected(seen.settledAt), yield* observed);
 
         // That attempt fails in turn: a new settled attempt the client never saw.
-        yield* sessions.settle(SESSION, "failed", "launch failed: again");
+        yield* sessions.settle(SESSION, "failed", said`launch failed: again`);
         const afterSecond = yield* observed;
         const afterSecondRefusal = refusalOf(Expected(seen.settledAt), afterSecond);
         const secondSeen = refusalOf(
@@ -184,11 +184,11 @@ describe.skipIf(postgres.skip)("the attempt a client saw, through Postgres and t
     const result = await run(
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
-        yield* sessions.settle(RETRIED, "failed", "launch failed: the platform did not answer");
+        yield* sessions.settle(RETRIED, "failed", said`launch failed: the platform did not answer`);
         const seen = asClientReads(yield* sessions.byId(RETRIED));
         // The retry the precondition admitted: it fails before any agent runs, so nothing
         // reopens the session, and its settle finds the first one in place.
-        yield* sessions.settle(RETRIED, "failed", "launch failed: again");
+        yield* sessions.settle(RETRIED, "failed", said`launch failed: again`);
         const after = yield* sessions.byId(RETRIED);
         return {
           seen,

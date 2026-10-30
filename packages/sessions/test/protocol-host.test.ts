@@ -551,7 +551,8 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       });
       yield* waitUntil(() => world.turns.get(second.id)?.providerTurnId === "turn-accepted");
       expect(world.turns.get(first.id)?.status).toBe("failed");
-      expect(world.turns.get(first.id)?.error).toContain("model unavailable");
+      // The harness's rejection is its own text: logged under the reference the turn names.
+      expect(world.turns.get(first.id)?.error).toMatch(/^internal error · reference [0-9a-f]{16}$/);
       expect(world.turns.get(second.id)?.status).toBe("running");
       expect(completed).toEqual([first.id]);
       expect(world.turns.get(second.id)).toMatchObject({

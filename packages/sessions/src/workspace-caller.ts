@@ -1,7 +1,8 @@
 import { type ExecutorAccess, SessionRunsRepo, SessionsRepo } from "@mend/db";
-import { SealantRunId, SealantWorkspaceId } from "@mend/domain";
+import { said, SealantRunId, SealantWorkspaceId } from "@mend/domain";
 import { canSeeProject, type OrganizationRole, type ProjectTenancy } from "@mend/domain/workbench";
 import {
+  curatedError,
   SealantClient,
   type SealantClientShape,
   SealantPlatformError,
@@ -124,22 +125,20 @@ export const mayWorkIn = (role: OrganizationRole | null, userId: string, project
  */
 export const actRefusal = (access: ExecutorAccess, asker: string): SealantPlatformError | null => {
   if (!mayWorkIn(access.askerRole, asker, access.project)) {
-    return new SealantPlatformError({
+    return curatedError({
       code: "no_standing",
       status: 403,
-      message:
-        "you no longer have access to this project, so nothing runs for you in its workspaces",
+      words: said`you no longer have access to this project, so nothing runs for you in its workspaces`,
       cause: null,
     });
   }
   // A creator who is still a member lends their executor whatever they can see: their own
   // sessions keep running in it when the project goes private (review 3 of mend#558, P1).
   if (access.creatorRole === null) {
-    return new SealantPlatformError({
+    return curatedError({
       code: "creator_no_access",
       status: 403,
-      message:
-        "the person who started this workspace is no longer a member of this organization, so nothing new runs in it · start a session of your own in this worktree",
+      words: said`the person who started this workspace is no longer a member of this organization, so nothing new runs in it · start a session of your own in this worktree`,
       cause: null,
     });
   }
@@ -281,11 +280,10 @@ export const WorkspaceCallerLive: Layer.Layer<
           const creator = yield* creatorOf(workspaceId);
           if (creator === null || principal.kind === "none") return;
           if (creator === principal.userId) return;
-          return yield* new SealantPlatformError({
+          return yield* curatedError({
             code: "harness_login_not_yours",
             status: 403,
-            message:
-              "a harness run in this workspace spends the logins it was created with, which are another person's; only they start one",
+            words: said`a harness run in this workspace spends the logins it was created with, which are another person's; only they start one`,
             cause: null,
           });
         }),

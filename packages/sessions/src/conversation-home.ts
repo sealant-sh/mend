@@ -9,6 +9,7 @@
  * process group is empty. Everything here is reached only in a person-layout executor, for a
  * protocol Claude or Codex session that shared control has been turned on for.
  */
+import { mendWords, type ReaderLine, said } from "@mend/domain";
 import { type LinuxIdentity, MEND_GROUP, linuxHomeOf } from "@mend/domain/workbench";
 
 import { CLAUDE_AGENT_HOOKS, CLAUDE_NEUTRAL_ENV, claudeSettingsOf } from "./claude-settings.ts";
@@ -606,5 +607,5 @@ export const foreignReasoningLine = (input: {
   readonly harness: ConversationHarness;
   readonly sender: string;
   readonly previous: string;
-}): string =>
-  `${input.sender}'s turn failed: ${input.harness === "codex" ? "OpenAI" : "Anthropic"} refused reasoning made on ${input.previous}'s account. ${input.previous} can continue the conversation.`;
+}): ReaderLine =>
+  said`${mendWords(input.sender)}'s turn failed: ${input.harness === "codex" ? said`OpenAI` : said`Anthropic`} refused reasoning made on ${mendWords(input.previous)}'s account. ${mendWords(input.previous)} can continue the conversation.`;
