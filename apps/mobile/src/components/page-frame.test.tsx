@@ -7,9 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PageDocument } from "@/components/page-document";
 import { PageFrame } from "@/components/page-frame";
-import { api, clearConfig, saveConfig } from "@/data/live";
+import { api } from "@/data/live";
 import { pageHostThemeCall } from "@/data/page-host";
 import { pageOf } from "@/data/pages";
+import { clearConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 import { onlyWebView, resetWebViews, webViews } from "@/test/fake-webview";
 
@@ -18,6 +19,7 @@ vi.mock("@react-native-async-storage/async-storage", async () => ({
   default: (await import("@/test/memory-storage")).storage,
 }));
 vi.mock("expo-secure-store", async () => (await import("@/test/memory-storage")).secureStore);
+vi.mock("expo-notifications", () => ({}));
 
 const page = pageOf({
   id: "page-1",

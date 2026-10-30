@@ -1,7 +1,5 @@
 // One way to ask a person something, or tell them: the same title, message and buttons as
-// `Alert.alert`. A phone keeps the platform's own alert. react-native-web's `Alert.alert` does
-// nothing, so on the web build every confirm-first action did nothing; there the question waits
-// here, oldest first, for the app's own dialog (components/ask.tsx) to show it.
+// `Alert.alert`.
 
 export interface AskButton {
   readonly text?: string;
@@ -10,8 +8,6 @@ export interface AskButton {
 }
 
 export interface AskOptions {
-  /** Android: a tap outside dismisses. The web dialog always dismisses on one. */
-  readonly cancelable?: boolean;
   readonly onDismiss?: () => void;
 }
 
@@ -22,7 +18,6 @@ export type Ask = (
   options?: AskOptions,
 ) => void;
 
-/** A question the web dialog shows. */
 export interface Question {
   readonly id: number;
   readonly title: string;
@@ -34,7 +29,6 @@ export interface Question {
 export interface Asker {
   readonly ask: Ask;
   readonly subscribe: (listener: () => void) => () => void;
-  /** The question on screen: the oldest not yet answered. Always null off the web. */
   readonly showing: () => Question | null;
   /** Close the question, then run the button's action. Once: a second press finds it gone. */
   readonly answer: (id: number, button: AskButton) => void;
@@ -48,19 +42,7 @@ export interface Asker {
 /** A question with no buttons gets the one native alerts show. */
 const OK: ReadonlyArray<AskButton> = [{ text: "OK" }];
 
-export const createAsker = ({
-  os,
-  alert,
-}: {
-  readonly os: string;
-  /** The platform's alert; `Alert.alert` in the app. */
-  readonly alert: (
-    title: string,
-    message?: string,
-    buttons?: Array<AskButton>,
-    options?: AskOptions,
-  ) => void;
-}): Asker => {
+export const createAsker = (hooks?: { readonly beforeAsk?: () => void }): Asker => {
   let waiting: ReadonlyArray<Question> = [];
   let next = 1;
   const listeners = new Set<() => void>();
@@ -76,10 +58,7 @@ export const createAsker = ({
   };
 
   const ask: Ask = (title, message, buttons, options) => {
-    if (os !== "web") {
-      alert(title, message, buttons === undefined ? undefined : [...buttons], options);
-      return;
-    }
+    hooks?.beforeAsk?.();
     waiting = [
       ...waiting,
       {

@@ -23,6 +23,9 @@ vi.mock("expo-notifications", () => ({
   clearLastNotificationResponseAsync: async () => undefined,
 }));
 vi.mock("expo-font", () => ({ useFonts: () => [true] }));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+}));
 vi.mock("expo-splash-screen", () => ({
   preventAutoHideAsync: async () => undefined,
   hideAsync: async () => undefined,

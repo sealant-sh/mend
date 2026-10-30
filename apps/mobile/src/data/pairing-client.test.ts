@@ -4,16 +4,16 @@ import { createServer } from "node:http";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
-import type { MendConfig } from "./live";
 import type { PairingConfigStore, PairingDevice } from "./pairing-client";
 import { HttpPairingClient } from "./pairing-client";
 import { parsePairUrl } from "./pairing-code";
+import type { Connection } from "./pairing-config";
 
 class InMemoryConfigStore implements PairingConfigStore {
-  config: MendConfig | null = null;
-  readonly writes: Array<MendConfig> = [];
+  config: Connection | null = null;
+  readonly writes: Array<Connection> = [];
 
-  async saveConfig(config: MendConfig): Promise<void> {
+  async saveConfig(config: Connection): Promise<void> {
     this.config = config;
     this.writes.push(config);
   }
@@ -162,7 +162,7 @@ describe("mobile pairing over HTTP", () => {
       url: "https://user:password@mend.example",
     });
     const store = new InMemoryConfigStore();
-    const previous: MendConfig = {
+    const previous: Connection = {
       url: "https://previous.example",
       token: "previous-test-token",
       deviceName: null,

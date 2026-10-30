@@ -182,7 +182,6 @@ export function AttachButton({
       "Attach an image",
       undefined,
       choices.map((choice) => ({ text: choice.label, onPress: choice.run })),
-      { cancelable: true },
     );
   };
 

@@ -14,13 +14,8 @@ import { useAsk } from "@/components/ask";
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
 import { usePaneEdges } from "@/components/pane";
 import { MonoText, UiText } from "@/components/typography";
-import {
-  loadConfig,
-  pasteSessionImage,
-  terminalInputOf,
-  useOwnerName,
-  useSession,
-} from "@/data/live";
+import { pasteSessionImage, terminalInputOf, useOwnerName, useSession } from "@/data/live";
+import { loadConfig } from "@/data/pairing-config";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 const ACCESSORY_HEIGHT = 44;

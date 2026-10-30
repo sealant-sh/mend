@@ -2,9 +2,9 @@ import { PublicOrigin } from "@mend/network";
 import { Option, Schema } from "effect";
 
 import { failureLogLine, failureWords } from "./failure-words";
-import type { MendConfig } from "./live";
 import type { PairPayload } from "./pairing-code";
 import { CODE_LENGTH, normalizeBaseUrl, normalizeCode } from "./pairing-code";
+import type { Connection } from "./pairing-config";
 
 /** The account that authorized this pairing. */
 export interface PairedUser {
@@ -15,7 +15,7 @@ export interface PairedUser {
 
 /** A claim saves credentials only after the complete response is accepted. */
 export type PairOutcome =
-  | { readonly state: "paired"; readonly config: MendConfig; readonly user: PairedUser }
+  | { readonly state: "paired"; readonly config: Connection; readonly user: PairedUser }
   | { readonly state: "refused"; readonly reason: string };
 
 /** Device facts sent with a claim, supplied by the native entrypoint. */
@@ -26,7 +26,7 @@ export interface PairingDevice {
 
 /** The device's existing config persistence boundary. */
 export interface PairingConfigStore {
-  saveConfig(config: MendConfig): Promise<void>;
+  saveConfig(config: Connection): Promise<void>;
 }
 
 /** Claim a short-lived code and persist the server-selected connection. */
@@ -111,7 +111,7 @@ export class HttpPairingClient implements PairingClient {
     }
     const body = parsePairResponse(await response.json().catch(() => null));
     if (body === null) return { state: "refused", reason: "server answered an unreadable body" };
-    const config: MendConfig = {
+    const config: Connection = {
       url: body.url,
       token: body.token,
       deviceName: body.deviceName ?? device.name,

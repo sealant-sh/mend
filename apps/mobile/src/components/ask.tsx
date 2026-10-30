@@ -1,11 +1,10 @@
 // `useAsk`: every confirm-first action and every notice in the app goes through it (data/ask.ts).
-// On a phone it is `Alert.alert`. On the web build, where that does nothing, `AskDialog` (mounted
-// once per pairing, in the root layout) shows the question in the app's own panel, same words and
-// buttons.
 
 import { useSyncExternalStore } from "react";
-import { Modal, Pressable, StyleSheet, View } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AskLayer } from "@/components/ask-layer";
 import { EvButton, type ButtonVariant } from "@/components/button";
 import { UiText } from "@/components/typography";
 import type { Ask, AskButton } from "@/data/ask";
@@ -25,32 +24,37 @@ const variantOf = (button: AskButton, buttons: ReadonlyArray<AskButton>): Button
 export function AskDialog() {
   const { colors, shadow } = useEvidenceTheme();
   const { asker } = usePairing();
+  const insets = useSafeAreaInsets();
   const question = useSyncExternalStore(asker.subscribe, asker.showing, () => null);
   if (question === null) return null;
   const dismiss = () => asker.dismiss(question.id);
-  // Two buttons sit side by side; a longer list of choices stacks, as a phone's alert does.
-  const stacked = question.buttons.length > 2;
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={dismiss}>
-      <Pressable
-        onPress={dismiss}
+    <AskLayer onRequestClose={dismiss}>
+      <View
         style={{
           flex: 1,
-          backgroundColor: "rgba(0,0,0,0.35)",
           justifyContent: "center",
           alignItems: "center",
           paddingHorizontal: 24,
+          paddingTop: insets.top + 24,
+          paddingBottom: insets.bottom + 24,
         }}
       >
         <Pressable
+          accessible={false}
+          onPress={dismiss}
+          style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0,0,0,0.35)" }]}
+        />
+        <View
           role="alertdialog"
           aria-label={question.title}
           aria-modal
-          onPress={(event) => event.stopPropagation()}
+          onAccessibilityEscape={dismiss}
           style={{
             width: "100%",
             maxWidth: 400,
+            maxHeight: "100%",
             backgroundColor: colors.panel,
             borderRadius: radius.xl2,
             borderWidth: StyleSheet.hairlineWidth,
@@ -64,29 +68,33 @@ export function AskDialog() {
             {question.title}
           </UiText>
           {question.message !== null && (
-            <UiText tone="ink2" size={14}>
-              {question.message}
-            </UiText>
+            <ScrollView style={{ flexGrow: 0, flexShrink: 1 }}>
+              <UiText tone="ink2" size={14}>
+                {question.message}
+              </UiText>
+            </ScrollView>
           )}
           <View
-            style={
-              stacked
-                ? { marginTop: 8, gap: 8 }
-                : { marginTop: 8, flexDirection: "row", justifyContent: "flex-end", gap: 8 }
-            }
+            style={{
+              marginTop: 8,
+              flexDirection: "row",
+              flexWrap: "wrap",
+              justifyContent: "flex-end",
+              gap: 8,
+            }}
           >
             {question.buttons.map((button, index) => (
               <EvButton
                 key={`${index}:${button.text ?? ""}`}
-                size="sm"
+                size={Platform.OS === "web" ? "sm" : "md"}
                 variant={variantOf(button, question.buttons)}
                 label={button.text ?? "OK"}
                 onPress={() => asker.answer(question.id, button)}
               />
             ))}
           </View>
-        </Pressable>
-      </Pressable>
-    </Modal>
+        </View>
+      </View>
+    </AskLayer>
   );
 }

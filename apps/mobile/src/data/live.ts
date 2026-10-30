@@ -1,24 +1,15 @@
-/**
- * The live workbench API, adapted into the shapes the screens already render
- * (mock.ts defined the visual contract; this feeds it real sessions). Config
- * is a server URL + a token stored on device — minted by pairing, or the
- * CLI bearer token typed in by hand.
- */
 import {
   captureStatusLine,
   type EffortLevel,
   type HarnessModelCatalogView,
 } from "@mend/domain/workbench";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import * as SecureStore from "expo-secure-store";
-import { useSyncExternalStore } from "react";
-import { Platform } from "react-native";
 
 import { failureLogLine, failureWords, NO_ANSWER } from "@/data/failure-words";
 import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
 import { pageKey, pagesOf } from "@/data/pages";
+import { loadConfig } from "@/data/pairing-config";
 import { pairingKeyOf } from "@/data/pairing-key";
 import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
 import { heard, Unreachable } from "@/data/reachability";
@@ -30,139 +21,6 @@ import type {
   WorkspaceRetirementDto,
 } from "@/data/shared-workspace";
 import { ACTIVE, toneOf } from "@/data/status-tone";
-
-// ─── config ─────────────────────────────────────────────────────────────────
-
-export interface MendConfig {
-  readonly url: string;
-  readonly token: string;
-  /** The name the machine recorded for this device when it paired. */
-  readonly deviceName: string | null;
-  /** ISO timestamp of the pairing claim; null for a hand-typed token. */
-  readonly pairedAt: string | null;
-}
-
-const EMPTY: MendConfig = { url: "", token: "", deviceName: null, pairedAt: null };
-
-const readString = (value: unknown): string | null =>
-  typeof value === "string" && value !== "" ? value : null;
-
-const parseConfig = (raw: string): MendConfig | null => {
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (
-      typeof value !== "object" ||
-      value === null ||
-      !("url" in value) ||
-      !("token" in value) ||
-      typeof value.url !== "string" ||
-      typeof value.token !== "string"
-    ) {
-      return null;
-    }
-    return {
-      url: value.url,
-      token: value.token,
-      deviceName: "deviceName" in value ? readString(value.deviceName) : null,
-      pairedAt: "pairedAt" in value ? readString(value.pairedAt) : null,
-    };
-  } catch {
-    return null;
-  }
-};
-
-// One store, read two ways: `loadConfig()` for the fetch path (awaits the
-// first read off disk) and `useConfig()` for the pairing boundary (re-renders
-// on save, no effect; screens read `usePairing()`). Hydrated once at import,
-// same pattern as preferences.ts.
-//
-// null is a third state, not a missing value: "the store has not answered
-// yet". The boundary renders nothing until it answers, or a phone that is
-// paired flashes the pairing panel on every cold start.
-let current: MendConfig | null = null;
-const configListeners = new Set<() => void>();
-const notifyConfig = (): void => {
-  for (const listener of configListeners) listener();
-};
-
-const settle = (config: MendConfig): void => {
-  current = config;
-  notifyConfig();
-};
-
-// ─── where the token lives ──────────────────────────────────────────────────
-//
-// The bearer token is a credential for the machine, so it sits in the OS
-// keychain (iOS Keychain, Android Keystore), readable only while the phone is
-// unlocked and never carried to another device by a backup — the machine
-// recorded THIS device, and a restore onto a new phone should pair again.
-// The web build has no keychain: it keeps the browser's storage, as before.
-// Phones that paired before this change hold the config in AsyncStorage;
-// the first read moves it across and clears the plain copy.
-
-const CONFIG_KEY = "mend-config";
-const KEYCHAIN = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY } as const;
-const keychainUsable = Platform.OS !== "web";
-
-const readStoredConfig = async (): Promise<string | null> => {
-  if (!keychainUsable) return AsyncStorage.getItem(CONFIG_KEY);
-  const secure = await SecureStore.getItemAsync(CONFIG_KEY, KEYCHAIN);
-  if (secure !== null) return secure;
-  const legacy = await AsyncStorage.getItem(CONFIG_KEY);
-  if (legacy === null) return null;
-  await SecureStore.setItemAsync(CONFIG_KEY, legacy, KEYCHAIN);
-  await AsyncStorage.removeItem(CONFIG_KEY);
-  return legacy;
-};
-
-const writeStoredConfig = (raw: string): Promise<void> =>
-  keychainUsable
-    ? SecureStore.setItemAsync(CONFIG_KEY, raw, KEYCHAIN)
-    : AsyncStorage.setItem(CONFIG_KEY, raw);
-
-const removeStoredConfig = async (): Promise<void> => {
-  // Both homes, so a pre-keychain copy cannot outlive an unpair.
-  if (keychainUsable) await SecureStore.deleteItemAsync(CONFIG_KEY, KEYCHAIN);
-  await AsyncStorage.removeItem(CONFIG_KEY);
-};
-
-const hydrated: Promise<void> = readStoredConfig()
-  .then((raw) => {
-    settle((raw === null ? null : parseConfig(raw)) ?? EMPTY);
-    return undefined;
-  })
-  .catch(() => settle(EMPTY));
-
-export const loadConfig = async (): Promise<MendConfig> => {
-  await hydrated;
-  return current ?? EMPTY;
-};
-
-export const saveConfig = async (config: MendConfig): Promise<void> => {
-  current = config;
-  notifyConfig();
-  await writeStoredConfig(JSON.stringify(config));
-};
-
-/** Forget the machine on this device. The machine keeps its own record. */
-export const clearConfig = async (): Promise<void> => {
-  current = EMPTY;
-  notifyConfig();
-  await removeStoredConfig();
-};
-
-export const isSavedConfig = (config: MendConfig): boolean => current === config;
-
-/** null until the stored config has been read — see the note on `current`. */
-export const useConfig = (): MendConfig | null =>
-  useSyncExternalStore(
-    (onChange: () => void) => {
-      configListeners.add(onChange);
-      return () => configListeners.delete(onChange);
-    },
-    () => current,
-    () => null,
-  );
 
 // ─── wire types (the server's DTOs, minimally) ──────────────────────────────
 

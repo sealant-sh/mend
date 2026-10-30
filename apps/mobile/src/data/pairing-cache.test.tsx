@@ -6,14 +6,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AskDialog, useAsk } from "@/components/ask";
 import { useAgentConversation } from "@/data/agent-conversation";
 import type { Ask } from "@/data/ask";
-import { clearConfig, loadConfig, saveConfig, useSession } from "@/data/live";
+import { useSession } from "@/data/live";
 import { HttpPairingClient, type PairingDevice } from "@/data/pairing-client";
+import { clearConfig, loadConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 
 vi.mock("@react-native-async-storage/async-storage", async () => ({
   default: (await import("@/test/memory-storage")).storage,
 }));
 vi.mock("expo-secure-store", async () => (await import("@/test/memory-storage")).secureStore);
+vi.mock("expo-notifications", () => ({}));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+}));
 
 const SESSION = "session-a";
 const A_HEADER = "rotate the payroll keys";
