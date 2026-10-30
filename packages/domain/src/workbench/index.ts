@@ -66,6 +66,7 @@ export * from "./preview-preparation.ts";
 export * from "./reference.ts";
 export * from "./repository.ts";
 export * from "./resource.ts";
+export * from "./resource-approval.ts";
 export * from "./resource-access.ts";
 export * from "./resource-settings.ts";
 export * from "./resource-status.ts";

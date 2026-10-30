@@ -827,6 +827,13 @@ export const choicesFor = (def: PolicySubject): ReadonlyArray<WorktreeChoice> =>
   return policy.kind === "choose" ? policy.choices : [];
 };
 
+/**
+ * Whether replacing `held` with `next` changes what `own` is (its scope or preset), which no
+ * definition may do while a worktree holds it as `own`, with data of its own.
+ */
+export const changesWhatOwnIs = (held: PolicySubject, next: PolicySubject): boolean =>
+  held.scope !== next.scope || held.preset !== next.preset;
+
 /** A worktree's choice at its first launch; null for a worktree resource. */
 export const defaultChoiceFor = (def: PolicySubject): WorktreeChoice | null => {
   const policy = scopePolicyFor(def);

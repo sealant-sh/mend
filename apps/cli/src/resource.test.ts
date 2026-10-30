@@ -30,6 +30,15 @@ const spec = (name: string, image: string) => ({
 });
 
 const pageOf = Schema.decodeUnknownSync(ResourcesPage);
+/** The page's offers to a reader who manages nothing: the CLI builds its own requests. */
+const NOT_A_MANAGER = {
+  project: {
+    kind: "denied",
+    message:
+      "approving a resource for the project is a manager's: the project's creator or an organization owner",
+  },
+  worktree: null,
+};
 
 const page = pageOf({
   settings: [
@@ -37,7 +46,11 @@ const page = pageOf({
       id: "rdef_1",
       digest,
       spec: spec("db", "postgres:17"),
+      approvals: { project: { by: "maria" }, worktree: null },
+      approve: { project: { kind: "approved" }, worktree: null },
+      choice: null,
       canRemove: true,
+      canChoose: false,
       statusLine: "@db · postgres 17 · project · approved by Maria · not started",
     },
   ],
@@ -48,6 +61,9 @@ const page = pageOf({
       spec: spec("mail", "axllent/mailpit:v1.21"),
       proposedBy: "tom",
       canRemove: true,
+      mine: true,
+      approvals: { project: null, worktree: null },
+      approve: NOT_A_MANAGER,
       statusLine: "@mail · mailpit · project · proposed by Tom · waiting for approval",
     },
     {
@@ -56,6 +72,9 @@ const page = pageOf({
       spec: spec("mail", "axllent/mailpit:v1.22"),
       proposedBy: "ana",
       canRemove: false,
+      mine: false,
+      approvals: { project: null, worktree: null },
+      approve: NOT_A_MANAGER,
       statusLine: "@mail · mailpit · project · proposed by Ana · waiting for approval",
     },
   ],
@@ -67,6 +86,8 @@ const page = pageOf({
       {
         digest,
         spec: spec("queue", "rabbitmq:4-management"),
+        approvals: { project: null, worktree: null },
+        approve: NOT_A_MANAGER,
         statusLine: "@queue · rabbitmq 4 · project · proposed in mend.toml · waiting for approval",
       },
     ],
@@ -184,6 +205,9 @@ describe("mend resource remove", () => {
         spec: spec("db", "postgres:18"),
         proposedBy: "maria",
         canRemove: true,
+        mine: true,
+        approvals: { project: null, worktree: null },
+        approve: NOT_A_MANAGER,
         statusLine: "@db · postgres 18 · project · proposed by Maria · waiting for approval",
       },
     ],
@@ -430,6 +454,8 @@ describe("mend resource approve", () => {
           {
             digest: "b".repeat(64),
             spec: { ...table, scope },
+            approvals: { project: null, worktree: null },
+            approve: NOT_A_MANAGER,
             statusLine: "@mail · mailpit · worktree · proposed in mend.toml · waiting for approval",
           },
         ],

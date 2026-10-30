@@ -104,10 +104,22 @@ const reads = Layer.mock(WorktreeReads, {
 const dbLayer = MendDBLive.pipe(
   Layer.provideMerge(PgClient.layer({ url: Redacted.make(scratchUrl.toString()) })),
 );
+/** Each worktree whose sessions were listed, which is how a change owner is looked up. */
+const ownerLookups: Array<string> = [];
+const countedSessions = Layer.effect(
+  SessionsRepo,
+  Effect.map(SessionsRepo, (live) => ({
+    ...live,
+    listForWorktree: (worktreeId: WorktreeId) => {
+      ownerLookups.push(worktreeId);
+      return live.listForWorktree(worktreeId);
+    },
+  })),
+).pipe(Layer.provide(SessionsRepoLive));
 const repos = Layer.mergeAll(
   ResourcesRepoLive,
   ProjectsRepoLive,
-  SessionsRepoLive,
+  countedSessions,
   UsersRepoLive,
   WorktreesRepoLive,
 ).pipe(Layer.provideMerge(dbLayer));
@@ -219,10 +231,13 @@ describe.skipIf(postgres.skip)("a session's read of its project's resources, end
 
   it("reads its project's status lines and its own worktree's file, and nothing a spec holds", async () => {
     asked.length = 0;
+    ownerLookups.length = 0;
     const status = await runtime.runPromise(
       Effect.flatMap(serve, (read) => read(SESSION, { kind: "read" }, clock)),
     );
     expect(asked).toEqual([`${WORKTREE}:mend.toml`]);
+    // A workspace's read carries no flags, so it looks up no change owner.
+    expect(ownerLookups).toEqual([]);
     expect(status).toEqual({
       statusLines: [
         "@queue · rabbitmq 4 · project · waiting for approval",

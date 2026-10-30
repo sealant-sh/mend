@@ -1,8 +1,11 @@
 import {
-  approvalScopeRefusal,
+  type Adopted,
+  type ApprovalTarget,
+  type DefinitionWithApproval,
   type DefinitionVersion,
   ProjectsRepo,
   type ResourceApproval,
+  type ResourceApprovalsByTarget,
   ResourceDefinitionNotFoundError,
   ResourceDefinitionRefusedError,
   type ResourceDefinitionStaleError,
@@ -20,6 +23,8 @@ import type {
   WorktreeId,
 } from "@mend/domain";
 import {
+  choicesFor,
+  imageDigestOf,
   PRESET_VERSION_RULE,
   presetDefinition,
   withPresetCommand,
@@ -27,9 +32,10 @@ import {
   type ProjectTenancy,
   type ResourceAct,
   resourceActRefusal,
-  resourceDefinitionRefusals,
   type ResourceActor,
   type ResourceApprovalFor,
+  type ResourceApprovalOffer,
+  resourceApprovalRefusals,
   type ResourceApprovalRequest,
   type ResourceApprovalSource,
   type ResourceApproved,
@@ -37,11 +43,15 @@ import {
   type ResourceDeclaredApproval,
   type ResourceDefinitionInput,
   type ResourceFileRead,
+  type ResourceApprovalOffers,
+  type ResourceApprovals,
   type ResourceProposalEntry,
   type ResourceProposalInput,
   resourceProposalNotices,
   ResourceRefusal,
   type ResourceSelectionEntry,
+  type ResourceSettingEntry,
+  type ResourceSettingsState,
   type ResourcesPage,
   type ResourceSpecDigest,
   type ResourcesStatus,
@@ -251,6 +261,133 @@ const statusOf = (page: ResourcesPage): ResourcesStatus => {
 const allows = (project: ResourceProject, actor: ResourceActor, act: ResourceAct) =>
   resourceActRefusal(project, actor, act) === null;
 
+/**
+ * Who reads a page, and the worktree it is read for with that worktree's change owner: what every
+ * flag on it is decided for, by the same `resourceActRefusal` the acts pass.
+ */
+interface PageReader {
+  readonly project: ResourceProject;
+  readonly actor: ResourceActor;
+  readonly worktree: { readonly id: WorktreeId; readonly changeOwner: string | null } | null;
+}
+
+/**
+ * What settings hold, as one read listed them: each definition by name, with its approvals, and
+ * the state the approval rules decide against (`resourceApprovalRefusals`).
+ */
+interface SettingsRead {
+  readonly byName: ReadonlyMap<string, DefinitionWithApproval>;
+  readonly state: ResourceSettingsState;
+}
+
+/** `owning`: how many worktrees hold each definition as `own`, which a new scope or preset would strand. */
+const settingsRead = (
+  projectId: ProjectId,
+  listed: ReadonlyArray<DefinitionWithApproval>,
+  owning: ReadonlyMap<ResourceDefinitionId, number>,
+): SettingsRead => ({
+  byName: new Map(listed.map((each) => [each.definition.spec.name, each])),
+  state: {
+    projectId,
+    definitions: listed.map(({ definition, approvals }) => ({
+      spec: definition.spec,
+      digest: definition.specDigest,
+      projectImage: approvals.project === null ? null : imageDigestOf(approvals.project.spec.image),
+      owning: owning.get(definition.id) ?? 0,
+    })),
+  },
+});
+
+const versionOf = ({ definition }: DefinitionWithApproval): DefinitionVersion => ({
+  id: definition.id,
+  digest: definition.specDigest,
+});
+
+/** Whether settings hold `spec` itself under its name. */
+const sameAsSettings = (
+  settings: SettingsRead,
+  spec: ResourceDefinitionInput,
+  digest: ResourceSpecDigest,
+) => settings.byName.get(spec.name)?.definition.specDigest === digest;
+
+const NO_APPROVALS: ResourceApprovalsByTarget = { project: null, worktree: null };
+
+const listedApprovals = (approvals: ResourceApprovalsByTarget): ResourceApprovals => ({
+  project: approvals.project === null ? null : { by: approvals.project.approvedBy },
+  worktree: approvals.worktree === null ? null : { by: approvals.worktree.approvedBy },
+});
+
+/**
+ * One listed item's approvals, and for each target the request its reader may post or why there
+ * is none, decided in the approve route's order: whose act it is (`resourceActRefusal`), then the
+ * rules (`resourceApprovalRefusals`), then an approval already made. The worktree's is the read
+ * worktree's, when the resource is a worktree's (decision G4). An item settings hold with this
+ * exact spec shares their approvals; adopting one over a different spec replaces it. `source`
+ * names the item, given what settings held under its name when it was listed.
+ */
+const approvalsOf = (
+  reader: PageReader,
+  settings: SettingsRead,
+  spec: ResourceDefinitionInput,
+  digest: ResourceSpecDigest,
+  source: (settings: DefinitionVersion | null) => ResourceApprovalSource,
+): { readonly approvals: ResourceApprovals; readonly approve: ResourceApprovalOffers } => {
+  const held = settings.byName.get(spec.name) ?? null;
+  const same = held?.definition.specDigest === digest;
+  const approvals = same ? held.approvals : NO_APPROVALS;
+  const offer = (
+    worktreeId: WorktreeId | null,
+    approvalFor: ResourceApprovalFor,
+    approved: ResourceApproval | null,
+  ): ResourceApprovalOffer => {
+    const denied = resourceActRefusal(reader.project, reader.actor, {
+      kind: "approve",
+      for: approvalFor,
+      replaces: held !== null && !same,
+    });
+    if (denied !== null) return { kind: "denied", message: denied };
+    const refusals = resourceApprovalRefusals(
+      settings.state,
+      spec,
+      // The route answers 404 for a worktree that is not the project's before any page is read.
+      worktreeId === null
+        ? { kind: "project" }
+        : { kind: "worktree", projectId: reader.project.id },
+    );
+    if (refusals.length > 0) return { kind: "rejected", refusals };
+    if (approved !== null) return { kind: "approved" };
+    return {
+      kind: "ready",
+      request: { source: source(held === null ? null : versionOf(held)), worktreeId },
+    };
+  };
+  const { worktree } = reader;
+  return {
+    approvals: listedApprovals(approvals),
+    approve: {
+      project: offer(null, { kind: "project" }, approvals.project),
+      worktree:
+        worktree === null || spec.scope !== "worktree"
+          ? null
+          : offer(
+              worktree.id,
+              { kind: "worktree", changeOwner: worktree.changeOwner },
+              approvals.worktree,
+            ),
+    },
+  };
+};
+
+/** Whether the reader may choose how the read worktree uses `spec`; a worktree resource has no choice. */
+const mayChoose = (reader: PageReader, spec: ResourceDefinitionInput) =>
+  reader.worktree !== null &&
+  choicesFor(spec).length > 0 &&
+  allows(reader.project, reader.actor, { kind: "use", changeOwner: reader.worktree.changeOwner });
+
+/** The approval a settings line names: the read worktree's own, else the project's. */
+const lineApproval = (approvals: ResourceApprovalsByTarget) =>
+  approvals.worktree ?? approvals.project;
+
 const isPresetVersion = Schema.is(PresetVersion);
 
 /** A preset proposal's definition, refused on `version` when the tag names no major. */
@@ -277,6 +414,12 @@ const declaredApproval = (
         by: nameOf(approval.approvedBy),
         for: approval.worktreeId === null ? "project" : "worktree",
       };
+
+/** What an approval pins, and the registry or mirror that answered for it (none for a worktree). */
+interface Pin {
+  readonly target: ApprovalTarget;
+  readonly resolvedBy: string | null;
+}
 
 const changed = (name: string, what: string) =>
   new ResourceStaleReadError({
@@ -313,9 +456,17 @@ export const ResourcesLive: Layer.Layer<
         }),
       );
 
+    const changeOwner = (worktreeId: WorktreeId) => worktrees.changeOwnerOf(worktreeId);
+
+    /** Settings as they are now, listed for `worktreeId` (or the project alone, for null). */
+    const settingsNow = (projectId: ProjectId, worktreeId: WorktreeId | null) =>
+      Effect.all([repo.listWithApprovals(projectId, worktreeId), repo.ownSelections(projectId)], {
+        concurrency: "unbounded",
+      }).pipe(Effect.map(([listed, owning]) => settingsRead(projectId, listed, owning)));
+
     const proposalEntry = (
-      project: ResourceProject,
-      actor: ResourceActor,
+      reader: PageReader,
+      settings: SettingsRead,
       proposal: {
         readonly id: ResourceProposalId;
         readonly spec: ResourceDefinitionInput;
@@ -323,28 +474,73 @@ export const ResourcesLive: Layer.Layer<
         readonly proposedBy: string;
       },
       by: string,
-      sameAsSettings: boolean,
       clock: ReaderClock,
     ): ResourceProposalEntry => ({
       id: proposal.id,
       digest: proposal.specDigest,
       spec: proposal.spec,
       proposedBy: proposal.proposedBy,
-      canRemove: allows(project, actor, {
+      mine: reader.actor.kind === "person" && reader.actor.viewer.userId === proposal.proposedBy,
+      canRemove: allows(reader.project, reader.actor, {
         kind: "remove-proposal",
         proposedBy: proposal.proposedBy,
       }),
-      statusLine: line(proposal.spec, { kind: "proposal", by, sameAsSettings }, clock),
+      ...approvalsOf(reader, settings, proposal.spec, proposal.specDigest, (held) => ({
+        kind: "proposal",
+        id: proposal.id,
+        digest: proposal.specDigest,
+        settings: held,
+      })),
+      statusLine: line(
+        proposal.spec,
+        {
+          kind: "proposal",
+          by,
+          sameAsSettings: sameAsSettings(settings, proposal.spec, proposal.specDigest),
+        },
+        clock,
+      ),
     });
 
+    const settingEntry = (
+      reader: PageReader,
+      settings: SettingsRead,
+      listed: DefinitionWithApproval,
+      nameOf: (id: string) => string,
+      clock: ReaderClock,
+    ): ResourceSettingEntry => {
+      const { definition, approvals, choice } = listed;
+      return {
+        id: definition.id,
+        digest: definition.specDigest,
+        spec: definition.spec,
+        ...approvalsOf(reader, settings, definition.spec, definition.specDigest, () => ({
+          kind: "settings",
+          ...versionOf(listed),
+        })),
+        choice,
+        canRemove: allows(reader.project, reader.actor, { kind: "remove-definition" }),
+        canChoose: mayChoose(reader, definition.spec),
+        statusLine: line(
+          definition.spec,
+          {
+            kind: "settings",
+            approval: declaredApproval(lineApproval(approvals), nameOf),
+            ...(choice === null ? {} : { choice }),
+          },
+          clock,
+        ),
+      };
+    };
+
     const readFile = Effect.fn("Resources.readFile")(function* (
-      projectId: ProjectId,
+      reader: PageReader,
+      settings: SettingsRead,
       worktreeId: WorktreeId,
-      sameAsSettings: (spec: ResourceDefinitionInput, digest: ResourceSpecDigest) => boolean,
       clock: ReaderClock,
     ) {
       const read = yield* reads
-        .readFile(projectId, worktreeId, MEND_TOML, null, MEND_TOML_MAX_BYTES)
+        .readFile(reader.project.id, worktreeId, MEND_TOML, null, MEND_TOML_MAX_BYTES)
         .pipe(Effect.result);
       if (read._tag === "Failure") {
         return {
@@ -382,9 +578,16 @@ export const ResourcesLive: Layer.Layer<
           return {
             digest,
             spec,
+            ...approvalsOf(reader, settings, spec, digest, (held) => ({
+              kind: "file",
+              worktreeId,
+              name: spec.name,
+              digest,
+              settings: held,
+            })),
             statusLine: line(
               spec,
-              { kind: "file", sameAsSettings: sameAsSettings(spec, digest) },
+              { kind: "file", sameAsSettings: sameAsSettings(settings, spec, digest) },
               clock,
             ),
           };
@@ -401,47 +604,44 @@ export const ResourcesLive: Layer.Layer<
       clock: ReaderClock,
     ) {
       yield* decide(project, actor, { kind: "read" });
-      const definitions = yield* repo.listWithApprovals(project.id, worktreeId);
-      const proposals = yield* repo.proposals(project.id);
+      // A workspace's flags are never read (`statusOf`), so it costs no change-owner query.
+      const [owner, definitions, proposals, owning] = yield* Effect.all(
+        [
+          worktreeId === null || actor.kind === "workspace"
+            ? Effect.succeed(null)
+            : changeOwner(worktreeId),
+          repo.listWithApprovals(project.id, worktreeId),
+          repo.proposals(project.id),
+          actor.kind === "workspace"
+            ? Effect.succeed(new Map<ResourceDefinitionId, number>())
+            : repo.ownSelections(project.id),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const reader: PageReader = {
+        project,
+        actor,
+        worktree: worktreeId === null ? null : { id: worktreeId, changeOwner: owner },
+      };
       const nameOf = yield* namesOf([
-        ...definitions.flatMap(({ approval }) => (approval === null ? [] : [approval.approvedBy])),
+        ...definitions.flatMap(({ approvals }) =>
+          [approvals.project, approvals.worktree].flatMap((each) =>
+            each === null ? [] : [each.approvedBy],
+          ),
+        ),
         ...proposals.map((proposal) => proposal.proposedBy),
       ]);
-      const held = new Map(
-        definitions.map(({ definition }) => [definition.spec.name, definition.specDigest]),
-      );
-      const sameAsSettings = (spec: ResourceDefinitionInput, digest: ResourceSpecDigest) =>
-        held.get(spec.name) === digest;
-      const settings = definitions.map(({ definition, approval, choice }) => ({
-        id: definition.id,
-        digest: definition.specDigest,
-        spec: definition.spec,
-        canRemove: allows(project, actor, { kind: "remove-definition" }),
-        statusLine: line(
-          definition.spec,
-          {
-            kind: "settings",
-            approval: declaredApproval(approval, nameOf),
-            ...(choice === null ? {} : { choice }),
-          },
-          clock,
-        ),
-      }));
+      const settings = settingsRead(project.id, definitions, owning);
       const file: ResourceFileRead =
         worktreeId === null
           ? { kind: "not-selected" }
-          : yield* readFile(project.id, worktreeId, sameAsSettings, clock);
+          : yield* readFile(reader, settings, worktreeId, clock);
       return {
-        settings,
+        settings: definitions.map((listed) =>
+          settingEntry(reader, settings, listed, nameOf, clock),
+        ),
         proposals: proposals.map((proposal) =>
-          proposalEntry(
-            project,
-            actor,
-            proposal,
-            nameOf(proposal.proposedBy),
-            sameAsSettings(proposal.spec, proposal.specDigest),
-            clock,
-          ),
+          proposalEntry(reader, settings, proposal, nameOf(proposal.proposedBy), clock),
         ),
         file,
         canPropose: allows(project, actor, { kind: "propose" }),
@@ -471,14 +671,13 @@ export const ResourcesLive: Layer.Layer<
       const spec =
         input.kind === "preset" ? yield* presetSpec(input) : withPresetCommand(input.spec);
       const proposal = yield* repo.propose(project.id, spec, viewer.userId);
-      const held = yield* repo.byName(project.id, spec.name);
+      const settings = yield* settingsNow(project.id, null);
       const nameOf = yield* namesOf([proposal.proposedBy]);
       return proposalEntry(
-        project,
-        actor,
+        { project, actor, worktree: null },
+        settings,
         proposal,
         nameOf(proposal.proposedBy),
-        held?.specDigest === proposal.specDigest,
         clock,
       );
     });
@@ -512,14 +711,13 @@ export const ResourcesLive: Layer.Layer<
       return { statusLine: `@${removed.spec.name} · definition removed` };
     });
 
-    const changeOwner = (worktreeId: WorktreeId) => worktrees.changeOwnerOf(worktreeId);
-
     /** The spec `source` names, while it is still what its digest says was read. */
     const sourceSpec = Effect.fn("Resources.sourceSpec")(function* (
-      project: ResourceProject,
+      reader: PageReader,
       source: ResourceApprovalSource,
       clock: ReaderClock,
     ) {
+      const { project } = reader;
       switch (source.kind) {
         case "settings": {
           const held = (yield* repo.listForProject(project.id)).find(
@@ -540,7 +738,12 @@ export const ResourcesLive: Layer.Layer<
           return proposal.spec;
         }
         case "file": {
-          const file = yield* readFile(project.id, source.worktreeId, () => false, clock);
+          const file = yield* readFile(
+            reader,
+            settingsRead(project.id, [], new Map()),
+            source.worktreeId,
+            clock,
+          );
           const table =
             file.kind === "read"
               ? file.proposals.find((each) => each.spec.name === source.name)
@@ -551,30 +754,29 @@ export const ResourcesLive: Layer.Layer<
       }
     });
 
-    /** The approval's answer: the definition settings hold now, and the image as it runs. */
+    /**
+     * The approval's answer: the definition settings hold now, listed for the worktree it was
+     * approved for (none for a project approval), and the image as it runs.
+     */
     const approved = Effect.fn("Resources.approved")(function* (
-      project: ResourceProject,
-      viewer: Viewer,
-      definition: DefinitionVersion & { readonly spec: ResourceDefinitionInput },
-      approval: ResourceApproval,
+      reader: PageReader,
+      adopted: Pick<Adopted, "definition" | "approval">,
       resolvedBy: string | null,
       clock: ReaderClock,
     ) {
-      const nameOf = yield* namesOf([approval.approvedBy]);
+      const { id } = adopted.definition;
+      const settings = yield* settingsNow(reader.project.id, reader.worktree?.id ?? null);
+      const listed = [...settings.byName.values()].find((each) => each.definition.id === id);
+      if (listed === undefined) return yield* new ResourceDefinitionNotFoundError({ id });
+      const { approvals } = listed;
+      const nameOf = yield* namesOf(
+        [approvals.project, approvals.worktree].flatMap((each) =>
+          each === null ? [] : [each.approvedBy],
+        ),
+      );
       return {
-        definition: {
-          ...definition,
-          canRemove: allows(project, { kind: "person", viewer }, { kind: "remove-definition" }),
-          statusLine: line(
-            definition.spec,
-            {
-              kind: "settings",
-              approval: declaredApproval(approval, nameOf),
-            },
-            clock,
-          ),
-        },
-        image: approval.spec.image,
+        definition: settingEntry(reader, settings, listed, nameOf, clock),
+        image: adopted.approval.spec.image,
         resolvedBy,
       } satisfies ResourceApproved;
     });
@@ -586,10 +788,18 @@ export const ResourcesLive: Layer.Layer<
       clock: ReaderClock,
     ) {
       const { source, worktreeId } = request;
-      const target: ResourceApprovalFor =
-        worktreeId === null
+      const reader: PageReader = {
+        project,
+        actor: { kind: "person", viewer },
+        worktree:
+          worktreeId === null
+            ? null
+            : { id: worktreeId, changeOwner: yield* changeOwner(worktreeId) },
+      };
+      const approvalFor: ResourceApprovalFor =
+        reader.worktree === null
           ? { kind: "project" }
-          : { kind: "worktree", changeOwner: yield* changeOwner(worktreeId) };
+          : { kind: "worktree", changeOwner: reader.worktree.changeOwner };
       const settings: DefinitionVersion | null =
         source.kind === "settings" ? { id: source.id, digest: source.digest } : source.settings;
       yield* decide(
@@ -597,14 +807,18 @@ export const ResourcesLive: Layer.Layer<
         { kind: "person", viewer },
         {
           kind: "approve",
-          for: target,
+          for: approvalFor,
           replaces: settings !== null && settings.digest !== source.digest,
         },
       );
-      const spec = yield* sourceSpec(project, source, clock);
-      // Refusals that need no registry come before one is asked.
-      const scope = approvalScopeRefusal(spec, worktreeId);
-      const refusals = [...(scope === null ? [] : [scope]), ...resourceDefinitionRefusals(spec)];
+      const spec = yield* sourceSpec(reader, source, clock);
+      // Every refusal that needs no registry, from settings as the page reads them, comes before
+      // one is asked; the repo decides them again under its locks.
+      const refusals = resourceApprovalRefusals(
+        (yield* settingsNow(project.id, null)).state,
+        spec,
+        worktreeId === null ? { kind: "project" } : { kind: "worktree", projectId: project.id },
+      );
       if (refusals.length > 0) {
         return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
       }
@@ -614,42 +828,44 @@ export const ResourcesLive: Layer.Layer<
       const found = yield* repo
         .approvalAsRead(lookup)
         .pipe(Effect.catchTag("ResourceSettingsStaleError", settingsChanged));
-      if (found !== null) {
-        const { definition, approval } = found;
-        const version = { id: definition.id, digest: definition.specDigest, spec: definition.spec };
-        return yield* approved(project, viewer, version, approval, null, clock);
-      }
-      const image = yield* images.resolve(spec.image).pipe(
-        Effect.mapError(
-          (error: ImageResolutionError) =>
-            new ResourceImageRefusedError({
-              name: spec.name,
-              refusal: { key: "image", message: imageRefusalClause(error) },
-              reason: error.reason,
-              message: imageRefusalLine(spec.name, error),
-            }),
-        ),
-      );
+      if (found !== null) return yield* approved(reader, found, null, clock);
+      // A worktree runs the image the project's approval of this spec pins (G4), so no registry
+      // is asked for it, and a tag that moved since changes nothing.
+      const pin: Pin =
+        worktreeId !== null
+          ? { target: { kind: "worktree", worktreeId }, resolvedBy: null }
+          : yield* images.resolve(spec.image).pipe(
+              Effect.mapError(
+                (error: ImageResolutionError) =>
+                  new ResourceImageRefusedError({
+                    name: spec.name,
+                    refusal: { key: "image", message: imageRefusalClause(error) },
+                    reason: error.reason,
+                    message: imageRefusalLine(spec.name, error),
+                  }),
+              ),
+              Effect.map(
+                (image): Pin => ({
+                  target: { kind: "project", imageDigest: image.digest },
+                  resolvedBy: image.resolvedBy,
+                }),
+              ),
+            );
       const adopted = yield* repo
-        .adoptAndApprove({ ...lookup, imageDigest: image.digest, approvedBy: viewer.userId })
+        .adoptAndApprove({
+          projectId: project.id,
+          spec,
+          settings,
+          target: pin.target,
+          approvedBy: viewer.userId,
+        })
         .pipe(
           Effect.catchTags({
             ResourceSettingsStaleError: settingsChanged,
             ResourceApprovalStaleError: () => Effect.fail(changed(spec.name, "the definition")),
           }),
         );
-      return yield* approved(
-        project,
-        viewer,
-        {
-          id: adopted.definition.id,
-          digest: adopted.definition.specDigest,
-          spec: adopted.definition.spec,
-        },
-        adopted.approval,
-        adopted.made ? image.resolvedBy : null,
-        clock,
-      );
+      return yield* approved(reader, adopted, adopted.made ? pin.resolvedBy : null, clock);
     });
 
     const use = Effect.fn("Resources.use")(function* (
@@ -677,7 +893,7 @@ export const ResourcesLive: Layer.Layer<
       );
       if (listed === undefined)
         return yield* new ResourceDefinitionNotFoundError({ id: definitionId });
-      const { approval } = listed;
+      const approval = lineApproval(listed.approvals);
       const nameOf = yield* namesOf(approval === null ? [] : [approval.approvedBy]);
       return {
         definitionId,
