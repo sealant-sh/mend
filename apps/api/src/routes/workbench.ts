@@ -604,12 +604,16 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("createNew", ({ payload }) =>
       Effect.gen(function* () {
-        if (!PROJECT_NAME_PATTERN.test(payload.name))
-          return yield* new StoreFailure({
-            message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
-          });
+        const name = yield* Schema.decodeUnknownEffect(ProjectName)(payload.name).pipe(
+          Effect.mapError(
+            () =>
+              new StoreFailure({
+                message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
+              }),
+          ),
+        );
         return yield* (yield* ProjectCreation)
-          .createNew(ProjectName.make(payload.name))
+          .createNew(name)
           .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
       }),
     )
