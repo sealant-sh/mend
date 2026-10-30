@@ -39,9 +39,12 @@ HttpApi.reflect(MendApi, {
   },
 });
 
-const operationOf = (request: HttpClientRequest.HttpClientRequest): string =>
-  operations.find(request.method, URL.parse(request.url)?.pathname ?? "")?.handler ??
-  "unknown operation";
+const operationOf = (request: HttpClientRequest.HttpClientRequest, apiUrl: string): string => {
+  const base = URL.parse(apiUrl)?.pathname.replace(/\/+$/, "") ?? "";
+  const path = URL.parse(request.url)?.pathname ?? "";
+  const routed = base !== "" && path.startsWith(`${base}/`) ? path.slice(base.length) : path;
+  return operations.find(request.method, routed)?.handler ?? "unknown operation";
+};
 
 const hasTag = (error: unknown): error is Refusal =>
   typeof error === "object" && error !== null && "_tag" in error && typeof error._tag === "string";
@@ -83,7 +86,7 @@ const removalOf = (refusal: Refusal): unknown =>
  * is contract drift and stays a loud 500. Anything else is logged server-side and crosses as a
  * generic failure.
  */
-export const toTRPCError = (error: unknown): TRPCError => {
+export const toTRPCError = (error: unknown, apiUrl = ""): TRPCError => {
   if (error instanceof TRPCError) return error;
   const message = error instanceof Error ? error.message : String(error);
   if (hasTag(error)) {
@@ -99,7 +102,7 @@ export const toTRPCError = (error: unknown): TRPCError => {
   }
   if (HttpClientError.isHttpClientError(error)) {
     const reason = error.reason._tag;
-    const operation = operationOf(error.request);
+    const operation = operationOf(error.request, apiUrl);
     if (reason === "TransportError" || reason === "InvalidUrlError" || reason === "EncodeError") {
       console.warn(`[trpc] api unreachable: ${operation} ${reason}`);
       return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: API_UNREACHABLE });

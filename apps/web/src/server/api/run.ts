@@ -74,5 +74,5 @@ export const run = async <A, E>(
     return exit.value === undefined ? exit.value : structuredClone(exit.value);
   }
   const failure = Cause.findErrorOption(exit.cause);
-  throw toTRPCError(Option.isSome(failure) ? failure.value : Cause.squash(exit.cause));
+  throw toTRPCError(Option.isSome(failure) ? failure.value : Cause.squash(exit.cause), ctx.apiUrl);
 };
