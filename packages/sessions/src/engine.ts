@@ -73,6 +73,7 @@ import {
   SessionProcessId,
   type ProjectId,
   type WorkspaceImage,
+  workspaceImagePackages,
   WorktreeId,
 } from "@mend/domain";
 import type {
@@ -12682,7 +12683,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                           })),
                         },
                       }),
-                  packages: workspaceImage.packages,
+                  packages: workspaceImagePackages(workspaceImage),
                   services: workspaceImage.services,
                   env,
                   ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),

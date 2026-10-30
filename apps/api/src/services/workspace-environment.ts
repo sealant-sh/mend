@@ -4,8 +4,8 @@ import {
   WorkspacePackageResolutionView,
 } from "@mend/api-contracts";
 import { SettingsRepo } from "@mend/db";
-import { MendSettings } from "@mend/domain";
-import type { WorkspaceImage, WorkspaceImageOs } from "@mend/domain";
+import { MendSettings, screenRefusal, workspaceImagePackages } from "@mend/domain";
+import type { ImageArchitecture, WorkspaceImage, WorkspaceImageOs } from "@mend/domain";
 import { SealantClient } from "@mend/sealant";
 import type { WorkspacePackageResolution } from "@mend/sealant";
 import { Effect } from "effect";
@@ -15,7 +15,15 @@ export interface ResolvedWorkspaceEnvironment {
   readonly resolutions: ReadonlyArray<WorkspacePackageResolution>;
 }
 
+/**
+ * The machine a workspace image builds for, taken as the machine Mend's server runs on: the SDK
+ * reports no executor's architecture.
+ */
+export const serverImageArchitecture: ImageArchitecture =
+  process.arch === "arm64" ? "aarch64" : "x86_64";
+
 interface WorkspaceEnvironmentPersistence<E> {
+  readonly architecture: ImageArchitecture;
   readonly getSettings: () => Effect.Effect<MendSettings, E>;
   readonly modifySettings: (
     update: (current: MendSettings) => MendSettings,
@@ -26,15 +34,21 @@ interface WorkspaceEnvironmentPersistence<E> {
   ) => Effect.Effect<WorkspacePackageResolution, E>;
 }
 
-/** Resolve the complete package draft for one OS; no partial environment is ever accepted. */
+/**
+ * Resolve the complete package draft for one OS, the screen's packages with it when the image has
+ * a screen; no partial environment is ever accepted.
+ */
 export const resolveWorkspaceEnvironment = <E>(
   workspaceImage: WorkspaceImage,
+  architecture: ImageArchitecture,
   resolvePackage: (
     packageName: string,
     os: WorkspaceImageOs,
   ) => Effect.Effect<WorkspacePackageResolution, E>,
-): Effect.Effect<ResolvedWorkspaceEnvironment, E> =>
+): Effect.Effect<ResolvedWorkspaceEnvironment, E | SettingsFailure> =>
   Effect.gen(function* () {
+    const refusal = screenRefusal(workspaceImage, architecture);
+    if (refusal !== null) return yield* new SettingsFailure({ message: refusal });
     // Custom bases have no managed package catalog: names pass through verbatim to whatever
     // package manager the base itself carries (the platform fails the build readable when it
     // has none). There is nothing to resolve, so the draft saves as-is.
@@ -42,7 +56,7 @@ export const resolveWorkspaceEnvironment = <E>(
       return { workspaceImage, resolutions: [] };
     }
     const resolved = yield* Effect.forEach(
-      workspaceImage.packages,
+      workspaceImagePackages(workspaceImage),
       (packageName) => resolvePackage(packageName, workspaceImage.os),
       { concurrency: 4 },
     );
@@ -60,9 +74,10 @@ export const resolveWorkspaceEnvironment = <E>(
     );
     if (!canSave) return { workspaceImage: null, resolutions };
 
+    const ownResolutions = resolutions.slice(0, workspaceImage.packages.length);
     const packages = [
       ...new Set(
-        resolutions.map(
+        ownResolutions.map(
           (resolution) => resolution.canonicalId ?? resolution.packageName ?? resolution.normalized,
         ),
       ),
@@ -80,7 +95,11 @@ export const resolveWorkspaceEnvironment = <E>(
 export const resolveWorkspaceEnvironmentWithSealant = (workspaceImage: WorkspaceImage) =>
   Effect.gen(function* () {
     const sealant = yield* SealantClient;
-    return yield* resolveWorkspaceEnvironment(workspaceImage, sealant.resolveWorkspacePackage);
+    return yield* resolveWorkspaceEnvironment(
+      workspaceImage,
+      serverImageArchitecture,
+      sealant.resolveWorkspacePackage,
+    );
   }).pipe(
     Effect.catchTag("SealantPlatformError", (error) =>
       Effect.fail(new SettingsFailure({ message: error.message })),
@@ -114,7 +133,11 @@ export const saveResolvedWorkspaceEnvironmentWith = <E>(
   persistence: WorkspaceEnvironmentPersistence<E>,
 ) =>
   Effect.gen(function* () {
-    const resolved = yield* resolveWorkspaceEnvironment(workspaceImage, persistence.resolvePackage);
+    const resolved = yield* resolveWorkspaceEnvironment(
+      workspaceImage,
+      persistence.architecture,
+      persistence.resolvePackage,
+    );
     const resolutions = resolved.resolutions.map(
       (resolution) => new WorkspacePackageResolutionView(resolution),
     );
@@ -141,6 +164,7 @@ export const saveResolvedWorkspaceEnvironment = (
     const settings = yield* SettingsRepo;
     const sealant = yield* SealantClient;
     return yield* saveResolvedWorkspaceEnvironmentWith(workspaceImage, merge, {
+      architecture: serverImageArchitecture,
       getSettings: settings.get,
       modifySettings: settings.modify,
       resolvePackage: sealant.resolveWorkspacePackage,

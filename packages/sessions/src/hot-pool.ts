@@ -63,6 +63,14 @@ export interface HotFingerprintInputs {
 
 const encodeWorkspaceImage = Schema.encodeSync(WorkspaceImage);
 
+/** An image without a screen hashes as before the switch existed, so its standbys stay claimable. */
+const fingerprintedImage = (image: WorkspaceImage) =>
+  Object.fromEntries(
+    Object.entries(encodeWorkspaceImage(image)).filter(
+      ([key, value]) => key !== "screen" || value === true,
+    ),
+  );
+
 const byName = <T extends { readonly name: string }>(items: ReadonlyArray<T>): ReadonlyArray<T> =>
   items.toSorted((a, b) => a.name.localeCompare(b.name));
 
@@ -84,7 +92,7 @@ export const hotFingerprint = (
     // v1 relocates every harness directory into sealantd's configured capture root before launch;
     // v2 relocates pi's `.pi` too (a standby made before it would leave pi's state ephemeral).
     harnessHomeLayout: "capture-root-v2",
-    workspaceImage: encodeWorkspaceImage(inputs.workspaceImage),
+    workspaceImage: fingerprintedImage(inputs.workspaceImage),
     // A person standby applies no dotfiles at boot: its owner's are resolved at claim, so a
     // dotfiles change does not drain it (review of mend#596, N7). A shared standby's keys keep
     // their order, so its hash is what it was.

@@ -50,6 +50,7 @@ const fedora = {
   packages: ["jq", "ripgrep"],
   shell: "zsh" as const,
   services: { docker: false },
+  screen: false,
 };
 
 describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {

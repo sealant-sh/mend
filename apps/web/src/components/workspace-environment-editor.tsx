@@ -11,6 +11,7 @@ import {
   OS_LABELS,
   parsePackageDraft,
   resolutionIssue,
+  SCREEN_SWITCH_COPY,
   workspaceEnvironmentFormReducer,
   workspaceImageFromForm,
   workspaceImagesEqual,
@@ -62,6 +63,7 @@ export function WorkspaceEnvironmentEditor({
   const [scanError, setScanError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<HostEnvironmentSuggestionsDto | null>(null);
   const dockerLabelId = useId();
+  const screenLabelId = useId();
 
   const pending = form.phase === "saving";
   const parsedDraft = parsePackageDraft(form.packageDraft);
@@ -239,6 +241,36 @@ export function WorkspaceEnvironmentEditor({
                 </button>
               ))}
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {form.mode === "family" ? (
+        <div className="mt-6 border-t border-[var(--sw-faint-rule)] pt-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p id={screenLabelId} className="font-sans text-sm font-medium text-foreground">
+                Screen
+              </p>
+              <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+                {SCREEN_SWITCH_COPY}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={form.screen}
+              aria-labelledby={screenLabelId}
+              disabled={pending}
+              onClick={() => dispatch({ type: "screen-toggled" })}
+              className={`shrink-0 rounded-xl border px-3.5 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${
+                form.screen
+                  ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {form.screen ? "Enabled" : "Disabled"}
+            </button>
           </div>
         </div>
       ) : null}

@@ -34,6 +34,9 @@ export const workspaceImageSummary = (image: WorkspaceImage): string =>
     ? `custom · ${image.baseImage}`
     : `${OS_LABELS[image.os].toLowerCase()} · ${image.packages.length} packages`;
 
+export const SCREEN_SWITCH_COPY =
+  "Adds TigerVNC, the Openbox window manager, Chromium and DejaVu fonts to this image, so the agent can run a browser or any desktop app on a screen people can watch. The image grows by an amount Mend has not measured yet. x86_64 only.";
+
 /** One setup command per line, verbatim — commands are not package names, no normalization. */
 export const parseSetupDraft = (draft: string): ReadonlyArray<string> =>
   draft
@@ -49,6 +52,7 @@ export interface WorkspaceEnvironmentFormState {
   readonly baseImage: string;
   readonly setupDraft: string;
   readonly docker: boolean;
+  readonly screen: boolean;
   readonly packageDraft: string;
   readonly phase: "idle" | "saving" | "saved";
   readonly resolutions: ReadonlyArray<WorkspacePackageResolutionDto> | null;
@@ -62,6 +66,7 @@ export type WorkspaceEnvironmentFormAction =
   | { readonly type: "base-image-changed"; readonly baseImage: string }
   | { readonly type: "setup-changed"; readonly setupDraft: string }
   | { readonly type: "docker-toggled" }
+  | { readonly type: "screen-toggled" }
   | { readonly type: "packages-changed"; readonly packageDraft: string }
   | {
       readonly type: "suggestions-applied";
@@ -90,6 +95,7 @@ export const createWorkspaceEnvironmentForm = (
   baseImage: workspaceImage.mode === "custom" ? workspaceImage.baseImage : "",
   setupDraft: workspaceImage.mode === "custom" ? workspaceImage.setupCommands.join("\n") : "",
   docker: workspaceImage.services.docker,
+  screen: workspaceImage.mode === "family" && workspaceImage.screen,
   packageDraft: workspaceImage.packages.join("\n"),
   phase: "idle",
   resolutions: null,
@@ -120,6 +126,8 @@ export const workspaceEnvironmentFormReducer = (
       return edited({ ...state, setupDraft: action.setupDraft });
     case "docker-toggled":
       return { ...state, docker: !state.docker, phase: "idle", error: null };
+    case "screen-toggled":
+      return { ...state, screen: !state.screen, phase: "idle", error: null };
     case "packages-changed":
       return edited({ ...state, packageDraft: action.packageDraft });
     case "suggestions-applied": {
@@ -161,6 +169,7 @@ export const workspaceImageFromForm = (state: WorkspaceEnvironmentFormState): Wo
         packages: parsePackageDraft(state.packageDraft).packages,
         shell: state.shell,
         services: { docker: state.docker },
+        screen: state.screen,
       };
 
 export const resolutionIssue = (
@@ -175,5 +184,7 @@ export const resolutionIssue = (
   }
   if (resolution.status === "not-found") return "Sealant could not find this package.";
   if (resolution.status === "invalid") return "Sealant rejected this package name.";
+  if (resolution.canonicalId === null)
+    return "Sealant's package catalog does not carry this package.";
   return `Sealant found the package, but not for ${OS_LABELS[os]}.`;
 };

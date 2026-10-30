@@ -7,6 +7,29 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-30 · 0.40.0-next.763 · Catalog ids for a screen's packages, per-manager packages, and the image's architecture
+
+**Shipped in part:** ask (1), the six ids with `chromium` refused on Ubuntu, landed in sealant#419
+and Mend pins it from 0.40.0-next.768 (#1200). Asks (2) and (3) are open.
+
+ADR 0020 gives a project's image a **Screen** switch that adds TigerVNC, `xauth`, `xdpyinfo`,
+Openbox, Chromium and DejaVu fonts. Mend asks a family image for six portable ids: `tigervnc`,
+`xauth`, `xdpyinfo`, `openbox`, `chromium` and `fonts-dejavu`.
+
+- **Today:** Core's package catalog has none of the six, and Mend's save refuses an id outside the
+  catalog, so the switch saves on no family. A custom base cannot carry them either: its `packages`
+  is one verbatim list for whichever manager the build finds, and each manager names these packages
+  differently. The SDK reports no image's architecture.
+- **Observed on x86_64, 2026-10-30:** Fedora 41, Arch and Ubuntu 24.04 install all six under their
+  own names, except that Ubuntu's `chromium` is a 50 kB snap stub that installs and exits 1. Fedora
+  names the binary `chromium-browser`. Nix evaluates all six from nixpkgs.
+- **Mend today:** the switch exists on family images and is refused at save with "Sealant's package
+  catalog does not carry this package". A custom base has no switch. Mend refuses a screen when its
+  own server is not x86_64, since it cannot ask the executor.
+- **Needed:** (1) the six ids in the catalog, with `chromium` reported unsupported on Ubuntu 24.04;
+  (2) packages keyed by package manager on a custom base, or the base's manager reported before the
+  build; (3) the architecture an image builds for, in `inspectImage` or the capability report.
+
 ## 2026-10-29 · 0.40.0-next.763 · A service resource
 
 Resources (ADR 0019, proposed) are long-running services that Sealant runs once per project, or once

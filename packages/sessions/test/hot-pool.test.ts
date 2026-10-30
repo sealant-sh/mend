@@ -1,4 +1,4 @@
-import type { WorkspaceImage } from "@mend/domain";
+import type { FamilyWorkspaceImage } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
 import { hotFingerprint, type HotFingerprintInputs } from "../src/hot-pool.ts";
@@ -7,7 +7,7 @@ import { hotFingerprint, type HotFingerprintInputs } from "../src/hot-pool.ts";
  * The default image before `bun` and `unzip` joined it, spelled out: the shared standby's golden
  * hash below must not move when the defaults do.
  */
-const workspaceImage: WorkspaceImage = {
+const workspaceImage: FamilyWorkspaceImage = {
   mode: "family",
   os: "arch",
   packages: [
@@ -31,6 +31,7 @@ const workspaceImage: WorkspaceImage = {
   ],
   shell: "zsh",
   services: { docker: true },
+  screen: false,
 };
 
 const base: HotFingerprintInputs = {
@@ -170,8 +171,10 @@ describe("hotFingerprint", () => {
           packages: [],
           shell: "bash",
           services: { docker: true },
+          screen: false,
         },
       },
+      { ...base, workspaceImage: { ...workspaceImage, screen: true } },
       { ...base, references: base.references.slice(1) },
       {
         ...base,

@@ -16,6 +16,7 @@ const image = (packages: ReadonlyArray<string>): SettingsDto["workspaceImage"] =
   packages,
   shell: "bash",
   services: { docker: true },
+  screen: false,
 });
 
 const resolution = (
@@ -60,6 +61,23 @@ describe("workspace environment form", () => {
         "arch",
       ),
     ).toBe("Sealant found more than one match. Try nodejs, nodejs-lts.");
+    expect(
+      resolutionIssue(
+        resolution({
+          requested: "tigervnc",
+          status: "unsupported",
+          canonicalId: null,
+          supported: false,
+        }),
+        "arch",
+      ),
+    ).toBe("Sealant's package catalog does not carry this package.");
+    expect(
+      resolutionIssue(
+        resolution({ requested: "chromium", status: "unsupported", supported: false }),
+        "ubuntu",
+      ),
+    ).toBe("Sealant found the package, but not for Ubuntu.");
   });
 
   it("keeps edits through rejection and resets the complete baseline after save", () => {
@@ -79,6 +97,7 @@ describe("workspace environment form", () => {
       packages: ["pnpm", "uv"],
       shell: "bash",
       services: { docker: true },
+      screen: false,
     });
     expect(rejected.savedImage).toEqual(image(["pnpm"]));
 
@@ -88,6 +107,7 @@ describe("workspace environment form", () => {
       packages: ["pnpm", "uv"],
       shell: "bash",
       services: { docker: true },
+      screen: false,
     };
     const saved = workspaceEnvironmentFormReducer(rejected, {
       type: "save-succeeded",
