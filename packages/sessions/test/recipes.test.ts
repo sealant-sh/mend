@@ -322,6 +322,19 @@ open = "/"
     }
   });
 
+  it("names a syntax error by its line, column and reason, never the lines around it", () => {
+    const toml = [
+      "[service.web]",
+      'command = "pnpm dev"',
+      "port = 3000",
+      'env = { API_TOKEN = "fake-value-slnt384" BAD }',
+    ].join("\n");
+    const error = Effect.runSync(parseMendToml(toml, "/repo/mend.toml").pipe(Effect.flip));
+    expect(error.message).toMatch(/^mend\.toml is not valid TOML: line 4, column \d+ · [^\n]+$/u);
+    expect(error.message).not.toContain("fake-value-slnt384");
+    expect(error.message).not.toContain("pnpm dev");
+  });
+
   it("reads a missing file, and one without [service], as nothing declared", async () => {
     for (const toml of [null, `title = "x"\n`]) {
       const file = await Effect.runPromise(readMendToml(worktreeWith(toml)));
