@@ -30,13 +30,13 @@ export const VOLATILE = [
     // Nitro's public-asset map: each entry's file mtime, and the entries' order.
     glob: "apps/web/.output/server/index.mjs",
     normalize: (text) =>
-      text.replace(/^const assets = \{\n([\s\S]*?)\n\};$/m, (_, body) => {
+      text.replace(/^var public_assets_data_default = \{\n([\s\S]*?)\n\};$/m, (_, body) => {
         const entries = body
-          .split(/\n(?=  ")/)
+          .split(/\n(?=\t")/)
           .map((entry) =>
             entry.replace(/,$/, "").replace(/("mtime": )"\d{4}-\d\d-\d\dT[\d:.]+Z"/, '$1"<mtime>"'),
           );
-        return `const assets = {\n${entries.toSorted().join(",\n")}\n};`;
+        return `var public_assets_data_default = {\n${entries.toSorted().join(",\n")}\n};`;
       }),
   },
   {
