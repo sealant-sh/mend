@@ -47,12 +47,38 @@ export const ResourceProposalInput = Schema.Union([
 ]);
 export type ResourceProposalInput = typeof ResourceProposalInput.Type;
 
+/**
+ * The approval of a definition's spec as listed: the approver's account id, and whether it is a
+ * manager's for the project or a change owner's for the worktree read (decision G4).
+ */
+export const ResourceListedApproval = Schema.Struct({
+  by: Schema.String,
+  for: Schema.Literals(["project", "worktree"]),
+});
+export type ResourceListedApproval = typeof ResourceListedApproval.Type;
+
+/**
+ * Whom approving `spec` as read for `worktreeId` approves it for: a worktree resource read for a
+ * worktree is approved for that worktree alone (decision G4), anything else for the project.
+ */
+export const approvalWorktreeOf = (
+  spec: Pick<ResourceDefinitionInput, "scope">,
+  worktreeId: WorktreeId | null,
+): WorktreeId | null => (spec.scope === "worktree" ? worktreeId : null);
+
 export const ResourceSettingEntry = Schema.Struct({
   id: ResourceDefinitionId,
   /** What a removal sends back: it holds only while the definition still has this spec. */
   digest: ResourceSpecDigest,
   spec: ResourceDefinitionInput,
+  approval: Schema.NullOr(ResourceListedApproval),
+  /** The read worktree's stored choice; null when no worktree was read or it stored none. */
+  choice: Schema.NullOr(WorktreeChoice),
   canRemove: Schema.Boolean,
+  /** For the reader, approving it for the target `approvalWorktreeOf` names. */
+  canApprove: Schema.Boolean,
+  /** For the reader, choosing how the read worktree uses it; false when no worktree was read. */
+  canChoose: Schema.Boolean,
   statusLine: Schema.String,
 });
 export type ResourceSettingEntry = typeof ResourceSettingEntry.Type;
@@ -64,6 +90,8 @@ export const ResourceProposalEntry = Schema.Struct({
   /** The proposer's account id; the status line names them. */
   proposedBy: Schema.String,
   canRemove: Schema.Boolean,
+  /** For the reader, adopting it into settings, as `canApprove` on a settings entry. */
+  canApprove: Schema.Boolean,
   statusLine: Schema.String,
 });
 export type ResourceProposalEntry = typeof ResourceProposalEntry.Type;
@@ -101,6 +129,8 @@ export const ResourceFileRead = Schema.Union([
       Schema.Struct({
         digest: ResourceSpecDigest,
         spec: ResourceDefinitionInput,
+        /** For the reader, adopting the table into settings, as on a member's proposal. */
+        canApprove: Schema.Boolean,
         statusLine: Schema.String,
       }),
     ),

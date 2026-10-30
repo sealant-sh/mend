@@ -35,6 +35,20 @@ const postgres = postgresTestConfig();
 const decodeSpec = Schema.decodeUnknownSync(ResourceDefinitionInput);
 const lines = (entries: ReadonlyArray<{ readonly statusLine: string }>) =>
   entries.map((entry) => entry.statusLine);
+/** Each entry's name, its approval and choice when it is a definition, and its flags. */
+type Flags = {
+  readonly spec: { readonly name: string };
+  readonly approval?: unknown;
+  readonly choice?: unknown;
+  readonly canApprove: boolean;
+  readonly canChoose?: boolean;
+};
+const flagsOf = (entries: ReadonlyArray<Flags>) =>
+  entries.map(({ spec, approval, choice, canApprove, canChoose }) => ({
+    name: spec.name,
+    ...(approval === undefined ? {} : { approval, choice, canChoose }),
+    canApprove,
+  }));
 const shared = ids("shared-a");
 const NAMES: Readonly<Record<string, string>> = { alice: "Alice", carol: "Carol" };
 
@@ -603,6 +617,10 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
           resolvedBy: "docker-mirror:5000",
           definition: {
             digest: proposal.digest,
+            approval: { by: "alice", for: "project" },
+            choice: null,
+            canApprove: true,
+            canChoose: false,
             statusLine: "@db · postgres 17 · project · approved by Alice · not started",
           },
         },
@@ -874,6 +892,56 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "off")).body).toMatchObject({
         revision: 1,
       });
+    });
+
+    it("carries each definition's approval and stored choice, and each reader's flags", async () => {
+      await start();
+      const db = await declare();
+      await approve(db, "alice", null);
+      await declareSpec(mailpit("box", "worktree"));
+      await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared");
+      await propose("carol", "18");
+      const flags = async (as: HarnessUser, worktree: WorktreeId | null) => {
+        const { body } = await list(as, worktree === null ? "" : `&worktreeId=${worktree}`);
+        return {
+          settings: flagsOf(body.settings),
+          proposals: flagsOf(body.proposals),
+          file: body.file.kind === "read" ? flagsOf(body.file.proposals) : body.file.kind,
+        };
+      };
+      const approved = { by: "alice", for: "project" };
+
+      // A manager approves for the project; a worktree's own acts stay its change owner's.
+      expect(await flags("alice", CAROL_WORKTREE_IN_SHARED_A)).toEqual({
+        settings: [
+          { name: "box", approval: null, choice: null, canChoose: false, canApprove: false },
+          { name: "db", approval: approved, choice: "shared", canChoose: false, canApprove: true },
+        ],
+        proposals: [{ name: "db", canApprove: true }],
+        file: [{ name: "mail", canApprove: false }],
+      });
+      // The change owner chooses for their worktree and approves its worktree resources.
+      expect(await flags("carol", CAROL_WORKTREE_IN_SHARED_A)).toEqual({
+        settings: [
+          { name: "box", approval: null, choice: null, canChoose: false, canApprove: true },
+          { name: "db", approval: approved, choice: "shared", canChoose: true, canApprove: false },
+        ],
+        proposals: [{ name: "db", canApprove: false }],
+        file: [{ name: "mail", canApprove: true }],
+      });
+      // With no worktree read there is no choice, and every approval is the project's.
+      expect(await flags("carol", null)).toEqual({
+        settings: [
+          { name: "box", approval: null, choice: null, canChoose: false, canApprove: false },
+          { name: "db", approval: approved, choice: null, canChoose: false, canApprove: false },
+        ],
+        proposals: [{ name: "db", canApprove: false }],
+        file: "not-selected",
+      });
+      expect((await flags("alice", null)).settings).toEqual([
+        { name: "box", approval: null, choice: null, canChoose: false, canApprove: true },
+        { name: "db", approval: approved, choice: null, canChoose: false, canApprove: true },
+      ]);
     });
 
     it("names the resource a refused choice is of, and says each refusal as a clause", async () => {
