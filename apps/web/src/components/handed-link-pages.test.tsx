@@ -9,11 +9,10 @@ import { getRouter } from "#/router";
 interface Sent {
   readonly url: string;
   readonly body: string;
-  /** The page's path when the request left: a request from a legacy path went before its redirect. */
-  readonly from: string;
+  readonly pathnameWhenSent: string;
 }
 
-// Before the app's modules load: the auth client keeps the fetch it finds then.
+// Before the app's modules load: better-auth's createAuthClient keeps the fetch it finds then.
 const sent = vi.hoisted(() => {
   const requests: Sent[] = [];
   vi.stubGlobal("matchMedia", () => ({
@@ -25,7 +24,7 @@ const sent = vi.hoisted(() => {
     requests.push({
       url: input instanceof Request ? input.url : String(input),
       body: typeof init?.body === "string" ? init.body : "",
-      from: window.location.pathname,
+      pathnameWhenSent: window.location.pathname,
     });
     return Promise.resolve(Response.json({ message: "not answered" }, { status: 500 }));
   });
@@ -80,8 +79,7 @@ const resetTokensSent = () =>
     .map((request): unknown => JSON.parse(request.body))
     .map((body) => (typeof body === "object" && body !== null ? Reflect.get(body, "token") : null));
 
-/** Fill the reset form, submit it, and answer with the token the request carried. */
-const submitReset = async (): Promise<unknown> => {
+const tokenTheResetSends = async (): Promise<unknown> => {
   const before = resetTokensSent().length;
   await act(async () => {
     type("reset-password", PASSWORD);
@@ -156,7 +154,7 @@ describe("a password reset link", () => {
     await open("/reset#SYN_RESET_A");
     expect(text()).toContain("Set a new password");
     expect(sent).toEqual([]);
-    expect(await submitReset()).toBe("SYN_RESET_A");
+    expect(await tokenTheResetSends()).toBe("SYN_RESET_A");
     expect(carriedInUrls()).toEqual([]);
   });
 
@@ -172,7 +170,7 @@ describe("a password reset link", () => {
     await act(async () => type("reset-password", PASSWORD));
     await go(() => router.navigate({ href: "/reset#SYN_RESET_B" }));
     expect(field("reset-password").value).toBe("");
-    expect(await submitReset()).toBe("SYN_RESET_B");
+    expect(await tokenTheResetSends()).toBe("SYN_RESET_B");
   });
 
   it("posts the new token after the address bar changes the fragment", async () => {
@@ -180,7 +178,7 @@ describe("a password reset link", () => {
     await go(() => {
       window.location.hash = "SYN_RESET_B";
     });
-    expect(await submitReset()).toBe("SYN_RESET_B");
+    expect(await tokenTheResetSends()).toBe("SYN_RESET_B");
   });
 
   it("offers no form once the fragment is gone", async () => {
@@ -193,7 +191,7 @@ describe("a password reset link", () => {
   it("offers the form once a missing fragment arrives", async () => {
     const router = await open("/reset");
     await go(() => router.navigate({ href: "/reset#SYN_RESET_A" }));
-    expect(await submitReset()).toBe("SYN_RESET_A");
+    expect(await tokenTheResetSends()).toBe("SYN_RESET_A");
   });
 
   it("posts the token of the entry Back and Forward land on", async () => {
@@ -202,11 +200,11 @@ describe("a password reset link", () => {
     await go(() => window.history.back());
     await vi.waitFor(() => expect(window.location.hash).toBe("#SYN_RESET_A"));
     await settle();
-    expect(await submitReset()).toBe("SYN_RESET_A");
+    expect(await tokenTheResetSends()).toBe("SYN_RESET_A");
     await go(() => window.history.forward());
     await vi.waitFor(() => expect(window.location.hash).toBe("#SYN_RESET_B"));
     await settle();
-    expect(await submitReset()).toBe("SYN_RESET_B");
+    expect(await tokenTheResetSends()).toBe("SYN_RESET_B");
   });
 });
 
@@ -224,7 +222,7 @@ describe("a link issued before the fragment", () => {
       expect(window.location.pathname).toBe(pathname);
       expect(window.location.hash).toBe(hash);
       expect(window.history.length).toBe(entries);
-      expect(sent.filter((request) => request.from !== pathname)).toEqual([]);
+      expect(sent.filter((request) => request.pathnameWhenSent !== pathname)).toEqual([]);
       expect(carriedInUrls()).toEqual([]);
     },
   );

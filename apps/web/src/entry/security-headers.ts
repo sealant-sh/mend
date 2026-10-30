@@ -68,11 +68,6 @@ export const PERMISSIONS_POLICY = [
   "browsing-topics=()",
 ].join(", ");
 
-/**
- * Pages whose URL carries a credential (an upgrade ticket, a pairing or authorization code, a
- * preview grant, a handed-over link's secret): nothing about them may leave in a Referer or stay in
- * a cache. Matched as the routers match a path, with any path below each for the older link forms.
- */
 const CREDENTIAL_PAGES: ReadonlyArray<string> = [
   "/tty-embed",
   "/pair",

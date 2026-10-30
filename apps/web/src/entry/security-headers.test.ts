@@ -13,8 +13,7 @@ const at = (appUrl: string, ...alternates: ReadonlyArray<string>) =>
     alternates.map((origin) => PublicOrigin.make(origin)),
   );
 
-/** Spellings of a page's path that a router may still serve as that page. */
-const spellings = (target: string) => [
+const routedSpellings = (target: string) => [
   target,
   target.toUpperCase(),
   `/${target}`,
@@ -103,7 +102,7 @@ describe("the browser header policy (MEND-11)", () => {
       "/slack/link/msl_SYN_SLACK_CODE",
     ];
     for (const page of pages) {
-      for (const target of spellings(page)) {
+      for (const target of routedSpellings(page)) {
         const headers = securityHeaders({ target, network: at("https://mend.example") });
         expect.soft(headers["referrer-policy"], target).toBe("no-referrer");
         expect.soft(headers["cache-control"], target).toBe("no-store");

@@ -35,7 +35,6 @@ export const slackRouter = router({
     .mutation(({ ctx, input: payload }) =>
       run(ctx, (api) => api.slack.setDefaultProject({ payload })),
     ),
-  // The /slack/link#<code> page.
   previewLink: procedure
     .input(input(SlackLinkCodeRequest))
     .query(({ ctx, input: payload }) => run(ctx, (api) => api.slack.previewLink({ payload }))),

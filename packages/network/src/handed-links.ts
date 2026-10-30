@@ -6,15 +6,10 @@ const HANDED_LINK_PAGES = {
 
 export type HandedLinkKind = keyof typeof HANDED_LINK_PAGES;
 
-/** The request header a sign-up from an invitation link carries the invitation's token in. */
 export const INVITATION_HEADER = "x-mend-invitation";
 
 export const HANDED_LINK_PAGE_PATHS: ReadonlyArray<string> = Object.values(HANDED_LINK_PAGES);
 
-/**
- * What every issuer mints: 32 random bytes in base64url for an invitation or a reset, `msl_` and
- * the same for a Slack code. The verify skill's redaction reads the same shape.
- */
 export const HANDED_LINK_SECRET_SHAPE = "[A-Za-z0-9_-]{8,256}";
 const SECRET = new RegExp(`^${HANDED_LINK_SECRET_SHAPE}$`);
 
@@ -32,11 +27,9 @@ const decodedSecret = (encoded: string): string | null => {
   }
 };
 
-/** `hash` as the browser holds it, still percent-encoded: a link page's secret, or none. */
-export const fragmentSecret = (hash: string): string | null =>
-  decodedSecret(hash.replace(/^#/, ""));
+export const fragmentSecret = (encodedHash: string): string | null =>
+  decodedSecret(encodedHash.replace(/^#/, ""));
 
-/** The secret of a link issued before 0.37, `/join/<token>`, or none. Removed in 0.39. */
 export const legacyPathSecret = (kind: HandedLinkKind, pathname: string): string | null => {
   const page = HANDED_LINK_PAGES[kind];
   const trimmed = pathname.replace(/\/$/, "");
@@ -45,14 +38,11 @@ export const legacyPathSecret = (kind: HandedLinkKind, pathname: string): string
   return segment.includes("/") ? null : decodedSecret(segment);
 };
 
-/**
- * Where a link issued before the fragment moves to: its fragment form, or the bare page when its
- * path holds no secret or it carries a fragment as well, since then which one is meant is unknown.
- */
 export const fragmentFormOf = (
   kind: HandedLinkKind,
   location: { readonly pathname: string; readonly hash: string },
 ): string => {
-  const secret = location.hash === "" ? legacyPathSecret(kind, location.pathname) : null;
+  const pathAndFragmentBothNamed = location.hash !== "";
+  const secret = pathAndFragmentBothNamed ? null : legacyPathSecret(kind, location.pathname);
   return secret === null ? HANDED_LINK_PAGES[kind] : handedLinkPath(kind, secret);
 };

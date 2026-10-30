@@ -26,7 +26,6 @@ import { fileURLToPath } from "node:url";
 import { HANDED_LINK_SECRET_SHAPE } from "../../../../packages/network/src/handed-links.ts";
 import { loadSecrets, redactValues, register } from "./secrets.mjs";
 
-/** A link Mend hands to a person, in its fragment form or the path form issued before it. */
 const handedLink = (kind, page, placeholder) => ({
   kind,
   pattern: new RegExp(`${page.replaceAll("/", "\\/")}([/#])${HANDED_LINK_SECRET_SHAPE}`, "g"),
