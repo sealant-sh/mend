@@ -882,6 +882,15 @@ What the build changed against this text, with the PR that carries each. Yiannis
   session still holds. Only a launch that runs as a person gets a display. A number goes back only
   between the session's launches, so a resume sent meanwhile waits for it and never runs on a number
   given away.
+- **A screen that outlives Mend is rekeyed, not restarted** (#1220): the passwords lived only in the
+  old process, so boot makes fresh ones and the session's person rewrites the passwd file through
+  the helper. Xvnc reads that file again at each sign-in, so the screen's apps keep running. The
+  rekey has one 15 s deadline and is fenced to the start it was asked about by an id that start
+  wrote into its directory. If it fails, Mend starts the screen over and logs `Restarted` with the
+  reason. Take over without a hand answers `NoHand`, never `Person`.
+- **Only the screen's own person's turns look and act** (#1217): a turn someone else steers under
+  shared control gets `owner_only`, as a steerer's turn gets no display (#1209). Releases on the
+  hand go ahead of anything queued (#1219).
 - **The hand** ends with a typed reason (`stream-stalled`, `decoder-failed`, `decode-deadline`, and
   the sign-in and size refusals); paced typing honors the batch limit, and nothing queued reaches
   Xvnc after the hand ends (#1189).
