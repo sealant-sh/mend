@@ -4,9 +4,10 @@ import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { SetupFrame } from "#/components/setup-frame";
-import { confirmSlackLink, previewSlackLink, type SlackLinkConfirmedDto } from "#/lib/api";
+import { confirmSlackLink, type SlackLinkConfirmedDto } from "#/lib/api";
 import { useFragmentSecret } from "#/lib/handed-links";
 import { linkedLine, slackPersonLabel } from "#/lib/slack";
+import { useTRPC } from "#/lib/trpc";
 
 const formatTime = (at: Date): string =>
   at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
@@ -33,11 +34,8 @@ function LinkDoesNotWork() {
 
 function SlackLink({ code }: { readonly code: string }) {
   const navigate = useNavigate();
-  const preview = useQuery({
-    queryKey: ["slack", "previewLink", code],
-    queryFn: () => previewSlackLink(code),
-    retry: false,
-  });
+  const trpc = useTRPC();
+  const preview = useQuery(trpc.slack.previewLink.queryOptions({ code }, { retry: false }));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<SlackLinkConfirmedDto | null>(null);
