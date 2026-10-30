@@ -3,6 +3,7 @@ import {
   BriefDetail,
   AccountRejected,
   CurrentUser,
+  deviceIdOf,
   SealantUnavailable,
   HealthStatus,
   InstanceView,
@@ -12,6 +13,7 @@ import {
   LossSpanView,
   MendApi,
   NotFound,
+  PushNeedsPairedDevice,
   RegisteredDevice,
   RunCommandView,
   RunDetail,
@@ -614,23 +616,31 @@ export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
     ),
 );
 
+const forgetCallingDevice = Effect.gen(function* () {
+  const deviceTokenId = deviceIdOf((yield* CurrentUser).credential);
+  if (deviceTokenId !== undefined) yield* (yield* PushDevicesRepo).forget(deviceTokenId);
+});
+
 export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handlers) =>
   handlers
     .handle("register", ({ payload }) =>
       Effect.gen(function* () {
-        const devices = yield* PushDevicesRepo;
         const caller = yield* CurrentUser;
-        const device = yield* devices.register(caller.user.id, payload.token, payload.platform);
+        const deviceTokenId = deviceIdOf(caller.credential);
+        if (deviceTokenId === undefined) return yield* new PushNeedsPairedDevice();
+        const device = yield* (yield* PushDevicesRepo)
+          .register({
+            userId: caller.user.id,
+            deviceTokenId,
+            token: payload.token,
+            platform: payload.platform,
+          })
+          .pipe(Effect.catchTag("PushCredentialEndedError", () => Effect.fail(new Unauthorized())));
         return new RegisteredDevice({ token: device.token, platform: device.platform });
       }),
     )
-    .handle("unregister", ({ params }) =>
-      Effect.gen(function* () {
-        const devices = yield* PushDevicesRepo;
-        const caller = yield* CurrentUser;
-        yield* devices.removeOwned(caller.user.id, params.token);
-      }),
-    )
+    .handle("unregister", () => forgetCallingDevice)
+    .handle("unregisterLegacyIgnoringToken", () => forgetCallingDevice)
     .handle("notificationSettings", () =>
       Effect.gen(function* () {
         const caller = yield* CurrentUser;

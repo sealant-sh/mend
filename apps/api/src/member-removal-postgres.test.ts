@@ -3,14 +3,13 @@ import {
   AgentConversationRepo,
   AgentConversationRepoLive,
   AuditEventsRepoLive,
+  DevicesRepo,
   DevicesRepoLive,
   MendDBLive,
   MemberRevocationsRepoLive,
   MemberRevocationsRepo,
   OrganizationsRepoLive,
   ProjectsRepoLive,
-  PushDevicesRepoLive,
-  PushDevicesRepo,
   SessionControlEventsRepoLive,
   SessionsRepoLive,
   SlackLinksRepoLive,
@@ -65,7 +64,6 @@ const reposLayer = Layer.mergeAll(
   DevicesRepoLive,
   OrganizationsRepoLive,
   ProjectsRepoLive,
-  PushDevicesRepoLive,
   SessionControlEventsRepoLive,
   SessionsRepoLive,
   SlackLinksRepoLive,
@@ -136,15 +134,15 @@ const externalLayer = Layer.mergeAll(
   ),
 );
 // Only readiness barriers wrap live implementations; the SQL mutations and transaction are real.
-const controlledPush = Layer.effect(
-  PushDevicesRepo,
+const controlledDevices = Layer.effect(
+  DevicesRepo,
   Effect.gen(function* () {
-    const actual = yield* PushDevicesRepo;
+    const actual = yield* DevicesRepo;
     return {
       ...actual,
-      removeAllForUser: (userId: string) =>
+      revokeAllForUser: (userId: string) =>
         actual
-          .removeAllForUser(userId)
+          .revokeAllForUser(userId)
           .pipe(
             Effect.tap(() =>
               Effect.suspend(() =>
@@ -158,7 +156,7 @@ const controlledPush = Layer.effect(
           ),
     };
   }),
-).pipe(Layer.provide(PushDevicesRepoLive));
+).pipe(Layer.provide(DevicesRepoLive));
 const controlledRemoval = Layer.effect(
   MemberRevocationsRepo,
   Effect.gen(function* () {
@@ -181,7 +179,7 @@ const controlledRemoval = Layer.effect(
           ),
     };
   }),
-).pipe(Layer.provide(MemberRevocationsRepoLive.pipe(Layer.provide(controlledPush))));
+).pipe(Layer.provide(MemberRevocationsRepoLive.pipe(Layer.provide(controlledDevices))));
 const layer = MemberRemovalLive.pipe(
   Layer.provide(controlledRemoval),
   Layer.provide(externalLayer),
@@ -192,6 +190,49 @@ const admin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 const observe = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(observerLayer)));
+const holdTransaction = async (statement: Effect.Effect<unknown, unknown, SqlClient.SqlClient>) => {
+  const opened = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const ended = observe(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* statement;
+          opened.resolve();
+          yield* Effect.promise(() => release.promise);
+        }),
+      );
+    }),
+  );
+  await Promise.race([opened.promise, ended]);
+  return () => {
+    release.resolve();
+    return ended;
+  };
+};
+const lockWaiters = async (count: number) => {
+  const deadline = performance.now() + 5_000;
+  for (;;) {
+    const waiting = await observe(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql`SELECT count(*)::int AS waiting FROM pg_stat_activity
+          WHERE datname = ${database} AND wait_event_type = 'Lock'`;
+        return Schema.decodeUnknownSync(Schema.Struct({ waiting: Schema.Number }))(rows[0]).waiting;
+      }),
+    );
+    if (waiting >= count) return;
+    if (performance.now() >= deadline) throw new Error(`${count} lock waiters never appeared`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+const revokeOnItsOwnConnection = (userId: string, deviceId: string) =>
+  Effect.runPromiseExit(
+    Effect.flatMap(DevicesRepo, (devices) => devices.revoke(userId, deviceId)).pipe(
+      Effect.provide(DevicesRepoLive.pipe(Layer.provide(MendDBLive), Layer.provide(observerLayer))),
+    ),
+  );
 const remove = Effect.flatMap(MemberRemoval, (removal) => removal.remove(input));
 const input = {
   organizationId: OrganizationId.make("org-test"),
@@ -221,7 +262,8 @@ const state = (userId = "removed") =>
         (SELECT "deactivatedAt" IS NULL FROM "user" WHERE id = ${userId}) AS active,
         (SELECT count(*)::int FROM "session" WHERE "userId" = ${userId}) AS auth,
         (SELECT count(*)::int FROM device_tokens WHERE user_id = ${userId} AND revoked_at IS NULL) AS devices,
-        (SELECT count(*)::int FROM push_devices WHERE user_id = ${userId}) AS push,
+        (SELECT count(*)::int FROM push_devices p JOIN device_tokens d ON d.id = p.device_token_id
+          WHERE d.user_id = ${userId}) AS push,
         (SELECT shared_control_enabled_at IS NOT NULL FROM agent_sessions WHERE id = ${`s-${userId}`}) AS shared,
         (SELECT count(*)::int FROM agent_turns WHERE author = ${userId} AND status = 'queued') AS queued,
         (SELECT count(*)::int FROM agent_requests r JOIN agent_turns t ON t.id = r.turn_id
@@ -316,7 +358,7 @@ describe.skipIf(postgres.skip)("member removal with real PostgreSQL", () => {
           (${`auth-${userId}`},${userId},${`auth-token-${userId}`},now()+interval '1 day')`;
           yield* sql`INSERT INTO device_tokens (id,user_id,name,platform,token_hash) VALUES
           (${`device-${userId}`},${userId},'Test','cli',${`hash-${userId}`})`;
-          yield* sql`INSERT INTO push_devices (token,user_id,platform) VALUES (${`push-${userId}`},${userId},'ios')`;
+          yield* sql`INSERT INTO push_devices (token,device_token_id,platform) VALUES (${`push-${userId}`},${`device-${userId}`},'ios')`;
           yield* sql`INSERT INTO projects (id,name,store_path,default_branch,organization_id) VALUES
           (${`p-${userId}`},${userId},${`/store/${userId}`},'main',${organizationId})`;
           yield* sql`INSERT INTO worktrees (id,project_id,name,directory,branch,base_sha) VALUES
@@ -451,6 +493,26 @@ describe.skipIf(postgres.skip)("member removal with real PostgreSQL", () => {
       Effect.runSync(Deferred.succeed(hold, undefined));
       await completion;
     }
+  });
+
+  it("finishes alongside the removed person revoking their own phone, neither one deadlocked", async () => {
+    notificationFails = false;
+    const resume = await holdTransaction(
+      Effect.flatMap(
+        SqlClient.SqlClient,
+        (sql) => sql`SELECT 1 FROM "session" WHERE id = 'auth-removed' FOR UPDATE`,
+      ),
+    );
+    const removing = runtime.runPromiseExit(remove);
+    await lockWaiters(1);
+    const revoking = revokeOnItsOwnConnection("removed", "device-removed");
+    await lockWaiters(2);
+    await resume();
+
+    const [removal, revoke] = await Promise.all([removing, revoking]);
+    expect.soft(Exit.isSuccess(removal) ? "removed" : Cause.pretty(removal.cause)).toBe("removed");
+    expect.soft(Exit.isSuccess(revoke) ? "revoked" : Cause.pretty(revoke.cause)).toBe("revoked");
+    expect(await runtime.runPromise(state())).toEqual(revoked);
   });
 
   it("preserves the last owner and refuses a membership in another organization", async () => {

@@ -96,8 +96,11 @@ const bearerOf = (machine: string, authorization: string | null): string =>
       : `another bearer (${machine})`;
 
 let received: Array<{ readonly machine: string; readonly line: string }> = [];
-const receivedBy = (machine: string): ReadonlyArray<string> =>
-  received.filter((entry) => entry.machine === machine).map(({ line }) => line);
+const isPushFarewell = (line: string) => line.startsWith("DELETE /api/devices ");
+const workReceivedBy = (machine: string): ReadonlyArray<string> =>
+  received
+    .filter((entry) => entry.machine === machine && !isPushFarewell(entry.line))
+    .map(({ line }) => line);
 
 type Outcome = "answer" | "drop";
 const holds = new Map<string, Array<(outcome: Outcome) => void>>();
@@ -333,7 +336,7 @@ describe("work pairing A started, after the phone pairs to B", () => {
       the("sender").send(SECOND_WORDS, []);
     });
     await settle();
-    expect(receivedBy("a.example")).toEqual([
+    expect(workReceivedBy("a.example")).toEqual([
       `POST /api/sessions/${SESSION}/turns with A's bearer {"input":"${FIRST_WORDS}"}`,
     ]);
 
@@ -341,11 +344,11 @@ describe("work pairing A started, after the phone pairs to B", () => {
     release(`POST /api/sessions/${SESSION}/turns`);
     await settle();
 
-    expect(receivedBy("a.example")).toEqual([
+    expect(workReceivedBy("a.example")).toEqual([
       `POST /api/sessions/${SESSION}/turns with A's bearer {"input":"${FIRST_WORDS}"}`,
       `POST /api/sessions/${SESSION}/turns with A's bearer {"input":"${SECOND_WORDS}"}`,
     ]);
-    expect(receivedBy("b.example")).toEqual([]);
+    expect(workReceivedBy("b.example")).toEqual([]);
   });
 
   it("stops watching for the project a dropped clone under A was adopting", async () => {
@@ -362,13 +365,13 @@ describe("work pairing A started, after the phone pairs to B", () => {
       'POST /api/projects with A\'s bearer {"name":"payroll","source":"git@example.com:acme/payroll"}',
       "GET /api/projects with A's bearer",
     ];
-    expect(receivedBy("a.example")).toEqual(beforeTheEnd);
+    expect(workReceivedBy("a.example")).toEqual(beforeTheEnd);
 
     await pair("b.example");
     await settle(9_000);
 
-    expect(receivedBy("a.example")).toEqual(beforeTheEnd);
-    expect(receivedBy("b.example")).toEqual([]);
+    expect(workReceivedBy("a.example")).toEqual(beforeTheEnd);
+    expect(workReceivedBy("b.example")).toEqual([]);
   });
 
   it("uploads none of A's queued photos once A ends", async () => {
@@ -388,14 +391,14 @@ describe("work pairing A started, after the phone pairs to B", () => {
     const beforeTheEnd = [
       `POST /api/sessions/${SESSION}/images with A's bearer [bytes of ${A_PHOTO}]`,
     ];
-    expect(receivedBy("a.example")).toEqual(beforeTheEnd);
+    expect(workReceivedBy("a.example")).toEqual(beforeTheEnd);
 
     await pair("b.example");
     act(() => heldUploads.shift()?.());
     await settle();
 
-    expect(receivedBy("a.example")).toEqual(beforeTheEnd);
-    expect(receivedBy("b.example")).toEqual([]);
+    expect(workReceivedBy("a.example")).toEqual(beforeTheEnd);
+    expect(workReceivedBy("b.example")).toEqual([]);
   });
 
   it("launches A's new session on A with A's bearer, and sends B nothing", async () => {
@@ -413,11 +416,11 @@ describe("work pairing A started, after the phone pairs to B", () => {
     release("POST /api/projects/project-a/sessions");
     await settle();
 
-    expect(receivedBy("a.example")).toEqual([
+    expect(workReceivedBy("a.example")).toEqual([
       'POST /api/projects/project-a/sessions with A\'s bearer {"harness":"codex","mode":"protocol","label":null,"name":null,"base":null}',
       `POST /api/sessions/${SESSION}/launch with A's bearer {"mode":"protocol"}`,
     ]);
-    expect(receivedBy("b.example")).toEqual([]);
+    expect(workReceivedBy("b.example")).toEqual([]);
   });
 
   it("reads no next page of A's conversation once A ends", async () => {
@@ -435,7 +438,7 @@ describe("work pairing A started, after the phone pairs to B", () => {
     await settle();
 
     expect(received.filter(({ line }) => line.includes(`after=${ITEM_PAGE_SIZE}`))).toEqual([]);
-    expect(receivedBy("b.example")).toEqual([]);
+    expect(workReceivedBy("b.example")).toEqual([]);
   });
 
   it("leaves B's out-of-reach mark alone when A's send fails late", async () => {
@@ -471,7 +474,7 @@ describe("work pairing A started, after the phone pairs to B", () => {
       </OnlyUnderA>,
     );
     await settle();
-    expect(receivedBy("a.example")).toContain(
+    expect(workReceivedBy("a.example")).toContain(
       `POST /api/upgrade-tickets with A's bearer {"target":"tty-embed","session":"${SESSION}"}`,
     );
 
@@ -479,7 +482,7 @@ describe("work pairing A started, after the phone pairs to B", () => {
     release("POST /api/upgrade-tickets");
     await settle();
 
-    expect(receivedBy("b.example")).toEqual([]);
+    expect(workReceivedBy("b.example")).toEqual([]);
   });
 });
 
@@ -521,9 +524,9 @@ describe("work pairing A started, when its screens unmount before the phone pair
     await settle();
 
     expect(late).toBe("refused");
-    expect(receivedBy("a.example").filter((line) => line.startsWith("GET /api/projects"))).toEqual(
-      [],
-    );
+    expect(
+      workReceivedBy("a.example").filter((line) => line.startsWith("GET /api/projects")),
+    ).toEqual([]);
     expect(the("unreachable")).toBe(true);
   });
 });
@@ -579,7 +582,7 @@ describe("work pairing A started, after the phone unpairs", () => {
     await settle();
 
     expect(stopped).toBe(NO_ANSWER);
-    expect(receivedBy("a.example")).toEqual([
+    expect(workReceivedBy("a.example")).toEqual([
       `POST /api/sessions/${SESSION}/stop with A's bearer {}`,
     ]);
   });
@@ -593,7 +596,7 @@ describe("work pairing A started, after the phone unpairs", () => {
     );
     act(() => the("images").attach([{ uri: A_PHOTO, name: "march.jpg" }]));
     await settle();
-    expect(receivedBy("a.example")).toEqual([
+    expect(workReceivedBy("a.example")).toEqual([
       `POST /api/sessions/${SESSION}/images with A's bearer [bytes of ${A_PHOTO}]`,
     ]);
 
@@ -623,7 +626,7 @@ describe("work pairing A started, after a Save that keeps the same machine", () 
     await settle();
 
     expect(
-      receivedBy("a.example").filter((line) => line.includes(`after=${ITEM_PAGE_SIZE}`)),
+      workReceivedBy("a.example").filter((line) => line.includes(`after=${ITEM_PAGE_SIZE}`)),
     ).toEqual([
       `GET /api/sessions/${SESSION}/items?after=${ITEM_PAGE_SIZE}&limit=${ITEM_PAGE_SIZE} with A's bearer`,
     ]);

@@ -1,9 +1,9 @@
-import { PAGE_VIEW_TOKEN_PARAM } from "@mend/network";
+import { CREDENTIAL_QUERY_PARAMETERS, PAGE_VIEW_TOKEN_PARAM } from "@mend/network";
 import { Effect, Layer } from "effect";
 import { HttpMiddleware, UrlParams } from "effect/http";
 
-import { rawFileRequest } from "./raw-file-privacy.ts";
 import { routesToPageView } from "./routes/pages.ts";
+import { unloggedRequest } from "./unlogged-requests.ts";
 
 /**
  * Effect's server tracer records `url.full` and `url.query` on every spelling the router matches,
@@ -12,12 +12,16 @@ import { routesToPageView } from "./routes/pages.ts";
  */
 export const UntracedRequestsLive: Layer.Layer<never> = Layer.mergeAll(
   Layer.succeed(HttpMiddleware.TracerDisabledWhen)(
-    (request) => rawFileRequest(request) || routesToPageView(request),
+    (request) => unloggedRequest(request) || routesToPageView(request),
   ),
   Layer.effect(
     UrlParams.CurrentRedactedNames,
     Effect.gen(function* () {
-      return [...(yield* UrlParams.CurrentRedactedNames), PAGE_VIEW_TOKEN_PARAM];
+      return [
+        ...(yield* UrlParams.CurrentRedactedNames),
+        ...CREDENTIAL_QUERY_PARAMETERS,
+        PAGE_VIEW_TOKEN_PARAM,
+      ];
     }),
   ),
 );

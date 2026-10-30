@@ -1306,15 +1306,6 @@ export const inferenceCalls = pgTable("inference_calls", {
   occurredAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
-export const pushDevices = pgTable("push_devices", {
-  token: text().primaryKey(),
-  platform: text().notNull(),
-  // FK to "user"(id) ON DELETE RESTRICT, declared in the migration: whose notifications it gets.
-  userId: text().notNull(),
-  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-  lastSeenAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-});
-
 /**
  * A paired device's long-lived bearer token. Only the sha256 hex of the token is
  * kept; the token itself is shown to the claimer once and never again. Revoking
@@ -2697,7 +2688,6 @@ export type ReferenceRepoRow = typeof referenceRepos.$inferSelect;
 export type ProjectReferenceRow = typeof projectReferences.$inferSelect;
 export type SettingsRow = typeof settings.$inferSelect;
 export type InferenceCallRow = typeof inferenceCalls.$inferSelect;
-export type PushDeviceRow = typeof pushDevices.$inferSelect;
 export type DeviceTokenRow = typeof deviceTokens.$inferSelect;
 export type PairingCodeRow = typeof pairingCodes.$inferSelect;
 export type CliAuthRequestRow = typeof cliAuthRequests.$inferSelect;

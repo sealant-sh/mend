@@ -3202,3 +3202,80 @@ describe.skipIf(postgres.skip)("recipe approvals", () => {
     expect(result).toEqual({ recorded: "recipe_approvals", rows: 0, source: 1 });
   });
 });
+
+describe.skipIf(postgres.skip)("0163 push device credentials", () => {
+  const DB = `${SCRATCH_DB}_push_credentials`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("drops every push token no device can be proven to own, and ties the next ones to a device", async () => {
+    const result = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* migrateWith(
+          Object.fromEntries(ORDERED.filter(([name]) => name <= "0159_session_messages")),
+        );
+        yield* sql`
+          INSERT INTO "user" (id, name, email) VALUES ('u-phone', 'Phone', 'phone@example.com')`;
+        yield* sql`
+          INSERT INTO device_tokens (id, user_id, name, platform, token_hash) VALUES
+            ('d-a', 'u-phone', 'Phone a', 'ios', 'hash-a'),
+            ('d-b', 'u-phone', 'Phone b', 'ios', 'hash-b')`;
+        yield* sql`
+          INSERT INTO push_devices (token, platform, user_id) VALUES
+            ('legacy-a', 'ios', 'u-phone'), ('legacy-b', 'android', 'u-phone')`;
+        yield* migrateWith(migrations);
+        const legacy = yield* sql<{ readonly token: string }>`SELECT token FROM push_devices`;
+        const columns = yield* sql<{ readonly column_name: string; readonly is_nullable: string }>`
+          SELECT column_name, is_nullable FROM information_schema.columns
+          WHERE table_name = 'push_devices' AND column_name IN ('user_id', 'device_token_id')`;
+        const unowned = yield* attempt(
+          sql`INSERT INTO push_devices (token, platform) VALUES ('unowned', 'ios')`,
+        );
+        yield* sql`
+          INSERT INTO push_devices (token, platform, device_token_id) VALUES
+            ('push-a', 'ios', 'd-a'), ('push-b', 'ios', 'd-b')`;
+        yield* sql`UPDATE device_tokens SET revoked_at = now() WHERE id = 'd-a'`;
+        const afterRevoke = yield* sql<{ readonly token: string }>`SELECT token FROM push_devices`;
+        yield* sql`UPDATE "user" SET "deactivatedAt" = now() WHERE id = 'u-phone'`;
+        const afterDeactivate = yield* sql`SELECT token FROM push_devices`;
+        return {
+          legacy: legacy.map((row) => row.token),
+          columns,
+          unowned,
+          afterRevoke: afterRevoke.map((row) => row.token),
+          afterDeactivate: afterDeactivate.length,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      legacy: [],
+      columns: [{ column_name: "device_token_id", is_nullable: "NO" }],
+      unowned: { code: "23502", column: "device_token_id" },
+      afterRevoke: ["push-b"],
+      afterDeactivate: 0,
+    });
+  });
+});

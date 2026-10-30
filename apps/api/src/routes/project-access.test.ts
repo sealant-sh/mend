@@ -156,6 +156,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "github.repos",
   "devices.register",
   "devices.unregister",
+  "devices.unregisterLegacyIgnoringToken",
   "devices.notificationSettings",
   "devices.setNotificationSettings",
   "userDevices.createPairing",

@@ -130,7 +130,6 @@ import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { PageViewTokens } from "../../src/page-view-tokens.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
-import { rawFilePrivacy } from "../../src/raw-file-privacy.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
@@ -144,6 +143,7 @@ import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
+import { unloggedRequests } from "../../src/unlogged-requests.ts";
 import { UntracedRequestsLive } from "../../src/untraced-requests.ts";
 import { createTenancyWorld, type HarnessUser, type TenancyWorld } from "./tenancy-harness.ts";
 import { recording } from "./tenancy-harness.ts";
@@ -181,7 +181,6 @@ export interface TenancyApi {
   readonly openConnections: (user: HarnessUser, kind: ConnectionKind) => Promise<number>;
   /** What removing a member does to their connections: close every one this process holds. */
   readonly closeConnectionsOf: (user: HarnessUser) => Promise<number>;
-  /** Push-device writes as `method:userId:token`, to prove the caller's id reaches the repo. */
   readonly deviceWrites: ReadonlyArray<string>;
   /** Where the Node-served API listens on loopback, with the `node` option. */
   readonly nodeOrigin: string | undefined;
@@ -389,14 +388,14 @@ export const createTenancyApi = async (
         PushDevicesRepo,
         "pushDevices",
         {
-          register: (userId, token, platform) =>
+          register: ({ userId, deviceTokenId, token, platform }) =>
             Effect.sync(() => {
-              deviceWrites.push(`register:${userId}:${token}`);
+              deviceWrites.push(`register:${userId}:${deviceTokenId}:${token}`);
               return new PushDevice({ token, platform, userId });
             }),
-          removeOwned: (userId, token) =>
+          forget: (deviceTokenId) =>
             Effect.sync(() => {
-              deviceWrites.push(`removeOwned:${userId}:${token}`);
+              deviceWrites.push(`forget:${deviceTokenId}`);
             }),
         },
         calls,
@@ -587,7 +586,7 @@ export const createTenancyApi = async (
   );
   const apiLayer = Layer.mergeAll(
     MendApiLive,
-    rawFilePrivacy,
+    unloggedRequests,
     options.browserHeaders ? apiResponseHeaders : Layer.empty,
     options.errorDetail === undefined ? Layer.empty : errorBoundary(options.errorDetail),
   ).pipe(

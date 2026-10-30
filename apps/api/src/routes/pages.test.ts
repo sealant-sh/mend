@@ -345,12 +345,14 @@ describe("the page-view token never reaches a trace", () => {
         200,
       );
       expect((await fetch(`${origin}/api/health?view=secret-token-value`)).status).toBe(200);
+      expect((await fetch(`${origin}/api/health?ticket=secret-ticket-value`)).status).toBe(200);
     } finally {
       await runtime.dispose();
     }
     const recorded = spans.map((span) => [span.name, Object.fromEntries(span.attributes)]);
     expect(JSON.stringify(recorded)).not.toContain("secret-token-value");
     expect(JSON.stringify(recorded)).not.toContain("secret-file-name");
+    expect(JSON.stringify(recorded)).not.toContain("secret-ticket-value");
     expect(recorded).toContainEqual([
       expect.any(String),
       expect.objectContaining({ "url.path": "/api/health", "url.query": "view=REDACTED" }),

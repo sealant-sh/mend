@@ -4,11 +4,11 @@ import { Keyboard } from "react-native";
 
 import { createAsker, type Asker } from "@/data/ask";
 import { openMachine, type Machine } from "@/data/machine";
-import { useConfig, type MendConfig } from "@/data/pairing-config";
+import { useConfig, type Connection } from "@/data/pairing-config";
 import { pairingKeyOf, type PairingKey } from "@/data/pairing-key";
 
 export interface Pairing {
-  readonly config: MendConfig;
+  readonly config: Connection;
   readonly asker: Asker;
   readonly machine: Machine;
 }
@@ -41,7 +41,7 @@ interface Held {
 }
 let held: Held | null = null;
 
-const heldFor = (key: PairingKey, config: MendConfig): Held => {
+const heldFor = (key: PairingKey, config: Connection): Held => {
   if (held?.machine.key !== key) {
     held?.client.clear();
     held?.end();
@@ -67,7 +67,7 @@ const PairingScope = ({
   children,
 }: {
   readonly pairingKey: PairingKey;
-  readonly config: MendConfig;
+  readonly config: Connection;
   readonly children: ReactNode;
 }): ReactNode => {
   const [{ client, asker, machine }] = useState(() => heldFor(pairingKey, config));

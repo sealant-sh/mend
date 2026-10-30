@@ -363,7 +363,15 @@ describe.skipIf(postgres.skip)("a terminal agent's exit under a live shell, thro
                   (SELECT id FROM organizations LIMIT 1), 'on', 'on'),
                  (${TOUR_ONLY}, 'docs', '/store/p-docs/repo.git', 'main',
                   (SELECT id FROM organizations LIMIT 1), 'on', 'off')`;
-        yield* devices.register(OWNER, PHONE, "ios");
+        yield* sql`
+          INSERT INTO device_tokens (id, user_id, name, platform, token_hash)
+          VALUES ('owner-phone', ${OWNER}, 'Phone', 'ios', 'hash-owner-phone')`;
+        yield* devices.register({
+          userId: OWNER,
+          deviceTokenId: "owner-phone",
+          token: PHONE,
+          platform: "ios",
+        });
       }),
     );
   });

@@ -32,15 +32,6 @@ export const mintPushToken = async (): Promise<
   }
 };
 
-export const grantedPushToken = async (): Promise<string | null> => {
-  if (!(await pushPermissionGranted())) return null;
-  try {
-    return (await Notifications.getExpoPushTokenAsync()).data;
-  } catch {
-    return null;
-  }
-};
-
 export const postDevice = async (
   connection: Pick<Connection, "url" | "token">,
   pushToken: string,
@@ -69,11 +60,10 @@ export const postDevice = async (
 
 export const forgetDevice = async (
   connection: Pick<Connection, "url" | "token">,
-  pushToken: string,
   signal: AbortSignal,
 ): Promise<void> => {
   try {
-    const response = await fetch(`${connection.url}/api/devices/${encodeURIComponent(pushToken)}`, {
+    const response = await fetch(`${connection.url}/api/devices`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${connection.token}` },
       signal,
