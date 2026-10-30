@@ -1,37 +1,11 @@
-import type { StoredResourceDefinition } from "@mend/db";
-import { ResourceDefinitionId } from "@mend/domain";
-import { ResourceDefinitionInput, resourceSpecDigest } from "@mend/domain/workbench";
-import { Effect, Schema } from "effect";
+import { ProjectHasResourcesError } from "@mend/db";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { ids } from "../../test/support/tenancy-harness.ts";
 
 const project = ids("private-alice").project;
-
-const definition = (name: string): StoredResourceDefinition => {
-  const spec = Schema.decodeUnknownSync(ResourceDefinitionInput)({
-    name,
-    scope: "project",
-    preset: null,
-    image: "rabbitmq:4",
-    command: null,
-    ports: [{ name: "amqp", port: 5672, protocol: "tcp" }],
-    env: {},
-    volumes: [],
-    ready: { kind: "tcp" },
-    exports: {},
-  });
-  return {
-    id: ResourceDefinitionId.make(`rdef_${name}`),
-    projectId: project,
-    spec,
-    specDigest: resourceSpecDigest(spec),
-    declaredBy: "alice",
-    createdAt: new Date(0),
-    updatedAt: new Date(0),
-  };
-};
 
 describe("removing a project that has resources", () => {
   let api: TenancyApi | undefined;
@@ -40,10 +14,16 @@ describe("removing a project that has resources", () => {
     api = undefined;
   });
 
-  const removeWith = async (resources: ReadonlyArray<StoredResourceDefinition>) => {
+  const removeWith = async (names: ReadonlyArray<string>) => {
     api = await createTenancyApi(undefined, {
       implement: {
-        resources: { listForProject: () => Effect.succeed(resources) },
+        resources: {
+          fenceProjectRemoval: (projectId) =>
+            names.length === 0
+              ? Effect.void
+              : Effect.fail(new ProjectHasResourcesError({ projectId, names })),
+          liftProjectRemovalFence: () => Effect.void,
+        },
         store: { removeProjectStore: () => Effect.succeed({ leftover: null }) },
       },
     });
@@ -52,18 +32,22 @@ describe("removing a project that has resources", () => {
   };
 
   it("is refused with the resources named, before any session stops or the store goes", async () => {
-    const { response, calls } = await removeWith([definition("db"), definition("queue")]);
+    const { response, calls } = await removeWith(["db", "queue"]);
     expect(response.status).toBe(422);
     expect(await response.json()).toMatchObject({
       _tag: "StoreFailure",
       message: "project has resources (@db, @queue) · remove them first",
     });
-    expect(calls).toEqual(["resources.listForProject"]);
+    expect(calls).toEqual(["resources.fenceProjectRemoval"]);
   });
 
-  it("goes on past the check when the project has none", async () => {
+  it("lifts the fence when the removal stops before the project's row goes", async () => {
     const { calls } = await removeWith([]);
     // The harness leaves session listing unimplemented, so the removal stops there.
-    expect(calls).toEqual(["resources.listForProject", "sessions.listForProject"]);
+    expect(calls).toEqual([
+      "resources.fenceProjectRemoval",
+      "sessions.listForProject",
+      "resources.liftProjectRemovalFence",
+    ]);
   });
 });
