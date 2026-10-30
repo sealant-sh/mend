@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { OrganizationId, ProjectId, WorktreeId } from "@mend/domain";
+import { OrganizationId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import { Cause, Effect, Exit, Layer, Redacted, String as Str } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { CaptureStoreRepo, CaptureStoreRepoLive } from "../src/repos/capture-store.ts";
+import { HotWorkspacesRepo, HotWorkspacesRepoLive } from "../src/repos/hot-workspaces.ts";
 import {
   ProjectServiceRecipesRepo,
   ProjectServiceRecipesRepoLive,
@@ -40,6 +41,7 @@ const repos = Layer.mergeAll(
   CaptureStoreRepoLive,
   ProjectServiceRecipesRepoLive,
   UpgradeTicketsRepoLive,
+  HotWorkspacesRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(pool))));
 const run = <A, E>(
   effect: Effect.Effect<
@@ -50,6 +52,7 @@ const run = <A, E>(
     | CaptureStoreRepo
     | ProjectServiceRecipesRepo
     | UpgradeTicketsRepo
+    | HotWorkspacesRepo
     | SqlClient.SqlClient
   >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(repos), Effect.scoped));
@@ -513,6 +516,28 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           byPurge: true,
           tombstoned: [key],
         });
+      }),
+    ));
+
+  it("keeps a removed project's standby in the pool's sweep until it is drained", async () =>
+    run(
+      Effect.gen(function* () {
+        const pool = yield* HotWorkspacesRepo;
+        const id = yield* seed("standby");
+        const standby = SessionId.make("hot-standby");
+        yield* pool.create({
+          id: standby,
+          projectId: id,
+          worktreeId: null,
+          ownerUserId: "anna",
+          fingerprint: "f",
+          harnessLayout: "shared",
+          worktree: null,
+          branch: null,
+          baseSha: null,
+        });
+        yield* keep(id);
+        expect((yield* pool.listAll()).map((entry) => entry.id)).toContain(standby);
       }),
     ));
 });

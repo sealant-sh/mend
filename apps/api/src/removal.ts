@@ -15,7 +15,6 @@ import {
 import {
   type FencedRow,
   type RemovalFenceId,
-  HotWorkspacesRepo,
   ProjectsRepo,
   REMOVAL_FENCE_RENEW_EVERY,
   RemovalFenced,
@@ -60,7 +59,6 @@ import {
   worktreeRefusalWords,
   worktreeRemovalRight,
 } from "@mend/domain/workbench";
-import { asSealantUser, SealantClient } from "@mend/sealant";
 import { SessionEngine, CaptureRuntime } from "@mend/sessions";
 import { Store } from "@mend/store";
 import { Data, Effect, Fiber, Layer } from "effect";
@@ -190,11 +188,9 @@ export const RemovalLive: Layer.Layer<
   never,
   | StandingServices
   | CaptureRuntime
-  | HotWorkspacesRepo
   | ProjectsRepo
   | RemovalFencesRepo
   | ResourcesRepo
-  | SealantClient
   | ServiceForwardsRepo
   | ServicesRepo
   | SessionEngine
@@ -224,8 +220,6 @@ export const RemovalLive: Layer.Layer<
     const engine = yield* SessionEngine;
     const store = yield* Store;
     const resources = yield* ResourcesRepo;
-    const hotWorkspaces = yield* HotWorkspacesRepo;
-    const sealant = yield* SealantClient;
     // What reading a change's standing asks for: landings, the worktree's files, origin.
     const standingServices = yield* Effect.context<StandingServices>();
 
@@ -549,20 +543,9 @@ export const RemovalLive: Layer.Layer<
         remove: (_, step) =>
           Effect.gen(function* () {
             yield* step;
-            // Hot workspaces hold nobody's work: their rows cascade with the project, but the
-            // containers would otherwise run until the platform's TTL.
-            yield* Effect.forEach(
-              yield* hotWorkspaces.listForProject(target.id),
-              (entry) =>
-                entry.sealantWorkspaceId === null
-                  ? Effect.void
-                  : sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
-                      Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
-                      Effect.ignore,
-                      asSealantUser(entry.ownerUserId),
-                    ),
-              { concurrency: 4 },
-            );
+            // Hot workspaces hold nobody's work: the pool drains a removed project's standbys,
+            // and its sweep retries any it could not stop.
+            yield* engine.reconcileHotSessions(target.id);
             return new ProjectRemovalReport({
               removed: true,
               leftover: null,

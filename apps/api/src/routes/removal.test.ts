@@ -91,6 +91,7 @@ const world = async (scene: Scene = {}) => {
         },
         engine: {
           refreshCaptureStatus: () => Effect.void,
+          reconcileHotSessions: () => Effect.void,
           launchUnderWay: () => false,
           captureHolds: (worktreeId) => Effect.succeed(scene.holds?.get(worktreeId) ?? []),
           provisionSessionIn: () =>
@@ -915,6 +916,17 @@ describe("DELETE /projects/:id", () => {
       name: "restored-api",
     });
     expect(removedStores).toEqual([]);
+  });
+
+  it("hands a removed project's standbys to the hot pool, which drains them until they are gone", async () => {
+    const instance = await world();
+    const response = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/projects/${privateAlice.project}`,
+    );
+    expect(response.status).toBe(200);
+    expect(instance.world.calls).toContain("engine.reconcileHotSessions");
   });
 
   it("purge requires the exact project name before deleting its retained store and rows", async () => {

@@ -13,7 +13,24 @@ const exceptions = new Map([
     "packages/db/src/repos/capture-store.ts:claim",
     "Lease admission explicitly checks permanent removal marks.",
   ],
+  [
+    "packages/db/src/repos/capture-store.ts:recordPutAuthority",
+    "A removed project is read to refuse it new upload URLs.",
+  ],
+  [
+    "packages/db/src/repos/capture-store.ts:condemnForPurge",
+    "Only a removed project's purge mark authorizes the condemnation.",
+  ],
   ["packages/db/src/repos/removal-fences.ts:keep", "Remove moves a listed project to removed."],
+  [
+    "packages/db/src/repos/removal-fences.ts:lockMembership",
+    "Lifecycle changes lock the person's membership in every state.",
+  ],
+  ["packages/db/src/repos/removal-fences.ts:audited", "Each lifecycle change records its entry."],
+  [
+    "packages/db/src/repos/removal-fences.ts:finishPurge",
+    "Purge deletes the removed row under its own mark.",
+  ],
   ["packages/db/src/repos/removal-fences.ts:restore", "Restore reads and locks lifecycle state."],
   ["packages/db/src/repos/removal-fences.ts:takePurge", "Purge claims retained lifecycle state."],
   [
@@ -38,7 +55,6 @@ const exceptions = new Map([
     "packages/db/src/repos/projects.ts:confirm",
     "An uncertain commit must not delete a registered store in any state.",
   ],
-  ["packages/db/src/repos/projects.ts:remove", "Purge deletes the removed row under its mark."],
   [
     "packages/db/src/repos/member-revocations.ts:beginRemoval",
     "Revocation must include retained private content.",

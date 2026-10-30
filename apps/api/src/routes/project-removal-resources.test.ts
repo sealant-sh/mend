@@ -26,7 +26,11 @@ const postgres = postgresTestConfig();
 /** What a project removal reads about its one worktree: nothing runs, saves or is past its base. */
 const quietWorktree = (changed: ReadonlyArray<string> = []) =>
   ({
-    engine: { launchUnderWay: () => false, captureHolds: () => Effect.succeed([]) },
+    engine: {
+      launchUnderWay: () => false,
+      captureHolds: () => Effect.succeed([]),
+      reconcileHotSessions: () => Effect.void,
+    },
     forwards: { listOpen: () => Effect.succeed([]) },
     reads: {
       changedFiles: () =>
