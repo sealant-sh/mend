@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { PreviewId, PreviewLabel, ProjectId, WorktreeId } from "@mend/domain";
-import { type PreviewStatus, previewStatusLine } from "@mend/domain/workbench";
+import {
+  PREVIEW_POLL_CAP_MS,
+  PREVIEW_POLL_MS,
+  PREVIEW_POLL_STALL_MS,
+  type PreviewStatus,
+  previewStatusLine,
+} from "@mend/domain/workbench";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createTRPCClient } from "@trpc/client";
 import { act } from "react";
@@ -10,13 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AppRouter } from "../server/routers/index.ts";
 import type { WorktreePreviewDto, WorktreePreviewsDto } from "./api.ts";
-import {
-  makePreviewPoll,
-  PREVIEW_POLL_CAP_MS,
-  PREVIEW_POLL_MS,
-  PREVIEW_POLL_STALL_MS,
-  useWorktreePreviews,
-} from "./previews.ts";
+import { useWorktreePreviews } from "./previews.ts";
 import { TRPCProvider, trpcLinks } from "./trpc.ts";
 
 const WORKTREE = WorktreeId.make("worktree-1");
@@ -45,7 +45,7 @@ const shown = (
 const said = (
   starting: boolean,
   ...previews: ReadonlyArray<WorktreePreviewDto>
-): WorktreePreviewsDto => ({ previews, unprepared: null, starting });
+): WorktreePreviewsDto => ({ previews, unprepared: null, starting, routing: null });
 
 const setupFact: PreviewStatus = { _tag: "Starting", service: "web", phase: "setup" };
 const observed = (service: string, at: Date, reachable = true): PreviewStatus => ({
@@ -60,24 +60,6 @@ const setup = () => said(true, shown("web", [setupFact]));
 const service = () =>
   said(true, shown("web", [{ _tag: "Starting", service: "web", phase: "service" }]));
 const settled = () => said(false, shown("web", [observed("web", new Date())]));
-
-describe("when the previews read is read again", () => {
-  it("polls while a start is under way and stops once it settles", () => {
-    const poll = makePreviewPoll();
-    expect(poll(WORKTREE, setup(), 0)).toBe(PREVIEW_POLL_MS);
-    expect(poll(WORKTREE, service(), 2_000)).toBe(PREVIEW_POLL_MS);
-    expect(poll(WORKTREE, settled(), 4_000)).toBe(false);
-    expect(poll(WORKTREE, undefined, 6_000)).toBe(false);
-  });
-
-  it("gives up on a start that has said the same thing for the stall limit, and resumes on a change", () => {
-    const poll = makePreviewPoll();
-    expect(poll(WORKTREE, setup(), 0)).toBe(PREVIEW_POLL_MS);
-    expect(poll(WORKTREE, setup(), PREVIEW_POLL_STALL_MS - 1)).toBe(PREVIEW_POLL_MS);
-    expect(poll(WORKTREE, setup(), PREVIEW_POLL_STALL_MS)).toBe(false);
-    expect(poll(WORKTREE, service(), PREVIEW_POLL_STALL_MS + 1)).toBe(PREVIEW_POLL_MS);
-  });
-});
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;

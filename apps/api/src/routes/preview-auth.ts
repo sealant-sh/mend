@@ -1,9 +1,10 @@
 import { Auth } from "@mend/auth";
 import { PreviewId } from "@mend/domain";
 import { previewAuthTarget } from "@mend/domain/workbench";
-import { Effect, Option, Redacted } from "effect";
+import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 
+import { previewExchangeUrl } from "../preview-host.ts";
 import { PreviewIdentity } from "../preview-identity.ts";
 import {
   answer,
@@ -44,11 +45,7 @@ export const answerPreviewAuth = (input: {
       .pipe(
         Effect.match({
           onFailure: refusalAnswer,
-          onSuccess: (issued) =>
-            redirect(
-              302,
-              `${issued.origin}/__mend/auth?ticket=${encodeURIComponent(Redacted.value(issued.ticket))}&path=${encodeURIComponent(path)}`,
-            ),
+          onSuccess: (issued) => redirect(302, previewExchangeUrl(issued, path)),
         }),
       );
   });

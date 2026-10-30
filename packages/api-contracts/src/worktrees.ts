@@ -264,6 +264,13 @@ export const WorktreePreview = Schema.Struct({
 });
 export type WorktreePreview = typeof WorktreePreview.Type;
 
+export const PreviewRoutingMode = Schema.Literals([
+  "loopback-http",
+  "domain-https",
+  "tailnet-https",
+]);
+export type PreviewRoutingMode = typeof PreviewRoutingMode.Type;
+
 /**
  * A worktree's previews, and the worktree's own line when its latest preparation names no kept
  * preview: `preview not prepared · change not captured`, or a recipe refused before any preview
@@ -274,6 +281,13 @@ export const WorktreePreviews = Schema.Struct({
   unprepared: Schema.NullOr(Schema.String),
   /** Whether a start of one of these previews is under way. */
   starting: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  /**
+   * How the gateway routes previews while it is on; null while it is off. A preview under
+   * `loopback-http` lives at `*.localhost`, which only the Mend machine itself reaches.
+   */
+  routing: Schema.NullOr(PreviewRoutingMode).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 });
 export type WorktreePreviews = typeof WorktreePreviews.Type;
 

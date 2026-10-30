@@ -36,7 +36,6 @@ import {
 import type { CheckpointId, WorktreeId } from "@mend/domain";
 import {
   currentAgentProcess,
-  previewOpenTarget,
   previewStatusesOf,
   previewStatusLine,
   unpreparedStatusOf,
@@ -57,6 +56,7 @@ import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";
 import { LIVE_STATES } from "../live-states.ts";
 import { PreviewSetupConfig } from "../preview-config.ts";
+import { previewOpenOf } from "../preview-open.ts";
 import { refuseStartWhileRemoving, Removal } from "../removal.ts";
 import { budgetExceeded } from "../session-budgets.ts";
 import { observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
@@ -656,6 +656,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
             const attempt = attemptId === null ? null : yield* processes.byId(attemptId);
             const boundService =
               view.binding._tag === "Bound" ? yield* services.byId(view.binding.serviceId) : null;
+            const open = previewOpenOf(setup, view);
             const facts = previewStatusesOf(
               {
                 preview: view.preview,
@@ -669,7 +670,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
               ...view,
               status: facts.map((status) => previewStatusLine(status, now)),
               facts,
-              open: setup._tag === "On" ? previewOpenTarget(view) : null,
+              open: open._tag === "Open" ? open.target : null,
               boundTo:
                 boundService === null
                   ? null
@@ -687,6 +688,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           starting: [...described.flatMap(({ facts }) => facts), unprepared].some(
             (status) => status?._tag === "Starting",
           ),
+          routing: setup._tag === "On" ? setup.routing.mode : null,
         };
       }),
     )

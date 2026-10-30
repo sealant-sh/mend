@@ -219,6 +219,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         expect(second?.preview.id).not.toBe(first.preview.id);
         expect(second?.preview.label).not.toBe(first.preview.label);
         expect(yield* previews.resolveByLabel(first.preview.label)).toEqual(first);
+        expect(yield* previews.resolveById(first.preview.id)).toEqual(first);
         expect(yield* previews.byLabel(first.preview.label)).toEqual(first.preview);
         expect(yield* previews.byId(first.preview.id)).toEqual(first.preview);
         const sql = yield* SqlClient.SqlClient;
@@ -338,6 +339,11 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
         expect(
           yield* previews.resolveByLabel(PreviewLabel.make("bbbbbbbbbbbbbbbbbbbbbbbbba")),
         ).toBeNull();
+        expect(yield* previews.resolveById(PreviewId.make("reserved"))).toMatchObject({
+          preview: { label, state: "removed" },
+          binding: { _tag: "Unbound", reason: "removed" },
+        });
+        expect(yield* previews.resolveById(PreviewId.make("no-such-preview"))).toBeNull();
       }),
       crypto,
     );

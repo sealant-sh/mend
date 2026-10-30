@@ -16,6 +16,7 @@ export * from "./secret-files.ts";
 export * from "./harness-models.ts";
 export * from "./changes.ts";
 export * from "./worktrees.ts";
+export * from "./previews.ts";
 export * from "./landing.ts";
 export * from "./handoffs.ts";
 export * from "./github.ts";

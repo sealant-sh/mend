@@ -68,6 +68,14 @@ hand instead, such as one from **Mint a token by hand** in the web app.
   answer approvals (`Allow once`, `Allow for session`, `Decline`) and questions, and attach images.
   Header actions include `Resume`, `Deliver follow-up`, `Review the change` and `Diff`; the rest sit
   under `More actions`, and `Stop session` is only ever there.
+- Where the server serves previews on the tailnet or a domain, a session whose worktree has a
+  preview the gateway serves gets a `Preview` header action. It opens the preview in the in-app
+  browser, signed in as you through a single-use link minted for this phone, so revoking the phone
+  under Settings → Devices ends its sign-in to the preview too. Under the header, `Services` lists
+  each preview's status line, such as `preview · web · answered HTTP 200 · observed 4 s ago`.
+  Previews served at `*.localhost` stay on the Mend machine, so the phone never offers them, and a
+  preview on the tailnet opens only from a phone on the same tailnet. When the in-app browser opens
+  nothing, a line under the header says why.
 - A Claude workflow shows as a card on the turn that started it while it runs: each phase, each
   agent's state, model, tokens and current tool, and the totals. The turn Claude starts to report it
   reads `the agent continued · …`.

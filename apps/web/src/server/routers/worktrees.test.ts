@@ -30,6 +30,7 @@ const previews = {
   ],
   unprepared: null,
   starting: true,
+  routing: "tailnet-https",
 };
 
 const startApi = async () => {

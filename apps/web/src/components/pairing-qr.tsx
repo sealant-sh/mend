@@ -1,7 +1,7 @@
+import { useSecondTick } from "@mend/ui/hooks/use-second-tick";
 import { useState } from "react";
 
 import type { MintedDeviceDto, PairingDto } from "#/lib/api";
-import { useSecondTick } from "#/lib/clock";
 
 /**
  * Pairing a phone: the machine mints a short-lived code, the phone reads it —

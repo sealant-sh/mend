@@ -70,6 +70,10 @@ keeps its own address, because the preview gateway does not serve it. The previe
 shows under the Service's row (`preview · web · answered HTTP 200 · observed 4 s ago`), and a
 preview that another session of the same worktree runs gets its own row.
 
+The phone app's session screen has a `Preview` action for the same preview, and the same status
+lines under its header. It shows only where the server serves previews on the tailnet or a domain: a
+phone cannot reach a preview at `*.localhost`. See [Phone](/clients/phone/#what-it-does).
+
 ## Declaring
 
 You can declare a Service from three places, and the result is the same:

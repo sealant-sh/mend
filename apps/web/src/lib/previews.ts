@@ -1,55 +1,10 @@
 import type { PreviewId, WorktreeId } from "@mend/domain";
-import type { PreviewStatus } from "@mend/domain/workbench";
+import { makePreviewPoll, type PreviewStatus } from "@mend/domain/workbench";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import type { WorktreePreviewsDto } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
-
-export const PREVIEW_POLL_MS = 2_000;
-
-export const PREVIEW_POLL_STALL_MS = 10 * 60_000;
-
-export const PREVIEW_POLL_CAP_MS = 30 * 60_000;
-
-const withoutClock = (status: PreviewStatus) =>
-  status._tag === "Observed" ? { ...status, observedAt: null } : status;
-
-const factsOf = (read: WorktreePreviewsDto): string =>
-  JSON.stringify([
-    read.unprepared,
-    read.previews.map(({ preview, facts }) => [preview.id, facts.map(withoutClock)]),
-  ]);
-
-interface Episode {
-  readonly worktreeId: WorktreeId;
-  readonly began: number;
-  readonly facts: string;
-  readonly since: number;
-}
-
-export const makePreviewPoll = () => {
-  let episode: Episode | null = null;
-  return (
-    worktreeId: WorktreeId,
-    read: WorktreePreviewsDto | undefined,
-    now: number,
-  ): number | false => {
-    if (read === undefined || !read.starting) {
-      episode = null;
-      return false;
-    }
-    const facts = factsOf(read);
-    if (episode === null || episode.worktreeId !== worktreeId) {
-      episode = { worktreeId, began: now, facts, since: now };
-    } else if (episode.facts !== facts) {
-      episode = { ...episode, facts, since: now };
-    }
-    return now - episode.since < PREVIEW_POLL_STALL_MS && now - episode.began < PREVIEW_POLL_CAP_MS
-      ? PREVIEW_POLL_MS
-      : false;
-  };
-};
 
 export const useWorktreePreviews = (worktreeId: WorktreeId) => {
   const trpc = useTRPC();

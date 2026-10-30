@@ -607,10 +607,162 @@ const checkPages = async (browser, label, origin) => {
   }
 };
 
+const PREVIEW_SESSION = "check-preview";
+const PREVIEW_WORKTREE = "check-preview-worktree";
+const PREVIEW_ID = "check-preview-web";
+const PREVIEW_URL = "/__check-preview/__mend/auth?ticket=check-ticket&path=%2F";
+const UNSERVED = "web · the gateway serves nothing for it · nothing to open";
+// Past Chromium's five seconds of user activation: a tab opened only once the ticket is minted is
+// blocked, and one reserved in the press is not.
+const SLOW_MINT_MS = 6_500;
+
+const previewOf = (service, sessionId) => ({
+  preview: {
+    id: service === "web" ? PREVIEW_ID : `check-preview-${service}`,
+    serviceName: service,
+  },
+  status: [`preview · ${service} · answered HTTP 200 · observed 4 s ago`],
+  facts: [
+    {
+      _tag: "Observed",
+      service,
+      reachable: true,
+      httpStatus: 200,
+      observedAt: new Date(Date.now() - 4_000).toISOString(),
+    },
+  ],
+  open: `/preview-auth?preview=${PREVIEW_ID}&path=%2F`,
+  boundTo: { serviceId: `check-service-${service}`, sessionId },
+});
+
+const previewsRead = (network) => ({
+  previews: [
+    previewOf("web", PREVIEW_SESSION),
+    ...Array.from({ length: network.siblings }, (_, index) =>
+      previewOf(`sibling-${index}`, "check-sibling"),
+    ),
+  ],
+  unprepared: null,
+  starting: false,
+  routing: network.routing,
+});
+
+const stubPreviewApi = async (page, origin, network) => {
+  await page.route(`${origin}/api/**`, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (body, status = 200) =>
+      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    if (path === `/api/sessions/${PREVIEW_SESSION}`) {
+      const view = sessionView(PREVIEW_SESSION, "agent-protocol");
+      return json({ ...view, session: { ...view.session, worktreeId: PREVIEW_WORKTREE } });
+    }
+    if (path === `/api/worktrees/${PREVIEW_WORKTREE}/previews`) return json(previewsRead(network));
+    if (request.method() === "POST" && path === `/api/previews/${PREVIEW_ID}/open`) {
+      network.opens.push(path);
+      await new Promise((resolve) => setTimeout(resolve, network.mintDelayMs));
+      return network.refuse
+        ? json({ _tag: "PreviewNotOpenable", reason: "not-served", message: UNSERVED }, 409)
+        : json({ url: `${origin}${PREVIEW_URL}` });
+    }
+    if (path === "/api/organization") return json({ userId: "check-user" });
+    return route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ _tag: "NotFound", message: "Not stubbed by check-web." }),
+    });
+  });
+};
+
+const checkPreview = async (browser, label, origin) => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  const network = {
+    routing: "loopback-http",
+    siblings: 0,
+    mintDelayMs: 0,
+    refuse: false,
+    opens: [],
+  };
+  try {
+    await stubPreviewApi(page, origin, network);
+    await saveServer(page, origin);
+    const preview = page.getByRole("button", { name: "Preview web" });
+    const line = page.getByText(/^preview · web · answered HTTP 200 · observed \d+ s ago$/);
+
+    await page.goto(`${origin}/session/${PREVIEW_SESSION}`, { timeout: 300_000 });
+    await line.waitFor({ timeout: 60_000 });
+    expect((await preview.count()) === 0, "a Preview showed for a preview served at *.localhost");
+    await shoot(page, label, "preview-loopback");
+
+    network.routing = "tailnet-https";
+    await page.reload();
+    await preview.waitFor({ timeout: 60_000 });
+    await line.waitFor({ timeout: 10_000 });
+    await shoot(page, label, "preview-tailnet");
+
+    network.mintDelayMs = SLOW_MINT_MS;
+    const popup = page.waitForEvent("popup", { timeout: 3_000 });
+    await preview.click();
+    const opened = await popup.catch(() => {
+      throw new Error("no tab opened in the press: the browser blocked the Preview's tab");
+    });
+    await opened.waitForURL((url) => url.href.endsWith(PREVIEW_URL), {
+      timeout: SLOW_MINT_MS + 10_000,
+    });
+    await opened.close();
+
+    network.mintDelayMs = 0;
+    const again = page.waitForEvent("popup", { timeout: 10_000 });
+    await preview.click();
+    const second = await again;
+    await second.waitForURL((url) => url.href.endsWith(PREVIEW_URL), { timeout: 10_000 });
+    await second.close();
+    expect(network.opens.length === 2, `${network.opens.length} opens minted for two presses`);
+
+    network.refuse = true;
+    const refused = page.waitForEvent("popup", { timeout: 10_000 });
+    await preview.click();
+    const reserved = await refused;
+    await reserved.waitForEvent("close", { timeout: 10_000 });
+    await page.getByText(`preview · ${UNSERVED}`, { exact: true }).waitFor({ timeout: 10_000 });
+    network.refuse = false;
+
+    await page.evaluate(() => {
+      window.open = () => null;
+    });
+    await preview.click();
+    await page
+      .getByText("preview · the in-app browser did not open · the browser blocked the new tab", {
+        exact: true,
+      })
+      .waitFor({ timeout: 10_000 });
+    await shoot(page, label, "preview-blocked");
+
+    network.siblings = 11;
+    await page.reload();
+    await preview.waitFor({ timeout: 60_000 });
+    const strip = page.getByTestId("preview-services");
+    await page.getByText("sibling-10", { exact: true }).waitFor({ state: "attached" });
+    const height = (await strip.boundingBox())?.height ?? Number.POSITIVE_INFINITY;
+    expect(height <= 180, `the Services strip is ${height}px tall with 12 previews`);
+    await shoot(page, label, "preview-many");
+    console.log(
+      `✓ ${label} Preview shows off loopback only, opens its tab in the press, says why it opened nothing, and keeps the strip at ${Math.round(height)}px`,
+    );
+    return [];
+  } catch (error) {
+    return [`${label} preview\n  ${error instanceof Error ? error.message : String(error)}`];
+  } finally {
+    await context.close();
+  }
+};
+
 rmSync(EXPORT_DIR, { recursive: true, force: true });
 await run(["export", "--platform", "web", "--output-dir", EXPORT_DIR]);
 
-const browser = await chromium.launch();
+// Playwright turns popup blocking off by default; the Preview's tab has to open with it on.
+const browser = await chromium.launch({ ignoreDefaultArgs: ["--disable-popup-blocking"] });
 const failures = [];
 try {
   const exported = await serveExport();
@@ -624,6 +776,7 @@ try {
   try {
     failures.push(...(await checkRoutes(browser, "dev server", dev.origin)));
     failures.push(...(await checkStopAsks(browser, "dev server", dev.origin)));
+    failures.push(...(await checkPreview(browser, "dev server", dev.origin)));
     failures.push(...(await checkPages(browser, "dev server", dev.origin)));
   } finally {
     dev.stop();

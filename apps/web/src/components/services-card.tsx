@@ -31,6 +31,8 @@ function RowAction({ className, ...props }: React.ComponentProps<typeof Button>)
     />
   );
 }
+import { useSecondTick } from "@mend/ui/hooks/use-second-tick";
+
 import {
   addService,
   restartService,
@@ -42,7 +44,6 @@ import {
   type ServiceViewDto,
   type SessionProcessDto,
 } from "#/lib/api";
-import { useSecondTick } from "#/lib/clock";
 import {
   placePreviews,
   type PreviewsRead,

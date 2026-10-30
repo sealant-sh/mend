@@ -303,6 +303,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       ensureForWorktree: () => Effect.die("unused"),
       ensureNamed: () => Effect.die("unused"),
       resolveByLabel: () => Effect.die("unused"),
+      resolveById: () => Effect.die("unused"),
       byLabel: (label) =>
         Effect.succeed(Object.values(PREVIEWS).find((preview) => preview.label === label) ?? null),
       byId: (id) => Effect.succeed(byId(id)),

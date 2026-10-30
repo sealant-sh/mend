@@ -56,6 +56,12 @@ const isRefusal = (
 const signInAt = (appUrl: string, previewId: PreviewId, path: PreviewPath) =>
   `${appUrl}${previewAuthTarget(previewId, path)}`;
 
+export const previewExchangeUrl = (
+  issued: { readonly origin: PreviewOrigin; readonly ticket: Redacted.Redacted<string> },
+  path: PreviewPath,
+): string =>
+  `${issued.origin}${EXCHANGE}?ticket=${encodeURIComponent(Redacted.value(issued.ticket))}&path=${encodeURIComponent(path)}`;
+
 const browserOf = (head: PreviewRequestHead): BrowserHead => ({
   method: head.method,
   upgrade: valuesOf(head.headers, "upgrade").length > 0,

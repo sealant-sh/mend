@@ -186,6 +186,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "skills.sync",
   // A landing's id resolves to its change first; landing.test.ts covers who may refresh it.
   "landings.refresh",
+  // A preview's id resolves to its project first; preview-open.test.ts covers who may open it.
+  "previews.open",
   "handoffs.receive",
   "handoffs.instanceTerms",
 ]);

@@ -142,6 +142,7 @@ import { LIVE_STATES } from "../../src/live-states.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { PageViewTokens } from "../../src/page-view-tokens.ts";
 import { type PreviewSetup, PreviewSetupConfig } from "../../src/preview-config.ts";
+import { PreviewIdentity } from "../../src/preview-identity.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
 import { RemovalLive } from "../../src/removal.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
@@ -290,6 +291,7 @@ export const createTenancyApi = async (
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
       readonly previews?: Layer.PartialEffectful<PreviewsRepo["Service"]>;
       readonly preparations?: Layer.PartialEffectful<PreviewPreparationsRepo["Service"]>;
+      readonly previewIdentity?: Layer.PartialEffectful<PreviewIdentity["Service"]>;
       readonly observations?: Layer.PartialEffectful<ServiceObservationsRepo["Service"]>;
       readonly storeRefs?: Layer.PartialEffectful<StoreRefsRepo["Service"]>;
       readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
@@ -540,6 +542,12 @@ export const createTenancyApi = async (
         PreviewPreparationsRepo,
         "preparations",
         options.implement?.preparations ?? {},
+        calls,
+      ),
+      recording(
+        PreviewIdentity,
+        "previewIdentity",
+        options.implement?.previewIdentity ?? {},
         calls,
       ),
       recording(
