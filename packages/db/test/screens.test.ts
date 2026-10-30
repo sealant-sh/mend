@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
 import {
+  AgentTurnId,
   ScreenFrameId,
   ScreenId,
   SealantWorkspaceId,
@@ -578,6 +579,81 @@ describe.skipIf(postgres.skip)("screens in Postgres", () => {
           stored.some((row) => new RegExp(`"length": ?${TYPED.length}\\b`).test(row.row)),
         ).toBe(true);
         expect(stored.filter((row) => row.row.includes(TYPED))).toEqual([]);
+      }),
+    ));
+
+  it("makes forty agent entries in one turn one screen item spanning them", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const { screens, session, agentProcess } = yield* postgresFixture;
+        const sessionId = yield* session();
+        const process = yield* agentProcess(sessionId);
+        const [first, second] = [
+          AgentTurnId.make(`t-${randomUUID()}`),
+          AgentTurnId.make(`t-${randomUUID()}`),
+        ];
+        for (const [ordinal, turn] of [first, second].entries()) {
+          yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status)
+            VALUES (${turn}, ${sessionId}, ${process}, ${ordinal}, 'look', 'completed')`;
+        }
+        const screen = yield* screens.reserve({ sessionId, workspaceId: workspace() });
+        const answer = (n: number, turnId: AgentTurnId | null) =>
+          Effect.gen(function* () {
+            const callKey = `call-${n}`;
+            yield* screens.claim({ screenId: screen.id, callKey, args: act(typing) });
+            yield* screens.settle({
+              screenId: screen.id,
+              callKey,
+              outcome: "applied",
+              answer: { ...acted(process, n), turnId },
+            });
+          });
+        for (let n = 1; n <= 20; n++) yield* answer(n, first);
+        const connection = ViewerConnectionId.make("c-held");
+        yield* screens.control(screen.id, { _tag: "Take", by: OWNER, connection }, OWNER);
+        yield* screens.control(screen.id, { _tag: "Fenced", epoch: 1 }, OWNER);
+        yield* screens.control(screen.id, { _tag: "HandBack", by: OWNER }, OWNER);
+        yield* screens.control(screen.id, { _tag: "Fenced", epoch: 2 }, OWNER);
+        for (let n = 21; n <= 40; n++) yield* answer(n, first);
+        yield* answer(41, second);
+        yield* answer(42, null);
+
+        const items = yield* sql<{
+          readonly turn_id: string;
+          readonly kind: string;
+          readonly data: unknown;
+        }>`
+          SELECT turn_id, kind, data FROM agent_items
+          WHERE session_id = ${sessionId} ORDER BY created_at`;
+        expect(items).toEqual([
+          {
+            turn_id: first,
+            kind: "screen",
+            data: {
+              span: { screenId: screen.id, fromSeq: 1, toSeq: 42 },
+              actions: 40,
+              frames: 40,
+              coverFrameId: "frame-40",
+              personHeld: true,
+            },
+          },
+          {
+            turn_id: second,
+            kind: "screen",
+            data: {
+              span: { screenId: screen.id, fromSeq: 43, toSeq: 43 },
+              actions: 1,
+              frames: 1,
+              coverFrameId: "frame-41",
+              personHeld: false,
+            },
+          },
+        ]);
+        const typed = yield* sql<{ readonly row: string }>`
+          SELECT row_to_json(agent_items)::text AS row FROM agent_items
+          WHERE session_id = ${sessionId}`;
+        expect(typed.filter((row) => row.row.includes(TYPED))).toEqual([]);
       }),
     ));
 });
