@@ -191,8 +191,10 @@ mend projects purge <id> --confirm exact-name
 ```
 
 Assets another project still references are kept. Instance audit and existing backups are unchanged.
-If purge stops partway, purge again to finish. A project left mid-deletion by an older Mend is
-listed here too; Restore refuses when completeness cannot be proved.
+If an upload a session started before the removal could still land, purge refuses and says until
+when; purge again after that time. If purge stops partway, purge again to finish. A project left
+mid-deletion by an older Mend is listed here too; Restore refuses when completeness cannot be
+proved.
 
 T3 Code's confirmation currently says project removal cannot be undone. Mend still keeps it; use
 Mend's Restore to bring it back. `mend doctor` reports local disk held by removed projects.
