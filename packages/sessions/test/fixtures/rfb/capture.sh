@@ -6,7 +6,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 codec=$(cd "$here/../../../src/screen" && pwd)
 image=mend-rfb-capture:local
 name=mend-rfb-capture-$$
-docker build -q -t "$image" "$here" >/dev/null
+docker build -q --target capture -t "$image" "$here" >/dev/null
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
 docker run --rm --name "$name" --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$here:/out" -v "$here/capture.mjs:/capture/sessions/test/fixtures/rfb/capture.mjs:ro" \

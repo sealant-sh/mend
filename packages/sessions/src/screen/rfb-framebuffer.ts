@@ -46,7 +46,12 @@ export type FramebufferRefusal =
   | "malformed";
 
 export type FramebufferRead =
-  | { readonly _tag: "Read"; readonly events: ReadonlyArray<FramebufferEvent> }
+  | {
+      readonly _tag: "Read";
+      readonly events: ReadonlyArray<FramebufferEvent>;
+      /** The server's latest message is read only in part. */
+      readonly partial: boolean;
+    }
   | { readonly _tag: "Refused"; readonly reason: FramebufferRefusal };
 
 type Phase =
@@ -160,7 +165,8 @@ export class Framebuffer {
       for (let step = this.step(queue); step !== WAIT; step = this.step(queue)) {
         if (step !== undefined) events.push(step);
       }
-      return this.phase._tag === "Refused" ? this.phase : { _tag: "Read", events };
+      if (this.phase._tag === "Refused") return this.phase;
+      return { _tag: "Read", events, partial: this.phase._tag !== "Idle" || queue.length > 0 };
     } catch (error) {
       if (!(error instanceof Refusal)) throw error;
       this.phase = { _tag: "Refused", reason: error.reason };

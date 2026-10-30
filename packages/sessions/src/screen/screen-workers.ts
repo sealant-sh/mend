@@ -32,6 +32,8 @@ export class WorkerStopped extends Data.TaggedError("WorkerStopped")<{
 export interface Decoder {
   readonly decode: (bytes: Uint8Array) => Effect.Effect<FramebufferRead, WorkerStopped>;
   readonly copy: Effect.Effect<Uint8Array<ArrayBuffer>, WorkerStopped>;
+  /** Fails once the decoder's thread has gone, whether or not a request was waiting. */
+  readonly stopped: Effect.Effect<never, WorkerStopped>;
 }
 
 export class ScreenWorkers extends Context.Service<
@@ -52,6 +54,7 @@ interface Thread {
     deadline: Duration.Duration,
   ) => Effect.Effect<Reply<Tag>, WorkerStopped>;
   readonly stop: Effect.Effect<void>;
+  readonly stopped: Effect.Effect<never, WorkerStopped>;
 }
 
 const isReply = <Tag extends WorkerReply["_tag"]>(
@@ -63,10 +66,13 @@ const threadOf = (url: URL): Thread => {
   const worker = new Worker(url);
   worker.unref();
   let alive = true;
+  let ending: WorkerStopped["reason"] = "failed";
   const waiting: Array<(reply: WorkerReply | undefined) => void> = [];
+  const watchers: Array<() => void> = [];
   const stopped = () => {
     alive = false;
     for (const resume of waiting.splice(0)) resume(undefined);
+    for (const notify of watchers.splice(0)) notify();
   };
   worker.on("message", (reply: WorkerReply) => waiting.shift()?.(reply));
   worker.on("error", stopped);
@@ -75,6 +81,11 @@ const threadOf = (url: URL): Thread => {
   const failed = new WorkerStopped({ reason: "failed" });
   return {
     stop,
+    stopped: Effect.callback<never, WorkerStopped>((resume) => {
+      const end = () => resume(Effect.fail(new WorkerStopped({ reason: ending })));
+      if (!alive) return end();
+      watchers.push(end);
+    }),
     ask: (request, tag, deadline) =>
       Effect.callback<WorkerReply | undefined>((resume) => {
         if (!alive) return resume(Effect.succeed(undefined));
@@ -87,7 +98,12 @@ const threadOf = (url: URL): Thread => {
         Effect.timeoutOrElse({
           duration: deadline,
           orElse: () =>
-            Effect.andThen(stop, Effect.fail(new WorkerStopped({ reason: "deadline" }))),
+            Effect.sync(() => {
+              ending = "deadline";
+            }).pipe(
+              Effect.andThen(stop),
+              Effect.andThen(Effect.fail(new WorkerStopped({ reason: "deadline" }))),
+            ),
         }),
       ),
   };
@@ -116,6 +132,7 @@ export const screenWorkersLayer = (url: URL): Layer.Layer<ScreenWorkers> =>
             copy: thread
               .ask({ _tag: "Copy" }, "Pixels", DECODE_DEADLINE)
               .pipe(Effect.map((reply) => reply.pixels)),
+            stopped: thread.stopped,
           })),
         ),
         encodePng: (pixels) =>
