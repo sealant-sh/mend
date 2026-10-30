@@ -10,7 +10,13 @@ import { makeHands } from "../src/screen/hands.ts";
 import { SCREEN_WORKER, screenWorkersLayer } from "../src/screen/screen-workers.ts";
 import { dialLog } from "./forward-fixture.ts";
 import { decodePng } from "./png.ts";
-import { OWNER, makeScreenWorld, screenHostLayer, screenSealantLayer } from "./screen-world.ts";
+import {
+  eventually,
+  OWNER,
+  makeScreenWorld,
+  screenHostLayer,
+  screenSealantLayer,
+} from "./screen-world.ts";
 import { type Xvnc, dockerReady, startXvnc } from "./xvnc.ts";
 
 const UNSIGNABLE = SessionId.make("s-unsignable");
@@ -102,10 +108,10 @@ describe.skipIf(!dockerReady)("a screen's hand, against TigerVNC Xvnc", () => {
         const screen = yield* screenOf(freshSession());
         const first = yield* hands.of(screen);
         world.sockets.at(-1)?.destroy();
-        for (let waited = 0; ended.length === 0; waited++) {
-          if (waited > 100) throw new Error("the hand's end was never told");
-          yield* Effect.sleep("20 millis");
-        }
+        yield* eventually(
+          () => Effect.sync(() => ended.length > 0),
+          "the hand's end was never told",
+        );
         expect(ended.map((each) => each.id)).toEqual([screen.id]);
         expect(hands.open(screen.id)).toBeNull();
         const second = yield* hands.of(screen);

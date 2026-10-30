@@ -28,7 +28,13 @@ import {
   ScreensLive,
 } from "../src/screen/screens.ts";
 import { decodePng } from "./png.ts";
-import { OWNER, makeScreenWorld, screenHostLayer, screenSealantLayer } from "./screen-world.ts";
+import {
+  eventually,
+  OWNER,
+  makeScreenWorld,
+  screenHostLayer,
+  screenSealantLayer,
+} from "./screen-world.ts";
 import { type Xvnc, dockerReady, startXvnc } from "./xvnc.ts";
 
 const CONNECTION = ViewerConnectionId.make("viewer-1");
@@ -476,10 +482,10 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
           expect((yield* rowOf(screen.id)).input._tag).toBe("Agent");
           const dialled = world.dials.length;
           world.sockets.at(-1)?.destroy();
-          for (let waited = 0; (yield* rowOf(screen.id)).input._tag === "Agent"; waited++) {
-            if (waited > 100) throw new Error("the input never reset");
-            yield* Effect.sleep("20 millis");
-          }
+          yield* eventually(
+            () => Effect.map(rowOf(screen.id), (row) => row.input._tag !== "Agent"),
+            "the input never reset",
+          );
           expect((yield* rowOf(screen.id)).input._tag).toBe("AwaitingAgent");
           answered(yield* screens.look(agent.call()));
           expect(world.dials.length).toBe(dialled + 1);
@@ -646,10 +652,10 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
             ]),
           ).toBe(true);
           expect(keysDown()).toBe(1);
-          for (let waited = 0; (yield* rowOf(screen.id)).input._tag === "Person"; waited++) {
-            if (waited > 150) throw new Error("never paused");
-            yield* Effect.sleep("100 millis");
-          }
+          yield* eventually(
+            () => Effect.map(rowOf(screen.id), (row) => row.input._tag !== "Person"),
+            "never paused",
+          );
           expect((yield* rowOf(screen.id)).input).toMatchObject({
             _tag: "Paused",
             reason: "lease-lapsed",
