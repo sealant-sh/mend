@@ -1,10 +1,11 @@
 import { PgClient } from "@effect/sql-pg";
 import { AgentTurnId, PreviewId, SessionId, SessionProcessId, WorktreeId } from "@mend/domain";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Option, Queue, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
+import { MEND_EVENTS_CHANNEL, MendEvent } from "../src/events.ts";
 import { migrations } from "../src/migrations.ts";
 import {
   AgentConversationRepo,
@@ -32,7 +33,11 @@ const workerLayer = () =>
     ),
   );
 
-type Services = PreviewPreparationsRepo | AgentConversationRepo | SqlClient.SqlClient;
+type Services =
+  | PreviewPreparationsRepo
+  | AgentConversationRepo
+  | SqlClient.SqlClient
+  | PgClient.PgClient;
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
@@ -226,6 +231,40 @@ describe.skipIf(postgres.skip)("preview_preparations: one worker prepares each e
     expect(result.decided?.state).toMatchObject({
       _tag: "Decided",
       decision: { _tag: "Running", service: "web", note: "recipe-changed" },
+    });
+  });
+
+  it("tells the worktree's readers of each phase and decision it records, and nothing a lapsed holder writes", async () => {
+    const heard = await run(
+      Effect.gen(function* () {
+        const repo = yield* PreviewPreparationsRepo;
+        const pg = yield* PgClient.PgClient;
+        const notices = yield* pg.listen(MEND_EVENTS_CHANNEL);
+        const next = Queue.take(notices).pipe(
+          Effect.map((notice) =>
+            Schema.decodeUnknownSync(Schema.fromJsonString(MendEvent))(notice.payload),
+          ),
+          Effect.timeoutOption("1 second"),
+          Effect.map(Option.getOrNull),
+        );
+        const turn = yield* endedTurn();
+        const claim = claimed(yield* repo.claim(turn, LEASE_MS));
+        const claimedHeard = yield* next;
+        yield* repo.progress(claim, startingWeb(turn));
+        const setupHeard = yield* next;
+        yield* repo.decide(claim, { _tag: "NotApproved", service: "web", previewId: null });
+        const refusalHeard = yield* next;
+        const lapsed = claimed(yield* repo.claim(yield* endedTurn(), 0));
+        yield* repo.decide(lapsed, { _tag: "NoChange" });
+        return { claimedHeard, setupHeard, refusalHeard, lapsedHeard: yield* next };
+      }).pipe(Effect.scoped),
+    );
+    const moved = { type: "worktree", worktreeId: WORKTREE, projectId: "p-1" };
+    expect(heard).toEqual({
+      claimedHeard: null,
+      setupHeard: moved,
+      refusalHeard: moved,
+      lapsedHeard: null,
     });
   });
 
