@@ -290,6 +290,16 @@ describe("capture git verification", () => {
       );
       expect(read1.value).toBe(true);
       expect(read1.stamp.captureN).toBe(0);
+      // A read that must see the head itself, the preview's after a flush, refuses instead.
+      const exact = await run(
+        Effect.gen(function* () {
+          const reads = yield* WorktreeReads;
+          return yield* reads
+            .changedFiles(world.project.id, worktreeId, world.baseSha, { exactHead: true })
+            .pipe(Effect.flip);
+        }),
+      );
+      expect(exact._tag).toBe("WorktreeNotCapturedError");
 
       // 2. A complete pack on top verifies, and the plan and the reads are its own again.
       const edited = packEditedTree(world.work, worktreeId, epoch, world.baseSha, (dir) => {

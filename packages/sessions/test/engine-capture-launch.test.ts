@@ -923,7 +923,12 @@ describe("SessionEngine capture mode", () => {
           const reads = () => execCalls.filter((argv) => argv.includes("mend-setup-inputs"));
           while (reads().length === 0) yield* Effect.sleep("10 millis");
 
-          expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+          expect(
+            yield* engine.stopServiceStarts(session.id, "web", {
+              kind: "person",
+              userId: "user-fixture",
+            }),
+          ).toBe(1);
           const error = yield* Fiber.join(starting);
 
           expect(error.message).toBe("a Stop came before web started");

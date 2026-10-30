@@ -257,7 +257,11 @@ interface ActiveService {
   /** Live relayed sockets — a shutdown must sever these or the process never exits. */
   readonly sockets: Set<net.Socket>;
   /** The last observation written, so a connection that says nothing new writes nothing. */
-  last: { readonly state: "reachable" | "unreachable"; readonly error: string | null } | null;
+  last: {
+    readonly state: "reachable" | "unreachable";
+    readonly error: string | null;
+    readonly httpStatus: number | null;
+  } | null;
 }
 
 const resetSockets = (entry: ActiveService): void => {
@@ -339,21 +343,36 @@ export const ServiceHostLive: Layer.Layer<
       state: "reachable" | "unreachable",
       source: ServiceObservationSource,
       error: string | null = null,
+      httpStatus: number | null = null,
     ): Promise<void> => {
       const entry = active.get(input.serviceId);
-      if (entry === undefined || (entry.last?.state === state && entry.last.error === error)) {
+      if (
+        entry === undefined ||
+        (entry.last?.state === state &&
+          entry.last.error === error &&
+          entry.last.httpStatus === httpStatus)
+      ) {
         return Promise.resolve();
       }
-      entry.last = { state, error };
+      entry.last = { state, error, httpStatus };
       return Effect.runPromise(
         observations
-          .record({ serviceId: input.serviceId, forwardId: input.forwardId, state, source, error })
+          .record({
+            serviceId: input.serviceId,
+            forwardId: input.forwardId,
+            state,
+            source,
+            error,
+            httpStatus,
+          })
           .pipe(Effect.ignore),
       );
     };
 
     const observeVerdict = (input: ServiceStartInput, verdict: ReadyVerdict): Promise<void> => {
-      if (verdict._tag === "Ready") return observe(input, "reachable", "probe");
+      if (verdict._tag === "Ready") {
+        return observe(input, "reachable", "probe", null, verdict.httpStatus);
+      }
       if (verdict.issue?.reason === "cancelled") return Promise.resolve();
       return observe(input, "unreachable", "probe", verdict.reason);
     };

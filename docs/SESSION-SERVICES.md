@@ -368,6 +368,57 @@ the owner.
 - Nothing is approved by an upgrade: after it, an automatic start of a recipe is refused until its
   owner starts it once. Removing a worktree removes its approvals.
 
+**The preview after a turn.** When a turn in a protocol session completes having changed the
+worktree, in a project whose `mend.toml` names a `[preview]`, Mend starts that preview unless
+something already runs it (ADR 0017, "After the agent is done").
+
+- The session's latest turn decides. A turn with a later one hands its change on: the latest turn
+  changed the worktree when the worktree differs from the newest checkpoint taken before the
+  earliest turn it covers started, or from its base when there is none. A changed turn followed by a
+  question still starts the preview, once.
+- Before it reads the change, Mend asks the executor to flush its captures, up to three times, then
+  reads the newest capture itself. A turn whose change cannot be read, or only from an older
+  capture, records `preview not prepared · change not captured`, never "no change". A question that
+  changed nothing starts nothing, and Mend reads `mend.toml` only once a turn changed something.
+- Not running: setup if its fingerprint changed, then each `depends`, then the Service, then its
+  ready check. It is an automatic start, so it runs only the owner's approved digest, as the person
+  who last started the Service. A changed digest runs the approved version and the preview says
+  `preview · web · recipe changed · the owner's Start runs it`.
+- Running: nothing. Hot reload has the change. When the turn changed `[setup]`'s inputs, the preview
+  says `setup inputs changed · restart to apply`. Mend never restarts it by itself.
+- A person's Stop holds, a Stop of a start whose setup still runs included (the start's Stop, or
+  Stop Services): it holds on the preview before the Service has a row. The agent's own
+  `mend service stop` does not hold it.
+- One automatic start of a preview runs at a time, whichever session's turn began it; another
+  records that a start holds the preview. Under the lifecycle permit, just before the Service's
+  attempt begins, Mend checks again that its claim holds, that no person stopped the preview, and
+  that nothing else runs it. A start that ends in a failure, a Stop or the session's end is recorded
+  as such.
+- Each ended turn is decided once, by whichever API process claims it in `preview_preparations`. The
+  claim is a lease that its worker renews. A worker that loses it stops where it stands and starts
+  nothing more; one that dies leaves it to lapse; the next minute's pass takes the turn again. Turns
+  are looked for when a conversation moves, at start-up and every minute.
+- `GET /worktrees/:id/previews` returns each kept preview with its status lines, and the worktree's
+  own line when its latest preparation names no kept preview. A start under way speaks first, else
+  the latest decision, a quiet one such as a question's included; a decision says nothing once an
+  attempt of its Service began after it. The lines are `previewStatusLine`'s, the same on every
+  surface: `preview · web · answered HTTP 200 · observed 4 s ago`,
+  `preview · web · starting · setup`, `preview · web · stopped by Maria`,
+  `preview not prepared · web · recipe not approved · the owner's Start runs it`.
+
+It never starts a recipe the owner did not approve, a preview a person stopped, or anything for a
+question, and it never restarts a running preview. Its limits until later delivery steps:
+
+- The first preview needs the owner's Start: until then the line says
+  `preview not prepared · web · recipe not approved · the owner's Start runs it`.
+- A session that ended before its turn was prepared is not started: the line says
+  `preview not prepared · session ended`. Step 12 starts a workspace for Services alone.
+- A Service started this way holds the protocol idle stop, as any running Service does, until step
+  12 adds the preview's own idle clock.
+- A turn whose session ended while no API process was listening is never looked at: the pass reads
+  only sessions that have not ended.
+- Terminal sessions' turns, including history a mode switch copies in, start nothing (step 13).
+
 Project recipes, the machine-local ones the web app adds, keep their four fields: no `cwd`, `env`,
 `ready`, `host`, `address` or `depends`.
 

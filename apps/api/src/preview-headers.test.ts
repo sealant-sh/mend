@@ -1,5 +1,5 @@
 import { PreviewLabel } from "@mend/domain";
-import type { PreviewUndelivered } from "@mend/domain/workbench";
+import type { PreviewNotDelivered } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -284,18 +284,16 @@ describe("the response head a viewer receives", () => {
 });
 
 describe("the page for a request the gateway did not deliver", () => {
-  const facts: ReadonlyArray<PreviewUndelivered> = [
+  const facts: ReadonlyArray<{ readonly service: string; readonly why: PreviewNotDelivered }> = [
     {
-      _tag: "DidNotStart",
-      serviceName: 'web <dev> & "docs"',
-      holdMs: 180_000,
-      reason: "start timed out",
+      service: 'web <dev> & "docs"',
+      why: { _tag: "DidNotStart", holdMs: 180_000, reason: "start timed out" },
     },
-    { _tag: "Stopped", serviceName: "api's", by: "<Maria>" },
+    { service: "api's", why: { _tag: "Stopped", by: "<Maria>" } },
   ];
 
-  it.each(facts)("says $_tag in one escaped line, uncached and unindexed", (fact) => {
-    const page = undeliveredAnswer(fact);
+  it.each(facts)("says $why._tag in one escaped line, uncached and unindexed", (fact) => {
+    const page = undeliveredAnswer(fact.service, fact.why);
     expect(page.status).toBe(503);
     expect(page.headers).toMatchObject({
       "cache-control": "no-store, private",
@@ -309,7 +307,7 @@ describe("the page for a request the gateway did not deliver", () => {
       ?.replace(/<[^>]+>/g, "")
       .replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(Number(code)));
     expect(visible).toBe(
-      fact._tag === "DidNotStart"
+      fact.why._tag === "DidNotStart"
         ? 'preview · web <dev> & "docs" · did not start in 3 min · start timed out · your request was not delivered'
         : "preview · api's · <Maria> stopped the preview · your request was not delivered",
     );

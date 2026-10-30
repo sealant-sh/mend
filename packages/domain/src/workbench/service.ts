@@ -104,6 +104,11 @@ export class ServiceObservation extends Schema.Class<ServiceObservation>("Servic
   state: ServiceTargetState,
   source: ServiceObservationSource,
   error: Schema.NullOr(Schema.String),
+  /** The status code an HTTP ready check read; null under a TCP rule and before 0165. */
+  httpStatus: Schema.NullOr(Schema.Int).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   firstObservedAt: Timestamp,
   lastObservedAt: Timestamp,
 }) {}

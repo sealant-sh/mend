@@ -181,6 +181,14 @@ const rawFilesOf = Effect.gen(function* () {
     });
 });
 
+export interface ChangedFilesOptions {
+  /**
+   * Read the chain head itself, or refuse: never the newest verified capture under a head whose
+   * Git section failed verification.
+   */
+  readonly exactHead?: boolean;
+}
+
 export class WorktreeReads extends Context.Service<
   WorktreeReads,
   {
@@ -194,6 +202,7 @@ export class WorktreeReads extends Context.Service<
       projectId: ProjectId,
       worktreeId: WorktreeId,
       base: string,
+      options?: ChangedFilesOptions,
     ) => Effect.Effect<Stamped<ReadonlyArray<ChangedFile>>, WorktreeReadError>;
     readonly diffRange: (
       projectId: ProjectId,
@@ -379,7 +388,11 @@ export interface CaptureCache {
 /** Mend-made packs for a worktree live under the project prefix, never an epoch's. */
 export const derivedPackPrefix = (projectId: ProjectId) => `projects/${projectId}/packs/`;
 
-const selectedCapture = (worktreeId: WorktreeId, historical?: { readonly captureId: string }) =>
+const selectedCapture = (
+  worktreeId: WorktreeId,
+  historical?: { readonly captureId: string },
+  exactHead = false,
+) =>
   Effect.gen(function* () {
     const repo = yield* CaptureStoreRepo;
     const unavailable = (reason: string) =>
@@ -405,6 +418,12 @@ const selectedCapture = (worktreeId: WorktreeId, historical?: { readonly capture
     // head is read as is — the failure, if any, surfaces with git's own words.
     if (historical !== undefined && chainHead.gitFsck === "failed") {
       return yield* unavailable("its capture failed Git verification");
+    }
+    if (exactHead && chainHead.gitFsck === "failed") {
+      return yield* new WorktreeNotCapturedError({
+        worktreeId,
+        message: "the worktree's newest capture failed Git verification",
+      });
     }
     const head =
       historical === undefined && chainHead.gitFsck === "failed"
@@ -480,8 +499,9 @@ export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
   projectId: ProjectId,
   worktreeId: WorktreeId,
   historical?: { readonly captureId: string },
+  exactHead = false,
 ) {
-  const head = yield* selectedCapture(worktreeId, historical);
+  const head = yield* selectedCapture(worktreeId, historical, exactHead);
   return yield* restoreCapture(projectId, worktreeId, head, historical !== undefined);
 });
 
@@ -575,8 +595,8 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
     /** Per capture: a capture never changes, so its count is read once. */
     const beyondGit = new Map<string, PathsBeyondGit>();
     const BEYOND_GIT_CACHE = 256;
-    const prepared = (projectId: ProjectId, worktreeId: WorktreeId) =>
-      ensureCaptureCache(projectId, worktreeId).pipe(
+    const prepared = (projectId: ProjectId, worktreeId: WorktreeId, exactHead = false) =>
+      ensureCaptureCache(projectId, worktreeId, undefined, exactHead).pipe(
         Effect.provideService(CaptureStoreRepo, repo),
         Effect.provideService(BlobStore, blobs),
         Effect.provideService(GitOpsRunner, runner),
@@ -621,8 +641,8 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
               .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
           ),
         ),
-      changedFiles: (projectId, worktreeId, base) =>
-        prepared(projectId, worktreeId).pipe(
+      changedFiles: (projectId, worktreeId, base, options) =>
+        prepared(projectId, worktreeId, options?.exactHead === true).pipe(
           Effect.flatMap((ready) =>
             runner
               .changedFiles(ready.cache, base, ready.worktreeTree)

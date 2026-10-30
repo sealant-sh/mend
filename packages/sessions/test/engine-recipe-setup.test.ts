@@ -808,7 +808,7 @@ describe("one run of [setup] per directory", () => {
               // The request's hold ran out long ago; the plan goes on waiting until the Stop.
               const held = yield* Fiber.join(starting);
               expect(held.message).toMatch(/^web waits on setup, which has not finished yet/u);
-              expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+              expect(yield* engine.stopServiceStarts(session.id, "web", ownerStop)).toBe(1);
               expect(order).toEqual([]);
               expect(world.setupRuns).toMatchObject([{ claimId: "lapsed-claim" }]);
             }),
@@ -943,8 +943,8 @@ describe("stopping and reporting a first start's [setup]", () => {
             yield* clock.untilChanged(() => setupWorld.steps.length > 0, "setup running");
             expect(sessionServices(world, session.id), "no Service row yet").toEqual([]);
 
-            expect(yield* engine.stopServiceStarts(session.id, "api")).toBe(0);
-            expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+            expect(yield* engine.stopServiceStarts(session.id, "api", ownerStop)).toBe(0);
+            expect(yield* engine.stopServiceStarts(session.id, "web", ownerStop)).toBe(1);
             const error = yield* Fiber.join(starting);
 
             expect(error.message).toBe("a Stop came before web started");
@@ -1235,7 +1235,7 @@ describe("a Stop while setup's done stamp is written", () => {
               .pipe(Effect.flip, Effect.forkChild);
             yield* clock.untilChanged(() => finishing.length > 0, "the stamp is being written");
 
-            expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+            expect(yield* engine.stopServiceStarts(session.id, "web", ownerStop)).toBe(1);
             yield* Deferred.succeed(written, undefined);
             const error = yield* Fiber.join(starting);
 
@@ -1289,7 +1289,7 @@ describe("a Stop while setup's done stamp is answered", () => {
               .pipe(Effect.flip, Effect.forkChild);
             yield* clock.untilChanged(() => written.length > 0, "the stamp is written");
 
-            expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+            expect(yield* engine.stopServiceStarts(session.id, "web", ownerStop)).toBe(1);
             yield* TestClock.adjust("20 seconds");
             yield* Fiber.join(starting);
 

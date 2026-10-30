@@ -81,7 +81,8 @@ import {
   ProjectEnvironmentVariableId,
   OrganizationId,
   ProjectId,
-  type PreviewId,
+  PreviewId,
+  PreviewLabel,
   ServiceForwardId,
   ServiceId,
   ServiceObservationId,
@@ -119,6 +120,7 @@ import {
   previewGatewayResolution,
   previewResumeCandidate,
   type PreviewTarget,
+  resolvePreviewBinding,
   selectPreviewTarget,
   Service,
   ServiceForward,
@@ -2147,7 +2149,51 @@ export const previewsRepoOf = (world: World) => {
       control._tag === "Stopped" ? { ...control, byName: control.by } : control;
     return { preview, resolution: previewGatewayResolution(read, selected, history) };
   };
+  const keptIn = (worktreeId: string) =>
+    [...world.previews.values()].filter((preview) => preview.worktreeId === worktreeId);
   return Layer.mock(PreviewsRepo, {
+    ensureForWorktree: (worktreeId) =>
+      Effect.sync(() => {
+        const targets = targetsOf(worktreeId);
+        const named = new Set(keptIn(worktreeId).map((preview) => preview.serviceName));
+        for (const { service } of targets) {
+          const session = world.sessions.get(service.sessionId);
+          if (service.browserScheme === null || named.has(service.name) || session === undefined)
+            continue;
+          named.add(service.name);
+          const id = PreviewId.make(`preview-${service.name}`);
+          world.previews.set(id, {
+            id,
+            projectId: session.projectId,
+            worktreeId: session.worktreeId,
+            serviceName: service.name,
+            label: PreviewLabel.make(service.name.padEnd(26, "a").slice(0, 26)),
+            state: "kept",
+          });
+        }
+        return keptIn(worktreeId).map((preview) => ({
+          preview,
+          binding: resolvePreviewBinding(preview, targets),
+        }));
+      }),
+    ensureNamed: (worktreeId, serviceName) =>
+      Effect.sync(() => {
+        const kept = keptIn(worktreeId).find((preview) => preview.serviceName === serviceName);
+        if (kept !== undefined) return kept.id;
+        const session = [...world.sessions.values()].find(
+          (candidate) => candidate.worktreeId === worktreeId,
+        );
+        const id = PreviewId.make(`preview-${serviceName}`);
+        world.previews.set(id, {
+          id,
+          projectId: session?.projectId ?? ProjectId.make("project-fixture"),
+          worktreeId: WorktreeId.make(worktreeId),
+          serviceName,
+          label: PreviewLabel.make(serviceName.padEnd(26, "a").slice(0, 26)),
+          state: "kept",
+        });
+        return id;
+      }),
     controlOf: (id) => Effect.sync(() => world.previewControls.get(id) ?? PREVIEW_CONTROL_INITIAL),
     changeControl: (id, request) =>
       Effect.sync(() => {
@@ -2268,6 +2314,12 @@ export const setupRunsLayer = (world: World) => {
     release: (claimId) =>
       Effect.sync(() => drop((row) => !(row.claimId === claimId && row.state === "running"))),
     discard: (claimId) => Effect.sync(() => drop((row) => row.claimId !== claimId)),
+    stampAt: (siteKey) =>
+      Effect.sync(
+        () =>
+          world.setupRuns.find((row) => row.siteKey === siteKey && row.state !== "running")
+            ?.fingerprint ?? null,
+      ),
   });
 };
 
@@ -3319,6 +3371,11 @@ export const checkpointsLayer = (world: World) =>
       Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId)),
     latestForWorktree: (worktreeId) =>
       Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId).at(-1) ?? null),
+    latestForWorktreeAt: (worktreeId, at) =>
+      Effect.succeed(
+        world.checkpoints.filter((c) => c.worktreeId === worktreeId && c.createdAt <= at).at(-1) ??
+          null,
+      ),
     countForWorktree: (worktreeId) =>
       Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId).length),
     listForSession: (sessionId) =>

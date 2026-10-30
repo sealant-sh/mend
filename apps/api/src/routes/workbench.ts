@@ -3363,8 +3363,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
         yield* steering.stop(params.id);
+        const caller = yield* CurrentUser;
         const ended = yield* (yield* SessionEngine)
-          .stopServiceStarts(params.id, payload.name)
+          .stopServiceStarts(params.id, payload.name, { kind: "person", userId: caller.user.id })
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         return { ended };
       }),
