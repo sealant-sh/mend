@@ -1,3 +1,4 @@
+import { INVITATION_HEADER } from "@mend/network";
 import { Button } from "@mend/ui/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -11,8 +12,6 @@ import { useFragmentSecret } from "#/lib/handed-links";
 import { passwordProblem } from "#/lib/onboarding";
 import { joinState } from "#/lib/organization";
 import { useTRPC } from "#/lib/trpc";
-
-const INVITATION_HEADER = "x-mend-invitation";
 
 export function JoinPage() {
   const secret = useFragmentSecret();

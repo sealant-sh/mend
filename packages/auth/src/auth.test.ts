@@ -1,11 +1,10 @@
-import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
+import { INVITATION_HEADER, makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { ConfigProvider, Effect, Layer, Result, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
   AuthLive,
   createAuthHandler,
-  INVITATION_HEADER,
   RegistrationPolicy,
   sessionCookiePolicy,
   type RegistrationDecision,

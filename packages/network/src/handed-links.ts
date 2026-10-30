@@ -6,6 +6,9 @@ const HANDED_LINK_PAGES = {
 
 export type HandedLinkKind = keyof typeof HANDED_LINK_PAGES;
 
+/** The request header a sign-up from an invitation link carries the invitation's token in. */
+export const INVITATION_HEADER = "x-mend-invitation";
+
 export const HANDED_LINK_PAGE_PATHS: ReadonlyArray<string> = Object.values(HANDED_LINK_PAGES);
 
 /**

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import {
+  INVITATION_HEADER,
   NetworkConfig,
   type PublicNetwork,
   routedPath,
@@ -35,9 +36,6 @@ export interface AuthSession {
    */
   readonly credential?: `session:${string}` | `device:${string}`;
 }
-
-/** The header a sign-up request carries its invitation token in. */
-export const INVITATION_HEADER = "x-mend-invitation";
 
 /** Whether an account may be created, decided before Better Auth inserts it. */
 export type RegistrationDecision =
