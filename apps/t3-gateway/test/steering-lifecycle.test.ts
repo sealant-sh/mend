@@ -435,6 +435,56 @@ describe("steer lifecycle", () => {
     ),
   );
 
+  for (const promotion of [false, true])
+    it.live(
+      `shows the words of a ${promotion ? "promotion" : "composer message"} Mend queued, then withdrew, once`,
+      () =>
+        withGateway((mend) =>
+          Effect.gen(function* () {
+            const turn = setup(mend);
+            mend.workbench.steerDelivery = {
+              _tag: "Queued",
+              turnId: "assigned",
+              reason: "turn-ended",
+            };
+            const { rpc } = yield* pairAndConnect(mend, "WITHDRAWNWORDS");
+            const id = "withdrawn-words";
+            if (promotion) {
+              yield* rpc[methods.dispatchCommand](message(id, { type: "queue_after_active" }));
+              const queued = (yield* rpc[methods.getThreadProjection]({ threadId })).runs.find(
+                (run) => run.userMessageId === id,
+              );
+              if (queued === undefined) return yield* Effect.die("Missing queued run");
+              yield* rpc[methods.dispatchCommand](promote(queued.id, turn.id));
+            } else {
+              yield* rpc[methods.dispatchCommand](
+                message(id, { type: "start_immediately" }, "steer"),
+              );
+            }
+            yield* projectionWhen(rpc, (current) =>
+              current.runs.some((run) => run.userMessageId === id && run.activeAttemptId !== null),
+            );
+            const receipt = turn.steers[0];
+            if (receipt?.queuedTurnId == null) return yield* Effect.die("No Queued receipt");
+            const destination = receipt.queuedTurnId;
+            mend.workbench.withdrawSteer(turn, receipt.id);
+            const projection = yield* projectionWhen(rpc, (current) =>
+              promotion
+                ? current.runs.some(
+                    (run) => run.userMessageId === id && run.activeAttemptId === null,
+                  )
+                : inputOf(current, id)?.status === "failed",
+            );
+            assert.deepStrictEqual(
+              projection.messages.filter((item) => item.text === id).map((item) => item.id),
+              [id],
+            );
+            assert.isUndefined(projection.runs.find((run) => run.id === destination));
+            assert.lengthOf(posts(mend, "/turns"), 0);
+          }),
+        ),
+    );
+
   it.live("returns a promotion to its place once when Mend withdraws its Queued turn", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

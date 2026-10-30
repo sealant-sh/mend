@@ -1797,13 +1797,13 @@ export const makePersonHub = (input: {
           const agent = current ?? launchingAgentOf(session, thread?.options ?? {});
           const conversation = conversations.get(session.id) ?? EMPTY_CONVERSATION;
           const queue = queues.get(session.id);
-          const withdrawn = Steering.withdrawnTurnIds(conversation.turns);
+          const steers = shownSteersOf(session.id);
+          const withdrawn = Steering.withdrawnTurnIds(conversation.turns, steers);
           const turns =
             withdrawn.size === 0
               ? conversation.turns
               : conversation.turns.filter((turn) => !withdrawn.has(turn.id));
           const ids = idsWithDestinations(session.id, turns, queue?.steers ?? []);
-          const steers = shownSteersOf(session.id);
           const pending: Array<ThreadSource["pending"][number]> = (queue?.entries ?? []).map(
             (queued) => ({
               runId: queued.runId,

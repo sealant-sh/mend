@@ -848,6 +848,7 @@ const SentSteerRecord = Schema.Struct({
     }),
     Schema.Struct({ kind: Schema.Literal("returned") }),
   ]),
+  withdrawnTurnId: Schema.optionalKey(Schema.String),
 });
 const decodeSentSteerRows = Schema.decodeUnknownEffect(
   Schema.Array(

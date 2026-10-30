@@ -90,6 +90,8 @@ export interface SentSteer {
   readonly intent: SteerIntent;
   readonly requestedAt: string;
   readonly outcome: SteerOutcome;
+  /** The turn Mend queued for it, then cancelled when it withdrew the steer: never shown. */
+  readonly withdrawnTurnId?: string;
 }
 
 /** What the thread shows of a steer, settled or still on its way (`pending`). */
@@ -232,20 +234,14 @@ export const destinationOf = (
 };
 
 /** Turns Mend cancelled when it withdrew the steer it had queued them for: they never ran. */
-export const withdrawnTurnIds = (turns: ReadonlyArray<MendTurn>): ReadonlySet<string> => {
-  const withdrawn = new Set(
-    turns.flatMap((turn) =>
-      (turn.steers ?? [])
-        .filter((receipt) => receipt.delivery._tag === "NotSent")
-        .map((receipt) => receipt.id),
-    ),
-  );
+export const withdrawnTurnIds = (
+  turns: ReadonlyArray<MendTurn>,
+  steers: ReadonlyArray<ShownSteer>,
+): ReadonlySet<string> => {
+  const withdrawn = new Set(steers.flatMap((steer) => steer.withdrawnTurnId ?? []));
   return new Set(
     turns
-      .filter(
-        (turn) =>
-          turn.status === "cancelled" && turn.fromSteer != null && withdrawn.has(turn.fromSteer),
-      )
+      .filter((turn) => turn.status === "cancelled" && withdrawn.has(turn.id))
       .map((turn) => turn.id),
   );
 };
@@ -332,10 +328,21 @@ const notSent = (
   facts: SteerFacts,
   stored: boolean,
 ): SteerStep => {
-  if (record.promotion === null && !facts.caller) return failed(record, reason, false);
+  const withdrawnTurnId = queuedTurnOf(record);
+  const kept = (outcome: SteerOutcome): SentSteer =>
+    withdrawnTurnId === null
+      ? sentOf(record, outcome)
+      : { ...sentOf(record, outcome), withdrawnTurnId };
+  if (record.promotion === null && !facts.caller)
+    return {
+      kind: "settled",
+      kept: kept({ kind: "failed", reason, uncertain: false }),
+      requeue: false,
+      refusal: null,
+    };
   return {
     kind: "settled",
-    kept: stored ? sentOf(record, { kind: "returned" }) : null,
+    kept: stored ? kept({ kind: "returned" }) : null,
     requeue: record.promotion !== null,
     refusal: reason,
   };
