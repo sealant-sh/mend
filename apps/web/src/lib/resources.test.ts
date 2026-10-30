@@ -44,7 +44,7 @@ const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingV
   digest,
   spec: db,
   approvals: { project: null, worktree: null },
-  approve: { project: null, worktree: null },
+  approve: { project: { kind: "denied", message: "is a manager's to approve" }, worktree: null },
   choice: null,
   canRemove: true,
   canChoose: false,
