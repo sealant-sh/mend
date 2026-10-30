@@ -1,6 +1,6 @@
-import { Cause, Effect, Exit, Layer, Logger, Option, Tracer } from "effect";
+import { Cause, Context, Effect, Exit, Layer, Logger, Option, Tracer } from "effect";
 import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { observedWebHandler } from "./http-observation.ts";
 
@@ -24,7 +24,7 @@ const harness = () => {
         Effect.succeed(HttpServerResponse.text("seen")).pipe(Effect.withSpan("handler")),
       ),
       router.add("POST", "/future/:id/refuse", HttpServerResponse.empty({ status: 403 })),
-      router.add("GET", "/future/:id/broken", Effect.die(new Error(`broken at ${SENTINEL}`))),
+      router.add("GET", "/future/:id/broken", Effect.die(new Error("broken"))),
       router.add(
         "GET",
         "/future/:id/internal",
@@ -109,6 +109,7 @@ const recorded = (spans: ReadonlyArray<Tracer.Span>) =>
         ? Cause.pretty(span.status.exit.cause)
         : null,
     ]),
+    (_, value) => (typeof value === "bigint" ? String(value) : value),
   );
 
 const settled = async (condition: () => boolean) => {
@@ -242,6 +243,179 @@ describe("what a request leaves in the log and the trace", () => {
       expect((await send("GET", `/quiet/${SENTINEL}`)).status).toBe(200);
       expect(logs).toEqual([]);
       expect(serverSpans(spans)).toEqual([]);
+    } finally {
+      await dispose();
+    }
+  });
+});
+
+/** Node takes a stream body only as a half-duplex one. */
+const failingBody = (): RequestInit & { readonly duplex: "half" } => ({
+  body: new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new Error("the client went quiet"));
+    },
+  }),
+  duplex: "half",
+});
+
+interface Diagnostic {
+  readonly level: string;
+  readonly message: unknown;
+  readonly annotations: Record<string, unknown>;
+  readonly span: Tracer.AnySpan | undefined;
+}
+
+const withEffectLoggers = () => {
+  const written: Array<Diagnostic> = [];
+  const printed: Array<string> = [];
+  const spans: Array<Tracer.Span> = [];
+  for (const level of ["log", "info", "warn", "error", "debug"] as const)
+    vi.spyOn(console, level).mockImplementation((...parts: Array<unknown>) => {
+      printed.push(parts.map((part) => JSON.stringify(part)).join(" "));
+    });
+  const routes = HttpRouter.use((router) =>
+    Effect.all([
+      router.add(
+        "GET",
+        "/future/:id/logs",
+        Effect.log("handled").pipe(Effect.as(HttpServerResponse.text("seen"))),
+      ),
+      router.add(
+        "POST",
+        "/future/:id/body",
+        Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
+          Effect.orDie(request.text),
+        ).pipe(Effect.as(HttpServerResponse.empty())),
+      ),
+      router.add(
+        "GET",
+        "/future/:id/internal",
+        Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
+          Effect.fail(
+            new HttpServerError.HttpServerError({
+              reason: new HttpServerError.InternalError({ request }),
+            }),
+          ),
+        ),
+      ),
+      router.add("GET", "/future/:id/broken", Effect.die(new Error("broken"))),
+      router.add("GET", "/future/:id/gone", HttpServerResponse.empty({ status: 499 })),
+    ]),
+  );
+  const { handler, dispose } = observedWebHandler(
+    routes.pipe(
+      Layer.provideMerge(
+        Layer.succeed(
+          Tracer.Tracer,
+          Tracer.make({
+            span(options) {
+              const span = Tracer.nativeTracer.span(options);
+              spans.push(span);
+              return span;
+            },
+          }),
+        ),
+      ),
+      Layer.provideMerge(
+        Logger.layer(
+          [
+            Logger.make((entry) => {
+              const { message, level, annotations } = JSON.parse(
+                String(Logger.formatJson.log(entry)),
+              );
+              written.push({
+                level,
+                message,
+                annotations,
+                span: Option.getOrUndefined(
+                  Context.getOption(entry.fiber.context, Tracer.ParentSpan),
+                ),
+              });
+            }),
+          ],
+          { mergeWithExisting: true },
+        ),
+      ),
+    ),
+    { unobserved: () => false },
+  );
+  const send = (method: string, path: string, init: RequestInit = {}) =>
+    handler(new Request(`http://mend.internal${path}`, { method, ...init }));
+  return { written, printed, spans, send, dispose };
+};
+
+describe("what a failed request leaves, with Effect's own loggers in place", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("leaves a 5xx's cause at error level, the request's URL replaced by its route's template, and no URL in the log, the console or the span's events", async () => {
+    const { written, printed, spans, send, dispose } = withEffectLoggers();
+    try {
+      const query = `?token=${SENTINEL}&ticket=${SENTINEL}&x=${SENTINEL}`;
+      const statuses = [
+        (await send("POST", `/future/${SENTINEL}/body${query}`, failingBody())).status,
+        (await send("GET", `/future/${SENTINEL}/internal${query}`)).status,
+        (await send("GET", `/future/${SENTINEL}/broken${query}`)).status,
+      ];
+      expect(statuses).toEqual([400, 500, 500]);
+      expect(
+        written
+          .filter((line) => line.level === "ERROR")
+          .map(({ annotations }) => [annotations["http.route"], annotations["cause"]]),
+      ).toEqual([
+        [
+          "/future/:id/internal",
+          expect.stringContaining("InternalError (GET /future/:id/internal)"),
+        ],
+        ["/future/:id/broken", expect.stringContaining("Error: broken")],
+      ]);
+      expect(printed.length).toBeGreaterThan(0);
+      expect(printed.filter((line) => line.includes(SENTINEL))).toEqual([]);
+      expect(
+        JSON.stringify(written.map(({ message, annotations }) => [message, annotations])),
+      ).not.toContain(SENTINEL);
+      expect(recorded(spans)).not.toContain(SENTINEL);
+    } finally {
+      await dispose();
+    }
+  });
+
+  it("writes the request's line inside its span, and names the route on every line its handler writes", async () => {
+    const { written, spans, send, dispose } = withEffectLoggers();
+    try {
+      await send("GET", `/future/${SENTINEL}/logs`, {
+        headers: { traceparent: `00-${TRACE_ID}-00f067aa0ba902b7-01` },
+      });
+      const [server] = serverSpans(spans);
+      expect(
+        written.map(({ message, annotations, span }) => [
+          message,
+          annotations["http.route"],
+          span?.traceId,
+          span?.spanId,
+        ]),
+      ).toEqual([
+        ["handled", "/future/:id/logs", TRACE_ID, server?.spanId],
+        ["Sent HTTP response", "/future/:id/logs", TRACE_ID, server?.spanId],
+      ]);
+      expect(
+        server instanceof Tracer.NativeSpan ? server.events.map(([name]) => name) : [],
+      ).toEqual(["handled", "Sent HTTP response"]);
+    } finally {
+      await dispose();
+    }
+  });
+
+  it("calls a request aborted only when its client went away, not when a handler answers 499", async () => {
+    const { written, spans, send, dispose } = withEffectLoggers();
+    try {
+      expect((await send("GET", `/future/${SENTINEL}/gone`)).status).toBe(499);
+      expect(written.map(({ annotations }) => annotations["http.status"])).toEqual([499]);
+      expect(serverSpans(spans).map(spanOutcome)).toEqual([
+        { method: "GET", route: "/future/:id/gone", status: 499 },
+      ]);
     } finally {
       await dispose();
     }
