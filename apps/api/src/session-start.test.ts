@@ -32,6 +32,7 @@ import {
   type SessionOrigin,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
+import { SealantPlatformError, toPlatformError } from "@mend/sealant";
 import {
   SessionAgentLiveError,
   SessionEngine,
@@ -42,6 +43,7 @@ import {
 } from "@mend/sessions";
 import { GitError } from "@mend/store";
 import { TestClock } from "@mend/test-ci/effect-vitest";
+import { SealantApiError } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -144,7 +146,11 @@ const startWorld = (
     /** The row observable while launch is pending, including a deleted row. */
     readonly initial?: Session | null;
     readonly executorCreate?: string | null;
-    readonly launchFailure?: SessionLaunchSetupError | SessionMovedOnError | SessionAgentLiveError;
+    readonly launchFailure?:
+      | SessionLaunchSetupError
+      | SessionMovedOnError
+      | SessionAgentLiveError
+      | SealantPlatformError;
     /** What the store said when provisioning the worktree failed. */
     readonly provisionFailure?: GitError;
     readonly launchEntered?: Deferred.Deferred<void>;
@@ -825,6 +831,25 @@ const expectLaunchFailure = (result: Awaited<ReturnType<typeof startAs>>) => {
 };
 
 describe("API-owned pre-workspace launch failure settlement", () => {
+  it("settles a launch the platform refused in its own words with a reference, never the words (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    const row = unlaunched();
+    const world = startWorld({
+      initial: row,
+      launchFailure: toPlatformError(new SealantApiError(words, { status: 500 })),
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const start = yield* SessionStart;
+        yield* start.launchAs("alice", row, launchInput()).pipe(Effect.result);
+        const summaries = world.settlements.map(([, , summary]) => summary ?? "");
+        expect(summaries).toHaveLength(1);
+        expect(summaries[0]).not.toContain(words);
+        expect(summaries[0]).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
+      }).pipe(Effect.provide(world.layer)),
+    );
+  });
+
   it("settles an unanswered launch failure and releases the real account slot", async () => {
     const row = unlaunched();
     const world = startWorld({
