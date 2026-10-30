@@ -11,9 +11,9 @@ import {
 import { ServiceId, SessionId } from "@mend/domain";
 import { REMOVAL_START_REFUSED } from "@mend/domain/workbench";
 import { TRPCError } from "@trpc/server";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { ApiRefusal, toTRPCError } from "./errors.ts";
+import { API_DRIFT, ApiRefusal, toTRPCError } from "./errors.ts";
 import { run } from "./run.ts";
 
 /**
@@ -25,13 +25,19 @@ import { run } from "./run.ts";
 
 let server: Server;
 let port = 0;
-let mode: "unreachable" | "http-503" | "http-401" | "removal-in-progress" = "http-503";
+let mode: "unreachable" | "http-503" | "http-401" | "removal-in-progress" | "drift-404" =
+  "http-503";
 
 beforeAll(async () => {
   server = createServer((_request, response) => {
     if (mode === "removal-in-progress") {
       response.writeHead(409, { "content-type": "application/json" });
       response.end(JSON.stringify({ _tag: "RemovalInProgress", message: REMOVAL_START_REFUSED }));
+      return;
+    }
+    if (mode === "drift-404") {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ _tag: "NotWhatTheContractDeclares" }));
       return;
     }
     if (mode === "http-503") {
@@ -88,6 +94,29 @@ describe("run + toTRPCError against a real client", () => {
     mode = "http-401";
     const error = await failure(`http://127.0.0.1:${port}`);
     expect(error.code).toBe("UNAUTHORIZED");
+  });
+});
+
+describe("what the web tier logs about a failed API call", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("names the operation, the failure and the status of contract drift, never the URL it called", async () => {
+    mode = "drift-404";
+    const logged: Array<string> = [];
+    for (const level of ["error", "warn", "log", "info"] as const)
+      vi.spyOn(console, level).mockImplementation((...parts: Array<unknown>) => {
+        logged.push(parts.map(String).join(" "));
+      });
+    const error = await failure(`http://127.0.0.1:${port}`, (api) =>
+      api.userDevices.cliAuthRequest({ params: { code: "CODE-7SEC" } }),
+    );
+    expect(error.message).toBe(API_DRIFT);
+    expect(logged.filter((line) => /7sec|127\.0\.0\.1|cli-auth/i.test(line))).toEqual([]);
+    expect(logged).toEqual([
+      "[trpc] contract drift decoding API response: userDevices.cliAuthRequest StatusCodeError 404",
+    ]);
   });
 });
 
