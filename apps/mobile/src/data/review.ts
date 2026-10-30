@@ -9,12 +9,12 @@ import { useRef, useState } from "react";
 
 import {
   api,
-  ApiError,
   requireFollowUpDelivery,
   useSession,
   type FollowUpDto,
   type SessionChangeDto,
 } from "@/data/live";
+import { ApiError } from "@/data/machine";
 import {
   advanceTarget,
   newerCheckpoint,

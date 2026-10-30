@@ -17,7 +17,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 
-import { api, ApiError } from "@/data/live";
+import { api } from "@/data/live";
+import { ApiError } from "@/data/machine";
 
 export type TtyPhase = "idle" | "connecting" | "connected" | "reconnecting" | "ended";
 

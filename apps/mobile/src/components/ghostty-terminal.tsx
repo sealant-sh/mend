@@ -16,7 +16,8 @@ import { Pressable, View } from "react-native";
 import { WebView } from "react-native-webview";
 
 import { MonoText, useTextScale } from "@/components/typography";
-import { api, ApiError } from "@/data/live";
+import { api } from "@/data/live";
+import { ApiError } from "@/data/machine";
 import { legacyBearerAfterMint404, useTtySocket } from "@/data/tty-socket";
 import { useEvidenceTheme } from "@/theme/evidence";
 

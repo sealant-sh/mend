@@ -5,9 +5,10 @@ import {
 } from "@mend/domain/workbench";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { failureLogLine, failureWords, NO_ANSWER } from "@/data/failure-words";
+import { NO_ANSWER } from "@/data/failure-words";
 import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
+import { ApiError, refusal } from "@/data/machine";
 import { pageKey, pagesOf } from "@/data/pages";
 import { loadConfig } from "@/data/pairing-config";
 import { pairingKeyOf } from "@/data/pairing-key";
@@ -154,31 +155,6 @@ export interface RemovalReportDto {
   readonly removed: boolean;
   readonly leftover: string | null;
 }
-
-/**
- * The server answered and said no (or did not answer: status 0). `message` is what a person reads
- * (`failureWords`): the server's own sentence when it gave one, else words for its tag or status.
- * The call and the status stay in the log.
- */
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    /** The refusal's `_tag`, when the body carried one: for code that branches on it. */
-    readonly tag: string | null = null,
-    /** True when `message` is the server's own sentence; false for words Mend chose. */
-    readonly serverWords: boolean = false,
-  ) {
-    super(message);
-  }
-}
-
-/** A refusal as an `ApiError` in words, its call, status and tag logged. */
-const refusal = (method: string, route: string, status: number, body: unknown): ApiError => {
-  console.warn(failureLogLine(`${method} ${route}`, status, body));
-  const failure = failureWords(status, body);
-  return new ApiError(failure.words, status, failure.tag, failure.serverWords !== null);
-};
 
 type Method = "GET" | "POST" | "PUT" | "DELETE";
 

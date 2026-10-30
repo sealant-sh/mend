@@ -8,7 +8,8 @@ import { StyleSheet, View } from "react-native";
 import { EvButton } from "@/components/button";
 import { PageDocument } from "@/components/page-document";
 import { MonoText, UiText } from "@/components/typography";
-import { ApiError, api } from "@/data/live";
+import { api } from "@/data/live";
+import { ApiError } from "@/data/machine";
 import {
   PAGE_OFFLINE_RETRY_MS,
   pageFrameKey,

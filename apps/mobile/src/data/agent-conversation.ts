@@ -14,7 +14,8 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useReducer, useRef } from "react";
 
-import { ApiError, api, apiNoContent } from "@/data/live";
+import { api, apiNoContent } from "@/data/live";
+import { ApiError } from "@/data/machine";
 import { pendingTurnsReducer, type LocalImage, type PendingTurn } from "@/data/pending-turns";
 import { composeTurnInput } from "@/data/turn-input";
 
