@@ -235,6 +235,7 @@ describe("the proposal form", () => {
           { key: "ports", message: "names no port, and a resource is reached on one" },
           { key: "exports.URL", message: "names {x}" },
         ]}
+        note={undefined}
         busy={false}
         onChange={nothing}
         onCancel={nothing}
@@ -258,6 +259,7 @@ describe("the proposal form", () => {
           env: [{ key: "MP_UI_AUTH", from: "secret", value: "MAILPIT_AUTH" }],
         }}
         refusals={[]}
+        note={undefined}
         busy={false}
         onChange={nothing}
         onCancel={nothing}

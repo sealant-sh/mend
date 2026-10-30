@@ -99,6 +99,11 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [draft, setDraft] = useState<ProposalDraft | null>(null);
   const [formRefusals, setFormRefusals] = useState<ReadonlyArray<ResourceRefusal>>([]);
+  // The read on screen: its project and worktree. An act's answer belongs to the read it started
+  // from, and one that returns after the read changed is dropped, never shown under another.
+  const reading = `${projectId}\u0000${worktreeId ?? ""}`;
+  const shown = useRef(reading);
+  shown.current = reading;
 
   const invalidate = () => queryClient.invalidateQueries(trpc.resources.pathFilter());
   const reload = () => {
@@ -114,12 +119,17 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
     if (running.current.has(key)) return;
     running.current.set(key, action);
     setBusy(new Map(running.current));
+    const startedOn = reading;
     void run()
       .catch((error: unknown) => ({
         at: key,
         note: { refused: true, lines: [message(error)], reload: false },
       }))
-      .then((answer) => setNotes((current) => answered(current, key, answer)))
+      .then((answer) =>
+        shown.current === startedOn
+          ? setNotes((current) => answered(current, key, answer))
+          : undefined,
+      )
       .finally(() => {
         running.current.delete(key);
         setBusy(new Map(running.current));
@@ -223,6 +233,7 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
               onChange={(event) => {
                 const chosen = worktrees.find((each) => each.id === event.target.value);
                 setWorktreeId(chosen?.id ?? null);
+                shown.current = `${projectId}\u0000${chosen?.id ?? ""}`;
                 setNotes(new Map());
                 setConfirming(null);
               }}
@@ -284,6 +295,7 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
         <ProposalForm
           draft={draft}
           refusals={formRefusals}
+          note={notes.get(PROPOSE)}
           busy={busy.has(PROPOSE)}
           onChange={(next) => {
             // A refusal answered the draft that was sent; an edit makes a new one.
@@ -681,6 +693,8 @@ const PRESETS = ["postgres", "redis", "mysql"] as const;
 export function ProposalForm(props: {
   readonly draft: ProposalDraft;
   readonly refusals: ReadonlyArray<ResourceRefusal>;
+  /** What answered the last submit when it never reached the server: a request that failed. */
+  readonly note: ItemNote | undefined;
   readonly busy: boolean;
   readonly onChange: (draft: ProposalDraft) => void;
   readonly onCancel: () => void;
@@ -847,6 +861,15 @@ export function ProposalForm(props: {
         </>
       )}
       {refused(null)}
+      {props.note === undefined ? null : (
+        <div className="border-l-2 border-[var(--sw-red)] pl-2">
+          {props.note.lines.map((line) => (
+            <p key={line} className="font-mono text-[11px] text-danger">
+              {line}
+            </p>
+          ))}
+        </div>
+      )}
       <div className="flex items-center justify-end gap-2.5">
         <button type="button" onClick={props.onCancel} className={quiet}>
           cancel
