@@ -1,18 +1,17 @@
 import {
   NotFound,
   RemovalForbidden,
-  RemovalInProgress,
   RemovalRefused,
   RemovalReport,
-  StoreFailure,
   WorktreeNotFound,
 } from "@mend/api-contracts";
 import {
   type FencedRow,
   type RemovalFenceId,
   HotWorkspacesRepo,
-  isRemovalFenced,
   ProjectsRepo,
+  REMOVAL_FENCE_RENEW_EVERY,
+  RemovalFenced,
   RemovalFencesRepo,
   ResourcesRepo,
   ServiceForwardsRepo,
@@ -20,17 +19,15 @@ import {
   SessionProcessesRepo,
   SessionRepositoriesRepo,
   SessionsRepo,
+  SetupRunsRepo,
   UsersRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
 } from "@mend/db";
-import type { ProjectId, WorktreeId } from "@mend/domain";
+import type { ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import {
   type ChangeStanding,
   decideRemoval,
-  REMOVAL_START_REFUSED,
-  REMOVAL_FENCE_LEASE_SECONDS,
-  type ForeignHolderFact,
   type HoldFact,
   type NonEmptyBlockers,
   notChangeOwnerWords,
@@ -41,18 +38,20 @@ import {
   type Session,
   type SessionActivity,
   type SessionFact,
+  type SessionRole,
+  type StoppedRemoval,
   underway,
+  underwayWith,
   type Worktree,
   type WorktreeFacts,
   type WorktreeHolds,
   worktreeRefusalWords,
   worktreeRemovalRight,
-  underwayWith,
 } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Store } from "@mend/store";
-import { Effect, Fiber, Layer } from "effect";
+import { Data, Effect, Fiber, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { changeStandingOf } from "./landing-state.ts";
@@ -80,58 +79,49 @@ export class Removal extends Context.Service<
       worktree: Worktree,
       caller: RemovalCaller,
       force: boolean,
-    ) => Effect.Effect<
-      RemovalReport,
-      WorktreeNotFound | RemovalForbidden | RemovalRefused | StoreFailure
-    >;
+    ) => Effect.Effect<RemovalReport, WorktreeNotFound | RemovalForbidden | RemovalRefused>;
     /** Refused while any worktree, anyone's, has work running, saving or not on origin. */
     readonly project: (
       project: Project,
       caller: RemovalCaller,
-    ) => Effect.Effect<RemovalReport, NotFound | RemovalRefused | StoreFailure>;
+    ) => Effect.Effect<RemovalReport, NotFound | RemovalRefused>;
   }
 >()("@mend/api/Removal") {}
 
-/** How often a removal renews its `checking` mark: well inside the lease. */
-const RENEW_EVERY = `${Math.floor(REMOVAL_FENCE_LEASE_SECONDS / 4)} seconds` as const;
-
-/** A session start in a worktree or project a removal has marked, refused before anything runs. */
+/**
+ * A session start in a worktree or project a removal has marked, refused before the route does
+ * anything the start's own rows would come after (a new worktree's directory). It dies as the
+ * database's refusal would, so the error boundary answers both alike.
+ */
 export const refuseStartWhileRemoving = Effect.fn("refuseStartWhileRemoving")(function* (place: {
   readonly projectId: ProjectId;
   readonly worktreeId: WorktreeId | null;
 }) {
   if (!(yield* (yield* RemovalFencesRepo).admitsStart(place))) {
-    return yield* new RemovalInProgress({ message: REMOVAL_START_REFUSED });
+    return yield* Effect.die(
+      new RemovalFenced(`project ${place.projectId} or its worktree is being removed`),
+    );
   }
 });
 
-/**
- * The same refusal, for a start whose insert met a mark taken after the check above: migration
- * 0164's trigger refused the session or worktree row.
- */
-export const refusedWhileRemoving = <A, E, R>(
-  start: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E | RemovalInProgress, R> =>
-  start.pipe(
-    Effect.catchCause(
-      (cause): Effect.Effect<never, E | RemovalInProgress> =>
-        isRemovalFenced(cause)
-          ? Effect.fail(new RemovalInProgress({ message: REMOVAL_START_REFUSED }))
-          : Effect.failCause(cause),
-    ),
-  );
+/** This removal's mark went to another removal while it deleted: it stops where it is. */
+class MarkLost extends Data.TaggedError("MarkLost") {}
 
 const activityOf = (
   session: Session,
-  role: SessionFact["role"],
-  running: ReadonlySet<string>,
-  forwarding: ReadonlySet<string>,
+  role: SessionRole,
+  facts: {
+    readonly starting: ReadonlySet<string>;
+    readonly running: ReadonlySet<string>;
+    readonly forwarding: ReadonlySet<string>;
+  },
 ): SessionActivity | "settled" => {
   if (LIVE_STATES.has(session.status)) return "live";
+  if (facts.starting.has(session.id)) return "starting";
   // A holder that is stopping still holds: its drain is saving the repository's files.
   if (role === "holder" && session.status === "stopping") return "stopping";
-  if (running.has(session.id)) return "process-running";
-  if (forwarding.has(session.id)) return "forward-open";
+  if (facts.running.has(session.id)) return "process-running";
+  if (facts.forwarding.has(session.id)) return "forward-open";
   return "settled";
 };
 
@@ -152,6 +142,12 @@ const refused = (
 
 type StandingServices = Effect.Services<ReturnType<typeof changeStandingOf>>;
 
+/** A session working in a worktree, and how. */
+interface Member {
+  readonly session: Session;
+  readonly role: SessionRole;
+}
+
 export const RemovalLive: Layer.Layer<
   Removal,
   never,
@@ -167,6 +163,7 @@ export const RemovalLive: Layer.Layer<
   | SessionProcessesRepo
   | SessionRepositoriesRepo
   | SessionsRepo
+  | SetupRunsRepo
   | Store
   | UsersRepo
   | WorktreeChangesRepo
@@ -182,6 +179,7 @@ export const RemovalLive: Layer.Layer<
     const processes = yield* SessionProcessesRepo;
     const services = yield* ServicesRepo;
     const forwards = yield* ServiceForwardsRepo;
+    const setupRuns = yield* SetupRunsRepo;
     const changes = yield* WorktreeChangesRepo;
     const users = yield* UsersRepo;
     const engine = yield* SessionEngine;
@@ -198,82 +196,98 @@ export const RemovalLive: Layer.Layer<
       return { userId, name: facts?.name ?? userId } satisfies Person;
     });
 
-    /** Each session's unexited processes and open Service forwards, read once. */
-    const holdsOnWorkspaces = Effect.fn("Removal.holdsOnWorkspaces")(function* (
-      members: ReadonlyArray<Session>,
+    /**
+     * Every session working in the worktree (`RemovalFencesRepo.sessionsIn`, the inverse of the
+     * places the fence refuses new work in), with how each works there.
+     */
+    const membersOf = Effect.fn("Removal.membersOf")(function* (worktree: Worktree) {
+      const held = new Set(
+        (yield* repositories.listForWorktree(worktree.id)).map((row) => row.sessionId),
+      );
+      const found = yield* Effect.forEach(yield* fences.sessionsIn(worktree.id), (sessionId) =>
+        sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))),
+      );
+      return found.flatMap((session): ReadonlyArray<Member> => {
+        if (session === null) return [];
+        const role: SessionRole =
+          session.worktreeId === worktree.id
+            ? "inhabitant"
+            : held.has(session.id)
+              ? "holder"
+              : "linked";
+        return [{ session, role }];
+      });
+    });
+
+    /** Each settled member's unexited processes and open Service forwards. */
+    const processesAndForwards = Effect.fn("Removal.processesAndForwards")(function* (
+      members: ReadonlyArray<Member>,
+      openServices: ReadonlySet<string>,
     ) {
-      const open = yield* forwards.listOpen();
       const running = new Set<string>();
       const forwarding = new Set<string>();
-      for (const member of members) {
-        if (LIVE_STATES.has(member.status)) continue;
-        const unexited = (yield* processes.listForSession(member.id)).some(
+      for (const { session } of members) {
+        if (LIVE_STATES.has(session.status)) continue;
+        const unexited = (yield* processes.listForSession(session.id)).some(
           (process) => process.exitedAt === null,
         );
-        if (unexited) running.add(member.id);
-        const serviceIds = new Set(
-          (yield* services.listForSession(member.id)).map((service) => service.id),
+        if (unexited) running.add(session.id);
+        const serviceIds = (yield* services.listForSession(session.id)).map(
+          (service) => service.id,
         );
-        if (open.some((forward) => serviceIds.has(forward.serviceId))) forwarding.add(member.id);
+        if (serviceIds.some((id) => openServices.has(id))) forwarding.add(session.id);
       }
       return { running, forwarding };
     });
 
-    /** The worktree's sessions, and the sessions holding it as a repository (docs/adr/0010). */
-    const membersOf = Effect.fn("Removal.membersOf")(function* (worktree: Worktree) {
-      const inhabitants = yield* sessions.listForWorktree(worktree.id);
-      const holders = (yield* Effect.forEach(
-        yield* repositories.listForWorktree(worktree.id),
-        (row) =>
-          sessions
-            .byId(row.sessionId)
-            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))),
-      )).flatMap((holder) =>
-        holder === null || inhabitants.some((member) => member.id === holder.id) ? [] : [holder],
-      );
-      return { inhabitants, holders };
-    });
+    /** The Services with a forward open now: read once per removal. */
+    const openServicesNow = Effect.suspend(() => forwards.listOpen()).pipe(
+      Effect.map((open) => new Set<string>(open.map((forward) => forward.serviceId))),
+    );
 
     /**
-     * What every worktree removal reads: the worktree's sessions and the sessions holding it as a
-     * repository, each classified once, and unsaved captures on it and on those holders' worktrees.
+     * What every worktree removal reads: the sessions working in the worktree, each classified
+     * once, the Service setups running there, and unsaved captures on it and on its holders'
+     * worktrees. Admitted starts are read first: one that ends before its session is read has
+     * written what the session read then shows.
      */
-    const worktreeHolds = Effect.fn("Removal.worktreeHolds")(function* (worktree: Worktree) {
-      const { inhabitants, holders } = yield* membersOf(worktree);
-      const { running, forwarding } = yield* holdsOnWorkspaces([...inhabitants, ...holders]);
-      const sessionFacts = yield* Effect.forEach(
-        [
-          ...inhabitants.map((session) => ({ session, role: "inhabitant" as const })),
-          ...holders.map((session) => ({ session, role: "holder" as const })),
-        ],
-        ({ session, role }) =>
-          Effect.gen(function* () {
-            return {
-              sessionId: session.id,
-              owner: yield* personOf(session.ownerUserId),
-              role,
-              activity: activityOf(session, role, running, forwarding),
-            } satisfies SessionFact;
-          }),
+    const worktreeHolds = Effect.fn("Removal.worktreeHolds")(function* (
+      worktree: Worktree,
+      openServices: ReadonlySet<string>,
+    ) {
+      const starting = new Set<SessionId>(yield* fences.startingIn(worktree.id));
+      const members = yield* membersOf(worktree);
+      const { running, forwarding } = yield* processesAndForwards(members, openServices);
+      const sessionFacts = yield* Effect.forEach(members, ({ session, role }) =>
+        Effect.gen(function* () {
+          return {
+            sessionId: session.id,
+            owner: yield* personOf(session.ownerUserId),
+            role,
+            activity: activityOf(session, role, { starting, running, forwarding }),
+          } satisfies SessionFact;
+        }),
       );
       const own = (yield* engine.captureHolds(worktree.id)).map(
         (hold): HoldFact => ({ ...hold, via: "own" }),
       );
-      const viaHolders = (yield* Effect.forEach(holders, (holder) =>
-        engine.captureHolds(holder.worktreeId),
+      // A holder's files for this repository travel with its own worktree's captures.
+      const viaHolders = (yield* Effect.forEach(
+        members.filter((member) => member.role === "holder"),
+        ({ session }) => engine.captureHolds(session.worktreeId),
       ))
         .flat()
         .map((hold): HoldFact => ({ ...hold, via: "holder" }));
       return {
-        facts: {
-          worktreeId: worktree.id,
-          name: worktree.name,
-          changeOwner: yield* personOf(worktree.changeOwnerUserId),
-          sessions: sessionFacts,
-          holds: [...own, ...viaHolders],
-        } satisfies WorktreeHolds,
-        inhabitants,
-      };
+        worktreeId: worktree.id,
+        name: worktree.name,
+        changeOwner: yield* personOf(worktree.changeOwnerUserId),
+        sessions: sessionFacts,
+        holds: [...own, ...viaHolders],
+        setupRunning: yield* setupRuns.unendedInWorktree(worktree.id),
+      } satisfies WorktreeHolds;
     });
 
     /**
@@ -285,8 +299,9 @@ export const RemovalLive: Layer.Layer<
       project: Project,
       worktree: Worktree,
       callerUserId: string,
+      openServices: ReadonlySet<string>,
     ) {
-      const { facts } = yield* worktreeHolds(worktree);
+      const holds = yield* worktreeHolds(worktree, openServices);
       const standing = yield* changeStandingOf({
         change: yield* changes.byWorktree(worktree.id),
         project,
@@ -301,51 +316,37 @@ export const RemovalLive: Layer.Layer<
               reason:
                 error._tag === "GitError" && error.stderr !== ""
                   ? error.stderr
-                  : `the change in ${worktree.name} could not be read`,
+                  : error._tag === "WorktreeNotCapturedError"
+                    ? error.message
+                    : `the change in ${worktree.name} could not be read`,
             }),
         ),
       );
       const nested = yield* worktrees.nestedRepositories(worktree.id);
-      return { ...facts, standing, nestedRepositories: nested } satisfies WorktreeFacts;
+      return { ...holds, standing, nestedRepositories: nested } satisfies WorktreeFacts;
     });
 
-    /** Sessions of other projects holding one of this project's worktrees as a repository. */
-    const foreignHolders = Effect.fn("Removal.foreignHolders")(function* (project: Project) {
-      const facts: Array<ForeignHolderFact> = [];
-      for (const row of yield* repositories.listForProject(project.id)) {
-        const holder = yield* sessions
-          .byId(row.sessionId)
-          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-        if (holder === null || holder.projectId === project.id) continue;
-        const { running, forwarding } = yield* holdsOnWorkspaces([holder]);
-        facts.push({
-          sessionId: holder.id,
-          path: row.path,
-          activity: activityOf(holder, "holder", running, forwarding),
-        });
-      }
-      return facts;
-    });
-
-    /** Keeps this removal's `checking` mark fresh for as long as `checks` runs. */
-    const renewing = <A, E>(row: FencedRow, id: RemovalFenceId, checks: Effect.Effect<A, E>) =>
+    /** Keeps mark `id` fresh for as long as `work` runs, checking or deleting. */
+    const renewing = <A, E>(row: FencedRow, id: RemovalFenceId, work: Effect.Effect<A, E>) =>
       Effect.gen(function* () {
         const renew = Effect.gen(function* () {
           while (true) {
-            yield* Effect.sleep(RENEW_EVERY);
+            yield* Effect.sleep(REMOVAL_FENCE_RENEW_EVERY);
             if (!(yield* fences.renew(row, id))) return;
           }
         });
-        const renewal = yield* Effect.forkChild(renew);
-        return yield* checks.pipe(Effect.ensuring(Fiber.interrupt(renewal)));
+        const renewal = yield* Effect.forkChild(Effect.interruptible(renew));
+        return yield* work.pipe(Effect.ensuring(Fiber.interrupt(renewal)));
       });
 
     /**
      * Marks `row`, then reads who may remove it and what stands in the way under that mark, and
      * either gives the mark back and refuses, or commits it and deletes. `finish` skips the
-     * decision: an earlier removal passed it and stopped while deleting. A deletion that fails
-     * keeps the mark, open for the next removal to finish at once. A removal that meets another
-     * under way reports that with every other blocker, read without a mark.
+     * decision: an earlier removal passed it and stopped while deleting. The deletion runs to its
+     * end even when the request goes away, renewing the mark, and asks before each destructive
+     * step whether the mark is still its own. A deletion that fails keeps the mark, open for the
+     * next removal to finish at once. A removal that meets another under way reports that with
+     * every other blocker, read without a mark.
      */
     const underFence = <Target, Denied, E, Gone>(
       row: FencedRow,
@@ -353,7 +354,11 @@ export const RemovalLive: Layer.Layer<
       steps: {
         readonly authorize: Effect.Effect<Target, Denied>;
         readonly decide: (target: Target) => Effect.Effect<RemovalDecision, E>;
-        readonly remove: (target: Target) => Effect.Effect<RemovalReport>;
+        /** `step` answers MarkLost once the mark is another removal's. */
+        readonly remove: (
+          target: Target,
+          step: Effect.Effect<void, MarkLost>,
+        ) => Effect.Effect<RemovalReport, MarkLost>;
         readonly gone: Gone;
       },
     ): Effect.Effect<RemovalReport, Denied | E | Gone | RemovalRefused> =>
@@ -362,7 +367,7 @@ export const RemovalLive: Layer.Layer<
         if (taken._tag === "gone") return yield* Effect.fail(steps.gone);
         if (taken._tag === "underway") {
           const decision = yield* steps.decide(yield* steps.authorize);
-          return yield* refused(scope, underwayWith(decision), false);
+          return yield* refused(scope, underwayWith(taken.stopped, decision), false);
         }
         const giveBack =
           taken._tag === "held" ? fences.release(row, taken.id) : fences.handOver(row, taken.id);
@@ -375,14 +380,23 @@ export const RemovalLive: Layer.Layer<
             yield* giveBack;
             return yield* refused(scope, decision.blockers, decision.forceWouldLift);
           }
-          if (!(yield* fences.commit(row, taken.id))) {
-            yield* giveBack;
-            return yield* refused(scope, underway, false);
-          }
         }
-        return yield* steps
-          .remove(target)
-          .pipe(Effect.onError(() => fences.handOver(row, taken.id)));
+        const step = fences
+          .renew(row, taken.id)
+          .pipe(Effect.flatMap((held) => (held ? Effect.void : Effect.fail(new MarkLost()))));
+        const lost = (stopped: StoppedRemoval | null) => refused(scope, underway(stopped), false);
+        return yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            if (taken._tag === "held" && !(yield* fences.commit(row, taken.id))) {
+              yield* giveBack;
+              return yield* lost(null);
+            }
+            return yield* renewing(row, taken.id, steps.remove(target, step)).pipe(
+              Effect.onError(() => fences.handOver(row, taken.id)),
+              Effect.catchTag("MarkLost", () => Effect.fail(lost(null))),
+            );
+          }),
+        );
       });
 
     const removeWorktree = Effect.fn("Removal.worktree")(function* (
@@ -399,14 +413,13 @@ export const RemovalLive: Layer.Layer<
         const current = yield* worktrees
           .byId(target.id)
           .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.fail(notFound)));
-        const { inhabitants, holders } = yield* membersOf(current);
         const right = worktreeRemovalRight({
           callerUserId: caller.userId,
           changeOwner: yield* personOf(current.changeOwnerUserId),
           changeOwnerProven: current.changeOwnerProven,
           managesProject: caller.managesProject,
-          ownsEverySession: [...inhabitants, ...holders].every(
-            (session) => session.ownerUserId === caller.userId,
+          ownsEverySession: (yield* membersOf(current)).every(
+            ({ session }) => session.ownerUserId === caller.userId,
           ),
         });
         if (right._tag === "hidden") return yield* notFound;
@@ -423,21 +436,28 @@ export const RemovalLive: Layer.Layer<
       return yield* underFence({ kind: "worktree", id: target.id }, "worktree", {
         authorize,
         decide: (current) =>
-          force
-            ? worktreeHolds(current).pipe(
-                Effect.map(({ facts }) =>
-                  decideRemoval({ kind: "worktree", force, worktree: facts }),
-                ),
-              )
-            : worktreeFacts(project, current, caller.userId).pipe(
-                Effect.map((facts) => decideRemoval({ kind: "worktree", force, worktree: facts })),
-              ),
-        remove: (current) =>
           Effect.gen(function* () {
+            const openServices = yield* openServicesNow;
+            return force
+              ? decideRemoval({
+                  kind: "worktree",
+                  force,
+                  worktree: yield* worktreeHolds(current, openServices),
+                })
+              : decideRemoval({
+                  kind: "worktree",
+                  force,
+                  worktree: yield* worktreeFacts(project, current, caller.userId, openServices),
+                });
+          }),
+        remove: (current, step) =>
+          Effect.gen(function* () {
+            yield* step;
             const { leftover } = yield* store.removeWorktreeForce(
               project.storePath,
               current.directory,
             );
+            yield* step;
             // Sessions, change, chain, and review artifacts cascade with the row.
             yield* worktrees.remove(current.id);
             return new RemovalReport({ removed: true, leftover });
@@ -457,22 +477,20 @@ export const RemovalLive: Layer.Layer<
         // are every one there will be.
         decide: () =>
           Effect.gen(function* () {
+            const openServices = yield* openServicesNow;
             const facts = yield* Effect.forEach(
               yield* worktrees.listForProject(target.id),
-              (worktree) => worktreeFacts(target, worktree, caller.userId),
+              (worktree) => worktreeFacts(target, worktree, caller.userId, openServices),
               { concurrency: 4 },
             );
             return decideRemoval({
               kind: "project",
-              project: {
-                worktrees: facts,
-                foreignHolders: yield* foreignHolders(target),
-                resources: yield* resources.declaredNames(target.id),
-              },
+              project: { worktrees: facts, resources: yield* resources.declaredNames(target.id) },
             });
           }),
-        remove: () =>
+        remove: (_, step) =>
           Effect.gen(function* () {
+            yield* step;
             // Hot workspaces hold nobody's work: their rows cascade with the project, but the
             // containers would otherwise run until the platform's TTL.
             yield* Effect.forEach(
@@ -487,7 +505,9 @@ export const RemovalLive: Layer.Layer<
                     ),
               { concurrency: 4 },
             );
+            yield* step;
             const { leftover } = yield* store.removeProjectStore(target.storePath);
+            yield* step;
             yield* projects.remove(target.id);
             return new RemovalReport({ removed: true, leftover });
           }),

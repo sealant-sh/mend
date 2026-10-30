@@ -114,7 +114,7 @@ describe("DELETE /worktrees/:id with repositories added by its sessions", () => 
         },
       ],
       message:
-        "This worktree holds 2 repositories added with mend repo add, saved only with it · /workspace/repos/core on mend/private-alice, /workspace/repos/sealantd on mend/private-alice · Mend cannot see whether they hold commits or edits that are not on origin, and removal deletes them. Push what you need from a session in this worktree before removal, or pass force=true to remove it anyway.",
+        "This worktree holds 2 repositories added with mend repo add, saved only with it · /workspace/repos/core on mend/private-alice, /workspace/repos/sealantd on mend/private-alice · Mend cannot see whether they hold commits or edits that are not on origin, so removal waits for force, pushed or not. Pass force=true to remove it anyway.",
     });
     expect(removed).toEqual([]);
     expect(api.world.worktrees.has(privateAlice.worktree)).toBe(true);
@@ -168,7 +168,7 @@ describe("DELETE /worktrees/:id with repositories added by its sessions", () => 
           { _tag: "NestedRepositories" },
         ],
         message:
-          "This worktree holds a change that was never landed · 1 file · +2 −1 · src/a.ts +2 −1. Land it or discard it before removal, or pass force=true to remove it anyway. This worktree holds 1 repository added with mend repo add, saved only with it · /workspace/repos/core on mend/private-alice · Mend cannot see whether it holds commits or edits that are not on origin, and removal deletes it. Push what you need from a session in this worktree before removal, or pass force=true to remove it anyway.",
+          "This worktree holds a change that was never landed · 1 file · +2 −1 · src/a.ts +2 −1. Land it or discard it before removal. This worktree holds 1 repository added with mend repo add, saved only with it · /workspace/repos/core on mend/private-alice · Mend cannot see whether it holds commits or edits that are not on origin, so removal waits for force, pushed or not. Pass force=true to remove it anyway.",
       });
     } finally {
       await unlanded.dispose();

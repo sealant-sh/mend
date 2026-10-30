@@ -821,12 +821,7 @@ const ADMITTED: Readonly<
   // failure ran).
   "projects.remove": {
     status: 500,
-    calls: [
-      "removalFences.take",
-      "removalFences.release",
-      "worktrees.listForProject",
-      "forwards.listOpen",
-    ],
+    calls: ["removalFences.take", "removalFences.release", "forwards.listOpen"],
   },
   "projects.visibility": { status: 500, calls: ["projects.setVisibility"] },
   "projects.automation": { status: 500, calls: ["projects.setAutomation"] },

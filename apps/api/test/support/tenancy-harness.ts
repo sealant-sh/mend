@@ -171,6 +171,8 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   // it, and the sessions holding it as a repository beside their own (docs/adr/0010).
   "sessions.listForWorktree",
   "sessionRepositories.listForWorktree",
+  // ...and those of projects linking it (`removal_fence_sessions_in`).
+  "removalFences.sessionsIn",
   // A worktree removal the caller may not make names the change's owner (decision Q4).
   "users.byId",
   // Who owns a change decides who may land it or remove its worktree.

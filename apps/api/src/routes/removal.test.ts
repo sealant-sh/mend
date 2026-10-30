@@ -6,11 +6,12 @@ import {
   SessionRepository,
   Worktree,
 } from "@mend/domain/workbench";
-import { type CaptureHold, WORKTREE_STAMP } from "@mend/sessions";
+import { type CaptureHold, WORKTREE_STAMP, WorktreeNotCapturedError } from "@mend/sessions";
 import { GitError } from "@mend/store";
 import { Deferred, Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { postgres, removalDatabase } from "../../test/support/removal-postgres.ts";
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import {
   CAROL_SESSION_IN_SHARED_A,
@@ -51,15 +52,26 @@ interface Scene {
   readonly beforeTake?: Effect.Effect<void>;
   /** A worktree whose change cannot be read, with git's words. */
   readonly unreadable?: ReadonlyMap<string, string>;
+  /** A worktree whose captured change cannot be restored, with the read's words. */
+  readonly notCaptured?: ReadonlyMap<string, string>;
+  /** Worktrees with a Service setup that has not ended. */
+  readonly setupRunning?: ReadonlyArray<string>;
+  /** Waits inside the store's removal of a worktree's files, for interruptions and takeovers. */
+  readonly aroundWorktreeRemoval?: (call: number) => Effect.Effect<void>;
+  /** Removal marks from Postgres (`removalDatabase`), in place of the in-memory ones. */
+  readonly fences?: Awaited<ReturnType<typeof removalDatabase>>["fences"];
+  readonly requestSignal?: AbortSignal;
 }
 
 let api: TenancyApi | undefined;
 let removedWorktrees: Array<string> = [];
+let removedRows: Array<string> = [];
 let removedStores: Array<string> = [];
 let reads = 0;
 
 const world = async (scene: Scene = {}) => {
   removedWorktrees = [];
+  removedRows = [];
   removedStores = [];
   reads = 0;
   api = await createTenancyApi(
@@ -68,7 +80,15 @@ const world = async (scene: Scene = {}) => {
       ...(scene.sessions === undefined ? {} : { sessions: scene.sessions }),
       ...(scene.processes === undefined ? {} : { processes: scene.processes }),
       ...(scene.beforeTake === undefined ? {} : { beforeTake: scene.beforeTake }),
+      ...(scene.requestSignal === undefined ? {} : { requestSignal: scene.requestSignal }),
+      // The production stack's boundary: it answers a start a removal's mark refused.
+      errorDetail: { mode: "redacted" },
       implement: {
+        ...(scene.fences === undefined ? {} : { removalFences: scene.fences }),
+        setupRuns: {
+          unendedInWorktree: (worktreeId) =>
+            Effect.succeed(scene.setupRunning?.includes(worktreeId) === true),
+        },
         engine: {
           launchUnderWay: () => false,
           captureHolds: (worktreeId) => Effect.succeed(scene.holds?.get(worktreeId) ?? []),
@@ -84,6 +104,10 @@ const world = async (scene: Scene = {}) => {
             Effect.gen(function* () {
               reads += 1;
               if (reads === 1 && scene.beforeRead !== undefined) yield* scene.beforeRead;
+              const notCaptured = scene.notCaptured?.get(worktreeId);
+              if (notCaptured !== undefined) {
+                return yield* new WorktreeNotCapturedError({ worktreeId, message: notCaptured });
+              }
               const unreadable = scene.unreadable?.get(worktreeId);
               if (unreadable !== undefined) {
                 return yield* new GitError({
@@ -126,8 +150,9 @@ const world = async (scene: Scene = {}) => {
         },
         store: {
           removeWorktreeForce: (_storePath, directory) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               removedWorktrees.push(directory);
+              yield* scene.aroundWorktreeRemoval?.(removedWorktrees.length) ?? Effect.void;
               return { leftover: null };
             }),
           removeProjectStore: (storePath) =>
@@ -476,6 +501,51 @@ describe("what a worktree removal reads under its mark", () => {
     });
   });
 
+  it("answers a captured change it could not restore with the read's words, in one 409", async () => {
+    const instance = await world({
+      notCaptured: new Map([
+        [
+          privateAlice.worktree,
+          "the change's Git evidence is unavailable · its capture manifest is invalid",
+        ],
+      ]),
+    });
+    const response = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/worktrees/${privateAlice.worktree}`,
+    );
+    expect(response.status).toBe(409);
+    expect(await bodyOf(response)).toMatchObject({
+      blockers: [
+        {
+          _tag: "Unlanded",
+          standing: {
+            _tag: "unread",
+            reason: "the change's Git evidence is unavailable · its capture manifest is invalid",
+          },
+        },
+      ],
+    });
+  });
+
+  it("refuses, with or without force, while a Service setup has not ended", async () => {
+    const instance = await world({ setupRunning: [privateAlice.worktree] });
+    for (const query of ["", "?force=true"]) {
+      const response = await instance.request(
+        "alice",
+        "DELETE",
+        `/api/worktrees/${privateAlice.worktree}${query}`,
+      );
+      expect(response.status).toBe(409);
+      expect(await bodyOf(response)).toMatchObject({
+        forceWouldLift: false,
+        blockers: [{ _tag: "SetupRunning", worktreeId: privateAlice.worktree }],
+      });
+    }
+    expect(removedWorktrees).toEqual([]);
+  });
+
   it("keeps a nested repository a blocker after the last session in the worktree is gone", async () => {
     const instance = await world();
     instance.world.nestedRepositories.set(privateAlice.worktree, [
@@ -541,15 +611,70 @@ describe("a worktree removal against a session start, a second removal and a cra
     expect(after.status).toBe(200);
   });
 
-  it("finishes a removal that passed its checks and stopped while deleting, without checking again", async () => {
+  it("finishes a deletion even when the request goes away while it deletes", async () => {
+    const atStore = Effect.runSync(Deferred.make<void>());
+    const resume = Effect.runSync(Deferred.make<void>());
+    const controller = new AbortController();
     const instance = await world({
+      requestSignal: controller.signal,
+      aroundWorktreeRemoval: () =>
+        Deferred.succeed(atStore, undefined).pipe(Effect.andThen(Deferred.await(resume))),
+    });
+    const removal = instance
+      .request("alice", "DELETE", `/api/worktrees/${privateAlice.worktree}`)
+      .catch(() => null);
+    await Effect.runPromise(Deferred.await(atStore));
+    controller.abort();
+    await Effect.runPromise(Deferred.succeed(resume, undefined));
+    await removal;
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        while (instance.world.worktrees.has(privateAlice.worktree))
+          yield* Effect.sleep("10 millis");
+      }).pipe(Effect.timeout("5 seconds")),
+    );
+    expect(removedWorktrees).toEqual(["private-alice"]);
+    expect(instance.world.calls.filter((call) => call === "worktrees.remove")).toHaveLength(1);
+  });
+});
+
+describe.skipIf(postgres.skip)("a removal against Postgres's marks", () => {
+  let database: Awaited<ReturnType<typeof removalDatabase>> | undefined;
+  afterEach(async () => {
+    await database?.drop();
+    database = undefined;
+  });
+
+  /** A world, its rows in Postgres, and the marks Postgres keeps; `scene` as `world` takes it. */
+  const marked = async (scene: Omit<Scene, "fences"> = {}) => {
+    const rows = await fixture((w) => ({
+      projects: new Map(w.projects),
+      worktrees: new Map(w.worktrees),
+      sessions: new Map(
+        [...w.sessions].map(([id, session]) => [
+          id,
+          scene.sessions?.find((replaced) => replaced.id === id) ?? session,
+        ]),
+      ),
+    }));
+    database = await removalDatabase(rows);
+    return world({ ...scene, fences: database.fences });
+  };
+
+  const setMark = (table: "worktrees" | "projects", id: string, phase: string, age: string) =>
+    database?.sql(
+      (sql) => sql`
+        UPDATE ${sql(table)}
+        SET removal_phase = ${phase}, removal_id = 'rmv_earlier',
+            removal_since = now() - ${age}::interval
+        WHERE id = ${id}`,
+    );
+
+  it("finishes a removal that passed its checks and stopped while deleting, without checking again", async () => {
+    const instance = await marked({
       changed: new Map([[privateAlice.worktree, [file("src/a.ts", 1, 0)]]]),
     });
-    instance.removalMarks.set(`worktree:${privateAlice.worktree}`, {
-      phase: "deleting",
-      since: new Date(0),
-      id: "rmv_crashed",
-    });
+    await setMark("worktrees", privateAlice.worktree, "deleting", "10 minutes");
     const response = await instance.request(
       "alice",
       "DELETE",
@@ -558,25 +683,129 @@ describe("a worktree removal against a session start, a second removal and a cra
     expect(response.status).toBe(200);
     expect(reads).toBe(0);
     expect(removedWorktrees).toEqual(["private-alice"]);
-  });
+  }, 60_000);
 
-  it("takes over a check whose checker went quiet, and decides afresh", async () => {
-    const instance = await world({
+  it("takes over a check whose checker went quiet, decides afresh, and gives the mark back", async () => {
+    const instance = await marked({
       changed: new Map([[privateAlice.worktree, [file("src/a.ts", 1, 0)]]]),
     });
-    instance.removalMarks.set(`worktree:${privateAlice.worktree}`, {
-      phase: "checking",
-      since: new Date(0),
-      id: "rmv_quiet",
-    });
+    await setMark("worktrees", privateAlice.worktree, "checking", "10 minutes");
     const response = await instance.request(
       "alice",
       "DELETE",
       `/api/worktrees/${privateAlice.worktree}`,
     );
     expect(await bodyOf(response)).toMatchObject({ blockers: [{ _tag: "Unlanded" }] });
-    expect(instance.removalMarks.size).toBe(0);
-  });
+    const left = await database?.sql(
+      (sql) =>
+        sql`SELECT removal_phase AS phase FROM worktrees WHERE id = ${privateAlice.worktree}`,
+    );
+    expect(left).toEqual([{ phase: null }]);
+  }, 60_000);
+
+  it("stops before its next step once another removal took its stopped deletion over", async () => {
+    const atStore = Effect.runSync(Deferred.make<void>());
+    const resume = Effect.runSync(Deferred.make<void>());
+    const instance = await marked({
+      aroundWorktreeRemoval: (call) =>
+        call === 1
+          ? Deferred.succeed(atStore, undefined).pipe(Effect.andThen(Deferred.await(resume)))
+          : Effect.void,
+    });
+    const first = instance.request("alice", "DELETE", `/api/worktrees/${privateAlice.worktree}`);
+    await Effect.runPromise(Deferred.await(atStore));
+    // The first deletion went quiet past the lease, as a paused process does.
+    await database?.sql(
+      (sql) => sql`
+        UPDATE worktrees SET removal_since = now() - interval '10 minutes'
+        WHERE id = ${privateAlice.worktree}`,
+    );
+    const second = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/worktrees/${privateAlice.worktree}`,
+    );
+    expect(second.status).toBe(200);
+    await Effect.runPromise(Deferred.succeed(resume, undefined));
+    const answered = await first;
+    expect(answered.status).toBe(409);
+    expect(await bodyOf(answered)).toMatchObject({ blockers: [{ _tag: "RemovalUnderway" }] });
+    expect(instance.world.calls.filter((call) => call === "worktrees.remove")).toHaveLength(1);
+  }, 60_000);
+
+  it("refuses a worktree whose project's deletion stopped partway, saying how to finish it", async () => {
+    const instance = await marked();
+    await setMark("projects", privateAlice.project, "deleting", "10 minutes");
+    const response = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/worktrees/${privateAlice.worktree}`,
+    );
+    expect(response.status).toBe(409);
+    expect(await bodyOf(response)).toMatchObject({
+      blockers: [{ _tag: "RemovalUnderway", stopped: { kind: "project", name: "private-alice" } }],
+      message: expect.stringContaining("remove that project again to finish it"),
+    });
+    expect(removedWorktrees).toEqual([]);
+  }, 60_000);
+
+  it("refuses a project while one of its worktrees' deletions stopped partway", async () => {
+    const instance = await marked();
+    await setMark("worktrees", privateAlice.worktree, "deleting", "10 minutes");
+    const response = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/projects/${privateAlice.project}`,
+    );
+    expect(await bodyOf(response)).toMatchObject({
+      blockers: [{ _tag: "RemovalUnderway", stopped: { kind: "worktree", name: "private-alice" } }],
+    });
+    expect(removedStores).toEqual([]);
+  }, 60_000);
+
+  it("counts a launch admitted before the removal as a session starting", async () => {
+    const session = await fixture((w) => w.sessions.get(privateAlice.session));
+    const instance = await marked({ sessions: [live(session, "completed")] });
+    await database?.sql(
+      (sql) => sql`
+        INSERT INTO session_admissions (id, session_id) VALUES ('adm-1', ${privateAlice.session})`,
+    );
+    const response = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/worktrees/${privateAlice.worktree}?force=true`,
+    );
+    expect(response.status).toBe(409);
+    expect(await bodyOf(response)).toMatchObject({
+      blockers: [{ _tag: "SessionLive", sessionId: privateAlice.session, activity: "starting" }],
+    });
+    expect(removedWorktrees).toEqual([]);
+  }, 60_000);
+
+  it("counts a live session of a project that links the worktree, by name", async () => {
+    const instance = await marked();
+    await database?.sql(
+      (sql) => sql`
+        INSERT INTO project_links (id, project_id, linked_project_id, name, worktree_name)
+        VALUES ('link-1', ${sharedA.project}, ${privateAlice.project}, 'alice', 'private-alice')`,
+    );
+    const response = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/worktrees/${privateAlice.worktree}?force=true`,
+    );
+    expect(response.status).toBe(409);
+    expect(await bodyOf(response)).toMatchObject({
+      blockers: [
+        {
+          _tag: "SessionLive",
+          sessionId: CAROL_SESSION_IN_SHARED_A,
+          role: "linked",
+          activity: "process-running",
+        },
+      ],
+    });
+  }, 60_000);
 });
 
 describe("DELETE /projects/:id", () => {
@@ -718,11 +947,18 @@ describe("DELETE /projects/:id", () => {
       "DELETE",
       `/api/projects/${privateAlice.project}`,
     );
-    expect(await bodyOf(response)).toMatchObject({
+    const body = await bodyOf(response);
+    expect(body).toMatchObject({
       blockers: [
-        { _tag: "SessionLive", role: "holder" },
-        { _tag: "HeldByOtherProject", path: "/workspace/repos/private-alice", activity: "live" },
+        {
+          _tag: "SessionLive",
+          sessionId: CAROL_SESSION_IN_SHARED_A,
+          worktreeName: "private-alice",
+          role: "holder",
+          activity: "live",
+        },
       ],
     });
+    expect(body).toHaveProperty("blockers", [expect.anything()]);
   });
 });

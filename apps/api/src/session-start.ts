@@ -42,7 +42,8 @@ import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
 import { Budgets } from "./budgets.ts";
-import { refusedWhileRemoving, refuseStartWhileRemoving } from "./removal.ts";
+import { refusedWhileRemoving } from "./removal-refusal.ts";
+import { refuseStartWhileRemoving } from "./removal.ts";
 import { budgetExceeded, requireSessionRoom } from "./session-budgets.ts";
 
 /** The worktree and conversation to provision: the create route's payload, plus its origin. */

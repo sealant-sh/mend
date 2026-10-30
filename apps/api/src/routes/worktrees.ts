@@ -48,7 +48,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";
 import { LIVE_STATES } from "../live-states.ts";
-import { refusedWhileRemoving, refuseStartWhileRemoving, Removal } from "../removal.ts";
+import { refuseStartWhileRemoving, Removal } from "../removal.ts";
 import { budgetExceeded } from "../session-budgets.ts";
 import { observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
 
@@ -654,7 +654,6 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
             autoLand: payload.autoLand,
           })
           .pipe(
-            refusedWhileRemoving,
             Effect.catchTag("WorktreeNotFoundError", () =>
               Effect.fail(new WorktreeNotFound({ id: params.id })),
             ),
