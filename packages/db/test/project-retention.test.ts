@@ -69,7 +69,7 @@ const keep = (id: ProjectId) =>
     const fences = yield* RemovalFencesRepo;
     const mark = yield* fences.take({ kind: "project", id });
     if (mark._tag !== "held") return yield* Effect.die("expected removal mark");
-    expect(yield* fences.keep(id, mark.id, "anna")).toBe(true);
+    expect(yield* fences.keep(id, mark.id, "anna")).toBe("kept");
   });
 
 describe.skipIf(postgres.skip)("project retention on a populated database (0167)", () => {
@@ -119,7 +119,7 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         );
         expect(yield* projects.storeClaimed("/store/legacy/repo.git")).toBe(true);
         expect(yield* fences.restore(ProjectId.make("legacy"), "anna")).toBe("legacy");
-        expect((yield* fences.takePurge(ProjectId.make("legacy")))._tag).toBe("finish");
+        expect((yield* fences.takePurge(ProjectId.make("legacy"), "anna"))._tag).toBe("finish");
       }),
     ));
 
@@ -185,8 +185,10 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         VALUES (${sid}, ${pid}, ${`w-${pid}`}, 'claude', 'work', 'work', 'abc', 'anna', ${snapshot})`;
         }
         yield* keep(id);
-        yield* (yield* RemovalFencesRepo).takePurge(id);
-        yield* projects.remove(id);
+        const fences = yield* RemovalFencesRepo;
+        const purge = yield* fences.takePurge(id, "anna");
+        if (purge._tag !== "finish") return yield* Effect.die("expected purge mark");
+        expect(yield* fences.finishPurge(id, purge.id, "anna")).toBe(true);
         expect(yield* projects.removedById(id)).toBeNull();
         expect(yield* sql`SELECT id FROM agent_sessions WHERE project_id = ${id}`).toEqual([]);
         expect(yield* sql`SELECT id FROM context_snapshots ORDER BY id`).toEqual([
@@ -352,6 +354,111 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           Effect.map(tickets.consume({ ...ticket, keep: true }), (spent) => spent !== null),
         );
         expect(open).toEqual([false, false, false, true]);
+      }),
+    ));
+
+  /** Takes the mark and keeps the project as `by`, answering what keep answered. */
+  const removeAs = (id: ProjectId, by: string) =>
+    Effect.gen(function* () {
+      const fences = yield* RemovalFencesRepo;
+      const mark = yield* fences.take({ kind: "project", id });
+      if (mark._tag !== "held") return yield* Effect.die("expected removal mark");
+      return yield* fences.keep(id, mark.id, by);
+    });
+  const member = (user: string, role: "owner" | "member") =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO "user" (id, name, email, "createdAt") VALUES (${user}, ${user}, ${`${user}@example.invalid`}, now()) ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO organization_members (organization_id, user_id, role) VALUES (${org}, ${user}, ${role})
+        ON CONFLICT (organization_id, user_id) DO UPDATE SET role = EXCLUDED.role`;
+    });
+
+  it("answers Restore, purge and removal by what the person may do when they commit", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        yield* member("olga", "owner");
+        const shared = yield* seed("authority-shared");
+        yield* sql`UPDATE projects SET visibility = 'shared', created_by_user_id = 'anna' WHERE id = ${shared}`;
+        expect(yield* removeAs(shared, "olga")).toBe("kept");
+        // Authorized as an owner, demoted before the change commits.
+        yield* member("olga", "member");
+        const restored = yield* fences.restore(shared, "olga");
+        const purge = yield* fences.takePurge(shared, "olga");
+        const other = yield* seed("authority-listed");
+        yield* sql`UPDATE projects SET visibility = 'shared' WHERE id = ${other}`;
+        const removed = yield* removeAs(other, "olga");
+        yield* member("pia", "member");
+        const own = ProjectId.make("authority-private");
+        yield* sql`INSERT INTO projects (id, name, organization_id, created_by_user_id, visibility, store_path, default_branch)
+          VALUES (${own}, ${own}, ${org}, 'pia', 'private', ${`/store/${own}/repo.git`}, 'main')`;
+        expect(yield* removeAs(own, "pia")).toBe("kept");
+        yield* sql`DELETE FROM organization_members WHERE user_id = 'pia'`;
+        expect({
+          restored,
+          purge: purge._tag,
+          removed,
+          formerMember: yield* fences.restore(own, "pia"),
+          state: yield* sql`SELECT id, removal_phase AS phase FROM projects
+            WHERE id IN (${shared}, ${other}, ${own}) ORDER BY id`,
+        }).toEqual({
+          restored: "forbidden",
+          purge: "forbidden",
+          removed: "forbidden",
+          formerMember: "forbidden",
+          state: [
+            { id: other, phase: "checking" },
+            { id: own, phase: "removed" },
+            { id: shared, phase: "removed" },
+          ],
+        });
+      }),
+    ));
+
+  it("commits each lifecycle change with its audit entry, and a purge deletes the row only under its own mark", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        const id = yield* seed("audited");
+        const actions = sql<{ readonly action: string }>`SELECT action FROM audit_events
+          WHERE subject_id = ${id} ORDER BY created_at, action`;
+        yield* removeAs(id, "anna");
+        const afterRemove = yield* actions;
+        yield* fences.restore(id, "anna");
+        const afterRestore = yield* actions;
+        yield* removeAs(id, "anna");
+        const first = yield* fences.takePurge(id, "anna");
+        if (first._tag !== "finish") return yield* Effect.die("expected purge mark");
+        yield* sql`UPDATE projects SET removal_since = now() - interval '10 minutes' WHERE id = ${id}`;
+        const second = yield* fences.takePurge(id, "anna");
+        if (second._tag !== "finish") return yield* Effect.die("expected purge takeover");
+        const stale = yield* fences.finishPurge(id, first.id, "anna");
+        const rowAfterStale = (yield* sql`SELECT id FROM projects WHERE id = ${id}`).length;
+        const finished = yield* fences.finishPurge(id, second.id, "anna");
+        expect({
+          afterRemove,
+          afterRestore,
+          stale,
+          rowAfterStale,
+          finished,
+          rowAfter: (yield* sql`SELECT id FROM projects WHERE id = ${id}`).length,
+          actions: yield* actions,
+        }).toEqual({
+          afterRemove: [{ action: "project.removed" }],
+          afterRestore: [{ action: "project.removed" }, { action: "project.restored" }],
+          stale: false,
+          rowAfterStale: 1,
+          finished: true,
+          rowAfter: 0,
+          actions: [
+            { action: "project.removed" },
+            { action: "project.restored" },
+            { action: "project.removed" },
+            { action: "project.purged" },
+          ],
+        });
       }),
     ));
 });

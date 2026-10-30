@@ -15,7 +15,6 @@ import {
 import {
   type FencedRow,
   type RemovalFenceId,
-  AuditEventsRepo,
   HotWorkspacesRepo,
   ProjectsRepo,
   REMOVAL_FENCE_RENEW_EVERY,
@@ -191,7 +190,6 @@ export const RemovalLive: Layer.Layer<
   never,
   | StandingServices
   | CaptureRuntime
-  | AuditEventsRepo
   | HotWorkspacesRepo
   | ProjectsRepo
   | RemovalFencesRepo
@@ -212,7 +210,6 @@ export const RemovalLive: Layer.Layer<
   Removal,
   Effect.gen(function* () {
     const capture = yield* CaptureRuntime;
-    const audit = yield* AuditEventsRepo;
     const fences = yield* RemovalFencesRepo;
     const worktrees = yield* WorktreesRepo;
     const projects = yield* ProjectsRepo;
@@ -402,7 +399,8 @@ export const RemovalLive: Layer.Layer<
           step: Effect.Effect<void, MarkLost>,
         ) => Effect.Effect<Report, MarkLost>;
         readonly gone: Gone;
-        readonly commit?: (target: Target, mark: RemovalFenceId) => Effect.Effect<boolean>;
+        /** Moves the mark past the checks; fails `gone` once the caller may no longer remove. */
+        readonly commit?: (target: Target, mark: RemovalFenceId) => Effect.Effect<boolean, Gone>;
       },
     ): Effect.Effect<Report, Denied | E | Gone | RemovalRefused> =>
       Effect.gen(function* () {
@@ -432,9 +430,11 @@ export const RemovalLive: Layer.Layer<
           Effect.gen(function* () {
             if (
               taken._tag === "held" &&
-              !(yield* steps.commit === undefined
-                ? fences.commit(row, taken.id)
-                : steps.commit(target, taken.id))
+              !(yield* (
+                steps.commit === undefined
+                  ? fences.commit(row, taken.id)
+                  : steps.commit(target, taken.id)
+              ).pipe(Effect.onError(() => giveBack)))
             ) {
               yield* giveBack;
               return yield* lost(null);
@@ -520,7 +520,16 @@ export const RemovalLive: Layer.Layer<
     ) {
       return yield* underFence({ kind: "project", id: target.id }, "project", {
         authorize: Effect.succeed(target),
-        commit: (_, mark) => fences.keep(target.id, mark, caller.userId),
+        commit: (_, mark) =>
+          fences
+            .keep(target.id, mark, caller.userId)
+            .pipe(
+              Effect.flatMap((outcome) =>
+                outcome === "forbidden"
+                  ? Effect.fail(new NotFound({ id: target.id }))
+                  : Effect.succeed(outcome === "kept"),
+              ),
+            ),
         // Resources keep their data only in their volumes (docs/adr/0019, "Durability"): a
         // declaration made while this removal's mark stands is refused, so the names read here
         // are every one there will be.
@@ -554,13 +563,6 @@ export const RemovalLive: Layer.Layer<
                     ),
               { concurrency: 4 },
             );
-            yield* audit.record({
-              organizationId: target.organizationId,
-              actorUserId: caller.userId,
-              action: "project.removed",
-              subjectType: "project",
-              subjectId: target.id,
-            });
             return new ProjectRemovalReport({
               removed: true,
               leftover: null,
@@ -612,17 +614,18 @@ export const RemovalLive: Layer.Layer<
         );
     });
 
+    const retentionForbidden = new ProjectRetentionForbidden({
+      message:
+        "Only the private project's creator or an organization owner for a shared project can Restore or purge it.",
+    });
+
     const authorizedRetained = Effect.fn("Removal.authorizedRetained")(function* (
       id: ProjectId,
       viewer: Viewer,
     ) {
       const kept = yield* projects.removedById(id);
       if (kept === null || !canSeeProject(kept.project, viewer)) return yield* new NotFound({ id });
-      if (!canRemoveProject(kept.project, viewer))
-        return yield* new ProjectRetentionForbidden({
-          message:
-            "Only the private project's creator or an organization owner for a shared project can Restore or purge it.",
-        });
+      if (!canRemoveProject(kept.project, viewer)) return yield* retentionForbidden;
       return kept;
     });
 
@@ -668,17 +671,10 @@ export const RemovalLive: Layer.Layer<
         ),
       );
       if (outcome === "gone") return yield* new NotFound({ id });
+      if (outcome === "forbidden") return yield* retentionForbidden;
       if (outcome === "purging" || outcome === "legacy")
         return yield* new ProjectRestoreUnavailable({
           message: "Purge has started. Purge again to finish.",
-        });
-      if (outcome === "restored")
-        yield* audit.record({
-          organizationId: kept.project.organizationId,
-          actorUserId: viewer.userId,
-          action: "project.restored",
-          subjectType: "project",
-          subjectId: id,
         });
       return yield* projects
         .byId(id)
@@ -695,28 +691,38 @@ export const RemovalLive: Layer.Layer<
         return yield* new PurgeNotConfirmed({
           message: "Type the project's name exactly to confirm purge.",
         });
-      const taken = yield* fences.takePurge(id);
+      const taken = yield* fences.takePurge(id, viewer.userId);
       if (taken._tag === "gone") return yield* new NotFound({ id });
+      if (taken._tag === "forbidden") return yield* retentionForbidden;
       if (taken._tag === "underway")
         return yield* refused("project", underway(taken.stopped), false);
       const row = { kind: "project", id } as const;
+      // Asked before every destructive step: once another purge took the mark, this one stops.
+      const holding = fences.renew(row, taken.id).pipe(
+        Effect.flatMap((held) =>
+          held
+            ? Effect.void
+            : Effect.fail(
+                new ProjectPurgeIncomplete({
+                  message: "Another purge took over this one. Retry purge to observe its result.",
+                }),
+              ),
+        ),
+      );
       return yield* Effect.uninterruptible(
         renewing(
           row,
           taken.id,
           Effect.gen(function* () {
-            if (!(yield* fences.renew(row, taken.id)))
-              return yield* new ProjectPurgeIncomplete({
-                message:
-                  "Another purge is working on this project. Retry purge to observe its result.",
-              });
+            yield* holding;
             yield* purgeProjectBlobs(
               capture,
               id,
               (yield* worktrees.listForProject(id)).map((tree) => tree.id),
               capture.enabled ? yield* worktrees.handoffPacks(id) : [],
+              holding,
             ).pipe(
-              Effect.catch(() =>
+              Effect.catchTag("PurgeBlobFailure", () =>
                 Effect.fail(
                   new ProjectPurgeIncomplete({
                     message: "Some stored objects could not be deleted. Purge again to finish.",
@@ -724,24 +730,22 @@ export const RemovalLive: Layer.Layer<
                 ),
               ),
             );
+            yield* holding;
+            if (yield* projects.storeClaimed(kept.project.storePath, id))
+              return yield* new ProjectPurgeIncomplete({
+                message:
+                  "Another project now claims this project's store directory, so its files were kept.",
+              });
             const { leftover } = yield* store.removeProjectStore(kept.project.storePath);
             if (leftover !== null)
               return yield* new ProjectPurgeIncomplete({
                 message:
                   "Some files could not be deleted. Fix their permissions and purge again to finish.",
               });
-            if (!(yield* fences.renew(row, taken.id)))
+            if (!(yield* fences.finishPurge(id, taken.id, viewer.userId)))
               return yield* new ProjectPurgeIncomplete({
                 message: "Purge stopped before deleting records. Purge again to finish.",
               });
-            yield* projects.remove(id);
-            yield* audit.record({
-              organizationId: kept.project.organizationId,
-              actorUserId: viewer.userId,
-              action: "project.purged",
-              subjectType: "project",
-              subjectId: id,
-            });
             return new ProjectPurgeReport({ id, purged: true });
           }),
         ).pipe(Effect.onError(() => fences.handOver(row, taken.id))),

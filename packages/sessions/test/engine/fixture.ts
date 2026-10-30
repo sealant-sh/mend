@@ -2635,7 +2635,6 @@ export const projectsLayer = (world: World) =>
       ),
     setAutomation: () => Effect.die("not in test"),
     setAutoLand: () => Effect.die("not in test"),
-    remove: () => Effect.die("not in test"),
   });
 
 /**

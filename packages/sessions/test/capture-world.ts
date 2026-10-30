@@ -226,7 +226,6 @@ export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
     listAll: () => Effect.succeed([project]),
     setAutomation: () => Effect.die("not in test"),
     setAutoLand: () => Effect.die("not in test"),
-    remove: () => Effect.die("not in test"),
   });
 
 export const worktreesFor = (rows: Map<string, Worktree>): Layer.Layer<WorktreesRepo> =>

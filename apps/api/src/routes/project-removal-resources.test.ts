@@ -107,9 +107,14 @@ const scratchDatabase = async () => {
           ([, migration]) => migration,
           { discard: true },
         );
-        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-a', 'A')`;
-        yield* sql`INSERT INTO projects (id, name, store_path, default_branch, organization_id)
-          VALUES (${project}, 'api', '/store/api', 'main', 'org-a')`;
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-A', 'A')`;
+        yield* sql`INSERT INTO "user" (id, name, email, "createdAt")
+          VALUES ('alice', 'Alice', 'alice@example.invalid', now())`;
+        yield* sql`INSERT INTO organization_members (organization_id, user_id, role)
+          VALUES ('org-A', 'alice', 'owner')`;
+        yield* sql`INSERT INTO projects (id, name, store_path, default_branch, organization_id,
+            created_by_user_id, visibility)
+          VALUES (${project}, 'api', '/store/api', 'main', 'org-A', 'alice', 'private')`;
       }),
     );
   } catch (error) {
@@ -146,7 +151,7 @@ const heldStore = () => {
   };
 };
 
-describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () => {
+describe.skipIf(postgres.skip)("two purges of one removed project, in Postgres", () => {
   let api: TenancyApi | undefined;
   let database: Awaited<ReturnType<typeof scratchDatabase>> | undefined;
   afterEach(async () => {
@@ -156,7 +161,7 @@ describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () =>
     database = undefined;
   });
 
-  it("refuses a second removal while one deletes; a failed deletion stays fenced, and the next removal finishes it", async () => {
+  it("refuses a second purge while one deletes; a failed purge stays fenced, and the next purge finishes it", async () => {
     database = await scratchDatabase();
     const { runtime } = database;
     const { resources, projects, removalFences } = await runtime.runPromise(
@@ -172,20 +177,33 @@ describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () =>
         ...quietWorktree(),
         resources,
         removalFences,
-        projects: { remove: projects.remove },
+        projects: {
+          byId: projects.byId,
+          removedById: projects.removedById,
+          storeClaimed: projects.storeClaimed,
+        },
         store: { removeProjectStore: store.removeProjectStore },
       },
     });
-    const remove = () => api?.request("alice", "DELETE", `/api/projects/${project}`);
+    expect((await api.request("alice", "DELETE", `/api/projects/${project}`)).status).toBe(200);
+    const purge = () =>
+      api?.request("alice", "POST", `/api/removed-projects/${project}/purge`, { confirm: "api" });
 
-    const first = remove();
+    const first = purge();
     const firstAtStore = await store.removal(1);
-    const second = await remove();
+    const second = await purge();
     expect(second?.status).toBe(409);
     expect(await second?.json()).toMatchObject({ blockers: [{ _tag: "RemovalUnderway" }] });
 
     firstAtStore.end("fails");
     expect((await first)?.status).toBe(500);
+    const restore = await api.request(
+      "alice",
+      "POST",
+      `/api/removed-projects/${project}/restore`,
+      {},
+    );
+    expect(restore.status).toBe(409);
 
     const spec = withPresetCommand(
       Schema.decodeUnknownSync(ResourceDefinitionInput)({
@@ -209,7 +227,7 @@ describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () =>
       refusals: [{ key: "project" }],
     });
 
-    const third = remove();
+    const third = purge();
     const thirdAtStore = await store.removal(2);
     thirdAtStore.end("succeeds");
     expect((await third)?.status).toBe(200);

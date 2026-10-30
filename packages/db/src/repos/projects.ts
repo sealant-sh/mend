@@ -7,7 +7,7 @@ import {
   type GitAuthMode,
   type ProjectVisibility,
 } from "@mend/domain/workbench";
-import { and, asc, eq, isNull, isNotNull } from "drizzle-orm";
+import { and, asc, eq, isNull, isNotNull, ne } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -99,7 +99,8 @@ export class ProjectsRepo extends Context.Service<
     readonly removedForOrganization: (
       id: OrganizationId,
     ) => Effect.Effect<ReadonlyArray<RetainedProject>>;
-    readonly storeClaimed: (storePath: string) => Effect.Effect<boolean>;
+    /** Whether any row, in any state, other than `except` claims the store directory. */
+    readonly storeClaimed: (storePath: string, except?: ProjectId) => Effect.Effect<boolean>;
     readonly byScratchOwner: (userId: string) => Effect.Effect<Project | null>;
     readonly publishInitialized: (
       project: InitializedProject,
@@ -191,8 +192,6 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       installEnabled: boolean,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
-    /** Hard delete — sessions and everything under them cascade. */
-    readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
 >()("@mend/db/ProjectsRepo") {}
 
@@ -254,11 +253,19 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
         return rows.map(retained);
       });
-      const storeClaimed = Effect.fn("ProjectsRepo.storeClaimed")(function* (storePath: string) {
+      const storeClaimed = Effect.fn("ProjectsRepo.storeClaimed")(function* (
+        storePath: string,
+        except?: ProjectId,
+      ) {
         const rows = yield* db
           .select({ id: projects.id })
           .from(projects)
-          .where(eq(projects.storePath, storePath))
+          .where(
+            and(
+              eq(projects.storePath, storePath),
+              except === undefined ? undefined : ne(projects.id, except),
+            ),
+          )
           .limit(1)
           .pipe(Effect.orDie);
         return rows.length > 0;
@@ -655,26 +662,6 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
-        yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              const snapshots = yield* sql<{ readonly id: string }>`SELECT id FROM context_snapshots
-            WHERE id IN (SELECT context_snapshot_id FROM agent_sessions WHERE project_id = ${id}) FOR UPDATE`;
-              yield* sql`DELETE FROM previews WHERE project_id = ${id}`;
-              yield* sql`UPDATE worktree_chain SET orphaned = true, head_capture = NULL, head_n = -1,
-            head_epoch = 0, guard = guard + 1 WHERE worktree_id IN (SELECT id FROM worktrees WHERE project_id = ${id})`;
-              yield* db.delete(projects).where(eq(projects.id, id));
-              for (const snapshot of snapshots) {
-                yield* sql`DELETE FROM context_snapshots WHERE id = ${snapshot.id}
-              AND NOT EXISTS (SELECT 1 FROM agent_sessions WHERE context_snapshot_id = ${snapshot.id})`;
-              }
-              yield* notifyEvent(sql, { type: "project", projectId: id });
-            }),
-          )
-          .pipe(Effect.orDie);
-      });
-
       return {
         removedById,
         removedForOrganization,
@@ -698,7 +685,6 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         setHotSessions,
         setInstallCommand,
         setInstallEnabled,
-        remove,
       };
     }),
   );

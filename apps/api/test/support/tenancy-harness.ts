@@ -773,8 +773,10 @@ export const createTenancyWorld = async (
           Effect.sync(() =>
             [...retainedProjects.values()].filter(({ project }) => project.organizationId === id),
           ),
-        storeClaimed: (storePath) =>
-          Effect.sync(() => [...projects.values()].some((p) => p.storePath === storePath)),
+        storeClaimed: (storePath, except) =>
+          Effect.sync(() =>
+            [...projects.values()].some((p) => p.storePath === storePath && p.id !== except),
+          ),
         byName: (org, name) =>
           Effect.sync(
             () =>

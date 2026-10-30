@@ -373,14 +373,15 @@ export const createTenancyApi = async (
     keep: (id, mark, userId) =>
       Effect.sync(() => {
         const project = world.projects.get(id);
-        if (project === undefined || removalMarks.get(`project:${id}`)?.id !== mark) return false;
+        if (project === undefined || removalMarks.get(`project:${id}`)?.id !== mark)
+          return "lost" as const;
         world.retainedProjects.set(id, {
           project,
           removedAt: new Date(),
           removedByUserId: userId,
           state: "removed",
         });
-        return true;
+        return "kept" as const;
       }),
     restore: (id, _userId, name) =>
       Effect.gen(function* () {
@@ -415,6 +416,14 @@ export const createTenancyApi = async (
         world.retainedProjects.delete(id);
         removalMarks.delete(`project:${id}`);
         return "restored" as const;
+      }),
+    finishPurge: (id, mark) =>
+      Effect.sync(() => {
+        if (removalMarks.get(`project:${id}`)?.id !== mark) return false;
+        world.calls.push(`projects.purge:${id}`);
+        world.purgeProject(id);
+        removalMarks.delete(`project:${id}`);
+        return true;
       }),
     takePurge: (id) =>
       Effect.sync((): FenceTaken => {
