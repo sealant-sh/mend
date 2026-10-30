@@ -916,7 +916,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     description: [
       "Approves the definition project settings hold under the name, or adopts a proposal into settings and approves it in the same write: the one --proposal names, the only one of the name, or the [resource.*] table in --worktree's mend.toml. Every field that runs prints first, with the digest approved. Mend pins the image to the digest its registry serves for the tag, asking the operator's mirrors first; a registry that cannot say leaves nothing approved.",
-      "Approving for the project is a manager's. A worktree resource read with --worktree is approved for that worktree, which is its change owner's, and only for an image a manager approved for the project; --for-project approves it for the project instead. A definition changed since it was read is not approved. Without a terminal, --digest names the digest of the definition you read, as printed.",
+      "Approving for the project is a manager's. A worktree resource read with --worktree is approved for that worktree, which is its change owner's, and only for an image a manager approved for the project; --for-project approves it for the project instead. When the project offers you no approval for that target, the reason prints, in the words the server would answer with, and nothing is approved. A definition changed since it was read is not approved. Without a terminal, --digest names the digest of the definition you read, as printed.",
     ],
     options: [
       { flag: "--proposal <id>", text: "the proposal to adopt and approve" },

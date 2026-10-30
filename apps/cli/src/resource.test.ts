@@ -30,7 +30,7 @@ const spec = (name: string, image: string) => ({
 });
 
 const pageOf = Schema.decodeUnknownSync(ResourcesPage);
-/** The page's offers to a reader who manages nothing: the CLI builds its own requests. */
+/** The page's offers to a reader who manages nothing: none of them is a request. */
 const NOT_A_MANAGER = {
   project: {
     kind: "denied",
@@ -320,6 +320,13 @@ const server = (answers: Record<string, unknown>) => {
   return { calls, api };
 };
 
+const ready = (source: unknown, worktreeId: string | null = null) => ({
+  kind: "ready",
+  request: { source, worktreeId },
+});
+
+const posted = (calls: ReadonlyArray<string>) => calls.filter((call) => call.startsWith("POST"));
+
 describe("the command against a server", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -444,87 +451,29 @@ describe("what the terminal receives", () => {
 
 describe("mend resource approve", () => {
   const unnamed = { proposal: null, worktree: null, forProject: false };
-  const checkout = { id: "wt_1", label: "checkout" };
-  const withFile = (table: ReturnType<typeof spec>, scope: "project" | "worktree") =>
-    pageOf({
-      ...page,
-      file: {
-        ...page.file,
-        proposals: [
-          {
-            digest: "b".repeat(64),
-            spec: { ...table, scope },
-            approvals: { project: null, worktree: null },
-            approve: NOT_A_MANAGER,
-            statusLine: "@mail · mailpit · worktree · proposed in mend.toml · waiting for approval",
-          },
-        ],
-      },
-    });
 
-  it("approves the definition settings hold, by the digest read", () => {
-    expect(approvalTarget(page, "db", unnamed)).toMatchObject({
-      ok: true,
-      body: { source: { kind: "settings", id: "rdef_1", digest }, worktreeId: null },
-    });
-  });
-
-  it("adopts the proposal named, over nothing settings hold", () => {
-    expect(approvalTarget(page, "mail", { ...unnamed, proposal: "rprop_2" })).toMatchObject({
-      ok: true,
-      body: { source: { kind: "proposal", id: "rprop_2", digest, settings: null } },
-    });
+  it("names a proposal when several share the name, and refuses an id of another name", () => {
     expect(approvalTarget(page, "mail", unnamed)).toEqual({
       ok: false,
       message: "2 proposals of @mail · name one with --proposal rprop_1 | rprop_2",
     });
-  });
-
-  it("adopts the only proposal of a name a worktree's file does not hold, for that worktree", () => {
-    const box = pageOf({
-      ...page,
-      proposals: [
-        {
-          ...page.proposals[0],
-          id: "rprop_9",
-          spec: { ...spec("box", "axllent/mailpit:v1.21"), scope: "worktree" },
-        },
-      ],
-    });
-    const forBox = {
-      ok: true,
-      body: { source: { kind: "proposal", id: "rprop_9", settings: null }, worktreeId: "wt_1" },
-    };
-    expect(approvalTarget(box, "box", { ...unnamed, worktree: checkout })).toMatchObject(forBox);
-    const unread = pageOf({
-      ...box,
-      file: { kind: "unavailable", worktreeId: "wt_1", message: "the worktree is gone" },
-    });
-    expect(approvalTarget(unread, "box", { ...unnamed, worktree: checkout })).toMatchObject(forBox);
-    expect(approvalTarget(page, "mail", { ...unnamed, worktree: checkout })).toEqual({
+    expect(approvalTarget(page, "db", { ...unnamed, proposal: "rprop_1" })).toEqual({
       ok: false,
-      message: "2 proposals of @mail · name one with --proposal rprop_1 | rprop_2",
+      message: "no proposal rprop_1 of @db",
     });
   });
 
-  it("approves a worktree's table for that worktree, or for the project when asked", () => {
-    const filed = withFile(spec("mail", "axllent/mailpit:v1.21"), "worktree");
-    expect(approvalTarget(filed, "mail", { ...unnamed, worktree: checkout })).toMatchObject({
-      ok: true,
-      body: {
-        source: { kind: "file", worktreeId: "wt_1", name: "mail", digest: "b".repeat(64) },
-        worktreeId: "wt_1",
-      },
+  it("says a target that approves the spec already, and approves nothing again", () => {
+    expect(approvalTarget(page, "db", unnamed)).toEqual({
+      ok: false,
+      message: "@db is approved for the project already · nothing was approved",
     });
-    expect(
-      approvalTarget(filed, "mail", { ...unnamed, worktree: checkout, forProject: true }),
-    ).toMatchObject({ ok: true, body: { worktreeId: null } });
   });
 
   it("prints every field that runs, the digest and whom it is for", () => {
-    const target = approvalTarget(page, "db", unnamed);
-    if (!target.ok) throw new Error(target.message);
-    expect(reviewLines(target.reviewed, null)).toEqual([
+    const [db] = page.settings;
+    if (db === undefined) throw new Error("the page holds db");
+    expect(reviewLines(db, null)).toEqual([
       "@db · postgres 17 · project · approved by Maria · not started",
       "  image postgres:17",
       "  scope project",
@@ -542,16 +491,207 @@ describe("approving, choosing and starting against a server", () => {
     vi.restoreAllMocks();
   });
 
+  const held = { id: "rdef_9", digest: "e".repeat(64) };
+  const fileDigest = "b".repeat(64);
+  const ofScope = (name: string, image: string, scope: "project" | "worktree") => ({
+    ...spec(name, image),
+    scope,
+  });
+  /** A page whose every offer is the server's own: each ready request names what settings held. */
+  const offering = pageOf({
+    canPropose: true,
+    settings: [
+      {
+        ...page.settings[0],
+        approvals: { project: null, worktree: null },
+        approve: {
+          project: ready({ kind: "settings", id: "rdef_1", digest }),
+          worktree: null,
+        },
+        statusLine: "@db · postgres 17 · project · waiting for approval",
+      },
+      {
+        ...page.settings[0],
+        id: "rdef_2",
+        spec: spec("cache", "redis:7"),
+        approvals: { project: null, worktree: null },
+        approve: {
+          project: {
+            kind: "rejected",
+            refusals: [
+              { key: "exports.URL", message: "sets MEND_RESOURCE_CACHE_URL, as db does too" },
+            ],
+          },
+          worktree: null,
+        },
+        statusLine: "@cache · redis 7 · project · waiting for approval",
+      },
+    ],
+    proposals: [
+      ...page.proposals.map((entry) =>
+        entry.id === "rprop_2"
+          ? {
+              ...entry,
+              approve: {
+                project: ready({ kind: "proposal", id: "rprop_2", digest, settings: held }),
+                worktree: null,
+              },
+            }
+          : entry,
+      ),
+      {
+        ...page.proposals[0],
+        id: "rprop_9",
+        spec: ofScope("box", "axllent/mailpit:v1.21", "worktree"),
+        approve: {
+          project: ready({ kind: "proposal", id: "rprop_9", digest, settings: held }),
+          worktree: ready({ kind: "proposal", id: "rprop_9", digest, settings: held }, "wt_1"),
+        },
+      },
+    ],
+    file: {
+      ...page.file,
+      proposals: [
+        {
+          digest: fileDigest,
+          spec: ofScope("queue", "rabbitmq:4-management", "worktree"),
+          approvals: { project: null, worktree: null },
+          approve: {
+            project: ready({
+              kind: "file",
+              worktreeId: "wt_1",
+              name: "queue",
+              digest: fileDigest,
+              settings: held,
+            }),
+            worktree: ready(
+              {
+                kind: "file",
+                worktreeId: "wt_1",
+                name: "queue",
+                digest: fileDigest,
+                settings: held,
+              },
+              "wt_1",
+            ),
+          },
+          statusLine: "@queue · rabbitmq 4 · worktree · proposed in mend.toml · waiting",
+        },
+        {
+          digest: fileDigest,
+          spec: ofScope("mail", "axllent/mailpit:v1.21", "worktree"),
+          approvals: { project: null, worktree: null },
+          approve: {
+            project: NOT_A_MANAGER.project,
+            worktree: {
+              kind: "rejected",
+              refusals: [
+                {
+                  key: "image",
+                  message:
+                    "is not one a manager approved for this project · a manager approves @mail for the project first",
+                },
+              ],
+            },
+          },
+          statusLine: "@mail · mailpit · worktree · proposed in mend.toml · waiting",
+        },
+      ],
+    },
+  });
+  const answers = {
+    "GET /projects/p_shop/worktrees": { worktrees: [{ id: "wt_1", name: "checkout" }] },
+    "GET /projects/p_shop/resources": offering,
+    "POST /projects/p_shop/resources/approvals": {
+      definition: { statusLine: "@db · postgres 17 · project · approved by Maria · not started" },
+      image: `postgres:17@sha256:${"c".repeat(64)}`,
+      resolvedBy: "docker-mirror:5000",
+    },
+  };
+
+  it("posts the request the page offers for the item and the target each flag names", async () => {
+    const offers = (name: string) =>
+      [
+        ...offering.settings,
+        ...offering.proposals,
+        ...(offering.file.kind === "read" ? offering.file.proposals : []),
+      ].filter((entry) => entry.spec.name === name);
+    const requestOf = (name: string, target: "project" | "worktree", id: string | null = null) => {
+      const offer = offers(name).find((each) => id === null || ("id" in each && each.id === id))
+        ?.approve[target];
+      if (offer?.kind !== "ready") throw new Error(`the page offers ${name} for ${target}`);
+      return offer.request;
+    };
+    const cases = [
+      { args: ["db"], request: requestOf("db", "project") },
+      {
+        args: ["mail", "--proposal", "rprop_2"],
+        request: requestOf("mail", "project", "rprop_2"),
+      },
+      { args: ["box"], request: requestOf("box", "project") },
+      { args: ["box", "--worktree", "checkout"], request: requestOf("box", "worktree") },
+      {
+        args: ["box", "--worktree", "checkout", "--for-project"],
+        request: requestOf("box", "project"),
+      },
+      { args: ["queue", "--worktree", "checkout"], request: requestOf("queue", "worktree") },
+      {
+        args: ["queue", "--worktree", "checkout", "--for-project"],
+        request: requestOf("queue", "project"),
+      },
+    ];
+    for (const { args, request } of cases) {
+      stdout();
+      const mend = server(answers);
+      await resourceCommand(mend.api, async () => shop, [
+        "approve",
+        ...args,
+        "--digest",
+        `sha256:${request.source.digest}`,
+      ]);
+      expect(posted(mend.calls), args.join(" ")).toEqual([
+        `POST /projects/p_shop/resources/approvals?timeZone=… ${JSON.stringify(request)}`,
+      ]);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("prints why the page offers no request, in the route's words, and posts nothing", async () => {
+    const cases = [
+      {
+        args: ["cache"],
+        words: "@cache · exports.URL sets MEND_RESOURCE_CACHE_URL, as db does too",
+      },
+      {
+        args: ["mail", "--worktree", "checkout"],
+        words:
+          "@mail · image is not one a manager approved for this project · a manager approves @mail for the project first",
+      },
+      { args: ["mail", "--proposal", "rprop_1"], words: NOT_A_MANAGER.project.message },
+    ];
+    for (const { args, words } of cases) {
+      const out = stdout();
+      const err = stderr();
+      exits();
+      const mend = server(answers);
+      await expect(
+        resourceCommand(mend.api, async () => shop, [
+          "approve",
+          ...args,
+          "--digest",
+          `sha256:${digest}`,
+        ]),
+      ).rejects.toThrow("exit 1");
+      expect(err.join(""), args.join(" ")).toBe(`mend: ${words}\n`);
+      expect(out, args.join(" ")).toEqual([]);
+      expect(posted(mend.calls), args.join(" ")).toEqual([]);
+      vi.restoreAllMocks();
+    }
+  });
+
   it("approves the digest passed, and prints the line and the image pinned", async () => {
     const out = stdout();
-    const mend = server({
-      "GET /projects/p_shop/resources": page,
-      "POST /projects/p_shop/resources/approvals": {
-        definition: { statusLine: "@db · postgres 17 · project · approved by Maria · not started" },
-        image: `postgres:17@sha256:${"c".repeat(64)}`,
-        resolvedBy: "docker-mirror:5000",
-      },
-    });
+    const mend = server(answers);
     await resourceCommand(mend.api, async () => shop, [
       "approve",
       "db",
@@ -572,14 +712,14 @@ describe("approving, choosing and starting against a server", () => {
     stdout();
     const err = stderr();
     exits();
-    const mend = server({ "GET /projects/p_shop/resources": page });
+    const mend = server(answers);
     await expect(resourceCommand(mend.api, async () => shop, ["approve", "db"])).rejects.toThrow(
       "exit 1",
     );
     expect(err.join("")).toBe(
       "mend: approving without a terminal takes --digest sha256:… of the definition you read, as printed above · nothing was approved\n",
     );
-    expect(mend.calls.filter((call) => call.startsWith("POST"))).toEqual([]);
+    expect(posted(mend.calls)).toEqual([]);
   });
 
   it("stores a worktree's choice and prints the line written", async () => {

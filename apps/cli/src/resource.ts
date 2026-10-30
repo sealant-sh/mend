@@ -1,6 +1,8 @@
 import {
   RESOURCE_PRESETS,
-  type ResourceApprovalSource,
+  type ResourceApprovalOffer,
+  type ResourceApprovalOffers,
+  type ResourceApprovalRequest,
   type ResourceApproved,
   type ResourceDefinitionInput,
   resourceProposalNotices,
@@ -258,24 +260,47 @@ export const removalTarget = (
   };
 };
 
-type Reviewed = { readonly spec: ResourceDefinitionInput; readonly digest: string };
+type Reviewed = {
+  readonly spec: ResourceDefinitionInput;
+  readonly digest: string;
+  readonly statusLine: string;
+  readonly approve: ResourceApprovalOffers;
+};
 
 export type ApprovalTarget =
-  | {
-      readonly ok: true;
-      readonly reviewed: Reviewed & { readonly statusLine: string };
-      readonly body: {
-        readonly source: ResourceApprovalSource;
-        readonly worktreeId: string | null;
-      };
-    }
+  | { readonly ok: true; readonly reviewed: Reviewed; readonly request: ResourceApprovalRequest }
   | { readonly ok: false; readonly message: string };
+
+/** The offer's request when it is ready, else why there is none, as the approve route says it. */
+const offered = (
+  reviewed: Reviewed,
+  offer: ResourceApprovalOffer,
+  target: string,
+): ApprovalTarget => {
+  const name = `@${printable(reviewed.spec.name)}`;
+  switch (offer.kind) {
+    case "ready":
+      return { ok: true, reviewed, request: offer.request };
+    case "denied":
+      return { ok: false, message: printable(offer.message) };
+    case "rejected":
+      return {
+        ok: false,
+        message: offer.refusals
+          .map((refusal) => `${name} · ${printable(refusal.key)} ${printable(refusal.message)}`)
+          .join("\n"),
+      };
+    case "approved":
+      return { ok: false, message: `${name} is approved ${target} already · nothing was approved` };
+  }
+};
 
 /**
  * What `mend resource approve` approves, from the page the caller just read: the definition
  * settings hold under the name, the proposal `--proposal` names (or the only one of the name), or,
- * with `--worktree`, that worktree's `mend.toml` table when it differs from settings. A worktree
- * resource read with `--worktree` is approved for that worktree, unless `--for-project`.
+ * with `--worktree`, that worktree's `mend.toml` table when it differs from settings. The request
+ * is the one the page offers for the target: the read worktree when the page offers one, unless
+ * `--for-project`, else the project.
  */
 export const approvalTarget = (
   page: ResourcesPage,
@@ -287,28 +312,19 @@ export const approvalTarget = (
   },
 ): ApprovalTarget => {
   const held = page.settings.find((entry) => entry.spec.name === name);
-  const settings = held === undefined ? null : { id: held.id, digest: held.digest };
-  const target = (
-    reviewed: Reviewed & { readonly statusLine: string },
-    source: ResourceApprovalSource,
-  ): ApprovalTarget => ({
-    ok: true,
-    reviewed,
-    body: {
-      source,
-      worktreeId:
-        named.worktree !== null && reviewed.spec.scope === "worktree" && !named.forProject
-          ? named.worktree.id
-          : null,
-    },
-  });
+  const target = (reviewed: Reviewed): ApprovalTarget =>
+    reviewed.approve.worktree !== null && named.worktree !== null && !named.forProject
+      ? offered(
+          reviewed,
+          reviewed.approve.worktree,
+          `for worktree ${printable(named.worktree.label)}`,
+        )
+      : offered(reviewed, reviewed.approve.project, "for the project");
   /** The only proposal of the name, or why there is none to approve. */
   const fromProposals = (none: string): ApprovalTarget => {
     const proposals = page.proposals.filter((entry) => entry.spec.name === name);
     const [only] = proposals;
-    if (only !== undefined && proposals.length === 1) {
-      return target(only, { kind: "proposal", id: only.id, digest: only.digest, settings: null });
-    }
+    if (only !== undefined && proposals.length === 1) return target(only);
     return {
       ok: false,
       message:
@@ -319,9 +335,7 @@ export const approvalTarget = (
   };
   const nothing = `no @${printable(name)} in settings or proposals · mend resource list shows what there is`;
   const fromSettings = (none: string): ApprovalTarget =>
-    held === undefined
-      ? fromProposals(none)
-      : target(held, { kind: "settings", id: held.id, digest: held.digest });
+    held === undefined ? fromProposals(none) : target(held);
   if (named.proposal !== null) {
     const entry = page.proposals.find((each) => each.id === named.proposal);
     if (entry?.spec.name !== name) {
@@ -330,7 +344,7 @@ export const approvalTarget = (
         message: `no proposal ${printable(named.proposal)} of @${printable(name)}`,
       };
     }
-    return target(entry, { kind: "proposal", id: entry.id, digest: entry.digest, settings });
+    return target(entry);
   }
   if (named.worktree !== null) {
     const file = page.file;
@@ -340,20 +354,14 @@ export const approvalTarget = (
     }
     const table = file.proposals.find((each) => each.spec.name === name);
     if (table === undefined || table.digest === held?.digest) return fromSettings(nothing);
-    return target(table, {
-      kind: "file",
-      worktreeId: file.worktreeId,
-      name: table.spec.name,
-      digest: table.digest,
-      settings,
-    });
+    return target(table);
   }
   return fromSettings(nothing);
 };
 
 /** The definition as an approver reviews it: every field that runs, and the digest approved. */
 export const reviewLines = (
-  reviewed: Reviewed & { readonly statusLine: string },
+  reviewed: Omit<Reviewed, "approve">,
   forWorktree: string | null,
 ): ReadonlyArray<string> => [
   printable(reviewed.statusLine),
@@ -445,7 +453,7 @@ export const resourceCommand = async (
         forProject: rest.includes("--for-project"),
       });
       if (!target.ok) return fail(target.message);
-      const forWorktree = target.body.worktreeId === null ? null : (worktree?.label ?? null);
+      const forWorktree = target.request.worktreeId === null ? null : (worktree?.label ?? null);
       for (const line of reviewLines(target.reviewed, forWorktree)) say(line);
       // What is approved is the digest the approver read: the one they pass, or the one shown.
       const passed = takeFlagValue(rest, "--digest");
@@ -464,7 +472,7 @@ export const resourceCommand = async (
       const approved = await api<ResourceApproved>(
         "POST",
         `/projects/${project.id}/resources/approvals?${zone}`,
-        { ...target.body, source: { ...target.body.source, digest } },
+        { ...target.request, source: { ...target.request.source, digest } },
       );
       say(printable(approved.definition.statusLine));
       const by =
