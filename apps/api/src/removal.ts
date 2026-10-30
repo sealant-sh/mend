@@ -102,7 +102,7 @@ export const refuseStartWhileRemoving = Effect.fn("refuseStartWhileRemoving")(fu
 
 /**
  * The same refusal, for a start whose insert met a mark taken after the check above: migration
- * 0164's trigger refused it, and nothing was written.
+ * 0164's trigger refused the session or worktree row.
  */
 export const refusedWhileRemoving = <A, E, R>(
   start: Effect.Effect<A, E, R>,
