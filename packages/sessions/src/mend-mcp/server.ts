@@ -12,7 +12,8 @@ import {
   MEND_MCP_PATH,
   MendMcpCaller,
 } from "./caller.ts";
-import { MEND_TOOLKITS, type MendMcpServices } from "./toolkits.ts";
+import type { SessionPages } from "./session-pages.ts";
+import { MEND_TOOLKITS, MEND_TOOLKITS_WITHOUT_SCREENS, type MendMcpServices } from "./toolkits.ts";
 
 export class MendMcp extends Context.Service<
   MendMcp,
@@ -134,3 +135,10 @@ export const mendMcpLayer = <R>(
 
 export const MendMcpLive: Layer.Layer<MendMcp, never, SessionChannelRegistry | MendMcpServices> =
   mendMcpLayer(MEND_TOOLKITS);
+
+/** Mend's MCP server in a process that builds no `Screens` (MEND_MODE=worker). */
+export const MendMcpWithoutScreensLive: Layer.Layer<
+  MendMcp,
+  never,
+  SessionChannelRegistry | SessionPages
+> = mendMcpLayer(MEND_TOOLKITS_WITHOUT_SCREENS);

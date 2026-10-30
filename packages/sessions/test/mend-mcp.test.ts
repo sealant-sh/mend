@@ -12,6 +12,7 @@ import {
   SessionProcessesRepoLive,
   SessionsRepo,
   SessionsRepoLive,
+  UsersRepo,
   migrations,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
@@ -31,6 +32,7 @@ import {
 import { MendMcp, MendMcpLive, mendMcpLayer } from "../src/mend-mcp/server.ts";
 import { PAGE_CHECK_WORKER, sessionPagesLayer } from "../src/mend-mcp/session-pages.ts";
 import { MEND_TOOLKITS } from "../src/mend-mcp/toolkits.ts";
+import { Screens } from "../src/screen/screens.ts";
 import {
   SessionChannelNetworkHost,
   SessionChannelNetworkHostLive,
@@ -85,6 +87,9 @@ const channelLayer = (options: { readonly idle?: Duration.Input } = {}) =>
       Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
       Layer.provide(SessionPagesRepoLive),
       Layer.provide(registry),
+      // The screen tools' own tests drive a real `Screens` (`mend-mcp-screens.test.ts`).
+      Layer.provide(Layer.mock(Screens)({})),
+      Layer.provide(Layer.mock(UsersRepo)({})),
     ),
     registry,
   ).pipe(Layer.provideMerge(dbLayer));
@@ -375,9 +380,11 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
             },
             annotations: { readOnlyHint: true },
           },
+          { name: "screen_look" },
+          { name: "screen_act" },
         ],
       });
-      expect(decodeAny(list.body).result).toMatchObject({ tools: { length: 1 } });
+      expect(decodeAny(list.body).result).toMatchObject({ tools: { length: 3 } });
 
       const published = resultOf(await client.render(PAGE, "call-1"));
       expect(published.isError).toBe(false);

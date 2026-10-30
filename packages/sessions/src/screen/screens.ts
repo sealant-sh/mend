@@ -79,6 +79,13 @@ export type ScreenCallAnswer =
 
 export type { PersonLapse, ScreenControlAnswer };
 
+/** A session's screen as the agent's tools describe it. */
+export interface ScreenState {
+  readonly screen: Screen;
+  /** When the person who holds the input took it; null while no person holds it. */
+  readonly takenAt: Date | null;
+}
+
 /**
  * Every input on a screen passes here (ADR 0020): the agent's two calls, people's takeovers, and
  * the one hand per live screen this process holds.
@@ -91,6 +98,8 @@ export class Screens extends Context.Service<
       caller: ScreenCaller,
       params: ScreenActParams,
     ) => Effect.Effect<ScreenCallAnswer, ScreenStartError>;
+    /** The screen holding the session's display; null when it holds none. */
+    readonly state: (sessionId: SessionId) => Effect.Effect<ScreenState | null>;
     readonly take: (
       sessionId: SessionId,
       userId: string,
@@ -414,6 +423,17 @@ export const ScreensLive: Layer.Layer<
           act(screen, who, params, plan.steps),
         );
       },
+      state: (sessionId) =>
+        Effect.gen(function* () {
+          const screen = yield* screens.ofSession(sessionId);
+          if (screen === null) return null;
+          if (screen.input._tag !== "Person") return { screen, takenAt: null };
+          const log = yield* screens.log(screen.id);
+          return {
+            screen,
+            takenAt: log.findLast((entry) => entry.body._tag === "Taken")?.at ?? null,
+          };
+        }),
       take: control.take,
       handBack: control.handBack,
       lapse: control.lapse,

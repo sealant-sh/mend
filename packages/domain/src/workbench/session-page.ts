@@ -7,6 +7,9 @@ export const MEND_MCP_SERVER = "mend";
 
 export const HTML_RENDER_TOOL = "html_render";
 
+export const SCREEN_LOOK_TOOL = "screen_look";
+export const SCREEN_ACT_TOOL = "screen_act";
+
 export const PAGE_LIMITS = {
   htmlChars: 512_000,
   titleChars: 200,
