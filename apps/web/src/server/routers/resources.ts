@@ -63,7 +63,7 @@ const outcome = <A, E>(
     ),
   );
 
-/** Every call names its project and the reader's zone, which the status lines it answers read in. */
+/** A call whose answer has status lines names the reader's zone, which their clock times read in. */
 const reader = { projectId: ProjectId, timeZone: ReaderTimeZone };
 
 export const resourcesRouter = router({
@@ -85,24 +85,31 @@ export const resourcesRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => {
         const at = { params: { id: i.projectId }, query: { timeZone: i.timeZone } };
-        // The client types its payload one union member at a time.
-        const proposal = i.proposal;
-        return outcome(
-          proposal.kind === "preset"
-            ? api.resources.propose({ ...at, payload: proposal })
-            : api.resources.propose({ ...at, payload: proposal }),
-        );
+        // The derived client takes its union payload as one request type per member, so each
+        // member is narrowed before it is sent.
+        const { proposal } = i;
+        switch (proposal.kind) {
+          case "preset":
+            return outcome(api.resources.propose({ ...at, payload: proposal }));
+          case "definition":
+            return outcome(api.resources.propose({ ...at, payload: proposal }));
+        }
       }),
     ),
-  /** A proposal another removal took first is gone, which the card says beside a reload. */
+  /**
+   * A proposal another removal took first is gone, which the card says beside a reload. A project
+   * the reader no longer sees is not found too, and stays an error: its id is not the proposal's.
+   */
   withdraw: procedure
-    .input(input(Schema.Struct({ ...reader, proposalId: ResourceProposalId })))
+    .input(input(Schema.Struct({ projectId: ProjectId, proposalId: ResourceProposalId })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) =>
         api.resources.withdraw({ params: { id: i.projectId, proposalId: i.proposalId } }).pipe(
           Effect.map((result) => ({ ok: true as const, result })),
-          Effect.catchTag("NotFound", () =>
-            Effect.succeed({ ok: false as const, kind: "gone" as const }),
+          Effect.catchTag("NotFound", (missing) =>
+            missing.id === i.proposalId
+              ? Effect.succeed({ ok: false as const, kind: "gone" as const })
+              : Effect.fail(missing),
           ),
         ),
       ),
@@ -111,7 +118,7 @@ export const resourcesRouter = router({
     .input(
       input(
         Schema.Struct({
-          ...reader,
+          projectId: ProjectId,
           definitionId: ResourceDefinitionId,
           expectedDigest: ResourceSpecDigest,
         }),
