@@ -29,7 +29,7 @@
     "@actions/expressions": "0.3.61",
     "@changesets/cli": "^2.31.0",
     "@types/node": "catalog:",
-    "@typescript/typescript6": "^6.0.2",
+    "@typescript/typescript6": "catalog:",
     "effect-solutions": "^0.5.2",
     "oxfmt": "^0.40.0",
     "oxlint": "1.76.0",

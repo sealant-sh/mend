@@ -78,7 +78,14 @@
     "babel-preset-expo": "~57.0.5",
     "jsdom": "catalog:",
     "playwright-core": "catalog:",
-    "typescript": "catalog:",
+    "typescript": "catalog:ts6",
     "vitest": "catalog:"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "typescript"
+      ]
+    }
   }
 }
