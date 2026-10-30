@@ -5,7 +5,14 @@ import {
   type SettledScreenCall,
 } from "@mend/db";
 import type { ScreenFrameId, ScreenId, SessionProcessId } from "@mend/domain";
-import type { Screen, ScreenLogBody, ScreenLogEntry } from "@mend/domain/workbench";
+import {
+  type Screen,
+  type ScreenActParams,
+  type ScreenActionNote,
+  type ScreenLogBody,
+  type ScreenLogEntry,
+  screenActionNote,
+} from "@mend/domain/workbench";
 import { BlobStore } from "@mend/store";
 import { Effect, Fiber, Layer, Scope } from "effect";
 import * as Context from "effect/Context";
@@ -14,6 +21,7 @@ import * as Semaphore from "effect/Semaphore";
 import { ForwardAdapter } from "../forward.ts";
 import type { Caller } from "../mend-mcp/caller.ts";
 import { readFrame, storeFrame } from "./frames.ts";
+import { planActions, type Step } from "./hand-steps.ts";
 import type { HandEnded } from "./hand.ts";
 import { type Hands, makeHands } from "./hands.ts";
 import { ScreenHost, ScreenStartError } from "./screen-host.ts";
@@ -41,6 +49,8 @@ export interface ScreenReceipt {
 
 export type ScreenCallAnswer =
   | { readonly _tag: "Refused"; readonly refusal: ScreenRefusal }
+  /** A `key` action no keysym names, refused before any input. */
+  | { readonly _tag: "UnsupportedKey"; readonly key: string }
   /** A call that left no entry: refused before, or its input may have partly landed. */
   | { readonly _tag: "NoEntry"; readonly outcome: "refused" | "outcome_unknown" }
   | {
@@ -50,6 +60,7 @@ export type ScreenCallAnswer =
       readonly png: Uint8Array;
       /** Null when the frame was not stored; the agent still has its PNG. */
       readonly frameId: ScreenFrameId | null;
+      readonly actions: ReadonlyArray<ScreenActionNote>;
       /** People's and Mend's entries since the agent's previous look. */
       readonly sinceLastLook: ReadonlyArray<ScreenLogEntry>;
     };
@@ -62,6 +73,10 @@ export class Screens extends Context.Service<
   Screens,
   {
     readonly look: (caller: ScreenCaller) => Effect.Effect<ScreenCallAnswer, ScreenStartError>;
+    readonly act: (
+      caller: ScreenCaller,
+      params: ScreenActParams,
+    ) => Effect.Effect<ScreenCallAnswer, ScreenStartError>;
   }
 >()("@mend/sessions/Screens") {}
 
@@ -98,6 +113,7 @@ const answeredOf = (
   receipt: { screenId: entry.screenId, seq: entry.seq, callKey },
   png,
   frameId: entry.frame?.id ?? null,
+  actions: entry.body._tag === "Acted" ? entry.body.notes : [],
   sinceLastLook: sinceLastLook(log, entry.seq),
 });
 
@@ -142,6 +158,7 @@ export const ScreensLive: Layer.Layer<
         ),
       ),
     );
+    const acting = new Set<ScreenId>();
 
     /** The screen, Live with passwords this process holds: started on demand (D7). */
     const started = (screen: Screen) =>
@@ -227,6 +244,47 @@ export const ScreensLive: Layer.Layer<
         return yield* answer(screen, who, { _tag: "Looked" }, yield* hand.look, "applied");
       });
 
+    /** One batch at a time per screen: a second answers `busy` while the first runs. */
+    const act = (
+      screen: Screen,
+      who: Attributed,
+      params: ScreenActParams,
+      steps: ReadonlyArray<Step>,
+    ) =>
+      Effect.suspend(() => {
+        if (acting.has(screen.id)) return settle(screen, who, "refused", "busy");
+        acting.add(screen.id);
+        return runBatch(screen, who, params, steps).pipe(
+          Effect.ensuring(Effect.sync(() => acting.delete(screen.id))),
+        );
+      });
+
+    const runBatch = (
+      screen: Screen,
+      who: Attributed,
+      params: ScreenActParams,
+      steps: ReadonlyArray<Step>,
+    ) =>
+      Effect.gen(function* () {
+        const admitted = yield* screens.control(screen.id, { _tag: "AgentActed" }, null);
+        if (admitted._tag === "Refused") {
+          const why = admitted.why === "look-first" ? "look_first" : "held";
+          return yield* settle(screen, who, "refused", why);
+        }
+        const now = yield* screens.byId(screen.id);
+        if (now === null || now.input._tag !== "Agent") {
+          return yield* settle(screen, who, "refused", "held");
+        }
+        const hand = yield* hands.of(now);
+        if (hand === null) return yield* settle(screen, who, "outcome_unknown", null);
+        const { results, png } = yield* hand.act(steps, now.input.epoch);
+        const notes = params.actions.map((action, at) =>
+          screenActionNote(action, results[at] ?? "skipped: time limit"),
+        );
+        const outcome = results.every((result) => result === "done") ? "applied" : "interrupted";
+        return yield* answer(now, who, { _tag: "Acted", notes }, png, outcome);
+      });
+
     /**
      * Claims the call before it starts anything, so a retry answers from the claim alone, then
      * runs it where the caller's going away cannot leave the claim open behind input already sent.
@@ -278,6 +336,15 @@ export const ScreensLive: Layer.Layer<
 
     return {
       look: (caller) => call(caller, { tool: "screen_look" }, look),
+      act: (caller, params) => {
+        const plan = planActions(params.actions);
+        if (plan._tag === "Unsupported") {
+          return Effect.succeed<ScreenCallAnswer>({ _tag: "UnsupportedKey", key: plan.key });
+        }
+        return call(caller, { tool: "screen_act", params }, (screen, who) =>
+          act(screen, who, params, plan.steps),
+        );
+      },
     };
   }),
 );

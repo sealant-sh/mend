@@ -6,7 +6,7 @@ import { PgClient } from "@effect/sql-pg";
 import { MendDBLive, ScreensRepo, ScreensRepoLive, migrations } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { type ScreenId, SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
-import type { Screen } from "@mend/domain/workbench";
+import type { Screen, ScreenAction } from "@mend/domain/workbench";
 import { BlobStoreFsLive } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Layer, Redacted } from "effect";
@@ -141,6 +141,11 @@ const answered = (answer: ScreenCallAnswer) => {
   return answer;
 };
 
+const movedTo = (at: { readonly x: number; readonly y: number }): ScreenAction => ({
+  kind: "move",
+  to: at,
+});
+
 let scratchCreated = false;
 
 beforeAll(async () => {
@@ -234,11 +239,30 @@ describe.skipIf(postgres.skip)("who may call, and on what", () => {
       }),
     ),
   );
+
+  it.live("refuses a key no keysym names before it claims or starts anything", () =>
+    asProcess(
+      Effect.gen(function* () {
+        const { sessionId, screen } = yield* sessionWithScreen;
+        const answer = yield* (yield* Screens).act(agentOf(sessionId).call(), {
+          actions: [{ kind: "key", combo: "ctrl+notakey" }],
+        });
+        expect(answer).toEqual({ _tag: "UnsupportedKey", key: "notakey" });
+        expect(world.starts).not.toContain(sessionId);
+        expect((yield* rowOf(screen.id)).life).toEqual({ _tag: "NotStarted" });
+      }),
+    ),
+  );
 });
 
 describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against TigerVNC Xvnc", () => {
   let xvnc: Xvnc;
   const x = (command: string) => xvnc.x(command);
+  const pointer = () =>
+    x("xdotool getmouselocation")
+      .match(/x:(\d+) y:(\d+)/)
+      ?.slice(1)
+      .map(Number);
 
   beforeAll(() => {
     xvnc = startXvnc(`mend-screens-${process.pid}-${Date.now()}`);
@@ -277,6 +301,60 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
           expect(again.receipt).toEqual(look.receipt);
           expect(decodePng(again.png).at(640, 400)).toEqual([0x33, 0x66, 0xcc]);
           expect((yield* logOf(screen.id)).length).toBe(1);
+        }),
+      ),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "acts: the batch runs on the screen, its notes and receipt answered",
+    () =>
+      asProcess(
+        Effect.gen(function* () {
+          const screens = yield* Screens;
+          const { sessionId, screen } = yield* sessionWithScreen;
+          const agent = agentOf(sessionId);
+          yield* screens.look(agent.call("look-1"));
+          const acted = answered(
+            yield* screens.act(agent.call("act-1"), { actions: [movedTo({ x: 321, y: 123 })] }),
+          );
+          expect(pointer()).toEqual([321, 123]);
+          expect(acted.outcome).toBe("applied");
+          expect(acted.receipt).toEqual({ screenId: screen.id, seq: 2, callKey: "act-1" });
+          expect(acted.actions).toEqual([{ action: movedTo({ x: 321, y: 123 }), result: "done" }]);
+          expect(acted.frameId).not.toBeNull();
+          const entry = (yield* logOf(screen.id)).at(-1);
+          expect(entry?.actor).toEqual({
+            _tag: "Agent",
+            processId: agent.id,
+            turnId: null,
+            callKey: "act-1",
+            toolCall: { _tag: "Pending" },
+          });
+          expect(entry?.body._tag).toBe("Acted");
+        }),
+      ),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "refuses an act on a turn someone other than the screen's person sent, sending nothing",
+    () =>
+      asProcess(
+        Effect.gen(function* () {
+          const screens = yield* Screens;
+          const { sessionId, screen } = yield* sessionWithScreen;
+          const agent = agentOf(sessionId);
+          answered(yield* screens.look(agent.call()));
+          x("xdotool mousemove 17 19");
+          const seen = (yield* logOf(screen.id)).length;
+          const steered = { ...agent.call(), accountId: "bob" };
+          expect(yield* screens.act(steered, { actions: [movedTo({ x: 777, y: 555 })] })).toEqual({
+            _tag: "Refused",
+            refusal: "owner_only",
+          });
+          expect(pointer()).toEqual([17, 19]);
+          expect((yield* logOf(screen.id)).length).toBe(seen);
         }),
       ),
     { timeout: 60_000 },
@@ -346,5 +424,58 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
         expect((yield* rowOf(screen.id)).input._tag).toBe("Agent");
       }),
     ),
+  );
+
+  it.live(
+    "answers a retry from its claim with no input, and refuses its key reused for other arguments",
+    () =>
+      asProcess(
+        Effect.gen(function* () {
+          const screens = yield* Screens;
+          const { sessionId } = yield* sessionWithScreen;
+          const agent = agentOf(sessionId);
+          yield* screens.look(agent.call());
+          const params = { actions: [movedTo({ x: 400, y: 300 })] };
+          const first = answered(yield* screens.act(agent.call("retried"), params));
+          x("xdotool mousemove 5 5");
+          const again = answered(yield* screens.act(agent.call("retried"), params));
+          expect(pointer()).toEqual([5, 5]);
+          expect(again.receipt).toEqual(first.receipt);
+          expect(again.actions).toEqual(first.actions);
+          expect(decodePng(again.png).width).toBe(1280);
+          expect(
+            yield* screens.act(agent.call("retried"), { actions: [movedTo({ x: 9, y: 9 })] }),
+          ).toEqual({ _tag: "Refused", refusal: "call_reused" });
+          expect(pointer()).toEqual([5, 5]);
+        }),
+      ),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "answers a second batch busy while one runs, and a look waits for it",
+    () =>
+      asProcess(
+        Effect.gen(function* () {
+          const screens = yield* Screens;
+          const { sessionId } = yield* sessionWithScreen;
+          const agent = agentOf(sessionId);
+          yield* screens.look(agent.call());
+          const running = yield* Effect.forkChild(
+            screens.act(agent.call(), {
+              actions: [{ kind: "wait", ms: 1_500 }, movedTo({ x: 600, y: 500 })],
+            }),
+          );
+          yield* Effect.sleep("300 millis");
+          expect(
+            yield* screens.act(agent.call(), { actions: [movedTo({ x: 10, y: 10 })] }),
+          ).toEqual({ _tag: "Refused", refusal: "busy" });
+          const looked = answered(yield* screens.look(agent.call()));
+          expect(pointer()).toEqual([600, 500]);
+          const batch = answered(yield* Fiber.join(running));
+          expect(looked.receipt.seq).toBeGreaterThan(batch.receipt.seq);
+        }),
+      ),
+    { timeout: 60_000 },
   );
 });
