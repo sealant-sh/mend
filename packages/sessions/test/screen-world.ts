@@ -22,6 +22,23 @@ import { XVNC_PASSWORD } from "./xvnc.ts";
 
 export const OWNER = "alice";
 
+/**
+ * Polls `done` until it holds, failing with `what` once `ms` of real time has passed: a hand's end
+ * and the row it resets go through a lock and the store, which a loaded runner makes slow, not wrong.
+ */
+export const eventually = <R>(
+  done: () => Effect.Effect<boolean, never, R>,
+  what: string,
+  ms = 30_000,
+) =>
+  Effect.gen(function* () {
+    const deadline = Date.now() + ms;
+    while (!(yield* done())) {
+      if (Date.now() > deadline) throw new Error(what);
+      yield* Effect.sleep("20 millis");
+    }
+  });
+
 export interface Dial {
   readonly port: number;
   readonly destination: ForwardDestination;
