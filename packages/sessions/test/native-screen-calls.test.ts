@@ -6,7 +6,8 @@ import { backfillFromNative } from "../src/native-backfill.ts";
 import { convertNativeSession, ingestNativeSession } from "../src/native-convert.ts";
 import { withPages } from "../src/transcript-pages.ts";
 
-const TYPED = "correct horse battery staple";
+// A marker JSON never escapes, so it shows in any encoding of the text that kept it.
+const TYPED = "typed-marker-Vq7Zs correct horse battery staple";
 const PNG_BASE64 = `iVBORw0KGgo${"QUJD".repeat(64)}`;
 const RECEIPT = { screenId: "screen-1", seq: 4, callKey: "key-4" };
 const ANSWERED = JSON.stringify({
@@ -172,32 +173,84 @@ describe("a call to Mend's screen tools in a native transcript", () => {
 
 const TYPED_NUMBER = 271828182845;
 
-/** The shapes an agent can give `screen_act`, valid or not; none may keep its typed text. */
-const ARGUMENT_SHAPES: ReadonlyArray<readonly [string, unknown]> = [
-  ["a valid batch", { actions: ACTIONS }],
-  ["an unknown kind", { actions: [{ kind: "typo", text: TYPED }] }],
-  ["an action in an array", { actions: [[{ kind: "type", text: TYPED }]] }],
-  ["arrays of arrays", { actions: [[[[{ kind: "type", text: TYPED }]], [{ text: TYPED }]]] }],
-  ["text in a nested object", { actions: [{ kind: "type", payload: { text: TYPED } }] }],
-  ["text at odd depths", { text: TYPED, a: [{ b: { text: TYPED, c: [[{ text: TYPED }]] } }] }],
-  ["a root array", [{ kind: "type", text: TYPED }]],
-  ["a number as text", { actions: [{ kind: "type", text: TYPED_NUMBER }] }],
-  ["an object as text", { actions: [{ kind: "type", text: { value: TYPED } }] }],
-  ["actions encoded as a string", { actions: JSON.stringify([{ kind: "type", text: TYPED }]) }],
-  ["an unparseable string", `{"actions":[{"kind":"type","text":"${TYPED}`],
-  ["a JSON string of text", JSON.stringify(TYPED)],
+const encoded = (value: unknown, times: number): unknown =>
+  times === 0 ? value : encoded(JSON.stringify(value), times - 1);
+const TYPE_ACTION = { kind: "type", text: TYPED };
+const TYPE_STORED = { kind: "type", length: TYPED.length };
+const CLICK = { kind: "click", at: { x: 10, y: 20 } };
+
+/**
+ * The shapes an agent can give `screen_act` and what Mend stores of each: the batch its schema
+ * rebuilds, or nothing.
+ */
+const STORED_SHAPES: ReadonlyArray<readonly [string, unknown, unknown]> = [
+  ["a valid batch", { actions: [CLICK, TYPE_ACTION] }, { actions: [CLICK, TYPE_STORED] }],
+  [
+    "a valid batch with text under other keys",
+    {
+      actions: [
+        { ...CLICK, at: { x: 10, y: 20, label: TYPED }, note: TYPED, text: TYPED },
+        { ...TYPE_ACTION, value: TYPED, payload: { text: TYPED } },
+      ],
+      comment: TYPED,
+    },
+    { actions: [CLICK, TYPE_STORED] },
+  ],
+  [
+    "a valid batch whose typed text is encoded JSON",
+    { actions: [{ kind: "type", text: encoded({ text: TYPED }, 2) }] },
+    { actions: [{ kind: "type", length: String(encoded({ text: TYPED }, 2)).length }] },
+  ],
+  [
+    "a batch encoded three times",
+    encoded({ actions: [TYPE_ACTION] }, 3),
+    { actions: [TYPE_STORED] },
+  ],
+  ["a batch encoded nine times", encoded({ actions: [TYPE_ACTION] }, 9), null],
+  [
+    "Mend's envelope around an encoded batch",
+    { "$mend.toolInput": { format: "json", value: encoded({ actions: [TYPE_ACTION] }, 2) } },
+    { actions: [TYPE_STORED] },
+  ],
+  ["actions encoded twice", { actions: encoded([TYPE_ACTION], 2) }, null],
+  ["actions encoded three times", { actions: encoded([TYPE_ACTION], 3) }, null],
+  ["an action encoded twice inside the array", { actions: [CLICK, encoded(TYPE_ACTION, 2)] }, null],
+  ["text encoded under another key", { actions: [{ payload: encoded({ text: TYPED }, 2) }] }, null],
+  [
+    "an unknown kind beside valid ones",
+    { actions: [CLICK, { kind: "paste", text: TYPED }, TYPE_ACTION] },
+    null,
+  ],
+  ["a batch over 20 actions", { actions: Array.from({ length: 21 }, () => TYPE_ACTION) }, null],
+  [
+    "text over 2,000 characters",
+    { actions: [CLICK, { kind: "type", text: `${TYPED}${"x".repeat(2001)}` }] },
+    null,
+  ],
+  ["an unknown kind", { actions: [{ kind: "typo", text: TYPED }] }, null],
+  ["an action in an array", { actions: [[TYPE_ACTION]] }, null],
+  ["arrays of arrays", { actions: [[[[TYPE_ACTION]], [{ text: TYPED }]]] }, null],
+  ["text in a nested object", { actions: [{ kind: "type", payload: { text: TYPED } }] }, null],
+  [
+    "text at odd depths",
+    { text: TYPED, a: [{ b: { text: TYPED, c: [[{ text: TYPED }]] } }] },
+    null,
+  ],
+  ["a root array", [TYPE_ACTION], null],
+  ["a number as text", { actions: [{ kind: "type", text: TYPED_NUMBER }] }, null],
+  ["an object as text", { actions: [{ kind: "type", text: { value: TYPED } }] }, null],
+  ["actions encoded as a string", { actions: encoded([TYPE_ACTION], 1) }, null],
+  ["an unparseable string", `{"actions":[{"kind":"type","text":"${TYPED}`, null],
+  ["a JSON string of text", encoded(TYPED, 1), null],
   [
     "Mend's envelope around a nested batch",
-    {
-      "$mend.toolInput": {
-        format: "json",
-        value: JSON.stringify({ actions: [[{ kind: "type", text: TYPED }]] }),
-      },
-    },
+    { "$mend.toolInput": { format: "json", value: encoded({ actions: [[TYPE_ACTION]] }, 1) } },
+    null,
   ],
   [
     "Mend's envelope inside the arguments",
     { actions: [{ "$mend.toolInput": { format: "text", value: TYPED } }] },
+    null,
   ],
 ];
 
@@ -276,34 +329,55 @@ const expectNoTyped = (stored: unknown) => {
 };
 
 describe("typed text in any shape of a screen_act's arguments", () => {
-  const shapes = ARGUMENT_SHAPES.map(([, args]) => args);
+  const shapes = STORED_SHAPES.map(([, args]) => args);
   const transcripts = [
     [
       "claude",
       claudeCallsOf(
         shapes.map((args) => ({ namespace: null, name: "mcp__mend__screen_act", args })),
       ),
+      "input",
     ],
     [
       "codex",
       codexCallsOf(shapes.map((args) => ({ namespace: "mcp__mend__", name: "screen_act", args }))),
+      "arguments",
     ],
   ] as const;
 
-  it.each(transcripts)("%s: the backfilled items keep none of it", (harness, native) => {
-    expect(native).toContain(TYPED);
-    const items = backfillFromNative(harness, "sess-shapes", native, null)?.turns.flatMap(
-      (turn) => turn.items,
-    );
-    expect(items?.filter((item) => item.kind === "tool-call")).toHaveLength(shapes.length);
-    expectNoTyped(items);
-  });
+  it.each(transcripts)(
+    "%s: the backfilled items keep only what the schema rebuilds",
+    (harness, native, field) => {
+      expect(native).toContain(TYPED);
+      const items = backfillFromNative(harness, "sess-shapes", native, null)?.turns.flatMap(
+        (turn) => turn.items,
+      );
+      const calls = items?.filter((item) => item.kind === "tool-call") ?? [];
+      expect(calls).toHaveLength(shapes.length);
+      expectNoTyped(items);
+      STORED_SHAPES.forEach(([, , stored], index) => {
+        expect(calls[index]?.data).toMatchObject({
+          [field]: stored,
+          mendScreenCall: { receipt: null, outcome: "outcome_unknown", refusal: null },
+        });
+        if (stored === null) {
+          expect(calls[index]?.data).toMatchObject({ mendScreenArgumentsDropped: true });
+        } else {
+          expect(calls[index]?.data).not.toHaveProperty("mendScreenArgumentsDropped");
+        }
+      });
+    },
+  );
 
   it.each(transcripts)("%s: the transcript view shows none of it", (harness, native) => {
     const events = ingestNativeSession(harness, native, "/workspace/repo")?.events ?? [];
     const entries = withPages(events, []);
-    expect(entries.filter((entry) => entry.kind === "tool")).toHaveLength(shapes.length);
+    const calls = entries.filter((entry) => entry.kind === "tool");
+    expect(calls).toHaveLength(shapes.length);
     expectNoTyped(entries);
+    expect(calls.map((call) => (call.kind === "tool" ? call.args : null))).toEqual(
+      STORED_SHAPES.map(([, , stored]) => (stored === null ? "" : JSON.stringify(stored))),
+    );
   });
 });
 

@@ -1,9 +1,9 @@
 import {
   isMendPageTool,
-  isMendScreenTool,
   mendPageReferenceIn,
-  screenArgumentsWithoutText,
+  mendScreenToolOf,
   screenToolTextIn,
+  storedScreenArguments,
 } from "@mend/agent-protocol";
 import type { PageRef } from "@mend/domain/workbench";
 
@@ -27,16 +27,17 @@ const pageCalledBy = (
   return id === null ? undefined : pages.get(id);
 };
 
-/** A screen call shows its tool's text, never its frame, and each typed text by its length. */
+/** A screen call shows its tool's text, never its frame, and its arguments as Mend stores them. */
 const withoutScreenPayload = (event: CanonicalEvent): CanonicalEvent => {
-  if (event.kind !== "tool" || !isMendScreenTool({ name: event.name, namespace: null })) {
-    return event;
-  }
-  const args = screenArgumentsWithoutText(event.args);
+  if (event.kind !== "tool") return event;
+  const tool = mendScreenToolOf({ name: event.name, namespace: null });
+  if (tool === null) return event;
+  const args = storedScreenArguments(tool, event.args);
   const text = screenToolTextIn(event.output);
   return {
     ...event,
-    args: typeof args === "string" ? args : "",
+    args: args === null ? "" : JSON.stringify(args),
+    argsFormat: "json",
     output: text === null ? "" : JSON.stringify(text),
   };
 };

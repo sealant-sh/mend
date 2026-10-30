@@ -7,6 +7,7 @@ import {
   ClaudeAdapter,
   CodexAdapter,
   compactMendScreenCall,
+  MEND_SCREEN_ARGUMENTS_DROPPED,
   MEND_SCREEN_CALL_FIELD,
 } from "../src/index.ts";
 
@@ -15,7 +16,8 @@ type JsonObject = Readonly<Record<string, unknown>>;
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const TYPED = "correct horse battery staple";
+// A marker JSON never escapes, so it shows in any encoding of the text that kept it.
+const TYPED = "typed-marker-Vq7Zs correct horse battery staple";
 const PNG_BASE64 = `iVBORw0KGgo${"QUJD".repeat(64)}`;
 const RECEIPT = { screenId: "screen-1", seq: 4, callKey: "key-4" };
 const ANSWERED = {
@@ -321,7 +323,7 @@ describe("a call to Mend's screen tools as the harness records it", () => {
           {
             request: {
               title: "mcp__mend__screen_act",
-              detail: { input: { tool_use_id: "toolu_act", actions: STORED_ACTIONS } },
+              detail: { input: { actions: STORED_ACTIONS } },
             },
           },
         ]);
@@ -351,71 +353,213 @@ describe("a call to Mend's screen tools as the harness records it", () => {
     expect(compactMendScreenCall(item)).toBe(item);
   });
 
-  it("strips typed text inside Mend's tool input envelope, and drops one it cannot read", () => {
+  it("reads the arguments out of Mend's tool input envelope, and drops ones it cannot read", () => {
     const read = compactMendScreenCall(enveloped(JSON.stringify({ actions: ACTIONS })));
     expect(read.data).toEqual({
       type: "tool_use",
       name: "imported_mcp__mend__screen_act",
-      input: {
-        "$mend.toolInput": { format: "json", value: JSON.stringify({ actions: STORED_ACTIONS }) },
-      },
+      input: { actions: STORED_ACTIONS },
     });
     const cut = compactMendScreenCall(enveloped(`{"actions":[{"kind":"type","text":"${TYPED}`));
-    expect(cut.data).toMatchObject({ input: { "$mend.toolInput": { value: "{}" } } });
+    expect(cut.data).toEqual({
+      type: "tool_use",
+      name: "imported_mcp__mend__screen_act",
+      input: null,
+      [MEND_SCREEN_ARGUMENTS_DROPPED]: true,
+    });
     expectNoPayload([read, cut]);
+  });
+
+  it("keeps a screen_look's empty arguments, and drops any others", () => {
+    const look = (input: unknown): AgentEventItem => ({
+      ...enveloped("{}"),
+      title: "mcp__mend__screen_look",
+      data: { type: "tool_use", name: "mcp__mend__screen_look", input },
+    });
+    expect(compactMendScreenCall(look({})).data).toMatchObject({ input: {} });
+    expect(compactMendScreenCall(look({})).data).not.toHaveProperty(MEND_SCREEN_ARGUMENTS_DROPPED);
+    const typed = compactMendScreenCall(look({ text: TYPED }));
+    expect(typed.data).toMatchObject({ input: null, [MEND_SCREEN_ARGUMENTS_DROPPED]: true });
+    expectNoPayload(typed);
   });
 });
 
 const TYPED_NUMBER = 271828182845;
 
-/** The shapes an agent can give `screen_act`, valid or not; none may keep its typed text. */
-const ARGUMENT_SHAPES: ReadonlyArray<readonly [string, unknown]> = [
-  ["a valid batch", { actions: [{ kind: "type", text: TYPED }] }],
+const encoded = (value: unknown, times: number): unknown =>
+  times === 0 ? value : encoded(JSON.stringify(value), times - 1);
+const TYPE_ACTION = { kind: "type", text: TYPED };
+const TYPE_STORED = { kind: "type", length: TYPED.length };
+const CLICK = { kind: "click", at: { x: 10, y: 20 } };
+
+/**
+ * The shapes an agent can give `screen_act` and what Mend stores of each: the batch its schema
+ * rebuilds, or nothing.
+ */
+const STORED_SHAPES: ReadonlyArray<readonly [string, unknown, unknown]> = [
+  ["a valid batch", { actions: ACTIONS }, { actions: STORED_ACTIONS }],
   [
-    "a batch over the limits",
+    "every kind of action",
     {
-      actions: Array.from({ length: 21 }, () => ({
-        kind: "type",
-        text: `${TYPED}${"x".repeat(2001)}`,
-      })),
+      actions: [
+        { kind: "click", at: { x: 1, y: 2 }, button: "right", count: 2 },
+        { kind: "move", to: { x: 3, y: 4 } },
+        { kind: "drag", from: { x: 5, y: 6 }, to: { x: 7, y: 8 } },
+        { kind: "scroll", at: { x: 9, y: 10 }, dx: 0, dy: -3 },
+        TYPE_ACTION,
+        { kind: "key", combo: "ctrl+shift+t" },
+        { kind: "wait", ms: 250 },
+      ],
+    },
+    {
+      actions: [
+        { kind: "click", at: { x: 1, y: 2 }, button: "right", count: 2 },
+        { kind: "move", to: { x: 3, y: 4 } },
+        { kind: "drag", from: { x: 5, y: 6 }, to: { x: 7, y: 8 } },
+        { kind: "scroll", at: { x: 9, y: 10 }, dx: 0, dy: -3 },
+        TYPE_STORED,
+        { kind: "key", combo: "ctrl+shift+t" },
+        { kind: "wait", ms: 250 },
+      ],
     },
   ],
-  ["an unknown kind", { actions: [{ kind: "typo", text: TYPED }] }],
-  ["an action in an array", { actions: [[{ kind: "type", text: TYPED }]] }],
-  ["arrays of arrays", { actions: [[[[{ kind: "type", text: TYPED }]], [{ text: TYPED }]]] }],
-  ["text in a nested object", { actions: [{ kind: "type", payload: { text: TYPED } }] }],
-  ["text at odd depths", { text: TYPED, a: [{ b: { text: TYPED, c: [[{ text: TYPED }]] } }] }],
-  ["a root array", [{ kind: "type", text: TYPED }]],
-  ["a number as text", { actions: [{ kind: "type", text: TYPED_NUMBER }] }],
-  ["an object as text", { actions: [{ kind: "type", text: { value: TYPED } }] }],
-  ["an array as text", { actions: [{ kind: "type", text: [TYPED] }] }],
-  ["actions encoded as a string", { actions: JSON.stringify([{ kind: "type", text: TYPED }]) }],
-  ["arguments as a JSON string", JSON.stringify({ actions: [[{ kind: "type", text: TYPED }]] })],
-  ["an unparseable string", `{"actions":[{"kind":"type","text":"${TYPED}`],
-  ["a JSON string of text", JSON.stringify(TYPED)],
+  [
+    "a valid batch with text under other keys",
+    {
+      actions: [
+        { ...CLICK, at: { x: 10, y: 20, label: TYPED }, note: TYPED, text: TYPED },
+        { ...TYPE_ACTION, value: TYPED, payload: { text: TYPED } },
+      ],
+      comment: TYPED,
+      text: TYPED,
+    },
+    { actions: [CLICK, TYPE_STORED] },
+  ],
+  [
+    "a valid batch whose typed text is JSON",
+    { actions: [{ kind: "type", text: JSON.stringify({ actions: [TYPE_ACTION] }) }] },
+    { actions: [{ kind: "type", length: JSON.stringify({ actions: [TYPE_ACTION] }).length }] },
+  ],
+  [
+    "a valid batch whose typed text is encoded JSON",
+    { actions: [{ kind: "type", text: encoded({ text: TYPED }, 2) }] },
+    { actions: [{ kind: "type", length: String(encoded({ text: TYPED }, 2)).length }] },
+  ],
+  ["a batch as a JSON string", encoded({ actions: ACTIONS }, 1), { actions: STORED_ACTIONS }],
+  ["a batch encoded three times", encoded({ actions: ACTIONS }, 3), { actions: STORED_ACTIONS }],
+  ["a batch encoded eight times", encoded({ actions: ACTIONS }, 8), { actions: STORED_ACTIONS }],
+  ["a batch encoded nine times", encoded({ actions: ACTIONS }, 9), null],
+  [
+    "Mend's envelope around an encoded batch",
+    { "$mend.toolInput": { format: "json", value: encoded({ actions: ACTIONS }, 2) } },
+    { actions: STORED_ACTIONS },
+  ],
+  ["actions encoded twice", { actions: encoded([TYPE_ACTION], 2) }, null],
+  ["actions encoded three times", { actions: encoded([TYPE_ACTION], 3) }, null],
+  ["an action encoded inside the array", { actions: [encoded(TYPE_ACTION, 1)] }, null],
+  ["an action encoded twice inside the array", { actions: [CLICK, encoded(TYPE_ACTION, 2)] }, null],
+  [
+    "a point encoded inside an action",
+    { actions: [{ kind: "click", at: encoded({ x: 1, y: 2, text: TYPED }, 2) }] },
+    null,
+  ],
+  ["text encoded under another key", { actions: [{ payload: encoded({ text: TYPED }, 2) }] }, null],
+  [
+    "an unknown kind beside valid ones",
+    { actions: [CLICK, { kind: "paste", text: TYPED }, TYPE_ACTION] },
+    null,
+  ],
+  ["a batch over 20 actions", { actions: Array.from({ length: 21 }, () => TYPE_ACTION) }, null],
+  [
+    "text over 2,000 characters",
+    { actions: [CLICK, { kind: "type", text: `${TYPED}${"x".repeat(2001)}` }] },
+    null,
+  ],
+  ["an empty batch", { actions: [] }, null],
+  ["no arguments", {}, null],
+  ["an unknown kind", { actions: [{ kind: "typo", text: TYPED }] }, null],
+  ["an action in an array", { actions: [[TYPE_ACTION]] }, null],
+  ["arrays of arrays", { actions: [[[[TYPE_ACTION]], [{ text: TYPED }]]] }, null],
+  ["text in a nested object", { actions: [{ kind: "type", payload: { text: TYPED } }] }, null],
+  [
+    "text at odd depths",
+    { text: TYPED, a: [{ b: { text: TYPED, c: [[{ text: TYPED }]] } }] },
+    null,
+  ],
+  ["a root array", [TYPE_ACTION], null],
+  ["a number as text", { actions: [{ kind: "type", text: TYPED_NUMBER }] }, null],
+  ["an object as text", { actions: [{ kind: "type", text: { value: TYPED } }] }, null],
+  ["an array as text", { actions: [{ kind: "type", text: [TYPED] }] }, null],
+  ["actions encoded as a string", { actions: encoded([TYPE_ACTION], 1) }, null],
+  ["arguments as a JSON string", encoded({ actions: [[TYPE_ACTION]] }, 1), null],
+  ["an unparseable string", `{"actions":[{"kind":"type","text":"${TYPED}`, null],
+  ["a JSON string of text", encoded(TYPED, 1), null],
+  ["typed text alone", TYPED, null],
   [
     "Mend's envelope around a nested batch",
-    {
-      "$mend.toolInput": {
-        format: "json",
-        value: JSON.stringify({ actions: [[{ kind: "type", text: TYPED }]] }),
-      },
-    },
+    { "$mend.toolInput": { format: "json", value: encoded({ actions: [[TYPE_ACTION]] }, 1) } },
+    null,
   ],
   [
     "Mend's envelope around an object",
-    { "$mend.toolInput": { format: "json", value: { actions: [{ kind: "type", text: TYPED }] } } },
+    { "$mend.toolInput": { format: "json", value: { actions: [TYPE_ACTION] } } },
+    null,
   ],
-  ["Mend's envelope of plain text", { "$mend.toolInput": { format: "text", value: TYPED } }],
+  ["Mend's envelope of plain text", { "$mend.toolInput": { format: "text", value: TYPED } }, null],
   [
     "Mend's envelope beside more text",
     { "$mend.toolInput": { format: "json", value: "{}" }, more: { text: TYPED } },
+    null,
   ],
   [
     "Mend's envelope inside the arguments",
     { actions: [{ "$mend.toolInput": { format: "text", value: TYPED } }] },
+    null,
   ],
 ];
+
+/** What a stored call keeps beside arguments it stored as null. */
+const droppedFlag = (stored: unknown) =>
+  stored === null ? { [MEND_SCREEN_ARGUMENTS_DROPPED]: true } : {};
+
+const claudeCall = (input: unknown): AgentEventItem => ({
+  providerItemId: "toolu_shape",
+  providerTurnId: "turn",
+  kind: "tool-call",
+  status: "completed",
+  title: "mcp__mend__screen_act",
+  text: null,
+  data: { type: "tool_use", name: "mcp__mend__screen_act", input },
+});
+const codexCall = (args: unknown): AgentEventItem => ({
+  ...claudeCall(null),
+  title: "screen_act",
+  data: { type: "mcpToolCall", server: "mend", tool: "screen_act", arguments: args },
+});
+
+describe("what Mend stores of a screen_act's arguments", () => {
+  it.each(STORED_SHAPES)("%s", (_name, args, stored) => {
+    const dropped = droppedFlag(stored);
+    const claude = compactMendScreenCall(claudeCall(args));
+    const codex = compactMendScreenCall(codexCall(args));
+    expect(JSON.stringify([claude, codex])).not.toContain(TYPED);
+    expect(claude.data).toEqual({
+      type: "tool_use",
+      name: "mcp__mend__screen_act",
+      input: stored,
+      ...dropped,
+    });
+    expect(codex.data).toEqual({
+      type: "mcpToolCall",
+      server: "mend",
+      tool: "screen_act",
+      arguments: stored,
+      ...dropped,
+    });
+    expect(compactMendScreenCall(claude)).toEqual(claude);
+    expect(compactMendScreenCall(codex)).toEqual(codex);
+  });
+});
 
 const expectNoTyped = (published: unknown) => {
   const text = JSON.stringify(published);
@@ -435,7 +579,7 @@ describe("typed text in any shape of a screen_act's arguments", () => {
           onEvent: seen.onEvent,
         });
         yield* session.sendTurn("open the page");
-        ARGUMENT_SHAPES.forEach(([, args], index) => {
+        STORED_SHAPES.forEach(([, args], index) => {
           const id = `toolu_shape_${index}`;
           fake.push({
             type: "assistant",
@@ -453,13 +597,35 @@ describe("typed text in any shape of a screen_act's arguments", () => {
         });
         yield* fake.drain;
         const opened = seen.events.filter((event) => event._tag === "request.opened");
-        expect(opened).toHaveLength(ARGUMENT_SHAPES.length);
+        expect(opened).toHaveLength(STORED_SHAPES.length);
         expectNoTyped(seen.events);
-        expect(
-          seen.items().findLast((item) => item.providerItemId === "toolu_shape_3")?.data,
-        ).toMatchObject({
-          input: { actions: [[{ kind: "type", length: TYPED.length }]] },
+        STORED_SHAPES.forEach(([, , input], index) => {
+          const item = seen
+            .items()
+            .findLast((each) => each.providerItemId === `toolu_shape_${index}`);
+          expect(item?.data).toEqual({
+            type: "tool_use",
+            id: `toolu_shape_${index}`,
+            name: "mcp__mend__screen_act",
+            input,
+            ...droppedFlag(input),
+            [MEND_SCREEN_CALL_FIELD]: { receipt: null, outcome: "refused", refusal: "held" },
+          });
         });
+        expect(
+          opened.map((event) => (event._tag === "request.opened" ? event.request.detail : null)),
+        ).toEqual(
+          // Claude reads a request's input as an object, and anything else as no input.
+          STORED_SHAPES.map(([, args, stored]) => {
+            const input = isObject(args) ? stored : null;
+            return {
+              toolName: "mcp__mend__screen_act",
+              input,
+              ...droppedFlag(input),
+              suggestions: [],
+            };
+          }),
+        );
       }),
     ),
   );
@@ -475,7 +641,7 @@ describe("typed text in any shape of a screen_act's arguments", () => {
           onEvent: seen.onEvent,
         });
         yield* session.sendTurn("open the page");
-        ARGUMENT_SHAPES.forEach(([, args], index) => {
+        STORED_SHAPES.forEach(([, args], index) => {
           fake.push({
             method: "item/completed",
             params: {
@@ -495,13 +661,21 @@ describe("typed text in any shape of a screen_act's arguments", () => {
           });
         });
         yield* fake.drain;
-        expect(seen.items()).toHaveLength(ARGUMENT_SHAPES.length);
+        expect(seen.items()).toHaveLength(STORED_SHAPES.length);
         expectNoTyped(seen.events);
-        for (const item of seen.items()) {
-          expect(item.data).toMatchObject({
-            [MEND_SCREEN_CALL_FIELD]: { receipt: null, outcome: "outcome_unknown" },
+        STORED_SHAPES.forEach(([, , stored], index) => {
+          expect(seen.items()[index]?.data).toEqual({
+            type: "mcpToolCall",
+            id: `call_shape_${index}`,
+            server: "mend",
+            tool: "screen_act",
+            arguments: stored,
+            ...droppedFlag(stored),
+            status: "failed",
+            durationMs: 3,
+            [MEND_SCREEN_CALL_FIELD]: { receipt: null, outcome: "outcome_unknown", refusal: null },
           });
-        }
+        });
       }),
     ),
   );

@@ -422,7 +422,7 @@ export const ClaudeAdapter: AgentAdapter = {
             title: toolName,
             detail: {
               toolName,
-              input: requestInputWithoutTypedText(
+              ...requestInputWithoutTypedText(
                 toolName,
                 requestInputWithoutPageHtml(toolName, input),
               ),
