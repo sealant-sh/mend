@@ -83,6 +83,14 @@ const postAuth = (route: string, body: object) =>
     }),
   );
 
+const getAuth = (route: string) =>
+  runAuth(
+    Effect.gen(function* () {
+      const auth = yield* Auth;
+      return yield* auth.handler(new Request(`${origin}/api/auth/${route}`));
+    }),
+  );
+
 const issueReset = (userId: string) =>
   runAuth(
     Effect.gen(function* () {
@@ -178,6 +186,9 @@ describe.skipIf(postgres.skip)("deactivation and password reset in migrated Post
     expect(superseded.status).toBe(400);
     await expect(superseded.json()).resolves.toMatchObject({ code: "INVALID_TOKEN" });
     expect(await signedInAs(bearer(account.token))).toBe(account.email);
+    const callback = await getAuth(`reset-password/${newer.token}?callbackURL=%2Freset`);
+    expect(callback.status).toBe(404);
+    expect(callback.headers.get("location")).toBeNull();
     expect((await reset(newer.token)).status).toBe(200);
     // The old bearer no longer authenticates, in addition to the old session rows being gone.
     const sessions = await scratch.query<{ count: string }>(
