@@ -42,6 +42,18 @@ export const pumpEvents = <E, R>(
       : Effect.void;
   });
 
+type BusEvent = Extract<BusSignal, { readonly kind: "event" }>;
+
+/**
+ * The payloads a subscription to the bus hears, for a worker written against a stream of NOTIFY
+ * payloads: it shares the process's one LISTEN instead of pinning a pool connection of its own.
+ */
+export const busPayloads = (subscription: PubSub.Subscription<BusSignal>) =>
+  Stream.fromSubscription(subscription).pipe(
+    Stream.filter((signal): signal is BusEvent => signal.kind === "event"),
+    Stream.map((signal) => signal.payload),
+  );
+
 export const makeEventBus = <E, R>(listen: Stream.Stream<string, E, R>) =>
   Effect.gen(function* () {
     const pubsub = yield* PubSub.sliding<BusSignal>(BUFFER);

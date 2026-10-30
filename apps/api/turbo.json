@@ -9,7 +9,8 @@
         "$TURBO_ROOT$/apps/cli/src/server-edge.ts",
         "$TURBO_ROOT$/apps/cli/src/server-edge-files.ts",
         "$TURBO_ROOT$/apps/cli/src/server-mirrors.ts",
-        "$TURBO_ROOT$/apps/cli/src/server-store.ts"
+        "$TURBO_ROOT$/apps/cli/src/server-store.ts",
+        "$TURBO_ROOT$/packages/*/src/**"
       ]
     }
   }

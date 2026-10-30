@@ -1,8 +1,6 @@
-import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
   CheckpointsRepo,
-  listenEvents,
   MendEvent,
   type PreviewPreparationClaim,
   PreviewPreparationsRepo,
@@ -34,6 +32,8 @@ import {
   Stream,
 } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
+
+import { busPayloads, EventBus } from "./events-bus.ts";
 
 const TURN_FRESHNESS_MS = 15 * 60_000;
 export const PREPARATION_LEASE_MS = 2 * 60_000;
@@ -293,10 +293,11 @@ export const previewPreparation = (
     );
   });
 
+/** Hears turns end on the process's events bus: one LISTEN per process, not one per worker. */
 export const PreviewPreparationLive: Layer.Layer<
   never,
   never,
-  | PgClient.PgClient
+  | EventBus
   | AgentConversationRepo
   | CheckpointsRepo
   | PreviewPreparationsRepo
@@ -306,5 +307,8 @@ export const PreviewPreparationLive: Layer.Layer<
   | WorktreeReads
   | WorktreesRepo
 > = Layer.effectDiscard(
-  Effect.flatMap(PgClient.PgClient, (sql) => previewPreparation(listenEvents(sql))),
+  Effect.gen(function* () {
+    const subscription = yield* (yield* EventBus).subscribe;
+    yield* previewPreparation(busPayloads(subscription));
+  }),
 );

@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import {
   Deferred,
   Effect,
+  ConfigProvider,
   Exit,
   Fiber,
   Layer,
@@ -14,8 +15,14 @@ import {
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { MendDB, MendDBLive } from "../src/client.ts";
-import { listenEvents, MEND_EVENTS_CHANNEL, type MendEvent, notifyEvent } from "../src/events.ts";
+import { ListenGuardLive, MendDB, MendDBLive, PgLive } from "../src/client.ts";
+import {
+  listenBudget,
+  listenEvents,
+  MEND_EVENTS_CHANNEL,
+  type MendEvent,
+  notifyEvent,
+} from "../src/events.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
@@ -39,8 +46,16 @@ const PRODUCTION_POOL_MAX = 6;
 const SERVER_LISTENERS = 5;
 const productionSizedLayer = MendDBLive.pipe(
   Layer.provideMerge(
-    PgClient.layer({ url: Redacted.make(scratchUrl), maxConnections: PRODUCTION_POOL_MAX }),
+    ListenGuardLive.pipe(
+      Layer.provideMerge(
+        PgClient.layer({ url: Redacted.make(scratchUrl), maxConnections: PRODUCTION_POOL_MAX }),
+      ),
+    ),
   ),
+);
+/** Mend's own pool, from its configuration: the default size, with the LISTEN guard installed. */
+const configuredLayer = PgLive.pipe(
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ DATABASE_URL: scratchUrl }))),
 );
 
 let scratchCreated = false;
@@ -140,6 +155,76 @@ describe.skipIf(postgres.skip)("mend_events in Postgres", () => {
           .pipe(Effect.timeout("2 seconds"), Effect.orDie);
         expect(JSON.parse(yield* Queue.take(received))).toEqual(event);
       }).pipe(Effect.scoped, Effect.provide(productionSizedLayer)),
+    ));
+
+  it("refuses the LISTEN that would pin a pool's last connection, and names the events bus", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        expect(listenBudget(sql)).toBe(PRODUCTION_POOL_MAX - 1);
+        for (let pinned = 0; pinned < listenBudget(sql); pinned++) {
+          yield* Effect.forkScoped(Stream.runDrain(listenEvents(sql)));
+        }
+        yield* sql<{ readonly listeners: number }>`
+          SELECT count(*)::int AS listeners FROM pg_stat_activity
+           WHERE datname = current_database()
+             AND query ILIKE ${`LISTEN %${MEND_EVENTS_CHANNEL}%`}`.pipe(
+          Effect.repeat({
+            until: ([row]) => row?.listeners === PRODUCTION_POOL_MAX - 1,
+            schedule: Schedule.spaced("20 millis"),
+          }),
+        );
+
+        const refused = yield* Stream.runDrain(listenEvents(sql)).pipe(
+          Effect.timeout("5 seconds"),
+          Effect.exit,
+        );
+
+        expect(Exit.isFailure(refused)).toBe(true);
+        expect(String(Exit.isFailure(refused) ? refused.cause : "")).toContain(
+          "subscribe to the events bus",
+        );
+        const [row] = yield* sql<{ readonly one: number }>`SELECT 1 AS one`.pipe(
+          Effect.timeout("2 seconds"),
+        );
+        expect(row?.one).toBe(1);
+      }).pipe(Effect.scoped, Effect.provide(productionSizedLayer)),
+    ));
+
+  it("refuses a direct sql.listen through an alias of the service tag on Mend's own pool, too", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        // The merge gate's bypass (mend#1234): a reexported tag and a raw `.listen`, which no
+        // source census sees by name.
+        const Database = PgClient.PgClient;
+        const sql = yield* Database;
+        expect(listenBudget(sql), "the default pool, all but one").toBe(PRODUCTION_POOL_MAX - 1);
+        for (let pinned = 0; pinned < listenBudget(sql); pinned++) {
+          yield* Effect.forkScoped(Stream.runDrain(listenEvents(sql)));
+        }
+        yield* sql<{ readonly listeners: number }>`
+          SELECT count(*)::int AS listeners FROM pg_stat_activity
+           WHERE datname = current_database() AND query ILIKE 'LISTEN %'`.pipe(
+          Effect.repeat({
+            until: ([row]) => row?.listeners === PRODUCTION_POOL_MAX - 1,
+            schedule: Schedule.spaced("20 millis"),
+          }),
+        );
+
+        const refused = yield* Effect.scoped(sql.listen("gate_direct_listener")).pipe(
+          Effect.timeout("5 seconds"),
+          Effect.exit,
+        );
+
+        expect(Exit.isFailure(refused)).toBe(true);
+        expect(String(Exit.isFailure(refused) ? refused.cause : "")).toContain(
+          "subscribe to the events bus",
+        );
+        const [row] = yield* sql<{ readonly one: number }>`SELECT 1 AS one`.pipe(
+          Effect.timeout("2 seconds"),
+        );
+        expect(row?.one).toBe(1);
+      }).pipe(Effect.scoped, Effect.provide(configuredLayer)),
     ));
 
   it("delivers a notify published inside a transaction when it commits, not before", () =>
