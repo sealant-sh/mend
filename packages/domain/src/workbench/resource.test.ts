@@ -715,23 +715,15 @@ describe("a preset's definition", () => {
   });
 
   it.each([
-    ["postgres", "17", ["postgres", "-c", "fsync=on", "-c", "synchronous_commit=on"]],
-    ["mysql", "8.4", ["mysqld", "--innodb-flush-log-at-trx-commit=1"]],
+    ["postgres", "17", ["-c", "fsync=on", "-c", "synchronous_commit=on"]],
+    ["mysql", "8.4", ["--innodb-flush-log-at-trx-commit=1"]],
     [
       "redis",
       "8",
-      [
-        "redis-server",
-        "--appendonly",
-        "yes",
-        "--appendfsync",
-        "always",
-        "--maxmemory-policy",
-        "noeviction",
-      ],
+      ["--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"],
     ],
   ] as const)(
-    "runs %s with its durable engine settings, inside the approved digest",
+    "runs %s with its durable engine settings as flags, which every image of the preset hands to its own server, inside the approved digest",
     (preset, version, command) => {
       const input = {
         name: ResourceName.make("db"),

@@ -166,7 +166,10 @@ const definitionFields = {
   name: ResourceName,
   preset: Schema.NullOr(ResourcePreset),
   image: ImageReference,
-  /** Null keeps the image's entrypoint. */
+  /**
+   * Replaces the image's default command (Docker `CMD`); the image's entrypoint always runs. Null
+   * keeps the default.
+   */
   command: Schema.NullOr(Argv),
   ports: Schema.Array(ResourcePort),
   /** Keys are refused by name in `resourceDefinitionRefusals`; a checked key would be dropped. */
@@ -391,7 +394,9 @@ export const RESOURCE_PRESETS: {
 /**
  * The port and data directory a preset's own image uses, by its major version, and the command
  * that runs its engine with every acknowledged write durable (ADR 0019, "Engine settings are part
- * of the preset"). The command is in the definition, so approving it approves those settings.
+ * of the preset"). The command is in the definition, so approving it approves those settings. It
+ * is flags alone: each image's entrypoint starts its own server for a leading flag (`mariadbd`,
+ * `valkey-server`) and still sets up an empty volume.
  */
 const PRESET_LAYOUT: {
   readonly [P in ResourcePreset]: {
@@ -403,25 +408,17 @@ const PRESET_LAYOUT: {
   postgres: {
     port: 5432,
     data: (major) => (major >= 18 ? "/var/lib/postgresql" : "/var/lib/postgresql/data"),
-    command: ["postgres", "-c", "fsync=on", "-c", "synchronous_commit=on"],
+    command: ["-c", "fsync=on", "-c", "synchronous_commit=on"],
   },
   mysql: {
     port: 3306,
     data: () => "/var/lib/mysql",
-    command: ["mysqld", "--innodb-flush-log-at-trx-commit=1"],
+    command: ["--innodb-flush-log-at-trx-commit=1"],
   },
   redis: {
     port: 6379,
     data: () => "/data",
-    command: [
-      "redis-server",
-      "--appendonly",
-      "yes",
-      "--appendfsync",
-      "always",
-      "--maxmemory-policy",
-      "noeviction",
-    ],
+    command: ["--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"],
   },
 };
 
