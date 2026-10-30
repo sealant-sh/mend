@@ -159,8 +159,26 @@ const betterAuthCookies = (network: { readonly appUrl: string }) => {
   };
 };
 
+/**
+ * Better Auth writes what a request carried into its own lines, a rejected `callbackURL` whole
+ * among them (`Invalid callbackURL: https://…/join/<token>?code=…`), and an email or an origin
+ * after a colon too. It passes an error as the message at times, hence `String`.
+ */
+const betterAuthLog = (
+  level: "debug" | "info" | "warn" | "error",
+  message: string,
+  ...rest: Array<unknown>
+) => {
+  const errors = rest.flatMap((value) => (value instanceof Error ? [value.name] : []));
+  const words = String(message).split(":", 1)[0]?.trim().slice(0, 160) ?? "";
+  const line = `[Better Auth] ${level}: ${words}${errors.length === 0 ? "" : ` (${errors.join(", ")})`}`;
+  if (level === "error") console.error(line);
+  else console.warn(line);
+};
+
 const createBetterAuth = (options: AuthHandlerOptions) =>
   betterAuth({
+    logger: { log: betterAuthLog },
     ...(options.database === undefined ? {} : { database: options.database }),
     ...(options.registration === undefined
       ? {}
