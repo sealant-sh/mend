@@ -560,6 +560,30 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
             FROM resource_approvals ORDER BY revision`,
         ),
       );
+    /** `spec` adopted and approved in a project of the organization nobody here can see. */
+    const approvedElsewhere = async (spec: ResourceDefinitionInput) => {
+      const elsewhere = ProjectId.make("p_resources_elsewhere");
+      await runtime.runPromise(
+        Effect.flatMap(
+          SqlClient.SqlClient,
+          (sql) => sql`INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+            VALUES (${elsewhere}, 'elsewhere', '/store/elsewhere', 'main', 'org-a')
+            ON CONFLICT (id) DO NOTHING`,
+        ),
+      );
+      return runtime.runPromise(
+        Effect.flatMap(repoNow, (repo) =>
+          repo.adoptAndApprove({
+            projectId: elsewhere,
+            spec,
+            settings: null,
+            imageDigest: ImageDigest.make(`sha256:${"f".repeat(64)}`),
+            worktreeId: null,
+            approvedBy: "bob",
+          }),
+        ),
+      );
+    };
     const fileTable = async (as: HarnessUser, worktree: WorktreeId) => {
       const read = (await list(as, `&worktreeId=${worktree}`)).body.file;
       return read.proposals[0];
@@ -672,27 +696,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
         },
       });
 
-      const elsewhere = ProjectId.make("p_resources_elsewhere");
-      await runtime.runPromise(
-        Effect.flatMap(
-          SqlClient.SqlClient,
-          (sql) => sql`INSERT INTO projects (id, name, store_path, default_branch, organization_id)
-            VALUES (${elsewhere}, 'elsewhere', '/store/elsewhere', 'main', 'org-a')
-            ON CONFLICT (id) DO NOTHING`,
-        ),
-      );
-      const foreign = await runtime.runPromise(
-        Effect.flatMap(repoNow, (repo) =>
-          repo.adoptAndApprove({
-            projectId: elsewhere,
-            spec: read.spec,
-            settings: null,
-            imageDigest: ImageDigest.make(`sha256:${"f".repeat(64)}`),
-            worktreeId: null,
-            approvedBy: "bob",
-          }),
-        ),
-      );
+      const foreign = await approvedElsewhere(read.spec);
       const viaForeign = await approveVia("alice", {
         source: {
           ...sameAsRead.source,
@@ -841,6 +845,14 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
         message:
           "choosing how this worktree uses a resource is its change owner's: the owner of its first session",
       });
+    });
+
+    it("answers another project's definition as not found, and never says its name", async () => {
+      await start();
+      const hidden = await approvedElsewhere(mailpit("secret-mail", "project"));
+      const chosen = await use("carol", CAROL_WORKTREE_IN_SHARED_A, hidden.definition.id, "off");
+      expect(chosen.status).toBe(404);
+      expect(JSON.stringify(chosen.body)).not.toContain("secret-mail");
     });
 
     it("refuses every start in the words a recipe's depends says", async () => {

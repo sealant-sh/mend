@@ -294,10 +294,12 @@ export class ResourcesRepo extends Context.Service<
       worktreeId: WorktreeId | null,
     ) => Effect.Effect<ResourceApproval | null, ResourceDefinitionNotFoundError>;
     /**
-     * The worktree's selection, set from the default when it has none or the policy refuses the
-     * one it has; null for a worktree resource.
+     * The worktree's selection of one of the project's definitions, set from the default when it
+     * has none or the policy refuses the one it has; null for a worktree resource. Another
+     * project's definition is not found.
      */
     readonly ensureSelection: (
+      projectId: ProjectId,
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
     ) => Effect.Effect<
@@ -306,6 +308,7 @@ export class ResourcesRepo extends Context.Service<
     >;
     /** A changed choice takes the next revision; the same choice again changes nothing. */
     readonly setSelection: (
+      projectId: ProjectId,
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       choice: SelectionChoice,
@@ -429,14 +432,21 @@ const worktreeProject = (tx: Tx, worktreeId: WorktreeId) =>
     .where(eq(worktrees.id, worktreeId))
     .pipe(Effect.map(([row]) => row?.projectId ?? null));
 
-/** The locked definition, once the worktree is known to be one of its project's. */
+/**
+ * The project's definition, locked, once the worktree is known to be one of the project's. Another
+ * project's definition is not found, the same as a missing one, so its name is never said.
+ */
 const lockForWorktree = Effect.fn("ResourcesRepo.lockForWorktree")(function* (
   tx: Tx,
+  projectId: ProjectId,
   worktreeId: WorktreeId,
   definitionId: ResourceDefinitionId,
 ) {
   const definition = yield* lockDefinition(tx, definitionId);
-  if ((yield* worktreeProject(tx, worktreeId)) !== definition.projectId) {
+  if (definition.projectId !== projectId) {
+    return yield* new ResourceDefinitionNotFoundError({ id: definitionId });
+  }
+  if ((yield* worktreeProject(tx, worktreeId)) !== projectId) {
     return yield* new ResourceSelectionRefusedError({
       definitionId,
       refusal: {
@@ -1082,13 +1092,14 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
     });
 
     const ensureSelection = Effect.fn("ResourcesRepo.ensureSelection")(function* (
+      projectId: ProjectId,
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
     ) {
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            const { spec } = yield* lockForWorktree(tx, worktreeId, definitionId);
+            const { spec } = yield* lockForWorktree(tx, projectId, worktreeId, definitionId);
             const mode = defaultChoiceFor(spec);
             if (mode === null) return null;
             const stored = yield* storedSelection(tx, worktreeId, definitionId);
@@ -1110,6 +1121,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
     });
 
     const setSelection = Effect.fn("ResourcesRepo.setSelection")(function* (
+      projectId: ProjectId,
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       choice: SelectionChoice,
@@ -1118,7 +1130,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            const { spec } = yield* lockForWorktree(tx, worktreeId, definitionId);
+            const { spec } = yield* lockForWorktree(tx, projectId, worktreeId, definitionId);
             const stored = yield* storedSelection(tx, worktreeId, definitionId);
             const revision = stored === null ? 0 : stored.revision + 1;
             const wanted = withRevision(spec, choice.mode, revision);

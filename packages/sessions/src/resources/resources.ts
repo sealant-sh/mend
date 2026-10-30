@@ -646,7 +646,13 @@ export const ResourcesLive: Layer.Layer<
         { kind: "person", viewer },
         { kind: "use", changeOwner: yield* changeOwner(worktreeId) },
       );
-      const stored = yield* repo.setSelection(worktreeId, definitionId, { mode }, viewer.userId);
+      const stored = yield* repo.setSelection(
+        project.id,
+        worktreeId,
+        definitionId,
+        { mode },
+        viewer.userId,
+      );
       const listed = (yield* repo.listWithApprovals(project.id, worktreeId)).find(
         (each) => each.definition.id === definitionId,
       );

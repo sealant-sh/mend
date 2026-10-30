@@ -696,46 +696,71 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         repo.declare(project, mailpit("worktree", "box"), "alice"),
       );
 
-      const own = await withRepo((repo) => repo.ensureSelection(worktree, db.id));
+      const own = await withRepo((repo) => repo.ensureSelection(project, worktree, db.id));
       expect(own).toMatchObject({
         selection: { mode: "own", revision: 0, target: { kind: "database" } },
         chosenBy: null,
       });
-      expect(await withRepo((repo) => repo.ensureSelection(worktree, db.id))).toEqual(own);
-      expect(await withRepo((repo) => repo.ensureSelection(worktree, cache.id))).toMatchObject({
+      expect(await withRepo((repo) => repo.ensureSelection(project, worktree, db.id))).toEqual(own);
+      expect(
+        await withRepo((repo) => repo.ensureSelection(project, worktree, cache.id)),
+      ).toMatchObject({
         selection: { mode: "shared", revision: 0 },
       });
-      expect(await withRepo((repo) => repo.ensureSelection(worktree, mail.id))).toMatchObject({
+      expect(
+        await withRepo((repo) => repo.ensureSelection(project, worktree, mail.id)),
+      ).toMatchObject({
         selection: { mode: "shared", revision: 0 },
       });
-      expect(await withRepo((repo) => repo.ensureSelection(worktree, perWorktree.id))).toBeNull();
+      expect(
+        await withRepo((repo) => repo.ensureSelection(project, worktree, perWorktree.id)),
+      ).toBeNull();
       expect(await count("resource_selections", perWorktree.id)).toBe(0);
     });
 
     it("refuses a selection the policy does not offer, or for another project's worktree, and writes nothing", async () => {
       const project = await newProject();
       const worktree = await newWorktree(project);
-      const elsewhere = await newWorktree(await newProject());
+      const other = await newProject();
+      const elsewhere = await newWorktree(other);
       const cache = await withRepo((repo) => repo.declare(project, redisCache(), "alice"));
       const db = await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
       const box = await withRepo((repo) => repo.declare(project, mailpit("worktree"), "alice"));
 
       expect(
-        await failureOf((repo) => repo.setSelection(worktree, cache.id, { mode: "own" }, "alice")),
+        await failureOf((repo) =>
+          repo.setSelection(project, worktree, cache.id, { mode: "own" }, "alice"),
+        ),
       ).toMatchObject({
         _tag: "ResourceSelectionRefusedError",
         definitionId: cache.id,
         refusal: { key: "mode", message: "is own, and @cache offers shared, off" },
       });
       expect(
-        await failureOf((repo) => repo.setSelection(worktree, box.id, { mode: "off" }, "alice")),
+        await failureOf((repo) =>
+          repo.setSelection(project, worktree, box.id, { mode: "off" }, "alice"),
+        ),
       ).toMatchObject({ refusal: { key: "selection" } });
       expect(
-        await failureOf((repo) => repo.setSelection(elsewhere, db.id, { mode: "off" }, "alice")),
+        await failureOf((repo) =>
+          repo.setSelection(project, elsewhere, db.id, { mode: "off" }, "alice"),
+        ),
       ).toMatchObject({ refusal: { key: "worktree" } });
-      expect(await failureOf((repo) => repo.ensureSelection(elsewhere, db.id))).toMatchObject({
+      expect(
+        await failureOf((repo) => repo.ensureSelection(project, elsewhere, db.id)),
+      ).toMatchObject({
         refusal: { key: "worktree" },
       });
+      // From the other project, this project's definition is not found, and its name is not said.
+      for (const choose of [
+        (repo: ResourcesRepo["Service"]) =>
+          repo.setSelection(other, elsewhere, db.id, { mode: "off" }, "alice"),
+        (repo: ResourcesRepo["Service"]) => repo.ensureSelection(other, elsewhere, db.id),
+      ]) {
+        expect(await failureOf(choose)).toEqual(
+          expect.objectContaining({ _tag: "ResourceDefinitionNotFoundError", id: db.id }),
+        );
+      }
       for (const definition of [cache, db, box])
         expect(await count("resource_selections", definition.id)).toBe(0);
     });
@@ -746,13 +771,13 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       const db = await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
       const cache = await withRepo((repo) => repo.declare(project, redisCache(), "alice"));
       const set = (mode: "off" | "shared" | "own", by: string) =>
-        withRepo((repo) => repo.setSelection(worktree, db.id, { mode }, by));
+        withRepo((repo) => repo.setSelection(project, worktree, db.id, { mode }, by));
 
       // The default, chosen explicitly, is the person's choice from then on.
-      await withRepo((repo) => repo.ensureSelection(worktree, cache.id));
+      await withRepo((repo) => repo.ensureSelection(project, worktree, cache.id));
       expect(
         await withRepo((repo) =>
-          repo.setSelection(worktree, cache.id, { mode: "shared" }, "alice"),
+          repo.setSelection(project, worktree, cache.id, { mode: "shared" }, "alice"),
         ),
       ).toMatchObject({ selection: { mode: "shared", revision: 0 }, chosenBy: "alice" });
 
@@ -771,7 +796,9 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       });
       expect(await set("own", "alice")).toEqual(own);
       expect(await set("off", "bob")).toMatchObject({ selection: { mode: "off", revision: 2 } });
-      expect(await withRepo((repo) => repo.ensureSelection(worktree, db.id))).toMatchObject({
+      expect(
+        await withRepo((repo) => repo.ensureSelection(project, worktree, db.id)),
+      ).toMatchObject({
         selection: { mode: "off", revision: 2 },
       });
     });
@@ -784,8 +811,8 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       const owned = await withRepo((repo) =>
         Effect.all(
           [one, two].flatMap((worktree) => [
-            repo.setSelection(worktree, db.id, { mode: "own" }, "alice"),
-            repo.setSelection(worktree, mail.id, { mode: "own" }, "alice"),
+            repo.setSelection(project, worktree, db.id, { mode: "own" }, "alice"),
+            repo.setSelection(project, worktree, mail.id, { mode: "own" }, "alice"),
           ]),
         ),
       );
@@ -803,18 +830,20 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       const project = await newProject();
       const worktree = await newWorktree(project);
       const cache = await withRepo((repo) => repo.declare(project, redisCache(), "alice"));
-      await withRepo((repo) => repo.setSelection(worktree, cache.id, { mode: "shared" }, "alice"));
+      await withRepo((repo) =>
+        repo.setSelection(project, worktree, cache.id, { mode: "shared" }, "alice"),
+      );
       // The selection's row lock holds both switches, the first one in line first.
       const release = await hold(
         "SELECT 1 FROM resource_selections WHERE worktree_id = $1 FOR UPDATE",
         [worktree],
       );
       const first = withRepo((repo) =>
-        repo.setSelection(worktree, cache.id, { mode: "off" }, "alice"),
+        repo.setSelection(project, worktree, cache.id, { mode: "off" }, "alice"),
       );
       await untilWaiting(1);
       const second = withRepo((repo) =>
-        repo.setSelection(worktree, cache.id, { mode: "shared" }, "bob"),
+        repo.setSelection(project, worktree, cache.id, { mode: "shared" }, "bob"),
       );
       await untilWaiting(2);
       // A table lock queued behind both makes any later read of the table wait until the second
@@ -838,7 +867,9 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       const project = await newProject();
       const worktree = await newWorktree(project);
       const cache = await withRepo((repo) => repo.declare(project, redisCache(), "alice"));
-      await withRepo((repo) => repo.setSelection(worktree, cache.id, { mode: "off" }, "alice"));
+      await withRepo((repo) =>
+        repo.setSelection(project, worktree, cache.id, { mode: "off" }, "alice"),
+      );
       // As a Mend whose policy offered Redis an own instance would have stored it.
       await execute(
         `UPDATE resource_selections SET mode = 'own', revision = 4,
@@ -846,7 +877,9 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
          WHERE worktree_id = $1`,
         [worktree],
       );
-      expect(await withRepo((repo) => repo.ensureSelection(worktree, cache.id))).toMatchObject({
+      expect(
+        await withRepo((repo) => repo.ensureSelection(project, worktree, cache.id)),
+      ).toMatchObject({
         selection: { mode: "shared", revision: 5 },
         chosenBy: null,
       });
@@ -857,7 +890,9 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         [worktree],
       );
       expect(
-        await withRepo((repo) => repo.setSelection(worktree, cache.id, { mode: "off" }, "bob")),
+        await withRepo((repo) =>
+          repo.setSelection(project, worktree, cache.id, { mode: "off" }, "bob"),
+        ),
       ).toMatchObject({ selection: { mode: "off", revision: 7 }, chosenBy: "bob" });
     });
   });
@@ -867,7 +902,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       const project = await newProject();
       const worktree = await newWorktree(project);
       const db = await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
-      const own = await withRepo((repo) => repo.ensureSelection(worktree, db.id));
+      const own = await withRepo((repo) => repo.ensureSelection(project, worktree, db.id));
       const asRedis = postgresDb({
         preset: "redis",
         image: "redis:8",
@@ -885,7 +920,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         ],
       });
       expect(await withRepo((repo) => repo.byName(project, "db"))).toEqual(db);
-      expect(await withRepo((repo) => repo.ensureSelection(worktree, db.id))).toEqual(own);
+      expect(await withRepo((repo) => repo.ensureSelection(project, worktree, db.id))).toEqual(own);
     });
 
     it("re-defaults every other selection to the new policy's default, each under a new revision", async () => {
@@ -894,11 +929,11 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       const mail = await withRepo((repo) =>
         repo.declare(project, mailpit("project", "db"), "alice"),
       );
-      await withRepo((repo) => repo.setSelection(one, mail.id, { mode: "off" }, "alice"));
-      await withRepo((repo) => repo.ensureSelection(two, mail.id));
+      await withRepo((repo) => repo.setSelection(project, one, mail.id, { mode: "off" }, "alice"));
+      await withRepo((repo) => repo.ensureSelection(project, two, mail.id));
       await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
       const selections = await withRepo((repo) =>
-        Effect.all([one, two].map((worktree) => repo.ensureSelection(worktree, mail.id))),
+        Effect.all([one, two].map((worktree) => repo.ensureSelection(project, worktree, mail.id))),
       );
       expect(selections).toMatchObject([
         { selection: { mode: "own", revision: 1, target: { kind: "database" } }, chosenBy: null },
@@ -910,10 +945,12 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       const project = await newProject();
       const worktree = await newWorktree(project);
       const mail = await withRepo((repo) => repo.declare(project, mailpit("project"), "alice"));
-      await withRepo((repo) => repo.setSelection(worktree, mail.id, { mode: "off" }, "alice"));
+      await withRepo((repo) =>
+        repo.setSelection(project, worktree, mail.id, { mode: "off" }, "alice"),
+      );
       await withRepo((repo) => repo.declare(project, mailpit("worktree"), "alice"));
       expect(await count("resource_selections", mail.id)).toBe(0);
-      expect(await withRepo((repo) => repo.ensureSelection(worktree, mail.id))).toBeNull();
+      expect(await withRepo((repo) => repo.ensureSelection(project, worktree, mail.id))).toBeNull();
     });
 
     it("waits for a selection being written, and does not leave it behind", async () => {
@@ -923,7 +960,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       // The worktree's row lock holds the selection at its insert, after it checked the policy.
       const release = await hold("SELECT 1 FROM worktrees WHERE id = $1 FOR UPDATE", [worktree]);
       const selecting = failureOf((repo) =>
-        repo.setSelection(worktree, mail.id, { mode: "shared" }, "alice"),
+        repo.setSelection(project, worktree, mail.id, { mode: "shared" }, "alice"),
       );
       await untilWaiting(1);
       const declaring = failureOf((repo) => repo.declare(project, mailpit("worktree"), "alice"));
@@ -939,7 +976,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
     const project = await newProject();
     const worktree = await newWorktree(project);
     const db = await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
-    await withRepo((repo) => repo.ensureSelection(worktree, db.id));
+    await withRepo((repo) => repo.ensureSelection(project, worktree, db.id));
     await withRepo((repo) => repo.approve(approval(db)));
     const deleteProject = () =>
       run(
