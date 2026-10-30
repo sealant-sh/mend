@@ -1,6 +1,7 @@
-import { errorStatusByTag } from "@mend/api-contracts";
+import { errorStatusByTag, MendApi } from "@mend/api-contracts";
 import { TRPCError } from "@trpc/server";
-import { HttpClientError } from "effect/http";
+import { FindMyWay, HttpClientError, type HttpClientRequest, type HttpRouter } from "effect/http";
+import { HttpApi } from "effect/http-api";
 
 import { NOT_DONE, type Refusal, refusalWords } from "./refusal-words.ts";
 
@@ -26,6 +27,26 @@ const codeForStatus = (status: number): TrpcCode => {
       return status < 500 ? "BAD_REQUEST" : "INTERNAL_SERVER_ERROR";
   }
 };
+
+const isRoutePath = (path: string): path is HttpRouter.PathInput => path.startsWith("/");
+
+/** Each contract call by its route, named `group.endpoint`. */
+const operations = FindMyWay.make<string>();
+HttpApi.reflect(MendApi, {
+  onGroup: () => {},
+  onEndpoint: ({ group, endpoint }) => {
+    if (isRoutePath(endpoint.path))
+      operations.on(endpoint.method, endpoint.path, `${group.identifier}.${endpoint.identifier}`);
+  },
+});
+
+/**
+ * What a log line calls a failed call: an API URL can carry a secret in its path (a CLI
+ * sign-in's user code), so the line names the contract's operation instead.
+ */
+const operationOf = (request: HttpClientRequest.HttpClientRequest): string =>
+  operations.find(request.method, URL.parse(request.url)?.pathname ?? "")?.handler ??
+  "unknown operation";
 
 const hasTag = (error: unknown): error is Refusal =>
   typeof error === "object" && error !== null && "_tag" in error && typeof error._tag === "string";
@@ -83,18 +104,21 @@ export const toTRPCError = (error: unknown): TRPCError => {
   }
   if (HttpClientError.isHttpClientError(error)) {
     const reason = error.reason._tag;
+    const operation = operationOf(error.request);
     if (reason === "TransportError" || reason === "InvalidUrlError" || reason === "EncodeError") {
-      console.warn(`[trpc] api unreachable: ${reason}`);
+      console.warn(`[trpc] api unreachable: ${operation} ${reason}`);
       return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: API_UNREACHABLE });
     }
+    const responseStatus = error.response?.status;
     if (reason === "StatusCodeError") {
       // A status the contract DECLARES arrived, but its body failed the
       // contract's decode — drift between tiers must stay loud.
-      console.error("[trpc] contract drift decoding API response:", message);
+      console.error(
+        `[trpc] contract drift decoding API response: ${operation} ${reason} ${responseStatus}`,
+      );
       return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: API_DRIFT });
     }
-    const responseStatus = error.response?.status;
-    console.warn(`[trpc] api responded ${responseStatus ?? "with no status"}`);
+    console.warn(`[trpc] api responded ${responseStatus ?? "with no status"}: ${operation}`);
     return new TRPCError({ code: codeForStatus(responseStatus ?? 502), message: NOT_DONE });
   }
   // Unmapped failure or defect: keep the detail on the server, not the wire.
