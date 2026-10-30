@@ -1,10 +1,11 @@
 import {
-  isHandedLinkPage,
+  HANDED_LINK_PAGE_PATHS,
   isPageViewTarget,
   PAGE_VIEW_HEADERS,
   PAGE_VIEW_PATH,
   type PublicNetwork,
   requestPathOf,
+  routedPath,
 } from "@mend/network";
 
 /**
@@ -67,16 +68,26 @@ export const PERMISSIONS_POLICY = [
   "browsing-topics=()",
 ].join(", ");
 
-/** Pages whose URL carries a credential: nothing about them may leave in a Referer. */
-const isCredentialedPage = (pathname: string): boolean =>
-  pathname === "/tty-embed" ||
-  pathname === "/pair" ||
-  pathname === "/authorize" ||
-  pathname === "/preview-auth" ||
-  pathname === "/api/preview-auth";
+/**
+ * Pages whose URL carries a credential (an upgrade ticket, a pairing or authorization code, a
+ * preview grant, a handed-over link's secret): nothing about them may leave in a Referer or stay in
+ * a cache. Matched as the routers match a path, with any path below each for the older link forms.
+ */
+const CREDENTIAL_PAGES: ReadonlyArray<string> = [
+  "/tty-embed",
+  "/pair",
+  "/authorize",
+  "/preview-auth",
+  "/api/preview-auth",
+  ...HANDED_LINK_PAGE_PATHS,
+];
 
-const handedLinkHeaders = (target: string): Readonly<Record<string, string>> =>
-  isHandedLinkPage(target) ? { "referrer-policy": "no-referrer", "cache-control": "no-store" } : {};
+const referrerAndCacheHeaders = (target: string): Readonly<Record<string, string>> => {
+  const pathname = routedPath(requestPathOf(target));
+  return CREDENTIAL_PAGES.some((page) => pathname === page || pathname.startsWith(`${page}/`))
+    ? { "referrer-policy": "no-referrer", "cache-control": "no-store" }
+    : { "referrer-policy": "strict-origin-when-cross-origin" };
+};
 
 /**
  * Only over https: on plain http the header is ignored by browsers and would be a false claim. For
@@ -91,14 +102,11 @@ const appHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>
   "x-content-type-options": "nosniff",
   // For browsers that predate frame-ancestors.
   "x-frame-options": "DENY",
-  "referrer-policy": isCredentialedPage(requestPathOf(input.target))
-    ? "no-referrer"
-    : "strict-origin-when-cross-origin",
+  ...referrerAndCacheHeaders(input.target),
   "permissions-policy": PERMISSIONS_POLICY,
   "cross-origin-opener-policy": "same-origin",
   "cross-origin-resource-policy": "same-origin",
   ...transportHeaders(input.network.appUrl),
-  ...handedLinkHeaders(input.target),
 });
 
 export const securityHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>> =>

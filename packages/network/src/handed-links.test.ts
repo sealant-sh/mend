@@ -5,7 +5,6 @@ import {
   fragmentSecret,
   type HandedLinkKind,
   handedLinkPath,
-  isHandedLinkPage,
   legacyPathSecret,
 } from "./handed-links.ts";
 
@@ -97,26 +96,6 @@ describe("a link Mend hands to a person", () => {
       { pathname: "/reset/tok", hash: "" },
     ]) {
       expect(fragmentFormOf("invitation", location), JSON.stringify(location)).toBe("/join");
-    }
-  });
-
-  it("names every page that reads one, in either form and however the router spells it", () => {
-    for (const target of [
-      "/join",
-      "/join/",
-      "/join/tok",
-      "/reset#tok",
-      "/reset/tok?x=1",
-      "/slack/link",
-      "/slack/link/msl_abc",
-      "/JOIN/tok",
-      "//reset/tok",
-      "https://mend.example/slack//link/msl_abc",
-    ]) {
-      expect(isHandedLinkPage(target), target).toBe(true);
-    }
-    for (const target of ["/", "/joined", "/settings", "/slack", "/api/auth/reset-password"]) {
-      expect(isHandedLinkPage(target), target).toBe(false);
     }
   });
 });

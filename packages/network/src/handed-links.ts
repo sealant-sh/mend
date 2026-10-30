@@ -1,5 +1,3 @@
-import { requestPathOf, routedPath } from "./request-path.ts";
-
 const HANDED_LINK_PAGES = {
   invitation: "/join",
   passwordReset: "/reset",
@@ -7,6 +5,8 @@ const HANDED_LINK_PAGES = {
 } as const;
 
 export type HandedLinkKind = keyof typeof HANDED_LINK_PAGES;
+
+export const HANDED_LINK_PAGE_PATHS: ReadonlyArray<string> = Object.values(HANDED_LINK_PAGES);
 
 /**
  * What every issuer mints: 32 random bytes in base64url for an invitation or a reset, `msl_` and
@@ -52,11 +52,4 @@ export const fragmentFormOf = (
 ): string => {
   const secret = location.hash === "" ? legacyPathSecret(kind, location.pathname) : null;
   return secret === null ? HANDED_LINK_PAGES[kind] : handedLinkPath(kind, secret);
-};
-
-export const isHandedLinkPage = (target: string): boolean => {
-  const pathname = routedPath(requestPathOf(target));
-  return Object.values(HANDED_LINK_PAGES).some(
-    (page) => pathname === page || pathname.startsWith(`${page}/`),
-  );
 };
