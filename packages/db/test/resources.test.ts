@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import {
+  type AdoptionRequest,
   type ApprovalRequest,
   ResourcesRepo,
   ResourcesRepoLive,
@@ -1065,6 +1066,104 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
           repo.removeIfCurrent(other, { id: db.id, digest: db.specDigest }),
         ),
       ).toMatchObject({ _tag: "ResourceDefinitionNotFoundError" });
+    });
+  });
+
+  describe("adopting a definition and approving it at once", () => {
+    const adoption = (
+      projectId: ProjectId,
+      spec: ResourceDefinitionInput,
+      overrides: Partial<AdoptionRequest> = {},
+    ): AdoptionRequest => ({
+      projectId,
+      spec,
+      settings: null,
+      imageDigest: imageDigest("a"),
+      worktreeId: null,
+      approvedBy: "maria",
+      ...overrides,
+    });
+
+    it("declares and approves an absent definition in one write, and twice is one approval", async () => {
+      const project = await newProject();
+      const first = await withRepo((repo) => repo.adoptAndApprove(adoption(project, postgresDb())));
+      expect(first.definition.spec).toEqual(postgresDb());
+      expect(first.approval.spec.image).toBe(`postgres:17@${imageDigest("a")}`);
+
+      // A retry, after the tag moved: the approval made is the answer, and nothing repins.
+      const again = await withRepo((repo) =>
+        repo.adoptAndApprove(adoption(project, postgresDb(), { imageDigest: imageDigest("b") })),
+      );
+      expect(again.approval.id).toBe(first.approval.id);
+      expect(await count("resource_approvals", first.definition.id)).toBe(1);
+      expect(
+        await withRepo((repo) =>
+          repo.exactApproval(first.definition.id, first.definition.specDigest, null),
+        ),
+      ).toMatchObject({ id: first.approval.id });
+    });
+
+    it("refuses a read settings have moved on from, and writes nothing", async () => {
+      const project = await newProject();
+      const read = await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
+      const changed = await withRepo((repo) =>
+        repo.declare(project, postgresDb({ image: "postgres:17.6" }), "alice"),
+      );
+      const proposal = postgresDb({ image: "postgres:18" });
+      expect(
+        await failureOf((repo) =>
+          repo.adoptAndApprove(
+            adoption(project, proposal, { settings: { id: read.id, digest: read.specDigest } }),
+          ),
+        ),
+      ).toEqual(expect.objectContaining({ _tag: "ResourceSettingsStaleError", name: "db" }));
+      // A read of no definition, where one now is.
+      expect(
+        await failureOf((repo) => repo.adoptAndApprove(adoption(project, proposal))),
+      ).toMatchObject({ _tag: "ResourceSettingsStaleError" });
+      expect(await withRepo((repo) => repo.byName(project, "db"))).toMatchObject({
+        specDigest: changed.specDigest,
+      });
+      expect(await count("resource_approvals", changed.id)).toBe(0);
+
+      const adopted = await withRepo((repo) =>
+        repo.adoptAndApprove(
+          adoption(project, proposal, { settings: { id: changed.id, digest: changed.specDigest } }),
+        ),
+      );
+      expect(adopted.definition.id).toBe(changed.id);
+      expect(adopted.definition.spec.image).toBe("postgres:18");
+    });
+
+    it("leaves settings as they were when the approval is refused", async () => {
+      const project = await newProject();
+      const worktree = await newWorktree(project);
+      // No manager approved this image for the project (decision G4).
+      expect(
+        await failureOf((repo) =>
+          repo.adoptAndApprove(adoption(project, mailpit("worktree"), { worktreeId: worktree })),
+        ),
+      ).toMatchObject({ _tag: "ResourceDefinitionRefusedError" });
+      expect(await withRepo((repo) => repo.byName(project, "mail"))).toBeNull();
+    });
+
+    it("approves a worktree resource for one worktree once a manager approved its image", async () => {
+      const project = await newProject();
+      const worktree = await newWorktree(project);
+      await withRepo((repo) =>
+        repo.adoptAndApprove(adoption(project, mailpit("project", "mailer"))),
+      );
+      const mine = await withRepo((repo) =>
+        repo.adoptAndApprove(
+          adoption(project, mailpit("worktree"), { worktreeId: worktree, approvedBy: "tom" }),
+        ),
+      );
+      expect(mine.approval).toMatchObject({ worktreeId: worktree, approvedBy: "tom" });
+      expect(
+        await withRepo((repo) =>
+          repo.exactApproval(mine.definition.id, mine.definition.specDigest, null),
+        ),
+      ).toBeNull();
     });
   });
 });

@@ -82,6 +82,22 @@ export interface ApprovalRequest {
   readonly approvedBy: string;
 }
 
+export interface AdoptionRequest {
+  readonly projectId: ProjectId;
+  /** The spec its approver read, as they read it. */
+  readonly spec: ResourceDefinitionInput;
+  /** What settings held under the spec's name when it was read; null for nothing. */
+  readonly settings: DefinitionVersion | null;
+  readonly imageDigest: ImageDigest;
+  readonly worktreeId: WorktreeId | null;
+  readonly approvedBy: string;
+}
+
+export interface Adopted {
+  readonly definition: StoredResourceDefinition;
+  readonly approval: ResourceApproval;
+}
+
 /** A selection as a person asks for it; the repo mints an `own` target and numbers the revision. */
 export type SelectionChoice = { readonly mode: WorktreeChoice };
 
@@ -143,6 +159,12 @@ export class ResourceDefinitionStaleError extends Schema.TaggedError<ResourceDef
     expected: ResourceSpecDigest,
     current: ResourceSpecDigest,
   },
+) {}
+
+/** Settings changed under the name since its approver read them, so nothing was adopted. */
+export class ResourceSettingsStaleError extends Schema.TaggedError<ResourceSettingsStaleError>()(
+  "ResourceSettingsStaleError",
+  { name: Schema.String },
 ) {}
 
 export class ResourceSelectionRefusedError extends Schema.TaggedError<ResourceSelectionRefusedError>()(
@@ -233,6 +255,26 @@ export class ResourcesRepo extends Context.Service<
       ResourceApproval,
       ResourceDefinitionNotFoundError | ResourceApprovalStaleError | ResourceDefinitionRefusedError
     >;
+    /**
+     * Declares `spec` and approves it, pinned, in one transaction, while settings still hold under
+     * its name what its approver read (`settings`, null for nothing), or `spec` itself. An
+     * approval of this spec for this target already made is the one answered: nothing repins it.
+     */
+    readonly adoptAndApprove: (
+      request: AdoptionRequest,
+    ) => Effect.Effect<
+      Adopted,
+      | ResourceSettingsStaleError
+      | ResourceDefinitionNotFoundError
+      | ResourceApprovalStaleError
+      | ResourceDefinitionRefusedError
+    >;
+    /** The latest approval of exactly this declared spec for exactly this target, or null. */
+    readonly exactApproval: (
+      definitionId: ResourceDefinitionId,
+      digest: ResourceSpecDigest,
+      worktreeId: WorktreeId | null,
+    ) => Effect.Effect<ResourceApproval | null>;
     /**
      * The latest approval of the definition's spec as declared now, for the project or for
      * `worktreeId`; null until that spec is approved.
@@ -524,6 +566,229 @@ const worktreeApprovalRefusal = Effect.fn("ResourcesRepo.worktreeApprovalRefusal
   return null;
 });
 
+/** Under the transaction: declares `spec` as `declare` says. */
+const declareIn = Effect.fn("ResourcesRepo.declareIn")(function* (
+  tx: Tx,
+  projectId: ProjectId,
+  spec: ResourceDefinitionInput,
+  declaredBy: string,
+) {
+  const refusals = resourceDefinitionRefusals(spec);
+  if (refusals.length > 0) {
+    return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
+  }
+  const encoded = yield* encodeSpec(spec).pipe(Effect.orDie);
+  const specDigest = resourceSpecDigest(spec);
+  // The project's row lock orders declarations and the removal fence: each sees the other.
+  const [project] = yield* tx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .for("no key update");
+  if (project === undefined) {
+    return yield* Effect.die(new Error(`project ${projectId} does not exist`));
+  }
+  const [fence] = yield* tx
+    .select({ id: projectRemovalFences.id })
+    .from(projectRemovalFences)
+    .where(eq(projectRemovalFences.projectId, projectId))
+    .limit(1);
+  if (fence !== undefined) return yield* fenceRefusal(spec);
+
+  const others = yield* tx
+    .select()
+    .from(resourceDefinitions)
+    .where(eq(resourceDefinitions.projectId, projectId));
+  const declared = yield* Effect.forEach(
+    others.filter((row) => row.name !== spec.name),
+    toDefinition,
+  );
+  const collisions = envCollisionRefusals([
+    ...declared.map((definition) => definition.spec),
+    spec,
+  ]).flatMap(({ resource, refusal }) => (resource === spec.name ? [refusal] : []));
+  if (collisions.length > 0) {
+    return yield* new ResourceDefinitionRefusedError({
+      name: spec.name,
+      refusals: collisions,
+    });
+  }
+
+  const sameName = others.find((row) => row.name === spec.name);
+  if (sameName === undefined) {
+    const [inserted] = yield* tx
+      .insert(resourceDefinitions)
+      .values({
+        id: ResourceDefinitionId.make(`rdef_${crypto.randomUUID()}`),
+        projectId,
+        name: spec.name,
+        scope: spec.scope,
+        preset: spec.preset,
+        spec: encoded,
+        specDigest,
+        declaredBy,
+      })
+      .returning();
+    if (inserted === undefined) {
+      return yield* Effect.die(new Error("a declared definition was not stored"));
+    }
+    return yield* toDefinition(inserted);
+  }
+  const existing = yield* lockDefinition(tx, sameName.id).pipe(
+    Effect.catchTag("ResourceDefinitionNotFoundError", Effect.die),
+  );
+  if (existing.specDigest === specDigest) return existing;
+  if (existing.spec.scope !== spec.scope || existing.spec.preset !== spec.preset) {
+    yield* redefaultSelections(tx, existing, spec);
+  }
+  const [updated] = yield* tx
+    .update(resourceDefinitions)
+    .set({
+      scope: spec.scope,
+      preset: spec.preset,
+      spec: encoded,
+      specDigest,
+      declaredBy,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(resourceDefinitions.id, existing.id))
+    .returning();
+  if (updated === undefined) {
+    return yield* Effect.die(new Error("a declared definition was not stored"));
+  }
+  return yield* toDefinition(updated);
+});
+
+/** Under the transaction: approves as `approve` says. */
+const approveIn = Effect.fn("ResourcesRepo.approveIn")(function* (
+  tx: Tx,
+  request: ApprovalRequest,
+) {
+  const { definitionId, digest, imageDigest, worktreeId, approvedBy } = request;
+  const definition = yield* lockDefinition(tx, definitionId);
+  const { spec } = definition;
+  if (definition.specDigest !== digest) {
+    return yield* new ResourceApprovalStaleError({
+      definitionId,
+      approving: digest,
+      current: definition.specDigest,
+    });
+  }
+  const refuse = (refusals: ReadonlyArray<ResourceRefusal>) =>
+    new ResourceDefinitionRefusedError({ name: spec.name, refusals });
+  const image = pinImage(spec.image, imageDigest);
+  if (image === null) {
+    return yield* refuse([{ key: "image", message: `names another digest than ${imageDigest}` }]);
+  }
+  const pinned: ResourceDefinitionInput = { ...spec, image };
+  const refusals = resourceDefinitionRefusals(pinned);
+  if (refusals.length > 0) return yield* refuse(refusals);
+  if (worktreeId !== null) {
+    const refusal = yield* worktreeApprovalRefusal(tx, definition, worktreeId, imageDigest);
+    if (refusal !== null) return yield* refuse([refusal]);
+  }
+
+  // Under the definition's lock: the latest approval of this declared spec, here, is the
+  // one that runs. It is returned when it already pins this image; otherwise a new
+  // revision is, so a spec declared again or a tag that moved back becomes current.
+  const pinnedDigest = resourceSpecDigest(pinned);
+  const [latestHere] = yield* tx
+    .select()
+    .from(resourceApprovals)
+    .where(
+      and(
+        eq(resourceApprovals.definitionId, definitionId),
+        eq(resourceApprovals.definitionDigest, digest),
+        worktreeId === null
+          ? isNull(resourceApprovals.worktreeId)
+          : eq(resourceApprovals.worktreeId, worktreeId),
+      ),
+    )
+    .orderBy(desc(resourceApprovals.revision))
+    .limit(1);
+  if (latestHere?.digest === pinnedDigest) return yield* toApproval(latestHere);
+  const [latest] = yield* tx
+    .select({ revision: max(resourceApprovals.revision) })
+    .from(resourceApprovals)
+    .where(eq(resourceApprovals.definitionId, definitionId));
+  const [inserted] = yield* tx
+    .insert(resourceApprovals)
+    .values({
+      id: ResourceApprovalId.make(`rapr_${crypto.randomUUID()}`),
+      definitionId,
+      worktreeId,
+      revision: (latest?.revision ?? 0) + 1,
+      definitionDigest: digest,
+      digest: pinnedDigest,
+      spec: yield* encodeSpec(pinned).pipe(Effect.orDie),
+      approvedBy,
+    })
+    .returning();
+  if (inserted === undefined) return yield* Effect.die(new Error("approval not stored"));
+  return yield* toApproval(inserted);
+});
+
+/** The latest approval of declared spec `digest` for exactly this target. */
+const exactApprovalIn = (
+  tx: Tx,
+  definitionId: ResourceDefinitionId,
+  digest: ResourceSpecDigest,
+  worktreeId: WorktreeId | null,
+) =>
+  tx
+    .select()
+    .from(resourceApprovals)
+    .where(
+      and(
+        eq(resourceApprovals.definitionId, definitionId),
+        eq(resourceApprovals.definitionDigest, digest),
+        worktreeId === null
+          ? isNull(resourceApprovals.worktreeId)
+          : eq(resourceApprovals.worktreeId, worktreeId),
+      ),
+    )
+    .orderBy(desc(resourceApprovals.revision))
+    .limit(1)
+    .pipe(Effect.flatMap(([row]) => (row === undefined ? Effect.succeed(null) : toApproval(row))));
+
+/** Adopts and approves as `adoptAndApprove` says: one transaction, settings checked under lock. */
+const adoptIn = Effect.fn("ResourcesRepo.adoptIn")(function* (tx: Tx, request: AdoptionRequest) {
+  const { projectId, spec, settings } = request;
+  const digest = resourceSpecDigest(spec);
+  // The project's row lock orders this against every declaration, so the name's row read here
+  // is the one the write replaces.
+  yield* tx
+    .select({ id: projects.id })
+    .from(projects)
+    .where(eq(projects.id, projectId))
+    .for("no key update");
+  const [held] = yield* tx
+    .select({ id: resourceDefinitions.id, specDigest: resourceDefinitions.specDigest })
+    .from(resourceDefinitions)
+    .where(
+      and(eq(resourceDefinitions.projectId, projectId), eq(resourceDefinitions.name, spec.name)),
+    )
+    .for("update");
+  const asRead =
+    held?.specDigest === digest ||
+    (settings === null
+      ? held === undefined
+      : held?.id === settings.id && held.specDigest === settings.digest);
+  if (!asRead) return yield* new ResourceSettingsStaleError({ name: spec.name });
+  const definition = yield* declareIn(tx, projectId, spec, request.approvedBy);
+  const made = yield* exactApprovalIn(tx, definition.id, digest, request.worktreeId);
+  const approval =
+    made ??
+    (yield* approveIn(tx, {
+      definitionId: definition.id,
+      digest,
+      imageDigest: request.imageDigest,
+      worktreeId: request.worktreeId,
+      approvedBy: request.approvedBy,
+    }));
+  return { definition, approval };
+});
+
 export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Layer.effect(
   ResourcesRepo,
   Effect.gen(function* () {
@@ -543,102 +808,10 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       return row === undefined ? null : yield* toDefinition(row);
     });
 
-    const declare = Effect.fn("ResourcesRepo.declare")(function* (
-      projectId: ProjectId,
-      spec: ResourceDefinitionInput,
-      declaredBy: string,
-    ) {
-      const refusals = resourceDefinitionRefusals(spec);
-      if (refusals.length > 0) {
-        return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
-      }
-      const encoded = yield* encodeSpec(spec).pipe(Effect.orDie);
-      const specDigest = resourceSpecDigest(spec);
-      return yield* db
-        .transaction((tx) =>
-          Effect.gen(function* () {
-            // The project's row lock orders declarations and the removal fence: each sees the other.
-            const [project] = yield* tx
-              .select({ id: projects.id })
-              .from(projects)
-              .where(eq(projects.id, projectId))
-              .for("no key update");
-            if (project === undefined) {
-              return yield* Effect.die(new Error(`project ${projectId} does not exist`));
-            }
-            const [fence] = yield* tx
-              .select({ id: projectRemovalFences.id })
-              .from(projectRemovalFences)
-              .where(eq(projectRemovalFences.projectId, projectId))
-              .limit(1);
-            if (fence !== undefined) return yield* fenceRefusal(spec);
-
-            const others = yield* tx
-              .select()
-              .from(resourceDefinitions)
-              .where(eq(resourceDefinitions.projectId, projectId));
-            const declared = yield* Effect.forEach(
-              others.filter((row) => row.name !== spec.name),
-              toDefinition,
-            );
-            const collisions = envCollisionRefusals([
-              ...declared.map((definition) => definition.spec),
-              spec,
-            ]).flatMap(({ resource, refusal }) => (resource === spec.name ? [refusal] : []));
-            if (collisions.length > 0) {
-              return yield* new ResourceDefinitionRefusedError({
-                name: spec.name,
-                refusals: collisions,
-              });
-            }
-
-            const sameName = others.find((row) => row.name === spec.name);
-            if (sameName === undefined) {
-              const [inserted] = yield* tx
-                .insert(resourceDefinitions)
-                .values({
-                  id: ResourceDefinitionId.make(`rdef_${crypto.randomUUID()}`),
-                  projectId,
-                  name: spec.name,
-                  scope: spec.scope,
-                  preset: spec.preset,
-                  spec: encoded,
-                  specDigest,
-                  declaredBy,
-                })
-                .returning();
-              if (inserted === undefined) {
-                return yield* Effect.die(new Error("a declared definition was not stored"));
-              }
-              return yield* toDefinition(inserted);
-            }
-            const existing = yield* lockDefinition(tx, sameName.id).pipe(
-              Effect.catchTag("ResourceDefinitionNotFoundError", Effect.die),
-            );
-            if (existing.specDigest === specDigest) return existing;
-            if (existing.spec.scope !== spec.scope || existing.spec.preset !== spec.preset) {
-              yield* redefaultSelections(tx, existing, spec);
-            }
-            const [updated] = yield* tx
-              .update(resourceDefinitions)
-              .set({
-                scope: spec.scope,
-                preset: spec.preset,
-                spec: encoded,
-                specDigest,
-                declaredBy,
-                updatedAt: sql`now()`,
-              })
-              .where(eq(resourceDefinitions.id, existing.id))
-              .returning();
-            if (updated === undefined) {
-              return yield* Effect.die(new Error("a declared definition was not stored"));
-            }
-            return yield* toDefinition(updated);
-          }),
-        )
+    const declare = (projectId: ProjectId, spec: ResourceDefinitionInput, declaredBy: string) =>
+      db
+        .transaction((tx) => declareIn(tx, projectId, spec, declaredBy))
         .pipe(Effect.catchTags(queryErrorsDie));
-    });
 
     const removeIfCurrent = Effect.fn("ResourcesRepo.removeIfCurrent")(function* (
       projectId: ProjectId,
@@ -826,83 +999,17 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         .pipe(Effect.orDie);
     });
 
-    const approve = Effect.fn("ResourcesRepo.approve")(function* (request: ApprovalRequest) {
-      const { definitionId, digest, imageDigest, worktreeId, approvedBy } = request;
-      return yield* db
-        .transaction((tx) =>
-          Effect.gen(function* () {
-            const definition = yield* lockDefinition(tx, definitionId);
-            const { spec } = definition;
-            if (definition.specDigest !== digest) {
-              return yield* new ResourceApprovalStaleError({
-                definitionId,
-                approving: digest,
-                current: definition.specDigest,
-              });
-            }
-            const refuse = (refusals: ReadonlyArray<ResourceRefusal>) =>
-              new ResourceDefinitionRefusedError({ name: spec.name, refusals });
-            const image = pinImage(spec.image, imageDigest);
-            if (image === null) {
-              return yield* refuse([
-                { key: "image", message: `names another digest than ${imageDigest}` },
-              ]);
-            }
-            const pinned: ResourceDefinitionInput = { ...spec, image };
-            const refusals = resourceDefinitionRefusals(pinned);
-            if (refusals.length > 0) return yield* refuse(refusals);
-            if (worktreeId !== null) {
-              const refusal = yield* worktreeApprovalRefusal(
-                tx,
-                definition,
-                worktreeId,
-                imageDigest,
-              );
-              if (refusal !== null) return yield* refuse([refusal]);
-            }
+    const approve = (request: ApprovalRequest) =>
+      db.transaction((tx) => approveIn(tx, request)).pipe(Effect.catchTags(queryErrorsDie));
 
-            // Under the definition's lock: the latest approval of this declared spec, here, is the
-            // one that runs. It is returned when it already pins this image; otherwise a new
-            // revision is, so a spec declared again or a tag that moved back becomes current.
-            const pinnedDigest = resourceSpecDigest(pinned);
-            const [latestHere] = yield* tx
-              .select()
-              .from(resourceApprovals)
-              .where(
-                and(
-                  eq(resourceApprovals.definitionId, definitionId),
-                  eq(resourceApprovals.definitionDigest, digest),
-                  worktreeId === null
-                    ? isNull(resourceApprovals.worktreeId)
-                    : eq(resourceApprovals.worktreeId, worktreeId),
-                ),
-              )
-              .orderBy(desc(resourceApprovals.revision))
-              .limit(1);
-            if (latestHere?.digest === pinnedDigest) return yield* toApproval(latestHere);
-            const [latest] = yield* tx
-              .select({ revision: max(resourceApprovals.revision) })
-              .from(resourceApprovals)
-              .where(eq(resourceApprovals.definitionId, definitionId));
-            const [inserted] = yield* tx
-              .insert(resourceApprovals)
-              .values({
-                id: ResourceApprovalId.make(`rapr_${crypto.randomUUID()}`),
-                definitionId,
-                worktreeId,
-                revision: (latest?.revision ?? 0) + 1,
-                definitionDigest: digest,
-                digest: pinnedDigest,
-                spec: yield* encodeSpec(pinned).pipe(Effect.orDie),
-                approvedBy,
-              })
-              .returning();
-            if (inserted === undefined) return yield* Effect.die(new Error("approval not stored"));
-            return yield* toApproval(inserted);
-          }),
-        )
-        .pipe(Effect.catchTags(queryErrorsDie));
-    });
+    const adoptAndApprove = (request: AdoptionRequest) =>
+      db.transaction((tx) => adoptIn(tx, request)).pipe(Effect.catchTags(queryErrorsDie));
+
+    const exactApproval = (
+      definitionId: ResourceDefinitionId,
+      digest: ResourceSpecDigest,
+      worktreeId: WorktreeId | null,
+    ) => exactApprovalIn(db, definitionId, digest, worktreeId).pipe(Effect.orDie);
 
     const currentApproval = Effect.fn("ResourcesRepo.currentApproval")(function* (
       definitionId: ResourceDefinitionId,
@@ -1015,6 +1122,8 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       fenceProjectRemoval,
       liftProjectRemovalFence,
       approve,
+      adoptAndApprove,
+      exactApproval,
       currentApproval,
       ensureSelection,
       setSelection,
