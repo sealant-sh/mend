@@ -55,6 +55,16 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
    * started from a base, and for one a server from before handoffs lists.
    */
   handoff: Schema.NullOr(WorktreeHandoff).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /**
+   * The change's owner (docs/adr/0007-landing.md, "Who lands"): the owner of the worktree's first
+   * session, written when that session starts and kept when it is deleted. Null when the worktree
+   * has had no session, or when its first owner cannot be proved; a server from before 0.37 never
+   * sends it.
+   */
+  changeOwnerUserId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

@@ -88,4 +88,5 @@ export * from "./shared-workspace.ts";
 export * from "./steering.ts";
 export * from "./tour.ts";
 export * from "./worktree.ts";
+export * from "./removal.ts";
 export * from "./worktree-removal.ts";

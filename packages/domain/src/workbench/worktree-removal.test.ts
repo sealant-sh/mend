@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { describeUnlanded } from "./removal.ts";
 import {
-  describeUnlanded,
   heldRepositoriesRefusal,
   unlandedFactsOf,
   WORKTREE_REMOVAL_FORCE_HINT,

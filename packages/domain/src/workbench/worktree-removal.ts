@@ -1,16 +1,11 @@
+import { REMOVAL_FORCE_HINT, type UnlandedFile } from "./removal.ts";
+
 /**
  * What a refused worktree removal says (docs/adr/0007-landing.md, "Worktree removal"). The server
  * writes the refusal in words; this module is the one place those words are shaped and read, so
  * a client that offers "Remove anyway" offers it exactly when `force=true` would lift the refusal,
  * and shows what the change holds from the words it was given.
  */
-
-/** A file's lines not on origin, as the store counts them. */
-export interface UnlandedFile {
-  readonly path: string;
-  readonly additions: number;
-  readonly deletions: number;
-}
 
 /** How many files a refusal names before counting the rest. */
 export const UNLANDED_NAMED_FILES = 5;
@@ -19,22 +14,9 @@ export const UNLANDED_NAMED_FILES = 5;
  * The tail of every refusal `force=true` lifts. A refusal without it, such as a capture still
  * saving, is not lifted by force, and a client offers no override for it.
  */
-export const WORKTREE_REMOVAL_FORCE_HINT = "or pass force=true to remove it anyway";
+export const WORKTREE_REMOVAL_FORCE_HINT = REMOVAL_FORCE_HINT;
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
-
-/** `3 files · +12 −3 · src/a.ts +10 −2, src/b.ts +2 −1, docs/c.md +0 −0` */
-export const describeUnlanded = (files: ReadonlyArray<UnlandedFile>): string => {
-  const additions = files.reduce((sum, file) => sum + file.additions, 0);
-  const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
-  const named = files
-    .slice(0, UNLANDED_NAMED_FILES)
-    .map((file) => `${file.path} +${file.additions} −${file.deletions}`)
-    .join(", ");
-  const more =
-    files.length > UNLANDED_NAMED_FILES ? `, ${files.length - UNLANDED_NAMED_FILES} more` : "";
-  return `${plural(files.length, "file", "files")} · +${additions} −${deletions} · ${named}${more}`;
-};
 
 /** What a refusal says the worktree holds that is not on origin. */
 export interface UnlandedFacts {
