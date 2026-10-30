@@ -1,4 +1,4 @@
-import { ReaderWords, type SaysReaderWords } from "@mend/domain";
+import { mendWords, type ReaderLine, ReaderWords, type SaysReaderWords } from "@mend/domain";
 import { Schema } from "effect";
 
 /**
@@ -27,8 +27,8 @@ export class SealantPlatformError
   })
   implements SaysReaderWords
 {
-  get [ReaderWords](): string | undefined {
-    return this.uncurated === true ? undefined : this.message;
+  get [ReaderWords](): ReaderLine | undefined {
+    return this.uncurated === true ? undefined : mendWords(this.message);
   }
 }
 

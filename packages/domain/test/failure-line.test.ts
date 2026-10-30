@@ -3,18 +3,38 @@ import { Cause, Effect, Logger, References, Schema } from "effect";
 import { describe, expect } from "vitest";
 
 import {
+  type ApprovedWords,
   failureLine,
   failureName,
   lineFailureOf,
+  mendWords,
+  type ReaderLine,
   ReaderWords,
+  said,
+  type SaysReaderWords,
   WITHHELD,
 } from "../src/failure-line.ts";
 
 const WORDS = "Anna is interviewing at Northwind on Friday, keep it quiet";
 
-class Refused extends Schema.TaggedError<Refused>()("Refused", { message: Schema.String }) {
-  get [ReaderWords](): string {
-    return this.message;
+class Refused
+  extends Schema.TaggedError<Refused>()("Refused", { message: Schema.String })
+  implements SaysReaderWords
+{
+  get [ReaderWords](): ReaderLine {
+    return mendWords(this.message);
+  }
+}
+
+class LedFailure
+  extends Schema.TaggedError<LedFailure>()("LedFailure", {
+    message: Schema.String,
+    lead: Schema.String,
+  })
+  implements SaysReaderWords
+{
+  get [ReaderWords](): ApprovedWords {
+    return { lead: mendWords(this.lead) };
   }
 }
 
@@ -26,8 +46,8 @@ class SometimesSaid extends Schema.TaggedError<SometimesSaid>()("SometimesSaid",
   message: Schema.String,
   approved: Schema.Boolean,
 }) {
-  get [ReaderWords](): string | undefined {
-    return this.approved ? this.message : undefined;
+  get [ReaderWords](): ReaderLine | undefined {
+    return this.approved ? mendWords(this.message) : undefined;
   }
 }
 
@@ -89,6 +109,38 @@ describe("a failure on a line (SLNT-385)", () => {
       expect(errors[0]?.["failure"]).toBe("EffectDrizzleQueryError");
     }),
   );
+
+  it.effect("says Mend's lead and withholds the rest of the failure under a logged reference", () =>
+    Effect.gen(function* () {
+      const { line, errors } = yield* lineOf(
+        Cause.fail(
+          new LedFailure({
+            message: `the logins were not written: ${WORDS}`,
+            lead: "the logins were not written",
+          }),
+        ),
+      );
+      expect(line).toMatch(/^the logins were not written · reference [0-9a-f]{16}$/);
+      expect(line).toMatch(WITHHELD);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.["reference"]).toBe(line.slice(-16));
+      expect(String(errors[0]?.["cause"])).toContain(WORDS);
+    }),
+  );
+
+  it("makes a line only of Mend's own text and other lines", () => {
+    const reference = mendWords("0123456789abcdef");
+    expect(said`launch failed: ${reference} · ${3} tries`).toBe(
+      "launch failed: 0123456789abcdef · 3 tries",
+    );
+    const error = new Error(WORDS);
+    // @ts-expect-error a failure's message is a plain string, not a line
+    const raw = said`launch failed: ${error.message}`;
+    expect(raw).toContain(WORDS);
+    // @ts-expect-error nor is a template literal holding one
+    const line: ReaderLine = `launch failed: ${error.message}`;
+    expect(line).toContain(WORDS);
+  });
 
   it.effect("keeps an interruption an interruption", () =>
     Effect.gen(function* () {
