@@ -1,5 +1,7 @@
 import {
   AgentConversationRepo,
+  makeScreensMemory,
+  ScreensRepo,
   ServicesRepo,
   SessionControlEventsRepo,
   SessionProcessesRepo,
@@ -14,6 +16,7 @@ import {
   SessionId,
   SessionProcessId,
   Sha,
+  ViewerConnectionId,
   WorktreeId,
 } from "@mend/domain";
 import {
@@ -144,6 +147,8 @@ interface WorldOptions {
   /** Minutes since a background task last changed. */
   readonly taskChangedMinutesAgo?: number;
   readonly shells?: boolean;
+  /** The session's screen: who holds its input, and minutes since its last activity. */
+  readonly screen?: { readonly held: boolean; readonly activeMinutesAgo: number };
   readonly agentKind?: SessionProcessKind;
   readonly stopFails?: boolean;
   /** What the executor answers when the idle stop reads its captures; null outside capture mode. */
@@ -165,7 +170,9 @@ const world = (options: WorldOptions = {}) => {
     processes: [
       processRow(options.agentKind ?? "agent-protocol", true, AGENT),
       ...(options.shells === true ? [processRow("shell", true)] : []),
+      ...(options.screen === undefined ? [] : [processRow("screen", true)]),
     ] as ReadonlyArray<SessionProcess>,
+    screenStops: [] as Array<string>,
     stops: [] as Array<{ readonly sessionId: SessionId; readonly summary: string | null }>,
     control: [] as Array<NewSessionControlEvent>,
     released: 0,
@@ -211,11 +218,35 @@ const world = (options: WorldOptions = {}) => {
           ),
         ),
     }),
+    Layer.effect(
+      ScreensRepo,
+      Effect.gen(function* () {
+        const screens = makeScreensMemory();
+        if (options.screen === undefined) return screens;
+        const screen = yield* screens.reserve({
+          sessionId: SESSION,
+          workspaceId: SealantWorkspaceId.make("ws-1"),
+        });
+        yield* screens.setLife(screen.id, {
+          life: { _tag: "Live", degraded: null },
+          processId: SessionProcessId.make("screen-1"),
+        });
+        if (options.screen.held) {
+          const connection = ViewerConnectionId.make("viewer-1");
+          yield* screens.control(screen.id, { _tag: "Take", by: "alice", connection }, "alice");
+          yield* screens.control(screen.id, { _tag: "Fenced", epoch: 1 }, "alice");
+        }
+        const activeAt = minutesAgo(options.screen.activeMinutesAgo);
+        return { ...screens, lastActivityAt: () => Effect.succeed(activeAt) };
+      }).pipe(Effect.orDie),
+    ),
     Layer.mock(SessionControlEventsRepo, {
       record: (event) => Effect.sync(() => void state.control.push(event)),
     }),
     Layer.mock(SessionEngine, {
       launchUnderWay: () => false,
+      stopScreen: (sessionId, reason) =>
+        Effect.sync(() => void state.screenStops.push(`${sessionId} · ${reason}`)),
       readCaptures: () =>
         Effect.sync(() => {
           const answer = options.captures?.[state.captureReads] ?? options.captures?.at(-1) ?? null;
@@ -343,6 +374,20 @@ describe("the protocol idle stop", () => {
       expect(w.state.stops).toEqual([]);
       expect(w.state.idleStoppedAt).toBeNull();
     }
+  });
+
+  it("leaves an agent alone while a person holds its screen, and stops a screen 15 minutes idle", async () => {
+    const held = world({ screen: { held: true, activeMinutesAgo: 30 } });
+    expect(await held.sweep(held.worker())).toEqual([]);
+    expect(held.state.screenStops).toEqual([]);
+
+    const recent = world({ screen: { held: false, activeMinutesAgo: 14 } });
+    expect(await recent.sweep(recent.worker())).toEqual([SESSION]);
+    expect(recent.state.screenStops).toEqual([]);
+
+    const idle = world({ minutes: "0", screen: { held: false, activeMinutesAgo: 15 } });
+    expect(await idle.sweep(idle.worker())).toEqual([]);
+    expect(idle.state.screenStops).toEqual([`${SESSION} · idle`]);
   });
 
   it("leaves an agent alone while its executor still ships captures, then stops it once they are in", async () => {
