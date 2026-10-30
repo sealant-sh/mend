@@ -24,6 +24,7 @@ interface Sent {
   readonly id: string;
   readonly input: string;
   readonly clientMessageId: string;
+  readonly expectedUserId: string;
 }
 
 type Reply =
@@ -59,17 +60,18 @@ const TRPC_CODES: Record<string, number> = {
   INTERNAL_SERVER_ERROR: -32603,
 };
 
-const AMBIGUOUS =
-  "You have two running turns in this session; Mend cannot tell which one to steer. Wait for one to finish, then send again.";
+const AMBIGUOUS = "Several of your turns are running in this session. Send as a new turn instead.";
 const NOT_STEERABLE = "Only the session's owner steers it.";
 const KEY_CONFLICT = "This message key was already used for another request.";
 const NOT_DONE = "Mend could not do that. Try again; the server log has the detail.";
 const UNCONFIRMED = "Message outcome not confirmed · check the session before sending again";
+const AUTHOR_CHANGED = "another account is signed in now · this message was not sent";
 
 const WORDS: Record<string, string> = {
   MessageTargetAmbiguous: AMBIGUOUS,
   SessionNotSteerable: NOT_STEERABLE,
   MessageKeyConflict: KEY_CONFLICT,
+  MessageAuthorChanged: AUTHOR_CHANGED,
 };
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -81,6 +83,7 @@ let replies: Array<Reply>;
 let principal: string | null;
 let identityLost: boolean;
 let identityReads: Array<string | null>;
+let identityHold: Promise<Response> | null;
 
 const answer = async (reply: Reply | undefined): Promise<Response> => {
   if (reply === undefined) throw new Error("No reply queued");
@@ -133,7 +136,7 @@ const trpcClient = () =>
         url: "http://mend.test/trpc",
         transformer: superjson,
         fetch: async (url, init) => {
-          if (String(url).includes("/organization.current")) return identity();
+          if (String(url).includes("/organization.current")) return identityHold ?? identity();
           sent.push(parse<Sent>(String(init?.body)));
           return answer(replies.shift());
         },
@@ -148,11 +151,12 @@ const render = async (userId = alice) => {
     root.render(
       <QueryClientProvider client={queryClient}>
         <TRPCProvider trpcClient={trpcClient()} queryClient={queryClient}>
-          <SessionMessageInput userId={userId} sessionId={sessionId} />
+          <SessionMessageInput sessionId={sessionId} />
         </TRPCProvider>
       </QueryClientProvider>,
     ),
   );
+  await settle();
 };
 
 const remount = async (userId = alice) => {
@@ -214,6 +218,7 @@ beforeEach(() => {
   principal = alice;
   identityLost = false;
   identityReads = [];
+  identityHold = null;
   sessionStorage.clear();
   localStorage.clear();
   host = document.createElement("div");
@@ -235,8 +240,17 @@ describe("SessionMessageInput", () => {
     await send();
 
     expect(sent).toHaveLength(1);
-    expect(Object.keys(sent[0] ?? {}).toSorted()).toEqual(["clientMessageId", "id", "input"]);
-    expect(sent[0]).toMatchObject({ id: sessionId, input: "also check the migrations" });
+    expect(Object.keys(sent[0] ?? {}).toSorted()).toEqual([
+      "clientMessageId",
+      "expectedUserId",
+      "id",
+      "input",
+    ]);
+    expect(sent[0]).toMatchObject({
+      id: sessionId,
+      input: "also check the migrations",
+      expectedUserId: alice,
+    });
     expect(status()).toBe("sent · the agent acknowledged it");
     expect(textarea().value).toBe("");
     expect(alert()).toBeNull();
@@ -300,17 +314,6 @@ describe("SessionMessageInput", () => {
   it("says so when the browser cannot make a key, and keeps the words", async () => {
     vi.stubGlobal("crypto", {});
     await render();
-    await type("check the lockfile");
-    await send();
-
-    expect(sent).toHaveLength(0);
-    expect(alert()).not.toBeNull();
-    expect(textarea().value).toBe("check the lockfile");
-  });
-
-  it("sends nothing and keeps the words when who is signed in cannot be read", async () => {
-    await render();
-    identityLost = true;
     await type("check the lockfile");
     await send();
 
@@ -531,9 +534,7 @@ describe("sign-out", () => {
 
   function ViewerMessageInput() {
     const viewer = useViewerState();
-    return viewer == null ? null : (
-      <SessionMessageInput userId={viewer.userId} sessionId={sessionId} />
-    );
+    return viewer == null ? null : <SessionMessageInput sessionId={sessionId} />;
   }
 
   const show = async () => {
@@ -591,6 +592,19 @@ describe("sign-out", () => {
     await settle();
   };
 
+  /** Hold reads of who is signed in until the returned release, answered as of now. */
+  const holdIdentity = () => {
+    const response = identity();
+    let resolveHold: ((held: Response) => void) | null = null;
+    identityHold = new Promise((resolve) => {
+      resolveHold = resolve;
+    });
+    return () => {
+      identityHold = null;
+      resolveHold?.(response);
+    };
+  };
+
   const signOutThenIn = async (next: string) => {
     forgetSignedInPerson(queryClient);
     await act(async () => root.render(null));
@@ -630,6 +644,24 @@ describe("sign-out", () => {
     expect(textarea().value).toBe("");
   });
 
+  it("hides the draft when another tab signs someone in, and keeps it for its own account", async () => {
+    await show();
+    await type("Alice private draft");
+    principal = bob;
+    const release = holdIdentity();
+    await act(async () =>
+      window.dispatchEvent(new StorageEvent("storage", { key: "mend.signedIn", newValue: "1" })),
+    );
+
+    expect(document.querySelector("textarea")?.value ?? "").toBe("");
+    release();
+    await settle();
+    expect(document.querySelector("textarea")?.value ?? "").toBe("");
+    principal = alice;
+    await comeBack("focus");
+    expect(textarea().value).toBe("Alice private draft");
+  });
+
   it.each([
     ["the next person", bob],
     ["the same person", alice],
@@ -660,14 +692,120 @@ describe("sign-out", () => {
     },
   );
 
-  it("sends nothing when someone else is signed in by the time Send is pressed", async () => {
+  it("shows no draft and takes no words while it re-reads who is signed in", async () => {
     await show();
-    await type("Alice private words from the first tab");
+    await type("Alice private draft");
     principal = bob;
+    const release = holdIdentity();
+    await comeBack("focus");
+
+    expect(textarea().value).toBe("");
+    expect(textarea().readOnly).toBe(true);
+    expect(host.textContent).toContain("checking who is signed in");
+    release();
+    await settle();
+  });
+
+  it("hides the draft as soon as the tab is used again, before the re-read renders", async () => {
+    await show();
+    await type("Alice private draft");
+    principal = bob;
+    const release = holdIdentity();
+    await act(async () => window.dispatchEvent(new Event("focus")));
+
+    expect(textarea().value).toBe("");
+    release();
+    await settle();
+  });
+
+  it("drops words typed before a re-read started on focus has rendered", async () => {
+    await show();
+    await type("Alice draft");
+    principal = bob;
+    const release = holdIdentity();
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await type("Bob private new words");
+    release();
+    await settle();
+    principal = alice;
+    await comeBack("focus");
+
+    expect(textarea().value).toBe("Alice draft");
+  });
+
+  it("does not send while a re-read of who is signed in is still out", async () => {
+    await show();
+    await type("Alice private draft");
+    const release = holdIdentity();
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    principal = bob;
+    replies.push({ receipt: turnReceipt("sent · written to the agent") });
     await send();
+    release();
+    await settle();
 
     expect(sent).toHaveLength(0);
+  });
+
+  it("shows no draft and takes no words after it could not read who is signed in", async () => {
+    await show();
+    await type("Alice private draft");
+    principal = bob;
+    identityLost = true;
+    await comeBack("focus");
+
     expect(textarea().value).toBe("");
-    expect(alert()).not.toBeNull();
+    expect(textarea().readOnly).toBe(true);
+    expect(host.textContent).toContain("could not check who is signed in");
+    identityLost = false;
+    principal = alice;
+    await comeBack("focus");
+    expect(textarea().value).toBe("Alice private draft");
+  });
+
+  it("never stores words typed during a re-read under the account read before it", async () => {
+    await show();
+    await type("Alice draft");
+    principal = bob;
+    const release = holdIdentity();
+    await comeBack("focus");
+    await type("Bob private new words");
+    release();
+    await settle();
+
+    expect(textarea().value).toBe("");
+    principal = alice;
+    await comeBack("focus");
+    expect(textarea().value).toBe("Alice draft");
+  });
+
+  it("sends nothing while it re-reads who is signed in", async () => {
+    await show();
+    await type("Alice private draft");
+    const release = holdIdentity();
+    await comeBack("focus");
+    principal = bob;
+    replies.push({ receipt: turnReceipt("sent · written to the agent") });
+    await send();
+    release();
+    await settle();
+
+    expect(sent).toHaveLength(0);
+  });
+
+  it("keeps the words under their writer when the server finds another account signed in", async () => {
+    await show();
+    await type("Alice private words");
+    principal = bob;
+    replies.push({ refusal: { status: 409, code: "CONFLICT", tag: "MessageAuthorChanged" } });
+    await send();
+
+    expect(sent).toEqual([expect.objectContaining({ expectedUserId: alice })]);
+    expect(alert()).toBe(AUTHOR_CHANGED);
+    expect(identityReads.at(-1)).toBe(bob);
+    expect(textarea().value).toBe("");
+    principal = alice;
+    await comeBack("focus");
+    expect(textarea().value).toBe("Alice private words");
   });
 });

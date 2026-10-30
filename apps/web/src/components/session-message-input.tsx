@@ -5,6 +5,7 @@ import type { SessionMessageReceiptDto } from "#/lib/api";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import { orLogin, useTRPC, useTRPCClient } from "#/lib/trpc";
 import { uuidV4 } from "#/lib/uuid";
+import { useSignedInQuery } from "#/lib/viewer";
 
 /**
  * The words being written and the key their send carries. The key is minted at the first send and
@@ -30,15 +31,13 @@ const EMPTY: Draft = { text: "", clientMessageId: null };
 
 const UNCONFIRMED = "Message outcome not confirmed · check the session before sending again";
 
-const ANOTHER_ACCOUNT = "Not sent · another account is signed in now";
-
-const UNKNOWN_ACCOUNT = "Not sent · Mend could not read who is signed in; send it again";
-
 const ENDED: ReadonlySet<string> = new Set(["cancelled", "failed", "interrupted"]);
 
 const PREFIX = "mend.message.";
 
 const SIGNED_OUT = "mend.signedOut";
+
+const SIGNED_IN = "mend.signedIn";
 
 const draftItems = (userId: string, sessionId: string) => ({
   text: `${PREFIX}${userId}.${sessionId}.text`,
@@ -91,7 +90,18 @@ export const forgetSignedInPerson = (queryClient: QueryClient) => {
 };
 
 /**
- * Run once per tab. A sign-out in another tab drops this tab's drafts and cached answers too, and
+ * Run after a sign-in or sign-up, which can replace the account a tab's cookie names with no
+ * sign-out. Every tab reads its answers again, so a draft shows only once the new identity is
+ * read; each draft stays stored under the account that wrote it.
+ */
+export const noteSignedIn = (queryClient: QueryClient) => {
+  void queryClient.resetQueries();
+  localStorage.setItem(SIGNED_IN, String(Date.now()));
+};
+
+/**
+ * Run once per tab. A sign-out in another tab drops this tab's drafts and cached answers too, a
+ * sign-in there makes this tab read its answers again, and
  * focusing or showing the tab again re-reads stale answers. Reset, not cleared, so what is on
  * screen reads its answers again.
  */
@@ -106,8 +116,8 @@ export const followOtherTabs = (queryClient: QueryClient) => {
     };
   });
   const onStorage = (event: StorageEvent) => {
-    if (event.key !== SIGNED_OUT) return;
-    dropDrafts();
+    if (event.key !== SIGNED_OUT && event.key !== SIGNED_IN) return;
+    if (event.key === SIGNED_OUT) dropDrafts();
     void queryClient.resetQueries();
   };
   window.addEventListener("storage", onStorage);
@@ -160,30 +170,40 @@ const settleDraft = (userId: string, sessionId: string, attempt: Draft, next: Dr
 /**
  * The session page's one input for a live conversation. Send goes into the person's own running
  * turn or starts their next one, as their "Send steers the running turn" setting says; the server
- * decides and answers with a sentence, shown as it is.
+ * decides and answers with a sentence, shown as it is. A draft is shown and edited only under an
+ * answer to who is signed in that is not being read again and did not fail. That answer is read
+ * from the query cache as it changes, not from the rendered query, which hears of a re-read
+ * started on focus only a task later.
  */
-export function SessionMessageInput({
-  userId,
-  sessionId,
-}: {
-  readonly userId: string;
-  readonly sessionId: string;
-}) {
+export function SessionMessageInput({ sessionId }: { readonly sessionId: string }) {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
-  const items = draftItems(userId, sessionId);
+  const signedIn = useSignedInQuery();
+  const identityKey = trpc.organization.current.queryKey();
+  const userId = useSyncExternalStore(
+    (listener) => queryClient.getQueryCache().subscribe(listener),
+    () => {
+      const state = queryClient.getQueryState(identityKey);
+      return state?.status === "success" && state.fetchStatus === "idle"
+        ? (state.data?.userId ?? null)
+        : null;
+    },
+  );
+  const items = userId === null ? null : draftItems(userId, sessionId);
   const draft: Draft = {
-    text: useSyncExternalStore(subscribe, () => sessionStorage.getItem(items.text) ?? ""),
-    clientMessageId: useSyncExternalStore(subscribe, () => sessionStorage.getItem(items.key)),
+    text: useSyncExternalStore(subscribe, () =>
+      items === null ? "" : (sessionStorage.getItem(items.text) ?? ""),
+    ),
+    clientMessageId: useSyncExternalStore(subscribe, () =>
+      items === null ? null : sessionStorage.getItem(items.key),
+    ),
   };
   const [outcome, setOutcome] = useState<Outcome>({ _tag: "Idle" });
   const sending = outcome._tag === "Sending";
 
-  const setDraft = (next: Draft) => writeDraft(userId, sessionId, next);
-
   const send = async () => {
-    if (sending || draft.text.trim() === "") return;
+    if (userId === null || sending || draft.text.trim() === "") return;
     const clientMessageId = draft.clientMessageId ?? mintKey();
     if (clientMessageId === null) {
       setOutcome({
@@ -193,24 +213,15 @@ export function SessionMessageInput({
       return;
     }
     const attempt = { text: draft.text, clientMessageId };
-    setDraft(attempt);
+    writeDraft(userId, sessionId, attempt);
     setOutcome({ _tag: "Sending" });
-    const signedIn = await queryClient
-      .fetchQuery({ ...trpc.organization.current.queryOptions(), staleTime: 0 })
-      .then(
-        (view) => view.userId,
-        () => null,
-      );
-    if (signedIn !== userId) {
-      setOutcome({ _tag: "Refused", words: signedIn === null ? UNKNOWN_ACCOUNT : ANOTHER_ACCOUNT });
-      return;
-    }
     try {
       const receipt = await orLogin(
         client.sessions.sendMessage.mutate({
           id: sessionId,
           input: attempt.text,
           clientMessageId: attempt.clientMessageId,
+          expectedUserId: userId,
         }),
       );
       settleDraft(userId, sessionId, attempt, draftAfter(receipt, attempt));
@@ -224,6 +235,8 @@ export function SessionMessageInput({
       }
       if (tag === "MessageKeyConflict")
         settleDraft(userId, sessionId, attempt, { text: attempt.text, clientMessageId: null });
+      if (tag === "MessageAuthorChanged")
+        void queryClient.invalidateQueries(trpc.organization.current.queryFilter());
       setOutcome({
         _tag: "Refused",
         words: failureWords(cause, "Not sent. Your message is still here; send it again."),
@@ -242,11 +255,14 @@ export function SessionMessageInput({
     >
       <textarea
         aria-label="Message the agent"
-        readOnly={sending}
+        readOnly={sending || userId === null}
         value={draft.text}
         rows={1}
         placeholder="Message the agent"
-        onChange={(event) => setDraft({ ...draft, text: event.target.value })}
+        onChange={(event) => {
+          if (userId !== null)
+            writeDraft(userId, sessionId, { ...draft, text: event.target.value });
+        }}
         onInput={(event) => {
           const el = event.currentTarget;
           el.style.height = "auto";
@@ -264,6 +280,13 @@ export function SessionMessageInput({
       />
       <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5 pl-5">
         <div className="min-w-0 flex-1">
+          {userId === null && (
+            <p className="font-sans text-[12.5px] text-muted-foreground">
+              {signedIn.isError && !signedIn.isFetching
+                ? "could not check who is signed in"
+                : "checking who is signed in"}
+            </p>
+          )}
           {outcome._tag === "Answered" && (
             <p role="status" className="font-mono text-[12.5px] text-ink-2">
               {outcome.explanation}
@@ -282,7 +305,7 @@ export function SessionMessageInput({
         </div>
         <button
           type="submit"
-          disabled={sending}
+          disabled={sending || userId === null}
           onPointerDown={(event) => event.preventDefault()}
           className="h-8 shrink-0 rounded-xl bg-primary px-3.5 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
         >

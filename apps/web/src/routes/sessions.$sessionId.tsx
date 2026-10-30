@@ -478,11 +478,7 @@ function SessionPage() {
                   )}
                 </div>
                 {conversationLive && control.steer && viewer != null && (
-                  <SessionMessageInput
-                    key={sessionId}
-                    userId={viewer.userId}
-                    sessionId={sessionId}
-                  />
+                  <SessionMessageInput key={sessionId} sessionId={sessionId} />
                 )}
               </>
             )}

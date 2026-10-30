@@ -6,7 +6,7 @@ import { useState } from "react";
 
 import { Field, PasswordField } from "#/components/auth-fields";
 import { formatDay } from "#/components/pairing-qr";
-import { forgetSignedInPerson } from "#/components/session-message-input";
+import { forgetSignedInPerson, noteSignedIn } from "#/components/session-message-input";
 import { SetupFrame } from "#/components/setup-frame";
 import { authClient } from "#/lib/auth-client";
 import { useFragmentSecret } from "#/lib/handed-links";
@@ -108,6 +108,7 @@ function Invitation({ token }: { readonly token: string }) {
 
 function JoinForm({ token }: { readonly token: string }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -135,6 +136,7 @@ function JoinForm({ token }: { readonly token: string }) {
       setError(result.error.message ?? "That did not work. Check the details and try again.");
       return;
     }
+    noteSignedIn(queryClient);
     void navigate({ to: "/welcome" });
   };
 
