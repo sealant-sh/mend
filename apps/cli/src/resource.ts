@@ -301,9 +301,25 @@ export const approvalTarget = (
           : null,
     },
   });
-  const fromSettings = (): ApprovalTarget =>
+  /** The only proposal of the name, or why there is none to approve. */
+  const fromProposals = (none: string): ApprovalTarget => {
+    const proposals = page.proposals.filter((entry) => entry.spec.name === name);
+    const [only] = proposals;
+    if (only !== undefined && proposals.length === 1) {
+      return target(only, { kind: "proposal", id: only.id, digest: only.digest, settings: null });
+    }
+    return {
+      ok: false,
+      message:
+        proposals.length === 0
+          ? none
+          : `${proposals.length} proposals of @${printable(name)} · name one with --proposal ${idsOf(proposals)}`,
+    };
+  };
+  const nothing = `no @${printable(name)} in settings or proposals · mend resource list shows what there is`;
+  const fromSettings = (none: string): ApprovalTarget =>
     held === undefined
-      ? { ok: false, message: `no @${printable(name)} in settings to approve` }
+      ? fromProposals(none)
       : target(held, { kind: "settings", id: held.id, digest: held.digest });
   if (named.proposal !== null) {
     const entry = page.proposals.find((each) => each.id === named.proposal);
@@ -317,17 +333,12 @@ export const approvalTarget = (
   }
   if (named.worktree !== null) {
     const file = page.file;
-    const where = `mend.toml in ${printable(named.worktree.label)}`;
     if (file.kind !== "read") {
-      return held === undefined
-        ? {
-            ok: false,
-            message: `${where} · ${"message" in file ? printable(file.message) : file.kind}`,
-          }
-        : fromSettings();
+      const where = `mend.toml in ${printable(named.worktree.label)}`;
+      return fromSettings(`${where} · ${"message" in file ? printable(file.message) : file.kind}`);
     }
     const table = file.proposals.find((each) => each.spec.name === name);
-    if (table === undefined || table.digest === held?.digest) return fromSettings();
+    if (table === undefined || table.digest === held?.digest) return fromSettings(nothing);
     return target(table, {
       kind: "file",
       worktreeId: file.worktreeId,
@@ -336,19 +347,7 @@ export const approvalTarget = (
       settings,
     });
   }
-  if (held !== undefined) return fromSettings();
-  const proposals = page.proposals.filter((entry) => entry.spec.name === name);
-  const [only] = proposals;
-  if (only !== undefined && proposals.length === 1) {
-    return target(only, { kind: "proposal", id: only.id, digest: only.digest, settings: null });
-  }
-  return {
-    ok: false,
-    message:
-      proposals.length === 0
-        ? `no @${printable(name)} in settings or proposals · mend resource list shows what there is`
-        : `${proposals.length} proposals of @${printable(name)} · name one with --proposal ${idsOf(proposals)}`,
-  };
+  return fromSettings(nothing);
 };
 
 /** The definition as an approver reviews it: every field that runs, and the digest approved. */

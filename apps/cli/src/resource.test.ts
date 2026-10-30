@@ -454,6 +454,33 @@ describe("mend resource approve", () => {
     });
   });
 
+  it("adopts the only proposal of a name a worktree's file does not hold, for that worktree", () => {
+    const box = pageOf({
+      ...page,
+      proposals: [
+        {
+          ...page.proposals[0],
+          id: "rprop_9",
+          spec: { ...spec("box", "axllent/mailpit:v1.21"), scope: "worktree" },
+        },
+      ],
+    });
+    const forBox = {
+      ok: true,
+      body: { source: { kind: "proposal", id: "rprop_9", settings: null }, worktreeId: "wt_1" },
+    };
+    expect(approvalTarget(box, "box", { ...unnamed, worktree: checkout })).toMatchObject(forBox);
+    const unread = pageOf({
+      ...box,
+      file: { kind: "unavailable", worktreeId: "wt_1", message: "the worktree is gone" },
+    });
+    expect(approvalTarget(unread, "box", { ...unnamed, worktree: checkout })).toMatchObject(forBox);
+    expect(approvalTarget(page, "mail", { ...unnamed, worktree: checkout })).toEqual({
+      ok: false,
+      message: "2 proposals of @mail · name one with --proposal rprop_1 | rprop_2",
+    });
+  });
+
   it("approves a worktree's table for that worktree, or for the project when asked", () => {
     const filed = withFile(spec("mail", "axllent/mailpit:v1.21"), "worktree");
     expect(approvalTarget(filed, "mail", { ...unnamed, worktree: checkout })).toMatchObject({
