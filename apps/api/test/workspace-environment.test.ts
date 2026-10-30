@@ -1,7 +1,12 @@
 import { SettingsFailure } from "@mend/api-contracts";
 import { SettingsRepo } from "@mend/db";
-import { defaultSettings, defaultWorkspaceImage, MendSettings } from "@mend/domain";
-import type { WorkspaceImage } from "@mend/domain";
+import {
+  defaultSettings,
+  defaultWorkspaceImage,
+  MendSettings,
+  SCREEN_PACKAGE_IDS,
+} from "@mend/domain";
+import type { FamilyWorkspaceImage, WorkspaceImage } from "@mend/domain";
 import {
   SealantClient,
   SealantPlatformError,
@@ -16,7 +21,7 @@ import {
   saveResolvedWorkspaceEnvironmentWith,
 } from "../src/services/workspace-environment.ts";
 
-const workspaceImage = (packages: ReadonlyArray<string>): WorkspaceImage => ({
+const workspaceImage = (packages: ReadonlyArray<string>): FamilyWorkspaceImage => ({
   mode: "family",
   os: "arch",
   packages,
@@ -43,12 +48,16 @@ describe("resolveWorkspaceEnvironment", () => {
   it("resolves every package for the selected OS and saves canonical IDs once", async () => {
     const observed: Array<{ readonly packageName: string; readonly os: string }> = [];
     const result = await Effect.runPromise(
-      resolveWorkspaceEnvironment(workspaceImage(["gh", "github-cli"]), (packageName, os) => {
-        observed.push({ packageName, os });
-        return Effect.succeed(
-          resolution(packageName, { canonicalId: "github-cli", packageName: "github-cli" }),
-        );
-      }),
+      resolveWorkspaceEnvironment(
+        workspaceImage(["gh", "github-cli"]),
+        "x86_64",
+        (packageName, os) => {
+          observed.push({ packageName, os });
+          return Effect.succeed(
+            resolution(packageName, { canonicalId: "github-cli", packageName: "github-cli" }),
+          );
+        },
+      ),
     );
 
     expect(observed).toEqual([
@@ -70,8 +79,11 @@ describe("resolveWorkspaceEnvironment", () => {
     resolution("linux-only", { supported: false }),
   ])("refuses the entire environment when $requested is unresolved", async (rejected) => {
     const result = await Effect.runPromise(
-      resolveWorkspaceEnvironment(workspaceImage(["pnpm", rejected.requested]), (packageName) =>
-        Effect.succeed(packageName === rejected.requested ? rejected : resolution(packageName)),
+      resolveWorkspaceEnvironment(
+        workspaceImage(["pnpm", rejected.requested]),
+        "x86_64",
+        (packageName) =>
+          Effect.succeed(packageName === rejected.requested ? rejected : resolution(packageName)),
       ),
     );
 
@@ -83,7 +95,7 @@ describe("resolveWorkspaceEnvironment", () => {
     // Repology's nearest project for `tree`, with no catalog id: it saved, then every launch
     // failed `Unknown workspace package 'python-urwidtrees'` (RC 0.36.0-next.754, B-F2).
     const result = await Effect.runPromise(
-      resolveWorkspaceEnvironment(workspaceImage(["bat", "tree"]), (packageName) =>
+      resolveWorkspaceEnvironment(workspaceImage(["bat", "tree"]), "x86_64", (packageName) =>
         Effect.succeed(
           packageName === "tree"
             ? resolution("tree", { canonicalId: null, packageName: "python-urwidtrees" })
@@ -127,7 +139,7 @@ describe("resolveWorkspaceEnvironment", () => {
 
     // From 0.39.0-next.726 every default answers with its catalog id and is supported.
     const fromCatalog = await Effect.runPromise(
-      resolveWorkspaceEnvironment(defaultWorkspaceImage, (packageName) =>
+      resolveWorkspaceEnvironment(defaultWorkspaceImage, "x86_64", (packageName) =>
         Effect.succeed(resolution(packageName)),
       ),
     );
@@ -136,7 +148,7 @@ describe("resolveWorkspaceEnvironment", () => {
     // Before it, `bun` (and `unzip`, `starship`, the zsh plugins, `direnv`) fell through to
     // Repology with no catalog id, so the Setup page could not save its own defaults (RC 3, A3).
     const beforeCatalog = await Effect.runPromise(
-      resolveWorkspaceEnvironment(defaultWorkspaceImage, (packageName) =>
+      resolveWorkspaceEnvironment(defaultWorkspaceImage, "x86_64", (packageName) =>
         Effect.succeed(
           packageName === "bun"
             ? resolution(packageName, { canonicalId: null })
@@ -145,6 +157,58 @@ describe("resolveWorkspaceEnvironment", () => {
       ),
     );
     expect(beforeCatalog.workspaceImage).toBeNull();
+  });
+
+  it("resolves a screen's packages with the image's own and saves only the image's own", async () => {
+    const asked: Array<string> = [];
+    const result = await Effect.runPromise(
+      resolveWorkspaceEnvironment(
+        { ...workspaceImage(["gh"]), screen: true },
+        "x86_64",
+        (packageName) => {
+          asked.push(packageName);
+          return Effect.succeed(
+            resolution(packageName, packageName === "gh" ? { canonicalId: "github-cli" } : {}),
+          );
+        },
+      ),
+    );
+
+    expect(asked).toEqual(["gh", ...SCREEN_PACKAGE_IDS]);
+    expect(result.workspaceImage).toMatchObject({ packages: ["github-cli"], screen: true });
+  });
+
+  it("refuses a screen whose packages the platform's catalog does not carry", async () => {
+    const result = await Effect.runPromise(
+      resolveWorkspaceEnvironment({ ...workspaceImage(["pnpm"]), screen: true }, "x86_64", (name) =>
+        Effect.succeed(
+          name === "pnpm" ? resolution(name) : resolution(name, { canonicalId: null }),
+        ),
+      ),
+    );
+
+    expect(result.workspaceImage).toBeNull();
+    expect(result.resolutions.filter((r) => !r.supported).map((r) => r.requested)).toEqual(
+      SCREEN_PACKAGE_IDS,
+    );
+  });
+
+  it("refuses a screen off x86_64 before asking the platform anything", async () => {
+    let asked = 0;
+    const result = await Effect.runPromise(
+      resolveWorkspaceEnvironment(
+        { ...workspaceImage(["pnpm"]), screen: true },
+        "aarch64",
+        (name) =>
+          Effect.sync(() => {
+            asked++;
+            return resolution(name);
+          }),
+      ).pipe(Effect.result),
+    );
+
+    expect(result._tag === "Failure" ? result.failure : null).toBeInstanceOf(SettingsFailure);
+    expect(asked).toBe(0);
   });
 
   it("merges a resolved environment into settings read after validation", async () => {
@@ -156,6 +220,7 @@ describe("resolveWorkspaceEnvironment", () => {
         requested,
         (latest, resolved) => new MendSettings({ ...latest, workspaceImage: resolved }),
         {
+          architecture: "x86_64",
           getSettings: () => Effect.succeed(current),
           modifySettings: (update) =>
             Effect.sync(() => {
@@ -191,6 +256,7 @@ describe("workspace environment save boundaries", () => {
         draft,
         (latest, image) => new MendSettings({ ...latest, workspaceImage: image }),
         {
+          architecture: "x86_64",
           getSettings: () => Effect.succeed(current),
           modifySettings: (update) =>
             Effect.sync(() => {
@@ -223,6 +289,7 @@ describe("workspace environment save boundaries", () => {
         workspaceImage(["pnpm", "missing"]),
         (latest, image) => new MendSettings({ ...latest, workspaceImage: image }),
         {
+          architecture: "x86_64",
           getSettings: () => Effect.succeed(current),
           modifySettings: (update) =>
             Effect.sync(() => {
@@ -299,6 +366,7 @@ describe("workspace environment save boundaries", () => {
         workspaceImage(["pnpm"]),
         (latest, image) => new MendSettings({ ...latest, workspaceImage: image }),
         {
+          architecture: "x86_64",
           getSettings: () => Effect.succeed(initial),
           modifySettings: () => {
             attempts++;
