@@ -527,10 +527,11 @@ describe("mend resource approve", () => {
     expect(reviewLines(target.reviewed, null)).toEqual([
       "@db · postgres 17 · project · approved by Maria · not started",
       "  image postgres:17",
-      "  ports smtp=1025/tcp",
+      "  scope project",
+      "  port smtp 1025/tcp",
       "  limits 1 CPU · 1024 MiB memory · 10 GiB disk",
       "  ready tcp",
-      `  digest sha256:${digest}`,
+      `  definition digest sha256:${digest}`,
       "  for the project",
     ]);
   });

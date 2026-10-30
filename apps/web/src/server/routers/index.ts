@@ -10,6 +10,7 @@ import { pagesRouter } from "./pages.ts";
 import { platformRouter } from "./platform.ts";
 import { projectsRouter } from "./projects.ts";
 import { queueRouter } from "./queue.ts";
+import { resourcesRouter } from "./resources.ts";
 import { servicesRouter } from "./services.ts";
 import { sessionsRouter } from "./sessions.ts";
 import { settingsRouter } from "./settings.ts";
@@ -42,6 +43,7 @@ export const appRouter = router({
   platform: platformRouter,
   projects: projectsRouter,
   queue: queueRouter,
+  resources: resourcesRouter,
   services: servicesRouter,
   sessions: sessionsRouter,
   worktrees: worktreesRouter,
