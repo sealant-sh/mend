@@ -8,7 +8,7 @@ import {
   ThreadId,
   WS_METHODS,
 } from "@mend/t3-contracts";
-import { Effect, Exit, Layer, Result, Stream } from "effect";
+import { Effect, Exit, Fiber, Layer, Result, Stream } from "effect";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { describe, expect, it } from "vitest";
@@ -17,11 +17,12 @@ import { GatewayConfig } from "../src/config.ts";
 import { gateDeviceCalls } from "../src/device-gate.ts";
 import { makeGatewayEnvironment } from "../src/environment.ts";
 import { makePersonHub, ThreadCommandRefused, type PersonHub } from "../src/hub.ts";
-import { MendClient, MendClientLive, MendNotFound } from "../src/mend-client.ts";
+import { MendClient, MendClientLive, MendNotFound, MendUnavailable } from "../src/mend-client.ts";
 import type { MendProject, MendSession } from "../src/mend-workbench.ts";
 import { personProjectPaths } from "../src/project-paths.ts";
 import { makeGatewayRpcHandlers } from "../src/rpc.ts";
 import { openGatewayState } from "../src/state.ts";
+import { TestClock } from "./support/effect-vitest.ts";
 import { inlineFindParser } from "./support/find-parser.ts";
 import { testBearerSession, unreachableMend } from "./support/stubs.ts";
 
@@ -69,14 +70,20 @@ const fixture = () =>
       listSkills: () => Effect.succeed([]),
       projectSkills: () => Effect.succeed([]),
       events: () => Stream.never,
-      projectDetail: (_token, id) =>
-        unreadableReads-- <= 0 && projects.has(id)
-          ? Effect.succeed({
-              project: projects.get(id) ?? makeProject(id, "missing"),
+      projectDetail: (_token, id) => {
+        const project = projects.get(id);
+        if (unreadableReads-- > 0)
+          return Effect.fail(
+            new MendUnavailable({ operation: "detail", status: 502, cause: null }),
+          );
+        return project === undefined
+          ? Effect.fail(new MendNotFound({ operation: "detail" }))
+          : Effect.succeed({
+              project,
               sessions: sessions.filter((s) => s.projectId === id),
               annotations: [],
-            })
-          : Effect.fail(new MendNotFound({ operation: "detail" })),
+            });
+      },
       createProject: (token, name) =>
         Effect.sync(() => {
           writes.push({ token, name, kind: "named" });
@@ -171,6 +178,15 @@ const fixture = () =>
         refusal = true;
       },
     };
+  });
+/** A creation's failure message, after checking it was still waiting at 4.9 s. */
+const failureOf = (create: Effect.Effect<unknown, { readonly message: string }>) =>
+  Effect.gen(function* () {
+    const answer = yield* Effect.forkChild(Effect.flip(create));
+    yield* TestClock.adjust("4900 millis");
+    expect(answer.pollUnsafe()).toBeUndefined();
+    yield* TestClock.adjust("1 second");
+    return (yield* Fiber.join(answer)).message;
   });
 const run = <A, E>(effect: Effect.Effect<A, E, import("effect/Scope").Scope>) =>
   Effect.runPromise(Effect.scoped(effect));
@@ -343,20 +359,26 @@ describe("project creation through the gateway", () => {
         expect((yield* f.hub.shellSnapshot).projects.map((p) => p.id)).toEqual([answer.projectId]);
       }),
     ));
-  it("answers the project Mend created even when the shell cannot load it yet", async () =>
+  it("answers a failure naming the created project when the shell cannot hold it within five seconds, then shows it once Mend reads again", async () =>
     run(
       Effect.gen(function* () {
         const f = yield* fixture();
         f.unreadableFor(Number.POSITIVE_INFINITY);
-        const named = yield* f.rpc[WS_METHODS.projectsCreateNew]({ name: "notes" });
-        expect(named).toEqual({
-          projectId: "named-0",
-          workspaceRoot: "/store/named-0/repo.git",
-        });
-        expect(yield* f.rpc[WS_METHODS.projectsEnsureScratch]()).toEqual({ projectId: "scratch" });
+        expect(yield* failureOf(f.rpc[WS_METHODS.projectsCreateNew]({ name: "notes" }))).toBe(
+          "Mend created the project notes-2, but this window cannot show it yet. It appears when the window refreshes, so there is no need to create it again.",
+        );
+        expect(yield* failureOf(f.rpc[WS_METHODS.projectsEnsureScratch]())).toBe(
+          "Mend created the project scratch-person, but this window cannot show it yet. It appears when the window refreshes, so there is no need to create it again.",
+        );
         expect((yield* f.hub.shellSnapshot).projects).toEqual([]);
         expect(f.writes.map((w) => w.kind)).toEqual(["named", "scratch"]);
-      }),
+        f.unreadableFor(0);
+        yield* TestClock.adjust("3 seconds");
+        expect((yield* f.hub.shellSnapshot).projects.map((p) => p.id).toSorted()).toEqual([
+          "named-0",
+          "scratch",
+        ]);
+      }).pipe(Effect.provide(TestClock.layer())),
     ));
   it("does not create with a refused or read-only device, and offers New project only to one that can", async () =>
     run(

@@ -744,9 +744,11 @@ names this project from your display name, falling back to your email's local pa
 `scratch-person`. Renaming your account keeps the original project and name.
 
 The gateway calls `POST /api/projects/new` or `POST /api/projects/scratch` with your device token
-and publishes the project's shell before answering. When the shell cannot load the project at once,
-the gateway reads it again for about a second, then answers with the project Mend created anyway, so
-a retry does not create `name-2`; the project's event brings it into the shell. Config advertises
+and publishes the project's shell before answering. When the shell cannot hold the project within
+five seconds, the gateway answers a failure that names the project Mend created and says it appears
+when the window refreshes, so a retry does not create `name-2`. The gateway reads Mend again every
+three seconds until the shell shows the project. Five seconds is half the 10 s t3code waits for the
+project after the answer, which leaves room for Mend's own creation call. Config advertises
 `newProjectsRoot` as `Mend` to a device with `orchestration:operate` only, and a fixed per-person
 `scratchWorkspaceRoot` to every device, which is how T3 Code recognises the scratch project. These
 are presentation labels. Every path sent back is looked up in the person's visible projects and

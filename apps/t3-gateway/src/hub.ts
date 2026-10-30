@@ -316,7 +316,10 @@ export interface PersonHub {
     threadId: string,
     afterSequence?: number,
   ) => Effect.Effect<ThreadSubscription | null, HubReadError, Scope.Scope>;
-  /** Publishes the created project into this person's shell before returning. */
+  /**
+   * Publishes the created project into this person's shell before returning; fails, naming the
+   * project Mend created, when the shell cannot hold it in time.
+   */
   readonly createProject: (
     session: BearerSession,
     request: ProjectCreationRequest,
@@ -3350,13 +3353,17 @@ export const makePersonHub = (input: {
           ),
           Effect.repeat({
             until: (project) => project !== null,
-            times: CREATED_READ_ATTEMPTS,
-            schedule: Schedule.spaced(CREATED_READ_RETRY),
+            schedule: Schedule.spaced(CREATED_READ_RETRY).pipe(
+              Schedule.upTo({ duration: CREATED_SHOWN_WITHIN }),
+            ),
           }),
         );
-      // The project exists in Mend either way: answering a failure would invite a retry that
-      // creates `name-2`. t3code waits for the shell itself, and the project's event brings it.
-      return shown ?? created;
+      if (shown !== null) return shown;
+      // The full read is tried again until Mend answers, which brings the project into the shell.
+      yield* requestRefresh("all");
+      return yield* refused(
+        `Mend created the project ${created.name}, but this window cannot show it yet. It appears when the window refreshes, so there is no need to create it again.`,
+      );
     });
 
     /**
@@ -4661,9 +4668,14 @@ export class Projections extends Context.Service<
   }
 >()("@mend/t3-gateway/Projections") {}
 
-/** How project creation reads the created project before it answers, well inside t3code's 10 s. */
+/** How often project creation reads the created project before it answers. */
 const CREATED_READ_RETRY = "250 millis";
-const CREATED_READ_ATTEMPTS = 4;
+/**
+ * How long a creation waits for the shell to hold the project before answering. t3code waits 10 s
+ * for the project after the answer, and drops a socket silent for 15 s; half the first leaves room
+ * for Mend's own creation call.
+ */
+const CREATED_SHOWN_WITHIN = "5 seconds";
 
 /** How a launch reads its new session's project before it answers, and then in the background. */
 const OPENING_READ_RETRY = "500 millis";
