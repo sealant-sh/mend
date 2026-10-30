@@ -56,6 +56,43 @@ const connectionBytes = (port: number): Promise<ForwardBytes> =>
     );
   });
 
+const listen = (answer: (socket: net.Socket) => void) =>
+  new Promise<net.Server>((resolve) => {
+    const server = net.createServer((socket) => socket.once("data", () => answer(socket)));
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
+const portOf = (server: net.Server) => {
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("no port");
+  return address.port;
+};
+describe("an HTTP ready check of an http Service", () => {
+  const check = async (answer: (socket: net.Socket) => void) => {
+    const server = await listen(answer);
+    try {
+      return await Effect.runPromise(
+        answersHttp(await connectionBytes(portOf(server)), {
+          path: "/",
+          host: "localhost",
+          tls: false,
+        }),
+      );
+    } finally {
+      server.close();
+    }
+  };
+
+  it("keeps the status the dev server answered, whatever it is", async () => {
+    expect(await check((socket) => socket.end("HTTP/1.1 200 OK\r\n\r\n"))).toBe(200);
+    expect(await check((socket) => socket.end("HTTP/1.1 403 Forbidden\r\n\r\n"))).toBe(403);
+  });
+
+  it("reads no status from a first line that is not one, or a connection closed first", async () => {
+    expect(await check((socket) => socket.end("SSH-2.0-OpenSSH_9.6\r\n"))).toBeNull();
+    expect(await check((socket) => socket.end())).toBeNull();
+  });
+});
+
 describe("an HTTP ready check of an https Service", () => {
   let directory = "";
   let server: https.Server | null = null;
@@ -99,7 +136,7 @@ describe("an HTTP ready check of an https Service", () => {
     fs.rmSync(directory, { recursive: true, force: true });
   });
 
-  it("speaks TLS, taking the dev server's own certificate, and reads its status line", async () => {
+  it("speaks TLS, taking the dev server's own certificate, and reads its status", async () => {
     const answered = await Effect.runPromise(
       answersHttp(await connectionBytes(port), {
         path: "/health",
@@ -107,7 +144,7 @@ describe("an HTTP ready check of an https Service", () => {
         tls: true,
       }),
     );
-    expect(answered).toBe(true);
+    expect(answered).toBe(204);
   });
 
   it("gets no status line in plain HTTP from a TLS listener", async () => {
@@ -118,6 +155,6 @@ describe("an HTTP ready check of an https Service", () => {
         tls: false,
       }),
     );
-    expect(answered).toBe(false);
+    expect(answered).toBeNull();
   });
 });

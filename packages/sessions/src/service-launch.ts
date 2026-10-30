@@ -149,10 +149,11 @@ export const readyCheckOf = (
  * `reason` is what an observation records.
  */
 export type ReadyVerdict =
-  | { readonly _tag: "Ready" }
+  /** `httpStatus`: the status an HTTP rule's `GET` read; null under a TCP rule. */
+  | { readonly _tag: "Ready"; readonly httpStatus: number | null }
   | { readonly _tag: "NotReady"; readonly reason: string; readonly issue: ForwardIssue | null };
 
-const READY: ReadyVerdict = { _tag: "Ready" };
+const READY: ReadyVerdict = { _tag: "Ready", httpStatus: null };
 
 const HTTP_CHECK_BOUND_MS = 5_000;
 
@@ -182,21 +183,29 @@ export const checkReady = (
       ),
     ).pipe(
       Effect.timeoutOption(Duration.millis(Math.max(1, timeoutMs ?? HTTP_CHECK_BOUND_MS))),
-      Effect.map((result) => Option.getOrElse(result, () => false)),
-      Effect.catchTag("ForwardDialFailure", () => Effect.succeed(false)),
+      Effect.map((result) => Option.getOrElse(result, () => null)),
+      Effect.catchTag("ForwardDialFailure", () => Effect.succeed(null)),
     );
-    return answered
-      ? READY
+    return answered !== null
+      ? { _tag: "Ready", httpStatus: answered }
       : ({ _tag: "NotReady", reason: `no HTTP answer to GET ${check.path}`, issue: null } as const);
   });
 
-const STATUS_LINE = /^HTTP\/\d(?:\.\d)? \d{3}/u;
+const STATUS_LINE = /^HTTP\/\d(?:\.\d)? (\d{3})/u;
 
-/** Whether an answer's first bytes open with a status line; null until a whole line has come. */
-const headAnswers = (head: string): boolean | null => {
+type HeadAnswer =
+  | { readonly _tag: "Waiting" }
+  | { readonly _tag: "Read"; readonly status: number | null };
+
+const WAITING: HeadAnswer = { _tag: "Waiting" };
+
+const headAnswers = (head: string): HeadAnswer => {
   const end = head.indexOf("\r\n");
-  if (end >= 0) return STATUS_LINE.test(head.slice(0, end));
-  return head.length > 1024 ? false : null;
+  if (end >= 0) {
+    const status = STATUS_LINE.exec(head.slice(0, end))?.[1];
+    return { _tag: "Read", status: status === undefined ? null : Number(status) };
+  }
+  return head.length > 1024 ? { _tag: "Read", status: null } : WAITING;
 };
 
 const requestOf = (request: { readonly path: string; readonly host: string }) =>
@@ -239,8 +248,8 @@ const duplexOf = (bytes: ForwardBytes): Duplex =>
 const answersHttps = (
   bytes: ForwardBytes,
   request: { readonly path: string; readonly host: string },
-): Effect.Effect<boolean> =>
-  Effect.callback<boolean>((resume) => {
+): Effect.Effect<number | null> =>
+  Effect.callback<number | null>((resume) => {
     const hostname = new URL(`https://${request.host}`).hostname;
     const socket = tls.connect({
       socket: duplexOf(bytes),
@@ -250,7 +259,7 @@ const answersHttps = (
     });
     let head = "";
     let settled = false;
-    const settle = (answered: boolean) => {
+    const settle = (answered: number | null) => {
       if (settled) return;
       settled = true;
       resume(Effect.succeed(answered));
@@ -259,22 +268,23 @@ const answersHttps = (
     socket.once("secureConnect", () => socket.write(requestOf(request)));
     socket.on("data", (chunk: Buffer) => {
       head += chunk.toString("latin1");
-      const status = headAnswers(head);
-      if (status !== null) settle(status);
+      const answer = headAnswers(head);
+      if (answer._tag === "Read") settle(answer.status);
     });
-    socket.once("error", () => settle(false));
-    socket.once("close", () => settle(false));
+    socket.once("error", () => settle(null));
+    socket.once("close", () => settle(null));
     return Effect.sync(() => socket.destroy());
   });
 
 /**
  * Write one `GET` and read until the status line: any status counts as answered (a dev server's
- * 403 for a host it does not allow is an answer). False when the forward ends first.
+ * 403 for a host it does not allow is an answer), and is what it answers. Null when the forward
+ * ends first, or its first line is no status line.
  */
 export const answersHttp = (
   bytes: ForwardBytes,
   request: { readonly path: string; readonly host: string; readonly tls: boolean },
-): Effect.Effect<boolean> =>
+): Effect.Effect<number | null> =>
   request.tls
     ? answersHttps(bytes, request)
     : Effect.gen(function* () {
@@ -283,9 +293,9 @@ export const answersHttp = (
         let head = "";
         for (;;) {
           const read = yield* bytes.read();
-          if (read.kind === "eof") return false;
+          if (read.kind === "eof") return null;
           head += decoder.decode(read.bytes, { stream: true });
-          const status = headAnswers(head);
-          if (status !== null) return status;
+          const answer = headAnswers(head);
+          if (answer._tag === "Read") return answer.status;
         }
-      }).pipe(Effect.catchTag("ForwardIoFailure", () => Effect.succeed(false)));
+      }).pipe(Effect.catchTag("ForwardIoFailure", () => Effect.succeed(null)));

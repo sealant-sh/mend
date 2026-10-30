@@ -1,5 +1,5 @@
 import type { WorktreeId } from "@mend/domain";
-import { and, count, eq, gt, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, ne, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -109,6 +109,8 @@ export class SetupRunsRepo extends Context.Service<
     readonly release: (claimId: string) => Effect.Effect<void>;
     /** Takes back what a claim left, its stamp included. */
     readonly discard: (claimId: string) => Effect.Effect<void>;
+    /** The fingerprint a site's finished run stamped, done or failed; null with none. */
+    readonly stampAt: (siteKey: string) => Effect.Effect<string | null>;
   }
 >()("@mend/db/SetupRunsRepo") {}
 
@@ -217,6 +219,16 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       yield* db.delete(setupRuns).where(eq(setupRuns.claimId, claimId));
     }, Effect.orDie);
 
-    return { claim, busy, runningIn, renew, finish, release, discard };
+    const stampAt = Effect.fn("SetupRunsRepo.stampAt")(function* (siteKey: string) {
+      const [row] = yield* db
+        .select({ fingerprint: setupRuns.fingerprint })
+        .from(setupRuns)
+        .where(and(eq(setupRuns.siteKey, siteKey), ne(setupRuns.state, "running")))
+        .orderBy(desc(setupRuns.finishedAt))
+        .limit(1);
+      return row?.fingerprint ?? null;
+    }, Effect.orDie);
+
+    return { claim, busy, runningIn, renew, finish, release, discard, stampAt };
   }),
 );
