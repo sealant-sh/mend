@@ -103,14 +103,28 @@ export const ResourceApprovals = Schema.Struct({
 export type ResourceApprovals = typeof ResourceApprovals.Type;
 
 /**
- * For each target, the approval request the reader may post as it stands, built by the server
- * from what it listed. Null where `resourceActRefusal` refuses the reader that target, where the
- * target already approves this exact spec, and for the worktree when none was read or the
- * resource is the project's.
+ * One target's approval as its reader may ask for it: the request to post as it stands, built by
+ * the server from what it listed, or why there is none. `denied`: the approval is not the
+ * reader's, in `resourceActRefusal`'s words. `rejected`: each refusal the approve route would
+ * answer, by key (`resourceApprovalRefusals`). `approved`: the target already approves this exact
+ * spec. Only a registry's answer, a project's removal, and a change after the read can still
+ * refuse a ready request.
+ */
+export const ResourceApprovalOffer = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("ready"), request: ResourceApprovalRequest }),
+  Schema.Struct({ kind: Schema.Literal("denied"), message: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("rejected"), refusals: Schema.Array(ResourceRefusal) }),
+  Schema.Struct({ kind: Schema.Literal("approved") }),
+]);
+export type ResourceApprovalOffer = typeof ResourceApprovalOffer.Type;
+
+/**
+ * Each target's offer. `worktree` is null when no worktree was read, or the resource is the
+ * project's, which no worktree approves on its own.
  */
 export const ResourceApprovalOffers = Schema.Struct({
-  project: Schema.NullOr(ResourceApprovalRequest),
-  worktree: Schema.NullOr(ResourceApprovalRequest),
+  project: ResourceApprovalOffer,
+  worktree: Schema.NullOr(ResourceApprovalOffer),
 });
 export type ResourceApprovalOffers = typeof ResourceApprovalOffers.Type;
 

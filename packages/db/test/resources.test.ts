@@ -19,6 +19,7 @@ import { migrations } from "../src/migrations.ts";
 import {
   type AdoptionRequest,
   type ApprovalRequest,
+  type ApprovalTarget,
   ResourcesRepo,
   ResourcesRepoLive,
   type StoredResourceDefinition,
@@ -205,14 +206,19 @@ const untilWaiting = async (n: number, unless?: Promise<unknown>) => {
 };
 
 const imageDigest = (hex: string) => ImageDigest.make(`sha256:${hex.repeat(64)}`);
+/** For the project, its image resolved to `imageDigest(hex)`. */
+const forProject = (hex = "a"): ApprovalTarget => ({
+  kind: "project",
+  imageDigest: imageDigest(hex),
+});
+const forWorktree = (worktreeId: WorktreeId): ApprovalTarget => ({ kind: "worktree", worktreeId });
 const approval = (
   definition: StoredResourceDefinition,
   overrides: Partial<ApprovalRequest> = {},
 ): ApprovalRequest => ({
   definitionId: definition.id,
   digest: definition.specDigest,
-  imageDigest: imageDigest("a"),
-  worktreeId: null,
+  target: forProject(),
   approvedBy: "maria",
   ...overrides,
 });
@@ -455,7 +461,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
 
       // The tag moved: approving what it names now is a new revision, and the current one.
       const moved = await withRepo((repo) =>
-        repo.approve(approval(definition, { imageDigest: imageDigest("b") })),
+        repo.approve(approval(definition, { target: forProject("b") })),
       );
       expect(moved).toMatchObject({
         revision: 2,
@@ -500,9 +506,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         refusals: [{ key: "image", message: `names another digest than ${imageDigest("a")}` }],
       });
       expect(
-        await withRepo((repo) =>
-          repo.approve(approval(definition, { imageDigest: imageDigest("c") })),
-        ),
+        await withRepo((repo) => repo.approve(approval(definition, { target: forProject("c") }))),
       ).toMatchObject({ spec: { image: `postgres:17@${imageDigest("c")}` } });
     });
 
@@ -561,7 +565,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       expect(await count("resource_approvals", id)).toBe(0);
     });
 
-    it("a change owner approves a worktree resource for their worktree alone, with an image a manager approved", async () => {
+    it("a change owner approves a worktree resource for their worktree alone, pinned to the image a manager approved for it", async () => {
       const project = await newProject();
       const mine = await newWorktree(project);
       const theirs = await newWorktree(project);
@@ -569,39 +573,40 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       const box = await withRepo((repo) =>
         repo.declare(project, mailpit("worktree", "box"), "alice"),
       );
-
-      // No manager approved this image for the project yet.
-      expect(
-        await failureOf((repo) =>
-          repo.approve(approval(box, { worktreeId: mine, approvedBy: "alice" })),
-        ),
-      ).toMatchObject({
+      const forMineBy = (approvedBy: string) =>
+        approval(box, { target: forWorktree(mine), approvedBy });
+      const unapproved = {
         _tag: "ResourceDefinitionRefusedError",
         refusals: [
           {
             key: "image",
-            message: `is ${imageDigest("a")}, which no manager approved for this project`,
+            message:
+              "is not one a manager approved for this project · a manager approves @box for the project first",
           },
         ],
-      });
+      };
+      expect(await failureOf((repo) => repo.approve(forMineBy("alice")))).toMatchObject(unapproved);
+      // Another resource approved with the same image approves nothing of this one.
       await withRepo((repo) => repo.approve(approval(mail)));
-      const forMine = await withRepo((repo) =>
-        repo.approve(approval(box, { worktreeId: mine, approvedBy: "alice" })),
+      expect(await failureOf((repo) => repo.approve(forMineBy("alice")))).toMatchObject(unapproved);
+
+      // A manager's approval for the project holds in every worktree, and its image is the one a
+      // worktree's own approval runs.
+      const managers = await withRepo((repo) =>
+        repo.approve(approval(box, { target: forProject("b") })),
       );
-      expect(forMine).toMatchObject({ worktreeId: mine, approvedBy: "alice" });
-      expect(
-        await withRepo((repo) =>
-          repo.approve(approval(box, { worktreeId: mine, approvedBy: "alice" })),
-        ),
-      ).toEqual(forMine);
+      expect(await withRepo((repo) => repo.currentApproval(box.id, theirs))).toEqual(managers);
+      const forMine = await withRepo((repo) => repo.approve(forMineBy("alice")));
+      expect(forMine).toMatchObject({
+        worktreeId: mine,
+        approvedBy: "alice",
+        spec: { image: `axllent/mailpit:v1.27@${imageDigest("b")}` },
+      });
+      expect(await withRepo((repo) => repo.approve(forMineBy("alice")))).toEqual(forMine);
 
       expect(await withRepo((repo) => repo.currentApproval(box.id, mine))).toEqual(forMine);
-      expect(await withRepo((repo) => repo.currentApproval(box.id, theirs))).toBeNull();
-      expect(await withRepo((repo) => repo.currentApproval(box.id, null))).toBeNull();
-
-      // A manager's approval for the project holds in every worktree.
-      const forProject = await withRepo((repo) => repo.approve(approval(box)));
-      expect(await withRepo((repo) => repo.currentApproval(box.id, theirs))).toEqual(forProject);
+      expect(await withRepo((repo) => repo.currentApproval(box.id, theirs))).toEqual(managers);
+      expect(await withRepo((repo) => repo.currentApproval(box.id, null))).toEqual(managers);
     });
 
     it("lists each definition with the approval of the spec it holds, for the project or the worktree read", async () => {
@@ -613,8 +618,9 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         repo.declare(project, mailpit("worktree", "box"), "alice"),
       );
       await withRepo((repo) => repo.approve(approval(mail)));
+      const managers = await withRepo((repo) => repo.approve(approval(box)));
       const forMine = await withRepo((repo) =>
-        repo.approve(approval(box, { worktreeId: mine, approvedBy: "alice" })),
+        repo.approve(approval(box, { target: forWorktree(mine), approvedBy: "alice" })),
       );
       const approvals = (worktree: WorktreeId | null) =>
         withRepo((repo) => repo.listWithApprovals(project, worktree)).then((listed) =>
@@ -625,22 +631,24 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
           ]),
         );
       expect(await approvals(mine)).toEqual([
-        ["box", null, forMine.id],
+        ["box", managers.id, forMine.id],
         ["mail", expect.any(String), null],
       ]);
       expect(await approvals(theirs)).toEqual([
-        ["box", null, null],
+        ["box", managers.id, null],
         ["mail", expect.any(String), null],
       ]);
       expect(await approvals(null)).toEqual([
-        ["box", null, null],
+        ["box", managers.id, null],
         ["mail", expect.any(String), null],
       ]);
 
       // A manager's later approval for the project lists beside the worktree's, never over it.
-      const forProject = await withRepo((repo) => repo.approve(approval(box)));
+      const again = await withRepo((repo) =>
+        repo.approve(approval(box, { target: forProject("b") })),
+      );
       expect(await approvals(mine)).toEqual([
-        ["box", forProject.id, forMine.id],
+        ["box", again.id, forMine.id],
         ["mail", expect.any(String), null],
       ]);
 
@@ -649,7 +657,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         repo.declare(project, { ...mailpit("project"), image: "axllent/mailpit:v1.28" }, "maria"),
       );
       expect(await approvals(null)).toEqual([
-        ["box", forProject.id, null],
+        ["box", again.id, null],
         ["mail", null, null],
       ]);
     });
@@ -664,10 +672,10 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       );
       await withRepo((repo) => repo.approve(approval(mail)));
       expect(
-        await failureOf((repo) => repo.approve(approval(mail, { worktreeId: worktree }))),
+        await failureOf((repo) => repo.approve(approval(mail, { target: forWorktree(worktree) }))),
       ).toMatchObject({ refusals: [{ key: "worktree" }] });
       expect(
-        await failureOf((repo) => repo.approve(approval(box, { worktreeId: elsewhere }))),
+        await failureOf((repo) => repo.approve(approval(box, { target: forWorktree(elsewhere) }))),
       ).toMatchObject({
         refusals: [
           { key: "worktree", message: "is not a worktree of the project that declares @box" },
@@ -687,8 +695,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
           repo.approve({
             definitionId: missing,
             digest: ResourceSpecDigest.make("0".repeat(64)),
-            imageDigest: imageDigest("a"),
-            worktreeId: null,
+            target: forProject(),
             approvedBy: "maria",
           }),
         ),
@@ -1126,8 +1133,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       projectId,
       spec,
       settings: null,
-      imageDigest: imageDigest("a"),
-      worktreeId: null,
+      target: forProject(),
       approvedBy: "maria",
       ...overrides,
     });
@@ -1140,7 +1146,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
 
       // A retry, after the tag moved: the approval made is the answer, and nothing repins.
       const again = await withRepo((repo) =>
-        repo.adoptAndApprove(adoption(project, postgresDb(), { imageDigest: imageDigest("b") })),
+        repo.adoptAndApprove(adoption(project, postgresDb(), { target: forProject("b") })),
       );
       expect(again.approval.id).toBe(first.approval.id);
       expect([first.made, again.made]).toEqual([true, false]);
@@ -1244,24 +1250,40 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       // No manager approved this image for the project (decision G4).
       expect(
         await failureOf((repo) =>
-          repo.adoptAndApprove(adoption(project, mailpit("worktree"), { worktreeId: worktree })),
+          repo.adoptAndApprove(
+            adoption(project, mailpit("worktree"), { target: forWorktree(worktree) }),
+          ),
         ),
       ).toMatchObject({ _tag: "ResourceDefinitionRefusedError" });
       expect(await withRepo((repo) => repo.byName(project, "mail"))).toBeNull();
     });
 
-    it("approves a worktree resource for one worktree once a manager approved its image", async () => {
+    it("approves a worktree resource for one worktree once a manager approved that spec for the project", async () => {
       const project = await newProject();
       const worktree = await newWorktree(project);
+      const forWorktreeBy = (approvedBy: string) =>
+        adoption(project, mailpit("worktree"), { target: forWorktree(worktree), approvedBy });
+      // Another resource approved with the same image is no manager's approval of this one.
       await withRepo((repo) =>
         repo.adoptAndApprove(adoption(project, mailpit("project", "mailer"))),
       );
-      const mine = await withRepo((repo) =>
-        repo.adoptAndApprove(
-          adoption(project, mailpit("worktree"), { worktreeId: worktree, approvedBy: "tom" }),
-        ),
+      expect(await failureOf((repo) => repo.adoptAndApprove(forWorktreeBy("tom")))).toMatchObject({
+        _tag: "ResourceDefinitionRefusedError",
+        refusals: [{ key: "image" }],
+      });
+
+      const managers = await withRepo((repo) =>
+        repo.adoptAndApprove(adoption(project, mailpit("worktree"), { target: forProject("b") })),
       );
-      expect(mine.approval).toMatchObject({ worktreeId: worktree, approvedBy: "tom" });
+      const mine = await withRepo((repo) => repo.adoptAndApprove(forWorktreeBy("tom")));
+      expect(mine).toMatchObject({
+        made: true,
+        approval: {
+          worktreeId: worktree,
+          approvedBy: "tom",
+          spec: { image: managers.approval.spec.image },
+        },
+      });
       expect(
         await withRepo((repo) =>
           repo.approvalAsRead({
@@ -1271,7 +1293,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
             worktreeId: null,
           }),
         ),
-      ).toBeNull();
+      ).toMatchObject({ approval: { id: managers.approval.id, worktreeId: null } });
     });
   });
 });

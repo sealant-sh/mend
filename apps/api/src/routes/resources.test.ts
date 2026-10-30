@@ -15,9 +15,14 @@ import {
   ImageDigest,
   presetDefinition,
   PresetVersion,
+  type ResourceApprovalOffer,
+  type ResourceApprovalRequest,
   ResourceDefinitionInput,
   ResourceName,
+  type ResourceProposalEntry,
   resourceRuntimeRefusal,
+  type ResourceSettingEntry,
+  type ResourcesPage,
 } from "@mend/domain/workbench";
 import { ImageResolutionError, type ResourceImageResolver, WORKTREE_STAMP } from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
@@ -35,17 +40,9 @@ const postgres = postgresTestConfig();
 const decodeSpec = Schema.decodeUnknownSync(ResourceDefinitionInput);
 const lines = (entries: ReadonlyArray<{ readonly statusLine: string }>) =>
   entries.map((entry) => entry.statusLine);
-type Listed = {
-  readonly spec: { readonly name: string };
-  readonly approvals: {
-    readonly project: { readonly by: string } | null;
-    readonly worktree: { readonly by: string } | null;
-  };
-  readonly approve: { readonly project: unknown; readonly worktree: unknown };
-  readonly choice?: unknown;
-  readonly canChoose?: boolean;
-  readonly mine?: boolean;
-};
+type Listed = Pick<ResourceSettingEntry, "spec" | "digest" | "approvals" | "approve"> &
+  Partial<Pick<ResourceSettingEntry, "id" | "choice" | "canChoose">> &
+  Partial<Pick<ResourceProposalEntry, "mine">>;
 /** Each entry's name, who approved it for which target, the targets it offers, and its flags. */
 const flagsOf = (entries: ReadonlyArray<Listed>) =>
   entries.map(({ spec, approvals, approve, choice, canChoose, mine }) => ({
@@ -54,10 +51,76 @@ const flagsOf = (entries: ReadonlyArray<Listed>) =>
       ...(approvals.project === null ? [] : [`project:${approvals.project.by}`]),
       ...(approvals.worktree === null ? [] : [`worktree:${approvals.worktree.by}`]),
     ],
-    offers: (["project", "worktree"] as const).filter((target) => approve[target] !== null),
+    offers: (["project", "worktree"] as const).filter(
+      (target) => approve[target]?.kind === "ready",
+    ),
     ...(choice === undefined ? {} : { choice, canChoose }),
     ...(mine === undefined ? {} : { mine }),
   }));
+/** The request a target offers, failing the test when it offers none. */
+const ready = (offer: ResourceApprovalOffer | null) => {
+  if (offer?.kind !== "ready") throw new Error(`no request offered: ${JSON.stringify(offer)}`);
+  return offer.request;
+};
+type Source = "settings" | "proposal" | "file";
+const entryOf = (page: ResourcesPage, source: Source, name: string): Listed => {
+  const entries: ReadonlyArray<Listed> =
+    source === "settings"
+      ? page.settings
+      : source === "proposal"
+        ? page.proposals
+        : page.file.kind === "read"
+          ? page.file.proposals
+          : [];
+  const entry = entries.find((each) => each.spec.name === name);
+  if (entry === undefined) throw new Error(`no ${source} entry @${name} on the page`);
+  return entry;
+};
+/**
+ * The request a client builds for an entry by itself, as `mend resource approve` does,
+ * whatever the page offers: the source as read, and what settings held under its name.
+ */
+const requestFor = (
+  page: ResourcesPage,
+  source: Source,
+  name: string,
+  worktreeId: WorktreeId | null,
+): ResourceApprovalRequest => {
+  const held = page.settings.find((each) => each.spec.name === name);
+  const settings = held === undefined ? null : { id: held.id, digest: held.digest };
+  if (source === "settings") {
+    if (held === undefined) throw new Error(`settings hold no @${name}`);
+    return { source: { kind: "settings", id: held.id, digest: held.digest }, worktreeId };
+  }
+  if (source === "proposal") {
+    const proposal = page.proposals.find((each) => each.spec.name === name);
+    if (proposal === undefined) throw new Error(`no proposal @${name}`);
+    return {
+      source: { kind: "proposal", id: proposal.id, digest: proposal.digest, settings },
+      worktreeId,
+    };
+  }
+  if (page.file.kind !== "read") throw new Error(`no mend.toml read: ${page.file.kind}`);
+  const table = page.file.proposals.find((each) => each.spec.name === name);
+  if (table === undefined) throw new Error(`no mend.toml table @${name}`);
+  return {
+    source: {
+      kind: "file",
+      worktreeId: page.file.worktreeId,
+      name: table.spec.name,
+      digest: table.digest,
+      settings,
+    },
+    worktreeId,
+  };
+};
+/** The refusal of a worktree approval before a manager approved the spec (decision G4). */
+const G4 = (name: string) => [
+  {
+    key: "image",
+    message: `is not one a manager approved for this project · a manager approves @${name} for the project first`,
+  },
+];
 const shared = ids("shared-a");
 const NAMES: Readonly<Record<string, string>> = { alice: "Alice", carol: "Carol" };
 
@@ -243,8 +306,10 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
         repo.approve({
           definitionId: definition.id,
           digest: definition.specDigest,
-          imageDigest: ImageDigest.make(`sha256:${"a".repeat(64)}`),
-          worktreeId,
+          target:
+            worktreeId === null
+              ? { kind: "project", imageDigest: ImageDigest.make(`sha256:${"a".repeat(64)}`) }
+              : { kind: "worktree", worktreeId },
           approvedBy,
         }),
       ),
@@ -431,10 +496,11 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     const mail = await declareSpec(mailpit("mail", "project"));
     const box = await declareSpec(mailpit("box", "worktree"));
     await approve(mail, "alice", null);
+    await approve(box, "alice", null);
     await approve(box, "carol", shared.worktree);
 
     expect(lines((await list("carol")).body.settings)).toEqual([
-      "@box · mailpit · worktree · waiting for approval",
+      "@box · mailpit · worktree · approved by Alice · not started",
       "@mail · mailpit · project · approved by Alice · not started",
     ]);
     expect(lines((await list("carol", `&worktreeId=${shared.worktree}`)).body.settings)).toEqual([
@@ -600,8 +666,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
             projectId: elsewhere,
             spec,
             settings: null,
-            imageDigest: ImageDigest.make(`sha256:${"f".repeat(64)}`),
-            worktreeId: null,
+            target: { kind: "project", imageDigest: ImageDigest.make(`sha256:${"f".repeat(64)}`) },
             approvedBy: "bob",
           }),
         ),
@@ -610,6 +675,41 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     const fileTable = async (as: HarnessUser, worktree: WorktreeId) => {
       const read = (await list(as, `&worktreeId=${worktree}`)).body.file;
       return read.proposals[0];
+    };
+    /**
+     * Posts the request a client would build for a target, and expects the answer the page's
+     * offer said: a ready request is that very request and approves; an approval already made is
+     * answered with nothing new; a withheld one is refused in the offer's own words.
+     */
+    const answersAsOffered = async (
+      as: HarnessUser,
+      offer: ResourceApprovalOffer,
+      request: ResourceApprovalRequest,
+    ) => {
+      const before = await approvals();
+      const answer = await approveVia(as, request);
+      switch (offer.kind) {
+        case "ready":
+          expect(offer.request).toEqual(request);
+          expect(answer.status).toBe(200);
+          return;
+        case "approved":
+          expect(answer).toMatchObject({ status: 200, body: { resolvedBy: null } });
+          expect(await approvals()).toEqual(before);
+          return;
+        case "denied":
+          expect(answer).toEqual({
+            status: 403,
+            body: { _tag: "ResourceDenied", message: offer.message },
+          });
+          return;
+        case "rejected":
+          expect(answer.status).toBe(422);
+          expect(answer.body).toMatchObject({ _tag: "ResourceRejected" });
+          expect(answer.body.refusals).toEqual(offer.refusals);
+          expect(await approvals()).toEqual(before);
+          return;
+      }
     };
 
     it("adopts a member's proposal, pins its image, and approving again asks no registry", async () => {
@@ -627,7 +727,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
           definition: {
             digest: proposal.digest,
             approvals: { project: { by: "alice" }, worktree: null },
-            approve: { project: null, worktree: null },
+            approve: { project: { kind: "approved" }, worktree: null },
             choice: null,
             canChoose: false,
             statusLine: "@db · postgres 17 · project · approved by Alice · not started",
@@ -736,40 +836,35 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       expect(resolved).toEqual(["postgres:17"]);
     });
 
-    it("lets a change owner approve a worktree resource only once a manager approved its image", async () => {
+    it("offers a change owner the worktree's approval once a manager approved that spec, and says why before (G4)", async () => {
       await start();
-      const table = await fileTable("carol", CAROL_WORKTREE_IN_SHARED_A);
-      const mine = {
-        source: {
-          kind: "file",
-          worktreeId: CAROL_WORKTREE_IN_SHARED_A,
-          name: "mail",
-          digest: table.digest,
-          settings: null,
-        },
-        worktreeId: CAROL_WORKTREE_IN_SHARED_A,
-      };
-      expect(await approveVia("carol", mine)).toMatchObject({
-        status: 422,
-        body: {
-          _tag: "ResourceRejected",
-          message: `@mail · image is ${digestFor("axllent/mailpit:v1.21")}, which no manager approved for this project`,
-        },
-      });
+      const read = async (as: HarnessUser): Promise<ResourcesPage> =>
+        (await list(as, `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`)).body;
+      const before = await read("carol");
+      const table = entryOf(before, "file", "mail");
+      expect(table.approve.worktree).toEqual({ kind: "rejected", refusals: G4("mail") });
+      await answersAsOffered(
+        "carol",
+        table.approve.worktree ?? { kind: "approved" },
+        requestFor(before, "file", "mail", CAROL_WORKTREE_IN_SHARED_A),
+      );
       expect((await list("carol")).body.settings).toEqual([]);
+      expect(resolved).toEqual([]);
 
       // The manager approves the image for the project, adopting the same table.
-      expect((await approveVia("alice", { ...mine, worktreeId: null })).status).toBe(200);
-      const approved = await approveVia("carol", mine);
-      expect(approved).toMatchObject({
-        status: 200,
-        body: {
-          definition: {
-            statusLine:
-              "@mail · mailpit · worktree · approved by Carol for this worktree · not started",
-          },
-        },
-      });
+      const managers = entryOf(await read("alice"), "file", "mail");
+      expect((await approveVia("alice", ready(managers.approve.project))).status).toBe(200);
+      const after = await read("carol");
+      const offer = entryOf(after, "settings", "mail").approve.worktree;
+      expect(offer?.kind).toBe("ready");
+      await answersAsOffered(
+        "carol",
+        offer ?? { kind: "approved" },
+        requestFor(after, "settings", "mail", CAROL_WORKTREE_IN_SHARED_A),
+      );
+      expect(lines((await read("carol")).settings)).toEqual([
+        "@mail · mailpit · worktree · approved by Carol for this worktree · not started",
+      ]);
       expect(await approvals()).toEqual([
         { worktreeId: null, approvedBy: "alice" },
         { worktreeId: CAROL_WORKTREE_IN_SHARED_A, approvedBy: "carol" },
@@ -957,15 +1052,13 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     it("approves a worktree for the image the manager approved, whatever its tag resolves to now", async () => {
       await start();
       const table = await fileTable("alice", CAROL_WORKTREE_IN_SHARED_A);
-      expect((await approveVia("alice", table.approve.project)).status).toBe(200);
+      expect((await approveVia("alice", ready(table.approve.project))).status).toBe(200);
       // The tag moves in the registry after the manager approved it, before anyone reads again.
       resolveImage = () =>
         Effect.succeed({ digest: digestFor("a tag moved since"), resolvedBy: "fake-registry" });
       resolved.length = 0;
       const page = (await list("carol", `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`)).body;
-      const offered = page.settings.find((entry: Listed) => entry.spec.name === "mail").approve
-        .worktree;
-      expect(offered).not.toBeNull();
+      const offered = ready(entryOf(page, "settings", "mail").approve.worktree);
       expect(await approveVia("carol", offered)).toMatchObject({
         status: 200,
         body: {
@@ -977,7 +1070,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       expect(resolved).toEqual([]);
     });
 
-    it("offers no replacement that changes what own is while a worktree holds it as own", async () => {
+    it("offers no replacement that changes what own is while a worktree holds it as own, and says why", async () => {
       await start();
       const db = await declare();
       expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own")).status).toBe(200);
@@ -986,30 +1079,87 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
           repo.propose(shared.project, { ...db.spec, scope: "worktree" }, "carol"),
         ),
       );
-      const offered = async () =>
-        (await list("alice", `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`)).body.proposals[0]
-          .approve;
-      expect(await offered()).toEqual({ project: null, worktree: null });
+      const read = async (): Promise<ResourcesPage> =>
+        (await list("alice", `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`)).body;
+      const held = await read();
+      const offer = entryOf(held, "proposal", "db").approve.project;
+      expect(offer).toEqual({
+        kind: "rejected",
+        refusals: [
+          {
+            key: "scope",
+            message:
+              "changes what own is, and 1 worktree holds @db as own, with data of its own · switch it to shared or off first",
+          },
+        ],
+      });
+      await answersAsOffered("alice", offer, requestFor(held, "proposal", "db", null));
 
       expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared")).status).toBe(200);
-      const now = await offered();
-      expect(now.project).not.toBeNull();
-      expect((await approveVia("alice", now.project)).status).toBe(200);
+      const switched = await read();
+      await answersAsOffered(
+        "alice",
+        entryOf(switched, "proposal", "db").approve.project,
+        requestFor(switched, "proposal", "db", null),
+      );
     });
+
+    for (const source of ["proposal", "file"] as const) {
+      it(`offers no ${source} whose export sets an env name another definition sets, and says why`, async () => {
+        await start();
+        await declareSpec({ ...mailpit("db", "project"), exports: { MAIN_URL: "smtp://{host}" } });
+        const spec = { ...mailpit("db-main", "project"), exports: { URL: "smtp://{host}" } };
+        if (source === "proposal") {
+          await runtime.runPromise(
+            Effect.flatMap(repoNow, (repo) => repo.propose(shared.project, spec, "carol")),
+          );
+        }
+        file = {
+          text: [
+            "[resource.db-main]",
+            'image = "axllent/mailpit:v1.21"',
+            'scope = "project"',
+            "ports = { smtp = 1025 }",
+            'exports = { URL = "smtp://{host}" }',
+          ].join("\n"),
+          stamp: WORKTREE_STAMP,
+        };
+        const page: ResourcesPage = (
+          await list("alice", `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`)
+        ).body;
+        const offer = entryOf(page, source, "db-main").approve.project;
+        expect(offer).toEqual({
+          kind: "rejected",
+          refusals: [
+            { key: "exports.URL", message: "sets MEND_RESOURCE_DB_MAIN_URL, as db does too" },
+          ],
+        });
+        await answersAsOffered("alice", offer, requestFor(page, source, "db-main", null));
+        expect(resolved).toEqual([]);
+      });
+    }
 
     it("approves a worktree's mend.toml table for the project, then for the worktree, as the page offers", async () => {
       await start();
-      const read = (as: HarnessUser) =>
+      const read = (as: HarnessUser): Promise<ResourcesPage> =>
         list(as, `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`).then(({ body }) => body);
-      const managers = await read("alice");
-      const table = managers.file.proposals[0];
-      expect(table.approve.worktree).toBeNull();
+      const table = entryOf(await read("alice"), "file", "mail");
+      const notTheOwners = {
+        kind: "denied",
+        message:
+          "approving a worktree resource for this worktree is its change owner's: the owner of its first session",
+      };
+      expect(table.approve.worktree).toEqual(notTheOwners);
       // Before a manager approves it for the project, its change owner is offered nothing to post.
-      expect((await read("carol")).file.proposals[0].approve).toEqual({
-        project: null,
-        worktree: null,
+      expect(entryOf(await read("carol"), "file", "mail").approve).toEqual({
+        project: {
+          kind: "denied",
+          message:
+            "approving a resource for the project is a manager's: the project's creator or an organization owner",
+        },
+        worktree: { kind: "rejected", refusals: G4("mail") },
       });
-      const forProject = await approveVia("alice", table.approve.project);
+      const forProject = await approveVia("alice", ready(table.approve.project));
       expect(forProject).toMatchObject({
         status: 200,
         body: {
@@ -1020,29 +1170,31 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       });
 
       const owners = await read("carol");
-      const mail = owners.settings.find((entry: Listed) => entry.spec.name === "mail");
+      const mail = entryOf(owners, "settings", "mail");
       expect(mail.approvals).toEqual({ project: { by: "alice" }, worktree: null });
-      expect(mail.approve.project).toBeNull();
-      expect(await approveVia("carol", mail.approve.worktree)).toMatchObject({
+      expect(mail.approve.project.kind).toBe("denied");
+      const approved = { kind: "approved" };
+      expect(await approveVia("carol", ready(mail.approve.worktree))).toMatchObject({
         status: 200,
         body: {
           definition: {
             approvals: { project: { by: "alice" }, worktree: { by: "carol" } },
-            approve: { project: null, worktree: null },
+            approve: { project: { kind: "denied" }, worktree: approved },
             statusLine:
               "@mail · mailpit · worktree · approved by Carol for this worktree · not started",
           },
         },
       });
       // Each target's approval stays listed, so neither offer comes back.
-      const after = (await read("carol")).settings.find(
-        (entry: Listed) => entry.spec.name === "mail",
-      );
+      const after = entryOf(await read("carol"), "settings", "mail");
       expect(after).toMatchObject({
         approvals: { project: { by: "alice" }, worktree: { by: "carol" } },
-        approve: { project: null, worktree: null },
+        approve: { project: { kind: "denied" }, worktree: approved },
       });
-      expect((await read("alice")).settings[0].approve).toEqual({ project: null, worktree: null });
+      expect(entryOf(await read("alice"), "settings", "mail").approve).toEqual({
+        project: approved,
+        worktree: notTheOwners,
+      });
     });
 
     it("names the resource a refused choice is of, and says each refusal as a clause", async () => {

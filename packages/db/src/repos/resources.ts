@@ -10,21 +10,25 @@ import {
 import {
   changesWhatOwnIs,
   defaultChoiceFor,
-  envCollisionRefusals,
   type ImageDigest,
   imageDigestOf,
   isDatabasePreset,
   type OwnTarget,
   pinImage,
+  resourceApprovalRefusals,
+  resourceDeclarationRefusals,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
   ResourceRefusal,
+  type ResourceSettingsState,
   ResourceSpecDigest,
   resourceSpecDigest,
   selectionRefusal,
   SelectionRevision,
+  type SettingsDefinition,
   type WorktreeChoice,
   WorktreeSelection,
+  worktreeApprovalImage,
 } from "@mend/domain/workbench";
 import { and, asc, desc, eq, inArray, isNull, max, or, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -70,33 +74,38 @@ export interface ResourceApproval {
   readonly approvedAt: Date;
 }
 
+/**
+ * Who an approval is for: the project, pinned to the digest its image resolved to (resolving it
+ * is the caller's, ADR 0019 step 4), or one worktree alone (decision G4), which runs the image the
+ * project's approval of the same spec pins, so it names none.
+ */
+export type ApprovalTarget =
+  | { readonly kind: "project"; readonly imageDigest: ImageDigest }
+  | { readonly kind: "worktree"; readonly worktreeId: WorktreeId };
+
 export interface ApprovalRequest {
   readonly definitionId: ResourceDefinitionId;
   /** The declared spec's digest, as the approver read it. */
   readonly digest: ResourceSpecDigest;
-  /** What the definition's image resolved to; resolving it is the caller's (ADR 0019, step 4). */
-  readonly imageDigest: ImageDigest;
-  /** Null approves for the project; a worktree approves a worktree resource for it alone. */
-  readonly worktreeId: WorktreeId | null;
+  readonly target: ApprovalTarget;
   readonly approvedBy: string;
 }
 
-export interface AdoptionRequest {
+/** An approval as its approver asks for it, before anything is resolved or written. */
+export interface ApprovalLookup {
   readonly projectId: ProjectId;
   /** The spec its approver read, as they read it. */
   readonly spec: ResourceDefinitionInput;
   /** What settings held under the spec's name when it was read; null for nothing. */
   readonly settings: DefinitionVersion | null;
-  readonly imageDigest: ImageDigest;
+  /** Null for the project. */
   readonly worktreeId: WorktreeId | null;
-  readonly approvedBy: string;
 }
 
-/** An approval as its approver asks for it, before anything is resolved or written. */
-export type ApprovalLookup = Pick<
-  AdoptionRequest,
-  "projectId" | "spec" | "settings" | "worktreeId"
->;
+export interface AdoptionRequest extends Omit<ApprovalLookup, "worktreeId"> {
+  readonly target: ApprovalTarget;
+  readonly approvedBy: string;
+}
 
 export interface Adopted {
   readonly definition: StoredResourceDefinition;
@@ -194,9 +203,9 @@ export class ResourcesRepo extends Context.Service<
   ResourcesRepo,
   {
     /**
-     * Declares `spec` under its name, or replaces that name's spec; the same spec twice is one
-     * write. A new scope or preset re-defaults each worktree's selection, and is refused while a
-     * worktree holds the resource as `own`.
+     * Declares `spec` under its name, or replaces that name's spec, refused as
+     * `resourceDeclarationRefusals` says; the same spec twice is one write. A new scope or preset
+     * re-defaults each worktree's selection.
      */
     readonly declare: (
       projectId: ProjectId,
@@ -236,17 +245,17 @@ export class ResourcesRepo extends Context.Service<
       projectId: ProjectId,
     ) => Effect.Effect<ReadonlyArray<StoredResourceDefinition>>;
     /**
-     * Each definition with the latest approval of the spec it holds as read for each target: a
-     * manager's for the project, and, for a worktree resource, `worktreeId`'s own (decision G4);
-     * and `worktreeId`'s stored choice, read as it is, writing no default. Three queries.
-     */
-    /**
      * How many worktrees hold each of the project's definitions as `own`; a definition none holds
      * is absent. One query, and nothing written.
      */
     readonly ownSelections: (
       projectId: ProjectId,
     ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, number>>;
+    /**
+     * Each definition with the latest approval of the spec it holds as read for each target: a
+     * manager's for the project, and, for a worktree resource, `worktreeId`'s own (decision G4);
+     * and `worktreeId`'s stored choice, read as it is, writing no default. Three queries.
+     */
     readonly listWithApprovals: (
       projectId: ProjectId,
       worktreeId: WorktreeId | null,
@@ -263,7 +272,8 @@ export class ResourcesRepo extends Context.Service<
      */
     readonly declaredNames: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
     /**
-     * Approves the declared spec the approver read, pinned, as the current approval of that spec;
+     * Approves the declared spec the approver read for its target, pinned, as the current approval
+     * of that spec, refused as `resourceApprovalRefusals` says under the definition's lock;
      * approving it again with the image it already pins is one row.
      */
     readonly approve: (
@@ -274,8 +284,9 @@ export class ResourcesRepo extends Context.Service<
     >;
     /**
      * Declares `spec` and approves it, pinned, in one transaction, while settings still hold under
-     * its name what its approver read (`settings`, null for nothing), or `spec` itself. An
-     * approval of this spec for this target already made is the one answered: nothing repins it.
+     * its name what its approver read (`settings`, null for nothing), or `spec` itself. Refused as
+     * `resourceApprovalRefusals` says, under the locks, before anything is written. An approval of
+     * this spec for this target already made is the one answered: nothing repins it.
      */
     readonly adoptAndApprove: (
       request: AdoptionRequest,
@@ -520,108 +531,40 @@ const fenceRefusal = (spec: ResourceDefinitionInput) =>
     ],
   });
 
-/** Under the definition's lock: what a new scope or preset does to each worktree's selection. */
+/**
+ * Under the definition's lock: what a new scope or preset does to each worktree's selection, once
+ * `resourceDeclarationRefusals` found no worktree holding it as `own`.
+ */
 const redefaultSelections = Effect.fn("ResourcesRepo.redefaultSelections")(function* (
   tx: Tx,
   existing: StoredResourceDefinition,
   spec: ResourceDefinitionInput,
 ) {
-  const rows = yield* tx
-    .select()
-    .from(resourceSelections)
-    .where(eq(resourceSelections.definitionId, existing.id));
-  const owning = rows.filter((row) => row.mode === "own").length;
-  if (owning > 0) {
-    return yield* new ResourceDefinitionRefusedError({
-      name: spec.name,
-      refusals: [
-        {
-          key: existing.spec.scope === spec.scope ? "preset" : "scope",
-          message:
-            owning === 1
-              ? `changes what own is, and 1 worktree holds @${spec.name} as own, with data of its own · switch it to shared or off first`
-              : `changes what own is, and ${owning} worktrees hold @${spec.name} as own, with data of their own · switch them to shared or off first`,
-        },
-      ],
-    });
-  }
   const mode = defaultChoiceFor(spec);
   if (mode === null) {
     yield* tx.delete(resourceSelections).where(eq(resourceSelections.definitionId, existing.id));
     return;
   }
+  const rows = yield* tx
+    .select()
+    .from(resourceSelections)
+    .where(eq(resourceSelections.definitionId, existing.id));
   for (const row of rows) {
     yield* writeSelection(tx, row, row, withRevision(spec, mode, row.revision + 1), null);
   }
 });
 
-/** Whether a manager approved, for the project, an image with this digest for any of its resources. */
-const projectApprovedImage = (tx: Tx, projectId: ProjectId, imageDigest: ImageDigest) =>
-  tx
-    .select({ spec: resourceApprovals.spec })
-    .from(resourceApprovals)
-    .innerJoin(resourceDefinitions, eq(resourceDefinitions.id, resourceApprovals.definitionId))
-    .where(and(eq(resourceDefinitions.projectId, projectId), isNull(resourceApprovals.worktreeId)))
-    .pipe(
-      Effect.flatMap((rows) => Effect.forEach(rows, (row) => decodeSpec(row.spec))),
-      Effect.orDie,
-      Effect.map((specs) => specs.some((spec) => imageDigestOf(spec.image) === imageDigest)),
-    );
-
-/** A project resource is approved for the project, never one worktree; null when `spec` may be. */
-export const approvalScopeRefusal = (
-  spec: ResourceDefinitionInput,
-  worktreeId: WorktreeId | null,
-): ResourceRefusal | null =>
-  worktreeId !== null && spec.scope !== "worktree"
-    ? {
-        key: "worktree",
-        message: `is one worktree, and @${spec.name} is a project resource, approved for the project`,
-      }
-    : null;
-
-/** Why `request` may not approve a worktree resource for its worktree, or null when it may. */
-const worktreeApprovalRefusal = Effect.fn("ResourcesRepo.worktreeApprovalRefusal")(function* (
-  tx: Tx,
-  definition: StoredResourceDefinition,
-  worktreeId: WorktreeId,
-  imageDigest: ImageDigest,
-) {
-  const scope = approvalScopeRefusal(definition.spec, worktreeId);
-  if (scope !== null) return scope;
-  if ((yield* worktreeProject(tx, worktreeId)) !== definition.projectId) {
-    return {
-      key: "worktree",
-      message: `is not a worktree of the project that declares @${definition.spec.name}`,
-    };
-  }
-  if (!(yield* projectApprovedImage(tx, definition.projectId, imageDigest))) {
-    return {
-      key: "image",
-      message: `is ${imageDigest}, which no manager approved for this project`,
-    };
-  }
-  return null;
-});
-
-/** Under the transaction: declares `spec` as `declare` says. */
-const declareIn = Effect.fn("ResourcesRepo.declareIn")(function* (
+/**
+ * The project's row, locked: it orders every declaration and a removal taking its mark (0166),
+ * so each sees the other. True while a removal holds its mark; a mark that lapsed is a removal
+ * that stopped.
+ */
+const lockProject = Effect.fn("ResourcesRepo.lockProject")(function* (
   tx: Tx,
   projectId: ProjectId,
-  spec: ResourceDefinitionInput,
-  declaredBy: string,
 ) {
-  const refusals = resourceDefinitionRefusals(spec);
-  if (refusals.length > 0) {
-    return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
-  }
-  const encoded = yield* encodeSpec(spec).pipe(Effect.orDie);
-  const specDigest = resourceSpecDigest(spec);
-  // The project's row lock orders declarations and a removal taking its mark (0166): each sees
-  // the other. A mark that lapsed is a removal that stopped.
   const [project] = yield* tx
     .select({
-      id: projects.id,
       removing: sql<boolean>`removal_fence_marked(${projects.removalPhase}, ${projects.removalSince})`,
     })
     .from(projects)
@@ -630,29 +573,117 @@ const declareIn = Effect.fn("ResourcesRepo.declareIn")(function* (
   if (project === undefined) {
     return yield* Effect.die(new Error(`project ${projectId} does not exist`));
   }
-  if (project.removing) return yield* fenceRefusal(spec);
+  return project.removing;
+});
 
-  const others = yield* tx
+/** The definition settings hold under `name`, row-locked; null for none. */
+const lockByName = (tx: Tx, projectId: ProjectId, name: string) =>
+  tx
+    .select()
+    .from(resourceDefinitions)
+    .where(and(eq(resourceDefinitions.projectId, projectId), eq(resourceDefinitions.name, name)))
+    .for("update")
+    .pipe(Effect.map(([row]) => row ?? null));
+
+/**
+ * The project's settings as the rules decide against them (`ResourceSettingsState`): each
+ * definition, the image the project's approval of its spec pins, and how many worktrees hold it
+ * as `own`. Read under the project's lock and that of the definition under the name decided.
+ */
+const settingsStateIn = Effect.fn("ResourcesRepo.settingsStateIn")(function* (
+  tx: Tx,
+  projectId: ProjectId,
+) {
+  const rows = yield* tx
     .select()
     .from(resourceDefinitions)
     .where(eq(resourceDefinitions.projectId, projectId));
-  const declared = yield* Effect.forEach(
-    others.filter((row) => row.name !== spec.name),
-    toDefinition,
+  const ofProject = eq(resourceDefinitions.projectId, projectId);
+  const approvals = yield* tx
+    .select({
+      definitionId: resourceApprovals.definitionId,
+      definitionDigest: resourceApprovals.definitionDigest,
+      spec: resourceApprovals.spec,
+    })
+    .from(resourceApprovals)
+    .innerJoin(resourceDefinitions, eq(resourceDefinitions.id, resourceApprovals.definitionId))
+    .where(and(ofProject, isNull(resourceApprovals.worktreeId)))
+    .orderBy(desc(resourceApprovals.revision));
+  const owning = yield* tx
+    .select({
+      definitionId: resourceSelections.definitionId,
+      owning: sql<number>`count(*)::int`,
+    })
+    .from(resourceSelections)
+    .innerJoin(resourceDefinitions, eq(resourceDefinitions.id, resourceSelections.definitionId))
+    .where(and(ofProject, eq(resourceSelections.mode, "own")))
+    .groupBy(resourceSelections.definitionId);
+  const definitions = yield* Effect.forEach(
+    rows,
+    Effect.fnUntraced(function* (row): Effect.fn.Return<SettingsDefinition> {
+      const { id, spec, specDigest } = yield* toDefinition(row);
+      // The latest approval of the spec it holds now; an older spec's never carries over.
+      const approval = approvals.find(
+        (each) => each.definitionId === id && each.definitionDigest === specDigest,
+      );
+      const approved =
+        approval === undefined ? null : yield* decodeSpec(approval.spec).pipe(Effect.orDie);
+      return {
+        spec,
+        digest: specDigest,
+        projectImage: approved === null ? null : imageDigestOf(approved.image),
+        owning: owning.find((each) => each.definitionId === id)?.owning ?? 0,
+      };
+    }),
   );
-  const collisions = envCollisionRefusals([
-    ...declared.map((definition) => definition.spec),
-    spec,
-  ]).flatMap(({ resource, refusal }) => (resource === spec.name ? [refusal] : []));
-  if (collisions.length > 0) {
-    return yield* new ResourceDefinitionRefusedError({
-      name: spec.name,
-      refusals: collisions,
-    });
-  }
+  return { projectId, definitions } satisfies ResourceSettingsState;
+});
 
-  const sameName = others.find((row) => row.name === spec.name);
-  if (sameName === undefined) {
+const worktreeIdOf = (target: ApprovalTarget) =>
+  target.kind === "project" ? null : target.worktreeId;
+
+/**
+ * Under the locks: refuses approving `spec` for `target` as `resourceApprovalRefusals` says,
+ * else answers the image it pins: the one resolved for the project, or for a worktree the one the
+ * project's approval of this spec pins (decision G4).
+ */
+const decideIn = Effect.fn("ResourcesRepo.decideIn")(function* (
+  tx: Tx,
+  projectId: ProjectId,
+  spec: ResourceDefinitionInput,
+  target: ApprovalTarget,
+) {
+  const settings = yield* settingsStateIn(tx, projectId);
+  const refusals = resourceApprovalRefusals(
+    settings,
+    spec,
+    target.kind === "project"
+      ? target
+      : { kind: "worktree", projectId: yield* worktreeProject(tx, target.worktreeId) },
+  );
+  if (refusals.length > 0) {
+    return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
+  }
+  if (target.kind === "project") return target.imageDigest;
+  const image = worktreeApprovalImage(settings, spec);
+  if (image === null) {
+    return yield* Effect.die(new Error("a worktree's approval passed its refusals unpinned"));
+  }
+  return image;
+});
+
+/** Stores `spec` under its name, its refusals decided under these locks, unless a removal holds its mark. */
+const writeDeclarationIn = Effect.fn("ResourcesRepo.writeDeclarationIn")(function* (
+  tx: Tx,
+  projectId: ProjectId,
+  spec: ResourceDefinitionInput,
+  declaredBy: string,
+) {
+  if (yield* lockProject(tx, projectId)) return yield* fenceRefusal(spec);
+  const encoded = yield* encodeSpec(spec).pipe(Effect.orDie);
+  const specDigest = resourceSpecDigest(spec);
+  const held = yield* lockByName(tx, projectId, spec.name);
+  if (held === null) {
     const [inserted] = yield* tx
       .insert(resourceDefinitions)
       .values({
@@ -671,9 +702,7 @@ const declareIn = Effect.fn("ResourcesRepo.declareIn")(function* (
     }
     return yield* toDefinition(inserted);
   }
-  const existing = yield* lockDefinition(tx, sameName.id).pipe(
-    Effect.catchTag("ResourceDefinitionNotFoundError", Effect.die),
-  );
+  const existing = yield* toDefinition(held);
   if (existing.specDigest === specDigest) return existing;
   if (changesWhatOwnIs(existing.spec, spec)) {
     yield* redefaultSelections(tx, existing, spec);
@@ -696,54 +725,47 @@ const declareIn = Effect.fn("ResourcesRepo.declareIn")(function* (
   return yield* toDefinition(updated);
 });
 
-/** Under the transaction: approves as `approve` says. */
-const approveIn = Effect.fn("ResourcesRepo.approveIn")(function* (
+/** Under the transaction: declares `spec` as `declare` says. */
+const declareIn = Effect.fn("ResourcesRepo.declareIn")(function* (
   tx: Tx,
-  request: ApprovalRequest,
+  projectId: ProjectId,
+  spec: ResourceDefinitionInput,
+  declaredBy: string,
 ) {
-  const { definitionId, digest, imageDigest, worktreeId, approvedBy } = request;
-  const definition = yield* lockDefinition(tx, definitionId);
-  const { spec } = definition;
-  if (definition.specDigest !== digest) {
-    return yield* new ResourceApprovalStaleError({
-      definitionId,
-      approving: digest,
-      current: definition.specDigest,
-    });
+  yield* lockProject(tx, projectId);
+  yield* lockByName(tx, projectId, spec.name);
+  const refusals = resourceDeclarationRefusals(yield* settingsStateIn(tx, projectId), spec);
+  if (refusals.length > 0) {
+    return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
   }
-  const refuse = (refusals: ReadonlyArray<ResourceRefusal>) =>
-    new ResourceDefinitionRefusedError({ name: spec.name, refusals });
+  return yield* writeDeclarationIn(tx, projectId, spec, declaredBy);
+});
+
+/**
+ * Approves `definition`'s spec for the worktree, or the project when null, pinned to `imageDigest`,
+ * its refusals decided under the definition's lock. The latest approval of this declared spec,
+ * here, is the one that runs: it is answered when it already pins this image; otherwise a new
+ * revision is, so a spec declared again or a tag that moved back becomes current.
+ */
+const writeApprovalIn = Effect.fn("ResourcesRepo.writeApprovalIn")(function* (
+  tx: Tx,
+  definition: StoredResourceDefinition,
+  imageDigest: ImageDigest,
+  worktreeId: WorktreeId | null,
+  approvedBy: string,
+) {
+  const { id: definitionId, spec, specDigest: digest } = definition;
   const image = pinImage(spec.image, imageDigest);
   if (image === null) {
-    return yield* refuse([{ key: "image", message: `names another digest than ${imageDigest}` }]);
+    return yield* new ResourceDefinitionRefusedError({
+      name: spec.name,
+      refusals: [{ key: "image", message: `names another digest than ${imageDigest}` }],
+    });
   }
   const pinned: ResourceDefinitionInput = { ...spec, image };
-  const refusals = resourceDefinitionRefusals(pinned);
-  if (refusals.length > 0) return yield* refuse(refusals);
-  if (worktreeId !== null) {
-    const refusal = yield* worktreeApprovalRefusal(tx, definition, worktreeId, imageDigest);
-    if (refusal !== null) return yield* refuse([refusal]);
-  }
-
-  // Under the definition's lock: the latest approval of this declared spec, here, is the
-  // one that runs. It is returned when it already pins this image; otherwise a new
-  // revision is, so a spec declared again or a tag that moved back becomes current.
   const pinnedDigest = resourceSpecDigest(pinned);
-  const [latestHere] = yield* tx
-    .select()
-    .from(resourceApprovals)
-    .where(
-      and(
-        eq(resourceApprovals.definitionId, definitionId),
-        eq(resourceApprovals.definitionDigest, digest),
-        worktreeId === null
-          ? isNull(resourceApprovals.worktreeId)
-          : eq(resourceApprovals.worktreeId, worktreeId),
-      ),
-    )
-    .orderBy(desc(resourceApprovals.revision))
-    .limit(1);
-  if (latestHere?.digest === pinnedDigest) return yield* toApproval(latestHere);
+  const latestHere = yield* exactApprovalIn(tx, definitionId, digest, worktreeId);
+  if (latestHere?.digest === pinnedDigest) return latestHere;
   const [latest] = yield* tx
     .select({ revision: max(resourceApprovals.revision) })
     .from(resourceApprovals)
@@ -763,6 +785,30 @@ const approveIn = Effect.fn("ResourcesRepo.approveIn")(function* (
     .returning();
   if (inserted === undefined) return yield* Effect.die(new Error("approval not stored"));
   return yield* toApproval(inserted);
+});
+
+/** Under the transaction: approves as `approve` says. */
+const approveIn = Effect.fn("ResourcesRepo.approveIn")(function* (
+  tx: Tx,
+  request: ApprovalRequest,
+) {
+  const { definitionId, digest, target } = request;
+  const definition = yield* lockDefinition(tx, definitionId);
+  if (definition.specDigest !== digest) {
+    return yield* new ResourceApprovalStaleError({
+      definitionId,
+      approving: digest,
+      current: definition.specDigest,
+    });
+  }
+  const imageDigest = yield* decideIn(tx, definition.projectId, definition.spec, target);
+  return yield* writeApprovalIn(
+    tx,
+    definition,
+    imageDigest,
+    worktreeIdOf(target),
+    request.approvedBy,
+  );
 });
 
 /** The latest approval of declared spec `digest` for exactly this target. */
@@ -794,48 +840,36 @@ const exactApprovalIn = (
  */
 const heldAsRead = Effect.fn("ResourcesRepo.heldAsRead")(function* (
   tx: Tx,
-  lookup: ApprovalLookup,
+  lookup: Pick<ApprovalLookup, "projectId" | "spec" | "settings">,
 ) {
   const { projectId, spec, settings } = lookup;
   const digest = resourceSpecDigest(spec);
-  yield* tx
-    .select({ id: projects.id })
-    .from(projects)
-    .where(eq(projects.id, projectId))
-    .for("no key update");
-  const [held] = yield* tx
-    .select()
-    .from(resourceDefinitions)
-    .where(
-      and(eq(resourceDefinitions.projectId, projectId), eq(resourceDefinitions.name, spec.name)),
-    )
-    .for("update");
+  yield* lockProject(tx, projectId);
+  const held = yield* lockByName(tx, projectId, spec.name);
   // A read of a definition holds only for that definition, at the digest read or already at
   // `spec`'s; a read of none holds while there is none, or `spec` itself on a retry.
   const asRead =
     settings === null
-      ? held === undefined || held.specDigest === digest
+      ? held === null || held.specDigest === digest
       : held?.id === settings.id &&
         (held.specDigest === settings.digest || held.specDigest === digest);
   if (!asRead) return yield* new ResourceSettingsStaleError({ name: spec.name });
-  return held === undefined ? null : yield* toDefinition(held);
+  return held === null ? null : yield* toDefinition(held);
 });
 
-/** Adopts and approves as `adoptAndApprove` says: one transaction, settings checked under lock. */
+/**
+ * Adopts and approves as `adoptAndApprove` says: one transaction, settings checked under lock,
+ * every refusal decided before anything is written.
+ */
 const adoptIn = Effect.fn("ResourcesRepo.adoptIn")(function* (tx: Tx, request: AdoptionRequest) {
-  const { projectId, spec } = request;
+  const { projectId, spec, target, approvedBy } = request;
   yield* heldAsRead(tx, request);
-  const definition = yield* declareIn(tx, projectId, spec, request.approvedBy);
-  const digest = definition.specDigest;
-  const existing = yield* exactApprovalIn(tx, definition.id, digest, request.worktreeId);
+  const imageDigest = yield* decideIn(tx, projectId, spec, target);
+  const definition = yield* writeDeclarationIn(tx, projectId, spec, approvedBy);
+  const worktreeId = worktreeIdOf(target);
+  const existing = yield* exactApprovalIn(tx, definition.id, definition.specDigest, worktreeId);
   if (existing !== null) return { definition, approval: existing, made: false };
-  const approval = yield* approveIn(tx, {
-    definitionId: definition.id,
-    digest,
-    imageDigest: request.imageDigest,
-    worktreeId: request.worktreeId,
-    approvedBy: request.approvedBy,
-  });
+  const approval = yield* writeApprovalIn(tx, definition, imageDigest, worktreeId, approvedBy);
   return { definition, approval, made: true };
 });
 
