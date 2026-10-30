@@ -118,6 +118,20 @@ describe("what the web tier logs about a failed API call", () => {
       "[trpc] contract drift decoding API response: userDevices.cliAuthRequest StatusCodeError 404",
     ]);
   });
+
+  it("names the operation when the API is served under a path", async () => {
+    mode = "drift-404";
+    const logged: Array<string> = [];
+    vi.spyOn(console, "error").mockImplementation((...parts: Array<unknown>) => {
+      logged.push(parts.map(String).join(" "));
+    });
+    await failure(`http://127.0.0.1:${port}/mend/`, (api) =>
+      api.userDevices.cliAuthRequest({ params: { code: "CODE-7SEC" } }),
+    );
+    expect(logged).toEqual([
+      "[trpc] contract drift decoding API response: userDevices.cliAuthRequest StatusCodeError 404",
+    ]);
+  });
 });
 
 describe("a start a removal's mark refused, through the real client", () => {
