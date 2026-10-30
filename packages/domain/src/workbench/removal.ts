@@ -60,11 +60,13 @@ export type Person = typeof Person.Type;
 
 /**
  * What holds a session's worktree in place: `live` (starting, running, waiting or idle),
- * `stopping` (only for a session holding the worktree as a repository, docs/adr/0010: its drain is
- * saving the repository's files), a process that has not exited, or an open Service forward.
+ * `starting` (a launch or a shell admitted and still under way), `stopping` (only for a session
+ * holding the worktree as a repository, docs/adr/0010: its drain is saving the repository's
+ * files), a process that has not exited, or an open Service forward.
  */
 export const SessionActivity = Schema.Literals([
   "live",
+  "starting",
   "stopping",
   "process-running",
   "forward-open",
@@ -86,11 +88,17 @@ export type HoldFact = typeof HoldFact.Type;
 export const NestedRepository = Schema.Struct({ path: Schema.String, branch: Schema.String });
 export type NestedRepository = typeof NestedRepository.Type;
 
+/**
+ * How a session works in a worktree: in it, holding it as a repository (docs/adr/0010), or
+ * mounting it as a linked project's worktree (ADR-0001).
+ */
+export const SessionRole = Schema.Literals(["inhabitant", "holder", "linked"]);
+export type SessionRole = typeof SessionRole.Type;
+
 export interface SessionFact {
   readonly sessionId: SessionId;
   readonly owner: Person | null;
-  /** `holder`: a session of another worktree that holds this one as a repository. */
-  readonly role: "inhabitant" | "holder";
+  readonly role: SessionRole;
   readonly activity: SessionActivity | "settled";
 }
 
@@ -102,6 +110,11 @@ export interface WorktreeHolds {
   readonly changeOwner: Person | null;
   readonly sessions: ReadonlyArray<SessionFact>;
   readonly holds: ReadonlyArray<HoldFact>;
+  /**
+   * A Service setup running in the worktree, or one whose end nobody has confirmed: it runs
+   * commands there before any process of its own exists.
+   */
+  readonly setupRunning: boolean;
 }
 
 /** What only a removal without force reads as well: whether the work here is anywhere else. */
@@ -110,17 +123,12 @@ export interface WorktreeFacts extends WorktreeHolds {
   readonly nestedRepositories: ReadonlyArray<NestedRepository>;
 }
 
-/** A session of another project holding one of this project's worktrees as a repository. */
-export interface ForeignHolderFact {
-  readonly sessionId: SessionId;
-  readonly path: string;
-  readonly activity: SessionActivity | "settled";
-}
-
 export interface ProjectFacts {
-  /** Every worktree of the project, whoever's (decision Q2). */
+  /**
+   * Every worktree of the project, whoever's (decision Q2), with every session working in it,
+   * another project's among them.
+   */
   readonly worktrees: ReadonlyArray<WorktreeFacts>;
-  readonly foreignHolders: ReadonlyArray<ForeignHolderFact>;
   /** Resources declared in the project (docs/adr/0019): their data lives only in their volumes. */
   readonly resources: ReadonlyArray<string>;
 }
@@ -129,16 +137,24 @@ export interface ProjectFacts {
 
 const worktreeRef = { worktreeId: WorktreeId, worktreeName: Schema.String };
 
+/** A removal of a project or a worktree that committed to deleting and stopped partway. */
+export const StoppedRemoval = Schema.Struct({
+  kind: Schema.Literals(["worktree", "project"]),
+  name: Schema.String,
+});
+export type StoppedRemoval = typeof StoppedRemoval.Type;
+
 /** Why a removal does not go ahead. A refusal is a non-empty list of these. */
 export const RemovalBlocker = Schema.Union([
   Schema.TaggedStruct("SessionLive", {
     ...worktreeRef,
     sessionId: SessionId,
     owner: Schema.NullOr(Person),
-    role: Schema.Literals(["inhabitant", "holder"]),
+    role: SessionRole,
     activity: SessionActivity,
   }),
   Schema.TaggedStruct("Saving", { ...worktreeRef, holds: Schema.Array(HoldFact) }),
+  Schema.TaggedStruct("SetupRunning", worktreeRef),
   Schema.TaggedStruct("Unlanded", {
     ...worktreeRef,
     owner: Schema.NullOr(Person),
@@ -148,14 +164,12 @@ export const RemovalBlocker = Schema.Union([
     ...worktreeRef,
     repositories: Schema.Array(NestedRepository),
   }),
-  Schema.TaggedStruct("HeldByOtherProject", {
-    sessionId: SessionId,
-    path: Schema.String,
-    activity: SessionActivity,
-  }),
   Schema.TaggedStruct("ResourcesDeclared", { names: Schema.Array(Schema.String) }),
-  /** Another removal of the same worktree or project is under way. */
-  Schema.TaggedStruct("RemovalUnderway", {}),
+  /**
+   * Another removal of the same worktree, its project or one of the project's worktrees is under
+   * way; `stopped` when that one is a deletion that stopped partway.
+   */
+  Schema.TaggedStruct("RemovalUnderway", { stopped: Schema.NullOr(StoppedRemoval) }),
 ]);
 export type RemovalBlocker = typeof RemovalBlocker.Type;
 type BlockerTag = RemovalBlocker["_tag"];
@@ -167,9 +181,9 @@ type BlockerTag = RemovalBlocker["_tag"];
 export const LIFTED_BY_FORCE = {
   SessionLive: false,
   Saving: false,
+  SetupRunning: false,
   Unlanded: true,
   NestedRepositories: true,
-  HeldByOtherProject: false,
   ResourcesDeclared: false,
   RemovalUnderway: false,
 } as const satisfies Record<BlockerTag, boolean>;
@@ -177,7 +191,7 @@ export const LIFTED_BY_FORCE = {
 const BLOCKER_ORDER = {
   RemovalUnderway: 0,
   SessionLive: 1,
-  HeldByOtherProject: 2,
+  SetupRunning: 2,
   Saving: 3,
   Unlanded: 4,
   NestedRepositories: 5,
@@ -223,6 +237,7 @@ const holdBlockers = (facts: WorktreeHolds): ReadonlyArray<RemovalBlocker> => {
       activity: session.activity,
     });
   }
+  if (facts.setupRunning) blockers.push({ _tag: "SetupRunning", ...ref });
   if (facts.holds.length > 0) blockers.push({ _tag: "Saving", ...ref, holds: facts.holds });
   return blockers;
 };
@@ -267,22 +282,10 @@ export const decideRemoval = (target: RemovalTarget): RemovalDecision => {
     };
   }
   const { project } = target;
-  const holders: ReadonlyArray<RemovalBlocker> = project.foreignHolders.flatMap((holder) =>
-    holder.activity === "settled"
-      ? []
-      : [
-          {
-            _tag: "HeldByOtherProject" as const,
-            sessionId: holder.sessionId,
-            path: holder.path,
-            activity: holder.activity,
-          },
-        ],
-  );
   const resources: ReadonlyArray<RemovalBlocker> =
     project.resources.length === 0 ? [] : [{ _tag: "ResourcesDeclared", names: project.resources }];
   const blockers = nonEmpty(
-    ordered([...project.worktrees.flatMap(blockersOfWorktree), ...holders, ...resources]),
+    ordered([...project.worktrees.flatMap(blockersOfWorktree), ...resources]),
   );
   return blockers === null
     ? { _tag: "Remove" }
@@ -290,11 +293,16 @@ export const decideRemoval = (target: RemovalTarget): RemovalDecision => {
 };
 
 /** A refusal for a removal that met another one under way. */
-export const underway: NonEmptyBlockers = [{ _tag: "RemovalUnderway" }];
+export const underway = (stopped: StoppedRemoval | null = null): NonEmptyBlockers => [
+  { _tag: "RemovalUnderway", stopped },
+];
 
 /** A removal that met another one under way, with whatever else stands in the way. */
-export const underwayWith = (decision: RemovalDecision): NonEmptyBlockers => [
-  ...underway,
+export const underwayWith = (
+  stopped: StoppedRemoval | null,
+  decision: RemovalDecision,
+): NonEmptyBlockers => [
+  ...underway(stopped),
   ...(decision._tag === "Refuse" ? decision.blockers : []),
 ];
 
@@ -327,39 +335,6 @@ export const worktreeRemovalRight = (input: {
   return input.managesProject || input.ownsEverySession ? { _tag: "allowed" } : { _tag: "hidden" };
 };
 
-// ─── The fence ──────────────────────────────────────────────────────────────
-
-/**
- * How long a removal's mark stands without its holder. Longer than any check takes; a checker
- * that has not committed by then is taken for dead. The session-start trigger of migration 0164
- * reads the same number.
- */
-export const REMOVAL_FENCE_LEASE_SECONDS = 120;
-
-/**
- * A removal's mark on its worktree or project row. `checking`: blockers are being read and no
- * session may start meanwhile. `deleting`: the checks passed and only the deletion is left.
- */
-export type RemovalPhase = "checking" | "deleting";
-
-export interface RemovalFence {
-  readonly phase: RemovalPhase;
-  readonly since: Date;
-}
-
-export type FenceStep =
-  | { readonly _tag: "acquire" }
-  | { readonly _tag: "finish" }
-  | { readonly _tag: "underway" };
-
-/** What a removal does with the mark it finds, judged from the row alone. */
-export const fenceStep = (fence: RemovalFence | null, now: Date): FenceStep => {
-  if (fence === null) return { _tag: "acquire" };
-  const fresh = now.getTime() - fence.since.getTime() < REMOVAL_FENCE_LEASE_SECONDS * 1000;
-  if (fresh) return { _tag: "underway" };
-  return fence.phase === "checking" ? { _tag: "acquire" } : { _tag: "finish" };
-};
-
 // ─── Words ──────────────────────────────────────────────────────────────────
 
 /**
@@ -368,12 +343,16 @@ export const fenceStep = (fence: RemovalFence | null, now: Date): FenceStep => {
  */
 export type RefusalAudience = "in-mend" | "outside-mend";
 
-/** The tail an in-Mend refusal carries when force lifts it; CLIs before 0.37 look for it. */
-export const REMOVAL_FORCE_HINT = "or pass force=true to remove it anyway";
+/** The one sentence an in-Mend refusal ends with when force lifts every blocker. */
+export const REMOVAL_FORCE_HINT = "Pass force=true to remove it anyway.";
 
-/** What a session start, a shell, a Service or a forward refused by a removal's mark reads. */
+/** What new work (a session, a shell, a Service, a forward) refused by a removal's mark reads. */
 export const REMOVAL_START_REFUSED =
-  "not started · a removal of this worktree or its project is under way · start again once it is refused";
+  "not started · a removal of this worktree or its project is under way · start again if Mend refuses it";
+
+/** The same, when the mark is a deletion that stopped partway and refuses until it is finished. */
+export const REMOVAL_START_REFUSED_STOPPED =
+  "not started · a removal of this worktree or its project stopped partway · remove it again in Mend to finish it";
 
 /** Decision Q3's sentence, verbatim. */
 export const NO_REMOTE_OUTSIDE_MEND =
@@ -424,6 +403,7 @@ export const holdWords = (holds: ReadonlyArray<HoldFact>): string => {
 
 const activityWords: Record<SessionActivity, string> = {
   live: "is live",
+  starting: "is starting",
   stopping: "is stopping",
   "process-running": "has a process running",
   "forward-open": "has a Service forward open",
@@ -438,21 +418,36 @@ const capitalized = (words: string) => `${words.charAt(0).toUpperCase()}${words.
 
 type Blocker<Tag extends BlockerTag> = Extract<RemovalBlocker, { readonly _tag: Tag }>;
 
-/** In Mend, what is not on origin, and the act that would keep it; the caller closes the sentence. */
+/** How a session that is not in the worktree works in it, as a clause; empty for one that is. */
+const roleInMend: Record<SessionRole, string> = {
+  inhabitant: "",
+  holder: ", which holds this worktree as a repository,",
+  linked: ", which mounts this worktree as a linked project,",
+};
+const roleOutside: Record<SessionRole, string> = {
+  inhabitant: "in this worktree",
+  holder: "holding this worktree as a repository",
+  linked: "mounting this worktree as a linked project",
+};
+
+const stoppedWords = (stopped: StoppedRemoval) =>
+  `the removal of ${stopped.kind} ${stopped.name} stopped partway`;
+
+/** In Mend, what is not on origin, and the act that would keep it. */
 const unlandedInMend = (standing: UnlandedStanding): string => {
   switch (standing._tag) {
     case "no-remote":
-      return `This worktree holds work that is not on any remote · ${describeUnlanded(standing.files)} · the project has no origin, so it cannot be landed. Discard it before removal`;
+      return `This worktree holds work that is not on any remote · ${describeUnlanded(standing.files)} · the project has no origin, so it cannot be landed. Discard it before removal.`;
     case "never-landed":
-      return `This worktree holds a change that was never landed · ${describeUnlanded(standing.files)}. Land it or discard it before removal`;
+      return `This worktree holds a change that was never landed · ${describeUnlanded(standing.files)}. Land it or discard it before removal.`;
     case "changed-since-landing":
-      return `This worktree changed since its last landing (${landedWords(standing.landed)}) · ${describeUnlanded(standing.files)}. Land it again or discard it before removal`;
+      return `This worktree changed since its last landing (${landedWords(standing.landed)}) · ${describeUnlanded(standing.files)}. Land it again or discard it before removal.`;
     case "origin-moved":
-      return `origin's ${standing.landed.remoteBranch} no longer holds the landed commit ${short(standing.landed.sha)} · ${standing.remoteSha === null ? "the branch is gone" : `it is at ${short(standing.remoteSha)}`}. Land it again before removal`;
+      return `origin's ${standing.landed.remoteBranch} no longer holds the landed commit ${short(standing.landed.sha)} · ${standing.remoteSha === null ? "the branch is gone" : `it is at ${short(standing.remoteSha)}`}. Land it again before removal.`;
     case "origin-unchecked":
-      return `origin could not be checked for the last landing (${landedWords(standing.landed)}) · ${trimStop(standing.reason)}. Try again`;
+      return `origin could not be checked for the last landing (${landedWords(standing.landed)}) · ${trimStop(standing.reason)}. Try again.`;
     case "unread":
-      return `Mend could not read this worktree's change · ${trimStop(standing.reason)}. Try again`;
+      return `Mend could not read this worktree's change · ${trimStop(standing.reason)}. Try again.`;
   }
 };
 
@@ -478,34 +473,35 @@ const nestedNames = (blocker: Blocker<"NestedRepositories">) =>
   );
 
 /** One sentence per blocker, for a refused worktree removal. */
-const worktreeSentence = (
-  blocker: RemovalBlocker,
-  audience: RefusalAudience,
-  hint: string,
-): string => {
+const worktreeSentence = (blocker: RemovalBlocker, audience: RefusalAudience): string => {
   const inMend = audience === "in-mend";
   switch (blocker._tag) {
     case "SessionLive":
       return inMend
-        ? `not removed · ${whose(blocker.owner)} session ${blocker.sessionId.slice(0, 8)}${blocker.role === "holder" ? ", which holds this worktree as a repository," : ""} ${activityWords[blocker.activity]} · stop it first.`
-        : `${capitalized(whose(blocker.owner))} session ${blocker.role === "holder" ? "holding this worktree as a repository" : "in this worktree"} ${activityWords[blocker.activity]}. Mend keeps the worktree; stop the session in Mend, then remove the worktree there.`;
+        ? `not removed · ${whose(blocker.owner)} session ${blocker.sessionId.slice(0, 8)}${roleInMend[blocker.role]} ${activityWords[blocker.activity]} · stop it first.`
+        : `${capitalized(whose(blocker.owner))} session ${roleOutside[blocker.role]} ${activityWords[blocker.activity]}. Mend keeps the worktree; stop the session in Mend, then remove the worktree there.`;
+    case "SetupRunning":
+      return inMend
+        ? "not removed · a Service setup is running in this worktree, or ended without Mend seeing it end · stop the session's Service starts first."
+        : "A Service setup is still running in this worktree. Mend keeps the worktree; stop it in Mend, then remove the worktree there.";
     case "Saving":
       return inMend
         ? `not removed · ${blocker.holds.some((hold) => hold.via === "holder") ? "a session holding this worktree as a repository is " : ""}${holdWords(blocker.holds)} · the worktree stays until its workspaces have saved and ended, or their owner discards what is unsaved.`
         : "This worktree's last session is still saving its files. Mend keeps the worktree; remove it from Mend once the save has finished.";
     case "Unlanded":
-      return inMend
-        ? `${unlandedInMend(blocker.standing)}${hint}`
-        : unlandedOutside(blocker.standing);
+      return inMend ? unlandedInMend(blocker.standing) : unlandedOutside(blocker.standing);
     case "NestedRepositories":
       return inMend
-        ? `This worktree holds ${plural(blocker.repositories.length, "repository", "repositories")} added with mend repo add, saved only with it · ${nestedNames(blocker)} · Mend cannot see whether ${blocker.repositories.length === 1 ? "it holds" : "they hold"} commits or edits that are not on origin, and removal deletes ${blocker.repositories.length === 1 ? "it" : "them"}. Push what you need from a session in this worktree before removal${hint}`
+        ? `This worktree holds ${plural(blocker.repositories.length, "repository", "repositories")} added with mend repo add, saved only with it · ${nestedNames(blocker)} · Mend cannot see whether ${blocker.repositories.length === 1 ? "it holds" : "they hold"} commits or edits that are not on origin, so removal waits for force, pushed or not.`
         : `This worktree holds repositories added with mend repo add (${nestedNames(blocker)}). Mend cannot see whether they hold work that is not on a remote, so it keeps the worktree. Remove it from Mend if you mean to discard it.`;
-    case "HeldByOtherProject":
-      return `A session of another project holds this project as a repository at ${blocker.path} and ${activityWords[blocker.activity]}.`;
     case "ResourcesDeclared":
       return `The project has resources (${blocker.names.map((name) => `@${name}`).join(", ")}). Remove them first.`;
     case "RemovalUnderway":
+      if (blocker.stopped !== null) {
+        return inMend
+          ? `not removed · ${stoppedWords(blocker.stopped)} · remove that ${blocker.stopped.kind} again to finish it.`
+          : `Mend started removing ${blocker.stopped.kind} ${blocker.stopped.name} and stopped partway. Remove it again from Mend to finish.`;
+      }
       return inMend
         ? "not removed · another removal of this worktree or its project is under way · try again shortly."
         : "Mend is already removing this worktree or its project. Check Mend before trying again.";
@@ -513,15 +509,17 @@ const worktreeSentence = (
 };
 
 /**
- * What a refused worktree removal says. In Mend, a refusal force lifts keeps the hint old CLIs
- * read; outside Mend, a single `no-remote` change reads exactly decision Q3's sentence.
+ * What a refused worktree removal says: a sentence per blocker, and in Mend, once at the end,
+ * the override when force lifts every one. Outside Mend, a single `no-remote` change reads exactly
+ * decision Q3's sentence.
  */
 export const worktreeRefusalWords = (
   refusal: { readonly blockers: ReadonlyArray<RemovalBlocker>; readonly forceWouldLift: boolean },
   audience: RefusalAudience,
 ): string => {
-  const hint = refusal.forceWouldLift ? `, ${REMOVAL_FORCE_HINT}.` : ".";
-  return refusal.blockers.map((blocker) => worktreeSentence(blocker, audience, hint)).join(" ");
+  const sentences = refusal.blockers.map((blocker) => worktreeSentence(blocker, audience));
+  if (audience === "in-mend" && refusal.forceWouldLift) sentences.push(REMOVAL_FORCE_HINT);
+  return sentences.join(" ");
 };
 
 const unlandedClause = (standing: UnlandedStanding) => {
@@ -539,23 +537,31 @@ const unlandedClause = (standing: UnlandedStanding) => {
   }
 };
 
+const projectRoleWords: Record<SessionRole, string> = {
+  inhabitant: "in",
+  holder: "holding",
+  linked: "linking",
+};
+
 /** One clause per blocker, for a refused project removal: whose work, and in which worktree. */
 const projectClause = (blocker: RemovalBlocker): string => {
   switch (blocker._tag) {
     case "SessionLive":
-      return `${whose(blocker.owner)} session in ${blocker.worktreeName} ${activityWords[blocker.activity]}`;
+      return `${whose(blocker.owner)} session ${projectRoleWords[blocker.role]} ${blocker.worktreeName} ${activityWords[blocker.activity]}`;
+    case "SetupRunning":
+      return `a Service setup is running in ${blocker.worktreeName}`;
     case "Saving":
       return `${blocker.worktreeName} is ${holdWords(blocker.holds)}`;
     case "Unlanded":
       return `${blocker.worktreeName} holds ${blocker.owner === null ? "a" : `${blocker.owner.name}'s`} change, ${unlandedClause(blocker.standing)}`;
     case "NestedRepositories":
       return `${blocker.worktreeName} holds repositories added with mend repo add (${nestedNames(blocker)})`;
-    case "HeldByOtherProject":
-      return `a session of another project holds this project as a repository at ${blocker.path} and ${activityWords[blocker.activity]}`;
     case "ResourcesDeclared":
       return `the project has resources (${blocker.names.map((name) => `@${name}`).join(", ")})`;
     case "RemovalUnderway":
-      return "another removal of this project is under way";
+      return blocker.stopped === null
+        ? "another removal of this project or one of its worktrees is under way"
+        : `${stoppedWords(blocker.stopped)}, so remove that ${blocker.stopped.kind} again first`;
   }
 };
 

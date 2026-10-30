@@ -5,16 +5,15 @@ import { SessionId, WorktreeId } from "../ids.ts";
 import {
   decideRemoval,
   describeUnlanded,
-  fenceStep,
   LIFTED_BY_FORCE,
   NO_REMOTE_OUTSIDE_MEND,
   notChangeOwnerWords,
   OWNERLESS_OUTSIDE_MEND,
   type ProjectFacts,
   projectRefusalWords,
-  REMOVAL_FENCE_LEASE_SECONDS,
   REMOVAL_FORCE_HINT,
   RemovalBlocker,
+  underwayWith,
   type UnlandedStanding,
   type WorktreeFacts,
   worktreeRefusalWords,
@@ -38,6 +37,7 @@ const worktree = (overrides: Partial<WorktreeFacts> = {}): WorktreeFacts => ({
   holds: [],
   standing: { _tag: "at-base" },
   nestedRepositories: [],
+  setupRunning: false,
   ...overrides,
 });
 
@@ -56,7 +56,6 @@ const liveSession = (id: string, owner = anna) => ({
 
 const project = (overrides: Partial<ProjectFacts> = {}): ProjectFacts => ({
   worktrees: [],
-  foreignHolders: [],
   resources: [],
   ...overrides,
 });
@@ -173,7 +172,7 @@ describe("a change Mend could not read", () => {
       },
     ];
     expect(worktreeRefusalWords(refuse(blockers, true), "in-mend")).toBe(
-      `Mend could not read this worktree's change · git diff failed. Try again, ${REMOVAL_FORCE_HINT}.`,
+      `Mend could not read this worktree's change · git diff failed. Try again. ${REMOVAL_FORCE_HINT}`,
     );
     expect(worktreeRefusalWords(refuse(blockers), "outside-mend")).toBe(
       "Mend could not read this worktree's change · git diff failed. Mend keeps the worktree; try again from Mend.",
@@ -215,29 +214,83 @@ describe("decideRemoval, a project", () => {
     ]);
   });
 
-  it("refuses for a live session of another project holding it, and for declared resources", () => {
+  it("names a session of another project holding a worktree once, and declared resources", () => {
+    const holder = {
+      ...liveSession("s-x", kostas),
+      role: "holder" as const,
+      activity: "stopping" as const,
+    };
     const decision = decideRemoval({
       kind: "project",
-      project: project({
-        foreignHolders: [
-          { sessionId: SessionId.make("s-x"), path: "repos/api", activity: "stopping" },
-        ],
-        resources: ["db"],
-      }),
+      project: project({ worktrees: [worktree({ sessions: [holder] })], resources: ["db"] }),
     });
-    expect(refusedBlockers(decision)).toEqual(["HeldByOtherProject", "ResourcesDeclared"]);
+    expect(refusedBlockers(decision)).toEqual(["SessionLive", "ResourcesDeclared"]);
+    if (decision._tag !== "Refuse") return;
+    expect(projectRefusalWords(decision.blockers, "in-mend")).toBe(
+      "not removed · Kostas's session holding fix-auth is stopping · the project has resources (@db) · stop, land or remove those first, then remove the project again.",
+    );
   });
 
-  it("ignores a settled holder from another project", () => {
+  it("refuses for a starting session, a linked project's session and a running Service setup", () => {
     const decision = decideRemoval({
       kind: "project",
       project: project({
-        foreignHolders: [
-          { sessionId: SessionId.make("s-x"), path: "repos/api", activity: "settled" },
+        worktrees: [
+          worktree({
+            setupRunning: true,
+            sessions: [
+              { ...liveSession("s-1"), activity: "starting" },
+              { ...liveSession("s-2", kostas), role: "linked" },
+            ],
+          }),
+        ],
+      }),
+    });
+    expect(refusedBlockers(decision)).toEqual(["SessionLive", "SessionLive", "SetupRunning"]);
+  });
+
+  it("ignores a settled session of another project", () => {
+    const decision = decideRemoval({
+      kind: "project",
+      project: project({
+        worktrees: [
+          worktree({ sessions: [{ ...liveSession("s-x"), role: "holder", activity: "settled" }] }),
         ],
       }),
     });
     expect(decision._tag).toBe("Remove");
+  });
+});
+
+describe("a removal that meets another", () => {
+  it("lists the other first, with every blocker of its own", () => {
+    const decision = decideRemoval({
+      kind: "worktree",
+      force: false,
+      worktree: worktree({ standing: neverLanded }),
+    });
+    expect(underwayWith(null, decision).map((blocker) => blocker._tag)).toEqual([
+      "RemovalUnderway",
+      "Unlanded",
+    ]);
+  });
+
+  it("says a deletion that stopped partway is finished by removing it again", () => {
+    const stopped = underwayWith({ kind: "project", name: "api" }, { _tag: "Remove" });
+    expect(worktreeRefusalWords(refuse(stopped), "in-mend")).toBe(
+      "not removed · the removal of project api stopped partway · remove that project again to finish it.",
+    );
+    expect(worktreeRefusalWords(refuse(stopped), "outside-mend")).toBe(
+      "Mend started removing project api and stopped partway. Remove it again from Mend to finish.",
+    );
+    expect(
+      projectRefusalWords(
+        underwayWith({ kind: "worktree", name: "fix-auth" }, { _tag: "Remove" }),
+        "in-mend",
+      ),
+    ).toBe(
+      "not removed · the removal of worktree fix-auth stopped partway, so remove that worktree again first · stop, land or remove those first, then remove the project again.",
+    );
   });
 });
 
@@ -248,6 +301,7 @@ describe("LIFTED_BY_FORCE", () => {
         .filter(([, lifted]) => lifted)
         .map(([tag]) => tag),
     ).toEqual(["Unlanded", "NestedRepositories"]);
+    expect(LIFTED_BY_FORCE.SetupRunning).toBe(false);
   });
 });
 
@@ -299,26 +353,6 @@ describe("hasProvenOwner (decision Q8)", () => {
   });
 });
 
-describe("fenceStep", () => {
-  const now = new Date("2026-10-30T10:00:00Z");
-  const ago = (seconds: number) => new Date(now.getTime() - seconds * 1000);
-  const stale = REMOVAL_FENCE_LEASE_SECONDS + 1;
-
-  it("takes a free fence, and a checking fence whose checker went quiet", () => {
-    expect(fenceStep(null, now)).toEqual({ _tag: "acquire" });
-    expect(fenceStep({ phase: "checking", since: ago(stale) }, now)).toEqual({ _tag: "acquire" });
-  });
-
-  it("refuses while another removal holds a fresh fence", () => {
-    expect(fenceStep({ phase: "checking", since: ago(5) }, now)).toEqual({ _tag: "underway" });
-    expect(fenceStep({ phase: "deleting", since: ago(5) }, now)).toEqual({ _tag: "underway" });
-  });
-
-  it("finishes a removal that passed its checks and stopped while deleting", () => {
-    expect(fenceStep({ phase: "deleting", since: ago(stale) }, now)).toEqual({ _tag: "finish" });
-  });
-});
-
 describe("worktreeRefusalWords", () => {
   const unlanded = (standing: UnlandedStanding): RemovalBlocker => ({
     _tag: "Unlanded",
@@ -362,11 +396,21 @@ describe("worktreeRefusalWords", () => {
     }
   });
 
-  it("names the files in Mend and keeps the force hint old clients read", () => {
+  it("names the files in Mend, and says force once when it lifts every blocker", () => {
     const words = worktreeRefusalWords(refuse([unlanded(neverLanded)], true), "in-mend");
     expect(words).toBe(
-      `This worktree holds a change that was never landed · ${describeUnlanded(neverLanded.files)}. Land it or discard it before removal, ${REMOVAL_FORCE_HINT}.`,
+      `This worktree holds a change that was never landed · ${describeUnlanded(neverLanded.files)}. Land it or discard it before removal. ${REMOVAL_FORCE_HINT}`,
     );
+    const nested: RemovalBlocker = {
+      _tag: "NestedRepositories",
+      worktreeId: WorktreeId.make("w-1"),
+      worktreeName: "fix-auth",
+      repositories: [{ path: "core", branch: "main" }],
+    };
+    const both = worktreeRefusalWords(refuse([unlanded(neverLanded), nested], true), "in-mend");
+    expect(both.split(REMOVAL_FORCE_HINT)).toHaveLength(2);
+    expect(both.endsWith(REMOVAL_FORCE_HINT)).toBe(true);
+    expect(both).not.toContain("Push what you need");
     expect(worktreeRefusalWords(refuse([unlanded(neverLanded)], false), "in-mend")).not.toContain(
       REMOVAL_FORCE_HINT,
     );
@@ -401,13 +445,18 @@ describe("worktreeRefusalWords", () => {
         repositories: [{ path: "core", branch: "main" }],
       },
       {
-        _tag: "HeldByOtherProject",
-        sessionId: SessionId.make("s-x"),
-        path: "repos/api",
-        activity: "live",
+        _tag: "SessionLive",
+        worktreeId: WorktreeId.make("w-1"),
+        worktreeName: "fix-auth",
+        sessionId: SessionId.make("s-2"),
+        owner: null,
+        role: "linked",
+        activity: "starting",
       },
+      { _tag: "SetupRunning", worktreeId: WorktreeId.make("w-1"), worktreeName: "fix-auth" },
       { _tag: "ResourcesDeclared", names: ["db"] },
-      { _tag: "RemovalUnderway" },
+      { _tag: "RemovalUnderway", stopped: null },
+      { _tag: "RemovalUnderway", stopped: { kind: "worktree", name: "fix-auth" } },
     ];
     for (const blocker of blockers) {
       for (const audience of ["in-mend", "outside-mend"] as const) {

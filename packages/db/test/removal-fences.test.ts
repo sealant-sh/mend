@@ -1,6 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, SessionId, WorktreeId } from "@mend/domain";
-import { REMOVAL_FENCE_LEASE_SECONDS } from "@mend/domain/workbench";
 import { Deferred, Effect, Exit, Fiber, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { migrations } from "../src/migrations.ts";
 import {
   isRemovalFenced,
+  isRemovalStopped,
   RemovalFencesRepo,
   RemovalFencesRepoLive,
 } from "../src/repos/removal-fences.ts";
@@ -49,6 +49,21 @@ const refused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.map((exit) => Exit.isFailure(exit) && isRemovalFenced(exit.cause)),
   );
 
+/** What a start refused by a mark was told: a removal at work, or one that stopped partway. */
+const refusal = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.exit,
+    Effect.map((exit) =>
+      Exit.isSuccess(exit)
+        ? "admitted"
+        : isRemovalStopped(exit.cause)
+          ? "stopped"
+          : isRemovalFenced(exit.cause)
+            ? "under way"
+            : "failed",
+    ),
+  );
+
 const changeOwner = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ readonly owner: string | null }>`
@@ -70,7 +85,16 @@ const ownerRecord = (worktree: string) =>
     return row;
   });
 
+/** Migration 0164's lease, as `removal_fence_fresh` holds it. */
+const LEASE_SECONDS = 120;
 const secondsAgo = (seconds: number) => `${seconds} seconds`;
+const age = (table: "worktrees" | "projects", id: string, seconds: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      UPDATE ${sql(table)} SET removal_since = now() - ${secondsAgo(seconds)}::interval
+      WHERE id = ${id}`;
+  });
 
 describe.skipIf(postgres.skip)("removal fences (migration 0164)", () => {
   beforeAll(async () => {
@@ -202,7 +226,7 @@ describe.skipIf(postgres.skip)("removal fences (migration 0164)", () => {
         const first = yield* fences.take(worktreeRow);
         if (first._tag !== "held") return yield* Effect.die("fence not taken");
         const second = yield* fences.take(worktreeRow);
-        const ago = `${REMOVAL_FENCE_LEASE_SECONDS + 5} seconds`;
+        const ago = `${LEASE_SECONDS + 5} seconds`;
         yield* sql`UPDATE worktrees SET removal_since = now() - ${ago}::interval WHERE id = 'w-1'`;
         const takeover = yield* fences.take(worktreeRow);
         if (takeover._tag !== "held") return yield* Effect.die("stale check not taken over");
@@ -348,7 +372,7 @@ describe.skipIf(postgres.skip)("removal fences (migration 0164)", () => {
         const taken = yield* fences.take(worktreeRow);
         if (taken._tag !== "held") return yield* Effect.die("fence not taken");
         yield* fences.commit(worktreeRow, taken.id);
-        const stale = secondsAgo(REMOVAL_FENCE_LEASE_SECONDS + 5);
+        const stale = secondsAgo(LEASE_SECONDS + 5);
         yield* sql`UPDATE worktrees SET removal_since = now() - ${stale}::interval WHERE id = 'w-1'`;
         const [first, second] = yield* Effect.all(
           [fences.take(worktreeRow), fences.take(worktreeRow)],
@@ -387,7 +411,7 @@ describe.skipIf(postgres.skip)("removal fences (migration 0164)", () => {
         const fences = yield* RemovalFencesRepo;
         const taken = yield* fences.take(worktreeRow);
         if (taken._tag !== "held") return yield* Effect.die("fence not taken");
-        const nearlyStale = secondsAgo(REMOVAL_FENCE_LEASE_SECONDS - 2);
+        const nearlyStale = secondsAgo(LEASE_SECONDS - 2);
         yield* sql`UPDATE worktrees SET removal_since = now() - ${nearlyStale}::interval WHERE id = 'w-1'`;
         const renewed = yield* fences.renew(worktreeRow, taken.id);
         yield* sql`UPDATE worktrees SET removal_since = removal_since - interval '10 seconds' WHERE id = 'w-1'`;
@@ -423,7 +447,7 @@ describe.skipIf(postgres.skip)("removal fences (migration 0164)", () => {
           INSERT INTO session_repositories
             (id, session_id, project_id, worktree_id, name, path, branch, base_sha, capture, source)
           VALUES ('r-1', 's-1', 'p-1', 'w-2', 'lib', 'lib', 'mend/other', 'abc', 'own', 'store')`);
-        const admitted = yield* fences.admitsSessionWork(SessionId.make("s-1"));
+        const admitted = !(yield* refused(fences.admit(SessionId.make("s-1"))));
         return { shell, service, observed, forward, repository, admitted };
       }),
     );
@@ -462,7 +486,7 @@ describe.skipIf(postgres.skip)("removal fences (migration 0164)", () => {
         const resumed = yield* refused(
           sql`UPDATE agent_sessions SET status = 'running' WHERE id = 's-b'`,
         );
-        const admitted = yield* fences.admitsSessionWork(SessionId.make("s-b"));
+        const admitted = !(yield* refused(fences.admit(SessionId.make("s-b"))));
         yield* fences.release(worktreeRow, taken.id);
         const afterRelease = yield* refused(
           sql`UPDATE agent_sessions SET status = 'running' WHERE id = 's-b'`,
@@ -504,11 +528,299 @@ describe.skipIf(postgres.skip)("removal fences (migration 0164)", () => {
           INSERT INTO session_repositories
             (id, session_id, project_id, worktree_id, name, path, branch, base_sha, capture, source)
           VALUES ('r-1', 's-1', 'p-1', 'w-2', 'lib', 'repos/lib', 'mend/other', 'abc', 'nested', 'origin')`;
+        yield* sql`UPDATE session_repositories SET state = 'ready' WHERE id = 'r-1'`;
         yield* sql`DELETE FROM agent_sessions WHERE id = 's-1'`;
         return yield* sql<{ readonly path: string; readonly branch: string }>`
           SELECT path, branch FROM worktree_nested_repositories WHERE worktree_id = 'w-1'`;
       }),
     );
     expect(kept).toEqual([{ path: "repos/lib", branch: "mend/other" }]);
+  });
+
+  it("keeps a nested repository only once its add finished", async () => {
+    const recorded = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* insertSession("s-1", "anna");
+        const nested = (id: string, path: string) => sql`
+          INSERT INTO session_repositories
+            (id, session_id, project_id, worktree_id, name, path, branch, base_sha, capture, source)
+          VALUES (${id}, 's-1', 'p-1', ${id === "r-1" ? "w-2" : "w-1"}, ${id}, ${path}, 'mend/x',
+                  'abc', 'nested', 'origin')`;
+        yield* nested("r-1", "repos/failed");
+        yield* sql`UPDATE session_repositories SET state = 'failed' WHERE id = 'r-1'`;
+        const afterFailure = yield* sql`
+          SELECT path FROM worktree_nested_repositories WHERE worktree_id = 'w-1'`;
+        yield* nested("r-2", "repos/lib");
+        yield* sql`UPDATE session_repositories SET state = 'ready' WHERE id = 'r-2'`;
+        const afterReady = yield* sql<{ readonly path: string }>`
+          SELECT path FROM worktree_nested_repositories WHERE worktree_id = 'w-1'`;
+        return { afterFailure: afterFailure.length, afterReady: afterReady.map((row) => row.path) };
+      }),
+    );
+    expect(recorded).toEqual({ afterFailure: 0, afterReady: ["repos/lib"] });
+  });
+
+  it("writes the owner's history in the session insert itself", async () => {
+    const history = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* insertSession("s-1", "anna");
+        const fences = yield* RemovalFencesRepo;
+        const taken = yield* fences.take(worktreeRow);
+        if (taken._tag !== "held") return yield* Effect.die("fence not taken");
+        const refusedInsert = yield* refused(insertSession("s-2", "kostas"));
+        return yield* sql<{ readonly user: string }>`
+          SELECT user_id AS user FROM worktree_session_owners WHERE worktree_id = 'w-1'
+          ORDER BY user_id`.pipe(
+          Effect.map((rows) => ({ refusedInsert, owners: rows.map((row) => row.user) })),
+        );
+      }),
+    );
+    expect(history).toEqual({ refusedInsert: true, owners: ["anna"] });
+  });
+
+  it("keeps a deletion that renews its mark its own, past the lease", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const fences = yield* RemovalFencesRepo;
+        const taken = yield* fences.take(worktreeRow);
+        if (taken._tag !== "held") return yield* Effect.die("fence not taken");
+        yield* fences.commit(worktreeRow, taken.id);
+        yield* age("worktrees", "w-1", LEASE_SECONDS - 2);
+        const renewed = yield* fences.renew(worktreeRow, taken.id);
+        yield* age("worktrees", "w-1", 60);
+        const whileRenewed = yield* fences.take(worktreeRow);
+        yield* age("worktrees", "w-1", LEASE_SECONDS + 5);
+        const takeover = yield* fences.take(worktreeRow);
+        const formerStillHolds = yield* fences.renew(worktreeRow, taken.id);
+        return {
+          renewed,
+          whileRenewed: whileRenewed._tag,
+          takeover: takeover._tag,
+          formerStillHolds,
+        };
+      }),
+    );
+    expect(outcome).toEqual({
+      renewed: true,
+      whileRenewed: "underway",
+      takeover: "finish",
+      formerStillHolds: false,
+    });
+  });
+
+  it("makes a project's removal and its worktree's see each other's stopped deletions at any age", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const fences = yield* RemovalFencesRepo;
+        const worktree = yield* fences.take(worktreeRow);
+        if (worktree._tag !== "held") return yield* Effect.die("fence not taken");
+        yield* fences.commit(worktreeRow, worktree.id);
+        yield* age("worktrees", "w-1", 600);
+        const projectOverStoppedWorktree = yield* fences.take(projectRow);
+        const finished = yield* fences.take(worktreeRow);
+        if (finished._tag !== "finish") return yield* Effect.die("stopped deletion not resumed");
+        yield* fences.release(worktreeRow, finished.id);
+        const project = yield* fences.take(projectRow);
+        if (project._tag !== "held") return yield* Effect.die("project fence not taken");
+        yield* fences.commit(projectRow, project.id);
+        yield* age("projects", "p-1", 600);
+        const worktreeUnderStoppedProject = yield* fences.take(worktreeRow);
+        return { projectOverStoppedWorktree, worktreeUnderStoppedProject };
+      }),
+    );
+    expect(outcome).toEqual({
+      projectOverStoppedWorktree: { _tag: "underway", stopped: { kind: "worktree", name: "fix" } },
+      worktreeUnderStoppedProject: { _tag: "underway", stopped: { kind: "project", name: "api" } },
+    });
+  });
+
+  it("tells a start under a stopped deletion apart from one under a removal at work", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const fences = yield* RemovalFencesRepo;
+        const taken = yield* fences.take(worktreeRow);
+        if (taken._tag !== "held") return yield* Effect.die("fence not taken");
+        const whileChecking = yield* refusal(insertSession("s-1", "anna"));
+        yield* fences.commit(worktreeRow, taken.id);
+        const whileDeleting = yield* refusal(insertSession("s-1", "anna"));
+        yield* fences.handOver(worktreeRow, taken.id);
+        const afterStopping = yield* refusal(insertSession("s-1", "anna"));
+        return { whileChecking, whileDeleting, afterStopping };
+      }),
+    );
+    expect(outcome).toEqual({
+      whileChecking: "under way",
+      whileDeleting: "under way",
+      afterStopping: "stopped",
+    });
+  });
+
+  it("lets a start admitted before the mark finish, and counts it as starting", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        yield* insertSession("s-1", "anna");
+        yield* insertSession("s-2", "anna");
+        yield* sql`UPDATE agent_sessions SET status = 'completed', settled_at = now()
+                   WHERE id IN ('s-1', 's-2')`;
+        const admission = yield* fences.admit(SessionId.make("s-1"));
+        const taken = yield* fences.take(worktreeRow);
+        if (taken._tag !== "held") return yield* Effect.die("fence not taken");
+        const starting = yield* fences.startingIn(WORKTREE);
+        const admittedOpens = yield* refusal(
+          sql`UPDATE agent_sessions SET status = 'running', settled_at = NULL WHERE id = 's-1'`,
+        );
+        const admittedShell = yield* refusal(sql`
+          INSERT INTO session_processes (id, session_id, sealant_workspace_id, sealant_session_id, kind)
+          VALUES ('p-shell', 's-1', 'ws-1', 'pty', 'shell')`);
+        const lateAdmission = yield* refusal(fences.admit(SessionId.make("s-2")));
+        const liveAdmission = yield* refusal(fences.admit(SessionId.make("s-1")));
+        yield* fences.endAdmission(admission);
+        yield* sql`UPDATE agent_sessions SET status = 'completed' WHERE id = 's-1'`;
+        const ended = yield* fences.startingIn(WORKTREE);
+        return { starting, admittedOpens, admittedShell, lateAdmission, liveAdmission, ended };
+      }),
+    );
+    expect(outcome).toEqual({
+      starting: ["s-1"],
+      admittedOpens: "admitted",
+      admittedShell: "admitted",
+      lateAdmission: "under way",
+      liveAdmission: "admitted",
+      ended: ["s-1"],
+    });
+  });
+
+  it("stops counting an admission nobody renews, and stops letting its rows in", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        yield* insertSession("s-1", "anna");
+        yield* sql`UPDATE agent_sessions SET status = 'completed' WHERE id = 's-1'`;
+        const admission = yield* fences.admit(SessionId.make("s-1"));
+        yield* sql`UPDATE session_admissions SET since = now() - ${secondsAgo(LEASE_SECONDS + 5)}::interval
+                   WHERE id = ${admission}`;
+        const taken = yield* fences.take(worktreeRow);
+        if (taken._tag !== "held") return yield* Effect.die("fence not taken");
+        return {
+          starting: yield* fences.startingIn(WORKTREE),
+          opens: yield* refusal(sql`UPDATE agent_sessions SET status = 'running' WHERE id = 's-1'`),
+        };
+      }),
+    );
+    expect(outcome).toEqual({ starting: [], opens: "under way" });
+  });
+
+  it("counts and fences a session of a project that links the worktree", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        yield* sql`
+          INSERT INTO projects (id, name, organization_id, store_path, default_branch)
+          VALUES ('p-2', 'web', 'org-1', '/store/web/repo.git', 'main')`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('w-b', 'p-2', 'b', 'b', 'mend/b', 'abc')`;
+        yield* sql`
+          INSERT INTO project_links (id, project_id, linked_project_id, name, worktree_name)
+          VALUES ('l-1', 'p-2', 'p-1', 'api', 'fix')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id)
+          VALUES ('s-b', 'p-2', 'w-b', 'claude', 'b', 'mend/b', 'abc', 'anna')`;
+        yield* sql`UPDATE agent_sessions SET status = 'completed' WHERE id = 's-b'`;
+        const inLinked = yield* fences.sessionsIn(WORKTREE);
+        const inOther = yield* fences.sessionsIn(WorktreeId.make("w-2"));
+        const taken = yield* fences.take(worktreeRow);
+        if (taken._tag !== "held") return yield* Effect.die("fence not taken");
+        const resumed = yield* refusal(
+          sql`UPDATE agent_sessions SET status = 'running' WHERE id = 's-b'`,
+        );
+        const inserted = yield* refusal(sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id)
+          VALUES ('s-c', 'p-2', 'w-b', 'claude', 'b', 'mend/b', 'abc', 'anna')`);
+        return { inLinked, inOther, resumed, inserted };
+      }),
+    );
+    expect(outcome).toEqual({
+      inLinked: ["s-b"],
+      inOther: [],
+      resumed: "under way",
+      inserted: "under way",
+    });
+  });
+
+  it("names a session in a worktree exactly when the worktree is one of the session's places", async () => {
+    const agree = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        yield* sql`
+          INSERT INTO projects (id, name, organization_id, store_path, default_branch)
+          VALUES ('p-2', 'web', 'org-1', '/store/web/repo.git', 'main')`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('w-b', 'p-2', 'b', 'b', 'mend/b', 'abc')`;
+        yield* sql`
+          INSERT INTO project_links (id, project_id, linked_project_id, name, worktree_name)
+          VALUES ('l-1', 'p-2', 'p-1', 'api', 'other')`;
+        yield* insertSession("s-1", "anna");
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id)
+          VALUES ('s-b', 'p-2', 'w-b', 'claude', 'b', 'mend/b', 'abc', 'anna')`;
+        yield* sql`
+          INSERT INTO session_repositories
+            (id, session_id, project_id, worktree_id, name, path, branch, base_sha, capture, source)
+          VALUES ('r-1', 's-b', 'p-1', 'w-1', 'api', 'api', 'mend/fix', 'abc', 'own', 'store')`;
+        const placed = yield* sql<{ readonly session: string; readonly worktree: string }>`
+          SELECT s.id AS session, place.worktree_id AS worktree
+          FROM agent_sessions s
+          CROSS JOIN LATERAL removal_fence_places(s.id, s.project_id, s.worktree_id) place
+          WHERE place.worktree_id IS NOT NULL
+          ORDER BY 2, 1`;
+        const named: Array<{ readonly session: string; readonly worktree: string }> = [];
+        for (const worktree of ["w-1", "w-2", "w-b"]) {
+          for (const session of yield* fences.sessionsIn(WorktreeId.make(worktree))) {
+            named.push({ session, worktree });
+          }
+        }
+        return { placed: [...placed], named };
+      }),
+    );
+    expect(agree.named).toEqual(agree.placed);
+    expect(agree.named).toEqual([
+      { session: "s-1", worktree: "w-1" },
+      { session: "s-b", worktree: "w-1" },
+      { session: "s-b", worktree: "w-2" },
+      { session: "s-b", worktree: "w-b" },
+    ]);
+  });
+
+  it("refuses a Service setup in a worktree a removal checks", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        const setup = (site: string, worktree: string) => sql`
+          INSERT INTO setup_runs
+            (site_key, fingerprint, worktree_id, state, claim_id, workspace_id, claimed_at, lease_until)
+          VALUES (${site}, 'f', ${worktree}, 'running', gen_random_uuid(), 'ws-1', now(),
+                  now() + interval '1 minute')`;
+        const taken = yield* fences.take(worktreeRow);
+        if (taken._tag !== "held") return yield* Effect.die("fence not taken");
+        return {
+          marked: yield* refusal(setup("site-1", "w-1")),
+          other: yield* refusal(setup("site-2", "w-2")),
+        };
+      }),
+    );
+    expect(outcome).toEqual({ marked: "under way", other: "admitted" });
   });
 });

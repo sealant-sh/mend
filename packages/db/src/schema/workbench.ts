@@ -86,7 +86,6 @@ import type {
   ServiceAddress,
   ServiceHostPolicy,
   ServiceLaunchSource,
-  RemovalPhase,
 } from "@mend/domain/workbench";
 import {
   AuditData,
@@ -530,7 +529,7 @@ export const projects = pgTable(
     // Whether Mend runs an install command for this project at all (0110, "Automatic install").
     installEnabled: boolean().notNull().default(true),
     // A removal's mark (0164, RemovalFencesRepo): all three set, or none.
-    removalPhase: text().$type<RemovalPhase>(),
+    removalPhase: text().$type<"checking" | "deleting">(),
     removalId: text(),
     removalSince: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
@@ -573,7 +572,7 @@ export const worktrees = pgTable(
     /** Whether the history proves `changeOwnerUserId` was the first session's owner (0164). */
     changeOwnerProven: boolean().notNull().default(false),
     // A removal's mark (0164, RemovalFencesRepo): all three set, or none.
-    removalPhase: text().$type<RemovalPhase>(),
+    removalPhase: text().$type<"checking" | "deleting">(),
     removalId: text(),
     removalSince: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),

@@ -635,11 +635,13 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            // No executor takes a worktree a removal is checking or deleting (0164). The project
+            // No executor takes a worktree a removal is checking or deleting (0164), unless its
+            // launch was admitted before the mark: the removal reads that admission. The project
             // and worktree rows are locked as the removal locks them, so each sees the other.
             const [fenced] = yield* sql<{ readonly marked: boolean }>`
-              SELECT removal_fence_marked(p.removal_phase, p.removal_since)
-                     OR removal_fence_marked(w.removal_phase, w.removal_since) AS marked
+              SELECT (removal_fence_marked(p.removal_phase, p.removal_since)
+                      OR removal_fence_marked(w.removal_phase, w.removal_since))
+                     AND NOT removal_fence_admitted(${executorId}) AS marked
                 FROM worktrees w JOIN projects p ON p.id = w.project_id
                WHERE w.id = ${worktreeId}
                FOR SHARE OF p, w`;
