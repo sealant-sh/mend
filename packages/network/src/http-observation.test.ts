@@ -1,5 +1,12 @@
 import { Cause, Context, Effect, Exit, Layer, Logger, Option, Tracer } from "effect";
-import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpClientResponse,
+  HttpRouter,
+  HttpServerError,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { observedWebHandler } from "./http-observation.ts";
@@ -11,6 +18,10 @@ interface LogLine {
   readonly message: unknown;
   readonly annotations: Record<string, unknown>;
 }
+
+const upstream = HttpClient.make((request) =>
+  Effect.succeed(HttpClientResponse.fromWeb(request, new Response("ok"))),
+);
 
 const harness = () => {
   const logs: Array<string> = [];
@@ -35,6 +46,18 @@ const harness = () => {
             }),
           ),
         ),
+      ),
+      router.add(
+        "GET",
+        "/future/:id/forward",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          yield* Effect.log("forwarding", request.headers);
+          yield* upstream.get(
+            `http://upstream.internal/x?wsTicket=${SENTINEL}&view=${SENTINEL}&ticket=${SENTINEL}`,
+          );
+          return HttpServerResponse.text("forwarded");
+        }),
       ),
       router.add(
         "GET",
@@ -212,6 +235,22 @@ describe("what a request leaves in the log and the trace", () => {
         "HttpRequestFailed: status 500",
         "HttpRequestFailed: aborted",
       ]);
+    } finally {
+      await dispose();
+    }
+  });
+
+  it("redacts Mend's credentials in what a handler logs and in the spans of the calls it makes", async () => {
+    const { logs, spans, send, dispose } = harness();
+    try {
+      const response = await send("GET", "/future/1/forward", {
+        headers: { "x-mend-invitation": SENTINEL },
+      });
+      expect(await response.text()).toBe("forwarded");
+      expect(spans.filter((span) => span.kind === "client")).toHaveLength(1);
+      expect(logs.filter((line) => line.includes("forwarding"))).toHaveLength(1);
+      expect(logs.filter((line) => line.includes(SENTINEL))).toEqual([]);
+      expect(recorded(spans)).not.toContain(SENTINEL);
     } finally {
       await dispose();
     }
