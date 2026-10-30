@@ -143,12 +143,12 @@ export const ProjectAccessLive: Layer.Layer<
     });
 
     /** Dies with `RemovedProjectWork` when the request would change a removed project `viewer` sees. */
-    const refuseRemovedWork = (projectId: ProjectId, viewer: Viewer) =>
+    const refuseRemovedWork = (projectId: ProjectId, caller: Viewer) =>
       Effect.gen(function* () {
         const request = yield* Effect.serviceOption(HttpServerRequest.HttpServerRequest);
         if (Option.isNone(request) || READS.has(request.value.method)) return;
         const kept = yield* projects.removedById(projectId);
-        if (kept !== null && canSeeProject(kept.project, viewer))
+        if (kept !== null && canSeeProject(kept.project, caller))
           return yield* Effect.die(new RemovedProjectWork({ state: kept.state }));
       });
 

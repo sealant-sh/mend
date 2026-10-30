@@ -1330,10 +1330,10 @@ describe("a change asked of a removed project", () => {
   beforeAll(async () => {
     removedWorld = await createTenancyApi({}, { errorDetail: { mode: "redacted" } });
     const removed = ids("private-alice").project;
-    const project = removedWorld.world.projects.get(removed);
-    if (project === undefined) throw new Error("missing private-alice fixture");
+    const row = removedWorld.world.projects.get(removed);
+    if (row === undefined) throw new Error("missing private-alice fixture");
     removedWorld.world.retainedProjects.set(removed, {
-      project,
+      project: row,
       removedAt: new Date("2026-10-30T12:00:00.000Z"),
       removedByUserId: "alice",
       state: "removed",
