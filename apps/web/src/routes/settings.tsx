@@ -19,7 +19,6 @@ import {
   pairingPayload,
   pairingUrls,
   renderPairingSvg,
-  useSecondTick,
 } from "#/components/pairing-qr";
 import { SecretFilesPanel } from "#/components/secret-files-panel";
 import { AppShell } from "#/components/shell";
@@ -41,6 +40,7 @@ import {
   type SealantConnectionDto,
   type SettingsDto,
 } from "#/lib/api";
+import { useSecondTick } from "#/lib/clock";
 import {
   DOTFILES_MANAGER_OPTIONS,
   repositoryDraft,

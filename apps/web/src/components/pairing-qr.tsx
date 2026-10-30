@@ -1,6 +1,7 @@
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 
 import type { MintedDeviceDto, PairingDto } from "#/lib/api";
+import { useSecondTick } from "#/lib/clock";
 
 /**
  * Pairing a phone: the machine mints a short-lived code, the phone reads it —
@@ -39,17 +40,6 @@ export const renderPairingSvg = async (payload: string): Promise<string> => {
   });
   return svg.replaceAll('stroke="#000000"', 'stroke="currentColor"');
 };
-
-const subscribeToSeconds = (onStoreChange: () => void) => {
-  const timer = setInterval(onStoreChange, 1000);
-  return () => clearInterval(timer);
-};
-
-const secondsNow = () => Math.floor(Date.now() / 1000);
-
-/** One shared once-a-second tick — the only thing a countdown needs. */
-export const useSecondTick = (): number =>
-  useSyncExternalStore(subscribeToSeconds, secondsNow, secondsNow);
 
 /** "9:41" while the moment is ahead, null once it has passed. */
 export const countdown = (expiresAt: string, nowSeconds: number): string | null => {

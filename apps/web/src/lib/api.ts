@@ -127,6 +127,8 @@ export type StableServiceDto = ServiceViewDto["service"];
 export type ServiceForwardDto = NonNullable<ServiceViewDto["currentForward"]>;
 export type ServiceObservationDto = NonNullable<ServiceViewDto["latestObservation"]>;
 export type ServiceEndpointDto = ServiceViewDto["endpoints"][number];
+export type WorktreePreviewsDto = Outputs["worktrees"]["previews"];
+export type WorktreePreviewDto = WorktreePreviewsDto["previews"][number];
 export type SessionTranscriptDto = Outputs["sessions"]["transcript"];
 export type TranscriptEventDto = SessionTranscriptDto["events"][number];
 

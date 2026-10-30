@@ -1,4 +1,11 @@
-import { isLoopbackHostname, serviceConnectCommand, serviceReach } from "@mend/domain/workbench";
+import type { WorktreeId } from "@mend/domain";
+import {
+  isLoopbackHostname,
+  type PreviewStatus,
+  previewStatusLine,
+  serviceConnectCommand,
+  serviceReach,
+} from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import { Checkbox } from "@mend/ui/components/ui/checkbox";
 import { Input } from "@mend/ui/components/ui/input";
@@ -35,6 +42,16 @@ import {
   type ServiceViewDto,
   type SessionProcessDto,
 } from "#/lib/api";
+import { useSecondTick } from "#/lib/clock";
+import {
+  placePreviews,
+  type PreviewsRead,
+  rowOpen,
+  type RowOpen,
+  type ServicePreview,
+  useWorktreePreviews,
+} from "#/lib/previews";
+import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -90,6 +107,41 @@ function ServiceStatusDot({ status }: { readonly status: string }) {
 
 type ServiceVerb = "restart" | "stop" | "rerun";
 
+function OpenAction({ open }: { readonly open: RowOpen }) {
+  if (open === null) return null;
+  if (open._tag === "Waiting") {
+    return (
+      <span
+        role="link"
+        aria-disabled="true"
+        title={open.why}
+        className="cursor-not-allowed font-sans text-xs font-medium text-faint"
+      >
+        Open
+      </span>
+    );
+  }
+  return (
+    <a
+      href={open.href}
+      target="_blank"
+      rel="noreferrer"
+      className="font-sans text-xs font-medium text-info hover:underline"
+    >
+      Open
+    </a>
+  );
+}
+
+function PreviewLines({ facts }: { readonly facts: ReadonlyArray<PreviewStatus> }) {
+  const now = new Date(useSecondTick() * 1000);
+  return facts.map((status, index) => (
+    <p key={index} className="mt-1 font-mono break-words text-[11px] text-muted-foreground">
+      {previewStatusLine(status, now)}
+    </p>
+  ));
+}
+
 const noSubscription = () => () => {};
 
 /**
@@ -123,6 +175,8 @@ function ServiceRow({
   pending,
   onAction,
   first,
+  previews,
+  preview,
 }: {
   readonly service: ServiceViewDto;
   readonly actionable: boolean;
@@ -131,6 +185,8 @@ function ServiceRow({
   readonly pending: string | null;
   readonly onAction: (verb: ServiceVerb, service: ServiceViewDto) => void;
   readonly first: boolean;
+  readonly previews: PreviewsRead;
+  readonly preview: ServicePreview | null;
 }) {
   const [copied, copyValue] = useCopy();
   const [commandCopied, copyCommand] = useCopy();
@@ -145,6 +201,11 @@ function ServiceRow({
   // link, so the row names the command that tunnels it here instead.
   const reach = serviceReach(service.endpoints, onMendHost);
   const url = reach.kind === "direct" ? reach.browserUrl : null;
+  const open = rowOpen(
+    previews,
+    preview,
+    live && url !== null && currentObservation(service)?.state === "reachable" ? url : null,
+  );
   const command = serviceConnectCommand(stable.name);
   // What a client would connect to — the copyable fact. Dead forwards are
   // not offered: an ended Service has no host port worth pasting anywhere.
@@ -202,16 +263,7 @@ function ServiceRow({
               {copied ? "Copied" : "Copy"}
             </RowAction>
           )}
-          {live && url !== null && currentObservation(service)?.state === "reachable" && (
-            <a
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className="font-sans text-xs font-medium text-info hover:underline"
-            >
-              Open
-            </a>
-          )}
+          <OpenAction open={open} />
           {live && actionable && attempt !== null && attempt.argv.length > 0 && (
             <RowAction
               onClick={() => onAction("restart", service)}
@@ -241,6 +293,7 @@ function ServiceRow({
           )}
         </span>
       </div>
+      {preview !== null && preview.facts.length > 0 && <PreviewLines facts={preview.facts} />}
       {live && reach.kind === "tunnel" && (
         <div className="mt-2">
           <div className="flex items-center justify-between gap-3">
@@ -282,12 +335,14 @@ function ServiceRow({
 
 export function ServicesCard({
   sessionId,
+  worktreeId,
   sessionLive,
   steer,
   runs,
   ownerName,
 }: {
   readonly sessionId: string;
+  readonly worktreeId: WorktreeId;
   readonly sessionLive: boolean;
   /** Whether the viewer may steer the session (docs/adr/0003); otherwise the card only reads. */
   readonly steer: boolean;
@@ -307,6 +362,7 @@ export function ServicesCard({
     ),
   );
   const recipes = useQuery(trpc.sessions.recipes.queryOptions({ id: sessionId }));
+  const previewsRead = useWorktreePreviews(worktreeId);
   const [pending, setPending] = useState<string | null>(null);
 
   const services = serviceViews.data ?? [];
@@ -325,12 +381,37 @@ export function ServicesCard({
     (recipe) => recipe.shadowedBy === null && !shownNames.has(recipe.name),
   );
   const shadowed = (recipes.data ?? []).filter((recipe) => recipe.shadowedBy !== null);
+  const recipeRows = canStart ? startable : [];
+  const shownServices = [...liveServices, ...endedServices];
+  // A failed refresh wins over what an earlier read said: the query keeps that data, but it no
+  // longer vouches for where Open goes.
+  const answered = previewsRead.isError ? undefined : previewsRead.data;
+  const previews: PreviewsRead =
+    answered !== undefined
+      ? {
+          _tag: "Read",
+          placed: placePreviews(answered, sessionId, {
+            serviceIds: new Set(shownServices.map((view) => view.service.id)),
+            names: new Set([...shownNames, ...recipeRows.map((recipe) => recipe.name)]),
+          }),
+        }
+      : {
+          _tag: "Unknown",
+          why: previewsRead.isError
+            ? "Mend could not read this worktree's previews"
+            : "Reading this worktree's previews",
+        };
+  const placed = previews._tag === "Read" ? previews.placed : null;
+  const previewOf = (serviceId: string, name: string): ServicePreview | null =>
+    placed?.byService.get(serviceId) ?? placed?.byName.get(name) ?? null;
+  const unplaced = placed?.unplaced ?? [];
   const renewalFailure = services.find((view) => view.workspaceTtlRenewalError !== null) ?? null;
 
   const invalidate = () =>
     Promise.all([
       queryClient.invalidateQueries(trpc.sessions.pathFilter()),
       queryClient.invalidateQueries(trpc.services.list.pathFilter()),
+      queryClient.invalidateQueries(trpc.worktrees.previews.pathFilter()),
     ]);
 
   const act = (verb: ServiceVerb, view: ServiceViewDto) => {
@@ -360,7 +441,11 @@ export function ServicesCard({
     void action.then(invalidate).finally(() => setPending(null));
   };
 
-  const empty = services.length === 0 && startable.length === 0 && shadowed.length === 0;
+  const empty =
+    services.length === 0 &&
+    startable.length === 0 &&
+    shadowed.length === 0 &&
+    unplaced.length === 0;
 
   return (
     <section className="mt-6">
@@ -384,7 +469,7 @@ export function ServicesCard({
           </p>
         ) : (
           <>
-            {[...liveServices, ...endedServices].map((service, index) => (
+            {shownServices.map((service, index) => (
               <ServiceRow
                 key={service.service.id}
                 service={service}
@@ -393,10 +478,13 @@ export function ServicesCard({
                 pending={pending}
                 onAction={act}
                 first={index === 0}
+                previews={previews}
+                preview={previewOf(service.service.id, service.service.name)}
               />
             ))}
-            {canStart &&
-              startable.map((recipe, index) => (
+            {recipeRows.map((recipe, index) => {
+              const preview = placed?.byName.get(recipe.name) ?? null;
+              return (
                 <div
                   key={`${recipe.source}:${recipe.name}`}
                   className={`px-4 py-3 ${index === 0 && services.length === 0 ? "" : "border-t border-rule-faint"}`}
@@ -405,22 +493,48 @@ export function ServicesCard({
                     <p className="min-w-0 truncate font-sans text-[13px] font-medium text-ink-2">
                       {recipe.name}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => start(recipe)}
-                      disabled={pending !== null}
-                      className="shrink-0 font-sans text-xs font-medium text-info hover:underline"
-                    >
-                      {pending === `run:${recipe.name}` ? "Starting…" : "Run"}
-                    </button>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <OpenAction open={rowOpen(previews, preview, null)} />
+                      <button
+                        type="button"
+                        onClick={() => start(recipe)}
+                        disabled={pending !== null}
+                        className="font-sans text-xs font-medium text-info hover:underline"
+                      >
+                        {pending === `run:${recipe.name}` ? "Starting…" : "Run"}
+                      </button>
+                    </span>
                   </div>
                   <p className="mt-1 truncate font-mono text-[11px] text-faint">
                     {recipe.command ?? "adopt"} · :{recipe.port}
                     {recipe.protocol === "udp" ? "/udp" : ""} ·{" "}
                     {recipe.source === "file" ? "mend.toml" : "project"}
                   </p>
+                  {preview !== null && preview.facts.length > 0 && (
+                    <PreviewLines facts={preview.facts} />
+                  )}
                 </div>
-              ))}
+              );
+            })}
+            {unplaced.map((preview, index) => (
+              <div
+                key={preview.id}
+                className={`px-4 py-3 ${index === 0 && services.length === 0 && recipeRows.length === 0 ? "" : "border-t border-rule-faint"}`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <p className="min-w-0 truncate font-sans text-[13px] font-medium text-ink-2">
+                    {preview.serviceName}
+                  </p>
+                  <OpenAction open={rowOpen(previews, preview, null)} />
+                </div>
+                {preview.inSiblingSession && (
+                  <p className="mt-1 truncate font-mono text-[11px] text-faint">
+                    runs in another session of this worktree
+                  </p>
+                )}
+                {preview.facts.length > 0 && <PreviewLines facts={preview.facts} />}
+              </div>
+            ))}
             {shadowed.map((recipe) => (
               <div
                 key={`${recipe.source}:${recipe.name}:shadowed`}
@@ -438,6 +552,16 @@ export function ServicesCard({
               </div>
             ))}
           </>
+        )}
+        {answered === undefined || answered.unprepared === null ? null : (
+          <p className="border-t border-rule-faint px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
+            {answered.unprepared}
+          </p>
+        )}
+        {previewsRead.isError && (
+          <p className="border-t border-rule-faint px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
+            previews not read · {failureWords(previewsRead.error, "no answer")}
+          </p>
         )}
         {canAct && !runs && (
           <p className="border-t border-rule-faint px-4 py-2.5 font-sans text-[12.5px] text-ink-2">
