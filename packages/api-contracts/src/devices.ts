@@ -27,6 +27,7 @@ export const devicesGroup = HttpApiGroup.make("devices")
     }),
   )
   .add(HttpApiEndpoint.delete("unregister", "/devices"))
+  .add(HttpApiEndpoint.delete("unregisterLegacyIgnoringToken", "/devices/:token"))
   // What the signed-in account hears about on its phones; PUT saves the whole setting.
   .add(
     HttpApiEndpoint.get("notificationSettings", "/me/notifications", {

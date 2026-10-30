@@ -616,6 +616,11 @@ export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
     ),
 );
 
+const forgetCallingDevice = Effect.gen(function* () {
+  const deviceTokenId = deviceIdOf((yield* CurrentUser).credential);
+  if (deviceTokenId !== undefined) yield* (yield* PushDevicesRepo).forget(deviceTokenId);
+});
+
 export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handlers) =>
   handlers
     .handle("register", ({ payload }) =>
@@ -634,12 +639,8 @@ export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handle
         return new RegisteredDevice({ token: device.token, platform: device.platform });
       }),
     )
-    .handle("unregister", () =>
-      Effect.gen(function* () {
-        const deviceTokenId = deviceIdOf((yield* CurrentUser).credential);
-        if (deviceTokenId !== undefined) yield* (yield* PushDevicesRepo).forget(deviceTokenId);
-      }),
-    )
+    .handle("unregister", () => forgetCallingDevice)
+    .handle("unregisterLegacyIgnoringToken", () => forgetCallingDevice)
     .handle("notificationSettings", () =>
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
