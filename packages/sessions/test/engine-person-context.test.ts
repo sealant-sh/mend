@@ -27,6 +27,7 @@ import {
   SealantClient,
   SealantPlatformError,
   SealantPrincipal,
+  toPlatformError,
 } from "@mend/sealant";
 import {
   SessionEngine,
@@ -36,11 +37,13 @@ import {
 } from "@mend/sessions";
 import { AgentBridge, processStatePathOf } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type {
-  CreateOptions,
-  Workspace,
-  WorkspaceCaptureOwnerMap,
-  WorkspaceCaptureReplanned,
+import {
+  type CreateOptions,
+  SealantApiError,
+  SealantError,
+  type Workspace,
+  type WorkspaceCaptureOwnerMap,
+  type WorkspaceCaptureReplanned,
 } from "@sealant/sdk";
 import { Clock, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
@@ -1462,21 +1465,22 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(refused._tag).toBe("HarnessLayoutNotAppliedError");
   });
 
-  it("settles a launch whose layout decision throws: failed, its words on the session line, nothing created (box, 0.36.0-next.645)", async () => {
-    // The box's 500: the operator's person launch with the flag unset, and the SDK refusing the
-    // image question's options by throwing, so the decision died rather than failed.
-    const words =
-      "workspaces.create requires exactly one of `repository` (a git remote to clone) or `source` (a caller-owned mount).";
+  /**
+   * A person launch whose layout decision dies with `defect`: the box's 500 (0.36.0-next.645),
+   * the operator's person launch with the flag unset and the SDK refusing the image question's
+   * options by throwing. Answers the session's line once nothing was created.
+   */
+  const launchWhoseLayoutDecisionDies = async (defect: unknown) => {
     const throwing = Layer.effect(
       PersonLayoutPlatform,
       Effect.map(PersonLayoutPlatform, (inner) => ({
         ...inner,
-        imageReport: () => Effect.die(new Error(words)),
+        imageReport: () => Effect.die(defect),
       })),
     ).pipe(Layer.provide(personPlatform([], { person: true })));
     const created: Array<CreateOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
-    await withEngine(
+    const summary = await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
           const project = yield* setup(tmp, world);
@@ -1494,9 +1498,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           expect(launched._tag).toBe("Failure");
           const row = world.sessions.get(session.id);
           expect(row?.status).toBe("failed");
-          expect(row?.summary).toBe(`launch failed: ${words}`);
-          expect(created).toHaveLength(0);
-          expect(execCalls).toHaveLength(0);
+          return row?.summary ?? null;
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -1519,6 +1521,34 @@ describe("per-person harness homes (docs/adr/0016)", () => {
         },
       },
     );
+    expect(created).toHaveLength(0);
+    expect(execCalls).toHaveLength(0);
+    return summary;
+  };
+
+  it("settles a launch whose layout decision throws the SDK's options refusal: failed, the refusal on the session line, nothing created (box, 0.36.0-next.645)", async () => {
+    const words =
+      "workspaces.create requires exactly one of `repository` (a git remote to clone) or `source` (a caller-owned mount).";
+    const refusal = new SealantError(words, { code: "invalid_create_options" });
+    expect(await launchWhoseLayoutDecisionDies(toPlatformError(refusal))).toBe(
+      `launch failed: ${words}`,
+    );
+  });
+
+  it("settles a launch whose layout decision dies with an error of its own: failed, its words withheld from the session line (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    const summary = await launchWhoseLayoutDecisionDies(new Error(words));
+    expect(summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
+    expect(summary).not.toContain(words);
+  });
+
+  it("withholds an SDK error whose words Mend never curated from the session line (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    const summary = await launchWhoseLayoutDecisionDies(
+      toPlatformError(new SealantApiError(`request refused: ${words}`, { status: 500 })),
+    );
+    expect(summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
+    expect(summary).not.toContain(words);
   });
 
   it("takes another person's turn onto the conversation in a person executor, on their own login (Delivery 18)", async () => {

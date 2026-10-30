@@ -6,7 +6,7 @@ import { WorktreeId } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Logger, References } from "effect";
 import { SqlError } from "effect/sql";
 import { describe, expect } from "vitest";
 
@@ -71,6 +71,19 @@ describe("a failed query's words on a session line (SLNT-385)", () => {
         const relocation = { homePath: "", executorRoot: "" };
         let testRoot = "";
         const clock = yield* makeEngineClock(["sessions"]);
+        const errors: Array<{ readonly message: string; readonly reference: unknown }> = [];
+        const logged = Logger.layer([
+          Logger.make((options) => {
+            if (options.logLevel !== "Error") return;
+            const annotations = options.fiber.getRef(References.CurrentLogAnnotations);
+            errors.push({
+              message: Array.isArray(options.message)
+                ? options.message.map(String).join(" ")
+                : String(options.message),
+              reference: annotations.reference,
+            });
+          }),
+        ]);
         const mariasLaunch = yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
           (world, tmp, project) =>
@@ -165,7 +178,7 @@ describe("a failed query's words on a session line (SLNT-385)", () => {
               },
             ),
           },
-        );
+        ).pipe(Effect.provide(logged));
         expect(refused?.userId).toBe("user-fixture");
         expect(refused?.contents).toContain(ANNAS_WORDS);
         const defects = Exit.isFailure(mariasLaunch.launched)
@@ -175,8 +188,12 @@ describe("a failed query's words on a session line (SLNT-385)", () => {
           : [];
         expect(defects).toContain(refused?.error);
         expect(mariasLaunch.status).toBe("failed");
-        expect(mariasLaunch.summary).toMatch(/^launch failed/);
         expect(mariasLaunch.summary).not.toContain(ANNAS_WORDS);
+        const line = /^launch failed: database operation failed · reference ([0-9a-f]{16})$/.exec(
+          mariasLaunch.summary,
+        );
+        expect(line, mariasLaunch.summary).not.toBeNull();
+        expect(errors.map((entry) => entry.reference)).toContain(line?.[1]);
       }),
     30_000,
   );
