@@ -164,6 +164,7 @@ const makeWorld = () => {
   const previewsRepo: PreviewsRepo["Service"] = {
     ensureForWorktree: () => Effect.die("unused"),
     ensureNamed: () => Effect.die("unused"),
+    resolveById: () => Effect.die("unused"),
     resolveByLabel: (label) =>
       Effect.sync(() => {
         reads.resolveByLabel += 1;

@@ -53,6 +53,7 @@ export class PreviewsRepo extends Context.Service<
       serviceName: string,
     ) => Effect.Effect<PreviewId, WorktreeNotFoundError>;
     readonly resolveByLabel: (label: PreviewLabel) => Effect.Effect<PreviewView | null>;
+    readonly resolveById: (id: PreviewId) => Effect.Effect<PreviewView | null>;
     readonly byId: (id: PreviewId) => Effect.Effect<Preview | null>;
     readonly byLabel: (label: PreviewLabel) => Effect.Effect<Preview | null>;
     /** The preview's control; a preview with no row is `PREVIEW_CONTROL_INITIAL`. */
@@ -422,16 +423,10 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         return allocated;
       }, Effect.catchTags(queryErrorsDie));
 
-      const resolveByLabel = Effect.fn("PreviewsRepo.resolveByLabel")(function* (
-        label: PreviewLabel,
-      ) {
-        return yield* snapshot((tx) =>
+      const resolveWhere = (where: SQL) =>
+        snapshot((tx) =>
           Effect.gen(function* () {
-            const [row] = yield* tx
-              .select()
-              .from(previews)
-              .where(eq(previews.label, label))
-              .limit(1);
+            const [row] = yield* tx.select().from(previews).where(where).limit(1);
             if (row === undefined) return null;
             const preview = yield* decodePreview(row);
             const targets =
@@ -439,6 +434,15 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
             return PreviewView.make({ preview, binding: resolvePreviewBinding(preview, targets) });
           }),
         );
+
+      const resolveByLabel = Effect.fn("PreviewsRepo.resolveByLabel")(function* (
+        label: PreviewLabel,
+      ) {
+        return yield* resolveWhere(eq(previews.label, label));
+      }, Effect.catchTags(queryErrorsDie));
+
+      const resolveById = Effect.fn("PreviewsRepo.resolveById")(function* (id: PreviewId) {
+        return yield* resolveWhere(eq(previews.id, id));
       }, Effect.catchTags(queryErrorsDie));
 
       const rowWhere = (where: SQL) =>
@@ -703,6 +707,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         ensureForWorktree,
         ensureNamed,
         resolveByLabel,
+        resolveById,
         byId,
         byLabel,
         controlOf,

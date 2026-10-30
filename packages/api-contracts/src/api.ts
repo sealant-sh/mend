@@ -13,6 +13,7 @@ import { operatorGroup } from "./operator.ts";
 import { invitationsGroup, organizationGroup } from "./organization.ts";
 import { pageViewGroup, pagesGroup } from "./pages.ts";
 import { piProfileGroup } from "./pi-profile.ts";
+import { previewsGroup } from "./previews.ts";
 import {
   projectClusterBindingsGroup,
   projectEnvironmentGroup,
@@ -79,6 +80,7 @@ export const MendApi = HttpApi.make("mend")
   .add(pagesGroup)
   .add(pageViewGroup)
   .add(worktreesGroup)
+  .add(previewsGroup)
   .add(sessionChangesGroup)
   .add(landingsGroup)
   .add(handoffsGroup)

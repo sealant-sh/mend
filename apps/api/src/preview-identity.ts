@@ -99,7 +99,7 @@ export class PreviewIdentity extends Context.Service<
       readonly opener: SignedInAccount;
     }) => Effect.Effect<
       { readonly origin: PreviewOrigin; readonly ticket: Redacted.Redacted<string> },
-      PreviewRefusal | PreviewUnavailable | PreviewPoolFull
+      PreviewNotFound | PreviewUnavailable | PreviewPoolFull
     >;
     /**
      * `presented` is the grant the browser already holds for the origin. `clearSiteData` says the
