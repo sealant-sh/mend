@@ -2510,6 +2510,8 @@ export const referencesEmptyLayer = Layer.succeed(ReferencesRepo, {
 /** Shared projectsLayer fixture for engine scenarios. */
 export const projectsLayer = (world: World) =>
   Layer.succeed(ProjectsRepo, {
+    byScratchOwner: () => Effect.succeed(null),
+    publishInitialized: () => Effect.die("not in test"),
     create: () => Effect.die("not in test"),
     setGitAuthMode: () => Effect.die("not in test"),
     listForOrganization: (organizationId) =>

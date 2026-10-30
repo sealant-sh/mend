@@ -13,8 +13,8 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { projects } from "../schema/workbench.ts";
-import { isUniqueViolation } from "./unique-violation.ts";
+import { projects, organizationMembers } from "../schema/workbench.ts";
+import { isUniqueViolation, uniqueViolationConstraint } from "./unique-violation.ts";
 
 export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundError>()(
   "ProjectNotFoundError",
@@ -28,6 +28,42 @@ export class ProjectNameTakenError extends Schema.TaggedError<ProjectNameTakenEr
   "ProjectNameTakenError",
   { name: Schema.String },
 ) {}
+
+export class ScratchProjectExistsError extends Schema.TaggedError<ScratchProjectExistsError>()(
+  "ScratchProjectExistsError",
+  { userId: Schema.String },
+) {}
+
+export class ProjectPublicationUnconfirmed extends Schema.TaggedError<ProjectPublicationUnconfirmed>()(
+  "ProjectPublicationUnconfirmed",
+  { projectId: Schema.String, cause: Schema.Defect() },
+) {}
+
+/** Publication rolled back before COMMIT was sent: nothing is registered, so the store may go. */
+export class ProjectNotPublished extends Schema.TaggedError<ProjectNotPublished>()(
+  "ProjectNotPublished",
+  { projectId: Schema.String, cause: Schema.Defect() },
+) {}
+
+export class ProjectMembershipChanged extends Schema.TaggedError<ProjectMembershipChanged>()(
+  "ProjectMembershipChanged",
+  {},
+) {}
+
+export class ScratchProjectPrivate extends Schema.TaggedError<ScratchProjectPrivate>()(
+  "ScratchProjectPrivate",
+  {},
+) {}
+
+export interface InitializedProject {
+  readonly id: ProjectId;
+  readonly organizationId: OrganizationId;
+  readonly createdByUserId: string;
+  readonly name: string;
+  readonly storePath: string;
+  readonly gitAuthMode: GitAuthMode;
+  readonly purpose: "named" | "scratch";
+}
 
 export interface NewProject {
   /** Minted by the caller: new stores are laid out by project id. */
@@ -47,6 +83,17 @@ export interface NewProject {
 export class ProjectsRepo extends Context.Service<
   ProjectsRepo,
   {
+    readonly byScratchOwner: (userId: string) => Effect.Effect<Project | null>;
+    readonly publishInitialized: (
+      project: InitializedProject,
+    ) => Effect.Effect<
+      Project,
+      | ProjectNameTakenError
+      | ScratchProjectExistsError
+      | ProjectNotPublished
+      | ProjectPublicationUnconfirmed
+      | ProjectMembershipChanged
+    >;
     readonly create: (project: NewProject) => Effect.Effect<Project, ProjectNameTakenError>;
     readonly byId: (id: ProjectId) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Names are unique within an organization, not across the instance. */
@@ -64,7 +111,7 @@ export class ProjectsRepo extends Context.Service<
     readonly setVisibility: (
       id: ProjectId,
       visibility: ProjectVisibility,
-    ) => Effect.Effect<Project, ProjectNotFoundError>;
+    ) => Effect.Effect<Project, ProjectNotFoundError | ScratchProjectPrivate>;
     /** Hand a project to another account: an owner taking over a departed member's project. */
     readonly setCreatedBy: (
       id: ProjectId,
@@ -192,6 +239,115 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return row === undefined ? null : toProject(row);
       });
 
+      const byScratchOwner = Effect.fn("ProjectsRepo.byScratchOwner")(function* (userId: string) {
+        const [row] = yield* db
+          .select()
+          .from(projects)
+          .where(eq(projects.scratchOwnerUserId, userId))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row === undefined ? null : toProject(row);
+      });
+
+      const publishInitialized = Effect.fn("ProjectsRepo.publishInitialized")(function* (
+        project: InitializedProject,
+      ) {
+        const { purpose, ...input } = project;
+        // Set when the body succeeds: only a failure after that can be a COMMIT with an unknown
+        // outcome, and an uncertain COMMIT must never cause the caller to delete a registered store.
+        let commitRequested = false;
+        const confirm = (cause: unknown) =>
+          db
+            .select()
+            .from(projects)
+            .where(eq(projects.id, project.id))
+            .limit(1)
+            .pipe(
+              Effect.mapError(
+                (readCause) =>
+                  new ProjectPublicationUnconfirmed({
+                    projectId: project.id,
+                    cause: { publication: cause, read: readCause },
+                  }),
+              ),
+              Effect.flatMap(([row]) =>
+                row === undefined ||
+                row.organizationId !== project.organizationId ||
+                row.createdByUserId !== project.createdByUserId ||
+                row.name !== project.name ||
+                row.storePath !== project.storePath
+                  ? Effect.fail(new ProjectPublicationUnconfirmed({ projectId: project.id, cause }))
+                  : Effect.succeed(toProject(row)),
+              ),
+            );
+        // Some row holds a colliding key, so the store it names may be registered after all.
+        const unpublished = (
+          cause: unknown,
+        ): Effect.Effect<Project, ProjectNotPublished | ProjectPublicationUnconfirmed> =>
+          commitRequested || uniqueViolationConstraint(cause) !== null
+            ? confirm(cause)
+            : Effect.fail(new ProjectNotPublished({ projectId: project.id, cause }));
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const [member] = yield* db
+                .select()
+                .from(organizationMembers)
+                .where(
+                  and(
+                    eq(organizationMembers.userId, project.createdByUserId),
+                    eq(organizationMembers.organizationId, project.organizationId),
+                  ),
+                )
+                .for("share");
+              if (member === undefined) return yield* new ProjectMembershipChanged({});
+              const [row] = yield* db
+                .insert(projects)
+                .values({
+                  ...input,
+                  visibility: "private",
+                  originUrl: null,
+                  adoptedSha: null,
+                  defaultBranch: "main",
+                  scratchOwnerUserId: purpose === "scratch" ? project.createdByUserId : null,
+                })
+                .returning();
+              if (row === undefined) return yield* Effect.die("project insert returned no row");
+              const created = toProject(row);
+              yield* notifyEvent(sql, { type: "project", projectId: created.id });
+              commitRequested = true;
+              return created;
+            }),
+          )
+          .pipe(
+            Effect.catch(
+              (
+                cause,
+              ): Effect.Effect<
+                Project,
+                | ProjectNameTakenError
+                | ScratchProjectExistsError
+                | ProjectMembershipChanged
+                | ProjectNotPublished
+                | ProjectPublicationUnconfirmed
+              > => {
+                if (cause instanceof ProjectMembershipChanged) return Effect.fail(cause);
+                switch (uniqueViolationConstraint(cause)) {
+                  case "projects_organization_name_key":
+                    return Effect.fail(new ProjectNameTakenError({ name: project.name }));
+                  case "projects_scratch_owner_key":
+                    return Effect.fail(
+                      new ScratchProjectExistsError({ userId: project.createdByUserId }),
+                    );
+                  default:
+                    return unpublished(cause);
+                }
+              },
+            ),
+            Effect.catchDefect(unpublished),
+          );
+      });
+
       const listAll = Effect.fn("ProjectsRepo.listAll")(function* () {
         const rows = yield* db
           .select()
@@ -217,6 +373,9 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         id: ProjectId,
         visibility: ProjectVisibility,
       ) {
+        const current = yield* byId(id);
+        if (visibility === "shared" && current.scratchOwnerUserId !== null)
+          return yield* new ScratchProjectPrivate({});
         const [row] = yield* db
           .update(projects)
           .set({ visibility, updatedAt: yield* DateTime.nowAsDate })
@@ -233,9 +392,14 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         id: ProjectId,
         userId: string,
       ) {
+        // Recovery transfers the content, not the departed person's scratch identity.
         const [row] = yield* db
           .update(projects)
-          .set({ createdByUserId: userId, updatedAt: yield* DateTime.nowAsDate })
+          .set({
+            createdByUserId: userId,
+            scratchOwnerUserId: null,
+            updatedAt: yield* DateTime.nowAsDate,
+          })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
@@ -423,6 +587,8 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
 
       return {
         create,
+        publishInitialized,
+        byScratchOwner,
         byId,
         byName,
         listAll,
