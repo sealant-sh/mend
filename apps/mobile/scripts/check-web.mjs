@@ -724,7 +724,9 @@ const checkPreview = async (browser, label, origin) => {
     const refused = page.waitForEvent("popup", { timeout: 10_000 });
     await preview.click();
     const reserved = await refused;
-    await reserved.waitForEvent("close", { timeout: 10_000 });
+    // The refusal answers at once, so the tab can close before a listener attaches, and Playwright
+    // never replays an event.
+    if (!reserved.isClosed()) await reserved.waitForEvent("close", { timeout: 10_000 });
     await page.getByText(`preview · ${UNSERVED}`, { exact: true }).waitFor({ timeout: 10_000 });
     network.refuse = false;
 
