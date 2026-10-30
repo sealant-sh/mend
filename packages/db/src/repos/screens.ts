@@ -146,8 +146,12 @@ export class ScreensRepo extends Context.Service<
       id: ScreenId,
       change: ScreenLifeChange,
     ) => Effect.Effect<Screen, ScreenNotFoundError>;
-    /** The session ended: its display goes back to the workspace. Once is enough. */
-    readonly release: (sessionId: SessionId) => Effect.Effect<void>;
+    /**
+     * The session ended: the reservation `id` gives its display back, if it still holds it. Only
+     * that reservation: one the session takes after it is a new row, and keeps its display. Once
+     * is enough.
+     */
+    readonly release: (id: ScreenId) => Effect.Effect<void>;
     /** Every screen still holding a display, oldest first. */
     readonly listHeld: () => Effect.Effect<ReadonlyArray<Screen>>;
     /**
@@ -397,12 +401,16 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return toScreen(row);
     });
 
-    const release = Effect.fn("ScreensRepo.release")(function* (sessionId: SessionId) {
+    const release = Effect.fn("ScreensRepo.release")(function* (id: ScreenId) {
       yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            const held = yield* heldRow(tx, sessionId);
-            if (held !== null) yield* releaseRow(tx, held, ENDED_BY_SESSION);
+            const [held] = yield* tx
+              .select()
+              .from(screens)
+              .where(and(eq(screens.id, id), isNull(screens.releasedAt)))
+              .for("update");
+            if (held !== undefined) yield* releaseRow(tx, held, ENDED_BY_SESSION);
           }),
         )
         .pipe(Effect.orDie);
@@ -676,10 +684,10 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
         row.activeAt = new Date();
         return Effect.succeed(row.screen);
       }),
-    release: (sessionId) =>
+    release: (id) =>
       Effect.sync(() => {
-        const row = held(sessionId);
-        if (row !== null) release(row, ENDED_BY_SESSION);
+        const row = rowOf(id);
+        if (row !== null && !row.released) release(row, ENDED_BY_SESSION);
       }),
     listHeld: () => Effect.sync(() => rows.filter((row) => !row.released).map((row) => row.screen)),
     lastActivityAt: (id) => Effect.sync(() => rowOf(id)?.activeAt ?? null),

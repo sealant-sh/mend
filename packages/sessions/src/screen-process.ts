@@ -4,7 +4,7 @@ import type {
   ScreensRepo,
   SessionProcessesRepo,
 } from "@mend/db";
-import { SealantRunId, SealantWorkspaceId, type SessionId } from "@mend/domain";
+import { type ScreenId, SealantRunId, SealantWorkspaceId, type SessionId } from "@mend/domain";
 import type {
   DisplayNumber,
   Screen,
@@ -75,10 +75,11 @@ export interface ScreenProcess<E> {
   >;
   readonly stop: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
   /**
-   * The session ended: its screen stops and its display goes back to the workspace. A screen whose
-   * process would not end keeps it, so a later release (or the next boot) gives it back.
+   * The session ended: its screen stops and the reservation `screenId` gives its display back. A
+   * screen whose process would not end keeps it, so a later release (or the next boot) gives it
+   * back. A reservation the session holds now that is not `screenId` is not the one that ended.
    */
-  readonly release: (sessionId: SessionId) => Effect.Effect<void>;
+  readonly release: (sessionId: SessionId, screenId: ScreenId) => Effect.Effect<void>;
   /** A screen row ended without a stop of ours: its process exited, or its workspace ended. */
   readonly ended: (
     rows: ReadonlyArray<SessionProcess>,
@@ -252,11 +253,12 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
   const stop = (sessionId: SessionId, reason: ScreenEndReason) =>
     locked(sessionId, Effect.asVoid(stopped(sessionId, reason)));
 
-  const release = (sessionId: SessionId) =>
+  const release = (sessionId: SessionId, screenId: ScreenId) =>
     locked(
       sessionId,
       Effect.gen(function* () {
-        if (yield* stopped(sessionId, "session-stopped")) yield* screens.release(sessionId);
+        if ((yield* screens.ofSession(sessionId))?.id !== screenId) return;
+        if (yield* stopped(sessionId, "session-stopped")) yield* screens.release(screenId);
       }),
     );
 

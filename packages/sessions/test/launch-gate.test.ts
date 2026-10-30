@@ -79,4 +79,65 @@ describe("launch gate", () => {
     expect(Exit.isFailure(outcome.duringRecovery)).toBe(true);
     expect(outcome.after).toBe(false);
   });
+
+  it("runs work between launches after the one under way, and a launch sent meanwhile waits for it", async () => {
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const gate = makeLaunchGate();
+        const order: string[] = [];
+        const releaseLaunch = yield* Deferred.make<void>();
+        const releaseBetween = yield* Deferred.make<void>();
+        const launch = yield* gate
+          .run("s-1")(
+            Deferred.await(releaseLaunch).pipe(
+              Effect.andThen(Effect.sync(() => order.push("launch"))),
+            ),
+          )
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        const busy = yield* gate.runBetweenOr("s-1", Effect.succeed("busy"))(Effect.succeed("now"));
+        const between = yield* gate
+          .runBetween("s-1")(
+            Effect.sync(() => order.push("between started")).pipe(
+              Effect.andThen(Deferred.await(releaseBetween)),
+              Effect.andThen(Effect.sync(() => order.push("between"))),
+            ),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.succeed(releaseLaunch, undefined);
+        yield* Fiber.join(launch);
+        while (!order.includes("between started")) yield* Effect.yieldNow;
+        const underWayBetween = gate.underWay("s-1");
+        const next = yield* gate
+          .run("s-1")(Effect.sync(() => order.push("next launch")))
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        const underWayWaiting = gate.underWay("s-1");
+        const busyBetween = yield* gate.runBetweenOr(
+          "s-1",
+          Effect.succeed("busy"),
+        )(Effect.succeed("now"));
+        yield* Deferred.succeed(releaseBetween, undefined);
+        yield* Fiber.join(between);
+        yield* Fiber.join(next);
+        const free = yield* gate.runBetweenOr("s-1", Effect.succeed("busy"))(Effect.succeed("now"));
+        return {
+          busy,
+          underWayBetween,
+          underWayWaiting,
+          busyBetween,
+          order,
+          free,
+        };
+      }),
+    );
+    expect(outcome).toEqual({
+      busy: "busy",
+      underWayBetween: false,
+      underWayWaiting: true,
+      busyBetween: "busy",
+      order: ["launch", "between started", "between", "next launch"],
+      free: "now",
+    });
+  });
 });

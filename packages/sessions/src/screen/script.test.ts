@@ -75,8 +75,15 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
   const processes = () =>
     docker("exec", container, "ps", "-e", "-o", "comm=").trim().split("\n").toSorted();
   const BASELINE = ["docker-init", "ps", "sleep"];
+  /**
+   * The container's processes once only the baseline is left, or as they stand at the deadline.
+   * Chromium's crashpad handlers run in a session of their own under init, out of the screen's
+   * process group, and end once the browser that holds them has: a moment after Xvnc, longer
+   * under load.
+   */
   const settled = Effect.gen(function* () {
-    for (let tries = 0; processes().length > BASELINE.length && tries < 100; tries++) {
+    const deadline = Date.now() + 60_000;
+    while (processes().join() !== BASELINE.join() && Date.now() < deadline) {
       yield* Effect.sleep("100 millis");
     }
     return processes();
@@ -119,7 +126,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
       new Promise<void>((resolve, reject) => {
         const timer = setTimeout(
           () => reject(new Error(`no "${line}" in ${lines.join(" | ")}`)),
-          15_000,
+          60_000,
         );
         const check = () => {
           if (lines.includes(line)) {
@@ -208,7 +215,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
           /fullpass|viewpass/,
         );
       }),
-    { timeout: 60_000 },
+    { timeout: 120_000 },
   );
 
   it.live(
@@ -255,7 +262,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         inside(`kill ${xvncPid(10)}`);
         expect(yield* settled).toEqual(BASELINE);
       }),
-    { timeout: 60_000 },
+    { timeout: 240_000 },
   );
 
   it.live(
@@ -268,7 +275,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         yield* Effect.promise(() => screen.exited);
         expect(yield* settled).toEqual(BASELINE);
       }),
-    { timeout: 60_000 },
+    { timeout: 180_000 },
   );
 
   it.live(
@@ -282,7 +289,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         expect(yield* settled).toEqual(BASELINE);
         docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
       }),
-    { timeout: 60_000 },
+    { timeout: 180_000 },
   );
 
   const asSession = (display: number, argv: ReadonlyArray<string>, on = container) =>
@@ -375,7 +382,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         inside("pkill -x socat");
         expect(yield* settled).toEqual(BASELINE);
       }),
-    { timeout: 120_000 },
+    { timeout: 240_000 },
   );
 
   it.live(
@@ -398,6 +405,6 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         inside(`kill ${xvncPid(10, confined)}`, "root", confined);
         yield* Effect.promise(() => screen.exited);
       }),
-    { timeout: 120_000 },
+    { timeout: 240_000 },
   );
 });

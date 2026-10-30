@@ -8622,27 +8622,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         yield* sessions.settle(sessionId, outcome, summary);
         yield* settleRunsOfSettled(sessionId);
-        if (!(yield* releaseDisplayIfEnded(sessionId))) {
-          yield* screenProcess.stop(sessionId, "session-stopped").pipe(owned(sessionId));
-        }
+        yield* screenProcess.stop(sessionId, "session-stopped").pipe(owned(sessionId));
+        yield* betweenLaunches(sessionId, releaseDisplayIfEnded(sessionId));
       });
 
       /**
        * A session that ended gives its display back (ADR 0020, "One display per session"): it
        * reads settled, and no agent of it still runs with the display in its env (one the fold
-       * will reopen the session over). False when the session has not ended, and it keeps it.
+       * will reopen the session over). Only between the session's launches (review 2 of
+       * mend#1209): a resume reserves the display and opens its process with it, so a release
+       * decided before it and landing after would free a display the resumed session runs on.
        */
       const releaseDisplayIfEnded = Effect.fn("SessionEngine.releaseDisplayIfEnded")(function* (
         sessionId: SessionId,
       ) {
+        const screen = yield* screens.ofSession(sessionId);
+        if (screen === null) return;
         const session = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-        if (session !== null && session.settledAt === null) return false;
-        if ((yield* processes.listForSession(sessionId)).some(isLiveAgentProcess)) return false;
-        yield* screenProcess.release(sessionId).pipe(owned(sessionId));
-        return true;
+        if (session !== null && session.settledAt === null) return;
+        if ((yield* processes.listForSession(sessionId)).some(isLiveAgentProcess)) return;
+        yield* screenProcess.release(sessionId, screen.id).pipe(owned(sessionId));
       });
+
+      /**
+       * Runs `effect` between the session's launches (`launch-gate.ts`): now when nothing holds
+       * the gate, or else forked to run once its holder is done. It never waits in place: the
+       * caller may be the very launch that holds the gate (one that fails settles its session).
+       */
+      const betweenLaunches = (sessionId: SessionId, effect: Effect.Effect<void>) =>
+        launchGate.runBetweenOr(
+          sessionId,
+          Effect.asVoid(Effect.forkIn(launchGate.runBetween(sessionId)(effect), scope)),
+        )(effect);
 
       /**
        * Runs left `running` under sessions that settled, each settled with its session's outcome
@@ -26268,9 +26281,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // session would otherwise meet the one-active-run index.
         yield* reconcileStaleRuns();
         // A display still held by a session that ended goes back: one an earlier Mend never
-        // released, or a release a restart cut short. Forked: a screen still running closes first.
+        // released, or a release a restart cut short. Forked, each between its session's
+        // launches: a screen still running closes first, and a resume sent meanwhile waits.
         for (const screen of yield* screens.listHeld()) {
-          yield* Effect.forkIn(Effect.asVoid(releaseDisplayIfEnded(screen.sessionId)), scope);
+          yield* Effect.forkIn(
+            launchGate.runBetween(screen.sessionId)(releaseDisplayIfEnded(screen.sessionId)),
+            scope,
+          );
         }
         const activeRuns = yield* sessionRuns.listActive();
         const reattached = new Set<string>();

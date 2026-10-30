@@ -879,7 +879,9 @@ What the build changed against this text, with the PR that carries each. Yiannis
 - **A display goes back when its session stops**, not only when the session is removed (#1209):
   otherwise stopped sessions hold all ninety numbers. An idle stop of the screen alone keeps it, a
   restart asks for the session's previous number first, and a boot gives back any number a stopped
-  session still holds. Only a launch that runs as a person gets a display.
+  session still holds. Only a launch that runs as a person gets a display. A number goes back only
+  between the session's launches, so a resume sent meanwhile waits for it and never runs on a number
+  given away.
 - **The hand** ends with a typed reason (`stream-stalled`, `decoder-failed`, `decode-deadline`, and
   the sign-in and size refusals); paced typing honors the batch limit, and nothing queued reaches
   Xvnc after the hand ends (#1189).
