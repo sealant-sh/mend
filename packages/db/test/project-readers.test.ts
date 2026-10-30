@@ -125,7 +125,8 @@ const unguarded = (name: string, source: string): ReadonlyArray<string> => {
 };
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
-const ROOTS = ["apps", "packages"];
+/** Declared as this package's test inputs in packages/db/turbo.json. */
+const ROOTS = [path.join(REPO_ROOT, "apps"), path.join(REPO_ROOT, "packages")];
 /** The schema and its history describe every state; they read no project. */
 const EXEMPT = new Set(["packages/db/src/migrations.ts", "packages/db/src/schema/workbench.ts"]);
 
@@ -142,7 +143,7 @@ const sourceFiles = (dir: string): ReadonlyArray<string> =>
 describe("default listed project reads", () => {
   it("rejects every new project query in production code that omits the listed predicate", () => {
     const found = ROOTS.flatMap((root) =>
-      sourceFiles(path.join(REPO_ROOT, root)).flatMap((file) => {
+      sourceFiles(root).flatMap((file) => {
         const relative = path.relative(REPO_ROOT, file);
         if (EXEMPT.has(relative) || !relative.includes(`${path.sep}src${path.sep}`)) return [];
         return unguarded(relative, readFileSync(file, "utf8"));

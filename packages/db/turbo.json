@@ -2,7 +2,8 @@
   "extends": ["//"],
   "tasks": {
     "test": {
-      "cache": false
+      "cache": false,
+      "inputs": ["$TURBO_EXTENDS$", "$TURBO_ROOT$/apps/*/src/**", "$TURBO_ROOT$/packages/*/src/**"]
     }
   }
 }
