@@ -146,7 +146,7 @@ after a sequence the hub still holds, with only what changed since (see "Replay 
 
 | t3code                                     | From Mend                                                                                                                                                                                                                                                 |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| user message                               | the turn's input; a turn the agent opened on its own is a system message                                                                                                                                                                                  |
+| user message                               | the turn's input and admitted steering inputs within that run; a turn the agent opened on its own is a system message                                                                                                                                     |
 | assistant message, reasoning               | `assistant-message` and `reasoning` items, `streaming` while in progress                                                                                                                                                                                  |
 | command, file change, web search           | read from the harness's own item in `data` (codex app-server items, claude `tool_use` blocks)                                                                                                                                                             |
 | other tool calls, plans, background tasks  | a tool row named by the harness                                                                                                                                                                                                                           |
@@ -161,13 +161,14 @@ after a sequence the hub still holds, with only what changed since (see "Replay 
 `orchestration.dispatchCommand` takes what Mend can back (`src/commands.ts`); every other command
 answers `OrchestrationV2DispatchCommandError` naming it.
 
-| t3code                                                                                           | What the gateway does                                                                                                                                                                                                                                                        |
-| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `message.dispatch`                                                                               | Checks Mend's steering rule as the sender (`GET /api/sessions/:id`), queues the message, and sends it once no turn is open: `POST /api/sessions/:id/turns`, or, when the agent stopped, `POST /api/sessions/:id/launch` with no prompt and then the turn once the agent runs |
-| `run.interrupt`                                                                                  | `POST /api/turns/:id/interrupt`; with `holdQueue` (t3code always sends it) the queue is held before the turn ends. A queued run is taken back instead                                                                                                                        |
-| `queued-run.cancel`, `queue.resume`, `queued-run.start`, `queued-run.edit`, `queued-run.reorder` | The gateway's queue                                                                                                                                                                                                                                                          |
-| `runtime-request.respond`                                                                        | `POST /api/requests/:id/respond`: decisions as Mend's (`acceptAlways` is `accept-for-session`), answers as lists of strings                                                                                                                                                  |
-| `thread.user-input.dismiss`                                                                      | The same, answering `cancel`                                                                                                                                                                                                                                                 |
+| t3code                                                                                           | What the gateway does                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message.dispatch`                                                                               | Resolves the client's per-message intent. Native steering calls `POST /api/turns/:id/steer`; ordinary messages queue until no turn is open: `POST /api/sessions/:id/turns`, or, when the agent stopped, `POST /api/sessions/:id/launch` with no prompt and then the turn once the agent runs |
+| `run.interrupt`                                                                                  | `POST /api/turns/:id/interrupt`; with `holdQueue` (t3code always sends it) the queue is held before the turn ends. A queued run is taken back instead                                                                                                                                        |
+| `queued-run.cancel`, `queue.resume`, `queued-run.start`, `queued-run.edit`, `queued-run.reorder` | The gateway's queue                                                                                                                                                                                                                                                                          |
+| `queued-message.promote-to-steer`                                                                | Claims the queued message, preserving its identity, then calls Mend's native steer route. A definite refusal restores its queue position                                                                                                                                                     |
+| `runtime-request.respond`                                                                        | `POST /api/requests/:id/respond`: decisions as Mend's (`acceptAlways` is `accept-for-session`), answers as lists of strings                                                                                                                                                                  |
+| `thread.user-input.dismiss`                                                                      | The same, answering `cancel`                                                                                                                                                                                                                                                                 |
 
 The gateway holds the queue (ADR 0012): it never sends a second turn while one is open in Mend,
 whoever opened it. A queued message is a run of the gateway's own (`t3-run:…`) until Mend opens its
@@ -211,7 +212,50 @@ way to Mend, and the queue stays as it was. It also waits for the gateway's firs
 a restart, so a queue kept across the restart is never sent ahead of a running turn. A message on
 its way to Mend, or settled, is neither rewritten, moved nor sent first.
 
-Steering mid-turn and holding a message for later are refused.
+### Native steering
+
+Codex and Claude threads advertise active steering. A message's `deliveryIntent` (`auto`, `steer`,
+`restart`) takes precedence over its dispatch mode, following t3code's CommandPolicy at `783581d461`
+(2026-10-29). `auto` queues while setup has no running provider turn. Explicit intent refuses that
+setup gap. Legacy `steer_active` and `restart_active` remain accepted; restart uses native steering
+too, with no interrupt, relaunch or replacement attempt. A message without intent keeps its existing
+queue behavior. Mend's per-person send preference is not read.
+
+Mend authorizes session control and the turn's sender. A different or unknown sender's message
+queues silently as that person's own turn; promotion leaves the row in place. `/compact` and
+`/logout` targets queue. A `/goal` sent with an intent while a turn runs queues as its own turn, as
+upstream's `message.dispatch` does. The client retains its upstream compaction guard. The gateway
+does not hide the Steer button based on who sent the turn. `src/steering.ts` decides all of this
+once, under the hub's lock, on the hub's own reads (`deliveryOf`), after a message id already kept
+or steered is answered as that message.
+
+An admitted steer is one completed `user_message` in the target run with `inputIntent: "steer"`, or
+`"promoted_queued_to_steer"`, and no delivery notice. The command waits for Mend's answer. A
+definite refusal returns the composer draft or restores a promoted row's position. When no request
+is left to take the draft back (a restart, a caller that left), the message stays in the target run,
+failed, with its words. `Sending` settles through turn reads. A later `NotSent` adds a failed input
+and its child error without failing the target run. `Unknown` never triggers another POST.
+
+An uncertain answer (none, a 5xx, the 30-second timeout, one that does not decode) leaves the input
+pending. Once a read that started after it shows no receipt, the gateway posts the same frozen input
+again under the same `clientSteerId`, so Mend answers the receipt it holds or admits the steer once.
+After three such POSTs the input fails where it stands with its words, and a promotion is not put
+back in the queue, since Mend may have it.
+
+A `Queued` receipt adopts exactly its destination turn with the original message id, once a read
+shows the turn is the steer's own; it never sends the words again. Until then a placeholder holds
+the message, queued behind a running turn and starting otherwise. A destination waiting behind a
+running turn reads as queued, so the running turn stays the one a steer goes to. Mend's withdrawal
+of a carry (`Queued` to `NotSent`) returns a promotion to its place, or leaves a composer message
+failed in the target run, and the withdrawn turn is not shown.
+
+Each claim of a message gets a fresh `clientSteerId`. A claim stopped while it prepares (an
+interrupt of its turn, a stop, an archive) retires its worker, so no older claim posts under a newer
+one.
+
+The run, one initial attempt, its node, and its bound provider turn are linked in snapshots and
+upsert events. Claude advertises tool interruption; Codex exposes native turn identity. Neither
+advertises interrupt-and-restart steering. Holding a message for later (`defer`) remains refused.
 
 ### Images
 
@@ -243,6 +287,35 @@ message carries those ids, in the queue and across a restart.
   a shared executor, into `/workspace/harness-home/paste/`. A steerer's image under shared control
   lands in the steerer's directory, and its turn runs as the steerer (ADR 0016, decision 6): the
   paste and the turn always go with the same sender's token.
+
+### Steering across a restart
+
+`steer_messages` keeps only steers on their way: the original words, ordered image ids, target,
+submitting bearer-session reference, the claim's key, exact prepared input, placed image paths and
+process id. It never copies a device token. Claiming a promotion and removing its queue entry is one
+transaction. Prepared input is written before the POST. Preparation runs outside the queue lock, so
+other commands remain responsive. Mend's answers are written until the state file holds them, never
+rolled back to an earlier phase.
+
+A settled steer leaves `steer_messages` for one `sent_steers` row, written once: its key, message
+and run ids, words, image ids, and where its words show (sent, queued as its own turn, failed with
+why, or returned to the person). That is all readback needs. A `Queued` steer settles once its own
+turn has left the queue, where Mend can no longer withdraw it; its destination's ids come from that
+row, never from the receipt alone. Images follow the rule ordinary messages follow, per person.
+
+A restart resumes preparation only before a POST was possible. A posting record or `Sending` receipt
+is reconciled by `(session, target turn, author, clientSteerId, input)` readback; a posting record a
+read shows no receipt for is posted again under its key, as above. The ordinary queue waits for the
+first successful Mend read after restart; a known Queued destination also blocks it until installed.
+Steers on their way retain the person's hub without a connected client. A `NotSent` whose words went
+back keeps a `returned` row that hides Mend's receipt; the same message id can be sent again,
+ordinarily or as a new steer.
+
+`test/steering.test.ts` and `test/steering-lifecycle.test.ts` use the real dispatch WebSocket and
+fake Mend. `test/steering-state.test.ts` checks the durable transfer and the pinned client's real
+reducer and queue workflow. Regenerate that test-only client bundle offline with
+`node test/support/upstream/sync.mjs <local-t3code-repo>`; it uses `git show v0.1.2`, includes the
+upstream license, and does not change the production pin.
 
 ### A queue that survives a restart
 

@@ -10,6 +10,7 @@ import {
   RuntimeRequestId,
   TurnItemId,
   type ProviderThreadId,
+  type ProviderTurnId,
   type ThreadId,
   type ChatAttachment,
   type OrchestrationV2Checkpoint,
@@ -34,9 +35,15 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { wordsOf } from "./images.ts";
-import { MendPageRef, type MendItem, type MendRequest, type MendTurn } from "./mend-workbench.ts";
+import {
+  MendPageRef,
+  type MendItem,
+  type MendRequest,
+  type MendTurn,
+  type MendTurnSteer,
+} from "./mend-workbench.ts";
 import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-options.ts";
-import { harnessProvider } from "./server-config.ts";
+import { harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import {
   appThreadOf,
   byOrdinal,
@@ -47,6 +54,9 @@ import {
   requestKindOf,
   runIdOf,
   runsOf,
+  turnGraphOf,
+  turnNodeIdOf,
+  providerTurnIdOf,
   runtimeRequestsOf,
   threadIdOf,
   threadModelOptionsOf,
@@ -56,6 +66,7 @@ import {
   type ThreadSource,
 } from "./shell.ts";
 import type { StoredImage } from "./state.ts";
+import type { ShownSteer } from "./steering.ts";
 import { SHARED_CHAIN_NOTICE } from "./turn-checkpoints.ts";
 
 /**
@@ -95,7 +106,6 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     emitsTurnStarted: true,
     emitsTurnCompleted: true,
     supportsInterrupt: true,
-    // A turn cannot be steered once it runs; a follow-up waits for it (the gateway's queue).
     supportsActiveSteering: false,
     supportsSteeringByInterruptRestart: false,
     supportsQueuedMessages: true,
@@ -243,9 +253,9 @@ interface Base {
   readonly id: TurnItemId;
   readonly threadId: ThreadId;
   readonly runId: RunId | null;
-  readonly nodeId: null;
+  readonly nodeId: NodeId | null;
   readonly providerThreadId: ProviderThreadId | null;
-  readonly providerTurnId: null;
+  readonly providerTurnId: ProviderTurnId | null;
   readonly nativeItemRef: null;
   readonly parentItemId: null;
   readonly ordinal: number;
@@ -472,11 +482,26 @@ const turnItemOfRequest = (request: MendRequest, base: Base): OrchestrationV2Tur
   };
 };
 
+/**
+ * By time, then Mend's own order of one turn's steers, then id: one total order, so a tie never
+ * leaves the order to the sort.
+ */
 const byRecorded = (
-  left: { readonly createdAt: string; readonly id: string },
-  right: { readonly createdAt: string; readonly id: string },
+  left: {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly steerOrdinal?: number | undefined;
+  },
+  right: {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly steerOrdinal?: number | undefined;
+  },
 ): number =>
-  Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id);
+  Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
+  (left.steerOrdinal ?? Number.POSITIVE_INFINITY) -
+    (right.steerOrdinal ?? Number.POSITIVE_INFINITY) ||
+  left.id.localeCompare(right.id);
 
 interface TurnEntries {
   readonly items: Array<OrchestrationV2TurnItem>;
@@ -500,10 +525,15 @@ const turnEntries = (
   const out: TurnEntries = { items: [], messages: [] };
   // A message the gateway sent with images: the person's words, and the images as attachments.
   const images = source.imagesOf(userMessageId);
-  const words = wordsOf(
-    turn.input,
-    images.map((sent) => ({ name: sent.image.name, path: sent.path })),
+  const adoptedSteer = source.steers.find(
+    (steer) => steer.outcome.kind === "queued" && steer.outcome.turnId === turn.id,
   );
+  const words =
+    adoptedSteer?.text ??
+    wordsOf(
+      turn.input,
+      images.map((sent) => ({ name: sent.image.name, path: sent.path })),
+    );
   const attachments = images.map((sent) => attachmentOf(sent.image));
 
   out.messages.push({
@@ -512,7 +542,7 @@ const turnEntries = (
     id: userMessageId,
     threadId,
     runId,
-    nodeId: null,
+    nodeId: turnNodeIdOf(turn.id),
     role: fromHarness ? "system" : "user",
     text: words,
     attachments,
@@ -524,9 +554,9 @@ const turnEntries = (
     id: userItemIdOf(runId),
     threadId,
     runId,
-    nodeId: null,
+    nodeId: turnNodeIdOf(turn.id),
     providerThreadId,
-    providerTurnId: null,
+    providerTurnId: providerTurnIdOf(turn),
     nativeItemRef: null,
     parentItemId: null,
     ordinal: ordinalBase,
@@ -546,6 +576,14 @@ const turnEntries = (
 
   type Entry =
     | {
+        readonly kind: "steer";
+        readonly createdAt: string;
+        readonly id: string;
+        readonly steerOrdinal: number | undefined;
+        readonly steer: ShownSteer | undefined;
+        readonly receipt: MendTurnSteer | undefined;
+      }
+    | {
         readonly kind: "item";
         readonly createdAt: string;
         readonly id: string;
@@ -557,7 +595,37 @@ const turnEntries = (
         readonly id: string;
         readonly request: MendRequest;
       };
+  const receipts = new Map(
+    (turn.steers ?? []).map((receipt) => [receipt.clientSteerId ?? receipt.id, receipt]),
+  );
+  const steering: Array<Entry> = [];
+  for (const steer of source.steers) {
+    if (steer.targetTurnId !== turn.id) continue;
+    const receipt = receipts.get(steer.clientSteerId);
+    receipts.delete(steer.clientSteerId);
+    if (steer.outcome.kind === "queued" || steer.outcome.kind === "returned") continue;
+    steering.push({
+      kind: "steer",
+      createdAt: receipt?.createdAt ?? steer.requestedAt,
+      id: steer.clientSteerId,
+      steerOrdinal: receipt?.ordinal,
+      steer,
+      receipt,
+    });
+  }
+  for (const receipt of receipts.values()) {
+    if (receipt.delivery._tag !== "Queued")
+      steering.push({
+        kind: "steer",
+        createdAt: receipt.createdAt,
+        id: receipt.id,
+        steerOrdinal: receipt.ordinal,
+        steer: undefined,
+        receipt,
+      });
+  }
   const entries: Array<Entry> = [
+    ...steering,
     ...items.map((item): Entry => ({ kind: "item", createdAt: item.createdAt, id: item.id, item })),
     ...requests.map(
       (request): Entry => ({
@@ -572,6 +640,84 @@ const turnEntries = (
   let ordinal = ordinalBase;
   for (const entry of entries) {
     ordinal += 1;
+    if (entry.kind === "steer") {
+      const { steer, receipt } = entry;
+      const messageId = MessageId.make(steer?.messageId ?? `message:steer:${entry.id}`);
+      const id = TurnItemId.make(
+        steer?.intent === "promoted_queued_to_steer"
+          ? `input:${steer.runId}`
+          : `steer-input:${entry.id}`,
+      );
+      const sent = source.imagesOf(messageId);
+      const steerText =
+        steer?.text ??
+        wordsOf(
+          receipt?.input ?? "",
+          sent.map((image) => ({ name: image.image.name, path: image.path })),
+        );
+      const steerAttachments = sent.map((image) => attachmentOf(image.image));
+      const started = utc(entry.createdAt);
+      const updated = utc(receipt?.updatedAt ?? entry.createdAt);
+      const error =
+        steer?.outcome.kind === "failed"
+          ? steer.outcome.reason
+          : steer === undefined && receipt?.delivery._tag === "NotSent"
+            ? `Mend did not send this message or queue a turn: ${receipt.delivery.reason}.`
+            : null;
+      const status =
+        error !== null ? "failed" : steer?.outcome.kind === "pending" ? "pending" : "completed";
+      out.messages.push({
+        createdBy: "user",
+        creationSource: "web",
+        id: messageId,
+        threadId,
+        runId,
+        nodeId: turnNodeIdOf(turn.id),
+        role: "user",
+        text: steerText,
+        attachments: steerAttachments,
+        streaming: false,
+        createdAt: started,
+        updatedAt: updated,
+      });
+      const base = {
+        threadId,
+        runId,
+        nodeId: turnNodeIdOf(turn.id),
+        providerThreadId,
+        providerTurnId: providerTurnIdOf(turn),
+        nativeItemRef: null,
+        title: null,
+        startedAt: started,
+        completedAt: status === "pending" ? null : updated,
+        updatedAt: updated,
+      };
+      out.items.push({
+        ...base,
+        id,
+        parentItemId: null,
+        ordinal,
+        status,
+        createdBy: "user",
+        creationSource: "web",
+        type: "user_message",
+        messageId,
+        inputIntent: steer?.intent ?? "steer",
+        text: steerText,
+        attachments: steerAttachments,
+      });
+      if (error !== null)
+        out.items.push({
+          ...base,
+          id: TurnItemId.make(`steer-error:${entry.id}`),
+          parentItemId: id,
+          ordinal: ++ordinal,
+          status: "failed",
+          type: "error",
+          failure: { class: "unknown", message: error, code: null, retryable: false },
+        });
+      continue;
+    }
     if (entry.kind === "item") {
       const { item } = entry;
       const updated = utc(item.updatedAt);
@@ -580,9 +726,9 @@ const turnEntries = (
         id: TurnItemId.make(item.id),
         threadId,
         runId,
-        nodeId: null,
+        nodeId: turnNodeIdOf(turn.id),
         providerThreadId,
-        providerTurnId: null,
+        providerTurnId: providerTurnIdOf(turn),
         nativeItemRef: null,
         parentItemId: null,
         ordinal,
@@ -601,7 +747,7 @@ const turnEntries = (
           id: mapped.messageId,
           threadId,
           runId,
-          nodeId: null,
+          nodeId: turnNodeIdOf(turn.id),
           role: "assistant",
           text: mapped.text,
           attachments: [],
@@ -619,9 +765,9 @@ const turnEntries = (
         id: TurnItemId.make(`request:${request.id}`),
         threadId,
         runId,
-        nodeId: null,
+        nodeId: turnNodeIdOf(turn.id),
         providerThreadId,
-        providerTurnId: null,
+        providerTurnId: providerTurnIdOf(turn),
         nativeItemRef: null,
         parentItemId: null,
         ordinal,
@@ -641,9 +787,9 @@ const turnEntries = (
       id: TurnItemId.make(`turn-error:${turn.id}`),
       threadId,
       runId,
-      nodeId: null,
+      nodeId: turnNodeIdOf(turn.id),
       providerThreadId,
-      providerTurnId: null,
+      providerTurnId: providerTurnIdOf(turn),
       nativeItemRef: null,
       parentItemId: null,
       ordinal: ordinal + 1,
@@ -843,6 +989,7 @@ const providerSessionOf = (
             ? "running"
             : "ready";
   const thread = appThreadOf(source);
+  const steering = harnessSteeringOf(source.session.harness);
   return {
     id: providerSessionIdOf(source.session),
     driver: provider?.driver ?? ProviderDriverKind.make(source.session.harness),
@@ -850,7 +997,14 @@ const providerSessionOf = (
     status,
     cwd: worktreePathOf(source.project, source.session),
     model: thread.modelSelection.model,
-    capabilities: MEND_PROVIDER_CAPABILITIES,
+    capabilities: {
+      ...MEND_PROVIDER_CAPABILITIES,
+      turns: { ...MEND_PROVIDER_CAPABILITIES.turns, ...steering },
+      identity: {
+        ...MEND_PROVIDER_CAPABILITIES.identity,
+        nativeTurnIds: steering.exposesNativeTurnId ? "strong" : "none",
+      },
+    },
     createdAt: utc(source.agent.createdAt),
     updatedAt: thread.updatedAt,
     lastError: null,
@@ -952,7 +1106,7 @@ const checkpointsOf = (
       threadId,
       scopeId,
       runId,
-      nodeId: NodeId.make(`run:${runId}`),
+      nodeId: turnNodeIdOf(turn.id),
       parentCheckpointId: checkpoints.at(-1)?.id ?? null,
       ordinalWithinScope: checkpoints.length + 1,
       appRunOrdinal: index + 1,
@@ -1010,12 +1164,10 @@ export const threadProjectionOf = (
   return {
     thread,
     runs,
-    attempts: [],
-    nodes: [],
+    ...turnGraphOf(source),
     subagents: [],
     providerSessions: [providerSessionOf(source, runs)],
     providerThreads: [providerThreadOf(source, runs)],
-    providerTurns: [],
     runtimeRequests: runtimeRequestsOf(source),
     messages,
     plans: [],

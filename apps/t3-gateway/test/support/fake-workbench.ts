@@ -4,6 +4,8 @@ import { PageId, SessionId } from "@mend/domain";
 import { PageRef } from "@mend/domain/workbench";
 import * as Schema from "effect/Schema";
 
+import type { MendTurnSteer } from "../../src/mend-workbench.ts";
+
 /**
  * The workbench half of the fake Mend: projects, sessions, protocol turns, items and requests,
  * served in Mend's shapes (`ProjectDetail`, `AgentTurn`, `AgentItem`, `AgentRequest` in
@@ -65,10 +67,14 @@ export interface FakeSession {
 }
 
 export interface FakeTurn {
+  steers: Array<MendTurnSteer>;
+  steerSender?: string | null;
+  providerTurnId: string | null;
+  fromSteer: string | null;
   readonly id: string;
   readonly sessionId: string;
   readonly ordinal: number;
-  readonly author: string | null;
+  author: string | null;
   readonly origin: "request" | "harness";
   readonly input: string;
   status: "queued" | "running" | "completed" | "interrupted" | "failed" | "cancelled";
@@ -288,6 +294,87 @@ export class FakeWorkbench {
   launchBringsAgentUp = true;
   /** How long after a launch answers its new agent is running. */
   launchLiveDelayMs = 50;
+  steerDelivery: MendTurnSteer["delivery"] = {
+    _tag: "Accepted",
+    evidence: "provider-acknowledged",
+  };
+  steerRefusal: { readonly status: number; readonly tag: string } | null = null;
+  /** How many of the next steer POSTs answer 503 before anything is stored. */
+  steerOutages = 0;
+  interruptUnavailable = false;
+  steerResponse: "normal" | "lost" | "malformed" | "mismatched" | "unavailable" = "normal";
+  queuedDestination:
+    | "own-fresh-turn"
+    | "steered-turn"
+    | "turn-not-from-steer"
+    | "turn-by-another-author"
+    | "turn-with-edited-input" = "own-fresh-turn";
+  readonly hiddenTurns = new Set<string>();
+  /** A Queued answer's new turn stays out of reads until a test lets it show. */
+  hideDestinations = false;
+  private nextImage: { readonly entered: () => void; readonly answer: Promise<void> } | null = null;
+  holdNextImage() {
+    const entered = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    this.nextImage = { entered: () => entered.resolve(), answer: answer.promise };
+    return { entered: entered.promise, release: () => answer.resolve() };
+  }
+  private nextSteer: {
+    readonly stage: "admission" | "response";
+    readonly entered: () => void;
+    readonly answer: Promise<void>;
+  } | null = null;
+
+  holdNextSteer(stage: "admission" | "response"): {
+    readonly entered: Promise<void>;
+    readonly release: () => void;
+  } {
+    const entered = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    this.nextSteer = { stage, entered: () => entered.resolve(), answer: answer.promise };
+    return { entered: entered.promise, release: () => answer.resolve() };
+  }
+
+  /** Mend's carry at a turn's end: a steer still Sending becomes its own queued turn. */
+  carrySteer(turn: FakeTurn, id: string): FakeTurn {
+    const steer = turn.steers.find((candidate) => candidate.id === id);
+    if (steer === undefined) throw new Error(`No steer ${id}`);
+    const destination = this.addTurn(turn.sessionId, steer.input, "queued");
+    destination.fromSteer = steer.id;
+    destination.author = steer.author;
+    destination.steerSender = steer.author;
+    Object.assign(steer, {
+      delivery: { _tag: "Queued", turnId: destination.id, reason: "turn-ended" },
+      queuedTurnId: destination.id,
+      updatedAt: tick(),
+    });
+    this.conversationChanged(turn.sessionId);
+    return destination;
+  }
+
+  /** Mend's carry withdrawal, in place: a held POST answers what it now reads. */
+  withdrawSteer(turn: FakeTurn, id: string): void {
+    const steer = turn.steers.find((candidate) => candidate.id === id);
+    if (steer === undefined || steer.delivery._tag !== "Queued") return;
+    const destination = (this.turns.get(turn.sessionId) ?? []).find(
+      (candidate) => candidate.id === steer.queuedTurnId,
+    );
+    if (destination !== undefined) this.setTurn(destination, "cancelled");
+    Object.assign(steer, {
+      delivery: { _tag: "NotSent", reason: steer.delivery.reason },
+      queuedTurnId: null,
+      updatedAt: tick(),
+    });
+    this.conversationChanged(turn.sessionId);
+  }
+
+  settleSteer(turn: FakeTurn, id: string, delivery: MendTurnSteer["delivery"]): void {
+    turn.steers = turn.steers.map((steer) =>
+      steer.id === id ? { ...steer, delivery, updatedAt: tick() } : steer,
+    );
+    this.conversationChanged(turn.sessionId);
+  }
+
   /** `POST /api/sessions/:id/turns` answers 401, as for a device revoked mid-flight. */
   turnsUnauthorized = false;
   /** `POST /turns` answers 409 though the row reads running (idle stop claimed, host not attached). */
@@ -573,7 +660,7 @@ export class FakeWorkbench {
     });
   }
 
-  private conversationChanged(sessionId: string): void {
+  conversationChanged(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session !== undefined) {
       this.emit({
@@ -588,6 +675,10 @@ export class FakeWorkbench {
     const turns = this.turns.get(sessionId) ?? [];
     const createdAt = tick();
     const turn: FakeTurn = {
+      steers: [],
+      steerSender: "user-1",
+      providerTurnId: status === "queued" ? null : this.nextId("native-turn"),
+      fromSteer: null,
       id: this.nextId("turn"),
       sessionId,
       ordinal: turns.length,
@@ -608,6 +699,8 @@ export class FakeWorkbench {
 
   setTurn(turn: FakeTurn, status: FakeTurn["status"], error: string | null = null): void {
     turn.status = status;
+    if (status === "running" && turn.providerTurnId === null)
+      turn.providerTurnId = this.nextId("native-turn");
     turn.error = error;
     if (status !== "queued" && turn.startedAt === null) turn.startedAt = tick();
     if (status !== "queued" && status !== "running") turn.endedAt = tick();
@@ -1134,7 +1227,9 @@ export class FakeWorkbench {
       }
       if (method === "GET" && sub === "turns") {
         // As Mend reads them when the request arrives; a delayed answer is that read, late.
-        const answer = structuredClone(this.turns.get(id) ?? []);
+        const answer = structuredClone(
+          (this.turns.get(id) ?? []).filter((turn) => !this.hiddenTurns.has(turn.id)),
+        );
         const observed = this.nextTurnsRead;
         if (observed?.sessionId === id) {
           this.nextTurnsRead = null;
@@ -1205,8 +1300,14 @@ export class FakeWorkbench {
         });
       }
       if (method === "POST" && sub === "images") {
-        return body().then((value) => {
+        return body().then(async (value) => {
           record(value);
+          const barrier = this.nextImage;
+          this.nextImage = null;
+          if (barrier !== null) {
+            barrier.entered();
+            await barrier.answer;
+          }
           if (this.control.get(id) === false) return notOwner();
           const agent = this.agents.get(id);
           if (agent === undefined || agent.exitedAt !== null) {
@@ -1272,12 +1373,119 @@ export class FakeWorkbench {
         return json(404, { _tag: "NotFound" });
       });
     }
+    if (method === "POST" && collection === "turns" && sub === "steer") {
+      return body().then(async (value) => {
+        record(value);
+        const barrier = this.nextSteer;
+        this.nextSteer = null;
+        if (barrier?.stage === "admission") {
+          barrier.entered();
+          await barrier.answer;
+        }
+        const turn = Array.from(this.turns.values())
+          .flat()
+          .find((candidate) => candidate.id === id);
+        if (turn === undefined) return json(404, { _tag: "NotFound" });
+        if (this.steerOutages > 0) {
+          this.steerOutages -= 1;
+          return json(503, { _tag: "Unavailable" });
+        }
+        if (this.steerRefusal !== null)
+          return json(this.steerRefusal.status, {
+            _tag: this.steerRefusal.tag,
+            message: this.steerRefusal.tag,
+          });
+        if (this.control.get(turn.sessionId) === false)
+          return json(403, { _tag: "SessionNotSteerable", message: "not yours" });
+        const author = this.accountOf(request.headers.authorization);
+        if (author === null || turn.steerSender !== author)
+          return json(403, {
+            _tag: "TurnSteerForbidden",
+            message: "Only the turn's sender can steer it.",
+          });
+        const payload = typeof value === "object" && value !== null ? value : {};
+        const input = "input" in payload && typeof payload.input === "string" ? payload.input : "";
+        const key =
+          "clientSteerId" in payload && typeof payload.clientSteerId === "string"
+            ? payload.clientSteerId
+            : "";
+        if (
+          !input.trim() ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(key)
+        )
+          return json(400, { _tag: "InvalidInput" });
+        const previous = Array.from(this.turns.values())
+          .flatMap((item) => item.flatMap((candidate) => candidate.steers))
+          .find((steer) => steer.author === author && steer.clientSteerId === key);
+        if (previous !== undefined)
+          return previous.turnId === turn.id && previous.input === input
+            ? json(200, previous)
+            : json(409, { _tag: "TurnSteerKeyConflict" });
+        const createdAt = tick();
+        const steerId = this.nextId("steer");
+        let delivery = this.steerDelivery;
+        if (
+          delivery._tag === "Queued" ||
+          (turn.status !== "running" && delivery._tag === "Accepted")
+        ) {
+          const kind = this.queuedDestination;
+          const destination =
+            kind === "steered-turn"
+              ? turn
+              : this.addTurn(
+                  turn.sessionId,
+                  kind === "turn-with-edited-input" ? `${input} (edited)` : input,
+                  "queued",
+                );
+          if (this.hideDestinations) this.hiddenTurns.add(destination.id);
+          if (kind !== "steered-turn") {
+            destination.fromSteer = kind === "turn-not-from-steer" ? null : steerId;
+            destination.author = kind === "turn-by-another-author" ? "someone-else" : author;
+            destination.steerSender = author;
+          }
+          delivery = { _tag: "Queued", turnId: destination.id, reason: "turn-ended" };
+        }
+        const steer: MendTurnSteer = {
+          id: steerId,
+          sessionId: turn.sessionId,
+          turnId: turn.id,
+          processId: this.agents.get(turn.sessionId)?.id ?? "process",
+          author,
+          ordinal: turn.steers.length,
+          input,
+          clientSteerId: key,
+          delivery,
+          queuedTurnId: delivery._tag === "Queued" ? delivery.turnId : null,
+          createdAt,
+          updatedAt: createdAt,
+        };
+        turn.steers.push(steer);
+        this.conversationChanged(turn.sessionId);
+        if (barrier?.stage === "response") {
+          barrier.entered();
+          await barrier.answer;
+        }
+        switch (this.steerResponse) {
+          case "lost":
+            response.destroy();
+            return true;
+          case "unavailable":
+            return json(503, { _tag: "Unavailable" });
+          case "malformed":
+            return json(200, { ...steer, delivery: { _tag: "Future" } });
+          case "mismatched":
+            return json(200, { ...steer, clientSteerId: "another-message" });
+        }
+        return json(200, steer);
+      });
+    }
     if (method === "POST" && collection === "turns" && sub === "interrupt") {
       return body().then((value) => {
         record(value);
         for (const turns of this.turns.values()) {
           const turn = turns.find((candidate) => candidate.id === id);
           if (turn === undefined) continue;
+          if (this.interruptUnavailable) return json(503, { _tag: "Unavailable" });
           if (this.control.get(turn.sessionId) === false) {
             return json(403, {
               _tag: "SessionNotSteerable",

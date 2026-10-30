@@ -72,6 +72,7 @@ export const unreachableMend: MendClient["Service"] = {
   ttyTicket: () => unavailable("POST /api/upgrade-tickets"),
   submitTurn: () => unavailable("POST /api/sessions/:id/turns"),
   launchProtocol: () => unavailable("POST /api/sessions/:id/launch"),
+  steerTurn: () => unavailable("POST /api/turns/:id/steer"),
   interruptTurn: () => unavailable("POST /api/turns/:id/interrupt"),
   respondRequest: () => unavailable("POST /api/requests/:id/respond"),
   events: () =>
@@ -143,6 +144,7 @@ export const emptyHub: PersonHub = {
   turnDiff: () => refused,
   commands: {
     send: () => refused,
+    promote: () => refused,
     interrupt: () => refused,
     cancelQueued: () => refused,
     resumeQueue: () => refused,

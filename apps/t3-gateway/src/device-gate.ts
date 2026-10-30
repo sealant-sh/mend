@@ -64,6 +64,7 @@ class GatedMendClient {
   readonly ttyTicket: DeviceCalls["ttyTicket"];
   readonly submitTurn: DeviceCalls["submitTurn"];
   readonly launchProtocol: DeviceCalls["launchProtocol"];
+  readonly steerTurn: DeviceCalls["steerTurn"];
   readonly interruptTurn: DeviceCalls["interruptTurn"];
   readonly respondRequest: DeviceCalls["respondRequest"];
   readonly events: DeviceCalls["events"];
@@ -113,6 +114,7 @@ class GatedMendClient {
     this.ttyTicket = calls.ttyTicket;
     this.submitTurn = calls.submitTurn;
     this.launchProtocol = calls.launchProtocol;
+    this.steerTurn = calls.steerTurn;
     this.interruptTurn = calls.interruptTurn;
     this.respondRequest = calls.respondRequest;
     this.events = calls.events;
@@ -197,6 +199,7 @@ export const gateDeviceCalls = (
     ttyTicket: (token, processId) => guard(token, mend.ttyTicket(token, processId)),
     launchProtocol: (token, sessionId, prompt, options) =>
       guard(token, mend.launchProtocol(token, sessionId, prompt, options)),
+    steerTurn: (token, turnId, input) => guard(token, mend.steerTurn(token, turnId, input)),
     interruptTurn: (token, turnId) => guard(token, mend.interruptTurn(token, turnId)),
     respondRequest: (token, requestId, response) =>
       guard(token, mend.respondRequest(token, requestId, response)),

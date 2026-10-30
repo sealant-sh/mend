@@ -4,6 +4,7 @@ import { posix } from "node:path";
 import { hasProvenOwner, OWNERLESS_OUTSIDE_MEND } from "@mend/domain/workbench";
 import {
   EventId,
+  AuthSessionId,
   OrchestrationProjectShell,
   OrchestrationV2AppThread,
   OrchestrationV2Checkpoint,
@@ -12,6 +13,9 @@ import {
   OrchestrationV2ProviderSession,
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
+  OrchestrationV2RunAttempt,
+  OrchestrationV2ExecutionNode,
+  OrchestrationV2ProviderTurn,
   OrchestrationV2RuntimeRequest,
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
@@ -38,6 +42,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as RcMap from "effect/RcMap";
+import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -76,7 +81,7 @@ import {
   type MendHarnessCatalog,
   type MendRequestResponse,
   type MendNotFound,
-  type MendUnavailable,
+  MendUnavailable,
 } from "./mend-client.ts";
 import type {
   MendActiveSession,
@@ -90,6 +95,7 @@ import type {
   MendSession,
   MendSessionAnnotation,
   MendTurn,
+  MendTurnSteer,
   MendWorkspaceRetirement,
 } from "./mend-workbench.ts";
 import {
@@ -135,6 +141,7 @@ import {
   launchingAgentOf,
   PROJECTION_SCHEMA_VERSION,
   runsOf,
+  runIdOf,
   threadModelOptionsOf,
   projectShellOf,
   settlementCandidateOf,
@@ -163,6 +170,7 @@ import {
   type ThreadLifecycle,
   type TurnIds,
 } from "./state.ts";
+import * as Steering from "./steering.ts";
 import { makeTerminals, type Terminals } from "./terminals.ts";
 import { makeThreadFinder, type ThreadFinder } from "./thread-find.ts";
 import { backgroundWorkOf, threadProjectionOf } from "./thread-projection.ts";
@@ -493,7 +501,31 @@ const lifecycleKept = <A>(effect: Effect.Effect<A, GatewayStateError>) =>
     ),
   );
 
+/** What Mend's answer to a steer POST settles, and what it leaves in doubt. */
+const answerOf = (
+  answer: Result.Result<MendTurnSteer, Effect.Error<MendCommand<MendTurnSteer>>>,
+): Steering.SteerAnswer => {
+  if (answer._tag === "Success") return { kind: "receipt", receipt: answer.success };
+  const failure = answer.failure;
+  if (failure._tag === "MendUnavailable") return { kind: "uncertain" };
+  return {
+    kind: "refused",
+    reason: failure.message,
+    notSender: failure._tag === "MendCommandRefused" && failure.tag === "TurnSteerForbidden",
+  };
+};
+
+const noSteersRead = () => Effect.void;
+const ANSWERED = { kind: "answered" } as const;
+
 export interface ThreadCommands {
+  /** `queued-message.promote-to-steer`: a queued message steers the target run's turn. */
+  readonly promote: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly queuedRunId: string;
+    readonly targetRunId: string;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
   /**
    * A message for the thread. The gateway queues it and sends it once no turn is open: as a turn
    * of the live agent, or, when the agent has stopped (the idle stop), as the opening turn of a
@@ -512,6 +544,9 @@ export interface ThreadCommands {
      * for the agent's next start, the Fast tier or another provider is refused (`model-options.ts`).
      */
     readonly modelSelection?: ModelSelection | undefined;
+    /** As the client sent them: `deliveryOf` decides, under the lock, whether it steers. */
+    readonly dispatchMode: Steering.DispatchMode;
+    readonly deliveryIntent?: Steering.DeliveryIntent;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /** Interrupts a running run, or takes back a queued one; `holdQueue` holds what is queued. */
   readonly interrupt: (input: {
@@ -713,11 +748,30 @@ interface ProjectEntry {
 }
 
 interface Conversation {
+  /** Which read of Mend this is, counting up: an older read never replaces a newer one. */
+  readonly readGeneration: number;
   readonly turns: ReadonlyArray<MendTurn>;
   readonly requests: ReadonlyArray<MendRequest>;
   /** What holds the next sender's turn (docs/adr/0016, decision 6); null when nothing waits. */
   readonly wait: MendConversationWait | null;
 }
+
+const keepObservedReceipts = (
+  previous: Conversation | undefined,
+  read: Conversation,
+): Conversation => ({
+  ...read,
+  turns: read.turns.map((turn) => {
+    const old = previous?.turns.find((candidate) => candidate.id === turn.id);
+    const receipts = new Map((old?.steers ?? []).map((receipt) => [receipt.id, receipt]));
+    for (const receipt of turn.steers ?? []) {
+      const known = receipts.get(receipt.id);
+      if (known === undefined || Steering.isLaterReceipt(known, receipt))
+        receipts.set(receipt.id, receipt);
+    }
+    return { ...turn, steers: Array.from(receipts.values()) };
+  }),
+});
 
 interface Printed<A> {
   readonly value: A;
@@ -800,7 +854,7 @@ const reasonOf = (error: { readonly _tag: string; readonly message: string }) =>
 /** How many items one `GET /api/sessions/:id/items` page asks for. */
 const ITEM_PAGE = 500;
 
-const EMPTY_CONVERSATION: Conversation = { turns: [], requests: [], wait: null };
+const EMPTY_CONVERSATION: Conversation = { readGeneration: 0, turns: [], requests: [], wait: null };
 const NO_IDS: ReadonlyMap<string, string> = new Map();
 
 /** Encodes through the vendored schema, so a mapping bug is caught here and never sent. */
@@ -814,6 +868,9 @@ const printer = <S extends Schema.Codec<unknown, unknown>>(schema: S) => {
 const printProject = printer(OrchestrationProjectShell);
 const printThreadShell = printer(OrchestrationV2ThreadShell);
 const printAppThread = printer(OrchestrationV2AppThread);
+const printAttempt = printer(OrchestrationV2RunAttempt);
+const printNode = printer(OrchestrationV2ExecutionNode);
+const printProviderTurn = printer(OrchestrationV2ProviderTurn);
 const printRun = printer(OrchestrationV2Run);
 const printRequest = printer(OrchestrationV2RuntimeRequest);
 const printMessage = printer(OrchestrationV2ConversationMessage);
@@ -834,6 +891,56 @@ interface ThreadEntity {
   }) => OrchestrationV2DomainEvent;
 }
 
+const widenToWholeRunGraphs = (
+  projection: OrchestrationV2ThreadProjection,
+  encodeFailures: ReadonlySet<string>,
+): ReadonlySet<string> => {
+  const failed = new Set(encodeFailures);
+  const brokenRuns = new Set(
+    projection.runs
+      .filter(
+        (run) =>
+          failed.has(`run:${run.id}`) ||
+          projection.attempts.some(
+            (attempt) => attempt.runId === run.id && failed.has(`attempt:${attempt.id}`),
+          ) ||
+          projection.nodes.some((node) => node.runId === run.id && failed.has(`node:${node.id}`)) ||
+          projection.providerTurns.some(
+            (turn) =>
+              failed.has(`provider-turn:${turn.id}`) &&
+              projection.attempts.some(
+                (attempt) => attempt.id === turn.runAttemptId && attempt.runId === run.id,
+              ),
+          ),
+      )
+      .map((run) => run.id),
+  );
+  for (const runId of brokenRuns) failed.add(`run:${runId}`);
+  for (const attempt of projection.attempts)
+    if (brokenRuns.has(attempt.runId)) failed.add(`attempt:${attempt.id}`);
+  for (const node of projection.nodes)
+    if (node.runId !== null && brokenRuns.has(node.runId)) failed.add(`node:${node.id}`);
+  for (const turn of projection.providerTurns)
+    if (failed.has(`node:${turn.nodeId}`) || failed.has(`attempt:${turn.runAttemptId}`))
+      failed.add(`provider-turn:${turn.id}`);
+  for (const scope of projection.checkpointScopes)
+    if (failed.has(`node:${scope.nodeId}`)) failed.add(`checkpoint-scope:${scope.id}`);
+  for (const checkpoint of projection.checkpoints)
+    if (
+      (checkpoint.runId !== null && brokenRuns.has(checkpoint.runId)) ||
+      failed.has(`checkpoint-scope:${checkpoint.scopeId}`)
+    )
+      failed.add(`checkpoint:${checkpoint.id}`);
+  for (const message of projection.messages)
+    if (message.runId !== null && brokenRuns.has(message.runId))
+      failed.add(`message:${message.id}`);
+  for (const item of projection.turnItems)
+    if (item.runId !== null && brokenRuns.has(item.runId)) failed.add(`item:${item.id}`);
+  for (const request of projection.runtimeRequests)
+    if (failed.has(`node:${request.nodeId}`)) failed.add(`request:${request.id}`);
+  return failed;
+};
+
 /**
  * A projection's entities, each encoded through its vendored schema. One that does not encode is
  * logged and left out, of the events and of the snapshot alike: a mapping bug never reaches a
@@ -847,10 +954,10 @@ const printProjection = (
 }> =>
   Effect.gen(function* () {
     const entities: Array<ThreadEntity> = [];
-    const failed = new Set<string>();
+    const encodeFailures = new Set<string>();
     const add = (key: string, print: string | Error, event: ThreadEntity["event"]) => {
       if (print instanceof Error) {
-        failed.add(key);
+        encodeFailures.add(key);
         return Effect.logError("t3 gateway could not encode a thread entity", {
           threadId: projection.thread.id,
           key,
@@ -888,6 +995,27 @@ const printProjection = (
         payload: run,
       }));
     }
+    for (const attempt of projection.attempts) {
+      yield* add(`attempt:${attempt.id}`, printAttempt(attempt), (base) => ({
+        ...base,
+        type: "run-attempt.updated",
+        payload: attempt,
+      }));
+    }
+    for (const node of projection.nodes) {
+      yield* add(`node:${node.id}`, printNode(node), (base) => ({
+        ...base,
+        type: "node.updated",
+        payload: node,
+      }));
+    }
+    for (const turn of projection.providerTurns) {
+      yield* add(`provider-turn:${turn.id}`, printProviderTurn(turn), (base) => ({
+        ...base,
+        type: "provider-turn.updated",
+        payload: turn,
+      }));
+    }
     for (const request of projection.runtimeRequests) {
       yield* add(`request:${request.id}`, printRequest(request), (base) => ({
         ...base,
@@ -923,13 +1051,17 @@ const printProjection = (
         payload: item,
       }));
     }
-    if (failed.size === 0) return { projection, entities };
+    if (encodeFailures.size === 0) return { projection, entities };
+    const failed = widenToWholeRunGraphs(projection, encodeFailures);
     const kept = <A extends { readonly id: string }>(prefix: string, values: ReadonlyArray<A>) =>
       values.filter((value) => !failed.has(`${prefix}:${value.id}`));
     return {
       projection: {
         ...projection,
         runs: kept("run", projection.runs),
+        attempts: kept("attempt", projection.attempts),
+        nodes: kept("node", projection.nodes),
+        providerTurns: kept("provider-turn", projection.providerTurns),
         checkpointScopes: kept("checkpoint-scope", projection.checkpointScopes),
         checkpoints: kept("checkpoint", projection.checkpoints),
         runtimeRequests: kept("request", projection.runtimeRequests),
@@ -939,7 +1071,7 @@ const printProjection = (
           .filter((row) => !failed.has(`item:${row.item.id}`))
           .map((row, position) => ({ ...row, position })),
       },
-      entities,
+      entities: entities.filter((entity) => !failed.has(entity.key)),
     };
   });
 
@@ -1161,6 +1293,23 @@ export const makePersonHub = (input: {
       for (const sessionId of sessionIds) opening.delete(sessionId);
     };
     const queues = new Map<string, Queueing.ThreadQueue>();
+    /** Claim (its client steer id) → the worker carrying it, and what its callers wait for. */
+    const steerWorkers = new Map<
+      string,
+      {
+        readonly done: Deferred.Deferred<number, ThreadCommandFailure>;
+        fiber: Fiber.Fiber<unknown> | null;
+      }
+    >();
+    const steerReadBarriers = new Map<string, number>();
+    const stoppedTurns = new Set<string>();
+    let readGeneration = 0;
+    const holdDispatchUntilLaterRead = (sessionId: string) =>
+      steerReadBarriers.set(sessionId, readGeneration);
+    const releaseOnLaterRead = (sessionId: string, generation: number) => {
+      const barrier = steerReadBarriers.get(sessionId);
+      if (barrier !== undefined && generation > barrier) steerReadBarriers.delete(sessionId);
+    };
     /**
      * Session id → its queue as the state file last kept it (ADR 0012, "State"): a queue is written
      * when it changed, and a restart brings back what was kept for this person.
@@ -1180,7 +1329,38 @@ export const makePersonHub = (input: {
           (sender) => restored.senders.get(sender) ?? null,
         );
         queues.set(restored.sessionId, queue);
+        if (queue.steers.length > 0) holdDispatchUntilLaterRead(restored.sessionId);
         keptQueues.set(restored.sessionId, JSON.stringify(restored.queue));
+      }
+    }
+    /** Session id → its settled steers by client steer id: all readback needs of them. */
+    const sentSteers = new Map<string, Map<string, Steering.SentSteer>>();
+    /** Session id → settled steers to write with its queue next; null forgets one. */
+    const unkeptSent = new Map<string, Map<string, Steering.SentSteer | null>>();
+    const sentChange = (
+      sessionId: string,
+      clientSteerId: string,
+      sent: Steering.SentSteer | null,
+    ) => {
+      const kept = sentSteers.get(sessionId) ?? new Map<string, Steering.SentSteer>();
+      if (sent === null) kept.delete(clientSteerId);
+      else kept.set(clientSteerId, sent);
+      sentSteers.set(sessionId, kept);
+      const unkept = unkeptSent.get(sessionId) ?? new Map<string, Steering.SentSteer | null>();
+      unkept.set(clientSteerId, sent);
+      unkeptSent.set(sessionId, unkept);
+    };
+    if (keeper !== null) {
+      for (const { sessionId, steer } of yield* state.listSentSteers(keeper.id).pipe(
+        Effect.catch((error) =>
+          Effect.logError("t3 gateway could not read its settled steers", {
+            cause: error.message,
+          }).pipe(Effect.as([])),
+        ),
+      )) {
+        const kept = sentSteers.get(sessionId) ?? new Map<string, Steering.SentSteer>();
+        kept.set(steer.clientSteerId, steer);
+        sentSteers.set(sessionId, kept);
       }
     }
     /**
@@ -1217,9 +1397,18 @@ export const makePersonHub = (input: {
         const live = Queueing.storedOf(queue);
         const stored = { ...live, entries: [...tombstones, ...live.entries] };
         const print = JSON.stringify(stored);
-        if (keptQueues.get(sessionId) === print) return true;
-        return yield* state.saveQueue(keeper.id, sessionId, stored).pipe(
-          Effect.tap(() => Effect.sync(() => keptQueues.set(sessionId, print))),
+        const sent = new Map(unkeptSent.get(sessionId) ?? []);
+        if (keptQueues.get(sessionId) === print && sent.size === 0) return true;
+        return yield* state.saveQueue(keeper.id, sessionId, stored, sent).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              keptQueues.set(sessionId, print);
+              const unkept = unkeptSent.get(sessionId);
+              for (const [clientSteerId, steer] of sent)
+                if (unkept?.get(clientSteerId) === steer) unkept.delete(clientSteerId);
+              if (unkept?.size === 0) unkeptSent.delete(sessionId);
+            }),
+          ),
           Effect.as(true),
           Effect.catch((error) =>
             Effect.logError("t3 gateway could not keep a queue", { cause: error.message }).pipe(
@@ -1258,8 +1447,23 @@ export const makePersonHub = (input: {
             ),
           ),
     );
+    for (const queue of queues.values()) {
+      for (const record of queue.steers) {
+        if (record.phase.kind === "posting" || record.phase.kind === "observed")
+          sentImages.set(record.messageId, record.phase.images);
+      }
+    }
     const imagesOfMessage = (messageId: string) =>
-      (sentImages.get(messageId) ?? []).flatMap((sent) => {
+      (
+        sentImages.get(messageId) ??
+        [
+          ...Array.from(queues.values()).flatMap((queue) => queue.steers),
+          ...Array.from(sentSteers.values()).flatMap((kept) => Array.from(kept.values())),
+        ]
+          .find((steer) => steer.messageId === messageId)
+          ?.imageIds.map((imageId) => ({ imageId, path: "" })) ??
+        []
+      ).flatMap((sent) => {
         const image = images.get(sent.imageId);
         return image === undefined ? [] : [{ image, path: sent.path }];
       });
@@ -1363,6 +1567,7 @@ export const makePersonHub = (input: {
         ([sessionId, kept]) => {
           const now = lifecycleOf(kept, {
             turns: conversations.get(sessionId)?.turns ?? [],
+            steers: shownSteersOf(sessionId),
             pending: (queues.get(sessionId)?.entries ?? []).map((queued) => ({
               state: Queueing.pendingStateOf(queued),
               requestedAt: queued.requestedAt,
@@ -1449,8 +1654,21 @@ export const makePersonHub = (input: {
      * it would drop the turn, and the queue would send the next message while this one runs.
      */
     const adoptedTurns = new Map<string, Map<string, MendTurn>>();
+    /** A session's steers take each read of it (set with the steers, below). */
+    let steersRead: (sessionId: string, generation: number) => Effect.Effect<void> = noSteersRead;
     /** A conversation as read, with the adopted turns it does not show yet; one it shows is let go. */
-    const withAdopted = (sessionId: string, conversation: Conversation): Conversation => {
+    const withAdopted = (
+      sessionId: string,
+      conversation: Conversation,
+      previous = conversations.get(sessionId),
+    ): Conversation => {
+      if (
+        previous !== undefined &&
+        (queues.get(sessionId)?.steers.length ?? 0) > 0 &&
+        previous.readGeneration > conversation.readGeneration
+      )
+        return previous;
+      conversation = keepObservedReceipts(previous, conversation);
       const adopted = adoptedTurns.get(sessionId);
       if (adopted === undefined) return conversation;
       const missing: Array<MendTurn> = [];
@@ -1578,33 +1796,56 @@ export const makePersonHub = (input: {
           if (!isProjectable(session, current, thread !== undefined)) continue;
           const agent = current ?? launchingAgentOf(session, thread?.options ?? {});
           const conversation = conversations.get(session.id) ?? EMPTY_CONVERSATION;
-          const ids = turnIds.get(session.id);
           const queue = queues.get(session.id);
-          const pending = (queue?.entries ?? []).map((queued) => ({
-            runId: queued.runId,
-            messageId: queued.messageId,
-            text: queued.text,
-            images: imagesOfIds(queued.imageIds),
-            requestedAt: queued.requestedAt,
-            state: Queueing.pendingStateOf(queued),
-            error: queued.error,
-            workspacePreparation: queued.workspacePreparation,
-            preparationFailed: queued.preparationFailed,
-          }));
+          const withdrawn = Steering.withdrawnTurnIds(conversation.turns);
+          const turns =
+            withdrawn.size === 0
+              ? conversation.turns
+              : conversation.turns.filter((turn) => !withdrawn.has(turn.id));
+          const ids = idsWithDestinations(session.id, turns, queue?.steers ?? []);
+          const steers = shownSteersOf(session.id);
+          const pending: Array<ThreadSource["pending"][number]> = (queue?.entries ?? []).map(
+            (queued) => ({
+              runId: queued.runId,
+              messageId: queued.messageId,
+              text: queued.text,
+              images: imagesOfIds(queued.imageIds),
+              requestedAt: queued.requestedAt,
+              state: Queueing.pendingStateOf(queued),
+              error: queued.error,
+              workspacePreparation: queued.workspacePreparation,
+              preparationFailed: queued.preparationFailed,
+            }),
+          );
+          for (const record of queue?.steers ?? []) {
+            if (!Steering.awaitsQueuedTurn(record, turns)) continue;
+            pending.push({
+              runId: record.runId,
+              messageId: record.messageId,
+              text: record.text,
+              images: imagesOfIds(record.imageIds),
+              requestedAt: record.requestedAt,
+              state: turns.some((turn) => turn.status === "running") ? "queued" : "starting",
+              error: null,
+              workspacePreparation: null,
+              preparationFailed: false,
+            });
+          }
           sources.push({
             threadId: ThreadId.make(thread?.threadId ?? session.id),
             project: entry.project,
             session,
             agent,
             changeId: annotation?.changeId ?? null,
-            turns: conversation.turns,
+            turns,
             requests: conversation.requests,
-            runIds: ids?.runIds ?? NO_IDS,
-            messageIds: ids?.messageIds ?? NO_IDS,
+            runIds: ids.runIds,
+            messageIds: ids.messageIds,
             imagesOf: imagesOfMessage,
             archivedAt: archived.get(session.id) ?? null,
             lifecycle: lifecycleOf(lifecycles.get(session.id), {
-              turns: conversation.turns,
+              turns,
+              steers,
               pending,
             }),
             lastVisitedAt: visited.get(session.id) ?? null,
@@ -1622,8 +1863,9 @@ export const makePersonHub = (input: {
                 ? null
                 : next;
             })(),
-            ...turnCheckpointsOf(session.id, conversation.turns),
+            ...turnCheckpointsOf(session.id, turns),
             pending,
+            steers,
             queueHeld: queue?.held ?? false,
             notices: threadNoticesOf({
               livePeople: active.get(session.id)?.livePeople ?? [],
@@ -1636,6 +1878,48 @@ export const makePersonHub = (input: {
         }
       }
       return sources;
+    };
+
+    const shownSteersOf = (sessionId: string): ReadonlyArray<Steering.ShownSteer> => [
+      ...(sentSteers.get(sessionId)?.values() ?? []),
+      ...(queues.get(sessionId)?.steers ?? []).map(Steering.shownOf),
+    ];
+
+    /**
+     * A session's id map, with each steer's Queued turn under the steer's own t3code ids once a
+     * read shows the turn is the steer's. Nothing is kept for it until then, so a destination Mend
+     * withdraws, or one that turns out not to be the steer's, leaves no ids behind.
+     */
+    const idsWithDestinations = (
+      sessionId: string,
+      turns: ReadonlyArray<MendTurn>,
+      steers: ReadonlyArray<Steering.SteerRecord>,
+    ): {
+      readonly runIds: ReadonlyMap<string, string>;
+      readonly messageIds: ReadonlyMap<string, string>;
+    } => {
+      const ids = turnIds.get(sessionId);
+      const destinations = [
+        ...steers.flatMap((record) => {
+          const destination = Steering.destinationOf(record, sessionId, turns);
+          return destination === null ? [] : [{ turnId: destination.id, record }];
+        }),
+        ...Array.from(sentSteers.get(sessionId)?.values() ?? []).flatMap((record) =>
+          record.outcome.kind === "queued" ? [{ turnId: record.outcome.turnId, record }] : [],
+        ),
+      ];
+      if (destinations.length === 0)
+        return { runIds: ids?.runIds ?? NO_IDS, messageIds: ids?.messageIds ?? NO_IDS };
+      return {
+        runIds: new Map([
+          ...(ids?.runIds ?? []),
+          ...destinations.map(({ turnId, record }) => [turnId, record.runId] as const),
+        ]),
+        messageIds: new Map([
+          ...(ids?.messageIds ?? []),
+          ...destinations.map(({ turnId, record }) => [turnId, record.messageId] as const),
+        ]),
+      };
     };
 
     const sourceOf = (sessionId: string): ThreadSource | null =>
@@ -2079,7 +2363,7 @@ export const makePersonHub = (input: {
     /** Whether a message the gateway accepted can still reach Mend: what holds the hub alive. */
     let busy = false;
     const holdWhileBusy = Effect.suspend(() => {
-      const now = !dead && Queueing.anyProgress(queues.values());
+      const now = !dead && (steerWorkers.size > 0 || Queueing.anyProgress(queues.values()));
       if (now === busy) return Effect.void;
       busy = now;
       return retain(now);
@@ -2129,18 +2413,23 @@ export const makePersonHub = (input: {
         : Effect.succeed(null);
 
     const readConversation = (sessionId: string, facts: ReadonlyMap<string, MendActiveSession>) =>
-      Effect.all(
-        {
-          turns: asPerson((token) => mend.listTurns(token, sessionId)),
-          requests: asPerson((token) => mend.listRequests(token, sessionId)),
-          wait: readWait(sessionId, facts),
-        },
-        { concurrency: 3 },
-      ).pipe(
-        Effect.map((conversation): Conversation | null => conversation),
-        // The session went between the list and this read; the next project read drops it.
-        Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
-      );
+      Effect.suspend(() => {
+        const generation = ++readGeneration;
+        return Effect.all(
+          {
+            turns: asPerson((token) => mend.listTurns(token, sessionId)),
+            requests: asPerson((token) => mend.listRequests(token, sessionId)),
+            wait: readWait(sessionId, facts),
+          },
+          { concurrency: 3 },
+        ).pipe(
+          Effect.map((conversation): Conversation | null => ({
+            ...conversation,
+            readGeneration: generation,
+          })),
+          Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+        );
+      });
 
     const readConversations = (
       sessionIds: ReadonlyArray<string>,
@@ -2257,10 +2546,15 @@ export const makePersonHub = (input: {
           yield* removed(finished);
           active = facts;
           applyRetirements(kept(retiredRead));
+          const previous = new Map(conversations);
           conversations.clear();
           for (const [sessionId, conversation] of kept(conversationsRead)) {
             if (conversation !== null) {
-              conversations.set(sessionId, withAdopted(sessionId, conversation));
+              conversations.set(
+                sessionId,
+                withAdopted(sessionId, conversation, previous.get(sessionId)),
+              );
+              yield* steersRead(sessionId, conversation.readGeneration);
             }
           }
           for (const [sessionId, items] of kept(caughtUp)) {
@@ -2342,6 +2636,7 @@ export const makePersonHub = (input: {
             for (const [sessionId, conversation] of read) {
               if (conversation !== null) {
                 conversations.set(sessionId, withAdopted(sessionId, conversation));
+                yield* steersRead(sessionId, conversation.readGeneration);
               }
             }
             for (const [sessionId, wait] of waits) {
@@ -2403,6 +2698,7 @@ export const makePersonHub = (input: {
               adoptedTurns.delete(sessionId);
             } else if (isKnownThread(sessionId)) {
               conversations.set(sessionId, withAdopted(sessionId, conversation));
+              yield* steersRead(sessionId, conversation.readGeneration);
             }
             const current = watches.get(sessionId);
             if (current !== undefined) mergeItems(current, items);
@@ -2651,6 +2947,21 @@ export const makePersonHub = (input: {
       Effect.forkScoped,
     );
 
+    const steerReads = yield* Effect.sleep("30 seconds").pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          Effect.forEach(
+            Array.from(queues),
+            ([sessionId, queue]) =>
+              queue.steers.length > 0 ? requestRefresh(`conversation:${sessionId}`) : Effect.void,
+            { discard: true },
+          ),
+        ),
+      ),
+      Effect.forever,
+      Effect.forkScoped,
+    );
+
     // ─── Teardown ──────────────────────────────────────────────────────────
 
     /** What else must end with the hub (set by later parts: the queue). */
@@ -2661,7 +2972,7 @@ export const makePersonHub = (input: {
      */
     const teardown = Effect.gen(function* () {
       dead = true;
-      yield* Fiber.interruptAll([sse, worker, deviceChecks]);
+      yield* Fiber.interruptAll([sse, worker, deviceChecks, steerReads]);
       yield* Effect.suspend(() => onTeardown);
       yield* input.dispose ?? Effect.void;
     });
@@ -2694,7 +3005,11 @@ export const makePersonHub = (input: {
       return {
         known: true,
         agentLive: source.agent.exitedAt === null && source.agent.status === "running",
-        turnOpen: turns.some((turn) => turn.status === "queued" || turn.status === "running"),
+        turnOpen:
+          turns.some((turn) => turn.status === "queued" || turn.status === "running") ||
+          (queues.get(sessionId)?.steers ?? []).some((record) =>
+            Steering.awaitsQueuedTurn(record, turns),
+          ),
         status: source.session.status,
         updatedAt: source.session.updatedAt,
         summary: source.session.summary ?? null,
@@ -2722,16 +3037,9 @@ export const makePersonHub = (input: {
           ),
         );
         if (!recorded && keeper !== null) {
-          const [stored] = Queueing.storedOf({
-            held: false,
-            preparation: null,
-            entries: [entry],
-          }).entries;
-          if (stored !== undefined) {
-            const waiting = unrecorded.get(sessionId) ?? [];
-            waiting.push({ stored: { ...stored, state: "sending" }, ids });
-            unrecorded.set(sessionId, waiting);
-          }
+          const waiting = unrecorded.get(sessionId) ?? [];
+          waiting.push({ stored: { ...Queueing.storedEntryOf(entry), state: "sending" }, ids });
+          unrecorded.set(sessionId, waiting);
         }
         Queueing.adopted(queueOf(sessionId), entry);
         const conversation = conversations.get(sessionId) ?? EMPTY_CONVERSATION;
@@ -2768,7 +3076,7 @@ export const makePersonHub = (input: {
         { concurrency: "unbounded" },
       ).pipe(Effect.map(([user, ofProject]) => deliveredSkills(user, ofProject)));
 
-    const invocationOf = (sessionId: string, entry: Queueing.QueueEntry) =>
+    const invocationOf = (sessionId: string, entry: Pick<Queueing.QueueEntry, "text" | "token">) =>
       Effect.gen(function* () {
         const source = sourceOf(sessionId);
         if (source === null || !mentionsSkill(entry.text)) return entry.text;
@@ -2790,7 +3098,10 @@ export const makePersonHub = (input: {
      * places only what is not placed yet, and a new agent, whose workspace may be another, gets
      * each image placed again.
      */
-    const placeImages = (sessionId: string, entry: Queueing.QueueEntry) =>
+    const placeImages = (
+      sessionId: string,
+      entry: Pick<Queueing.QueueEntry, "imageIds" | "token">,
+    ) =>
       Effect.forEach(
         entry.imageIds,
         (imageId) =>
@@ -2996,6 +3307,27 @@ export const makePersonHub = (input: {
           // read has shown yet is not gone either. An archived thread's queue never moves, held or
           // not, by the archive the state file keeps (review 613-R2-1).
           if (!loaded || opening.has(sessionId) || archived.has(sessionId)) return Effect.void;
+          if (
+            steerReadBarriers.has(sessionId) ||
+            queue.steers.some((record) => steerWorkers.has(record.clientSteerId))
+          )
+            return Effect.void;
+          const preparing = queue.steers.find((record) => record.phase.kind === "preparing");
+          if (preparing !== undefined)
+            return Effect.gen(function* () {
+              const token = yield* tokenOfSender(preparing.sender);
+              if (token !== null && !tokens.isRefused(token)) {
+                yield* startSteerWorker(sessionId, preparing.clientSteerId, token);
+                return;
+              }
+              yield* carryOutSteer(
+                sessionId,
+                yield* stepSteer(sessionId, preparing.clientSteerId, {
+                  kind: "stopped",
+                  reason: Queueing.SENDER_GONE,
+                }),
+              );
+            });
           return Effect.flatMap(queueNow, (now) => {
             const step = Queueing.nextStep(queue, viewOf(sessionId), now, timings);
             const work =
@@ -3067,16 +3399,41 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         const queue = queueOf(sessionId);
         const held = queue.held;
+        const steers = queue.steers;
         const preparation = queue.preparation === null ? null : { ...queue.preparation };
         const entries = [...queue.entries];
         const fields = queue.entries.map((entry) => [entry, { ...entry }] as const);
         if (!change(queue)) return false;
         if (yield* keepQueue(sessionId, queue)) return true;
         queue.held = held;
+        queue.steers = steers;
         queue.preparation = preparation;
         queue.entries = entries;
         for (const [entry, before] of fields) Object.assign(entry, before);
         return yield* refused(QUEUE_NOT_KEPT);
+      });
+
+    /**
+     * Writes a session's queue until the state file holds it. What Mend answered or the person
+     * asked for is already true, so a failed write is retried, never rolled back.
+     */
+    const keeping = new Set<string>();
+    const keepUntilKept = (sessionId: string) =>
+      Effect.suspend(() => {
+        if (keeping.has(sessionId)) return Effect.void;
+        keeping.add(sessionId);
+        return Effect.gen(function* () {
+          for (
+            let wait = 100;
+            !(yield* locked(Effect.suspend(() => keepQueue(sessionId, queueOf(sessionId)))));
+            wait = Math.min(wait * 2, 5_000)
+          )
+            yield* Effect.sleep(wait);
+        }).pipe(
+          Effect.ensuring(Effect.sync(() => keeping.delete(sessionId))),
+          Effect.forkIn(hubScope),
+          Effect.asVoid,
+        );
       });
 
     const send: ThreadCommands["send"] = (command) =>
@@ -3089,10 +3446,19 @@ export const makePersonHub = (input: {
         const release = Effect.sync(() => {
           handledCommands.delete(command.commandId);
         });
-        return yield* sendReserved(command).pipe(Effect.onError(() => release));
+        return yield* sendOnce(command).pipe(Effect.onError(() => release));
       });
 
-    const sendReserved: ThreadCommands["send"] = (command) =>
+    /** A run the client named that no read has shown yet is read for before anything is decided. */
+    const readForRun = (threadId: string, runId: string) =>
+      Effect.suspend(() => {
+        const source = sourceOf(threadId);
+        return source === null || runsOf(source).some((run) => run.id === runId)
+          ? Effect.void
+          : refreshConversation(threadId).pipe(Effect.ignore);
+      });
+
+    const sendOnce: ThreadCommands["send"] = (command) =>
       Effect.gen(function* () {
         // Only those who may steer queue a message.
         yield* steerableBy(command.session, command.threadId, command.threadId);
@@ -3106,27 +3472,55 @@ export const makePersonHub = (input: {
           (image) => sessionIdOf(image.threadId) === command.threadId,
         );
         if (selection !== null) return yield* refused(selection);
-        return yield* locked(
+        const mode = command.dispatchMode;
+        if (mode.type === "steer_active" || mode.type === "restart_active")
+          yield* readForRun(command.threadId, mode.targetRunId);
+        const sent = yield* locked(
           Effect.gen(function* () {
-            if (sourceOf(command.threadId) === null) {
+            const source = sourceOf(command.threadId);
+            if (source === null) {
               return yield* refused(`Thread ${command.threadId} is not in this environment.`);
             }
             // A client re-sends a command it saw no answer to, a restart of the gateway in between
-            // too: a message already kept or sent is the same message.
+            // too: a message already kept, steered or sent is the same message, whatever it asks.
+            const queue = queueOf(command.threadId);
+            const steered = steerOfMessage(command.threadId, command.messageId);
+            if (steered !== undefined) {
+              if (
+                steered.text !== command.text ||
+                JSON.stringify(steered.imageIds) !== JSON.stringify(command.imageIds) ||
+                ((mode.type === "steer_active" || mode.type === "restart_active") &&
+                  mode.targetRunId !== steered.targetRunId)
+              )
+                return yield* refused("This message id already names different steering input.");
+              return yield* replaySteer(command.threadId, steered);
+            }
             if (
-              queueOf(command.threadId).entries.some(
-                (entry) => entry.messageId === command.messageId,
-              ) ||
+              queue.entries.some((entry) => entry.messageId === command.messageId) ||
               Array.from(turnIds.get(command.threadId)?.messageIds.values() ?? []).includes(
                 command.messageId,
               )
             ) {
-              return sequence;
+              return ANSWERED;
             }
+            const delivery = Steering.deliveryOf(
+              source,
+              {
+                kind: "message",
+                mode,
+                intent: command.deliveryIntent,
+                text: command.text,
+                imageIds: command.imageIds,
+              },
+              { author: command.session.mendUser.id, stopped: stoppedTurns },
+            );
+            if (delivery.kind === "refuse") return yield* refused(delivery.reason);
             yield* keepNextChoices(command.threadId, command.modelSelection, catalog);
+            if (delivery.kind === "steer")
+              return yield* claimSteer(command.threadId, command.session, delivery, command, null);
             const requestedAt = DateTime.formatIso(yield* DateTime.now);
-            yield* changeKept(command.threadId, (queue) => {
-              queue.entries.push(
+            yield* changeKept(command.threadId, (changed) => {
+              changed.entries.push(
                 Queueing.newEntry({
                   runId: `t3-run:${randomUUID()}`,
                   messageId: command.messageId,
@@ -3140,9 +3534,431 @@ export const makePersonHub = (input: {
               return true;
             });
             yield* publishAll;
-            return sequence;
+            return ANSWERED;
+          }).pipe(Effect.uninterruptible),
+        );
+        return sent.kind === "wait" ? yield* awaitSteer(sent.clientSteerId, sent.done) : sequence;
+      });
+
+    const STOPPED_BEFORE_SENT = "The message was stopped before it was sent.";
+    const currentSteer = (sessionId: string, clientSteerId: string) =>
+      queueOf(sessionId).steers.find((record) => record.clientSteerId === clientSteerId);
+    const tokenOfSender = (sender: string): Effect.Effect<string | null> =>
+      state.findSessionById(AuthSessionId.make(sender)).pipe(
+        Effect.map((found) =>
+          Option.isSome(found) && found.value.revokedAt === null ? found.value.deviceToken : null,
+        ),
+        Effect.orElseSucceed(() => null),
+      );
+    /** Claim → how many requests wait on its outcome: a refusal hands one of them the draft. */
+    const steerCallers = new Map<string, number>();
+    /** Claim → the read generation after which a read checks its unconfirmed POST. */
+    const steerCheckedAfter = new Map<string, number>();
+
+    /**
+     * What `steerStep` chose for one steer, and how to carry it out on its queue. The words a step
+     * puts back in the queue go as their sender: a promotion as whoever queued it, a composer
+     * message with the caller's own token when there is one.
+     */
+    const stepSteer = (
+      sessionId: string,
+      clientSteerId: string,
+      event: Steering.SteerEvent,
+      token: string | null = null,
+    ) =>
+      Effect.gen(function* () {
+        const record = currentSteer(sessionId, clientSteerId);
+        if (record === undefined) return null;
+        const step = Steering.steerStep(record, event, {
+          sessionId,
+          turns: conversations.get(sessionId)?.turns ?? [],
+          caller: (steerCallers.get(clientSteerId) ?? 0) > 0,
+        });
+        const requeueToken =
+          step.kind === "settled" && step.requeue
+            ? record.promotion === null && token !== null
+              ? token
+              : yield* tokenOfSender(record.promotion?.entry.sender ?? record.sender)
+            : null;
+        const carry = (queue: Queueing.ThreadQueue): boolean => {
+          switch (step.kind) {
+            case "unchanged":
+              return false;
+            case "changed":
+            case "post":
+              queue.steers = queue.steers.map((candidate) =>
+                candidate.clientSteerId === clientSteerId ? step.record : candidate,
+              );
+              return true;
+            case "settled":
+              queue.steers = queue.steers.filter(
+                (candidate) => candidate.clientSteerId !== clientSteerId,
+              );
+              if (step.kept !== null) sentChange(sessionId, clientSteerId, step.kept);
+              if (step.requeue) Queueing.requeueSteer(queue, record, requeueToken);
+              return true;
+          }
+        };
+        return { record, step, carry };
+      });
+
+    /** Carries a step out in memory and writes it until kept: Mend's answer is never undone. */
+    const carryOutSteer = (
+      sessionId: string,
+      stepped: Effect.Success<ReturnType<typeof stepSteer>>,
+    ) =>
+      stepped !== null && stepped.carry(queueOf(sessionId))
+        ? keepUntilKept(sessionId)
+        : Effect.void;
+
+    const stopKept = (sessionId: string, clientSteerId: string, reason: string) =>
+      locked(
+        Effect.gen(function* () {
+          const stepped = yield* stepSteer(sessionId, clientSteerId, { kind: "stopped", reason });
+          yield* carryOutSteer(sessionId, stepped);
+        }),
+      );
+
+    /** A request waiting on a claim's outcome; while it waits, a refusal can hand it the draft. */
+    const awaitSteer = (
+      clientSteerId: string,
+      done: Deferred.Deferred<number, ThreadCommandFailure>,
+    ) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() =>
+          steerCallers.set(clientSteerId, (steerCallers.get(clientSteerId) ?? 0) + 1),
+        ),
+        () => Deferred.await(done),
+        () =>
+          Effect.sync(() => {
+            const left = (steerCallers.get(clientSteerId) ?? 1) - 1;
+            if (left > 0) steerCallers.set(clientSteerId, left);
+            else steerCallers.delete(clientSteerId);
+          }),
+      );
+
+    /**
+     * A request for a message that is already a steer: it waits for the claim's outcome while one
+     * is on its way, takes back the words of one that failed with nobody to return them to, and is
+     * otherwise answered as sent.
+     */
+    const replaySteer = (
+      sessionId: string,
+      steer: { readonly clientSteerId: string } & (
+        | { readonly kind: "working" }
+        | { readonly kind: "settled"; readonly outcome: Steering.SteerOutcome }
+      ),
+    ) =>
+      Effect.gen(function* () {
+        const running = steerWorkers.get(steer.clientSteerId);
+        if (running !== undefined)
+          return { kind: "wait" as const, clientSteerId: steer.clientSteerId, done: running.done };
+        if (steer.kind === "settled" && steer.outcome.kind === "failed") {
+          sentChange(sessionId, steer.clientSteerId, null);
+          yield* keepUntilKept(sessionId);
+          yield* publishAll;
+          return yield* refused(steer.outcome.reason);
+        }
+        return ANSWERED;
+      });
+
+    /** The steer a message id names, on its way or settled; one whose words went back is none. */
+    const steerOfMessage = (sessionId: string, messageId: string) => {
+      const working = queueOf(sessionId).steers.find((record) => record.messageId === messageId);
+      if (working !== undefined) return { ...working, kind: "working" as const };
+      const settled = Array.from(sentSteers.get(sessionId)?.values() ?? []).find(
+        (steer) => steer.messageId === messageId && steer.outcome.kind !== "returned",
+      );
+      return settled === undefined ? undefined : { ...settled, kind: "settled" as const };
+    };
+
+    const deliverSteer = (
+      sessionId: string,
+      clientSteerId: string,
+      token: string,
+      done: Deferred.Deferred<number, ThreadCommandFailure>,
+    ): Effect.Effect<number, ThreadCommandFailure> =>
+      Effect.gen(function* () {
+        const claimed = currentSteer(sessionId, clientSteerId);
+        if (claimed === undefined) return yield* refused(STOPPED_BEFORE_SENT);
+        let posting = claimed;
+        if (claimed.phase.kind === "preparing") {
+          const prepared = yield* Effect.gen(function* () {
+            const text = yield* invocationOf(sessionId, { text: claimed.text, token });
+            const placed = yield* placeImages(sessionId, { imageIds: claimed.imageIds, token });
+            return {
+              input: turnInputOf(text, placed),
+              images: placed.map(({ imageId, path }) => ({ imageId, path })),
+              processId: sourceOf(sessionId)?.agent.id ?? null,
+            };
+          }).pipe(Effect.result);
+          if (prepared._tag === "Failure") return yield* refused(prepared.failure.message);
+          const frozen = yield* locked(
+            Effect.gen(function* () {
+              if (archived.has(sessionId))
+                return yield* refused("The thread was archived before the message was sent.");
+              const stepped = yield* stepSteer(sessionId, clientSteerId, {
+                kind: "prepared",
+                ...prepared.success,
+              });
+              if (stepped?.step.kind !== "post") return null;
+              yield* keepSentImages(stepped.record.messageId, prepared.success.images);
+              // Kept before it is posted: a restart must POST these exact bytes, or nothing.
+              yield* changeKept(sessionId, stepped.carry);
+              return stepped.step.record;
+            }),
+          );
+          if (frozen === null) return yield* refused(STOPPED_BEFORE_SENT);
+          posting = frozen;
+        }
+        if (posting.phase.kind !== "posting") return sequence;
+        const answer = yield* mend
+          .steerTurn(token, posting.targetTurnId, {
+            input: posting.phase.input,
+            clientSteerId,
+          })
+          .pipe(
+            Effect.timeoutOrElse({
+              duration: "30 seconds",
+              orElse: () =>
+                Effect.fail(
+                  new MendUnavailable({
+                    operation: "POST /api/turns/:id/steer",
+                    status: null,
+                    cause: null,
+                  }),
+                ),
+            }),
+            Effect.result,
+          );
+        const left = yield* locked(
+          Effect.gen(function* () {
+            const stepped = yield* stepSteer(
+              sessionId,
+              clientSteerId,
+              { kind: "answered", answer: answerOf(answer) },
+              token,
+            );
+            yield* carryOutSteer(sessionId, stepped);
+            const now = currentSteer(sessionId, clientSteerId);
+            if (now !== undefined) holdDispatchUntilLaterRead(sessionId);
+            yield* publishAll;
+            const refusal = stepped?.step.kind === "settled" ? stepped.step.refusal : null;
+            if (refusal === null) yield* Deferred.succeed(done, sequence);
+            else
+              yield* Deferred.fail(
+                done,
+                answer._tag === "Failure" && answer.failure._tag === "MendDeviceRefused"
+                  ? answer.failure
+                  : new ThreadCommandRefused({ reason: refusal, authorization: false }),
+              );
+            return now;
           }),
         );
+        if (left?.phase.kind === "posting") {
+          // Its answer settled nothing: a read after this wait decides whether it goes again.
+          yield* Effect.sleep(
+            Math.min(timings.retryMaxMs, timings.retryBaseMs * 2 ** (left.phase.unconfirmed - 1)),
+          );
+          yield* locked(
+            Effect.sync(() => {
+              steerCheckedAfter.set(clientSteerId, readGeneration);
+              if (steerWorkers.get(clientSteerId)?.done === done)
+                steerWorkers.delete(clientSteerId);
+            }),
+          );
+        }
+        yield* requestRefresh(`conversation:${sessionId}`);
+        return sequence;
+      });
+
+    const startSteerWorker = (sessionId: string, clientSteerId: string, token: string) =>
+      Effect.gen(function* () {
+        const done = yield* Deferred.make<number, ThreadCommandFailure>();
+        const claim: { readonly done: typeof done; fiber: Fiber.Fiber<unknown> | null } = {
+          done,
+          fiber: null,
+        };
+        steerWorkers.set(clientSteerId, claim);
+        claim.fiber = yield* Effect.forkIn(
+          deliverSteer(sessionId, clientSteerId, token, done).pipe(
+            Effect.catch((error) =>
+              stopKept(sessionId, clientSteerId, error.message).pipe(
+                Effect.andThen(Effect.fail(error)),
+              ),
+            ),
+            Effect.onExit((exit) =>
+              locked(
+                Effect.gen(function* () {
+                  if (steerWorkers.get(clientSteerId) === claim) steerWorkers.delete(clientSteerId);
+                  if (!Exit.hasInterrupts(exit)) yield* publishAll;
+                  yield* Deferred.done(done, exit);
+                }),
+              ),
+            ),
+            Effect.exit,
+            Effect.interruptible,
+          ),
+          hubScope,
+        );
+        return done;
+      });
+
+    /**
+     * Stops the claims still preparing (all of a session's, or those aimed at one turn): each is
+     * settled by `steerStep`, its caller told why, and its worker retired with it.
+     */
+    const stopPreparing = (sessionId: string, reason: string, turnId: string | null = null) =>
+      Effect.gen(function* () {
+        const claims = queueOf(sessionId).steers.filter(
+          (record) =>
+            record.phase.kind === "preparing" &&
+            (turnId === null || record.targetTurnId === turnId),
+        );
+        for (const claim of claims) {
+          const stepped = yield* stepSteer(sessionId, claim.clientSteerId, {
+            kind: "stopped",
+            reason,
+          });
+          if (stepped === null || !stepped.carry(queueOf(sessionId))) continue;
+          const retired = steerWorkers.get(claim.clientSteerId);
+          if (retired === undefined) continue;
+          steerWorkers.delete(claim.clientSteerId);
+          yield* Deferred.fail(
+            retired.done,
+            new ThreadCommandRefused({ reason, authorization: false }),
+          );
+          if (retired.fiber !== null)
+            yield* Effect.forkIn(Fiber.interrupt(retired.fiber), hubScope);
+        }
+        if (claims.length > 0) yield* keepUntilKept(sessionId);
+      });
+
+    steersRead = (sessionId, generation) =>
+      Effect.gen(function* () {
+        releaseOnLaterRead(sessionId, generation);
+        for (const record of queues.get(sessionId)?.steers ?? []) {
+          const checked =
+            !steerWorkers.has(record.clientSteerId) &&
+            generation > (steerCheckedAfter.get(record.clientSteerId) ?? -1);
+          const stepped = yield* stepSteer(sessionId, record.clientSteerId, {
+            kind: "read",
+            checked,
+          });
+          yield* carryOutSteer(sessionId, stepped);
+          if (stepped?.step.kind !== "post") continue;
+          const token = yield* tokenOfSender(record.sender);
+          if (token === null || tokens.isRefused(token))
+            yield* carryOutSteer(
+              sessionId,
+              yield* stepSteer(sessionId, record.clientSteerId, {
+                kind: "stopped",
+                reason: Queueing.SENDER_GONE,
+              }),
+            );
+          else yield* startSteerWorker(sessionId, record.clientSteerId, token);
+        }
+      });
+
+    /** A claim on a message for the target's turn: kept before its worker starts. */
+    const claimSteer = (
+      threadId: string,
+      session: BearerSession,
+      delivery: Extract<Steering.Delivery, { readonly kind: "steer" }>,
+      words: {
+        readonly messageId: string;
+        readonly text: string;
+        readonly imageIds: ReadonlyArray<string>;
+      },
+      queued: Queueing.QueueEntry | null,
+    ) =>
+      Effect.gen(function* () {
+        const queue = queueOf(threadId);
+        const stored = queued === null ? undefined : Queueing.storedEntryOf(queued);
+        const record: Steering.SteerRecord = {
+          clientSteerId: randomUUID(),
+          messageId: words.messageId,
+          runId: queued?.runId ?? `t3-run:${randomUUID()}`,
+          targetTurnId: delivery.target.id,
+          targetRunId: delivery.targetRunId,
+          text: words.text,
+          imageIds: words.imageIds,
+          requestedAt: queued?.requestedAt ?? DateTime.formatIso(yield* DateTime.now),
+          sender: session.sessionId,
+          author: session.mendUser.id,
+          intent: queued === null ? "steer" : "promoted_queued_to_steer",
+          promotion:
+            stored === undefined || queued === null
+              ? null
+              : {
+                  entry: { ...stored, workspacePreparation: null },
+                  successors: Queueing.promotionSuccessors(queue, queued.runId),
+                },
+          phase: { kind: "preparing" },
+        };
+        yield* changeKept(threadId, (changed) => {
+          changed.entries = changed.entries.filter((entry) => entry !== queued);
+          changed.steers = [...changed.steers, record];
+          return true;
+        });
+        const done = yield* startSteerWorker(threadId, record.clientSteerId, session.deviceToken);
+        yield* publishAll;
+        return { kind: "wait" as const, clientSteerId: record.clientSteerId, done };
+      });
+
+    const promote: ThreadCommands["promote"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        yield* steerableBy(command.session, command.threadId, command.threadId);
+        yield* readForRun(command.threadId, command.targetRunId);
+        const promoted = yield* locked(
+          Effect.gen(function* () {
+            const source = sourceOf(command.threadId);
+            if (source === null)
+              return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+            const queue = queueOf(command.threadId);
+            const working = queue.steers.find((record) => record.runId === command.queuedRunId);
+            const settled = Array.from(sentSteers.get(command.threadId)?.values() ?? []).find(
+              (steer) => steer.runId === command.queuedRunId && steer.outcome.kind !== "returned",
+            );
+            const existing =
+              working !== undefined
+                ? { ...working, kind: "working" as const }
+                : settled === undefined
+                  ? undefined
+                  : { ...settled, kind: "settled" as const };
+            if (existing !== undefined) {
+              if (existing.targetRunId !== command.targetRunId)
+                return yield* refused("This message id already names different steering input.");
+              return yield* replaySteer(command.threadId, existing);
+            }
+            const queued = queue.entries.find(
+              (entry) => entry.runId === command.queuedRunId && entry.state === "queued",
+            );
+            if (queued === undefined) return yield* refused("That message is no longer queued.");
+            const delivery = Steering.deliveryOf(
+              source,
+              {
+                kind: "promotion",
+                targetRunId: command.targetRunId,
+                text: queued.text,
+                imageIds: queued.imageIds,
+              },
+              { author: command.session.mendUser.id, stopped: stoppedTurns },
+            );
+            if (delivery.kind === "refuse") return yield* refused(delivery.reason);
+            if (delivery.kind === "queue") return ANSWERED;
+            const invalid = selectionRefusal(
+              queued.imageIds,
+              (image) => sessionIdOf(image.threadId) === command.threadId,
+            );
+            if (invalid !== null) return yield* refused(invalid);
+            return yield* claimSteer(command.threadId, command.session, delivery, queued, queued);
+          }).pipe(Effect.uninterruptible),
+        );
+        return promoted.kind === "wait"
+          ? yield* awaitSteer(promoted.clientSteerId, promoted.done)
+          : sequence;
       });
 
     const catalogFor = (
@@ -3218,12 +4034,8 @@ export const makePersonHub = (input: {
 
     /** The Mend turn a run is: the turn the gateway sent it as, or the turn of that id. */
     const turnOfRun = (sessionId: string, runId: string): MendTurn | null => {
-      const runIds = turnIds.get(sessionId)?.runIds ?? NO_IDS;
-      let turnId = runId;
-      for (const [candidate, minted] of runIds) {
-        if (minted === runId) turnId = candidate;
-      }
-      return conversations.get(sessionId)?.turns.find((turn) => turn.id === turnId) ?? null;
+      const source = sourceOf(sessionId);
+      return source?.turns.find((turn) => runIdOf(source, turn) === runId) ?? null;
     };
 
     /** Takes a message back wherever it is on its way, holding the queue if asked. */
@@ -3253,11 +4065,13 @@ export const makePersonHub = (input: {
             const turn = turnOfRun(command.threadId, command.runId);
             if (turn === null) return yield* refused(`Run ${command.runId} is not in this thread.`);
             const wasHeld = queue.held;
+            yield* stopPreparing(command.threadId, STOPPED_BEFORE_SENT, turn.id);
             // Held before the turn ends, so the next message does not go out behind it.
             yield* changeKept(command.threadId, (held) => {
               Queueing.holdIfQueued(held, command.holdQueue);
               return true;
             });
+            stoppedTurns.add(turn.id);
             yield* publishAll;
             return { kind: "turn" as const, turn, wasHeld };
           }),
@@ -3274,6 +4088,7 @@ export const makePersonHub = (input: {
           Effect.tapError(() =>
             locked(
               Effect.gen(function* () {
+                stoppedTurns.delete(target.turn.id);
                 queueOf(command.threadId).held = target.wasHeld;
                 yield* publishAll;
               }),
@@ -3881,7 +4696,11 @@ export const makePersonHub = (input: {
         // A stopped session is not launched again for what was already queued; resuming is.
         yield* locked(
           Effect.gen(function* () {
-            Queueing.holdIfQueued(queueOf(sessionId), true);
+            const queue = queueOf(sessionId);
+            yield* stopPreparing(sessionId, STOPPED_BEFORE_SENT);
+            for (const turn of sourceOf(sessionId)?.turns ?? [])
+              if (turn.status === "running") stoppedTurns.add(turn.id);
+            Queueing.holdIfQueued(queue, true);
             yield* publishAll;
           }),
         );
@@ -3923,7 +4742,12 @@ export const makePersonHub = (input: {
           Effect.gen(function* () {
             // Mend keeps the row until its workspace has stopped; t3code's client has let it go.
             if (!report.removed) removing.add(sessionId);
-            Queueing.failAll(queueOf(sessionId), "The thread was deleted.");
+            const queue = queueOf(sessionId);
+            queue.steers = [];
+            sentSteers.delete(sessionId);
+            unkeptSent.delete(sessionId);
+            steerReadBarriers.delete(sessionId);
+            Queueing.failAll(queue, "The thread was deleted.");
             yield* publishAll;
           }),
         );
@@ -4104,6 +4928,10 @@ export const makePersonHub = (input: {
             // until the person resumes it.
             const wasHeld = queueOf(sessionId).held;
             if (at !== null) {
+              yield* stopPreparing(
+                sessionId,
+                "The thread was archived before the message was sent.",
+              );
               yield* changeKept(sessionId, (queue) => {
                 Queueing.holdIfQueued(queue, true);
                 return true;
@@ -4259,6 +5087,7 @@ export const makePersonHub = (input: {
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
+      promote: (command) => promote({ ...command, threadId: sessionIdOf(command.threadId) }),
       send: (command) => send({ ...command, threadId: sessionIdOf(command.threadId) }),
       interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),

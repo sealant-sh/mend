@@ -78,6 +78,7 @@ export const makeGatewayEnvironment = (input: {
     // against Mend.
     capabilities: {
       repositoryIdentity: false,
+      serverResolvedCommandContext: true,
       connectionProbe: true,
       threadSettlement: true,
       threadAutoSettlement: true,

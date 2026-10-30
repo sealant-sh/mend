@@ -1,6 +1,10 @@
 import type { OrchestrationV2ThreadLaunchWorkspaceStrategy } from "@mend/t3-contracts";
 
 import type { PendingRun } from "./shell.ts";
+import { isUnsent, type SteerRecord } from "./steering.ts";
+
+/** A promotion not yet sent may come back to its place, so it keeps an interrupt's hold. */
+const holdsTheQueue = (record: SteerRecord) => record.promotion !== null && isUnsent(record);
 
 /**
  * The gateway's queue of one thread (ADR 0012, "The gateway holds the queue"), as plain data and
@@ -85,7 +89,42 @@ export interface QueueEntry {
   preparationFailed: boolean;
 }
 
+/**
+ * A claimed steer's words back in the queue: a promotion in its place, before what was queued
+ * behind it; a composer message as the sender's own turn, at the end.
+ */
+export const requeueSteer = (queue: ThreadQueue, record: SteerRecord, token: string | null) => {
+  const stored: StoredEntry = record.promotion?.entry ?? {
+    runId: record.runId,
+    messageId: record.messageId,
+    text: record.text,
+    requestedAt: record.requestedAt,
+    sender: record.sender,
+    state: "queued",
+    error: null,
+    launches: 0,
+    imageIds: record.imageIds,
+    workspacePreparation: null,
+    preparationFailed: false,
+  };
+  const before = queue.entries.findIndex((entry) =>
+    record.promotion?.successors.includes(entry.runId),
+  );
+  queue.entries.splice(before < 0 ? queue.entries.length : before, 0, restoredEntry(stored, token));
+};
+
+export const promotionSuccessors = (queue: ThreadQueue, runId: string): ReadonlyArray<string> => {
+  const order = queue.entries.map((entry) => entry.runId);
+  for (const record of queue.steers.toReversed()) {
+    if (record.promotion === null || order.includes(record.runId)) continue;
+    const before = order.findIndex((id) => record.promotion?.successors.includes(id));
+    order.splice(before < 0 ? order.length : before, 0, record.runId);
+  }
+  return order.slice(order.indexOf(runId) + 1);
+};
+
 export interface ThreadQueue {
+  steers: ReadonlyArray<SteerRecord>;
   entries: Array<QueueEntry>;
   /** An interrupt held the queue: nothing queued is sent until it is resumed. */
   held: boolean;
@@ -159,7 +198,12 @@ export const MAX_LAUNCHES = 2;
 /** Session statuses that end a launch: provisioning failed or the agent went away. */
 const ENDED: ReadonlySet<string> = new Set(["failed", "stopped", "completed"]);
 
-export const emptyQueue = (): ThreadQueue => ({ entries: [], held: false, preparation: null });
+export const emptyQueue = (): ThreadQueue => ({
+  entries: [],
+  steers: [],
+  held: false,
+  preparation: null,
+});
 
 export const newEntry = (input: {
   readonly runId: string;
@@ -198,7 +242,12 @@ export const canProgress = (entry: QueueEntry): boolean =>
 /** Whether any message in any queue can still progress, or any worktree is being prepared. */
 export const anyProgress = (queues: Iterable<ThreadQueue>): boolean => {
   for (const queue of queues) {
-    if (queue.preparation?.status === "running" || queue.entries.some(canProgress)) return true;
+    if (
+      queue.steers.length > 0 ||
+      queue.preparation?.status === "running" ||
+      queue.entries.some(canProgress)
+    )
+      return true;
   }
   return false;
 };
@@ -207,7 +256,7 @@ const hasQueued = (queue: ThreadQueue) => queue.entries.some((entry) => entry.st
 
 /** Keeps the queue's own rules after any change: an empty queue is not held, settled ones are few. */
 const tidy = (queue: ThreadQueue) => {
-  if (!hasQueued(queue)) queue.held = false;
+  if (!hasQueued(queue) && !queue.steers.some(holdsTheQueue)) queue.held = false;
   const settled = queue.entries.filter(
     (entry) => entry.state === "failed" || entry.state === "cancelled",
   );
@@ -246,7 +295,7 @@ export const adopted = (queue: ThreadQueue, entry: QueueEntry) => {
 
 /** `holdQueue` on any interrupt: what is still queued waits for a resume. */
 export const holdIfQueued = (queue: ThreadQueue, holdQueue: boolean) => {
-  if (holdQueue && hasQueued(queue)) queue.held = true;
+  if (holdQueue && (hasQueued(queue) || queue.steers.some(holdsTheQueue))) queue.held = true;
 };
 
 export const resume = (queue: ThreadQueue) => {
@@ -560,27 +609,31 @@ export interface StoredEntry {
 }
 
 export interface StoredQueue {
+  readonly steers?: ReadonlyArray<SteerRecord>;
   readonly held: boolean;
   readonly preparation: QueuePreparation | null;
   readonly entries: ReadonlyArray<StoredEntry>;
 }
 
+export const storedEntryOf = (entry: QueueEntry): StoredEntry => ({
+  runId: entry.runId,
+  messageId: entry.messageId,
+  text: entry.text,
+  requestedAt: entry.requestedAt,
+  sender: entry.sender,
+  state: entry.state,
+  error: entry.error,
+  launches: entry.launches,
+  imageIds: entry.imageIds,
+  workspacePreparation: entry.workspacePreparation,
+  preparationFailed: entry.preparationFailed,
+});
+
 export const storedOf = (queue: ThreadQueue): StoredQueue => ({
+  steers: queue.steers,
   held: queue.held,
   preparation: queue.preparation === null ? null : { ...queue.preparation },
-  entries: queue.entries.map((entry) => ({
-    runId: entry.runId,
-    messageId: entry.messageId,
-    text: entry.text,
-    requestedAt: entry.requestedAt,
-    sender: entry.sender,
-    state: entry.state,
-    error: entry.error,
-    launches: entry.launches,
-    imageIds: entry.imageIds,
-    workspacePreparation: entry.workspacePreparation,
-    preparationFailed: entry.preparationFailed,
-  })),
+  entries: queue.entries.map(storedEntryOf),
 });
 
 /** What a message being sent when the gateway stopped says: it may or may not be in Mend. */
@@ -646,6 +699,7 @@ export const restoredQueue = (
     stored.preparation?.status === "running" ||
     stored.entries.some((entry) => entry.state === "preparing");
   const queue: ThreadQueue = {
+    steers: stored.steers ?? [],
     entries: stored.entries.map((entry) => restoredEntry(entry, tokenOf(entry.sender))),
     held: stored.held,
     preparation: cutShort

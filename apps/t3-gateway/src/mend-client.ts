@@ -43,6 +43,7 @@ import {
   MendSession,
   MendSessionDetail,
   MendTurn,
+  MendTurnSteer,
   MendWorkspaceRetirement,
   type MendWorktree,
   MendWorktreeListing,
@@ -578,6 +579,11 @@ export class MendClient extends Context.Service<
       prompt: string,
       options?: MendLaunchOptions,
     ) => MendCommand<MendSession>;
+    readonly steerTurn: (
+      deviceToken: string,
+      turnId: string,
+      input: { readonly input: string; readonly clientSteerId: string },
+    ) => MendCommand<MendTurnSteer>;
     /** `POST /api/turns/:id/interrupt`. */
     readonly interruptTurn: (deviceToken: string, turnId: string) => MendCommand<void>;
     /** `POST /api/requests/:id/respond`. */
@@ -608,6 +614,7 @@ const decodeConversationWait = Schema.decodeUnknownEffect(Schema.NullOr(MendConv
 const decodeWorkspaceRetirement = Schema.decodeUnknownEffect(
   Schema.NullOr(MendWorkspaceRetirement),
 );
+const decodeTurnSteer = Schema.decodeUnknownEffect(MendTurnSteer);
 const decodeTurn = Schema.decodeUnknownEffect(MendTurn);
 const decodeWorktreeListing = Schema.decodeUnknownEffect(MendWorktreeListing);
 const decodeSession = Schema.decodeUnknownEffect(MendSession);
@@ -1470,6 +1477,18 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/upgrade-tickets",
         ).pipe(Effect.map((minted) => Redacted.make(minted.ticket)));
 
+      const steerTurn: MendClient["Service"]["steerTurn"] = (deviceToken, turnId, input) =>
+        answered(
+          command(
+            "POST /api/turns/:id/steer",
+            `/api/turns/${encodeURIComponent(turnId)}/steer`,
+            deviceToken,
+            input,
+            decodeTurnSteer,
+          ),
+          "POST /api/turns/:id/steer",
+        );
+
       const interruptTurn = (deviceToken: string, turnId: string) =>
         command(
           "POST /api/turns/:id/interrupt",
@@ -1609,6 +1628,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         ttyTicket,
         submitTurn,
         launchProtocol,
+        steerTurn,
         interruptTurn,
         respondRequest,
         events,

@@ -157,6 +157,7 @@ const WAIT: MendConversationWait = {
 const sourceWith = (notices: ThreadNotices): ThreadSource => ({
   threadId: ThreadId.make(session.id),
   imagesOf: () => [],
+  steers: [],
   turnCheckpoints: new Map(),
   sharedWorktree: false,
   nextMode: null,

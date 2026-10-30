@@ -23,12 +23,14 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 import { GatewayConfig } from "./config.ts";
+import { MendTurnSteer } from "./mend-workbench.ts";
 import {
   NO_MODEL_PREFERENCES,
   type KeptModelPreferences,
   type ModelPreferences,
 } from "./model-preferences.ts";
 import type { EntryState, StoredEntry, StoredQueue } from "./queue.ts";
+import type { SentSteer, SteerRecord } from "./steering.ts";
 
 /**
  * The gateway's own state (ADR 0012, "State"): one `node:sqlite` file it owns. Mend's records stay
@@ -251,7 +253,16 @@ export class GatewayState extends Context.Service<
       mendUserId: string,
       sessionId: string,
       queue: StoredQueue,
+      /** Settled steers to keep, by client steer id; null forgets one. */
+      sent?: ReadonlyMap<string, SentSteer | null>,
     ) => Effect.Effect<void, GatewayStateError>;
+    /** Every settled steer kept for a person, by session (`steering.ts`, `SentSteer`). */
+    readonly listSentSteers: (
+      mendUserId: string,
+    ) => Effect.Effect<
+      ReadonlyArray<{ readonly sessionId: string; readonly steer: SentSteer }>,
+      GatewayStateError
+    >;
     /**
      * Every queue kept for a person, by session, with the device tokens of the senders whose
      * bearer is still live (a sender missing from `senders` is no longer paired).
@@ -708,6 +719,23 @@ const MIGRATIONS: ReadonlyArray<string> = [
   );
   CREATE INDEX lifecycle_receipts_by_session ON lifecycle_receipts (mend_user_id, mend_session_id);
   `,
+  `
+  CREATE TABLE steer_messages (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    client_steer_id TEXT NOT NULL,
+    sender_session_id TEXT NOT NULL,
+    record TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id, client_steer_id)
+  );
+  CREATE TABLE sent_steers (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    client_steer_id TEXT NOT NULL,
+    record TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id, client_steer_id)
+  );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -752,6 +780,89 @@ const ThreadRow = Schema.Struct({
 const decodeThreadRows = Schema.decodeUnknownEffect(Schema.Array(ThreadRow));
 const RemovalRow = Schema.Struct({ mend_session_id: Schema.String });
 const decodeRemovalRows = Schema.decodeUnknownEffect(Schema.Array(RemovalRow));
+const StoredSteer = Schema.Struct({
+  clientSteerId: Schema.String.check(Schema.isUUID()),
+  messageId: Schema.String,
+  runId: Schema.String,
+  targetTurnId: Schema.String,
+  targetRunId: Schema.String,
+  text: Schema.String,
+  imageIds: Schema.Array(Schema.String),
+  requestedAt: Schema.String,
+  sender: Schema.String,
+  author: Schema.String,
+  intent: Schema.Literals(["steer", "promoted_queued_to_steer"]),
+  promotion: Schema.NullOr(
+    Schema.Struct({
+      successors: Schema.Array(Schema.String),
+      entry: Schema.Struct({
+        runId: Schema.String,
+        messageId: Schema.String,
+        text: Schema.String,
+        requestedAt: Schema.String,
+        sender: Schema.String,
+        state: Schema.Literal("queued"),
+        error: Schema.NullOr(Schema.String),
+        launches: Schema.Number,
+        imageIds: Schema.Array(Schema.String),
+        workspacePreparation: Schema.Null,
+        preparationFailed: Schema.Boolean,
+      }),
+    }),
+  ),
+  phase: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("preparing") }),
+    Schema.Struct({
+      kind: Schema.Literal("posting"),
+      input: Schema.String,
+      images: Schema.Array(Schema.Struct({ imageId: Schema.String, path: Schema.String })),
+      processId: Schema.NullOr(Schema.String),
+      unconfirmed: Schema.Int,
+    }),
+    Schema.Struct({
+      kind: Schema.Literal("observed"),
+      input: Schema.String,
+      images: Schema.Array(Schema.Struct({ imageId: Schema.String, path: Schema.String })),
+      processId: Schema.NullOr(Schema.String),
+      receipt: MendTurnSteer,
+    }),
+  ]),
+});
+const SentSteerRecord = Schema.Struct({
+  clientSteerId: Schema.String,
+  messageId: Schema.String,
+  runId: Schema.String,
+  targetTurnId: Schema.String,
+  targetRunId: Schema.String,
+  text: Schema.String,
+  imageIds: Schema.Array(Schema.String),
+  intent: Schema.Literals(["steer", "promoted_queued_to_steer"]),
+  requestedAt: Schema.String,
+  outcome: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("sent") }),
+    Schema.Struct({ kind: Schema.Literal("queued"), turnId: Schema.String }),
+    Schema.Struct({ kind: Schema.Literal("failed"), reason: Schema.String }),
+    Schema.Struct({ kind: Schema.Literal("returned") }),
+  ]),
+});
+const decodeSentSteerRows = Schema.decodeUnknownEffect(
+  Schema.Array(
+    Schema.Struct({
+      mend_session_id: Schema.String,
+      record: Schema.fromJsonString(SentSteerRecord),
+    }),
+  ),
+);
+const decodeSteerRows = Schema.decodeUnknownEffect(
+  Schema.Array(
+    Schema.Struct({
+      mend_session_id: Schema.String,
+      record: Schema.fromJsonString(StoredSteer),
+      device_token: Schema.NullOr(Schema.String),
+    }),
+  ),
+);
+
 const QueuedRow = Schema.Struct({
   mend_session_id: Schema.String,
   run_id: Schema.String,
@@ -1161,7 +1272,7 @@ export const openGatewayState = (
 
     const forgetThread = (mendUserId: string, sessionId: string) =>
       transaction("forgetThread", () => {
-        for (const table of ["thread_ids", "lifecycle_receipts"]) {
+        for (const table of ["thread_ids", "lifecycle_receipts", "steer_messages", "sent_steers"]) {
           database
             .prepare(`DELETE FROM ${table} WHERE mend_user_id = ? AND mend_session_id = ?`)
             .run(mendUserId, sessionId);
@@ -1199,7 +1310,12 @@ export const openGatewayState = (
           .run(mendUserId, sessionId);
       });
 
-    const saveQueue = (mendUserId: string, sessionId: string, queue: StoredQueue) =>
+    const saveQueue = (
+      mendUserId: string,
+      sessionId: string,
+      queue: StoredQueue,
+      sent: ReadonlyMap<string, SentSteer | null> = new Map(),
+    ) =>
       transaction("saveQueue", () => {
         database
           .prepare("DELETE FROM queued_messages WHERE mend_user_id = ? AND mend_session_id = ?")
@@ -1237,6 +1353,31 @@ export const openGatewayState = (
             entry.preparationFailed ? 1 : 0,
           );
         });
+        database
+          .prepare("DELETE FROM steer_messages WHERE mend_user_id = ? AND mend_session_id = ?")
+          .run(mendUserId, sessionId);
+        const insertSteer = database.prepare(
+          "INSERT INTO steer_messages (mend_user_id, mend_session_id, client_steer_id, sender_session_id, record) VALUES (?, ?, ?, ?, ?)",
+        );
+        for (const steer of queue.steers ?? []) {
+          insertSteer.run(
+            mendUserId,
+            sessionId,
+            steer.clientSteerId,
+            steer.sender,
+            JSON.stringify(steer),
+          );
+        }
+        const keepSent = database.prepare(
+          "INSERT OR REPLACE INTO sent_steers (mend_user_id, mend_session_id, client_steer_id, record) VALUES (?, ?, ?, ?)",
+        );
+        const forgetSent = database.prepare(
+          "DELETE FROM sent_steers WHERE mend_user_id = ? AND mend_session_id = ? AND client_steer_id = ?",
+        );
+        for (const [clientSteerId, steer] of sent) {
+          if (steer === null) forgetSent.run(mendUserId, sessionId, clientSteerId);
+          else keepSent.run(mendUserId, sessionId, clientSteerId, JSON.stringify(steer));
+        }
         if (queue.held) {
           database
             .prepare("INSERT INTO queue_holds (mend_user_id, mend_session_id) VALUES (?, ?)")
@@ -1273,6 +1414,16 @@ export const openGatewayState = (
             )
             .all(mendUserId),
         ).pipe(Effect.flatMap(decoded("loadQueues", decodeQueuedRows)));
+        const steerRows = yield* run("loadQueues", () =>
+          database
+            .prepare(
+              `SELECT s.mend_session_id, s.record,
+                  CASE WHEN b.revoked_at IS NULL THEN b.device_token END AS device_token
+             FROM steer_messages s LEFT JOIN bearer_sessions b ON b.session_id = s.sender_session_id
+            WHERE s.mend_user_id = ?`,
+            )
+            .all(mendUserId),
+        ).pipe(Effect.flatMap(decoded("loadQueues", decodeSteerRows)));
         const holds = yield* run("loadQueues", () =>
           database
             .prepare("SELECT mend_session_id FROM queue_holds WHERE mend_user_id = ?")
@@ -1327,16 +1478,41 @@ export const openGatewayState = (
           if (!bySession.has(sessionId))
             bySession.set(sessionId, { entries: [], senders: new Map() });
         }
+        const steers = new Map<string, Array<SteerRecord>>();
+        for (const row of steerRows) {
+          const records = steers.get(row.mend_session_id) ?? [];
+          records.push(row.record);
+          steers.set(row.mend_session_id, records);
+          const kept = bySession.get(row.mend_session_id) ?? {
+            entries: [],
+            senders: new Map<string, string>(),
+          };
+          if (row.device_token !== null) kept.senders.set(row.record.sender, row.device_token);
+          bySession.set(row.mend_session_id, kept);
+        }
         return Array.from(bySession, ([sessionId, kept]) => ({
           sessionId,
           queue: {
             held: held.has(sessionId),
             preparation: preparations.get(sessionId) ?? null,
             entries: kept.entries,
+            steers: steers.get(sessionId) ?? [],
           },
           senders: kept.senders,
         }));
       });
+
+    const listSentSteers = (mendUserId: string) =>
+      run("listSentSteers", () =>
+        database
+          .prepare("SELECT mend_session_id, record FROM sent_steers WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listSentSteers", decodeSentSteerRows)),
+        Effect.map((rows) =>
+          rows.map((row) => ({ sessionId: row.mend_session_id, steer: row.record })),
+        ),
+      );
 
     const reserveSequences = (from: number, count: number) =>
       Effect.flatMap(Clock.currentTimeMillis, (now) =>
@@ -1485,6 +1661,14 @@ export const openGatewayState = (
             `DELETE FROM images
               WHERE created_at < ? AND (? IS NULL OR mend_user_id = ?)
                 AND NOT EXISTS (SELECT 1 FROM sent_images s WHERE s.image_id = images.image_id)
+                AND NOT EXISTS (
+                  SELECT 1 FROM steer_messages s, json_each(s.record, '$.imageIds') j
+                   WHERE s.mend_user_id = images.mend_user_id AND j.value = images.image_id
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM sent_steers s, json_each(s.record, '$.imageIds') j
+                   WHERE s.mend_user_id = images.mend_user_id AND j.value = images.image_id
+                )
                 AND NOT EXISTS (
                   SELECT 1 FROM queued_messages q, json_each(q.image_ids) j
                    WHERE q.mend_user_id = images.mend_user_id AND j.value = images.image_id
@@ -1860,7 +2044,8 @@ export const openGatewayState = (
           .prepare(
             `SELECT b.* FROM bearer_sessions b
                JOIN (SELECT DISTINCT q.mend_user_id, q.sender_session_id FROM queued_messages q
-                      WHERE q.state IN ('queued', 'launching')) p
+                      WHERE q.state IN ('queued', 'launching')
+                      UNION SELECT s.mend_user_id, s.sender_session_id FROM steer_messages s) p
                  ON p.sender_session_id = b.session_id AND p.mend_user_id = b.mend_user_id
               WHERE b.revoked_at IS NULL`,
           )
@@ -1887,6 +2072,7 @@ export const openGatewayState = (
       dropRemoval,
       saveQueue,
       loadQueues,
+      listSentSteers,
       reserveSequences,
       saveImages,
       listImages,
