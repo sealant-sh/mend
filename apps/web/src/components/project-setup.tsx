@@ -543,14 +543,14 @@ export function RemoveProjectSection({ projectId }: { readonly projectId: string
         {removing === "working"
           ? "Removing…"
           : removing === "armed"
-            ? "Really remove project and store copy?"
+            ? "Remove project? It can be restored."
             : "Remove project…"}
       </button>
       {removing === "armed" && (
         <p className="mt-2 font-mono text-xs text-faint">
-          Deletes every worktree, session and review, and removes the store copy. Refused while any
-          session runs or saves, or any change is not on origin, whoever started it. The origin
-          repository is untouched.
+          Removes the project from Mend and T3 Code. Its files and history are kept. Restore it from
+          Projects → Removed projects. Refused while any session runs or saves, or any change is not
+          on origin, whoever started it.
         </p>
       )}
       {failure !== null && (

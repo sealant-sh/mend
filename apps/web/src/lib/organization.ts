@@ -82,6 +82,12 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `removed ${subject}`;
     case "project.visibility_changed":
       return `made project ${event.subjectId} ${text(event.data["visibility"]) ?? "private"}`;
+    case "project.removed":
+      return "removed a project";
+    case "project.restored":
+      return "restored a project";
+    case "project.purged":
+      return "purged a project";
     case "project.taken_over":
       return `took over project ${event.subjectId}`;
     case "folder.created":

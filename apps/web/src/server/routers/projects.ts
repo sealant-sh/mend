@@ -17,6 +17,7 @@ import {
   ProjectWorkspaceImageRequest,
 } from "@mend/api-contracts";
 import { ProjectId, ProjectLinkId, ProjectMountId } from "@mend/domain";
+import { ProjectName } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -26,6 +27,24 @@ const byId = input(Schema.Struct({ id: ProjectId }));
 
 /** Projects · references · mounts · recipes. */
 export const projectsRouter = router({
+  removed: procedure.query(({ ctx }) => run(ctx, (api) => api.projects.removed())),
+  restore: procedure
+    .input(input(Schema.Struct({ id: ProjectId, name: Schema.optionalKey(ProjectName) })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.projects.restore({
+          params: { id: i.id },
+          payload: i.name === undefined ? {} : { name: i.name },
+        }),
+      ),
+    ),
+  purge: procedure
+    .input(input(Schema.Struct({ id: ProjectId, confirm: Schema.String })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.projects.purge({ params: { id: i.id }, payload: { confirm: i.confirm } }),
+      ),
+    ),
   list: procedure.query(({ ctx }) => run(ctx, (api) => api.projects.list())),
   detail: procedure
     .input(byId)
