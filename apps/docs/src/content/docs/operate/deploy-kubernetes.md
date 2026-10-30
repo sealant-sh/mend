@@ -255,6 +255,15 @@ admits the controller's Pods by namespace and label in one selector. What the ch
 - `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws` and `/tty-embed` carry a single-use
   upgrade ticket in the query string, and `/pair` a pairing code. Keep query strings on those paths
   out of the controller's logs.
+- A sign-up from an invitation carries its token in the `X-Mend-Invitation` request header. Keep
+  that header out of the controller's logs.
+- Links issued by an older Mend carry a secret in the path: `/join/<token>`, `/reset/<token>` and
+  `/slack/link/<code>`. Keep paths under those prefixes out of the controller's logs while such a
+  link may still be opened (an invitation lasts up to thirty days). New links carry the secret after
+  the `#`, which no browser sends.
+- An upgrade to this release rolls the `web` and `api` Deployments out together. A link a new API
+  pod issues while an old web pod still serves does not open there: the old web tier has no page for
+  the new link form. Open it again once the web rollout completes.
 - A controller that buffers responses breaks the `/api/events` stream. The timeouts above keep
   terminals and the event stream open.
 - Mend accepts request bodies up to 1 MiB, 24 MiB on routes that take a file, and 64 MiB on

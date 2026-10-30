@@ -116,9 +116,13 @@ Or from **Settings → Invitations** on the web: enter an optional email, pick t
 **New link**. The web link expires after seven days.
 
 Mend sends no email. The command and the page print a link, once, for you to hand over. The link
-works once. Whoever opens it at `/join/<token>` sees the organization name, the role and the expiry
+works once. Whoever opens it at `/join#<token>` sees the organization name, the role and the expiry
 date, creates an account, and joins with that role. Bind the link to an email address when it must
 not be forwarded.
+
+The token follows the `#`, which a browser never sends to a server, so no proxy or edge in front of
+Mend logs it. A link issued by an older version, `/join/<token>`, still works: the page moves the
+token after the `#` before it loads anything.
 
 Open invitations are listed under **Invitations** with **Revoke** beside each. Accepted, revoked and
 expired ones are counted under it. A signed-in account that already belongs to another organization
@@ -325,8 +329,8 @@ Mend sends no email, so recovery is a link someone hands over.
   mend operator reset-link sam@acme.dev
   ```
 
-The link opens `/reset/<token>`, works once and expires after a day. Setting a password with it
-signs the account out everywhere.
+The link opens `/reset#<token>`, works once and expires after a day. An older `/reset/<token>` link
+still works. Setting a password with it signs the account out everywhere.
 
 When an organization's owners are gone or locked out, the operator brings one back:
 
