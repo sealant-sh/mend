@@ -1,4 +1,3 @@
-import { fragmentSecret } from "@mend/network";
 import { Button } from "@mend/ui/components/ui/button";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -6,10 +5,11 @@ import { useState } from "react";
 import { PasswordField } from "#/components/auth-fields";
 import { SetupFrame } from "#/components/setup-frame";
 import { authClient } from "#/lib/auth-client";
+import { useFragmentSecret } from "#/lib/handed-links";
 import { passwordProblem } from "#/lib/onboarding";
 
 export function ResetPage() {
-  const secret = fragmentSecret(window.location.hash);
+  const secret = useFragmentSecret();
   return secret === null ? (
     <SetupFrame>
       <p className="ev-eyebrow mb-2">password</p>
@@ -21,7 +21,7 @@ export function ResetPage() {
       </p>
     </SetupFrame>
   ) : (
-    <ResetForm token={secret} />
+    <ResetForm key={secret} token={secret} />
   );
 }
 

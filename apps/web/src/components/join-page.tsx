@@ -1,4 +1,3 @@
-import { fragmentSecret } from "@mend/network";
 import { Button } from "@mend/ui/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -8,6 +7,7 @@ import { Field, PasswordField } from "#/components/auth-fields";
 import { formatDay } from "#/components/pairing-qr";
 import { SetupFrame } from "#/components/setup-frame";
 import { authClient } from "#/lib/auth-client";
+import { useFragmentSecret } from "#/lib/handed-links";
 import { passwordProblem } from "#/lib/onboarding";
 import { joinState } from "#/lib/organization";
 import { useTRPC } from "#/lib/trpc";
@@ -15,8 +15,8 @@ import { useTRPC } from "#/lib/trpc";
 const INVITATION_HEADER = "x-mend-invitation";
 
 export function JoinPage() {
-  const secret = fragmentSecret(window.location.hash);
-  return secret === null ? <NotAnInvitation /> : <Invitation token={secret} />;
+  const secret = useFragmentSecret();
+  return secret === null ? <NotAnInvitation /> : <Invitation key={secret} token={secret} />;
 }
 
 function NotAnInvitation() {

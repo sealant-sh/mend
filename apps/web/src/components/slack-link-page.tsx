@@ -1,4 +1,3 @@
-import { fragmentSecret } from "@mend/network";
 import { Button } from "@mend/ui/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -6,14 +5,15 @@ import { useState } from "react";
 
 import { SetupFrame } from "#/components/setup-frame";
 import { confirmSlackLink, previewSlackLink, type SlackLinkConfirmedDto } from "#/lib/api";
+import { useFragmentSecret } from "#/lib/handed-links";
 import { linkedLine, slackPersonLabel } from "#/lib/slack";
 
 const formatTime = (at: Date): string =>
   at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
 export function SlackLinkPage() {
-  const secret = fragmentSecret(window.location.hash);
-  return secret === null ? <LinkDoesNotWork /> : <SlackLink code={secret} />;
+  const secret = useFragmentSecret();
+  return secret === null ? <LinkDoesNotWork /> : <SlackLink key={secret} code={secret} />;
 }
 
 function LinkDoesNotWork() {
