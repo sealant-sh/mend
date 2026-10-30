@@ -1210,7 +1210,7 @@ export const helpMessage = (input: {
 
 /**
  * The reply to a mention from someone who has not linked their account: a button to
- * `/slack/link/<code>`. Once they link, Mend runs the request they made.
+ * `/slack/link#<code>`. Once they link, Mend runs the request they made.
  */
 export const linkPrompt = (url: string): SlackMessage => {
   const text =

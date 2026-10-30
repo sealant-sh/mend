@@ -102,7 +102,7 @@ export class SlackDefaultProjectRequest extends Schema.Class<SlackDefaultProject
   projectId: Schema.NullOr(ProjectId),
 }) {}
 
-/** The code from a `/slack/link/<code>` page. */
+/** The code from a `/slack/link#<code>` page. */
 export class SlackLinkCodeRequest extends Schema.Class<SlackLinkCodeRequest>(
   "SlackLinkCodeRequest",
 )({
