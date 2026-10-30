@@ -444,7 +444,10 @@ approves it.
   to its digest. An instance runs only an approved revision. A changed definition runs only after it
   is approved again. Until then, the running instance keeps the old revision.
 - **Who approves** a project resource is a manager. Who may declare an image that is not a preset is
-  decision G1. Who approves a worktree resource is decision G4.
+  decision G1. Who approves a worktree resource is decision G4. As built, a worktree's change owner
+  approves a worktree resource for that worktree once a manager has approved the same definition for
+  the project. The worktree's approval pins the image the project's approval pinned, and asks no
+  registry again.
 - **What no definition may ask for.** Privileged mode, added capabilities, host network, host
   mounts, the Docker socket or the sidecar's daemon, and devices. The platform refuses them, not
   only Mend. Which registries an image may come from is decision G2.
