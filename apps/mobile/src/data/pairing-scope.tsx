@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { Keyboard } from "react-native";
 
 import { createAsker, type Asker } from "@/data/ask";
+import { openMachine, type Machine } from "@/data/machine";
 import { useConfig, type MendConfig } from "@/data/pairing-config";
 import { pairingKeyOf, type PairingKey } from "@/data/pairing-key";
 
@@ -10,6 +11,7 @@ export interface Pairing {
   readonly config: MendConfig;
   readonly key: PairingKey;
   readonly asker: Asker;
+  readonly machine: Machine;
 }
 
 const PairingContext = createContext<Pairing | null>(null);
@@ -36,15 +38,18 @@ interface Held {
   readonly key: PairingKey;
   readonly client: QueryClient;
   readonly asker: Asker;
+  readonly machine: Machine;
+  readonly end: () => void;
 }
 let held: Held | null = null;
 
-const heldFor = (key: PairingKey): Held => {
+const heldFor = (key: PairingKey, config: MendConfig): Held => {
   if (held?.key !== key) {
     held = {
       key,
       client: new QueryClient({ defaultOptions: { queries: { retry: 1 } } }),
       asker: createAsker({ beforeAsk: () => Keyboard.dismiss() }),
+      ...openMachine(config),
     };
   }
   return held;
@@ -59,16 +64,18 @@ const PairingScope = ({
   readonly config: MendConfig;
   readonly children: ReactNode;
 }): ReactNode => {
-  const [{ client, asker }] = useState(() => heldFor(pairingKey));
-  // Once another pairing holds the cache, cancels the ended one's fetches and pending retries.
+  const [{ client, asker, machine, end }] = useState(() => heldFor(pairingKey, config));
   useEffect(
     () => () => {
-      if (held?.client !== client) client.clear();
+      if (held?.client !== client) {
+        client.clear();
+        end();
+      }
     },
-    [client],
+    [client, end],
   );
   return (
-    <PairingContext.Provider value={{ config, key: pairingKey, asker }}>
+    <PairingContext.Provider value={{ config, key: pairingKey, asker, machine }}>
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     </PairingContext.Provider>
   );
