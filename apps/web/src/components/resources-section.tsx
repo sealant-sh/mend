@@ -83,7 +83,15 @@ type Settled = Answer & { readonly apply?: () => void };
 /** An act answered with nothing to say: the item's earlier note goes. */
 const none = (key: string): Answer => ({ at: key, note: null });
 
+/**
+ * Keyed by project, so another project's setup starts from nothing: no answer, refusal or open
+ * review of one project's read reaches another's.
+ */
 export function ResourcesSection({ projectId }: { readonly projectId: string }) {
+  return <ProjectResources key={projectId} projectId={projectId} />;
+}
+
+function ProjectResources({ projectId }: { readonly projectId: string }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const [worktreeId, setWorktreeId] = useState<WorktreeId | null>(null);
@@ -755,142 +763,145 @@ export function ProposalForm(props: {
         props.onSubmit();
       }}
     >
-      <div className="flex flex-wrap items-center gap-2">
-        {choices("What it runs", ["preset", "image"], draft.kind, (kind) => set("kind", kind))}
-        {choices("Scope", ["project", "worktree"], draft.scope, (scope) => set("scope", scope))}
-      </div>
-      {refused("scope")}
-      <span className={hint}>Name: lower case, as @name reads it</span>
-      <input
-        aria-label="Name"
-        value={draft.name}
-        onChange={(event) => set("name", event.target.value)}
-        placeholder="db"
-        className={field}
-      />
-      {refused("name")}
-      {draft.kind === "preset" ? (
-        <>
-          <span className={hint}>
-            Preset and its version, an image tag that starts with its major
-          </span>
-          <div className="flex flex-wrap items-center gap-2">
-            {choices("Preset", PRESETS, draft.preset, (preset) => set("preset", preset))}
-            <input
-              aria-label="Version"
-              value={draft.version}
-              onChange={(event) => set("version", event.target.value)}
-              placeholder="17"
-              className={`${field} w-32`}
-            />
-          </div>
-          {refused("version")}
-        </>
-      ) : (
-        <>
-          <span className={hint}>Image</span>
-          <input
-            aria-label="Image"
-            value={draft.image}
-            onChange={(event) => set("image", event.target.value)}
-            placeholder="axllent/mailpit:v1.21"
-            className={field}
-          />
-          {refused("image")}
-          <span className={hint}>Ports, one per line: name=port, or name=port/udp</span>
-          <textarea
-            aria-label="Ports"
-            rows={2}
-            value={draft.ports}
-            onChange={(event) => set("ports", event.target.value)}
-            placeholder={"smtp=1025\nhttp=8025"}
-            className={field}
-          />
-          {refused("ports")}
-          <span className={hint}>Volumes, one per line: name=/mount/path</span>
-          <textarea
-            aria-label="Volumes"
-            rows={2}
-            value={draft.volumes}
-            onChange={(event) => set("volumes", event.target.value)}
-            placeholder="data=/data"
-            className={field}
-          />
-          {refused("volumes")}
-          <span className={hint}>Env: a literal value, or a project secret by its name</span>
-          {draft.env.map((row, index) => {
-            const change = (next: Partial<typeof row>) =>
-              set(
-                "env",
-                draft.env.map((each, at) => (at === index ? { ...each, ...next } : each)),
-              );
-            return (
-              <div key={index} className="flex flex-wrap items-center gap-1.5">
-                <input
-                  aria-label="Env name"
-                  value={row.key}
-                  onChange={(event) => change({ key: event.target.value })}
-                  placeholder="NAME"
-                  className={`${field} w-36`}
-                />
-                {choices("Env value from", ["literal", "secret"], row.from, (from) =>
-                  change({ from }),
-                )}
-                <input
-                  aria-label={row.from === "secret" ? "Project secret name" : "Env value"}
-                  value={row.value}
-                  onChange={(event) => change({ value: event.target.value })}
-                  placeholder={row.from === "secret" ? "project secret's name" : "value"}
-                  className={`${field} min-w-0 flex-1`}
-                />
-                <button
-                  type="button"
-                  aria-label={`Remove env ${row.key === "" ? "row" : row.key}`}
-                  onClick={() =>
-                    set(
-                      "env",
-                      draft.env.filter((_, at) => at !== index),
-                    )
-                  }
-                  className={`${quiet} hover:text-danger`}
-                >
-                  remove
-                </button>
-              </div>
-            );
-          })}
-          <button
-            type="button"
-            onClick={() => set("env", [...draft.env, { key: "", from: "literal", value: "" }])}
-            className={`${quiet} self-start`}
-          >
-            + env
-          </button>
-          {refused("env")}
-        </>
-      )}
-      {refused(null)}
-      {props.note === undefined ? null : (
-        <div className="border-l-2 border-[var(--sw-red)] pl-2">
-          {props.note.lines.map((line) => (
-            <p key={line} className="font-mono text-[11px] text-danger">
-              {line}
-            </p>
-          ))}
+      {/* While a proposal is in flight nothing can be typed that its answer would close over. */}
+      <fieldset disabled={props.busy} className="contents">
+        <div className="flex flex-wrap items-center gap-2">
+          {choices("What it runs", ["preset", "image"], draft.kind, (kind) => set("kind", kind))}
+          {choices("Scope", ["project", "worktree"], draft.scope, (scope) => set("scope", scope))}
         </div>
-      )}
-      <div className="flex items-center justify-end gap-2.5">
-        <button type="button" onClick={props.onCancel} className={quiet}>
-          cancel
-        </button>
-        <button
-          type="submit"
-          disabled={props.busy}
-          className="rounded-xl border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-        >
-          {props.busy ? "proposing…" : "propose"}
-        </button>
-      </div>
+        {refused("scope")}
+        <span className={hint}>Name: lower case, as @name reads it</span>
+        <input
+          aria-label="Name"
+          value={draft.name}
+          onChange={(event) => set("name", event.target.value)}
+          placeholder="db"
+          className={field}
+        />
+        {refused("name")}
+        {draft.kind === "preset" ? (
+          <>
+            <span className={hint}>
+              Preset and its version, an image tag that starts with its major
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              {choices("Preset", PRESETS, draft.preset, (preset) => set("preset", preset))}
+              <input
+                aria-label="Version"
+                value={draft.version}
+                onChange={(event) => set("version", event.target.value)}
+                placeholder="17"
+                className={`${field} w-32`}
+              />
+            </div>
+            {refused("version")}
+          </>
+        ) : (
+          <>
+            <span className={hint}>Image</span>
+            <input
+              aria-label="Image"
+              value={draft.image}
+              onChange={(event) => set("image", event.target.value)}
+              placeholder="axllent/mailpit:v1.21"
+              className={field}
+            />
+            {refused("image")}
+            <span className={hint}>Ports, one per line: name=port, or name=port/udp</span>
+            <textarea
+              aria-label="Ports"
+              rows={2}
+              value={draft.ports}
+              onChange={(event) => set("ports", event.target.value)}
+              placeholder={"smtp=1025\nhttp=8025"}
+              className={field}
+            />
+            {refused("ports")}
+            <span className={hint}>Volumes, one per line: name=/mount/path</span>
+            <textarea
+              aria-label="Volumes"
+              rows={2}
+              value={draft.volumes}
+              onChange={(event) => set("volumes", event.target.value)}
+              placeholder="data=/data"
+              className={field}
+            />
+            {refused("volumes")}
+            <span className={hint}>Env: a literal value, or a project secret by its name</span>
+            {draft.env.map((row, index) => {
+              const change = (next: Partial<typeof row>) =>
+                set(
+                  "env",
+                  draft.env.map((each, at) => (at === index ? { ...each, ...next } : each)),
+                );
+              return (
+                <div key={index} className="flex flex-wrap items-center gap-1.5">
+                  <input
+                    aria-label="Env name"
+                    value={row.key}
+                    onChange={(event) => change({ key: event.target.value })}
+                    placeholder="NAME"
+                    className={`${field} w-36`}
+                  />
+                  {choices("Env value from", ["literal", "secret"], row.from, (from) =>
+                    change({ from }),
+                  )}
+                  <input
+                    aria-label={row.from === "secret" ? "Project secret name" : "Env value"}
+                    value={row.value}
+                    onChange={(event) => change({ value: event.target.value })}
+                    placeholder={row.from === "secret" ? "project secret's name" : "value"}
+                    className={`${field} min-w-0 flex-1`}
+                  />
+                  <button
+                    type="button"
+                    aria-label={`Remove env ${row.key === "" ? "row" : row.key}`}
+                    onClick={() =>
+                      set(
+                        "env",
+                        draft.env.filter((_, at) => at !== index),
+                      )
+                    }
+                    className={`${quiet} hover:text-danger`}
+                  >
+                    remove
+                  </button>
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => set("env", [...draft.env, { key: "", from: "literal", value: "" }])}
+              className={`${quiet} self-start`}
+            >
+              + env
+            </button>
+            {refused("env")}
+          </>
+        )}
+        {refused(null)}
+        {props.note === undefined ? null : (
+          <div className="border-l-2 border-[var(--sw-red)] pl-2">
+            {props.note.lines.map((line) => (
+              <p key={line} className="font-mono text-[11px] text-danger">
+                {line}
+              </p>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center justify-end gap-2.5">
+          <button type="button" onClick={props.onCancel} className={quiet}>
+            cancel
+          </button>
+          <button
+            type="submit"
+            disabled={props.busy}
+            className="rounded-xl border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+          >
+            {props.busy ? "proposing…" : "propose"}
+          </button>
+        </div>
+      </fieldset>
     </form>
   );
 }

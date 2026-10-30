@@ -87,19 +87,26 @@ const mount = async () => {
   document.body.append(host);
   const root = createRoot(host);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () =>
-    root.render(
-      <QueryClientProvider client={client}>
-        <ResourcesSection projectId="project_probe" />
-      </QueryClientProvider>,
-    ),
-  );
+  const show = (projectId: string) =>
+    act(async () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <ResourcesSection projectId={projectId} />
+        </QueryClientProvider>,
+      ),
+    );
+  await show("project_probe");
   await settle();
   const buttonNamed = (text: string) =>
     [...host.querySelectorAll("button")].find((button) => button.textContent === text);
   return {
     host,
     buttonNamed,
+    /** The same card, now on another project's setup, as a route change gives it. */
+    showProject: async (projectId: string) => {
+      await show(projectId);
+      await settle();
+    },
     unmount: async () => {
       await act(async () => root.unmount());
       client.clear();
@@ -311,6 +318,60 @@ describe("the Resources card's answers", () => {
       });
       await settle();
       expect(card.host.textContent).not.toContain("the answer for A");
+    } finally {
+      await card.unmount();
+    }
+  });
+  it("drops a delivered refusal when the setup moves to another project", async () => {
+    boundary.page.current = page();
+    boundary.propose.mockResolvedValue({
+      ok: false,
+      kind: "rejected",
+      refusals: [{ key: "version", message: "is not a major version" }],
+      message: "@db · version is not a major version",
+    });
+    const card = await mount();
+    try {
+      await act(async () => card.buttonNamed("+ propose a resource…")?.click());
+      await type(card.host.querySelector('[aria-label="Name"]'), "db");
+      await type(card.host.querySelector('[aria-label="Version"]'), "latest");
+      await act(async () =>
+        card.host
+          .querySelector("form")
+          ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+      );
+      await settle();
+      expect(card.host.textContent).toContain("version is not a major version");
+      await card.showProject("project_other");
+      expect(card.host.textContent).not.toContain("is not a major version");
+    } finally {
+      await card.unmount();
+    }
+  });
+
+  it("locks the draft while its proposal is in flight, so nothing typed can be dropped", async () => {
+    boundary.page.current = page();
+    const pending: Array<(value: unknown) => void> = [];
+    boundary.propose.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    const card = await mount();
+    try {
+      await act(async () => card.buttonNamed("+ propose a resource…")?.click());
+      await type(card.host.querySelector('[aria-label="Name"]'), "first");
+      await type(card.host.querySelector('[aria-label="Version"]'), "17");
+      await act(async () =>
+        card.host
+          .querySelector("form")
+          ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+      );
+      expect(boundary.propose).toHaveBeenCalledOnce();
+      const controls = [
+        ...(card.host.querySelector("form")?.querySelectorAll("input, textarea, button") ?? []),
+      ];
+      expect(controls.length).toBeGreaterThan(0);
+      expect(controls.filter((control) => !control.matches(":disabled"))).toEqual([]);
+      await act(async () => pending[0]?.({ ok: true, result: { id: "rprop_first" } }));
+      await settle();
+      expect(card.host.querySelector("form")).toBeNull();
     } finally {
       await card.unmount();
     }
