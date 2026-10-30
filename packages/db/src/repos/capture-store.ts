@@ -17,7 +17,10 @@ import {
   captureSummaries,
   packs,
   worktreeChain,
+  worktrees,
+  projects,
 } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 
 /**
  * The capture store's pointers (docs/adr/0002-session-capture-store.md "Postgres schema"):
@@ -549,6 +552,7 @@ export class CaptureStoreRepo extends Context.Service<
       ReadonlyArray<{
         readonly worktreeId: WorktreeId;
         readonly headCapture: string | null;
+        readonly retained?: boolean;
         readonly headN: number;
         /** Read before any row the caller computes liveness from; `condemn` takes it back. */
         readonly guard: number;
@@ -590,7 +594,7 @@ export class CaptureStoreRepo extends Context.Service<
     readonly deleteCaptures: (
       worktreeId: WorktreeId,
       captureIds: ReadonlyArray<string>,
-    ) => Effect.Effect<number>;
+    ) => Effect.Effect<ReadonlyArray<string>>;
     readonly listPacks: (state?: PackState) => Effect.Effect<ReadonlyArray<PackRow>>;
     readonly setPackState: (
       packIds: ReadonlyArray<string>,
@@ -906,9 +910,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
               yield* sql`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`;
               // Parent first, without blocking the FK key-share locks register/accept need. Then
               // chain before capture, matching register and preventing a head change at publication.
-              const worktrees =
+              const lockedWorktrees =
                 yield* sql`SELECT 1 FROM worktrees WHERE id = ${input.worktreeId} FOR NO KEY UPDATE`;
-              if (worktrees.length === 0) return false;
+              if (lockedWorktrees.length === 0) return false;
               const chains =
                 yield* sql`SELECT 1 FROM worktree_chain WHERE worktree_id = ${input.worktreeId} FOR UPDATE`;
               if (chains.length === 0) return false;
@@ -973,6 +977,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const [chain] = yield* sql<{
         readonly worktreeId: WorktreeId;
         readonly headCapture: string | null;
+        readonly retained?: boolean;
         readonly headN: number;
         readonly headEpoch: number;
       }>`
@@ -1457,12 +1462,16 @@ export const CaptureStoreRepoLive: Layer.Layer<
           headCapture: worktreeChain.headCapture,
           headN: worktreeChain.headN,
           guard: worktreeChain.guard,
+          retained: drizzleSql<boolean>`NOT (${projectListed}) OR removal_fence_marked(${projects.removalPhase}, ${projects.removalSince})`,
         })
         .from(worktreeChain)
+        .leftJoin(worktrees, eq(worktrees.id, worktreeChain.worktreeId))
+        .leftJoin(projects, eq(projects.id, worktrees.projectId))
         .pipe(Effect.orDie);
       return rows.map((row) => ({
         worktreeId: row.worktreeId,
         headCapture: row.headCapture,
+        retained: row.retained,
         headN: Number(row.headN),
         guard: Number(row.guard),
       }));
@@ -1498,6 +1507,22 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return { guards, tombstones: decoded.tombstones };
     });
 
+    const whileListed = <A>(worktreeId: WorktreeId, otherwise: A, action: Effect.Effect<A>) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`SELECT p.id FROM projects p JOIN worktrees w ON w.project_id = p.id
+        WHERE w.id = ${worktreeId} AND p.removed_at IS NULL
+          AND NOT removal_fence_marked(p.removal_phase, p.removal_since) FOR SHARE OF p`;
+            if (rows.length > 0) return yield* action;
+            const orphan =
+              yield* sql`SELECT 1 FROM worktree_chain WHERE worktree_id = ${worktreeId} AND orphaned FOR SHARE`;
+            return orphan.length === 0 ? otherwise : yield* action;
+          }),
+        )
+        .pipe(Effect.orDie);
+
     const condemn = Effect.fn("CaptureStoreRepo.condemn")(function* (
       worktreeId: WorktreeId,
       guard: number,
@@ -1508,10 +1533,17 @@ export const CaptureStoreRepoLive: Layer.Layer<
       // A tombstone already there (a pass that condemned it and failed to delete, one whose
       // bytes came back, or one another pass still holds) is condemned again: its bytes may be
       // going now. The claim rows land in the same statement, only if the guard held.
-      const rows = yield* sql<{ readonly worktreeId: string }>`
+      return yield* whileListed(
+        worktreeId,
+        false,
+        Effect.gen(function* () {
+          const rows = yield* sql<{ readonly worktreeId: string }>`
         WITH ch AS (
           UPDATE worktree_chain SET guard = guard + 1
            WHERE worktree_id = ${worktreeId} AND guard = ${guard}
+             AND (orphaned OR EXISTS (SELECT 1 FROM worktrees w JOIN projects p ON p.id = w.project_id
+               WHERE w.id = ${worktreeId} AND p.removed_at IS NULL
+                 AND NOT removal_fence_marked(p.removal_phase, p.removal_since)))
            RETURNING worktree_id
         ),
         t AS (
@@ -1529,7 +1561,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
           RETURNING key
         )
         SELECT worktree_id FROM ch`.pipe(Effect.orDie);
-      return rows.length > 0;
+          return rows.length > 0;
+        }),
+      );
     });
 
     const renewDeletion = Effect.fn("CaptureStoreRepo.renewDeletion")(function* (
@@ -1565,17 +1599,26 @@ export const CaptureStoreRepoLive: Layer.Layer<
       worktreeId: WorktreeId,
       captureIds: ReadonlyArray<string>,
     ) {
-      if (captureIds.length === 0) return 0;
+      if (captureIds.length === 0) return [];
       // Never the head, whatever the caller computed: the chain pointer stays consistent.
-      const rows = yield* sql<{ readonly id: string }>`
+      return yield* whileListed(
+        worktreeId,
+        [],
+        Effect.gen(function* () {
+          const rows = yield* sql<{ readonly id: string }>`
         DELETE FROM captures c
          USING worktree_chain ch
          WHERE c.worktree_id = ${worktreeId}
            AND ch.worktree_id = c.worktree_id
            AND c.id <> ch.head_capture
+           AND EXISTS (SELECT 1 FROM worktrees w JOIN projects p ON p.id = w.project_id
+             WHERE w.id = c.worktree_id AND p.removed_at IS NULL
+               AND NOT removal_fence_marked(p.removal_phase, p.removal_since))
            AND c.id IN ${sql.in([...captureIds])}
          RETURNING c.id`.pipe(Effect.orDie);
-      return rows.length;
+          return rows.map((row) => row.id);
+        }),
+      );
     });
 
     const listPacks = Effect.fn("CaptureStoreRepo.listPacks")(function* (state?: PackState) {

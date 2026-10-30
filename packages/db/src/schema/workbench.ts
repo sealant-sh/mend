@@ -531,17 +531,22 @@ export const projects = pgTable(
     // Whether Mend runs an install command for this project at all (0110, "Automatic install").
     installEnabled: boolean().notNull().default(true),
     // A removal's mark (0166, RemovalFencesRepo): all three set, or none.
-    removalPhase: text().$type<"checking" | "deleting">(),
+    removalPhase: text().$type<"checking" | "removed" | "deleting">(),
+    removedAt: timestamp({ mode: "date", withTimezone: true }),
+    removedByUserId: text(),
+    removalLegacy: boolean().notNull().default(false),
     removalId: text(),
     removalSince: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    unique("projects_organization_name_key").on(table.organizationId, table.name),
+    uniqueIndex("projects_organization_name_key")
+      .on(table.organizationId, table.name)
+      .where(sql`${table.removedAt} IS NULL`),
     uniqueIndex("projects_scratch_owner_key")
       .on(table.scratchOwnerUserId)
-      .where(sql`${table.scratchOwnerUserId} IS NOT NULL`),
+      .where(sql`${table.scratchOwnerUserId} IS NOT NULL AND ${table.removedAt} IS NULL`),
     index("projects_organization_visibility_idx").on(table.organizationId, table.visibility),
   ],
 );
@@ -2772,10 +2777,7 @@ export const worktreeLeases = pgTable("worktree_leases", {
 
 /** The chain head: the only pointer that means "truth". `head_n` is -1 before capture 0. */
 export const worktreeChain = pgTable("worktree_chain", {
-  worktreeId: text()
-    .$type<WorktreeId>()
-    .primaryKey()
-    .references(() => worktrees.id, { onDelete: "cascade" }),
+  worktreeId: text().$type<WorktreeId>().primaryKey(),
   headCapture: text(),
   headN: integer().notNull().default(-1),
   headEpoch: bigint({ mode: "number" }).notNull().default(0),
@@ -2784,6 +2786,7 @@ export const worktreeChain = pgTable("worktree_chain", {
    * condemns this chain's objects; each writes only while it still reads what it read.
    */
   guard: bigint({ mode: "number" }).notNull().default(0),
+  orphaned: boolean().notNull().default(false),
 });
 
 /**
@@ -2798,7 +2801,7 @@ export const captureTombstones = pgTable(
     worktreeId: text()
       .$type<WorktreeId>()
       .notNull()
-      .references(() => worktrees.id, { onDelete: "cascade" }),
+      .references(() => worktreeChain.worktreeId, { onDelete: "cascade" }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp({ mode: "date", withTimezone: true }),
   },
@@ -2835,7 +2838,7 @@ export const captureSeals = pgTable(
     worktreeId: text()
       .$type<WorktreeId>()
       .notNull()
-      .references(() => worktrees.id, { onDelete: "cascade" }),
+      .references(() => worktreeChain.worktreeId, { onDelete: "cascade" }),
     epoch: bigint({ mode: "number" }).notNull(),
     executorId: text().notNull(),
     captureId: text().notNull(),

@@ -8,6 +8,7 @@ import { Context, DateTime, Effect, Layer, Redacted, Schema } from "effect";
 import { MendDB } from "../client.ts";
 import { organizationMembers, previewGrants, previews, projects } from "../schema/workbench.ts";
 import { credentialStanding } from "./credential-standing.ts";
+import { projectListed } from "./projects.ts";
 import { isTicketCredential, type TicketCredential } from "./upgrade-tickets.ts";
 
 const GRANT_PATTERN = /^mpg_[A-Za-z0-9_-]{43}$/;
@@ -121,7 +122,7 @@ export const PreviewGrantsRepoLive: Layer.Layer<PreviewGrantsRepo, never, MendDB
         })
         .from(previewGrants)
         .innerJoin(previews, eq(previews.id, previewGrants.previewId))
-        .innerJoin(projects, eq(projects.id, previews.projectId))
+        .innerJoin(projects, and(projectListed, eq(projects.id, previews.projectId)))
         .leftJoin(organizationMembers, eq(organizationMembers.userId, previewGrants.userId))
         .where(and(inArray(previewGrants.tokenHash, [...new Set(hashes)]), grantStands(now)))
         .pipe(failed("standing"));

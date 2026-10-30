@@ -4422,6 +4422,162 @@ const worktreeRemovalMigration = Effect.gen(function* () {
   yield* sql`DROP TABLE project_removal_fences`;
 });
 
+const projectRetentionMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE projects
+    DROP CONSTRAINT projects_removal_phase_check,
+    ADD CONSTRAINT projects_removal_phase_check CHECK (removal_phase IN ('checking', 'removed', 'deleting')),
+    ADD COLUMN removed_at timestamptz,
+    ADD COLUMN removed_by_user_id text REFERENCES "user"(id) ON DELETE RESTRICT,
+    ADD COLUMN removal_legacy boolean NOT NULL DEFAULT false`;
+  // An old deleting mark has no inventory proving which files survived. Never resume it on boot.
+  yield* sql`UPDATE projects SET removed_at = CASE WHEN isfinite(removal_since) THEN removal_since ELSE now() END, removal_legacy = true,
+    removal_since = '-infinity' WHERE removal_phase = 'deleting'`;
+  yield* sql`ALTER TABLE projects ADD CONSTRAINT projects_removed_check CHECK (
+    (removed_at IS NOT NULL) = coalesce(removal_phase IN ('removed', 'deleting'), false)
+    AND (removed_by_user_id IS NULL OR removed_at IS NOT NULL)
+    AND (NOT removal_legacy OR removed_at IS NOT NULL))`;
+  yield* sql`ALTER TABLE projects DROP CONSTRAINT projects_organization_name_key`;
+  yield* sql`CREATE UNIQUE INDEX projects_organization_name_key ON projects (organization_id, name)
+    WHERE removed_at IS NULL`;
+  yield* sql`DROP INDEX projects_scratch_owner_key`;
+  yield* sql`CREATE UNIQUE INDEX projects_scratch_owner_key ON projects (scratch_owner_user_id)
+    WHERE scratch_owner_user_id IS NOT NULL AND removed_at IS NULL`;
+  yield* sql`CREATE INDEX projects_removed_idx ON projects (organization_id, removed_at, id)
+    WHERE removed_at IS NOT NULL`;
+  yield* sql.unsafe(`CREATE OR REPLACE FUNCTION removal_fence_marked(phase text, since timestamptz)
+    RETURNS boolean LANGUAGE sql STABLE AS $$
+      SELECT coalesce(phase IN ('removed', 'deleting'), false) OR removal_fence_fresh(since)
+    $$`);
+  yield* sql.unsafe(`CREATE OR REPLACE FUNCTION removal_fence_admit(projects_in text[], worktrees_in text[])
+    RETURNS void LANGUAGE plpgsql AS $$
+    DECLARE marked text; fresh boolean; removed boolean;
+    BEGIN
+      SELECT array_agg(DISTINCT id) INTO projects_in FROM projects
+        WHERE id = ANY(projects_in) OR id IN (SELECT project_id FROM worktrees WHERE id = ANY(worktrees_in));
+      PERFORM 1 FROM projects WHERE id = ANY(projects_in) ORDER BY id FOR SHARE;
+      SELECT id, removal_fence_fresh(removal_since), removed_at IS NOT NULL INTO marked, fresh, removed
+        FROM projects WHERE id = ANY(projects_in) AND removal_fence_marked(removal_phase, removal_since)
+        ORDER BY removed_at NULLS LAST, id LIMIT 1;
+      IF marked IS NOT NULL THEN
+        RAISE EXCEPTION 'project % is unavailable; restore a removed project before starting work', marked
+          USING ERRCODE = CASE WHEN removed THEN 'MRFRM' WHEN fresh THEN 'MRFEN' ELSE 'MRFES' END;
+      END IF;
+      PERFORM 1 FROM worktrees WHERE id = ANY(worktrees_in) ORDER BY id FOR SHARE;
+      SELECT id, removal_fence_fresh(removal_since) INTO marked, fresh FROM worktrees
+        WHERE id = ANY(worktrees_in) AND removal_fence_marked(removal_phase, removal_since)
+        ORDER BY removal_fence_fresh(removal_since) LIMIT 1;
+      IF marked IS NOT NULL THEN
+        RAISE EXCEPTION 'worktree % is being removed', marked
+          USING ERRCODE = CASE WHEN fresh THEN 'MRFEN' ELSE 'MRFES' END;
+      END IF;
+    END $$`);
+  yield* sql.unsafe(`CREATE OR REPLACE FUNCTION removal_fence_admitted(sid text)
+    RETURNS boolean LANGUAGE sql STABLE AS $$
+      SELECT EXISTS (SELECT 1 FROM session_admissions a
+        WHERE a.session_id = sid AND removal_fence_fresh(a.since))
+      AND NOT EXISTS (SELECT 1 FROM agent_sessions s
+        CROSS JOIN LATERAL removal_fence_places(s.id, s.project_id, s.worktree_id) place
+        JOIN projects p ON p.id = place.project_id
+        WHERE s.id = sid AND p.removed_at IS NOT NULL)
+    $$`);
+  yield* sql.unsafe(`CREATE FUNCTION project_retention_capture_references() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    DECLARE ps text[]; ws text[];
+    BEGIN
+      SELECT array_agg(split_part(value, '/', 2)) FILTER (WHERE value LIKE 'projects/%'),
+             array_agg(split_part(value, '/', 2)) FILTER (WHERE value LIKE 'captures/%')
+        INTO ps, ws
+        FROM jsonb_array_elements_text(jsonb_path_query_array(NEW.sections, '$.** ? (@.type() == "string")'));
+      PERFORM removal_fence_admit(coalesce(ps, '{}'), array_append(coalesce(ws, '{}'), NEW.worktree_id));
+      RETURN NEW;
+    END $$`);
+  yield* sql`CREATE TRIGGER captures_project_retention
+    BEFORE INSERT OR UPDATE OF sections ON captures
+    FOR EACH ROW EXECUTE FUNCTION project_retention_capture_references()`;
+  yield* sql.unsafe(`CREATE FUNCTION project_retention_handoff_reference() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    DECLARE k text;
+    BEGIN
+      k := NEW.handoff->>'deltaPack';
+      IF k LIKE 'captures/%' THEN
+        PERFORM removal_fence_admit(ARRAY[NEW.project_id], ARRAY[split_part(k, '/', 2)]);
+      ELSIF k LIKE 'projects/%' THEN
+        PERFORM removal_fence_admit(ARRAY[NEW.project_id, split_part(k, '/', 2)], '{}');
+      END IF;
+      RETURN NEW;
+    END $$`);
+  yield* sql`CREATE TRIGGER worktrees_retention_handoff
+    BEFORE INSERT OR UPDATE OF handoff ON worktrees
+    FOR EACH ROW EXECUTE FUNCTION project_retention_handoff_reference()`;
+  yield* sql.unsafe(`CREATE FUNCTION project_retention_link() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      PERFORM removal_fence_admit(ARRAY[NEW.project_id, NEW.linked_project_id], '{}');
+      RETURN NEW;
+    END $$`);
+  yield* sql`CREATE TRIGGER project_links_retention
+    BEFORE INSERT OR UPDATE ON project_links
+    FOR EACH ROW EXECUTE FUNCTION project_retention_link()`;
+
+  // Inherited capture objects still need their owner's register/retention guard after purge.
+  yield* sql`ALTER TABLE worktree_chain ADD COLUMN orphaned boolean NOT NULL DEFAULT false,
+    DROP CONSTRAINT worktree_chain_worktree_id_fkey`;
+  yield* sql`ALTER TABLE capture_tombstones DROP CONSTRAINT capture_tombstones_worktree_id_fkey,
+    ADD CONSTRAINT capture_tombstones_chain_fkey FOREIGN KEY (worktree_id)
+      REFERENCES worktree_chain(worktree_id) ON DELETE CASCADE`;
+  yield* sql.unsafe(`CREATE FUNCTION project_retention_chain_cleanup() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      DELETE FROM worktree_chain WHERE worktree_id = OLD.id AND NOT orphaned;
+      RETURN OLD;
+    END $$`);
+  yield* sql`CREATE TRIGGER worktrees_retention_chain_cleanup AFTER DELETE ON worktrees
+    FOR EACH ROW EXECUTE FUNCTION project_retention_chain_cleanup()`;
+
+  yield* sql.unsafe(`CREATE FUNCTION project_retention_preview_grant() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      PERFORM removal_fence_admit(ARRAY[(SELECT project_id FROM previews WHERE id = NEW.preview_id)], '{}');
+      RETURN NEW;
+    END $$`);
+  yield* sql`CREATE TRIGGER preview_grants_retention BEFORE INSERT ON preview_grants
+    FOR EACH ROW EXECUTE FUNCTION project_retention_preview_grant()`;
+  yield* sql.unsafe(`CREATE FUNCTION project_retention_preview_ticket() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      PERFORM removal_fence_admit(ARRAY(SELECT project_id FROM previews
+        WHERE 'preview=' || id = ANY(string_to_array(NEW.scope, '&'))), '{}');
+      RETURN NEW;
+    END $$`);
+  yield* sql`CREATE TRIGGER upgrade_tickets_retention BEFORE INSERT ON upgrade_tickets
+    FOR EACH ROW WHEN (NEW.target = 'preview') EXECUTE FUNCTION project_retention_preview_ticket()`;
+  yield* sql.unsafe(`CREATE OR REPLACE FUNCTION removal_fence_admit_admission() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM agent_sessions WHERE id = NEW.session_id
+                     AND status IN ('starting', 'running', 'waiting', 'idle'))
+        OR EXISTS (SELECT 1 FROM agent_sessions s
+          CROSS JOIN LATERAL removal_fence_places(s.id, s.project_id, s.worktree_id) place
+          JOIN projects p ON p.id = place.project_id
+          WHERE s.id = NEW.session_id AND p.removed_at IS NOT NULL) THEN
+        PERFORM removal_fence_admit_session_work(NEW.session_id);
+      END IF;
+      RETURN NEW;
+    END $$`);
+  yield* sql.unsafe(`CREATE OR REPLACE FUNCTION removal_fence_places(sid text, pid text, wid text)
+    RETURNS TABLE (project_id text, worktree_id text) LANGUAGE sql STABLE AS $$
+      SELECT pid, wid
+      UNION
+      SELECT r.project_id, r.worktree_id FROM session_repositories r WHERE r.session_id = sid
+      UNION
+      SELECT l.linked_project_id, w.id FROM project_links l
+        JOIN projects p ON p.id = l.linked_project_id AND p.removed_at IS NULL
+        LEFT JOIN worktrees w ON w.project_id = l.linked_project_id AND w.name = l.worktree_name
+        WHERE l.project_id = pid
+    $$`);
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4578,4 +4734,5 @@ export const migrations = {
   "0163_push_device_credentials": pushDeviceCredentialsMigration,
   "0165_preview_preparations": previewPreparationsMigration,
   "0166_worktree_removal": worktreeRemovalMigration,
+  "0167_project_retention": projectRetentionMigration,
 };

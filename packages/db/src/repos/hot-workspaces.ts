@@ -19,7 +19,9 @@ import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
+import { projects } from "../schema/workbench.ts";
 import { hotWorkspaces } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 
 export interface NewHotWorkspace {
   readonly id: SessionId;
@@ -123,6 +125,12 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
       const rows = yield* db
         .select()
         .from(hotWorkspaces)
+        .where(
+          inArray(
+            hotWorkspaces.projectId,
+            db.select({ id: projects.id }).from(projects).where(projectListed),
+          ),
+        )
         .orderBy(asc(hotWorkspaces.createdAt))
         .pipe(Effect.orDie);
       return rows.map(toHotWorkspace);

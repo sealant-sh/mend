@@ -1,11 +1,13 @@
 import { ProjectLinkId, type ProjectId } from "@mend/domain";
 import { ProjectLink } from "@mend/domain/workbench";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
+import { projects } from "../schema/workbench.ts";
 import { projectLinks } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 
 export class ProjectLinkNotFoundError extends Schema.TaggedError<ProjectLinkNotFoundError>()(
   "ProjectLinkNotFoundError",
@@ -43,6 +45,11 @@ export const ProjectLinksRepoLive: Layer.Layer<ProjectLinksRepo, never, MendDB> 
   Effect.gen(function* () {
     const db = yield* MendDB;
 
+    const listedTarget = inArray(
+      projectLinks.linkedProjectId,
+      db.select({ id: projects.id }).from(projects).where(projectListed),
+    );
+
     const create = Effect.fn("ProjectLinksRepo.create")(function* (link: NewProjectLink) {
       const [row] = yield* db
         .insert(projectLinks)
@@ -57,7 +64,7 @@ export const ProjectLinksRepoLive: Layer.Layer<ProjectLinksRepo, never, MendDB> 
       const [row] = yield* db
         .select()
         .from(projectLinks)
-        .where(eq(projectLinks.id, id))
+        .where(and(listedTarget, eq(projectLinks.id, id)))
         .limit(1)
         .pipe(Effect.orDie);
       if (row === undefined) return yield* new ProjectLinkNotFoundError({ linkId: id });
@@ -70,7 +77,7 @@ export const ProjectLinksRepoLive: Layer.Layer<ProjectLinksRepo, never, MendDB> 
       const rows = yield* db
         .select()
         .from(projectLinks)
-        .where(eq(projectLinks.projectId, projectId))
+        .where(and(listedTarget, eq(projectLinks.projectId, projectId)))
         .orderBy(asc(projectLinks.name))
         .pipe(Effect.orDie);
       return rows.map(toProjectLink);

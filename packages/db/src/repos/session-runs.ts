@@ -1,11 +1,14 @@
 import { type SealantRunId, type SealantWorkspaceId, type SessionId } from "@mend/domain";
 import { SessionRun } from "@mend/domain/workbench";
+import { inArray } from "drizzle-orm";
 import { and, asc, desc, eq, isNotNull, isNull, lt, max } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
+import { agentSessions, projects } from "../schema/workbench.ts";
 import { sessionRuns } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 import { uniqueViolationConstraint } from "./unique-violation.ts";
 
 /** One open run per session: the partial unique index on `session_id` where `settled_at` is null. */
@@ -209,7 +212,19 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
       const rows = yield* db
         .select()
         .from(sessionRuns)
-        .where(isNull(sessionRuns.settledAt))
+        .where(
+          and(
+            isNull(sessionRuns.settledAt),
+            inArray(
+              sessionRuns.sessionId,
+              db
+                .select({ id: agentSessions.id })
+                .from(agentSessions)
+                .innerJoin(projects, eq(projects.id, agentSessions.projectId))
+                .where(projectListed),
+            ),
+          ),
+        )
         .orderBy(asc(sessionRuns.createdAt))
         .pipe(Effect.orDie);
       return rows.map(toSessionRun);

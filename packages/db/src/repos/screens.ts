@@ -25,10 +25,12 @@ import {
   transitionInput,
   withoutTypedText,
 } from "@mend/domain/workbench";
+import { inArray } from "drizzle-orm";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { Context, DateTime, Effect, Layer, Schema } from "effect";
 
 import { type MendDatabase, MendDB } from "../client.ts";
+import { projects } from "../schema/workbench.ts";
 import {
   agentSessions,
   checkpoints,
@@ -37,6 +39,7 @@ import {
   screens,
 } from "../schema/workbench.ts";
 import { notifyAgentConversation } from "./agent-conversation.ts";
+import { projectListed } from "./projects.ts";
 import { ensureScreenEpisode } from "./screen-episodes.ts";
 import { isForeignKeyViolation } from "./unique-violation.ts";
 
@@ -426,7 +429,19 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       const rows = yield* db
         .select()
         .from(screens)
-        .where(isNull(screens.releasedAt))
+        .where(
+          and(
+            isNull(screens.releasedAt),
+            inArray(
+              screens.sessionId,
+              db
+                .select({ id: agentSessions.id })
+                .from(agentSessions)
+                .innerJoin(projects, eq(projects.id, agentSessions.projectId))
+                .where(projectListed),
+            ),
+          ),
+        )
         .orderBy(asc(screens.createdAt))
         .pipe(Effect.orDie);
       return rows.map(toScreen);

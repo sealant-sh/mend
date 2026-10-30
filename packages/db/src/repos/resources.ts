@@ -43,6 +43,7 @@ import {
   resourceSelections,
   worktrees,
 } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 
 /** A definition as a project's settings hold it (ADR 0019); a `mend.toml` proposal is not one. */
 export interface StoredResourceDefinition {
@@ -568,7 +569,7 @@ const lockProject = Effect.fn("ResourcesRepo.lockProject")(function* (
       removing: sql<boolean>`removal_fence_marked(${projects.removalPhase}, ${projects.removalSince})`,
     })
     .from(projects)
-    .where(eq(projects.id, projectId))
+    .where(and(projectListed, eq(projects.id, projectId)))
     .for("no key update");
   if (project === undefined) {
     return yield* Effect.die(new Error(`project ${projectId} does not exist`));

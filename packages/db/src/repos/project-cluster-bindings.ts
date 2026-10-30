@@ -8,13 +8,14 @@ import {
   validateClusterObjectName,
   type ClusterBindingKind,
 } from "@mend/domain/workbench";
-import { asc, eq, sql as drizzleSql } from "drizzle-orm";
+import { and, asc, eq, sql as drizzleSql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { projectClusterBindings, projects } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 import { ProjectNotFoundError } from "./projects.ts";
 
 /** 422 material: the object name failed the DNS-1123 grammar (or the set is full). */
@@ -109,7 +110,7 @@ const lockProject = (tx: Tx, projectId: ProjectId) =>
         workspaceServiceAccount: projects.workspaceServiceAccount,
       })
       .from(projects)
-      .where(eq(projects.id, projectId))
+      .where(and(projectListed, eq(projects.id, projectId)))
       .for("update")
       .pipe(Effect.orDie);
     if (row === undefined) return yield* new ProjectNotFoundError({ projectId });
@@ -132,7 +133,7 @@ const bumpAggregate = (tx: Tx, projectId: ProjectId) =>
         clusterBindingRevision: drizzleSql`${projects.clusterBindingRevision} + 1`,
         updatedAt: yield* DateTime.nowAsDate,
       })
-      .where(eq(projects.id, projectId))
+      .where(and(projectListed, eq(projects.id, projectId)))
       .returning({ clusterBindingRevision: projects.clusterBindingRevision })
       .pipe(Effect.orDie);
     if (row === undefined) {
@@ -162,7 +163,7 @@ export const ProjectClusterBindingsRepoLive: Layer.Layer<
         })
         .from(projects)
         .leftJoin(projectClusterBindings, eq(projectClusterBindings.projectId, projects.id))
-        .where(eq(projects.id, projectId))
+        .where(and(projectListed, eq(projects.id, projectId)))
         .orderBy(asc(projectClusterBindings.kind), asc(projectClusterBindings.objectName))
         .pipe(Effect.orDie);
       const first = rows[0];
@@ -264,7 +265,7 @@ export const ProjectClusterBindingsRepoLive: Layer.Layer<
                 workspaceServiceAccount: serviceAccount,
                 updatedAt: yield* DateTime.nowAsDate,
               })
-              .where(eq(projects.id, projectId))
+              .where(and(projectListed, eq(projects.id, projectId)))
               .pipe(Effect.orDie);
             const revision = yield* bumpAggregate(tx, projectId);
             return { serviceAccount, revision };
