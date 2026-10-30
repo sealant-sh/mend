@@ -289,8 +289,8 @@ because ordering and status-sensitive page names are part of the public route co
   `/contributing/workflows/client-surface/` is **[Current repository] Add a client surface**,
   covering web, desktop, mobile, CLI, and VS Code ownership plus contract and behavior parity.
 - `apps/docs/src/content/docs/contributing/testing.md` at `/contributing/testing/` is **[Current
-  repository] Tests and required checks**, explaining build-before-typecheck, `tsgo`, lint, format,
-  test suites, Postgres requirements, and forced pre-publication checks.
+  repository] Tests and required checks**, explaining build-before-typecheck, TypeScript 7's `tsc`,
+  lint, format, test suites, Postgres requirements, and forced pre-publication checks.
 - `apps/docs/src/content/docs/contributing/dependencies.md` at `/contributing/dependencies/` is
   **[Current repository] Packages and dependencies**, recording `workspace:*`, `catalog:`, lockfile,
   package boundary, and public barrel rules.

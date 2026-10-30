@@ -131,7 +131,7 @@ site's feature-status page says what works today. Plan milestones describe direc
 pnpm install
 pnpm dev                         # product web app
 pnpm --filter @mend/docs dev     # documentation site on port 3103
-pnpm typecheck                   # tsgo, never tsc
+pnpm typecheck                   # TypeScript 7 tsc
 pnpm lint
 pnpm format:fix
 ```

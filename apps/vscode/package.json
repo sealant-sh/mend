@@ -41,12 +41,12 @@
   ],
   "main": "./dist/extension.js",
   "scripts": {
-    "build": "tsgo -p tsconfig.json --noEmit && node build.mjs",
+    "build": "tsc -p tsconfig.json --noEmit && node build.mjs",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "package": "vsce package --no-dependencies",
     "test": "vitest run",
     "test:e2e": "node ../../scripts/vscode-remote-acceptance.mjs",
-    "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p test/e2e/tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/e2e/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@mend/agent-conversation": "workspace:*",

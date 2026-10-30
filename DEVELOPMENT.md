@@ -134,7 +134,7 @@ harness, that is the thing to check first.
 
 ```sh
 pnpm build                        # generates route trees needed by clean-checkout typechecks
-pnpm exec turbo typecheck --force # tsgo; never tsc
+pnpm exec turbo typecheck --force # TypeScript 7 tsc
 pnpm exec turbo lint --force
 pnpm exec turbo test --force
 pnpm format:fix
