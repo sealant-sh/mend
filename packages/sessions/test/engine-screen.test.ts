@@ -8,7 +8,7 @@ import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Redacted } from "effect";
 import { describe, expect } from "vitest";
 
-import { screenArgv, screenReapArgv } from "../src/screen/script.ts";
+import { onScreenPath, screenArgv, screenReapArgv } from "../src/screen/script.ts";
 import type { World } from "./engine/fixture.ts";
 import {
   LAUNCHER,
@@ -68,7 +68,7 @@ const agentOpens = (platform: Platform) =>
 
 describe("the session's display on every launch (ADR 0020)", () => {
   it.effect(
-    "names each session's own display and cookie at a cold launch, a join and a follow-up",
+    "names each session's own display and cookie, the wrapper first on PATH, at a cold launch, a join and a follow-up",
     () =>
       withScreens((world, platform) =>
         Effect.gen(function* () {
@@ -76,6 +76,11 @@ describe("the session's display on every launch (ADR 0020)", () => {
           const opens = agentOpens(platform);
           expect(opens).toHaveLength(3);
           const uid = opens[0]?.options?.user?.uid;
+          for (const { argv } of opens) {
+            expect(argv.slice(0, 4)).toEqual(onScreenPath([]));
+            expect(argv[2]).toBe('PATH=/run/mend/bin:$PATH exec "$@"');
+            expect(argv.length).toBeGreaterThan(4);
+          }
           expect(opens.map(({ options }) => options?.env)).toEqual(
             [10, 11, 11].map((display) =>
               expect.objectContaining({
@@ -95,7 +100,8 @@ describe("the session's display on every launch (ADR 0020)", () => {
           yield* launchJoinAndFollowUp(world);
           const opens = agentOpens(platform);
           expect(opens).toHaveLength(3);
-          for (const { options } of opens) {
+          for (const { argv, options } of opens) {
+            expect(argv).not.toContain("mend-screen-path");
             expect(options?.env).not.toHaveProperty("DISPLAY");
             expect(options?.env).not.toHaveProperty("XAUTHORITY");
           }

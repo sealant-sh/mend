@@ -651,7 +651,7 @@ import {
   type ScreenProcess,
 } from "./screen-process.ts";
 import { makeScreenPasswords, type ScreenPasswords } from "./screen/passwords.ts";
-import { screenEnvOf } from "./screen/script.ts";
+import { onScreenPath, screenEnvOf } from "./screen/script.ts";
 import {
   decodeSecretFilesRecord,
   encodeSecretFilesRecord,
@@ -18822,7 +18822,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.andThen(
             sealant.openSession(
               workspace,
-              startedArgv,
+              display === null ? startedArgv : onScreenPath(startedArgv),
               launchOpenOptions({
                 pipe: protocolStart !== null,
                 person:
@@ -20781,7 +20781,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.andThen(
               sealant.openSession(
                 workspace,
-                startedArgv,
+                display === null ? startedArgv : onScreenPath(startedArgv),
                 launchOpenOptions({
                   pipe: protocolStart !== null,
                   person:

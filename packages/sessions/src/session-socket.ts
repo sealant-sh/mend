@@ -30,6 +30,7 @@ import {
   MEND_MCP_TOOL_TIMEOUT_SECONDS,
 } from "./mend-mcp/caller.ts";
 import type { PickupGrant } from "./pickup-tickets.ts";
+import { CHROMIUM_WRAPPER_SCRIPT } from "./screen/chromium.ts";
 import type { ScreenPasswords } from "./screen/passwords.ts";
 import { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
 import {
@@ -246,6 +247,9 @@ export const SESSION_SOCKET_MOUNT_PATH = "/run/mend";
 
 /** The workspace helper, by the path the mount gives it: a `mend` earlier on PATH never answers. */
 export const MEND_HELPER_PATH = `${SESSION_SOCKET_MOUNT_PATH}/bin/mend`;
+
+/** The browser wrapper beside it (ADR 0020), whose directory leads a screen session's PATH. */
+export const CHROMIUM_WRAPPER_PATH = `${SESSION_SOCKET_MOUNT_PATH}/bin/chromium`;
 
 /**
  * The helper staged beside the socket. Dependency-free node, talking HTTP
@@ -877,11 +881,12 @@ interface ActiveSocket {
   readonly server: http.Server;
 }
 
-/** Stage the helper + shim into `<dir>/bin` (idempotent, overwrite in place). */
+/** Stage the helper, the shim and the browser wrapper into `<dir>/bin` (idempotent, in place). */
 const stageScripts = (dir: string): void => {
   fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
   fs.writeFileSync(path.join(dir, "bin", "mend"), HELPER_SCRIPT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "mend-git-ssh"), GIT_SSH_SHIM_SCRIPT, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "chromium"), CHROMIUM_WRAPPER_SCRIPT, { mode: 0o755 });
 };
 
 const encoded = (script: string) => Buffer.from(script).toString("base64");
@@ -902,11 +907,13 @@ export const workspaceScriptStaging = (
   const names = [
     "mend",
     "mend-git-ssh",
+    "chromium",
     ...(options.gitCredentialHelper === true ? ["mend-git-credential"] : []),
   ];
   const scripts = [
     HELPER_SCRIPT,
     GIT_SSH_SHIM_SCRIPT,
+    CHROMIUM_WRAPPER_SCRIPT,
     ...(options.gitCredentialHelper === true ? [GIT_CREDENTIAL_HELPER_SCRIPT] : []),
   ];
   return (

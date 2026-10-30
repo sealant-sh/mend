@@ -1,14 +1,19 @@
 import { SCREEN_LIMITS, type DisplayNumber, type ScreenDegraded } from "@mend/domain/workbench";
 
 import { privateRuntimeOf } from "../harness-layout.ts";
-import { MEND_HELPER_PATH } from "../session-socket.ts";
+import {
+  CHROMIUM_WRAPPER_PATH,
+  MEND_HELPER_PATH,
+  SESSION_SOCKET_MOUNT_PATH,
+} from "../session-socket.ts";
 
 /**
  * The screen's process (ADR 0020), as `sh -c SCREEN_SCRIPT mend-screen :<n> <width>x<height> <dir>`:
  * it travels in argv, so the image holds no Mend file. The passwords come from the session channel
  * and never touch argv or env; the X cookie is written through stdin for the same reason. One
- * child waits for the display, starts the window manager, says how that went, and ends the
- * process group once Xvnc is gone or the terminal hangs up, so nothing outlives the display.
+ * child waits for the display, starts the window manager and the browser (through the wrapper,
+ * so the agent's `chromium <url>` reaches the same one), says how the window manager went, and
+ * ends the process group once Xvnc is gone or the terminal hangs up, so nothing outlives it.
  */
 export const SCREEN_SCRIPT = `set -eu
 display=$1
@@ -34,6 +39,7 @@ export DISPLAY="$display" XAUTHORITY="$dir/auth"
   done
   openbox >/dev/null 2>&1 &
   wm=$!
+  ${CHROMIUM_WRAPPER_PATH} about:blank >/dev/null 2>&1 &
   said=
   while sleep 0.5 && kill -0 $$ 2>/dev/null; do
     if kill -0 "$wm" 2>/dev/null; then
@@ -60,6 +66,18 @@ export type ScreenUser = { readonly uid: number } | null;
  */
 export const screenDirOf = (display: DisplayNumber, user: ScreenUser): string =>
   `${user === null ? "/tmp" : privateRuntimeOf(user.uid)}/mend-screen-${display}`;
+
+/**
+ * A process of the session started with the wrapper's directory first on its PATH. The PATH is
+ * the workspace's own, which Mend cannot read, so the shell puts the directory in front of it.
+ */
+export const onScreenPath = (argv: ReadonlyArray<string>): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  `PATH=${SESSION_SOCKET_MOUNT_PATH}/bin:$PATH exec "$@"`,
+  "mend-screen-path",
+  ...argv,
+];
 
 /** What a process of the session needs to open its windows on the session's screen. */
 export const screenEnvOf = (
