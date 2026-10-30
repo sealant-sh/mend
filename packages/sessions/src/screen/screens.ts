@@ -22,7 +22,6 @@ import {
 import { BlobStore } from "@mend/store";
 import { Effect, Fiber, Layer, Scope } from "effect";
 import * as Context from "effect/Context";
-import * as Semaphore from "effect/Semaphore";
 
 import { ForwardAdapter } from "../forward.ts";
 import type { Caller } from "../mend-mcp/caller.ts";
@@ -174,25 +173,8 @@ export const ScreensLive: Layer.Layer<
     const host = yield* ScreenHost;
     const scope = yield* Scope.Scope;
     const blobs = yield* Effect.context<BlobStore>();
-    const locks = new Map<ScreenId, Semaphore.Semaphore>();
-    /** A hand's end and an admission on a hand, one at a time per screen. */
-    const serially = <A, E>(screenId: ScreenId, effect: Effect.Effect<A, E>) => {
-      const lock = locks.get(screenId) ?? Semaphore.makeUnsafe(1);
-      locks.set(screenId, lock);
-      return lock.withPermit(effect);
-    };
-    // The hand that ended has already left `hands`, so a hand open now is its replacement, and what
-    // was admitted on that one stands.
     const hands: Hands = yield* makeHands(
-      (screen): Effect.Effect<void> =>
-        serially(
-          screen.id,
-          Effect.suspend(() =>
-            hands.open(screen.id) === null
-              ? Effect.asVoid(control.decide(screen.id, { _tag: "Ended" }, null))
-              : Effect.void,
-          ),
-        ),
+      (screen): Effect.Effect<void> => Effect.asVoid(control.ended(screen.id)),
     );
     const control: ScreenControl = yield* makeScreenControl(hands).pipe(
       Effect.provideContext(blobs),
@@ -270,7 +252,7 @@ export const ScreensLive: Layer.Layer<
       Effect.gen(function* () {
         const hand = yield* hands.of(screen);
         if (hand === null) return yield* settle(screen, who, "outcome_unknown", null);
-        const admitted = yield* serially(
+        const admitted = yield* control.serially(
           screen.id,
           Effect.suspend(() =>
             hands.open(screen.id) === hand

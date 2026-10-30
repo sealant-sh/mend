@@ -97,7 +97,7 @@ export interface Hand {
   readonly look: Effect.Effect<Uint8Array, HandEnded | WorkerStopped>;
   /** A holder's input, sent only while `epoch` is current. */
   readonly relay: (inputs: ReadonlyArray<Input>, epoch: number) => Effect.Effect<void, HandEnded>;
-  /** A key-up and a button-up for everything held, at each change of holder. */
+  /** A key-up and a button-up for everything held, at each change of holder, ahead of the queue. */
   readonly release: Effect.Effect<void, HandEnded>;
   readonly ended: Effect.Effect<never, HandEnded>;
 }
@@ -121,6 +121,9 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
   const ready = yield* Deferred.make<void>();
   const writing = yield* Semaphore.make(1);
   const tasks = yield* Queue.bounded<Effect.Effect<void>>(QUEUED_AT_MOST);
+  /** Releases, each run as soon as the task running now is done, ahead of everything in `tasks`. */
+  const releases: Array<Effect.Effect<void>> = [];
+  const nextTask = Effect.suspend(() => releases.shift() ?? Effect.flatten(Queue.take(tasks)));
   let held: Held = NOTHING_HELD;
   let lastUpdate = 0;
 
@@ -193,12 +196,28 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
       : Effect.flatMap(Clock.currentTimeMillis, (now) =>
           sleepUntil(() => Math.min(now + step.ms, limit), epoch),
         ).pipe(Effect.as("done"));
-  const run = <A>(task: Effect.Effect<A, HandEnded>) =>
+  const enqueue = <A>(
+    task: Effect.Effect<A, HandEnded>,
+    offer: (queued: Effect.Effect<void>) => Effect.Effect<unknown>,
+  ) =>
     whileOpen(
       Effect.gen(function* () {
         const done = yield* Deferred.make<A, HandEnded>();
-        yield* Queue.offer(tasks, Deferred.into(whileOpen(task), done).pipe(Effect.asVoid));
+        yield* offer(Deferred.into(whileOpen(task), done).pipe(Effect.asVoid));
         return yield* Deferred.await(done);
+      }),
+    );
+  const run = <A>(task: Effect.Effect<A, HandEnded>) =>
+    enqueue(task, (queued) => Queue.offer(tasks, queued));
+  const runFirst = <A>(task: Effect.Effect<A, HandEnded>) =>
+    enqueue(task, (queued) =>
+      Effect.sync(() => {
+        releases.push(queued);
+        // Wakes a queue waiting empty; a full one is not waiting, and takes the release next.
+        Queue.offerUnsafe(
+          tasks,
+          Effect.suspend(() => releases.shift() ?? Effect.void),
+        );
       }),
     );
 
@@ -247,7 +266,7 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
     }
   });
 
-  yield* Effect.forkScoped(Effect.forever(Effect.flatten(Queue.take(tasks))));
+  yield* Effect.forkScoped(Effect.forever(nextTask));
   yield* Effect.forkScoped(whileOpen(reader));
   yield* Effect.forkScoped(whileOpen(decoder.stopped.pipe(Effect.mapError(decoderEnded))));
   yield* Effect.addFinalizer(() =>
@@ -292,7 +311,7 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
     look: run(settledFrame()).pipe(Effect.flatMap(workers.encodePng)),
     relay: (inputs, epoch) =>
       run(Effect.flatMap(current(epoch), (now) => (now ? press(inputs) : Effect.void))),
-    release: run(Effect.suspend(() => press(releaseAll(held)))),
+    release: runFirst(Effect.suspend(() => press(releaseAll(held)))),
     ended: Deferred.await(end),
   } satisfies Hand;
 });
