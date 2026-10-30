@@ -1453,6 +1453,8 @@ export interface World {
   readonly setupRuns: Array<WorldSetupRun>;
   /** Runs before a setup stamp is written, so a test can hold the write. */
   setupFinishing: (() => Effect.Effect<void>) | undefined;
+  /** Runs after a setup stamp is written, before its answer, so a test can hold the reply. */
+  setupFinished: (() => Effect.Effect<void>) | undefined;
   controlSeq: number;
   readonly previews: Map<string, Preview>;
   readonly previewControls: Map<string, PreviewControl>;
@@ -1554,6 +1556,7 @@ export const makeWorld = (): World => ({
   launches: new Map(),
   setupRuns: [],
   setupFinishing: undefined,
+  setupFinished: undefined,
   controlSeq: 0,
   previews: new Map(),
   previewControls: new Map(),
@@ -2223,6 +2226,7 @@ export const setupRunsLayer = (world: World) => {
             return true;
           }),
         ),
+        Effect.tap((written) => (written ? (world.setupFinished?.() ?? Effect.void) : Effect.void)),
       ),
     release: (claimId) =>
       Effect.sync(() => drop((row) => !(row.claimId === claimId && row.state === "running"))),

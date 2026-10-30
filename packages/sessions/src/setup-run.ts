@@ -336,11 +336,7 @@ export const makeSetupRunner = Effect.gen(function* () {
     if (!(yield* setupRuns.finish(claimId, { state: "done", exitCode: 0, outputTail: tail }))) {
       return yield* notRun(LOST_WORDS);
     }
-    // A Stop that came while the stamp was written takes it back.
-    if (plan.stopped()) {
-      yield* setupRuns.discard(claimId);
-      return yield* notRun(SETUP_STOPPED);
-    }
+    if (plan.stopped()) return yield* notRun(SETUP_STOPPED);
     yield* report(plan, "ran");
   });
 
@@ -356,9 +352,17 @@ export const makeSetupRunner = Effect.gen(function* () {
     const ended = yield* Ref.make(true);
     yield* runSteps(run, claimId, ended).pipe(
       Effect.raceFirst(holdClaim(claimId)),
+      // However the run ended: a Stop takes back what its claim left, a stamp written meanwhile
+      // included, and a run whose processes may still run keeps its claim.
       Effect.ensuring(
         Ref.get(ended).pipe(
-          Effect.flatMap((known) => (known ? setupRuns.release(claimId) : Effect.void)),
+          Effect.flatMap((known) =>
+            !known
+              ? Effect.void
+              : run.plan.stopped()
+                ? setupRuns.discard(claimId)
+                : setupRuns.release(claimId),
+          ),
         ),
       ),
       Effect.catch((error) =>

@@ -1261,3 +1261,56 @@ describe("a Stop while setup's done stamp is written", () => {
     }),
   );
 });
+
+describe("a Stop while setup's done stamp is answered", () => {
+  it.effect("leaves no done stamp when a renewal ends the run before the answer comes", () =>
+    Effect.gen(function* () {
+      const clock = yield* makeEngineClock(["processes", "sessions", "setupRuns"]);
+      const spawned = clock.watched<ReadonlyArray<string>>();
+      const written = clock.watched<string>();
+      const steps: string[] = [];
+      const answer = Deferred.makeUnsafe<void>();
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, tmp, project) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* provisionIn(project);
+            yield* engine.launch(session.id, ["codex"]);
+            write(tmp, session.worktree, "mend.toml", ONE_STEP);
+            world.setupFinished = () =>
+              Effect.sync(() => written.push("done")).pipe(Effect.andThen(Deferred.await(answer)));
+            const starting = yield* engine
+              .runServiceRecipe(session.id, "web", ownerStart)
+              .pipe(Effect.flip, Effect.forkChild);
+            yield* clock.untilChanged(() => written.length > 0, "the stamp is written");
+
+            expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+            yield* TestClock.adjust("20 seconds");
+            yield* Fiber.join(starting);
+
+            expect(world.setupRuns.filter((row) => row.state === "done")).toEqual([]);
+            expect(opensOf(spawned, "pnpm dev")).toEqual([]);
+
+            world.setupFinished = undefined;
+            yield* engine.runServiceRecipe(session.id, "web", ownerStart);
+            expect(steps).toEqual([
+              "pnpm install --frozen-lockfile",
+              "pnpm install --frozen-lockfile",
+            ]);
+            expect(world.setupRuns).toMatchObject([{ state: "done" }]);
+          }),
+        {
+          prepareWorld: clock.prepareWorld,
+          forwardAdapterLayer: portsAnswer,
+          sealantLayer: layerWith(spawned, {
+            execEffect: (argv) => {
+              const step = setupStepOf(argv);
+              if (step === null) return undefined;
+              return Effect.sync(() => steps.push(step)).pipe(Effect.as(answered(0)));
+            },
+          }),
+        },
+      );
+    }),
+  );
+});
