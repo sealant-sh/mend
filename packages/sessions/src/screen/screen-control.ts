@@ -12,7 +12,7 @@ import {
   transitionInput,
 } from "@mend/domain/workbench";
 import type { BlobStore } from "@mend/store";
-import { Clock, Deferred, Effect, Fiber, Option, Scope } from "effect";
+import { Clock, Deferred, Duration, Effect, Fiber, Option, Scope } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import { storeFrame } from "./frames.ts";
@@ -29,6 +29,8 @@ export type ScreenControlAnswer =
 const NO_SCREEN: ScreenControlAnswer = { _tag: "NoScreen" };
 const NO_HAND: ScreenControlAnswer = { _tag: "NoHand" };
 const UNCHANGED: ScreenControlAnswer = { _tag: "Unchanged" };
+/** How long a paste already on the screen may hold its viewer's end while its entry is written. */
+const PASTE_LOGGED_WITHIN = Duration.seconds(10);
 
 export type PersonLapse = Exclude<ScreenLapse, "restart">;
 
@@ -317,7 +319,9 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
       ),
     /**
      * The holder's paste, put on the screen's clipboard through the hand while that connection
-     * holds (D13). The log keeps that it happened, never what was pasted.
+     * holds (D13). The log keeps that it happened, never what was pasted. Once the hand has the
+     * paste, the hand sends it even if this caller goes, so its viewer leaving does not cancel the
+     * entry either.
      */
     paste: (sessionId: SessionId, connection: ViewerConnectionId, text: string) =>
       onSession(
@@ -327,17 +331,26 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
           if (input._tag !== "Person" || input.connection !== connection) {
             return Effect.succeed(false);
           }
-          return Effect.gen(function* () {
-            const hand = yield* hands.of(screen);
-            if (hand === null || !(yield* hand.paste(text, input.epoch))) return false;
-            yield* screens.append({
-              screenId: screen.id,
-              actor: { _tag: "Person", userId: input.userId },
-              body: { _tag: "PersonInput", clicks: 0, keys: 0, pastes: 1 },
-              frame: null,
-            });
-            return true;
-          }).pipe(
+          return Effect.uninterruptibleMask((restore) =>
+            Effect.gen(function* () {
+              const hand = yield* restore(hands.of(screen));
+              if (hand === null || !(yield* hand.paste(text, input.epoch))) return false;
+              yield* screens
+                .append({
+                  screenId: screen.id,
+                  actor: { _tag: "Person", userId: input.userId },
+                  body: { _tag: "PersonInput", clicks: 0, keys: 0, pastes: 1 },
+                  frame: null,
+                })
+                .pipe(
+                  Effect.timeoutOrElse({
+                    duration: PASTE_LOGGED_WITHIN,
+                    orElse: () => Effect.die(new Error("screen: the paste's log entry timed out")),
+                  }),
+                );
+              return true;
+            }),
+          ).pipe(
             Effect.catchTags({
               HandEnded: () => Effect.succeed(false),
               ScreenNotFoundError: () => Effect.succeed(false),

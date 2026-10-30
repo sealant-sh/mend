@@ -1,8 +1,10 @@
 import { ViewerConnectionId, type SessionId } from "@mend/domain";
 import { it } from "@mend/test-ci/effect-vitest";
-import { Effect, Fiber } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
+import { SqlClient } from "effect/sql";
 import { describe, expect } from "vitest";
 
+import type { Input } from "../src/screen/rfb-client.ts";
 import { Screens } from "../src/screen/screens.ts";
 import { VIEWER_UNSENT_CEILING } from "../src/screen/viewer.ts";
 import { makeTestViewer } from "./rfb-test-viewer.ts";
@@ -163,6 +165,88 @@ describe.skipIf(postgres.skip || !dockerReady)("watching a screen, against Tiger
               actor: { _tag: "Person", userId: OWNER },
               body: { _tag: "PersonInput", clicks: 0, keys: 0, pastes: 1 },
             },
+          ]);
+          x("xdotool search --class xterm | xargs -r -n1 xdotool windowkill || true");
+        }),
+      ),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "counts a paste already on the screen once, though its viewer left while the log waited for the row",
+    () =>
+      asProcess(
+        Effect.gen(function* () {
+          const screens = yield* Screens;
+          const sql = yield* SqlClient.SqlClient;
+          const { sessionId, screen } = yield* sessionWithScreen;
+          answered(yield* screens.look(agentOf(sessionId).call()));
+          x("rm -f /tmp/pasted");
+          start("xterm", "-geometry", "40x10+0+0", "-e", "sh", "-c", "cat > /tmp/pasted");
+          yield* eventually(
+            () => Effect.sync(() => x("xdotool search --class xterm || true").trim() !== ""),
+            "no xterm",
+          );
+          const owner = yield* watching(sessionId, true);
+          yield* owner.hello;
+          yield* screens.take(sessionId, OWNER, owner.connection);
+          yield* owner.input({ _tag: "Pointer", buttons: 0, x: 60, y: 40 });
+          const locked = yield* Deferred.make<void>();
+          const unlock = yield* Deferred.make<void>();
+          const locker = yield* Effect.forkChild(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT id FROM screens WHERE id = ${screen.id} FOR UPDATE`;
+                yield* Deferred.succeed(locked, undefined);
+                yield* Deferred.await(unlock);
+              }),
+            ),
+          );
+          yield* Deferred.await(locked);
+          yield* owner.paste("mend-paste-kept");
+          yield* eventually(
+            () =>
+              Effect.map(
+                sql<{ readonly waiting: number }>`SELECT count(*)::int AS waiting
+                  FROM pg_stat_activity
+                  WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+                (rows) => (rows[0]?.waiting ?? 0) > 0,
+              ).pipe(Effect.orDie),
+            "the paste's log entry never waited for the screen's row",
+          );
+          yield* owner.leave;
+          yield* Effect.timeoutOption(Fiber.await(owner.relay), "1 second");
+          yield* Deferred.succeed(unlock, undefined);
+          yield* Fiber.join(locker);
+          expect(yield* Fiber.join(owner.relay)).toEqual({ _tag: "ViewerLeft" });
+          const press = (...inputs: ReadonlyArray<Input>) =>
+            screens.input(sessionId, owner.connection, inputs);
+          yield* press(
+            { _tag: "Key", down: true, keysym: 0xffe1 },
+            { _tag: "Key", down: true, keysym: 0xff63 },
+            { _tag: "Key", down: false, keysym: 0xff63 },
+            { _tag: "Key", down: false, keysym: 0xffe1 },
+          );
+          yield* eventually(
+            () =>
+              Effect.gen(function* () {
+                if (x("cat /tmp/pasted 2>/dev/null || true").includes("mend-paste-kept")) {
+                  return true;
+                }
+                yield* Effect.sleep("100 millis");
+                yield* press(
+                  { _tag: "Key", down: true, keysym: 0xff0d },
+                  { _tag: "Key", down: false, keysym: 0xff0d },
+                );
+                return false;
+              }),
+            "the paste never reached the xterm",
+          );
+          const pasted = (yield* logOf(screen.id)).filter(
+            (entry) => entry.body._tag === "PersonInput",
+          );
+          expect(pasted.map(({ body }) => body)).toEqual([
+            { _tag: "PersonInput", clicks: 0, keys: 0, pastes: 1 },
           ]);
           x("xdotool search --class xterm | xargs -r -n1 xdotool windowkill || true");
         }),
