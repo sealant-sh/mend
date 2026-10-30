@@ -246,7 +246,7 @@ const screenContract = (runFixture: RunFixture) => {
           frame: null,
         });
         yield* screens.control(screen.id, { _tag: "Take", by: OWNER, connection }, OWNER);
-        yield* screens.control(screen.id, { _tag: "Fenced", epoch: 1 }, OWNER);
+        yield* screens.control(screen.id, { _tag: "Fenced", epoch: 1 }, OWNER, frame(2));
         yield* screens.append({
           screenId: screen.id,
           actor: { _tag: "Person", userId: OWNER },
@@ -259,6 +259,7 @@ const screenContract = (runFixture: RunFixture) => {
           [2, "Person", "Taken"],
           [3, "Person", "PersonInput"],
         ]);
+        expect(log[1]?.frame).toEqual({ ...frame(2), state: "stored" });
         expect(log[2]?.frame).toEqual({ ...frame(1), state: "stored" });
         const missing = yield* Effect.flip(
           screens.append({

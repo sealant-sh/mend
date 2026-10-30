@@ -293,13 +293,15 @@ const changed = (
 const handedBack = (epoch: number, actor: ScreenInputLog["actor"]): ScreenInputTransition =>
   changed({ _tag: "AwaitingAgent", epoch }, false, { actor, body: { _tag: "HandedBack", epoch } });
 
-const holderConnection = (input: ScreenInput): ViewerConnectionId | null => {
+/** The viewer connection that holds the input, or is being handed it. */
+export const screenHolderConnection = (input: ScreenInput): ViewerConnectionId | null => {
   if (input._tag === "Person") return input.connection;
   return input._tag === "Fencing" && input.to._tag === "Person" ? input.to.connection : null;
 };
 
 /** A person holds the input, or is taking it: what keeps a screen and its session up. */
-export const screenHeldByPerson = (input: ScreenInput): boolean => holderConnection(input) !== null;
+export const screenHeldByPerson = (input: ScreenInput): boolean =>
+  screenHolderConnection(input) !== null;
 
 /**
  * D7: a started screen stops once `idleStopMs` passed since its last activity (an agent call, a
@@ -329,7 +331,7 @@ export const transitionInput = (
   switch (event._tag) {
     case "Take":
       if (owner === null || event.by !== owner) return { _tag: "Refused", why: "owner-only" };
-      if (holderConnection(input) === event.connection) return UNCHANGED;
+      if (screenHolderConnection(input) === event.connection) return UNCHANGED;
       return changed(
         {
           _tag: "Fencing",
@@ -350,7 +352,7 @@ export const transitionInput = (
       );
     }
     case "Lapse":
-      return holderConnection(input) === event.connection
+      return screenHolderConnection(input) === event.connection
         ? pause(event.reason, event.at, input._tag === "Person")
         : UNCHANGED;
     case "HandBack":

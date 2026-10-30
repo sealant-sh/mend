@@ -4,7 +4,13 @@ import {
   ScreensRepo,
   type SettledScreenCall,
 } from "@mend/db";
-import type { ScreenFrameId, ScreenId, SessionProcessId } from "@mend/domain";
+import type {
+  ScreenFrameId,
+  ScreenId,
+  SessionId,
+  SessionProcessId,
+  ViewerConnectionId,
+} from "@mend/domain";
 import {
   type Screen,
   type ScreenActParams,
@@ -24,6 +30,13 @@ import { readFrame, storeFrame } from "./frames.ts";
 import { planActions, type Step } from "./hand-steps.ts";
 import type { HandEnded } from "./hand.ts";
 import { type Hands, makeHands } from "./hands.ts";
+import type { Input } from "./rfb-client.ts";
+import {
+  makeScreenControl,
+  type PersonLapse,
+  type ScreenControl,
+  type ScreenControlAnswer,
+} from "./screen-control.ts";
 import { ScreenHost, ScreenStartError } from "./screen-host.ts";
 import { ScreenWorkers, type WorkerStopped } from "./screen-workers.ts";
 
@@ -65,6 +78,8 @@ export type ScreenCallAnswer =
       readonly sinceLastLook: ReadonlyArray<ScreenLogEntry>;
     };
 
+export type { PersonLapse, ScreenControlAnswer };
+
 /**
  * Every input on a screen passes here (ADR 0020): the agent's two calls, people's takeovers, and
  * the one hand per live screen this process holds.
@@ -77,6 +92,26 @@ export class Screens extends Context.Service<
       caller: ScreenCaller,
       params: ScreenActParams,
     ) => Effect.Effect<ScreenCallAnswer, ScreenStartError>;
+    readonly take: (
+      sessionId: SessionId,
+      userId: string,
+      connection: ViewerConnectionId,
+    ) => Effect.Effect<ScreenControlAnswer>;
+    readonly handBack: (sessionId: SessionId, userId: string) => Effect.Effect<ScreenControlAnswer>;
+    readonly lapse: (
+      sessionId: SessionId,
+      connection: ViewerConnectionId,
+      reason: PersonLapse,
+    ) => Effect.Effect<ScreenControlAnswer>;
+    readonly heartbeat: (
+      sessionId: SessionId,
+      connection: ViewerConnectionId,
+    ) => Effect.Effect<boolean>;
+    readonly input: (
+      sessionId: SessionId,
+      connection: ViewerConnectionId,
+      inputs: ReadonlyArray<Input>,
+    ) => Effect.Effect<boolean>;
   }
 >()("@mend/sessions/Screens") {}
 
@@ -148,15 +183,19 @@ export const ScreensLive: Layer.Layer<
     };
     // The hand that ended has already left `hands`, so a hand open now is its replacement, and what
     // was admitted on that one stands.
-    const hands: Hands = yield* makeHands((screen) =>
-      serially(
-        screen.id,
-        Effect.suspend(() =>
-          hands.open(screen.id) === null
-            ? Effect.ignore(screens.control(screen.id, { _tag: "Ended" }, null))
-            : Effect.void,
+    const hands: Hands = yield* makeHands(
+      (screen): Effect.Effect<void> =>
+        serially(
+          screen.id,
+          Effect.suspend(() =>
+            hands.open(screen.id) === null
+              ? Effect.asVoid(control.decide(screen.id, { _tag: "Ended" }, null))
+              : Effect.void,
+          ),
         ),
-      ),
+    );
+    const control: ScreenControl = yield* makeScreenControl(hands).pipe(
+      Effect.provideContext(blobs),
     );
     const acting = new Set<ScreenId>();
 
@@ -345,6 +384,11 @@ export const ScreensLive: Layer.Layer<
           act(screen, who, params, plan.steps),
         );
       },
+      take: control.take,
+      handBack: control.handBack,
+      lapse: control.lapse,
+      heartbeat: control.heartbeat,
+      input: control.input,
     };
   }),
 );

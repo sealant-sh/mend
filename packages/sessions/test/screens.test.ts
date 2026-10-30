@@ -5,10 +5,16 @@ import * as path from "node:path";
 import { PgClient } from "@effect/sql-pg";
 import { MendDBLive, ScreensRepo, ScreensRepoLive, migrations } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { type ScreenId, SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
+import {
+  type ScreenId,
+  SealantWorkspaceId,
+  SessionId,
+  SessionProcessId,
+  ViewerConnectionId,
+} from "@mend/domain";
 import type { Screen, ScreenAction } from "@mend/domain/workbench";
 import { BlobStoreFsLive } from "@mend/store";
-import { it } from "@mend/test-ci/effect-vitest";
+import { TestClock, it } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect } from "vitest";
@@ -24,6 +30,8 @@ import {
 import { decodePng } from "./png.ts";
 import { OWNER, makeScreenWorld, screenHostLayer, screenSealantLayer } from "./screen-world.ts";
 import { type Xvnc, dockerReady, startXvnc } from "./xvnc.ts";
+
+const CONNECTION = ViewerConnectionId.make("viewer-1");
 
 const postgres = postgresTestConfig();
 const SCRATCH_DB = `mend_screens_service_${process.pid}_${Date.now()}`;
@@ -57,7 +65,7 @@ const reposLayer = Layer.effect(
   ScreensRepo,
   Effect.map(ScreensRepo, (stored): ScreensRepo["Service"] => ({
     ...stored,
-    control: (id, event, owner) =>
+    control: (id, event, owner, frame) =>
       Effect.gen(function* () {
         const held = event._tag === "Ended" ? holdNextEnd : null;
         if (held !== null) {
@@ -65,7 +73,7 @@ const reposLayer = Layer.effect(
           yield* Deferred.succeed(held.reached, undefined);
           yield* Deferred.await(held.go);
         }
-        return yield* stored.control(id, event, owner);
+        return yield* stored.control(id, event, owner, frame);
       }),
   })),
 ).pipe(Layer.provideMerge(storedReposLayer));
@@ -255,9 +263,73 @@ describe.skipIf(postgres.skip)("who may call, and on what", () => {
   );
 });
 
+describe.skipIf(postgres.skip)("people's input on a screen with no hand", () => {
+  const takenByPerson = Effect.gen(function* () {
+    const screens = yield* Screens;
+    const { sessionId, screen } = yield* sessionWithScreen;
+    expect(yield* screens.take(sessionId, "bob", CONNECTION)).toEqual({
+      _tag: "Refused",
+      why: "owner-only",
+    });
+    yield* screens.take(sessionId, OWNER, CONNECTION);
+    expect((yield* rowOf(screen.id)).input).toMatchObject({
+      _tag: "Person",
+      connection: CONNECTION,
+    });
+    return { screens, sessionId, screen };
+  });
+
+  it.effect("hands a paused screen back to the agent once two minutes pass", () =>
+    asProcess(
+      Effect.gen(function* () {
+        const { screens, sessionId, screen } = yield* takenByPerson;
+        yield* screens.lapse(sessionId, CONNECTION, "disconnected");
+        expect((yield* rowOf(screen.id)).input).toMatchObject({
+          _tag: "Paused",
+          reason: "disconnected",
+        });
+        yield* TestClock.adjust("119 seconds");
+        expect((yield* rowOf(screen.id)).input._tag).toBe("Paused");
+        yield* TestClock.adjust("1 second");
+        yield* Effect.yieldNow;
+        for (let turn = 0; (yield* rowOf(screen.id)).input._tag === "Paused"; turn++) {
+          if (turn > 100) throw new Error("never handed back");
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+        }
+        expect((yield* rowOf(screen.id)).input._tag).toBe("AwaitingAgent");
+        const last = (yield* logOf(screen.id)).at(-1);
+        expect([last?.actor, last?.body._tag]).toEqual([{ _tag: "Mend" }, "HandedBack"]);
+      }),
+    ),
+  );
+
+  it.effect("keeps the holder while heartbeats come, and pauses once one is ten seconds late", () =>
+    asProcess(
+      Effect.gen(function* () {
+        const { screens, sessionId, screen } = yield* takenByPerson;
+        yield* TestClock.adjust("8 seconds");
+        expect(yield* screens.heartbeat(sessionId, CONNECTION)).toBe(true);
+        expect(yield* screens.heartbeat(sessionId, ViewerConnectionId.make("other"))).toBe(false);
+        yield* TestClock.adjust("8 seconds");
+        expect((yield* rowOf(screen.id)).input._tag).toBe("Person");
+        yield* TestClock.adjust("3 seconds");
+        for (let turn = 0; (yield* rowOf(screen.id)).input._tag === "Person"; turn++) {
+          if (turn > 100) throw new Error("never paused");
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+        }
+        expect((yield* rowOf(screen.id)).input).toMatchObject({
+          _tag: "Paused",
+          reason: "lease-lapsed",
+        });
+      }),
+    ),
+  );
+});
+
 describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against TigerVNC Xvnc", () => {
   let xvnc: Xvnc;
   const x = (command: string) => xvnc.x(command);
+  const keysDown = () => (x('xinput query-state "TigerVNC keyboard"').match(/=down/g) ?? []).length;
   const pointer = () =>
     x("xdotool getmouselocation")
       .match(/x:(\d+) y:(\d+)/)
@@ -474,6 +546,91 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
           expect(pointer()).toEqual([600, 500]);
           const batch = answered(yield* Fiber.join(running));
           expect(looked.receipt.seq).toBeGreaterThan(batch.receipt.seq);
+        }),
+      ),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "stops a batch at a take, holds no key after it, and makes the agent look first once handed back",
+    () =>
+      asProcess(
+        Effect.gen(function* () {
+          const screens = yield* Screens;
+          const { sessionId, screen } = yield* sessionWithScreen;
+          const agent = agentOf(sessionId);
+          yield* screens.look(agent.call());
+          const running = yield* Effect.forkChild(
+            screens.act(agent.call(), {
+              actions: [
+                { kind: "type", text: "a".repeat(400) },
+                { kind: "wait", ms: 3_000 },
+                movedTo({ x: 700, y: 700 }),
+              ],
+            }),
+          );
+          yield* Effect.sleep("200 millis");
+          yield* screens.take(sessionId, OWNER, CONNECTION);
+          const batch = answered(yield* Fiber.join(running));
+          expect(batch.outcome).toBe("interrupted");
+          expect(batch.actions.map((note) => note.result).at(-1)).toBe("skipped: taken over");
+          expect(keysDown()).toBe(0);
+          expect(pointer()).not.toEqual([700, 700]);
+          expect((yield* rowOf(screen.id)).input).toMatchObject({
+            _tag: "Person",
+            connection: CONNECTION,
+          });
+          expect(yield* screens.look(agent.call())).toEqual({ _tag: "Refused", refusal: "held" });
+
+          yield* screens.handBack(sessionId, OWNER);
+          expect((yield* rowOf(screen.id)).input._tag).toBe("AwaitingAgent");
+          expect(yield* screens.act(agent.call(), { actions: [movedTo({ x: 1, y: 1 })] })).toEqual({
+            _tag: "Refused",
+            refusal: "look_first",
+          });
+          const looked = answered(yield* screens.look(agent.call()));
+          expect(looked.sinceLastLook.map((entry) => entry.body._tag)).toEqual([
+            "Taken",
+            "HandedBack",
+          ]);
+          for (const entry of looked.sinceLastLook) expect(entry.frame).not.toBeNull();
+        }),
+      ),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "pauses a holder whose heartbeat stops, and releases the key it held",
+    () =>
+      asProcess(
+        Effect.gen(function* () {
+          const screens = yield* Screens;
+          const { sessionId, screen } = yield* sessionWithScreen;
+          yield* screens.look(agentOf(sessionId).call());
+          yield* screens.take(sessionId, OWNER, CONNECTION);
+          expect(
+            yield* screens.input(sessionId, CONNECTION, [
+              { _tag: "Key", down: true, keysym: 0xffe1 },
+            ]),
+          ).toBe(true);
+          expect(keysDown()).toBe(1);
+          for (let waited = 0; (yield* rowOf(screen.id)).input._tag === "Person"; waited++) {
+            if (waited > 150) throw new Error("never paused");
+            yield* Effect.sleep("100 millis");
+          }
+          expect((yield* rowOf(screen.id)).input).toMatchObject({
+            _tag: "Paused",
+            reason: "lease-lapsed",
+          });
+          expect(keysDown()).toBe(0);
+          const paused = (yield* logOf(screen.id)).at(-1);
+          expect(paused?.body).toEqual({ _tag: "Paused", reason: "lease-lapsed" });
+          expect(paused?.frame).not.toBeNull();
+          expect(
+            yield* screens.input(sessionId, CONNECTION, [
+              { _tag: "Key", down: true, keysym: 0xffe1 },
+            ]),
+          ).toBe(false);
         }),
       ),
     { timeout: 60_000 },
