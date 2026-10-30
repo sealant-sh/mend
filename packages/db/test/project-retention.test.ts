@@ -461,4 +461,58 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         });
       }),
     ));
+
+  it("issues no upload URL once removed, and lets only the purge's own mark condemn its objects", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const capture = yield* CaptureStoreRepo;
+        const fences = yield* RemovalFencesRepo;
+        const id = yield* seed("condemned");
+        const tree = WorktreeId.make("w-condemned");
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES (${tree}, ${id}, ${tree}, ${tree}, ${tree}, ${"a".repeat(40)})`;
+        yield* capture.init(tree);
+        yield* keep(id);
+        const authority = yield* capture.recordPutAuthority(
+          tree,
+          1,
+          new Date(Date.now() + 600_000),
+        );
+        const purge = yield* fences.takePurge(id, "anna");
+        if (purge._tag !== "finish") return yield* Effect.die("expected purge mark");
+        const guardOf = Effect.map(
+          capture.listChains(),
+          (chains) => chains.find((chain) => chain.worktreeId === tree)?.guard ?? -1,
+        );
+        const key = `captures/${tree}/1/packs/${"e".repeat(64)}`;
+        const claim = { token: "purge-test", ttlSeconds: 3600 };
+        const byRetention = yield* capture.condemn(tree, yield* guardOf, [key], claim);
+        const input = { worktreeId: tree, keys: [key], claim, projectId: id };
+        const byStaleMark = yield* capture.condemnForPurge({
+          ...input,
+          guard: yield* guardOf,
+          fenceId: "rmv_stale",
+        });
+        const byPurge = yield* capture.condemnForPurge({
+          ...input,
+          guard: yield* guardOf,
+          fenceId: purge.id,
+        });
+        expect({
+          authority: authority.recorded,
+          until: yield* capture.putAuthorityUntilFor([tree]),
+          byRetention,
+          byStaleMark,
+          byPurge,
+          tombstoned: (yield* capture.referenceState([tree], [key])).tombstones.map((t) => t.key),
+        }).toEqual({
+          authority: false,
+          until: null,
+          byRetention: false,
+          byStaleMark: false,
+          byPurge: true,
+          tombstoned: [key],
+        });
+      }),
+    ));
 });

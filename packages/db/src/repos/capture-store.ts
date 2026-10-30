@@ -1,8 +1,9 @@
 import { PgClient } from "@effect/sql-pg";
-import type { Sha, WorktreeId } from "@mend/domain";
+import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { asc, eq, inArray, sql as drizzleSql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
+import type { Statement } from "effect/sql";
 
 import { MendDB } from "../client.ts";
 import {
@@ -445,6 +446,10 @@ export class CaptureStoreRepo extends Context.Service<
       checkedSeals?: ReadonlyArray<string>,
       holder?: LeaseHolder,
     ) => Effect.Effect<PutAuthorityRecord>;
+    /** The latest expiry of an upload URL handed out under any epoch of these worktrees. */
+    readonly putAuthorityUntilFor: (
+      worktreeIds: ReadonlyArray<WorktreeId>,
+    ) => Effect.Effect<Date | null>;
     /** The latest expiry of an upload URL handed out under that epoch's prefix, or null. */
     readonly putAuthorityUntil: (
       worktreeId: WorktreeId,
@@ -578,6 +583,18 @@ export class CaptureStoreRepo extends Context.Service<
       keys: ReadonlyArray<string>,
       claim: DeletionClaim,
     ) => Effect.Effect<boolean>;
+    /**
+     * A purge's `condemn` of a removed project's chain: authorized only while the project's
+     * `deleting` mark is `fenceId` and fresh, read under the project's lock.
+     */
+    readonly condemnForPurge: (input: {
+      readonly worktreeId: WorktreeId;
+      readonly guard: number;
+      readonly keys: ReadonlyArray<string>;
+      readonly claim: DeletionClaim;
+      readonly projectId: ProjectId;
+      readonly fenceId: string;
+    }) => Effect.Effect<boolean>;
     /**
      * Retention, before it deletes: extend every claim `token` holds by `ttlSeconds`. Only while
      * none of them has lapsed — a lapsed one is renewed never, since a register may have brought
@@ -1159,6 +1176,12 @@ export const CaptureStoreRepoLive: Layer.Layer<
                    FOR SHARE`;
               if (lease?.held !== true) return { recorded: false, reason: "lease" } as const;
             }
+            // A removed project hands out no upload URL: purge waits out only those it gave before.
+            const [parent] = yield* sql<{ readonly removed: boolean }>`
+              SELECT p.removed_at IS NOT NULL AS removed
+                FROM projects p JOIN worktrees w ON w.project_id = p.id
+               WHERE w.id = ${worktreeId} FOR SHARE OF p`;
+            if (parent?.removed === true) return { recorded: false, reason: "lease" } as const;
             yield* lockPutAuthority(worktreeId, epoch);
             // Read after the lock: a seal marked while this waited is seen. Every seal whose
             // objects live under this prefix, whatever epoch or worktree it seals (0092).
@@ -1194,6 +1217,16 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
         SELECT expires_at FROM capture_put_authority
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}`.pipe(Effect.orDie);
+      return row?.expiresAt ?? null;
+    });
+
+    const putAuthorityUntilFor = Effect.fn("CaptureStoreRepo.putAuthorityUntilFor")(function* (
+      worktreeIds: ReadonlyArray<WorktreeId>,
+    ) {
+      if (worktreeIds.length === 0) return null;
+      const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
+        SELECT max(expires_at) AS expires_at FROM capture_put_authority
+         WHERE worktree_id IN ${sql.in([...worktreeIds])}`.pipe(Effect.orDie);
       return row?.expiresAt ?? null;
     });
 
@@ -1523,27 +1556,22 @@ export const CaptureStoreRepoLive: Layer.Layer<
         )
         .pipe(Effect.orDie);
 
-    const condemn = Effect.fn("CaptureStoreRepo.condemn")(function* (
+    /**
+     * Tombstones `keys` and holds `hold` on each, in one statement that lands only while the
+     * chain's guard still reads `guard` and `admitted` holds for it.
+     */
+    const condemnStatement = (
       worktreeId: WorktreeId,
       guard: number,
       keys: ReadonlyArray<string>,
       hold: DeletionClaim,
-    ) {
-      if (keys.length === 0) return true;
-      // A tombstone already there (a pass that condemned it and failed to delete, one whose
-      // bytes came back, or one another pass still holds) is condemned again: its bytes may be
-      // going now. The claim rows land in the same statement, only if the guard held.
-      return yield* whileListed(
-        worktreeId,
-        false,
-        Effect.gen(function* () {
-          const rows = yield* sql<{ readonly worktreeId: string }>`
+      admitted: Statement.Fragment,
+    ) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<{ readonly worktreeId: string }>`
         WITH ch AS (
           UPDATE worktree_chain SET guard = guard + 1
-           WHERE worktree_id = ${worktreeId} AND guard = ${guard}
-             AND (orphaned OR EXISTS (SELECT 1 FROM worktrees w JOIN projects p ON p.id = w.project_id
-               WHERE w.id = ${worktreeId} AND p.removed_at IS NULL
-                 AND NOT removal_fence_marked(p.removal_phase, p.removal_since)))
+           WHERE worktree_id = ${worktreeId} AND guard = ${guard} AND ${admitted}
            RETURNING worktree_id
         ),
         t AS (
@@ -1560,10 +1588,62 @@ export const CaptureStoreRepoLive: Layer.Layer<
           ON CONFLICT (key, token) DO NOTHING
           RETURNING key
         )
-        SELECT worktree_id FROM ch`.pipe(Effect.orDie);
-          return rows.length > 0;
-        }),
+        SELECT worktree_id FROM ch`;
+        return rows.length > 0;
+      });
+
+    const condemn = Effect.fn("CaptureStoreRepo.condemn")(function* (
+      worktreeId: WorktreeId,
+      guard: number,
+      keys: ReadonlyArray<string>,
+      hold: DeletionClaim,
+    ) {
+      if (keys.length === 0) return true;
+      // A tombstone already there (a pass that condemned it and failed to delete, one whose
+      // bytes came back, or one another pass still holds) is condemned again: its bytes may be
+      // going now. The claim rows land in the same statement, only if the guard held.
+      return yield* whileListed(
+        worktreeId,
+        false,
+        condemnStatement(
+          worktreeId,
+          guard,
+          keys,
+          hold,
+          sql`(orphaned OR EXISTS (SELECT 1 FROM worktrees w JOIN projects p ON p.id = w.project_id
+               WHERE w.id = ${worktreeId} AND p.removed_at IS NULL
+                 AND NOT removal_fence_marked(p.removal_phase, p.removal_since)))`,
+        ).pipe(Effect.orDie),
       );
+    });
+
+    const condemnForPurge = Effect.fn("CaptureStoreRepo.condemnForPurge")(function* (input: {
+      readonly worktreeId: WorktreeId;
+      readonly guard: number;
+      readonly keys: ReadonlyArray<string>;
+      readonly claim: DeletionClaim;
+      readonly projectId: ProjectId;
+      readonly fenceId: string;
+    }) {
+      if (input.keys.length === 0) return true;
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const held = yield* sql`SELECT 1 FROM projects p JOIN worktrees w ON w.project_id = p.id
+              WHERE w.id = ${input.worktreeId} AND p.id = ${input.projectId}
+                AND p.removal_phase = 'deleting' AND p.removal_id = ${input.fenceId}
+                AND removal_fence_fresh(p.removal_since) FOR SHARE OF p`;
+            if (held.length === 0) return false;
+            return yield* condemnStatement(
+              input.worktreeId,
+              input.guard,
+              input.keys,
+              input.claim,
+              sql`true`,
+            );
+          }),
+        )
+        .pipe(Effect.orDie);
     });
 
     const renewDeletion = Effect.fn("CaptureStoreRepo.renewDeletion")(function* (
@@ -1657,6 +1737,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       recordSeal,
       recordPutAuthority,
       putAuthorityUntil,
+      putAuthorityUntilFor,
       putAuthorityUntilOver,
       sealAuthorityOver,
       noteLaunchAnswers,
@@ -1673,6 +1754,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       listChains,
       referenceState,
       condemn,
+      condemnForPurge,
       renewDeletion,
       finishDeletion,
       deleteCaptures,

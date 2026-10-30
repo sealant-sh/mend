@@ -443,6 +443,15 @@ export const makeMemoryCaptureStore = (
       }),
     putAuthorityUntil: (worktreeId, epoch) =>
       Effect.sync(() => putAuthority.get(`${worktreeId}:${epoch}`) ?? null),
+    putAuthorityUntilFor: (worktreeIds) =>
+      Effect.sync(() => {
+        const times = [...putAuthority.entries()].flatMap(([key, until]) =>
+          worktreeIds.some((worktreeId) => key.startsWith(`${worktreeId}:`))
+            ? [until.getTime()]
+            : [],
+        );
+        return times.length === 0 ? null : new Date(Math.max(...times));
+      }),
     putAuthorityUntilOver: (scopes) =>
       Effect.sync(() => {
         const times = scopes.flatMap((scope) => {
@@ -609,6 +618,11 @@ export const makeMemoryCaptureStore = (
         }
         return true;
       }),
+    // No project rows here: the purge's mark is Postgres's to check.
+    condemnForPurge: (input) =>
+      Effect.suspend(() =>
+        repository.condemn(input.worktreeId, input.guard, input.keys, input.claim),
+      ),
     renewDeletion: (token, ttlSeconds) =>
       Effect.sync(() => {
         const held = [...claims.values()].filter((byToken) => byToken.has(token));

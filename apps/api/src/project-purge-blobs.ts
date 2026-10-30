@@ -1,14 +1,24 @@
-import type { WorktreeId, ProjectId } from "@mend/domain";
-import type { CaptureRuntimeShape } from "@mend/sessions";
-import { keysOfSections, treePrefixesOfSections, packIdxKeyOf } from "@mend/store";
-import { Data, Effect } from "effect";
+import { randomUUID } from "node:crypto";
 
-/** An object of the project could not be listed or deleted: purge again to finish. */
+import type { CaptureStoreRepo, RemovalFenceId } from "@mend/db";
+import type { ProjectId, WorktreeId } from "@mend/domain";
+import { type BlobStore, keysOfSections, packIdxKeyOf, treePrefixesOfSections } from "@mend/store";
+import { Clock, Data, Effect } from "effect";
+
+/** An object of the project could not be listed, condemned or deleted: purge again to finish. */
 export class PurgeBlobFailure extends Data.TaggedError("PurgeBlobFailure")<{
   readonly key: string;
 }> {}
 
-export const purgeKeys = (
+/** An upload URL issued before the removal can still land bytes until `until`. */
+export class UploadAuthorityOpen extends Data.TaggedError("UploadAuthorityOpen")<{
+  readonly until: Date;
+}> {}
+
+/** Long enough for one group's deletes; renewed before each, like capture retention's. */
+const CLAIM_TTL_SECONDS = 60 * 60;
+
+const purgeKeys = (
   keys: ReadonlyArray<string>,
   referenced: ReadonlySet<string>,
   trees: ReadonlySet<string>,
@@ -17,53 +27,112 @@ export const purgeKeys = (
     (key) => !referenced.has(key) && ![...trees].some((prefix) => key.startsWith(prefix)),
   );
 
-/** `step` runs before every deletion and fails once the purge no longer holds its mark. */
+/**
+ * Deletes the stored objects only the removed project names (docs/adr/0002, "Retention and
+ * compaction"). Nothing goes while an upload URL issued before the removal may still land bytes.
+ * Each worktree's objects are tombstoned under its chain's guard, as read before the inventory,
+ * so a capture that named one since keeps it, and a later capture naming a deleted one is refused.
+ * `step` runs before every deletion and fails once the purge no longer holds its mark.
+ */
 export const purgeProjectBlobs = <E>(
-  capture: CaptureRuntimeShape,
-  projectId: ProjectId,
+  capture: {
+    readonly repo: CaptureStoreRepo["Service"];
+    readonly blobs: BlobStore["Service"];
+  },
+  purge: { readonly projectId: ProjectId; readonly mark: RemovalFenceId },
   worktrees: ReadonlyArray<WorktreeId>,
   foreignHandoffPacks: ReadonlyArray<string>,
   step: Effect.Effect<void, E>,
-): Effect.Effect<void, E | PurgeBlobFailure> =>
+): Effect.Effect<void, E | PurgeBlobFailure | UploadAuthorityOpen> =>
   Effect.gen(function* () {
-    if (!capture.enabled) return;
+    const { repo, blobs } = capture;
+    const until = Math.max(
+      (yield* repo.putAuthorityUntilFor(worktrees))?.getTime() ?? 0,
+      yield* blobs.startupUntil,
+    );
+    if (until > (yield* Clock.currentTimeMillis))
+      return yield* new UploadAuthorityOpen({ until: new Date(until) });
+
+    const failed = (key: string) => () => new PurgeBlobFailure({ key });
     const own = new Set(worktrees);
+    const chains = yield* repo.listChains();
     const referenced = new Set(foreignHandoffPacks.flatMap((key) => [key, packIdxKeyOf(key)]));
     const trees = new Set<string>();
-    // The purge mark fences new references before this inventory. Include removed projects too.
-    for (const chain of yield* capture.repo.listChains()) {
+    for (const chain of chains) {
       if (own.has(chain.worktreeId)) continue;
-      for (const row of yield* capture.repo.listChain(chain.worktreeId)) {
+      for (const row of yield* repo.listChain(chain.worktreeId)) {
         referenced.add(row.manifestKey);
-        for (const key of keysOfSections(row.sections)) referenced.add(key);
+        for (const key of keysOfSections(row.sections)) {
+          referenced.add(key);
+          referenced.add(packIdxKeyOf(key));
+        }
         for (const prefix of treePrefixesOfSections(row.sections)) trees.add(prefix);
-        const summary = yield* capture.repo.summaryOf(row.id);
+        const summary = yield* repo.summaryOf(row.id);
         if (summary !== null) referenced.add(summary.key);
       }
     }
-    for (const prefix of [
-      `projects/${projectId}/`,
-      ...worktrees.flatMap((id) => [`captures/${id}/`, `changes/${id}/`]),
-    ]) {
-      const failed = (key: string) => () => new PurgeBlobFailure({ key });
-      const entries = yield* capture.blobs.list(prefix).pipe(Effect.mapError(failed(prefix)));
+
+    // The project's own packs have no chain: they are tombstoned under its first worktree's.
+    const groups: Array<{
+      readonly worktreeId: WorktreeId | null;
+      readonly prefixes: ReadonlyArray<string>;
+    }> = worktrees.map((worktreeId, index) => ({
+      worktreeId,
+      prefixes: [
+        `captures/${worktreeId}/`,
+        `changes/${worktreeId}/`,
+        ...(index === 0 ? [`projects/${purge.projectId}/`] : []),
+      ],
+    }));
+    if (groups.length === 0)
+      groups.push({ worktreeId: null, prefixes: [`projects/${purge.projectId}/`] });
+
+    for (const group of groups) {
+      yield* step;
+      const listed = yield* Effect.forEach(group.prefixes, (prefix) =>
+        blobs.list(prefix).pipe(Effect.mapError(failed(prefix))),
+      );
       const keys = purgeKeys(
-        entries.map((entry) => entry.key),
+        listed.flat().map((entry) => entry.key),
         referenced,
         trees,
       );
-      for (const key of keys) {
-        yield* step;
-        yield* capture.blobs.remove(key).pipe(Effect.mapError(failed(key)));
-      }
-      for (const upload of yield* capture.blobs
-        .listMultipart(prefix)
-        .pipe(Effect.mapError(failed(prefix)))) {
-        if (purgeKeys([upload.key], referenced, trees).length === 0) continue;
-        yield* step;
-        yield* capture.blobs
-          .abortMultipart(upload.key, upload.uploadId)
-          .pipe(Effect.mapError(failed(upload.key)));
-      }
+      const guard = chains.find((chain) => chain.worktreeId === group.worktreeId)?.guard;
+      const token = `${purge.mark}:${randomUUID()}`;
+      const condemned =
+        group.worktreeId === null || guard === undefined
+          ? true
+          : yield* repo.condemnForPurge({
+              worktreeId: group.worktreeId,
+              guard,
+              keys,
+              claim: { token, ttlSeconds: CLAIM_TTL_SECONDS },
+              projectId: purge.projectId,
+              fenceId: purge.mark,
+            });
+      if (!condemned) return yield* new PurgeBlobFailure({ key: group.prefixes[0] ?? "" });
+      const deleted: Array<string> = [];
+      yield* Effect.gen(function* () {
+        for (const key of keys) {
+          yield* step;
+          if (guard !== undefined && (yield* repo.renewDeletion(token, CLAIM_TTL_SECONDS)) === 0)
+            return yield* new PurgeBlobFailure({ key });
+          yield* blobs.remove(key).pipe(Effect.mapError(failed(key)));
+          deleted.push(key);
+        }
+        for (const prefix of group.prefixes) {
+          for (const upload of yield* blobs
+            .listMultipart(prefix)
+            .pipe(Effect.mapError(failed(prefix)))) {
+            if (purgeKeys([upload.key], referenced, trees).length === 0) continue;
+            yield* step;
+            yield* blobs
+              .abortMultipart(upload.key, upload.uploadId)
+              .pipe(Effect.mapError(failed(upload.key)));
+          }
+        }
+      }).pipe(
+        Effect.ensuring(guard === undefined ? Effect.void : repo.finishDeletion(token, deleted)),
+      );
     }
   });

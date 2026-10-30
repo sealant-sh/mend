@@ -715,21 +715,29 @@ export const RemovalLive: Layer.Layer<
           taken.id,
           Effect.gen(function* () {
             yield* holding;
-            yield* purgeProjectBlobs(
-              capture,
-              id,
-              (yield* worktrees.listForProject(id)).map((tree) => tree.id),
-              capture.enabled ? yield* worktrees.handoffPacks(id) : [],
-              holding,
-            ).pipe(
-              Effect.catchTag("PurgeBlobFailure", () =>
-                Effect.fail(
-                  new ProjectPurgeIncomplete({
-                    message: "Some stored objects could not be deleted. Purge again to finish.",
-                  }),
-                ),
-              ),
-            );
+            if (capture.enabled)
+              yield* purgeProjectBlobs(
+                capture,
+                { projectId: id, mark: taken.id },
+                (yield* worktrees.listForProject(id)).map((tree) => tree.id),
+                yield* worktrees.handoffPacks(id),
+                holding,
+              ).pipe(
+                Effect.catchTags({
+                  PurgeBlobFailure: () =>
+                    Effect.fail(
+                      new ProjectPurgeIncomplete({
+                        message: "Some stored objects could not be deleted. Purge again to finish.",
+                      }),
+                    ),
+                  UploadAuthorityOpen: ({ until }) =>
+                    Effect.fail(
+                      new ProjectPurgeIncomplete({
+                        message: `An upload this project started may still land until ${until.toISOString()}. Purge again after then to finish.`,
+                      }),
+                    ),
+                }),
+              );
             yield* holding;
             if (yield* projects.storeClaimed(kept.project.storePath, id))
               return yield* new ProjectPurgeIncomplete({
