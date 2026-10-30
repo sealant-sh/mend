@@ -279,13 +279,17 @@ A change whose first session has no owner, or whose owner has no GitHub account 
 open a pull request from Mend. The push still works if the project's auth mode allows it.
 
 The worktree stores its change owner (`worktrees.change_owner_user_id`, migration 0164). The first
-session's insert writes it, and deleting that session leaves it as it is. Before 0164 the owner was
-folded from the session rows that still stood, so deleting the first session handed the change to
-whoever owned the next one. A client that deletes a thread before it removes the thread's worktree
-(t3code does) would have erased the owner the removal checks. Worktrees from before 0164 were given
-the owner of their earliest session that still stands, the owner landing had read until then. A
-worktree with no session left is given the one person who ever had a session in it, when the record
-since 0118 proves there was only one; otherwise its owner is unknown.
+session's insert records it once, a null owner included, and no later session or deletion changes
+it. Before 0164 the owner was folded from the session rows that still stood, so deleting the first
+session handed the change to whoever owned the next one. A client that deletes a thread before it
+removes the thread's worktree (t3code does) would have erased the owner the removal checks.
+
+Worktrees from before 0164 keep the owner landing has read until now: the owner of their earliest
+session that still stands. The worktree also records whether that owner is proven
+(`change_owner_proven`): only when the worktree has no gap in its owner history (0118) and nobody
+else ever had a session there. A worktree with no session left is recorded by its next session, on
+the same terms. Landing reads the stored owner, proven or not, so no existing worktree lands
+differently. Removal reads the proof: see "Worktree removal".
 
 ### What Mend records and shows
 
@@ -389,19 +393,26 @@ one rule set (`decideRemoval` in `@mend/domain`), and every client reads one ref
 `RemovalRefused` that lists every blocker at once. A blocker is a live session (or a process or
 Service forward still running), a save under way, a change not on origin, a repository nested in the
 worktree, a session of another project holding it, declared resources, or another removal under way.
-Only the change's owner removes a worktree; anyone else, an organization owner included, gets a 403
-`RemovalForbidden` that names the owner. A worktree with no known owner keeps the earlier rule:
-whoever manages the project, or a caller who owns every session in it. The owner's `force` lifts
+Only the change's proven owner removes a worktree; anyone else, an organization owner included, gets
+a 403 `RemovalForbidden` that names the owner. A worktree with no owner, or one the history cannot
+prove, keeps the earlier rule in the web and the CLI: whoever manages the project, or a caller who
+owns every session in it. T3 Code refuses such a worktree itself (decision Q8). The removal reads
+the owner after it takes its mark, so an owner recorded meanwhile decides. The owner's `force` lifts
 only a change not on origin and nested repositories, never running or unsaved work. Project removal
 refuses on the same blockers in every worktree, whoever's, and has no force. Neither ever stops a
 session or a Service for the caller.
 
 A removal marks its worktree or project row (`checking`, then `deleting`) while it reads and
-deletes. A session that would become live there, or a new worktree in a marked project, is refused
-(`RemovalInProgress`, from the route or from the database trigger), so nothing starts between the
-checks and the deletion. A start that committed first is what the checks then read. A mark whose
-checker stopped answering is taken over after 120 seconds; a removal that stopped while deleting is
-finished by the next one without checking again.
+deletes, and renews a `checking` mark while its checks run. While a mark stands the database refuses
+new work there: a session inserted or becoming live in the worktree or in one it holds as a
+repository, a shell, Service or screen process, a Service forward, an added repository, a new
+worktree, a standby made or claimed, an executor claiming the worktree's capture lease, and a
+resource declaration. Every route answers that refusal as a 409 `RemovalInProgress`. A start that
+committed first is what the checks then read. A worktree's removal and its project's see each
+other's marks. A mark whose checker stopped renewing it lapses after 120 seconds and is taken over;
+a removal that stopped while deleting is finished by the next one, which takes the mark under a new
+id so no two finish it at once. A removal that meets another under way still reports every other
+blocker, and a change it cannot read is one more blocker, so the refusal always lists them all.
 
 Landed branches are `mend/*` on origin, like the session branches in the store. Refreshing a project
 from origin skips `mend/*`, so a landed branch never collides with the session branch a worktree has

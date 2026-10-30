@@ -363,15 +363,17 @@ answers t3code's authorization error.
 t3code's own confirm dialogs ask, and Mend's removal decides (`src/removal.ts`). t3code sends
 `force: true` with both; the gateway never passes it to Mend in any form.
 
-| t3code                               | Mend                                                                                                                                                                                                                                                                        |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `vcs.removeWorktree`                 | `DELETE /api/worktrees/:id`. `cwd` names the project by its store path, and `path` one directory under its `worktrees/`, matched to Mend's listing (`GET /api/projects/:id/worktrees`) by the worktree's directory, never its name. Any other path is refused, Mend unasked |
-| `projects.mutate` (`project.delete`) | `DELETE /api/projects/:id`; answers the project with `deletedAt`, as t3code's contract requires, once the project and its threads have left the shell. Creating or editing a project is still refused: projects are adopted and edited in Mend                              |
+| t3code                               | Mend                                                                                                                                                                                                                                                                            |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vcs.removeWorktree`                 | `DELETE /api/worktrees/:id`. `cwd` names the project by its store path, and `path` one directory under its `worktrees/`, matched to Mend's listing (`GET /api/projects/:id/worktrees`) by the worktree's directory, never its name. Any other path is refused, Mend unasked     |
+| `projects.mutate` (`project.delete`) | `DELETE /api/projects/:id`; answers the project with `deletedAt`, as t3code's contract requires, once the project and its threads have left the shell. They leave on Mend's answer alone, and no read that began before it brings them back. Editing a project is still refused |
 
 - A worktree Mend no longer lists is answered as removed, as t3code's own server answers for a path
   that is gone.
-- A worktree whose change has no provable owner is refused without asking Mend: "Mend cannot tell
-  who started this worktree's change, so it keeps it. Remove it from Mend."
+- A worktree whose change has no owner, or one Mend's history cannot prove started it
+  (`changeOwnerProven`), is refused without asking Mend: "Mend cannot tell who started this
+  worktree's change, so it keeps it. Remove it from Mend." A recorded owner never changes, so the
+  owner the gateway read is the one Mend checks.
 - Before asking Mend, the gateway waits up to 45 seconds for the worktree's deleted threads to
   finish their removal in Mend (a stop drains and saves first). Then it asks anyway and shows what
   Mend says.
