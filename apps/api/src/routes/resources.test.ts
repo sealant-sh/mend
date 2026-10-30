@@ -1197,6 +1197,117 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       });
     });
 
+    describe("every target's offer answers as it says, whatever the source, reader and settings", () => {
+      const NAME = "mail-main";
+      const specOf = (scope: "project" | "worktree", image = "axllent/mailpit:v1.21") => ({
+        ...mailpit(NAME, scope),
+        image,
+        exports: { URL: "smtp://{host}" },
+      });
+      const tomlOf = (scope: "project" | "worktree") =>
+        [
+          `[resource.${NAME}]`,
+          'image = "axllent/mailpit:v1.21"',
+          `scope = "${scope}"`,
+          "ports = { smtp = 1025 }",
+          'exports = { URL = "smtp://{host}" }',
+        ].join("\n");
+      /** What settings hold before the page is read, beside the spec the entry is of. */
+      const STATES = {
+        "nothing under its name": async () => {},
+        "this spec": async (scope: "project" | "worktree") => {
+          await declareSpec(specOf(scope));
+        },
+        "this spec, approved for the project": async (scope: "project" | "worktree") => {
+          await approve(await declareSpec(specOf(scope)), "alice", null);
+        },
+        "an older spec, approved for the project": async (scope: "project" | "worktree") => {
+          await approve(await declareSpec(specOf(scope, "axllent/mailpit:v1.20")), "alice", null);
+        },
+        "an older project spec a worktree holds as own": async () => {
+          const held = await declareSpec(specOf("project", "axllent/mailpit:v1.20"));
+          expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, held.id, "own")).status).toBe(200);
+        },
+        "another definition setting the same env name": async () => {
+          await declareSpec({ ...mailpit("mail", "project"), exports: { MAIN_URL: "{host}" } });
+        },
+      } as const;
+      const READERS = [
+        { reader: "a manager", as: "alice", worktree: CAROL_WORKTREE_IN_SHARED_A },
+        { reader: "the change owner", as: "carol", worktree: CAROL_WORKTREE_IN_SHARED_A },
+        { reader: "a member", as: "carol", worktree: shared.worktree },
+        { reader: "a manager who owns the change", as: "alice", worktree: shared.worktree },
+      ] as const;
+      const SOURCES = ["settings", "proposal", "file"] as const;
+      /** Each kind of offer the cases met, a refusal by its keys, so none passes by meeting none. */
+      const met = new Set<string>();
+
+      for (const scope of ["project", "worktree"] as const) {
+        for (const [state, arrange] of Object.entries(STATES)) {
+          for (const source of SOURCES) {
+            // Settings hold the very spec of a settings entry.
+            if (source === "settings" && !state.startsWith("this spec")) continue;
+            for (const { reader, as, worktree } of READERS) {
+              it(`${scope} · ${source} · ${state} · ${reader}`, async () => {
+                await start();
+                file = { text: tomlOf(scope), stamp: WORKTREE_STAMP };
+                await arrange(scope);
+                if (source === "proposal") {
+                  await runtime.runPromise(
+                    Effect.flatMap(repoNow, (repo) =>
+                      repo.propose(shared.project, specOf(scope), "carol"),
+                    ),
+                  );
+                }
+                const read = async (): Promise<ResourcesPage> =>
+                  (await list(as, `&worktreeId=${worktree}`)).body;
+                const page = await read();
+                const entry = entryOf(page, source, NAME);
+                expect(entry.digest).toBe(entryOf(page, "file", NAME).digest);
+                const targets = (["project", "worktree"] as const).flatMap((target) => {
+                  const offer = entry.approve[target];
+                  return offer === null ? [] : [{ target, offer }];
+                });
+                expect(targets.map(({ target }) => target)).toEqual(
+                  scope === "worktree" ? ["project", "worktree"] : ["project"],
+                );
+                // A ready request writes, so it posts after every withheld one has answered.
+                const ordered = targets.toSorted(
+                  (a, b) => Number(a.offer.kind === "ready") - Number(b.offer.kind === "ready"),
+                );
+                for (const { target, offer } of ordered) {
+                  met.add(
+                    offer.kind === "rejected"
+                      ? `rejected ${offer.refusals.map(({ key }) => key).join(" ")}`
+                      : offer.kind,
+                  );
+                  const forWorktree = target === "project" ? null : worktree;
+                  await answersAsOffered(as, offer, requestFor(page, source, NAME, forWorktree));
+                  if (offer.kind === "ready") {
+                    const after = entryOf(await read(), "settings", NAME).approve[target];
+                    expect(after).toEqual({ kind: "approved" });
+                  }
+                }
+              });
+            }
+          }
+        }
+      }
+
+      it("met every kind of offer, and each rule's refusal", () => {
+        expect([...met].toSorted()).toEqual([
+          "approved",
+          "denied",
+          "ready",
+          "rejected exports.URL",
+          "rejected image",
+          "rejected image exports.URL",
+          "rejected image scope",
+          "rejected scope",
+        ]);
+      });
+    });
+
     it("names the resource a refused choice is of, and says each refusal as a clause", async () => {
       await start();
       const cache = await declareSpec(
