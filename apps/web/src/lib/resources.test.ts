@@ -1,4 +1,4 @@
-import { ResourceDefinitionId, ResourceProposalId, WorktreeId } from "@mend/domain";
+import { ResourceDefinitionId } from "@mend/domain";
 import {
   presetDefinition,
   PresetVersion,
@@ -10,19 +10,15 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
-  approvalRequest,
-  awaitsApproval,
   choiceInUse,
   choiceWords,
   EMPTY_DRAFT,
   fieldOf,
   proposalOf,
   type ResourceSettingView,
-  type ResourcesPageView,
 } from "./resources.ts";
 
 const digest = ResourceSpecDigest.make("a".repeat(64));
-const worktree = WorktreeId.make("wt_1");
 const db = presetDefinition({
   name: ResourceName.make("db"),
   preset: "postgres",
@@ -46,20 +42,13 @@ const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingV
   id: ResourceDefinitionId.make("rdef_db"),
   digest,
   spec: db,
-  approval: null,
+  approvals: { project: null, worktree: null },
+  approve: { project: null, worktree: null },
   choice: null,
   canRemove: true,
-  canApprove: true,
   canChoose: false,
   statusLine: "@db · postgres 17 · project · waiting for approval",
   ...overrides,
-});
-
-const page = (settings: ReadonlyArray<ResourceSettingView>): ResourcesPageView => ({
-  settings,
-  proposals: [],
-  file: { kind: "not-selected" },
-  canPropose: true,
 });
 
 describe("proposing a resource from the form", () => {
@@ -117,6 +106,24 @@ describe("proposing a resource from the form", () => {
     ]);
   });
 
+  it("refuses two env rows of one name, by that name, before anything is sent", () => {
+    const refused = proposalOf({
+      ...EMPTY_DRAFT,
+      kind: "image",
+      name: "mail",
+      image: "axllent/mailpit:v1.21",
+      ports: "smtp=1025",
+      env: [
+        { key: "AUTH", from: "secret", value: "AUTH_SECRET" },
+        { key: " AUTH ", from: "literal", value: "disabled" },
+      ],
+    });
+    expect(refused).toEqual({
+      ok: false,
+      refusals: [{ key: "env.AUTH", message: "is named by two rows" }],
+    });
+  });
+
   it("puts each server key under its field, and the rest under the form", () => {
     expect(
       ["ports", "ports.http", "env.MP_UI_AUTH", "volumes.data", "exports.URL", "version"].map(
@@ -144,54 +151,5 @@ describe("choosing how a worktree uses a resource", () => {
     expect(choiceWords(db, "off").meaning).toBe(
       "Gets nothing from this resource; the worktree runs its own.",
     );
-  });
-});
-
-describe("approving", () => {
-  it("offers approval only where the flag allows it and the target still waits", () => {
-    expect(awaitsApproval(setting(), null)).toBe(true);
-    expect(awaitsApproval(setting({ canApprove: false }), null)).toBe(false);
-    expect(awaitsApproval(setting({ approval: { by: "alice", for: "project" } }), null)).toBe(
-      false,
-    );
-    // A worktree resource approved for the project still waits for the worktree's own.
-    const box = setting({ spec: mail, approval: { by: "alice", for: "project" } });
-    expect(awaitsApproval(box, worktree)).toBe(true);
-    expect(awaitsApproval({ ...box, approval: { by: "carol", for: "worktree" } }, worktree)).toBe(
-      false,
-    );
-  });
-
-  it("approves what was read, by its digest, for the target its scope names", () => {
-    const held = setting();
-    expect(approvalRequest(page([held]), { kind: "settings", entry: held }, worktree)).toEqual({
-      source: { kind: "settings", id: held.id, digest },
-      worktreeId: null,
-    });
-    const proposal = {
-      id: ResourceProposalId.make("rprop_1"),
-      digest: ResourceSpecDigest.make("b".repeat(64)),
-      spec: db,
-      proposedBy: "carol",
-      canRemove: true,
-      canApprove: true,
-      statusLine: "@db · postgres 17 · project · proposed by Carol · waiting for approval",
-    };
-    expect(approvalRequest(page([held]), { kind: "proposal", entry: proposal }, null)).toEqual({
-      source: {
-        kind: "proposal",
-        id: proposal.id,
-        digest: proposal.digest,
-        settings: { id: held.id, digest },
-      },
-      worktreeId: null,
-    });
-    const table = { digest, spec: mail, canApprove: true, statusLine: "@mail" };
-    expect(
-      approvalRequest(page([]), { kind: "file", entry: table, worktreeId: worktree }, worktree),
-    ).toEqual({
-      source: { kind: "file", worktreeId: worktree, name: "mail", digest, settings: null },
-      worktreeId: worktree,
-    });
   });
 });

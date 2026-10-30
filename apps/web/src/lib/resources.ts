@@ -1,6 +1,5 @@
 import type { WorktreeId } from "@mend/domain";
 import {
-  approvalWorktreeOf,
   defaultChoiceFor,
   isDatabasePreset,
   type ResourceApprovalRequest,
@@ -17,8 +16,8 @@ import { orLogin, trpcClient } from "./trpc.ts";
 
 /**
  * The project's resources as the setup card reads and changes them (ADR 0019). The server decides
- * every act and sends every status line; this module builds what the card sends and sorts the
- * server's refusals onto the fields they name.
+ * every act, sends every status line and builds every approval request; this module builds the
+ * proposal the card sends and sorts the server's refusals onto the fields they name.
  */
 
 type Outputs = inferRouterOutputs<AppRouter>["resources"];
@@ -39,15 +38,16 @@ const at = (projectId: string) => ({ projectId, timeZone: readerZone() });
 export const proposeResource = (projectId: string, proposal: ResourceProposalInput) =>
   orLogin(trpcClient.resources.propose.mutate({ ...at(projectId), proposal }));
 export const withdrawResourceProposal = (projectId: string, proposalId: string) =>
-  orLogin(trpcClient.resources.withdraw.mutate({ ...at(projectId), proposalId }));
+  orLogin(trpcClient.resources.withdraw.mutate({ projectId, proposalId }));
 export const removeResourceDefinition = (projectId: string, entry: ResourceSettingView) =>
   orLogin(
     trpcClient.resources.remove.mutate({
-      ...at(projectId),
+      projectId,
       definitionId: entry.id,
       expectedDigest: entry.digest,
     }),
   );
+/** Posts a request the server built for one target (an item's `approve`), as it was given. */
 export const approveResource = (projectId: string, request: ResourceApprovalRequest) =>
   orLogin(trpcClient.resources.approve.mutate({ ...at(projectId), request }));
 export const chooseResource = (
@@ -93,100 +93,6 @@ export const choiceInUse = (
   if (entry.choice !== null) return { choice: entry.choice, stored: true };
   const fallback = defaultChoiceFor(entry.spec);
   return fallback === null ? null : { choice: fallback, stored: false };
-};
-
-/**
- * Whether the definition still waits for the approval its reader may give: a worktree
- * resource read for a worktree waits for that worktree's own, anything else for the project's.
- */
-export const awaitsApproval = (entry: ResourceSettingView, worktreeId: WorktreeId | null) =>
-  entry.canApprove &&
-  (approvalWorktreeOf(entry.spec, worktreeId) === null
-    ? entry.approval === null
-    : entry.approval?.for !== "worktree");
-
-/** A definition settings hold under `name`, as an adoption names what it may replace. */
-const heldUnder = (page: ResourcesPageView, name: string) => {
-  const held = page.settings.find((entry) => entry.spec.name === name);
-  return held === undefined ? null : { id: held.id, digest: held.digest };
-};
-
-/** Whether settings hold exactly this spec, so approving it would change nothing. */
-export const sameAsSettings = (
-  page: ResourcesPageView,
-  entry: { readonly spec: ResourceDefinitionInput; readonly digest: string },
-) => heldUnder(page, entry.spec.name)?.digest === entry.digest;
-
-/** What approving an item as read sends: its source by the digest read, and its target. */
-export const approvalRequest = (
-  page: ResourcesPageView,
-  item:
-    | { readonly kind: "settings"; readonly entry: ResourceSettingView }
-    | { readonly kind: "proposal"; readonly entry: ResourceProposalView }
-    | {
-        readonly kind: "file";
-        readonly entry: ResourceFileTableView;
-        readonly worktreeId: WorktreeId;
-      },
-  worktreeId: WorktreeId | null,
-): ResourceApprovalRequest => {
-  const { spec, digest } = item.entry;
-  const target = approvalWorktreeOf(spec, worktreeId);
-  switch (item.kind) {
-    case "settings":
-      return { source: { kind: "settings", id: item.entry.id, digest }, worktreeId: target };
-    case "proposal":
-      return {
-        source: {
-          kind: "proposal",
-          id: item.entry.id,
-          digest,
-          settings: heldUnder(page, spec.name),
-        },
-        worktreeId: target,
-      };
-    case "file":
-      return {
-        source: {
-          kind: "file",
-          worktreeId: item.worktreeId,
-          name: spec.name,
-          digest,
-          settings: heldUnder(page, spec.name),
-        },
-        worktreeId: target,
-      };
-  }
-};
-
-/** Every field of a definition that runs, as an approver reviews it before approving. */
-export const reviewFields = (
-  spec: ResourceDefinitionInput,
-): ReadonlyArray<readonly [string, string]> => {
-  const fields: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
-    ["image", [spec.image]],
-    ["scope", [spec.scope]],
-    ["command", spec.command === null ? [] : [spec.command.join(" ")]],
-    ["ports", spec.ports.map((port) => `${port.name}=${port.port}/${port.protocol}`)],
-    ["volumes", spec.volumes.map((volume) => `${volume.name}=${volume.mountPath}`)],
-    [
-      "env",
-      Object.entries(spec.env).map(([key, value]) =>
-        typeof value === "string" ? `${key}=${value}` : `${key} from secret ${value.secret}`,
-      ),
-    ],
-    [
-      "limits",
-      [
-        `${spec.limits.cpu} CPU · ${spec.limits.memoryMiB} MiB memory · ${spec.limits.diskGiB} GiB disk`,
-      ],
-    ],
-    ["ready", [spec.ready.kind === "command" ? spec.ready.argv.join(" ") : spec.ready.kind]],
-    ["exports", Object.entries(spec.exports).map(([key, value]) => `${key}=${value}`)],
-  ];
-  return fields.flatMap(([label, values]) =>
-    values.length === 0 ? [] : [[label, values.join(", ")] as const],
-  );
 };
 
 // ── Proposing ────────────────────────────────────────────────────────────────
@@ -283,6 +189,9 @@ export const proposalOf = (
   | { readonly ok: true; readonly proposal: ResourceProposalInput }
   | { readonly ok: false; readonly refusals: ReadonlyArray<ResourceRefusal> } => {
   const name = draft.name.trim();
+  const env = draft.env
+    .map((row) => ({ ...row, key: row.key.trim() }))
+    .filter((row) => row.key !== "");
   const body =
     draft.kind === "preset"
       ? {
@@ -294,7 +203,7 @@ export const proposalOf = (
         }
       : {
           kind: "definition",
-          spec: ((ports) => ({
+          spec: ((ports, rows) => ({
             name,
             scope: draft.scope,
             preset: null,
@@ -302,20 +211,31 @@ export const proposalOf = (
             command: null,
             ports,
             env: Object.fromEntries(
-              draft.env
-                .filter((row) => row.key.trim() !== "")
-                .map((row) => [
-                  row.key.trim(),
-                  row.from === "secret" ? { secret: row.value.trim() } : row.value,
-                ]),
+              rows.map((row) => [
+                row.key,
+                row.from === "secret" ? { secret: row.value.trim() } : row.value,
+              ]),
             ),
             volumes: lines(draft.volumes).map(volumeOf),
             ready: { kind: ports.some((port) => port.protocol === "tcp") ? "tcp" : "none" },
             exports: {},
-          }))(lines(draft.ports).map(portOf)),
+          }))(lines(draft.ports).map(portOf), env),
         };
+  if (draft.kind === "image") {
+    // A record keeps one value per name: a second row would silently replace the first.
+    const named = env.map((row) => row.key);
+    const twice = [...new Set(named.filter((key, index) => named.indexOf(key) !== index))];
+    if (twice.length > 0) {
+      return {
+        ok: false,
+        refusals: twice.map((key) => ({ key: `env.${key}`, message: "is named by two rows" })),
+      };
+    }
+  }
   const checked = proposalCheck["~standard"].validate(body);
-  if (checked instanceof Promise) return { ok: false, refusals: [] };
+  if (checked instanceof Promise) {
+    throw new Error("the proposal's schema checks asynchronously, which this form cannot wait for");
+  }
   if (checked.issues === undefined) return { ok: true, proposal: checked.value };
   return {
     ok: false,
