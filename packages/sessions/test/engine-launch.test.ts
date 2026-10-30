@@ -196,6 +196,7 @@ describe("SessionEngine", () => {
           packages: ["bat", "lazygit"],
           shell: "bash",
           services: { docker: true },
+          screen: false,
         },
       },
     );
@@ -426,6 +427,7 @@ describe("SessionEngine", () => {
           packages: [],
           shell: "bash",
           services: { docker: true },
+          screen: false,
         },
       },
     );

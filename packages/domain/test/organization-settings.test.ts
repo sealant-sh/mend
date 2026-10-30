@@ -27,6 +27,7 @@ const fedora = {
   packages: ["jq"],
   shell: "zsh" as const,
   services: { docker: false },
+  screen: false,
 };
 
 describe("organization defaults: project → organization → instance", () => {

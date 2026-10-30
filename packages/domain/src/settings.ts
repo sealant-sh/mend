@@ -75,6 +75,7 @@ export const FamilyWorkspaceImage = Schema.Struct({
    */
   shell: shellWithDefault,
   services: workspaceImageServices,
+  screen: offByDefault,
 });
 export type FamilyWorkspaceImage = typeof FamilyWorkspaceImage.Type;
 
@@ -96,13 +97,46 @@ export type CustomWorkspaceImage = typeof CustomWorkspaceImage.Type;
 export const WorkspaceImage = Schema.Union([FamilyWorkspaceImage, CustomWorkspaceImage]);
 export type WorkspaceImage = typeof WorkspaceImage.Type;
 
-export const defaultWorkspaceImage: WorkspaceImage = {
+export const defaultWorkspaceImage: FamilyWorkspaceImage = {
   mode: "family",
   os: "arch",
   packages: [...DEFAULT_WORKSPACE_PACKAGES],
   shell: "zsh",
   services: { docker: true },
+  screen: false,
 };
+
+/**
+ * What a screen needs in its image (docs/adr/0020-guis-in-sessions.md, D1 and D8): TigerVNC's
+ * Xvnc and `vncpasswd`, `xauth` for the display's cookie, `xdpyinfo` to wait for the display, a
+ * light window manager, Chromium and a font set. Portable ids a family image asks the platform's
+ * catalog for, kept apart from the saved packages so turning the screen off removes them.
+ */
+export const SCREEN_PACKAGE_IDS: ReadonlyArray<string> = [
+  "tigervnc",
+  "xauth",
+  "xdpyinfo",
+  "openbox",
+  "chromium",
+  "fonts-dejavu",
+];
+
+/** Every package an image installs: its own, then those of the screen's it lacks. */
+export const workspaceImagePackages = (image: WorkspaceImage): ReadonlyArray<string> =>
+  image.mode === "family" && image.screen
+    ? [...image.packages, ...SCREEN_PACKAGE_IDS.filter((id) => !image.packages.includes(id))]
+    : image.packages;
+
+export type ImageArchitecture = "x86_64" | "aarch64";
+
+/** Why this image cannot have a screen where it would build, or null when it can. */
+export const screenRefusal = (
+  image: WorkspaceImage,
+  architecture: ImageArchitecture,
+): string | null =>
+  image.mode === "family" && image.screen && architecture !== "x86_64"
+    ? `A screen needs an x86_64 machine in this release, and this server runs on ${architecture}.`
+    : null;
 
 const listsEqual = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index]);
@@ -115,7 +149,7 @@ export const workspaceImagesEqual = (left: WorkspaceImage, right: WorkspaceImage
     return false;
   }
   if (left.mode === "family" && right.mode === "family") {
-    return left.os === right.os && left.shell === right.shell;
+    return left.os === right.os && left.shell === right.shell && left.screen === right.screen;
   }
   if (left.mode === "custom" && right.mode === "custom") {
     return (

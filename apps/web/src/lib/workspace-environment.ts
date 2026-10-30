@@ -49,6 +49,7 @@ export interface WorkspaceEnvironmentFormState {
   readonly baseImage: string;
   readonly setupDraft: string;
   readonly docker: boolean;
+  readonly screen: boolean;
   readonly packageDraft: string;
   readonly phase: "idle" | "saving" | "saved";
   readonly resolutions: ReadonlyArray<WorkspacePackageResolutionDto> | null;
@@ -90,6 +91,7 @@ export const createWorkspaceEnvironmentForm = (
   baseImage: workspaceImage.mode === "custom" ? workspaceImage.baseImage : "",
   setupDraft: workspaceImage.mode === "custom" ? workspaceImage.setupCommands.join("\n") : "",
   docker: workspaceImage.services.docker,
+  screen: workspaceImage.mode === "family" && workspaceImage.screen,
   packageDraft: workspaceImage.packages.join("\n"),
   phase: "idle",
   resolutions: null,
@@ -161,6 +163,7 @@ export const workspaceImageFromForm = (state: WorkspaceEnvironmentFormState): Wo
         packages: parsePackageDraft(state.packageDraft).packages,
         shell: state.shell,
         services: { docker: state.docker },
+        screen: state.screen,
       };
 
 export const resolutionIssue = (

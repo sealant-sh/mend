@@ -116,6 +116,7 @@ describe("SessionEngine", () => {
           packages: [],
           shell: "zsh",
           services: { docker: false },
+          screen: false,
         },
       },
     );
@@ -156,6 +157,7 @@ describe("SessionEngine", () => {
           packages: [],
           shell: "zsh",
           services: { docker: false },
+          screen: false,
         },
       },
     );

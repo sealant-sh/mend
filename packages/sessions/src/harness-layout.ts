@@ -7,7 +7,7 @@
  */
 import { createHash } from "node:crypto";
 
-import type { WorkspaceImage } from "@mend/domain";
+import { workspaceImagePackages, type WorkspaceImage } from "@mend/domain";
 import {
   type HarnessLayout,
   type HarnessLayoutSource,
@@ -288,14 +288,15 @@ export const DOTFILES_BLOCK_REASON =
  */
 export const imageLayoutKeyOf = (image: WorkspaceImage, digest: string | null): string => {
   if (digest !== null) return `digest:${digest}`;
+  const packages = workspaceImagePackages(image);
   const spec =
     image.mode === "custom"
-      ? { mode: "custom", baseImage: image.baseImage, packages: [...image.packages].toSorted() }
+      ? { mode: "custom", baseImage: image.baseImage, packages: [...packages].toSorted() }
       : {
           mode: "family",
           os: image.os,
           shell: image.shell,
-          packages: [...image.packages].toSorted(),
+          packages: [...packages].toSorted(),
           docker: image.services.docker,
         };
   return `spec:${createHash("sha256").update(JSON.stringify(spec)).digest("hex").slice(0, 32)}`;

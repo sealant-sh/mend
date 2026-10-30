@@ -187,6 +187,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
     readonly packagesDraft: string;
     readonly setupDraft: string;
     readonly docker: boolean;
+    readonly screen: boolean;
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -207,6 +208,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
             packagesDraft: (from?.packages ?? []).join("\n"),
             setupDraft: "",
             docker: from?.services.docker ?? true,
+            screen: from?.screen ?? false,
           }
         : {
             mode: "custom",
@@ -216,6 +218,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
             packagesDraft: from.packages.join("\n"),
             setupDraft: from.setupCommands.join("\n"),
             docker: from.services.docker,
+            screen: false,
           },
     );
   };
@@ -259,6 +262,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
           packages,
           shell: draft.shell,
           services: { docker: draft.docker },
+          screen: draft.screen,
         };
   };
 

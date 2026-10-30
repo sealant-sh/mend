@@ -6,7 +6,7 @@
  * names people by their Mend account; Core by their Sealant user, which the identity mapping
  * answers from Mend's own table.
  */
-import type { WorkspaceImage } from "@mend/domain";
+import { workspaceImagePackages, type WorkspaceImage } from "@mend/domain";
 import { loginChoiceOf } from "@mend/domain/default-login";
 import type {
   CreateOptions,
@@ -109,7 +109,7 @@ export const imageCreateOptionsOf = (image: WorkspaceImage, harness: Harness): C
   harness,
   ...(image.mode === "custom" ? { baseImage: image.baseImage } : { os: image.os }),
   ...(image.mode === "family" && image.shell !== "bash" ? { shell: image.shell } : {}),
-  packages: image.packages,
+  packages: workspaceImagePackages(image),
   services: image.services,
 });
 

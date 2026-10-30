@@ -171,6 +171,7 @@ const ZSH_FAMILY: LaunchImage = {
   packages: [],
   shell: "zsh",
   services: { docker: false },
+  screen: false,
 };
 
 /** A store whose snapshot per owner is whatever `snapshots` says right now; every read lands in `reads`. */

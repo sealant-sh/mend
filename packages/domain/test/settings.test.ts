@@ -6,6 +6,11 @@ import {
   DotfilesRepository,
   dotfilesRepositoryUrlCredentialIssue,
   MendSettings,
+  SCREEN_PACKAGE_IDS,
+  screenRefusal,
+  WorkspaceImage,
+  workspaceImagePackages,
+  type WorkspaceImageOs,
 } from "../src/settings.ts";
 
 describe("MendSettings workspace image profile", () => {
@@ -36,6 +41,7 @@ describe("MendSettings workspace image profile", () => {
       ],
       shell: "zsh",
       services: { docker: true },
+      screen: false,
     });
   });
 
@@ -73,6 +79,7 @@ describe("MendSettings workspace image profile", () => {
       ],
       shell: "zsh",
       services: { docker: true },
+      screen: false,
     });
   });
 
@@ -133,6 +140,7 @@ describe("MendSettings workspace image profile", () => {
       packages: ["pnpm"],
       shell: "bash",
       services: { docker: false },
+      screen: false,
     });
   });
 
@@ -178,5 +186,48 @@ describe("MendSettings workspace image profile", () => {
     for (const bad of ["", "/dots", "dots/", "../dots", "dots/../..", "a//b", ".", "d:o"]) {
       expect(() => decode({ ...base, subdirectory: bad })).toThrow();
     }
+  });
+});
+
+describe("a workspace image's screen", () => {
+  const decodeImage = Schema.decodeUnknownSync(WorkspaceImage);
+  const family = (os: WorkspaceImageOs, screen: boolean) =>
+    decodeImage({ mode: "family", os, packages: ["git", "chromium"], screen });
+  const custom = decodeImage({
+    mode: "custom",
+    baseImage: "node:22-bookworm",
+    packages: ["git"],
+    setupCommands: [],
+    screen: true,
+  });
+
+  it("is off on family images stored before the switch existed, and round-trips when on", () => {
+    expect(decodeImage({ mode: "family", os: "arch", packages: [] })).toMatchObject({
+      screen: false,
+    });
+    const on = family("fedora", true);
+    expect(decodeImage(Schema.encodeSync(WorkspaceImage)(on))).toEqual(on);
+  });
+
+  it("adds the screen's packages to every family's plan, after the image's own and once each", () => {
+    for (const os of ["fedora", "arch", "nix", "ubuntu"] as const) {
+      expect(workspaceImagePackages(family(os, true))).toEqual([
+        "git",
+        "chromium",
+        ...SCREEN_PACKAGE_IDS.filter((id) => id !== "chromium"),
+      ]);
+      expect(workspaceImagePackages(family(os, false))).toEqual(["git", "chromium"]);
+    }
+  });
+
+  it("is refused off x86_64 and allowed on an x86_64 family image", () => {
+    expect(screenRefusal(family("arch", true), "aarch64")).toMatch(/x86_64 machine/);
+    expect(screenRefusal(family("arch", false), "aarch64")).toBeNull();
+    expect(screenRefusal(family("arch", true), "x86_64")).toBeNull();
+  });
+
+  it("cannot be asked of a custom base, whose package manager Mend cannot name packages for", () => {
+    expect(custom).not.toHaveProperty("screen");
+    expect(workspaceImagePackages(custom)).toEqual(["git"]);
   });
 });

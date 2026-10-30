@@ -375,6 +375,7 @@ describe("the default shell profile", () => {
       packages: [],
       shell: "zsh",
       services: { docker: false },
+      screen: false,
     };
     expect(shellProfileApplies({ defaultShellProfile: true }, { ...zsh, shell: "zsh" })).toBe(true);
     expect(shellProfileApplies({ defaultShellProfile: false }, { ...zsh, shell: "zsh" })).toBe(

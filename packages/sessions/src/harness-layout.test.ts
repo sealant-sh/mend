@@ -327,10 +327,18 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
     ).toBe(key);
     expect(
       imageLayoutKeyOf(
-        { mode: "family", os: "ubuntu", packages: [], shell: "bash", services: { docker: true } },
+        {
+          mode: "family",
+          os: "ubuntu",
+          packages: [],
+          shell: "bash",
+          services: { docker: true },
+          screen: false,
+        },
         null,
       ),
     ).not.toBe(key);
+    expect(imageLayoutKeyOf({ ...defaultWorkspaceImage, screen: true }, null)).not.toBe(key);
   });
 });
 

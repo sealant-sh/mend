@@ -232,7 +232,14 @@ const IMAGES: ReadonlyArray<readonly [string, WorkspaceImage]> = [
   ["the default image", defaultWorkspaceImage],
   [
     "a bash family image without docker",
-    { mode: "family", os: "fedora", packages: ["git"], shell: "bash", services: { docker: false } },
+    {
+      mode: "family",
+      os: "fedora",
+      packages: ["git"],
+      shell: "bash",
+      services: { docker: false },
+      screen: false,
+    },
   ],
   [
     "a custom base image",

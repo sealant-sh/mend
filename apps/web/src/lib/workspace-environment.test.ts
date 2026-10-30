@@ -16,6 +16,7 @@ const image = (packages: ReadonlyArray<string>): SettingsDto["workspaceImage"] =
   packages,
   shell: "bash",
   services: { docker: true },
+  screen: false,
 });
 
 const resolution = (
@@ -79,6 +80,7 @@ describe("workspace environment form", () => {
       packages: ["pnpm", "uv"],
       shell: "bash",
       services: { docker: true },
+      screen: false,
     });
     expect(rejected.savedImage).toEqual(image(["pnpm"]));
 
@@ -88,6 +90,7 @@ describe("workspace environment form", () => {
       packages: ["pnpm", "uv"],
       shell: "bash",
       services: { docker: true },
+      screen: false,
     };
     const saved = workspaceEnvironmentFormReducer(rejected, {
       type: "save-succeeded",

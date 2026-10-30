@@ -22,6 +22,7 @@ const workspaceImage = (packages: ReadonlyArray<string>): WorkspaceImage => ({
   packages,
   shell: "bash",
   services: { docker: true },
+  screen: false,
 });
 
 const resolution = (
@@ -60,6 +61,7 @@ describe("resolveWorkspaceEnvironment", () => {
       packages: ["github-cli"],
       shell: "bash",
       services: { docker: true },
+      screen: false,
     });
   });
 
