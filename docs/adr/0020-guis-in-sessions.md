@@ -200,15 +200,16 @@ a Service a raw listener with no Mend authentication
 (`packages/sessions/src/service-host.ts:193-201`, tenancy item `raw-service-ports` in
 `apps/api/src/tenancy.ts:139`).
 
-**Startup and teardown.** The argv is `sh -c <script> mend-screen :<n> 1280x800`. The script forks
-one child, then `exec`s Xvnc, so Xvnc is the leader and holds the port. A `{kind: "session"}`
-forward reaches this X server only, and resets with `owner-exited` when Xvnc exits (SDK
-`dist/types.d.ts:1484-1495`). The child waits for the display with `xdpyinfo`, at most 10 s, as the
-prototype did (`deploy/desktop/start:16-21` on the branch). It then starts the window manager and
-the browser, and prints `mend-screen ready` or `mend-screen degraded <client>` to the session's
-output, which Mend reads into the status line. When the display goes, the child kills its process
-group. The SDK does not say what happens to a session's other processes after its leader exits, so
-PR 11 checks that nothing outlives Xvnc, and platform feedback 3 asks.
+**Startup and teardown.** The argv is `sh -c <script> mend-screen :<n> 1280x800 <dir>`, where
+`<dir>` is the screen's 0700 runtime directory, named by the engine so that the cookie path is the
+same at every start. The script forks one child, then `exec`s Xvnc, so Xvnc is the leader and holds
+the port. A `{kind: "session"}` forward reaches this X server only, and resets with `owner-exited`
+when Xvnc exits (SDK `dist/types.d.ts:1484-1495`). The child waits for the display with `xdpyinfo`,
+at most 10 s, as the prototype did (`deploy/desktop/start:16-21` on the branch). It then starts the
+window manager and the browser, and prints `mend-screen ready` or `mend-screen degraded <client>` to
+the session's output, which Mend reads into the status line. When the display goes, the child kills
+its process group. The SDK does not say what happens to a session's other processes after its leader
+exits, so PR 11 checks that nothing outlives Xvnc, and platform feedback 3 asks.
 
 **One display per session.** A display number is reserved at the session's first launch in a project
 whose Environment has a screen, kept while the session lives (idle stops and restarts reuse it), and
@@ -321,11 +322,13 @@ session-bound), signs in with the view-only password, and sends a `ClientInit` w
 set, as the hand does, so no connection displaces another. It relays the server's bytes untouched
 and parses the viewer's:
 
-- `SetEncodings` is rewritten to an allow-list of plain encodings and the server-only `Cursor` and
-  `DesktopSize` pseudo-encodings. noVNC asks for Fence, ContinuousUpdates, QEMU Extended Key Event,
-  ExtendedDesktopSize and xvp by default. Offered those, it would send message types 248, 150, 255,
-  251 and 250, with its keys as type 255. Without them, it sends only `KeyEvent` and `PointerEvent`,
-  and no watcher can resize the screen or ask it to shut down.
+- `SetEncodings` is rewritten to an allow-list: Raw, CopyRect, ZRLE and the `DesktopSize`
+  pseudo-encoding. `Cursor` is left out, so Xvnc draws the real pointer into the frames every
+  watcher and the agent see; with it, noVNC would draw each viewer's own pointer instead. noVNC asks
+  for Fence, ContinuousUpdates, QEMU Extended Key Event, ExtendedDesktopSize and xvp by default.
+  Offered those, it would send message types 248, 150, 255, 251 and 250, with its keys as type 255.
+  Without them, it sends only `KeyEvent` and `PointerEvent`, and no watcher can resize the screen or
+  ask it to shut down.
 - `SetPixelFormat` and `FramebufferUpdateRequest` pass.
 - `KeyEvent` and `PointerEvent` go to the hand, which re-issues them for the holder only.
 - `ClientCutText` follows the clipboard default (D13) and never passes on the relay's connection.
@@ -849,6 +852,35 @@ started before the decisions, because none of them changed with an answer.
 21. **retention and the frame budget** (after D6, D13). Check: expired frames read `expired`, and at
     the budget input works, the agent gets its image and the log reads `frames not kept`. Verifier:
     a short retention and a small budget on the box.
+
+## Built differently
+
+What the build changed against this text, with the PR that carries each. Yiannis can overrule any.
+
+- **The agent process names itself with an id, not a credential** (#1175). `MEND_AGENT_PROCESS_ID`
+  in the launch env, sent by the helper and resolved against the session's process rows; the channel
+  credential still authenticates. The SDK says a session's env is "not for secrets".
+- **The screen's packages come from Core's catalog** (#1197, sealant#419, pinned from
+  0.40.0-next.768 in #1200), as D8 (a) chose, with no Mend-published base. Fedora, Arch and nix
+  carry all six; Ubuntu 24.04's `chromium` is a snap stub, so Core refuses it there with its reason.
+  A custom base gets no Screen switch, because Mend cannot know its package manager. The
+  architecture is the Mend server's own until the SDK reports the executor's.
+- **No `Cursor` pseudo-encoding** (#1183), so every watcher sees the agent's real pointer.
+- **Passwords**: eight characters made fresh at each start, handed once per start over the session
+  channel to the person the screen runs as, never logged (#1204). Xvnc also gets `-nolisten tcp`.
+- **The browser** starts through a staged `chromium` wrapper that keeps one profile per screen in
+  the screen's directory; the agent's own `chromium <url>` opens a tab in that instance (#1209).
+  D12's fallback is a probe: the first run starts Chromium headless with its sandbox and, only if
+  that fails, without it, and records the answer for the status line.
+- **PATH** reaches the wrapper through argv, because sealantd applies a session's env without
+  expansion (#1209, with a platform feedback entry).
+- **A shared-control turn runs as the steerer and gets no display**; the owner's cookie and profile
+  are 0700 (#1209). This follows D3.
+- **The hand** ends with a typed reason (`stream-stalled`, `decoder-failed`, `decode-deadline`, and
+  the sign-in and size refusals); paced typing honors the batch limit, and nothing queued reaches
+  Xvnc after the hand ends (#1189).
+- **Delivery** split the planned PRs further to stay near 250 lines each, merged PRs 3 and 4 as
+  #1175, and moved PR 5's recheck extraction into PR 15.
 
 ## Decision log
 
