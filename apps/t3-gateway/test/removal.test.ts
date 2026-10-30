@@ -102,6 +102,12 @@ const assertNeverForced = (mend: FakeMend) => {
   }
 };
 
+/** A request the fake holds until `release`, and says when it is `reached`. */
+const heldRequest = () => ({
+  release: Promise.withResolvers<void>(),
+  reached: Promise.withResolvers<void>(),
+});
+
 const deleteThread = (rpc: Rpc, threadId: string) =>
   rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
     type: "thread.delete",
@@ -595,13 +601,8 @@ describe("Removing a project from t3code", () => {
           yield* shell.next(
             (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
           );
-          const held = () => {
-            const release = Promise.withResolvers<void>();
-            const reached = Promise.withResolvers<void>();
-            return { release, reached };
-          };
-          const removal = held();
-          const read = held();
+          const removal = heldRequest();
+          const read = heldRequest();
           mend.workbench.holds.push(
             {
               method: "DELETE",

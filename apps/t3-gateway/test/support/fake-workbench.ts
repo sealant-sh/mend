@@ -696,10 +696,10 @@ export class FakeWorkbench {
     const path = url.pathname;
     const method = request.method ?? "GET";
     if (!path.startsWith("/api/")) return false;
-    const held = this.holds.findIndex(
+    const holdAt = this.holds.findIndex(
       (candidate) => candidate.method === method && candidate.path.test(path),
     );
-    const matched = held === -1 ? null : (this.holds.splice(held, 1)[0] ?? null);
+    const matched = holdAt === -1 ? null : (this.holds.splice(holdAt, 1)[0] ?? null);
     if (matched?.before === true) {
       matched.reached();
       return matched.until.then(() => this.route(request, response, body, accepted));

@@ -982,6 +982,10 @@ const FULL_READ_RETRY = "3 seconds";
 /** A stream that lasted this long resets the backoff: it was a drop, not a refusal loop. */
 const HEALTHY_STREAM_MS = 30_000;
 
+/** Mend took a removal and gave no answer to read: whether it removed anything is open. */
+const unanswered = (what: "worktree" | "project", error: MendUnavailable) =>
+  Effect.fail(new RemovalKept({ reason: removalUnansweredWords(what, error.status) }));
+
 const projectableSessionIds = (
   entry: ProjectEntry,
   launched: ReadonlyMap<string, LaunchedThread>,
@@ -4602,10 +4606,6 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         while (yield* removalsUnderWay(worktreeId)) yield* Effect.sleep(REMOVAL_SETTLE_LOOK);
       }).pipe(Effect.timeoutOrElse({ duration: REMOVAL_SETTLE_WAIT, orElse: () => Effect.void }));
-
-    /** Mend took the removal and gave no answer to read: whether it removed anything is open. */
-    const unanswered = (what: "worktree" | "project", error: MendUnavailable) =>
-      Effect.fail(new RemovalKept({ reason: removalUnansweredWords(what, error.status) }));
 
     const removeWorktree: PersonHub["removeWorktree"] = (request) =>
       Effect.gen(function* () {
