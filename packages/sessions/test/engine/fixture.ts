@@ -3371,6 +3371,11 @@ export const checkpointsLayer = (world: World) =>
       Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId)),
     latestForWorktree: (worktreeId) =>
       Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId).at(-1) ?? null),
+    latestForWorktreeAt: (worktreeId, at) =>
+      Effect.succeed(
+        world.checkpoints.filter((c) => c.worktreeId === worktreeId && c.createdAt <= at).at(-1) ??
+          null,
+      ),
     countForWorktree: (worktreeId) =>
       Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId).length),
     listForSession: (sessionId) =>

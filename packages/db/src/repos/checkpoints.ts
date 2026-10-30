@@ -6,7 +6,7 @@ import {
   type WorktreeId,
 } from "@mend/domain";
 import { Checkpoint, CheckpointSource, type CheckpointTrigger } from "@mend/domain/workbench";
-import { and, asc, count, desc, eq, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, lte, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -78,6 +78,11 @@ export class CheckpointsRepo extends Context.Service<
     ) => Effect.Effect<Checkpoint | null>;
     readonly listForWorktree: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<Checkpoint>>;
     readonly latestForWorktree: (worktreeId: WorktreeId) => Effect.Effect<Checkpoint | null>;
+    /** The worktree's newest checkpoint taken at or before `at`: what it held then. */
+    readonly latestForWorktreeAt: (
+      worktreeId: WorktreeId,
+      at: Date,
+    ) => Effect.Effect<Checkpoint | null>;
     /** Next ordinal = count; the unique `(worktree_id, ordinal)` index backstops the lock. */
     readonly countForWorktree: (worktreeId: WorktreeId) => Effect.Effect<number>;
     /** Transcript-scoped readers: a session's own snapshots, by provenance. */
@@ -211,6 +216,20 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       return row === undefined ? null : toCheckpoint(row);
     });
 
+    const latestForWorktreeAt = Effect.fn("CheckpointsRepo.latestForWorktreeAt")(function* (
+      worktreeId: WorktreeId,
+      at: Date,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(checkpoints)
+        .where(and(eq(checkpoints.worktreeId, worktreeId), lte(checkpoints.createdAt, at)))
+        .orderBy(desc(checkpoints.ordinal))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toCheckpoint(row);
+    });
+
     const countForWorktree = Effect.fn("CheckpointsRepo.countForWorktree")(function* (
       worktreeId: WorktreeId,
     ) {
@@ -262,6 +281,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       byOrdinal,
       listForWorktree,
       latestForWorktree,
+      latestForWorktreeAt,
       countForWorktree,
       listForSession,
       withWorktreeLock,

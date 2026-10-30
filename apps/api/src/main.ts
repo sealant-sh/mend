@@ -68,6 +68,7 @@ import {
   PreviewsRepoLive,
   ScreensRepoLive,
   PreviewGrantsRepoLive,
+  PreviewPreparationsRepoLive,
   SkillsRepoLive,
   SlackDefaultsRepoLive,
   SlackEventClaimsRepoLive,
@@ -243,6 +244,7 @@ import { OwnerLandingLive } from "./owner-landing.ts";
 import { PageViewTokensLive } from "./page-view-tokens.ts";
 import { PreviewSetupConfig, PreviewSetupConfigLive } from "./preview-config.ts";
 import { PreviewIdentityLive } from "./preview-identity.ts";
+import { PreviewPreparationLive } from "./preview-preparation.ts";
 import { servePreviews } from "./preview-serving.ts";
 import { PreviewUrlsLive } from "./preview-urls.ts";
 import { ProjectCreationLive, UnsettledRepositorySweepLive } from "./project-creation.ts";
@@ -300,6 +302,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   PreviewsRepoLive.pipe(Layer.provide(NodeCrypto.layer)),
   PreviewGrantsRepoLive,
   ScreensRepoLive,
+  PreviewPreparationsRepoLive,
   ServiceForwardsRepoLive,
   ServiceObservationsRepoLive,
   RecipeApprovalsRepoLive,
@@ -748,6 +751,7 @@ const WorkerLive = Layer.mergeAll(
   SlackReporterLive,
   // Lands a change when a turn completes and automatic landing is on (docs/adr/0007-landing.md).
   AutomaticLandingLive,
+  PreviewPreparationLive,
   // Adopts a pull request the agent opened itself, after its push and when its turn ends.
   PullRequestAdoptionLive,
   // Names the stores whose git config has a login, a token or an include: refused until fixed.
