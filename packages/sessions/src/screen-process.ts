@@ -182,7 +182,7 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
             message: "this workspace cannot give a screen its own person · no screen was started",
           });
         }
-        const argv = screenArgv(screen.display);
+        const argv = screenArgv(screen.display, startAs.user);
         const row = yield* processes.create({
           sessionId,
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),

@@ -1,4 +1,5 @@
 import { linuxLoginNameOf, type SessionChannelTokensRepo } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import type { HarnessLayout } from "@mend/domain/workbench";
 import {
   type PersonExecOptions,
@@ -43,6 +44,7 @@ export const withScreens = <A, E>(
     readonly printed?: ReadonlyArray<string>;
     readonly layout?: HarnessLayout;
     readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
+    readonly screen?: boolean;
   } = {},
 ) => {
   const platform: Platform = { spawned: [], opened: [], execs: [], execUsers: [], listeners: [] };
@@ -53,6 +55,7 @@ export const withScreens = <A, E>(
     {
       captured: makeMemoryCaptureStore(),
       ...(options.tokensLayer === undefined ? {} : { tokensLayer: options.tokensLayer }),
+      workspaceImage: { ...defaultWorkspaceImage, screen: options.screen ?? true },
       sealantLayer: sealantLaunchLayer(
         created,
         undefined,

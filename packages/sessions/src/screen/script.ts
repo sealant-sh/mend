@@ -1,10 +1,11 @@
 import { SCREEN_LIMITS, type DisplayNumber, type ScreenDegraded } from "@mend/domain/workbench";
 
+import { privateRuntimeOf } from "../harness-layout.ts";
 import { MEND_HELPER_PATH } from "../session-socket.ts";
 
 /**
- * The screen's process (ADR 0020), as `sh -c SCREEN_SCRIPT mend-screen :<n> <width>x<height>`: it
- * travels in argv, so the image holds no Mend file. The passwords come from the session channel
+ * The screen's process (ADR 0020), as `sh -c SCREEN_SCRIPT mend-screen :<n> <width>x<height> <dir>`:
+ * it travels in argv, so the image holds no Mend file. The passwords come from the session channel
  * and never touch argv or env; the X cookie is written through stdin for the same reason. One
  * child waits for the display, starts the window manager, says how that went, and ends the
  * process group once Xvnc is gone or the terminal hangs up, so nothing outlives the display.
@@ -12,7 +13,7 @@ import { MEND_HELPER_PATH } from "../session-socket.ts";
 export const SCREEN_SCRIPT = `set -eu
 display=$1
 n=\${display#:}
-dir=\${XDG_RUNTIME_DIR:-\${TMPDIR:-/tmp}}/mend-screen-$n
+dir=$3
 umask 077
 rm -rf "$dir"
 mkdir -m 700 "$dir"
@@ -50,13 +51,33 @@ exec Xvnc "$display" -geometry "$2" -depth 24 -localhost -nolisten tcp -rfbport 
   -SendCutText=0 -AcceptCutText=1 -AlwaysShared
 `;
 
-export const screenArgv = (display: DisplayNumber): ReadonlyArray<string> => [
+/** Who a screen runs as: a person by their uid, or null for root. */
+export type ScreenUser = { readonly uid: number } | null;
+
+/**
+ * The screen's own directory, made afresh at each start, so its cookie's path is the same at
+ * every start: in its person's private runtime directory, or `/tmp` as root.
+ */
+export const screenDirOf = (display: DisplayNumber, user: ScreenUser): string =>
+  `${user === null ? "/tmp" : privateRuntimeOf(user.uid)}/mend-screen-${display}`;
+
+/** What a process of the session needs to open its windows on the session's screen. */
+export const screenEnvOf = (
+  display: DisplayNumber,
+  user: ScreenUser,
+): Readonly<Record<string, string>> => ({
+  DISPLAY: `:${display}`,
+  XAUTHORITY: `${screenDirOf(display, user)}/auth`,
+});
+
+export const screenArgv = (display: DisplayNumber, user: ScreenUser): ReadonlyArray<string> => [
   "sh",
   "-c",
   SCREEN_SCRIPT,
   "mend-screen",
   `:${display}`,
   `${SCREEN_LIMITS.width}x${SCREEN_LIMITS.height}`,
+  screenDirOf(display, user),
 ];
 
 const REAP_SCRIPT = `lock=/tmp/.X$1-lock

@@ -121,9 +121,13 @@ export const SCREEN_PACKAGE_IDS: ReadonlyArray<string> = [
   "fonts-dejavu",
 ];
 
+/** Whether a workspace made from this image runs a screen; null is an image not known yet. */
+export const imageHasScreen = (image: WorkspaceImage | null): boolean =>
+  image?.mode === "family" && image.screen;
+
 /** Every package an image installs: its own, then those of the screen's it lacks. */
 export const workspaceImagePackages = (image: WorkspaceImage): ReadonlyArray<string> =>
-  image.mode === "family" && image.screen
+  imageHasScreen(image)
     ? [...image.packages, ...SCREEN_PACKAGE_IDS.filter((id) => !image.packages.includes(id))]
     : image.packages;
 
@@ -134,7 +138,7 @@ export const screenRefusal = (
   image: WorkspaceImage,
   architecture: ImageArchitecture,
 ): string | null =>
-  image.mode === "family" && image.screen && architecture !== "x86_64"
+  imageHasScreen(image) && architecture !== "x86_64"
     ? `A screen needs an x86_64 machine in this release, and this server runs on ${architecture}.`
     : null;
 

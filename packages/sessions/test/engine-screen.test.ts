@@ -1,11 +1,23 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 import { DisplayNumber, type Screen } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
+import { sessionStatePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Redacted } from "effect";
 import { describe, expect } from "vitest";
 
 import { screenArgv, screenReapArgv } from "../src/screen/script.ts";
-import { LAUNCHER, lostReap, lostStart, screenRows, withScreens } from "./engine/screen-fixture.ts";
+import type { World } from "./engine/fixture.ts";
+import {
+  LAUNCHER,
+  lostReap,
+  lostStart,
+  type Platform,
+  screenRows,
+  withScreens,
+} from "./engine/screen-fixture.ts";
 
 /** The engine's own fibers run on the event loop: give them turns until `done` holds. */
 const until = (done: () => Effect.Effect<boolean>, what: string) =>
@@ -16,6 +28,82 @@ const until = (done: () => Effect.Effect<boolean>, what: string) =>
     }
     throw new Error(`never observed: ${what}`);
   });
+
+/** Two sessions of one worktree, the second joining the first's executor, then its follow-up. */
+const launchJoinAndFollowUp = (world: World) =>
+  Effect.gen(function* () {
+    const engine = yield* SessionEngine;
+    const [project] = [...world.projects.values()];
+    if (project === undefined) throw new Error("no project");
+    const first = yield* engine.provision({
+      projectId: project.id,
+      harness: "claude",
+      label: null,
+      name: "screen",
+      ownerUserId: "user-fixture",
+      start: { kind: "base", base: null },
+    });
+    yield* engine.launch(first.id, ["claude"]);
+    const second = yield* engine.provisionSessionIn(first.worktreeId, {
+      harness: "claude",
+      label: null,
+      ownerUserId: "user-fixture",
+    });
+    yield* engine.launch(second.id, ["claude"]);
+    yield* engine.stop(second.id);
+    const state = sessionStatePathOf(project.storePath, second.id);
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(
+      path.join(state, "manifest.json"),
+      JSON.stringify({ harness: "claude", providerSessionId: null, capturedAt: "2026-10-30" }),
+    );
+    fs.writeFileSync(path.join(state, "harness-state.tar.gz"), "fake-archive");
+    yield* engine.launchFollowUp(second.id, "Carry on.", "follow-up-1", "user-fixture");
+  });
+
+const agentOpens = (platform: Platform) =>
+  platform.spawned.flatMap((argv, at) =>
+    argv[3] === "mend-screen" ? [] : [{ argv, options: platform.opened[at] }],
+  );
+
+describe("the session's display on every launch (ADR 0020)", () => {
+  it.effect(
+    "names each session's own display and cookie at a cold launch, a join and a follow-up",
+    () =>
+      withScreens((world, platform) =>
+        Effect.gen(function* () {
+          yield* launchJoinAndFollowUp(world);
+          const opens = agentOpens(platform);
+          expect(opens).toHaveLength(3);
+          const uid = opens[0]?.options?.user?.uid;
+          expect(opens.map(({ options }) => options?.env)).toEqual(
+            [10, 11, 11].map((display) =>
+              expect.objectContaining({
+                DISPLAY: `:${display}`,
+                XAUTHORITY: `/run/user/${uid}/mend-screen-${display}/auth`,
+              }),
+            ),
+          );
+        }),
+      ),
+  );
+
+  it.effect("names no display in a project whose Environment has no screen", () =>
+    withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          yield* launchJoinAndFollowUp(world);
+          const opens = agentOpens(platform);
+          expect(opens).toHaveLength(3);
+          for (const { options } of opens) {
+            expect(options?.env).not.toHaveProperty("DISPLAY");
+            expect(options?.env).not.toHaveProperty("XAUTHORITY");
+          }
+        }),
+      { screen: false },
+    ),
+  );
+});
 
 describe("the session's screen (ADR 0020)", () => {
   it.effect(
@@ -39,8 +127,12 @@ describe("the session's screen (ADR 0020)", () => {
           const screen = yield* engine.startScreen(session.id);
           expect(screen.display).toBe(10);
           expect(screen.life).toEqual({ _tag: "Starting" });
-          expect(platform.spawned.at(-1)).toEqual(screenArgv(DisplayNumber.make(10)));
-          expect(platform.opened.at(-1)?.user?.name).toBe(LAUNCHER);
+          const user = platform.opened.at(-1)?.user;
+          expect(user?.name).toBe(LAUNCHER);
+          expect(platform.spawned.at(-1)).toEqual(
+            screenArgv(DisplayNumber.make(10), { uid: user?.uid ?? -1 }),
+          );
+          expect(platform.spawned.at(-1)?.at(-1)).toBe(`/run/user/${user?.uid}/mend-screen-10`);
 
           const [row] = screenRows(world);
           expect(row).toMatchObject({
@@ -288,7 +380,7 @@ describe("the session's screen (ADR 0020)", () => {
             message: "this workspace cannot give a screen its own person · no screen was started",
           });
           expect(screenRows(world)).toEqual([]);
-          expect(platform.spawned).not.toContainEqual(screenArgv(DisplayNumber.make(10)));
+          expect(platform.spawned).not.toContainEqual(screenArgv(DisplayNumber.make(10), null));
           expect(yield* engine.screenPasswords(session.id)).toBeNull();
         }),
       { layout: "shared" },

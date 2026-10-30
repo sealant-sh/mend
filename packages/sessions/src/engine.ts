@@ -76,6 +76,7 @@ import {
   SessionId,
   SessionProcessId,
   type ProjectId,
+  imageHasScreen,
   type WorkspaceImage,
   workspaceImagePackages,
   WorktreeId,
@@ -650,6 +651,7 @@ import {
   type ScreenProcess,
 } from "./screen-process.ts";
 import { makeScreenPasswords, type ScreenPasswords } from "./screen/passwords.ts";
+import { screenEnvOf } from "./screen/script.ts";
 import {
   decodeSecretFilesRecord,
   encodeSecretFilesRecord,
@@ -17445,6 +17447,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         },
       };
 
+      /**
+       * The session's display in this workspace for a process it opens there (ADR 0020, "One
+       * display per session"): reserved at its first launch when the workspace's image has a
+       * screen, kept for the session's life; null without a screen or with every display taken.
+       */
+      const displayOfLaunch = (
+        sessionId: SessionId,
+        workspaceId: SealantWorkspaceId,
+        image: WorkspaceImage | null,
+      ) =>
+        imageHasScreen(image)
+          ? screens.reserve({ sessionId, workspaceId }).pipe(
+              Effect.map((screen) => screen.display),
+              Effect.catchTag("ScreenDisplaysFullError", () =>
+                Effect.logWarning("session engine: no display left for the session's screen").pipe(
+                  Effect.annotateLogs({ sessionId, workspaceId }),
+                  Effect.as(null),
+                ),
+              ),
+            )
+          : Effect.succeed(null);
+
       const launchInternalBody = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         plan: LaunchPlan,
@@ -18789,6 +18813,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
+        const display = yield* displayOfLaunch(
+          sessionId,
+          SealantWorkspaceId.make(workspace.id),
+          workspaceImage,
+        );
         const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
           Effect.andThen(
             sealant.openSession(
@@ -18800,7 +18829,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   startAs === null
                     ? null
                     : { user: startAs.user, env: inConversation?.env ?? startAs.env },
-                env: records.processEnv(processId),
+                env: {
+                  ...records.processEnv(processId),
+                  ...(display === null ? {} : screenEnvOf(display, startAs?.user ?? null)),
+                },
               }),
             ),
           ),
@@ -20734,6 +20766,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 });
           const records = launchRecords[plan.role];
           const processId = SessionProcessId.make(crypto.randomUUID());
+          const workspaceId = SealantWorkspaceId.make(workspace.id);
+          // The screen runs as the session's owner: a steerer's process cannot open its cookie.
+          const display =
+            startAs !== null && sender !== session.ownerUserId
+              ? null
+              : yield* displayOfLaunch(
+                  sessionId,
+                  workspaceId,
+                  (yield* sessions.executorSessionOf(workspaceId))?.workspaceImage ??
+                    session.workspaceImage,
+                );
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
               sealant.openSession(
@@ -20745,7 +20788,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     startAs === null
                       ? null
                       : { user: startAs.user, env: inConversation?.env ?? startAs.env },
-                  env: records.processEnv(processId),
+                  env: {
+                    ...records.processEnv(processId),
+                    ...(display === null ? {} : screenEnvOf(display, startAs?.user ?? null)),
+                  },
                 }),
               ),
             ),

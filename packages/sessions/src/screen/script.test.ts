@@ -71,13 +71,11 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
   }
 
   const start = (display: number): Screen => {
-    const [, , script, ...args] = screenArgv(DisplayNumber.make(display));
+    const [, , script, ...args] = screenArgv(DisplayNumber.make(display), { uid: 40001 });
     const child = spawn("docker", [
       "exec",
       "-u",
       "person",
-      "-e",
-      `XDG_RUNTIME_DIR=${RUNTIME}`,
       container,
       "setsid",
       "-w",
