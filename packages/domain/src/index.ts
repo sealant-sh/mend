@@ -8,6 +8,7 @@ export * from "./brief-comment.ts";
 export * from "./brief.ts";
 export * from "./change.ts";
 export * from "./evidence.ts";
+export * from "./failure-line.ts";
 export * from "./ids.ts";
 export * from "./inference.ts";
 export * from "./issue.ts";
