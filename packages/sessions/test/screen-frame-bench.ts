@@ -10,7 +10,7 @@
  *   worst-encode  that frame's PNG
  *   look          `hand.look` end to end: the 300 ms quiet window, the copy and the encode
  *
- *   node packages/sessions/bench/screen-frame.ts [--runs 15]
+ *   node packages/sessions/test/screen-frame-bench.ts [--runs 15]
  */
 import { randomBytes } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -31,7 +31,7 @@ import {
 import { ByteQueue } from "../src/screen/rfb-queue.ts";
 import { VncSignIn } from "../src/screen/rfb-sign-in.ts";
 import { SCREEN_WORKER, screenWorkersLayer } from "../src/screen/screen-workers.ts";
-import { XVNC_PASSWORD, connect, startXvnc } from "../test/xvnc.ts";
+import { XVNC_PASSWORD, connect, startXvnc } from "./xvnc.ts";
 
 const { values } = parseArgs({ options: { runs: { type: "string", default: "15" } } });
 const runs = Number(values.runs);
