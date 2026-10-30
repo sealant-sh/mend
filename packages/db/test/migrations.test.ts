@@ -3,7 +3,7 @@ import { HARNESS_MODEL_SEED, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workben
 import { Effect, Redacted, Schema } from "effect";
 import { Migrator, SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { migrations } from "../src/migrations.ts";
 import { postgresTestConfig } from "./postgres.ts";
@@ -27,34 +27,48 @@ const withScratch = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(scratchLayer), Effect.scoped));
 const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
 const upTo = (last: string) =>
-  Effect.forEach(
-    ORDERED.filter(([name]) => name <= last),
-    ([, migration]) => migration,
-    { discard: true },
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql.withTransaction(
+      Effect.forEach(
+        ORDERED.filter(([name]) => name <= last),
+        ([, migration]) => migration,
+        { discard: true },
+      ),
+    );
+  });
+
+/**
+ * DROP DATABASE forces a server-wide checkpoint, which takes seconds while other test files write.
+ */
+const emptyScratch = () =>
+  withScratch(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP SCHEMA public CASCADE`;
+      yield* sql`CREATE SCHEMA public`;
+    }),
   );
 
-describe.skipIf(postgres.skip)("conversation migration boundaries: 0035, 0036 and 0107", () => {
-  let created = false;
-  beforeEach(async () => {
-    created = false;
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${SCRATCH_DB}`);
-        created = true;
-      }),
-    );
-  });
-  afterEach(async () => {
-    if (!created) return;
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+beforeAll(async () => {
+  await withAdmin(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql.unsafe(`CREATE DATABASE ${SCRATCH_DB}`);
+    }),
+  );
+});
+afterAll(async () => {
+  await withAdmin(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
+    }),
+  );
+});
 
+describe.skipIf(postgres.skip)("conversation migration boundaries: 0035, 0036 and 0107", () => {
+  beforeEach(emptyScratch);
   it("backfills agent rows to agent-pty with the harness read off argv and the provider id on the newest", async () => {
     const rows = await withScratch(
       Effect.gen(function* () {
@@ -249,35 +263,10 @@ describe.skipIf(postgres.skip)("conversation migration boundaries: 0035, 0036 an
 });
 
 describe.skipIf(postgres.skip)("0052 project skill inheritance", () => {
-  const SETTINGS_DB = `${SCRATCH_DB}_skill_inheritance`;
-  const settingsUrl = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${SETTINGS_DB}`;
-    return url.toString();
-  })();
-  const settingsLayer = PgClient.layer({ url: Redacted.make(settingsUrl) });
-  const withSettingsDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(settingsLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${SETTINGS_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SETTINGS_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("defaults existing and new projects to inheriting user skills", async () => {
-    const rows = await withSettingsDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0051_user_git_access");
@@ -302,35 +291,10 @@ describe.skipIf(postgres.skip)("0052 project skill inheritance", () => {
 });
 
 describe.skipIf(postgres.skip)("0110 automatic install", () => {
-  const INSTALL_DB = `${SCRATCH_DB}_install_enabled`;
-  const installUrl = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${INSTALL_DB}`;
-    return url.toString();
-  })();
-  const installLayer = PgClient.layer({ url: Redacted.make(installUrl) });
-  const withInstallDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(installLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${INSTALL_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${INSTALL_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("turns automatic install on for existing and new projects, and keeps a saved command", async () => {
-    const rows = await withInstallDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0109_opencode_models");
@@ -358,34 +322,10 @@ describe.skipIf(postgres.skip)("0110 automatic install", () => {
 });
 
 describe.skipIf(postgres.skip)("0111 agent memory homes", () => {
-  const HOMES_DB = `${SCRATCH_DB}_memory_homes`;
-  const homesLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${HOMES_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withHomesDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(homesLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${HOMES_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${HOMES_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("comes after 0110 and records a home per worktree that outlives its person and goes with its worktree", async () => {
-    const rows = await withHomesDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0110_project_install_enabled");
@@ -423,35 +363,10 @@ describe.skipIf(postgres.skip)("0111 agent memory homes", () => {
 });
 
 describe.skipIf(postgres.skip)("0046 worktree containers", () => {
-  const WORKTREE_DB = `${SCRATCH_DB}_wt`;
-  const worktreeUrl = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${WORKTREE_DB}`;
-    return url.toString();
-  })();
-  const worktreeLayer = PgClient.layer({ url: Redacted.make(worktreeUrl) });
-  const withWorktreeDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(worktreeLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${WORKTREE_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${WORKTREE_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("mints one worktree per session, re-keys the change and chain, and flips the destructive FKs", async () => {
-    const result = await withWorktreeDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0045_native_ingest_cursor");
@@ -624,23 +539,20 @@ const seedMigrationSession = (prefix: string) =>
   });
 
 describe.skipIf(postgres.skip)("0055 organizations", () => {
-  const ORG_DB = `${SCRATCH_DB}_org`;
   const EMPTY_DB = `${SCRATCH_DB}_org_empty`;
-  const layerFor = (database: string) => {
+  const emptyLayer = (() => {
     const url = new URL(ADMIN_URL);
-    url.pathname = `/${database}`;
+    url.pathname = `/${EMPTY_DB}`;
     return PgClient.layer({ url: Redacted.make(url.toString()) });
-  };
-  const withDb =
-    (database: string) =>
-    <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-      Effect.runPromise(effect.pipe(Effect.provide(layerFor(database)), Effect.scoped));
+  })();
+  const withEmptyDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(emptyLayer), Effect.scoped));
 
   beforeAll(async () => {
+    await emptyScratch();
     await withAdmin(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${ORG_DB}`);
         yield* sql.unsafe(`CREATE DATABASE ${EMPTY_DB}`);
       }),
     );
@@ -649,14 +561,13 @@ describe.skipIf(postgres.skip)("0055 organizations", () => {
     await withAdmin(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${ORG_DB} WITH (FORCE)`);
         yield* sql.unsafe(`DROP DATABASE IF EXISTS ${EMPTY_DB} WITH (FORCE)`);
       }),
     );
   });
 
   it("upgrades without widening: one organization, the oldest account owns and operates it, projects stay shared", async () => {
-    const result = await withDb(ORG_DB)(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0054_project_install_command");
@@ -757,7 +668,7 @@ describe.skipIf(postgres.skip)("0055 organizations", () => {
   });
 
   it("creates the organization on an empty database, and new projects need one", async () => {
-    const result = await withDb(EMPTY_DB)(
+    const result = await withEmptyDb(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0055_organizations");
@@ -777,7 +688,7 @@ describe.skipIf(postgres.skip)("0055 organizations", () => {
   });
 
   it("the constraints hold the model: roles, one organization per account, consistent invitations, no deletion", async () => {
-    const outcomes = await withDb(ORG_DB)(
+    const outcomes = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const [organization] = yield* sql<{
@@ -843,34 +754,10 @@ describe.skipIf(postgres.skip)("0055 organizations", () => {
 });
 
 describe.skipIf(postgres.skip)("0056 per-account resources", () => {
-  const RESOURCES_DB = `${SCRATCH_DB}_resources`;
-  const resourcesLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${RESOURCES_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withResourcesDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(resourcesLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${RESOURCES_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${RESOURCES_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("gives devices to the oldest account and references to the organization", async () => {
-    const result = await withResourcesDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0055_organizations");
@@ -930,34 +817,10 @@ describe.skipIf(postgres.skip)("0056 per-account resources", () => {
 });
 
 describe.skipIf(postgres.skip)("0058 hot pool owners", () => {
-  const HOT_DB = `${SCRATCH_DB}_hot`;
-  const hotLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${HOT_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withHotDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(hotLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${HOT_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${HOT_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("credits ownerless entries to the first account they ran as, and refuses new ones", async () => {
-    const result = await withHotDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0057_folders");
@@ -993,34 +856,10 @@ describe.skipIf(postgres.skip)("0058 hot pool owners", () => {
 });
 
 describe.skipIf(postgres.skip)("0062 slack", () => {
-  const SLACK_DB = `${SCRATCH_DB}_slack`;
-  const slackLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${SLACK_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withSlackDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(slackLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${SLACK_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SLACK_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("marks existing sessions as Mend's, and the keys hold the model: one workspace per organization, links inside it", async () => {
-    const result = await withSlackDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0061_upgrade_tickets");
@@ -1171,34 +1010,10 @@ describe.skipIf(postgres.skip)("0062 slack", () => {
 });
 
 describe.skipIf(postgres.skip)("0063 slack reports", () => {
-  const REPORTS_DB = `${SCRATCH_DB}_slack_reports`;
-  const reportsLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${REPORTS_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withReportsDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(reportsLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${REPORTS_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${REPORTS_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("reads an earlier thread as external with nothing reported, and posts go with the session", async () => {
-    const result = await withReportsDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0062_slack");
@@ -1249,34 +1064,10 @@ describe.skipIf(postgres.skip)("0063 slack reports", () => {
 });
 
 describe.skipIf(postgres.skip)("0064 landing", () => {
-  const LANDING_DB = `${SCRATCH_DB}_landing`;
-  const landingLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${LANDING_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withLandingDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(landingLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${LANDING_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${LANDING_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("leaves existing rows to their defaults, and the checks hold a landing's facts together", async () => {
-    const result = await withLandingDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0063_slack_reports");
@@ -1457,34 +1248,10 @@ describe.skipIf(postgres.skip)("0064 landing", () => {
 });
 
 describe.skipIf(postgres.skip)("0065 turn landing", () => {
-  const TURN_DB = `${SCRATCH_DB}_turn_landing`;
-  const turnLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${TURN_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withTurnDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(turnLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${TURN_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${TURN_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("decides every turn that already ended, and holds a decision to its claim", async () => {
-    const result = await withTurnDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0064_landing");
@@ -1572,34 +1339,10 @@ describe.skipIf(postgres.skip)("0065 turn landing", () => {
 });
 
 describe.skipIf(postgres.skip)("0066 landing description", () => {
-  const DESCRIPTION_DB = `${SCRATCH_DB}_landing_description`;
-  const descriptionLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DESCRIPTION_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDescriptionDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(descriptionLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DESCRIPTION_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DESCRIPTION_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("keeps existing landing facts and gives every old landing an unclaimed nullable tour field", async () => {
-    const result = await withDescriptionDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0065_turn_landing");
@@ -1650,34 +1393,10 @@ describe.skipIf(postgres.skip)("0066 landing description", () => {
 });
 
 describe.skipIf(postgres.skip)("0071 project default shell profile", () => {
-  const PROFILE_DB = `${SCRATCH_DB}_shell_profile`;
-  const profileLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${PROFILE_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withProfileDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(profileLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${PROFILE_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${PROFILE_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("turns the default shell profile on for existing and new projects", async () => {
-    const rows = await withProfileDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0070_organization_settings");
@@ -1704,34 +1423,10 @@ describe.skipIf(postgres.skip)("0071 project default shell profile", () => {
 });
 
 describe.skipIf(postgres.skip)("0073 landing reasons", () => {
-  const REASONS_DB = `${SCRATCH_DB}_landing_reasons`;
-  const reasonsLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${REASONS_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withReasonsDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(reasonsLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${REASONS_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${REASONS_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("lets a turn read as a landing request and record why it did not land", async () => {
-    const result = await withReasonsDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0072_protocol_idle_stop");
@@ -1810,34 +1505,10 @@ describe.skipIf(postgres.skip)("0073 landing reasons", () => {
 });
 
 describe.skipIf(postgres.skip)("0075 capture drain", () => {
-  const DRAIN_DB = `${SCRATCH_DB}_capture_drain`;
-  const drainLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DRAIN_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDrainDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(drainLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DRAIN_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DRAIN_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("gives an existing session no drain, and admits only whole drain intents and the discard", async () => {
-    const result = await withDrainDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0073_landing_reasons");
@@ -1919,34 +1590,10 @@ describe.skipIf(postgres.skip)("0075 capture drain", () => {
 });
 
 describe.skipIf(postgres.skip)("0077 capture drain resume", () => {
-  const RESUME_DB = `${SCRATCH_DB}_capture_drain_resume`;
-  const resumeLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${RESUME_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withResumeDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(resumeLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${RESUME_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${RESUME_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("gives a session draining before it no relaunch to finish", async () => {
-    const existing = await withResumeDb(
+    const existing = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0075_capture_drain");
@@ -1975,34 +1622,10 @@ describe.skipIf(postgres.skip)("0077 capture drain resume", () => {
 });
 
 describe.skipIf(postgres.skip)("0096 notification settings", () => {
-  const NOTIFY_DB = `${SCRATCH_DB}_notifications`;
-  const notifyLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${NOTIFY_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withNotifyDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(notifyLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${NOTIFY_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${NOTIFY_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("gives a row the defaults: Slack sessions off, every kind on", async () => {
-    const rows = await withNotifyDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0095_process_first_output");
@@ -2035,31 +1658,7 @@ describe.skipIf(postgres.skip)("0096 notification settings", () => {
 });
 
 describe.skipIf(postgres.skip)("0106 terminal watch control", () => {
-  const WATCH_DB = `${SCRATCH_DB}_terminal_watch`;
-  const watchLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${WATCH_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withWatchDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(watchLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${WATCH_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${WATCH_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("keeps old control events, accepts every supported kind and refuses unknown kinds", async () => {
     const previousKinds = [
@@ -2074,7 +1673,7 @@ describe.skipIf(postgres.skip)("0106 terminal watch control", () => {
       "discard-unsaved-stop",
     ];
     const supportedKinds = [...previousKinds, "terminal-watch"];
-    const result = await withWatchDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0105_turn_origin");
@@ -2124,14 +1723,6 @@ describe.skipIf(postgres.skip)("0106 terminal watch control", () => {
 });
 
 describe.skipIf(postgres.skip)("0109 opencode models", () => {
-  const MODELS_DB = `${SCRATCH_DB}_opencode_models`;
-  const modelsLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${MODELS_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withModelsDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(modelsLayer), Effect.scoped));
   const opencodeRows = Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const rows = yield* sql<{
@@ -2144,25 +1735,10 @@ describe.skipIf(postgres.skip)("0109 opencode models", () => {
     return rows.map((row) => ({ ...row }));
   });
 
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${MODELS_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${MODELS_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("lists the ChatGPT login's models for opencode with no default of its own, and keeps an operator's rows", async () => {
-    const rows = await withModelsDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0108_agent_memory_import_bases");
@@ -2183,7 +1759,7 @@ describe.skipIf(postgres.skip)("0109 opencode models", () => {
     expect(rows.map((row) => row.id)).toContain("openai/gpt-6.1-sol");
 
     // A catalog with no opencode rows takes the seed as it is.
-    const fresh = await withModelsDb(
+    const fresh = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`DELETE FROM harness_models WHERE harness = 'opencode'`;
@@ -2205,34 +1781,10 @@ describe.skipIf(postgres.skip)("0109 opencode models", () => {
 });
 
 describe.skipIf(postgres.skip)("0116 shared control ever", () => {
-  const EVER_DB = `${SCRATCH_DB}_shared_ever`;
-  const everLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${EVER_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withEverDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(everLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${EVER_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${EVER_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("counts a session shared and then unshared before it from its first shared-control-on, and one shared now", async () => {
-    const rows = await withEverDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0115_start_agents_after_install");
@@ -2276,34 +1828,10 @@ describe.skipIf(postgres.skip)("0116 shared control ever", () => {
 });
 
 describe.skipIf(postgres.skip)("0117 conversation homes", () => {
-  const DB = `${SCRATCH_DB}_conversation_homes`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("says who a live agent in a person-layout executor runs as: its session's owner, and nobody else's", async () => {
-    const rows = await withDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0116_shared_control_ever");
@@ -2351,34 +1879,10 @@ describe.skipIf(postgres.skip)("0117 conversation homes", () => {
 });
 
 describe.skipIf(postgres.skip)("0118 pre-release executors", () => {
-  const DB = `${SCRATCH_DB}_pre_release`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("adds the migration and retirement tables, which go with their worktree", async () => {
-    const left = await withDb(
+    const left = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0117_conversation_homes");
@@ -2430,34 +1934,10 @@ describe.skipIf(postgres.skip)("0118 pre-release executors", () => {
 });
 
 describe.skipIf(postgres.skip)("0119 image layout confirmed", () => {
-  const DB = `${SCRATCH_DB}_layout_confirmed`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("keeps a yes confirmed where a person launch ran on the image, and everything else unconfirmed", async () => {
-    const rows = await withDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0118_pre_release_executors");
@@ -2495,34 +1975,10 @@ describe.skipIf(postgres.skip)("0119 image layout confirmed", () => {
 });
 
 describe.skipIf(postgres.skip)("0120 hot workspace layout", () => {
-  const DB = `${SCRATCH_DB}_hot_layout`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("a standby from before it booted shared, and a layout is person or shared", async () => {
-    const result = await withDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0119_image_layout_confirmed");
@@ -2556,34 +2012,10 @@ describe.skipIf(postgres.skip)("0120 hot workspace layout", () => {
 });
 
 describe.skipIf(postgres.skip)("0126 repository URL credentials", () => {
-  const DB = `${SCRATCH_DB}_url_credentials`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("strips the login or token from every stored repository URL, and leaves the rest as typed", async () => {
-    const result = await withDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0125_ssh_key_revocations");
@@ -2672,34 +2104,10 @@ const customImage = {
 };
 
 describe.skipIf(postgres.skip)("0127 default bun", () => {
-  const DB = `${SCRATCH_DB}_default_bun`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("adds bun and unzip to every stored family image where missing, and leaves custom bases alone", async () => {
-    const result = await withDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0126_repository_url_credentials");
@@ -2748,34 +2156,10 @@ describe.skipIf(postgres.skip)("0127 default bun", () => {
 });
 
 describe.skipIf(postgres.skip)("0129 ambient removed", () => {
-  const DB = `${SCRATCH_DB}_ambient_removed`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("moves ambient projects to their creator's mode, else mend-key, and new projects default to mend-key", async () => {
-    const rows = await withDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0128_cli_auth_client");
@@ -2838,34 +2222,10 @@ describe.skipIf(postgres.skip)("0129 ambient removed", () => {
 });
 
 describe.skipIf(postgres.skip)("0130 claude's own default", () => {
-  const DB = `${SCRATCH_DB}_claude_own_default`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("takes the default off the seeded `fable`, and leaves codex's as it is", async () => {
-    const defaults = await withDb(
+    const defaults = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0129_ambient_removed");
@@ -2889,38 +2249,14 @@ describe.skipIf(postgres.skip)("0130 claude's own default", () => {
 });
 
 describe.skipIf(postgres.skip)("0138 kubernetes person layout", () => {
-  const DB = `${SCRATCH_DB}_kubernetes_person_layout`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   const KUBERNETES = "Kubernetes workspaces cannot run per-person users: no one's sudo works there";
   const NO_NEW_PRIVILEGES = "no-new-privileges is set, so no one's sudo works";
   const OWNER_MAP = "its sealantd does not restore files per person";
 
   it("takes the reasons only Kubernetes or an unprobed image caused out of every no, drops a no left with none, and runs twice the same", async () => {
-    const result = await withDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0137_preview_grants");
@@ -2969,34 +2305,10 @@ const migrateWith = (record: Record<string, Effect.Effect<void, SqlError, SqlCli
   Migrator.make({})({ loader: Migrator.fromRecord(record), table: "mend_migrations" });
 
 describe.skipIf(postgres.skip)("0140 session pages", () => {
-  const DB = `${SCRATCH_DB}_session_pages`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("reaches a database the migrator already took to 0139", async () => {
-    const tables = await withDb(
+    const tables = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* migrateWith(
@@ -3023,36 +2335,12 @@ const refused = (statement: Effect.Effect<unknown, SqlError>) =>
   );
 
 describe.skipIf(postgres.skip)("0148 resources", () => {
-  const DB = `${SCRATCH_DB}_resources`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("holds a definition to its spec, keeps approvals and own targets apart, and keeps its project", async () => {
     const digestA = "a".repeat(64);
     const digestB = "b".repeat(64);
-    const outcome = await withDb(
+    const outcome = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0143_recipe_launch");
@@ -3147,38 +2435,15 @@ describe.skipIf(postgres.skip)("0148 resources", () => {
 });
 
 describe.skipIf(postgres.skip)("recipe approvals", () => {
-  const DB = `${SCRATCH_DB}_recipe_approvals`;
   const at = ORDERED.findIndex(([name]) => name.endsWith("_recipe_approvals"));
   const approvals = ORDERED[at]?.[0] ?? "";
   const previous = ORDERED[at - 1]?.[0] ?? "";
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
 
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("reaches a database the migrator took to the one before it, approving nothing, and gives attempts a launch source", async () => {
     expect(at).toBeGreaterThan(0);
-    const result = await withDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* migrateWith(Object.fromEntries(ORDERED.filter(([name]) => name <= previous)));
@@ -3204,34 +2469,10 @@ describe.skipIf(postgres.skip)("recipe approvals", () => {
 });
 
 describe.skipIf(postgres.skip)("0163 push device credentials", () => {
-  const DB = `${SCRATCH_DB}_push_credentials`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("drops every push token no device can be proven to own, and ties the next ones to a device", async () => {
-    const result = await withDb(
+    const result = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* migrateWith(
@@ -3281,34 +2522,10 @@ describe.skipIf(postgres.skip)("0163 push device credentials", () => {
 });
 
 describe.skipIf(postgres.skip)("0165 preview preparations", () => {
-  const PREPARATION_DB = `${SCRATCH_DB}_preview_preparations`;
-  const preparationLayer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${PREPARATION_DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withPreparationDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(preparationLayer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${PREPARATION_DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${PREPARATION_DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("decides every turn that already ended, and leaves an open one to the job", async () => {
-    const rows = await withPreparationDb(
+    const rows = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0157_recipe_approvals");
@@ -3362,34 +2579,10 @@ describe.skipIf(postgres.skip)("0165 preview preparations", () => {
 });
 
 describe.skipIf(postgres.skip)("0166 worktree removal", () => {
-  const DB = `${SCRATCH_DB}_removal`;
-  const layer = (() => {
-    const url = new URL(ADMIN_URL);
-    url.pathname = `/${DB}`;
-    return PgClient.layer({ url: Redacted.make(url.toString()) });
-  })();
-  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
-
-  beforeAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
-      }),
-    );
-  });
-  afterAll(async () => {
-    await withAdmin(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-      }),
-    );
-  });
+  beforeAll(emptyScratch);
 
   it("records each worktree's earliest standing owner, proven only where the history vouches", async () => {
-    const outcome = await withDb(
+    const outcome = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0165_preview_preparations");
