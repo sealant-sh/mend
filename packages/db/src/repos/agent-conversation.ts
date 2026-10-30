@@ -63,6 +63,7 @@ import {
   agentTurns,
   agentTurnSteers,
   agentProtocolControlJournal,
+  previewPreparations,
   sessionProcesses,
 } from "../schema/workbench.ts";
 import { pageItemRow, pagesWithoutItems, publishedPageIdOf } from "./page-items.ts";
@@ -1957,6 +1958,17 @@ export const AgentConversationRepoLive: Layer.Layer<
               if (turnRow === undefined) {
                 return yield* Effect.die("agent turn backfill returned no row");
               }
+              yield* tx.insert(previewPreparations).values({
+                turnId: turnRow.id,
+                sessionId,
+                worktreeId: sql`(SELECT worktree_id FROM agent_sessions WHERE id = ${sessionId})`,
+                state: "skipped",
+                reason: "terminal history",
+                claimId: crypto.randomUUID(),
+                claimedAt: now,
+                leaseUntil: now,
+                decidedAt: now,
+              });
               let eventIndex = 0;
               for (const item of turn.items) {
                 yield* tx

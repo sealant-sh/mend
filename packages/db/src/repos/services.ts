@@ -129,6 +129,7 @@ export interface NewServiceObservation {
   readonly state: ServiceTargetState;
   readonly source: ServiceObservationSource;
   readonly error?: string | null;
+  readonly httpStatus?: number | null;
 }
 
 /** Timestamped target facts; every transition is retained. */
@@ -632,11 +633,13 @@ export const ServiceObservationsRepoLive: Layer.Layer<
         .limit(1)
         .pipe(Effect.orDie);
       const error = input.error ?? null;
+      const httpStatus = input.httpStatus ?? null;
       if (
         latest !== undefined &&
         latest.state === input.state &&
         latest.source === input.source &&
-        latest.error === error
+        latest.error === error &&
+        latest.httpStatus === httpStatus
       ) {
         const [extended] = yield* db
           .update(serviceObservations)
@@ -659,6 +662,7 @@ export const ServiceObservationsRepoLive: Layer.Layer<
           state: input.state,
           source: input.source,
           error,
+          httpStatus,
         })
         .returning()
         .pipe(Effect.orDie);

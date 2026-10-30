@@ -75,6 +75,7 @@ const view = (patch: Partial<ServiceViewDto> = {}): ServiceViewDto => ({
     state: "reachable",
     source: "probe",
     error: null,
+    httpStatus: null,
     firstObservedAt: "2026-08-20T00:00:00.000Z",
     lastObservedAt: "2026-08-20T00:00:00.000Z",
   },

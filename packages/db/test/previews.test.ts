@@ -295,6 +295,30 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
     },
   );
 
+  it("keeps a preview by name before any Service of that name has a row, once", async () => {
+    await run(
+      Effect.gen(function* () {
+        const { worktree } = yield* seed("named");
+        const previews = yield* PreviewsRepo;
+        const [first, again] = yield* Effect.all(
+          [
+            previews.ensureNamed(worktree, "storybook"),
+            previews.ensureNamed(worktree, "storybook"),
+          ],
+          { concurrency: 2 },
+        );
+        expect(again).toBe(first);
+        const kept = yield* previews.ensureForWorktree(worktree);
+        expect(kept.find((view) => view.preview.serviceName === "storybook")?.preview.id).toBe(
+          first,
+        );
+        expect(
+          yield* Effect.flip(previews.ensureNamed(WorktreeId.make("wt-gone"), "storybook")),
+        ).toMatchObject({ _tag: "WorktreeNotFoundError" });
+      }),
+    );
+  });
+
   it("retries a label that belongs to a tombstone instead of reusing it", async () => {
     let draws = 0;
     const crypto = cryptoWith((size) => (++draws <= 2 ? new Uint8Array(size) : randomBytes(size)));
