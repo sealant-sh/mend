@@ -95,9 +95,10 @@ import {
   SecretCipher,
   Store,
 } from "@mend/store";
-import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { Effect, Layer, Logger } from "effect";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { ADMISSION_REFUSED, refusedAdmissions } from "../test/support/refused-admissions.ts";
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
 import { ProjectAccess } from "./access.ts";
 import { OwnerLanding, OwnerLandingLive, type OwnerLandingInput } from "./owner-landing.ts";
@@ -243,6 +244,10 @@ const account = (
 
 interface WorldOptions {
   readonly submitRefused?: SessionTurnRefusedError;
+  /** What the engine does with a turn once it is noted; a queued turn unless said. */
+  readonly submitTurn?: SessionEngine["Service"]["submitTurn"];
+  /** Collects every log line, as JSON. */
+  readonly logs?: string[];
   readonly steeringRefused?: string;
   /** Literal repository rows for joined-session and existing-thread controls. */
   readonly sessions?: ReadonlyArray<Session>;
@@ -795,6 +800,9 @@ const world = (options: WorldOptions = {}) => {
       submitTurn: (sessionId, input, author) =>
         Effect.gen(function* () {
           yield* note(`engine.submitTurn:${sessionId}:${author}:${input}`);
+          if (options.submitTurn !== undefined) {
+            return yield* options.submitTurn(sessionId, input, author);
+          }
           if (options.submitRefused !== undefined) return yield* options.submitRefused;
           if (earlier?.live === false)
             return yield* new ProtocolHostNotLiveError({ processId: sessionId });
@@ -978,7 +986,16 @@ const world = (options: WorldOptions = {}) => {
           yield* runner.idle;
           return result;
         }),
-      ).pipe(Effect.provide(layer)),
+      ).pipe(
+        Effect.provide(layer),
+        Effect.provide(
+          options.logs === undefined
+            ? Layer.empty
+            : Logger.layer([
+                Logger.make((entry) => options.logs?.push(String(Logger.formatJson.log(entry)))),
+              ]),
+        ),
+      ),
     );
 
   /** Deliver envelopes and wait for every one of them to be handled. */
@@ -2031,6 +2048,50 @@ const command = (w: ReturnType<typeof world>, text: string, channel = "C-general
     channel,
     ...(channel.startsWith("D") ? { type: "message", channel_type: "im" } : {}),
   });
+
+const admissions = refusedAdmissions({
+  session: EARLIER,
+  process: SessionProcessId.make("agent-1"),
+  turn: AgentTurnId.make("turn-earlier"),
+});
+
+describe.skipIf(admissions.skip)("the Slack runner, when a follow-up's turn insert fails", () => {
+  let conversations: AgentConversationRepo["Service"];
+  beforeAll(async () => {
+    conversations = await admissions.open();
+  }, 120_000);
+  afterAll(() => admissions.close());
+
+  it("logs the failed statement without the words", async () => {
+    const words = "Rename the ledger helper before Friday 7c41";
+    const logs: string[] = [];
+    const w = world({
+      threadSession: { threadTs: RETRY_THREAD, projectId: web.id, owner: "alice" },
+      logs,
+      submitTurn: (sessionId, input, author) =>
+        conversations
+          .submitTurn(sessionId, SessionProcessId.make("agent-1"), input, author)
+          .pipe(Effect.orDie),
+    });
+    await w.deliver(
+      w.mention("Ev9", {
+        user: "U-alice",
+        text: `<@U-bot> ${words}`,
+        ts: "1700000200.000900",
+        thread_ts: RETRY_THREAD,
+      }),
+    );
+
+    expect(w.effects).toContain(`engine.submitTurn:session-earlier:alice:${words}`);
+    expect(posts(w, "postMessage").map((post) => post.text)).toEqual([
+      "failed · Mend could not finish handling this request · see the Mend logs",
+    ]);
+    const failure = logs.find((line) => line.includes("slack runner: request handling failed"));
+    expect(failure).toContain('insert into \\"agent_turns\\"');
+    expect(failure).toContain(ADMISSION_REFUSED);
+    expect(logs.join("\n")).not.toContain(words);
+  });
+});
 
 describe("the Slack runner, for `settings` and `list`", () => {
   it("shows the channel default and the shared projects the member can pick, only to them", async () => {

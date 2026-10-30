@@ -120,6 +120,7 @@ import {
   makeConnectionRegistry,
   type ConnectionKind,
 } from "../../src/connections.ts";
+import { errorBoundary, type ErrorDetail } from "../../src/error-boundary.ts";
 import { EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
@@ -210,6 +211,8 @@ export const createTenancyApi = async (
     readonly logs?: string[];
     readonly spans?: Tracer.Span[];
     readonly browserHeaders?: boolean;
+    /** The production error boundary, in this mode; none unless stated. */
+    readonly errorDetail?: ErrorDetail["Service"];
     /** Also serve the API behind the Node HTTP adapter Mend runs on, at `nodeOrigin`. */
     readonly node?: boolean;
     readonly urlBearers?: "accept" | "refuse";
@@ -565,6 +568,7 @@ export const createTenancyApi = async (
     MendApiLive,
     rawFilePrivacy,
     options.browserHeaders ? apiResponseHeaders : Layer.empty,
+    options.errorDetail === undefined ? Layer.empty : errorBoundary(options.errorDetail),
   ).pipe(
     Layer.provideMerge(UntracedRequestsLive),
     Layer.provide(authorization),
