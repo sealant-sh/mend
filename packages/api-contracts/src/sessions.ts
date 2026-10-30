@@ -332,6 +332,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         ProtocolSessionNotLive,
         MessageKeyConflict,
         MessageTargetAmbiguous,
+        RemovalInProgress,
       ],
     }),
   )
@@ -340,7 +341,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: SubmitAgentTurnRequest,
       success: AgentTurn,
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive],
+      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, RemovalInProgress],
     }),
   )
   .add(
@@ -378,7 +379,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("replaceWorkspace", "/sessions/:id/workspace-retirement/replace", {
       params: { id: SessionId },
       payload: ReplaceWorkspaceRequest,
-      error: [NotFound, WorkspaceReplaceRefused],
+      error: [NotFound, WorkspaceReplaceRefused, RemovalInProgress],
     }),
   )
   .add(
@@ -403,6 +404,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         InvalidTurnSteer,
         TurnSteerKeyConflict,
         ProtocolSessionNotLive,
+        RemovalInProgress,
       ],
     }),
   )
@@ -459,7 +461,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("openShell", "/sessions/:id/shell", {
       params: { id: SessionId },
       success: SessionProcess,
-      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure],
+      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -490,7 +492,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         browserScheme: Schema.optional(ServiceBrowserScheme),
       }),
       success: ServiceView,
-      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure],
+      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -507,7 +509,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         startId: Schema.optional(ServiceStartId),
       }),
       success: ServiceView,
-      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure],
+      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -521,7 +523,14 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         setup: Schema.optional(Schema.Literals(["always"])),
       }),
       success: ServiceView,
-      error: [NotFound, SessionNotSteerable, SessionNotLive, StoreFailure, ServiceStartUnderWay],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        SessionNotLive,
+        StoreFailure,
+        ServiceStartUnderWay,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -587,7 +596,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("restartService", "/services/:id/restart", {
       params: { id: ServiceId },
       success: ServiceView,
-      error: [NotFound, SessionNotSteerable, StoreFailure],
+      error: [NotFound, SessionNotSteerable, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -682,6 +691,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         BudgetExceeded,
         SessionMovedOn,
         SessionAgentLive,
+        RemovalInProgress,
       ],
     }),
   )
@@ -700,7 +710,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: ResumeRequest,
       success: Session,
-      error: [NotFound, SessionNotSteerable, StoreFailure],
+      error: [NotFound, SessionNotSteerable, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -710,7 +720,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: HandoffRequest,
       success: Session,
-      error: [NotFound, SessionNotSteerable, StoreFailure, HandoffUnsupported],
+      error: [NotFound, SessionNotSteerable, StoreFailure, HandoffUnsupported, RemovalInProgress],
     }),
   )
   .add(
@@ -727,7 +737,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: DeliverFollowUpRequest,
       success: FollowUp,
-      error: [NotFound, SessionNotSteerable, StoreFailure],
+      error: [NotFound, SessionNotSteerable, StoreFailure, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

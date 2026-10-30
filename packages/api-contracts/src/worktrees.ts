@@ -243,7 +243,7 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       params: { id: ProjectId },
       payload: NewWorktree,
       success: Worktree,
-      error: [NotFound, WorktreeNameTaken, StoreFailure],
+      error: [NotFound, WorktreeNameTaken, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -272,12 +272,12 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
     // with the directory. Only the change's owner removes it. Refused, every blocker at once,
     // while anything runs or saves there, and while a change not on origin stands
     // (docs/adr/0007-landing.md, "Worktree removal"); the owner's `force=true` lifts only the
-    // last. `StoreFailure` is a store that failed, never a refusal.
+    // last.
     HttpApiEndpoint.delete("remove", "/worktrees/:id", {
       params: { id: WorktreeId },
       query: { force: Schema.optional(Schema.String) },
       success: RemovalReport,
-      error: [WorktreeNotFound, RemovalForbidden, RemovalRefused, StoreFailure],
+      error: [WorktreeNotFound, RemovalForbidden, RemovalRefused],
     }),
   )
   .add(

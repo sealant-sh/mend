@@ -43,6 +43,7 @@ import {
   ProjectHotSessionsStatus,
   ProjectWorkspaceImageRequest,
   ProjectWorkspaceImageSaveResult,
+  RemovalInProgress,
   RemovalRefused,
   RemovalReport,
   SettingsFailure,
@@ -100,7 +101,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.delete("remove", "/projects/:id", {
       params: { id: ProjectId },
       success: RemovalReport,
-      error: [NotFound, RemovalRefused, StoreFailure],
+      error: [NotFound, RemovalRefused],
     }),
   )
   .add(
@@ -167,7 +168,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectHotSessionsRequest,
       success: Project,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(

@@ -15,7 +15,7 @@ describe("handoffs contract", () => {
     });
     expect(statuses.get("instanceTerms")).toEqual(new Set([401, 422]));
     expect(statuses.get("terms")).toEqual(new Set([401, 404, 422]));
-    expect(statuses.get("receive")).toEqual(new Set([401, 404, 422, 429]));
+    expect(statuses.get("receive")).toEqual(new Set([401, 404, 409, 422, 429]));
   });
 
   it("refuses a reason outside the closed set", () => {
