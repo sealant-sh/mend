@@ -2,7 +2,7 @@
   "extends": "@mend/typescript/core.json",
   "compilerOptions": {
     "module": "CommonJS",
-    "moduleResolution": "Node",
+    "moduleResolution": "Bundler",
     "verbatimModuleSyntax": false,
     "rootDir": "src",
     "types": ["node", "vscode"]

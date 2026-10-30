@@ -122,7 +122,10 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   commit the result alongside the `package.json` change that caused it — a PR that adds a dependency
   ships its lockfile update.
 - After code changes, always run `pnpm format:fix`.
-- For type-checking, always use `tsgo` (`pnpm typecheck`) and do not use `tsc`.
+- For type-checking, use `pnpm typecheck`. It runs TypeScript 7's native `tsc` in every package
+  except `apps/docs`, whose `astro check` needs TypeScript 6. TypeScript 6
+  (`@typescript/typescript6`, catalog `ts6`) is only for tools that load `typescript` as a library;
+  never run `tsc6` yourself.
 - For internal dependencies, always use `workspace:*` in `package.json` and import via
   `@mend/<package-name>`; never import from `../packages/*` paths.
 - For external dependencies used by more than one app/package, prefer `catalog:` versions in

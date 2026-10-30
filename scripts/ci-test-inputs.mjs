@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 const codeFile = /\.(?:[cm]?[jt]s|tsx|jsx)$/;
 const walk = (node, visit) => {

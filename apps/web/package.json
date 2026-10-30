@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "start": "node --experimental-strip-types src/entry/main.ts",
     "test": "vitest run --passWithNoTests && node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=../../scripts/ci-node-reporter.mjs --test-reporter-destination=stderr --test-reporter=../../scripts/ci-test-report.mjs --test-reporter-destination=stdout scripts/test-lifecycle.integration.mjs",
-    "typecheck": "tsgo -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@dnd-kit/core": "catalog:",

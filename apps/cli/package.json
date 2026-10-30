@@ -39,7 +39,7 @@
     "prepack": "pnpm run build",
     "test": "vitest run --passWithNoTests",
     "test:package": "node scripts/test-package.mjs",
-    "typecheck": "tsgo -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@opentui/core": "0.5.3",

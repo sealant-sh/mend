@@ -13,7 +13,7 @@
     "ios:release": "expo run:ios --device --configuration Release",
     "lint": "oxlint .",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "web": "expo start --web"
   },
   "dependencies": {
@@ -78,7 +78,14 @@
     "babel-preset-expo": "~57.0.5",
     "jsdom": "catalog:",
     "playwright-core": "catalog:",
-    "typescript": "~6.0.3",
+    "typescript": "catalog:ts6",
     "vitest": "catalog:"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "typescript"
+      ]
+    }
   }
 }

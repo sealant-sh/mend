@@ -361,7 +361,7 @@ working, idle, and blocked from its native agent screen rules.
 
 ## Building and checking the npm package
 
-`pnpm --filter @sealant/mend typecheck` uses tsgo without emission.
+`pnpm --filter @sealant/mend typecheck` runs TypeScript 7's `tsc` without emission.
 `pnpm --filter @sealant/mend build` bundles the CLI and its private workspace dependencies with
 esbuild, follows transitive imports, and generates the man pages. Split chunks stay directly in
 `dist/` so package-relative version reads work. Only declared public runtime dependencies remain

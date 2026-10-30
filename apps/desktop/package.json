@@ -16,7 +16,7 @@
     "preview": "electron-vite preview",
     "start": "electron-vite preview",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsgo -p tsconfig.json --noEmit && tsgo -p tsconfig.node.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
   },
   "devDependencies": {
     "@fontsource/inter": "catalog:",
