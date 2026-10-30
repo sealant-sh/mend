@@ -409,11 +409,12 @@ more would stop by then, the server refuses. An agent turn in flight is never st
 
 Deleting a session removes only the conversation record; the worktree, with its change and
 checkpoints, remains. Removing a worktree is its own explicit act (`mend worktrees rm <name>`,
-dashboard `Shift+D`, the web app's worktree menu, or the API): refused while any session is live,
-and refused while the worktree holds work that is not on origin (a change never landed, or one
-changed since its last landing) unless forced. The refusal names the files and line counts that are
-not on origin, and `mend worktrees rm` prints it as the server said it, with the `--force` form that
-removes the worktree anyway. A worktree whose workspace is still saving is refused either way.
+dashboard `Shift+D`, the web app's worktree menu, or the API), and only the change's owner, whose
+session started it, may do it. It is refused while any session is live, and refused while the
+worktree holds work that is not on origin (a change never landed, one changed since its last
+landing, or any work in a project with no origin) unless forced. The refusal lists every blocker at
+once, and `mend worktrees rm` prints it as the server said it, with the `--force` form when force
+lifts it. A worktree whose workspace is still saving is refused either way.
 
 ## Landing commands
 

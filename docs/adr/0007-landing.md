@@ -278,6 +278,15 @@ project can see the landing record.
 A change whose first session has no owner, or whose owner has no GitHub account connected, cannot
 open a pull request from Mend. The push still works if the project's auth mode allows it.
 
+The worktree stores its change owner (`worktrees.change_owner_user_id`, migration 0164). The first
+session's insert writes it, and deleting that session leaves it as it is. Before 0164 the owner was
+folded from the session rows that still stood, so deleting the first session handed the change to
+whoever owned the next one. A client that deletes a thread before it removes the thread's worktree
+(t3code does) would have erased the owner the removal checks. Worktrees from before 0164 were given
+the owner of their earliest session that still stands, the owner landing had read until then. A
+worktree with no session left is given the one person who ever had a session in it, when the record
+since 0118 proves there was only one; otherwise its owner is unknown.
+
 ### What Mend records and shows
 
 A `change_landings` row for each landing records:
@@ -372,7 +381,27 @@ Removal stops asking for an export that does not exist. A worktree whose latest 
 on origin, according to the last landing and a fetch, is removable without `force`. So is one whose
 last landing's pull request GitHub last reported merged, even after origin's branch was deleted,
 because a squash merge leaves no ancestry to fetch. Anything else is refused, as it is today, and
-the refusal names what is unlanded: files and line counts since the last landing.
+the refusal names what is unlanded: files and line counts since the last landing. In a project with
+no origin, work past the base is on no remote at all, and the refusal says so.
+
+Amended 2026-10-30 (SLNT-96, decisions Q1 to Q4 of 2026-10-25). Worktree and project removal follow
+one rule set (`decideRemoval` in `@mend/domain`), and every client reads one refusal: a 409
+`RemovalRefused` that lists every blocker at once. A blocker is a live session (or a process or
+Service forward still running), a save under way, a change not on origin, a repository nested in
+the worktree, a session of another project holding it, declared resources, or another removal under
+way. Only the change's owner removes a worktree; anyone else, an organization owner included, gets a
+403 `RemovalForbidden` that names the owner. A worktree with no known owner keeps the earlier rule:
+whoever manages the project, or a caller who owns every session in it. The owner's `force` lifts
+only a change not on origin and nested repositories, never running or unsaved work. Project
+removal refuses on the same blockers in every worktree, whoever's, and has no force. Neither ever
+stops a session or a Service for the caller.
+
+A removal marks its worktree or project row (`checking`, then `deleting`) while it reads and
+deletes. A session that would become live there, or a new worktree in a marked project, is refused
+(`RemovalInProgress`, from the route or from the database trigger), so nothing starts between the
+checks and the deletion. A start that committed first is what the checks then read. A mark whose
+checker stopped answering is taken over after 120 seconds; a removal that stopped while deleting is
+finished by the next one without checking again.
 
 Landed branches are `mend/*` on origin, like the session branches in the store. Refreshing a project
 from origin skips `mend/*`, so a landed branch never collides with the session branch a worktree has
@@ -514,6 +543,9 @@ it. After PR 6, sessions land themselves. PR 9 is the Cursor experience end to e
     review. Adopting it keeps one. A fork's pull request is someone's own branch in someone's own
     repository, and Mend's push to origin cannot reach it, so Mend states it and pushes to origin
     only.
+14. **Store the change owner on the worktree.** Folding it from the sessions that still stand made
+    it move when the first session was deleted, which is the first thing t3code does before it
+    removes a worktree. One stored column gives landing and removal the same owner.
 
 ## Open questions
 

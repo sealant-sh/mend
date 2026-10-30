@@ -279,8 +279,9 @@ What does not survive a workspace replacement is what the capture leaves out: sy
 installed by hand, `/tmp`, and writes inside organization folders, which arrive as copies. Deleting
 a session removes only the conversation record; the worktree, its change, and its checkpoints
 remain. Removing the worktree is its own explicit act, and it deletes uncommitted changes with it.
-It is refused while any session is live, and refused again while the change is not on origin, naming
-the files and line counts that are not landed, or while a session in it holds a
+Only the person whose session started the change removes it. It is refused while any session is
+live, and while the change is not on origin, naming the files and line counts that are not landed,
+or while a session in it holds a
 [repository added with `mend repo add`](/guides/repositories-in-a-session/). Land the change, or
 remove it anyway: **Remove anyway** in the web app, `mend worktrees rm <name> --force` in the
 terminal.

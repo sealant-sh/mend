@@ -345,19 +345,40 @@ A worktree whose sessions added repositories with `mend repo add` is refused too
 Their files and history are saved only inside this worktree, and Mend cannot see whether they hold
 commits or edits that are not on origin. Push what you need from a session in the worktree first.
 
+In a project with no origin, nothing can be landed, so any work past the base is refused as work
+that is not on any remote.
+
+Removal lists everything that stands in the way at once: a session that is live, a process or
+Service still running, a workspace still saving, a change not on origin and nested repositories.
+Mend never stops a session for you; stop it, then remove the worktree again.
+
 The refusal is the first step, never the last. In the web app, the worktree menu's **Remove
 worktree** shows these words with the files and line counts not on origin, and offers **Remove
-anyway**, which is the same removal with `force=true`. **Clear settled** never forces: it says how
-many worktrees it kept for this reason, and each one's menu shows what it holds. From a terminal,
-`mend worktrees rm <name>` prints the refusal as the server said it, and
-`mend worktrees rm <name> --force` removes the worktree anyway. A worktree whose workspace is still
-saving is refused either way, until the save ends or its owner discards what is unsaved.
+anyway**, which is the same removal with `force=true`. Force lifts only work that is not on origin.
+It never lifts a live session or a save under way, and the web app does not offer it then. **Clear
+settled** never forces: it says how many worktrees it kept for this reason, and each one's menu
+shows what it holds. From a terminal, `mend worktrees rm <name>` prints the refusal as the server
+said it, and `mend worktrees rm <name> --force` removes the worktree anyway when force lifts the
+refusal.
+
+Only the change's owner removes a worktree: the person whose session started it. Anyone else, an
+organization owner included, is refused with the owner's name, with or without force. A teammate's
+session in the worktree does not make it theirs, and deleting the first session does not change
+whose it is.
 
 A worktree is removable without force when it holds nothing past its base, or when its latest
 landing's checkpoint is what it holds and either the pull request was last reported merged or
 origin's branch still has the landed commit. A merged pull request counts even after its branch was
 deleted, because a squash merge leaves no ancestry to fetch. Mend fetches origin's branch with your
 git access to check.
+
+## Removing a project
+
+Removing a project deletes every worktree in it, so it is refused while any of them, whoever
+started it, has a session live, a workspace saving, or a change not on origin. The refusal names
+each worktree and whose work it is, and the project, its worktrees and its sessions stay as they
+were. There is no force for a project: each owner lands or removes their own worktree first. Only
+an organization owner, or the creator of a private project, removes a project.
 
 ## Pull a change into your own clone
 
