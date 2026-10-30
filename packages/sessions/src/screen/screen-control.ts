@@ -7,11 +7,12 @@ import {
   type ScreenInputEvent,
   type ScreenInputTransition,
   type ScreenLapse,
+  type ScreenLogBody,
   screenHolderConnection,
   transitionInput,
 } from "@mend/domain/workbench";
 import type { BlobStore } from "@mend/store";
-import { Clock, Effect, Fiber, Scope } from "effect";
+import { Clock, Deferred, Effect, Fiber, Option, Scope } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import { storeFrame } from "./frames.ts";
@@ -19,9 +20,14 @@ import type { Hands } from "./hands.ts";
 import type { Input } from "./rfb-client.ts";
 import { ScreenHost } from "./screen-host.ts";
 
-export type ScreenControlAnswer = ScreenInputTransition | { readonly _tag: "NoScreen" };
+/** `NoHand`: a take over refused, since no hand could put the person's input on the screen. */
+export type ScreenControlAnswer =
+  | ScreenInputTransition
+  | { readonly _tag: "NoScreen" }
+  | { readonly _tag: "NoHand" };
 
 const NO_SCREEN: ScreenControlAnswer = { _tag: "NoScreen" };
+const NO_HAND: ScreenControlAnswer = { _tag: "NoHand" };
 const UNCHANGED: ScreenControlAnswer = { _tag: "Unchanged" };
 
 export type PersonLapse = Exclude<ScreenLapse, "restart">;
@@ -61,36 +67,44 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
   const context = yield* Effect.context<BlobStore>();
   const timers = new Map<ScreenId, Armed>();
   const locks = new Map<ScreenId, Semaphore.Semaphore>();
+  const booting = new Map<ScreenId, Deferred.Deferred<void>>();
   /** Every change to a screen's row or timer this process makes, one at a time per screen. */
-  const serially = <A, E>(screenId: ScreenId, effect: Effect.Effect<A, E>) => {
+  const lockOf = (screenId: ScreenId) => {
     const lock = locks.get(screenId) ?? Semaphore.makeUnsafe(1);
     locks.set(screenId, lock);
-    return lock.withPermit(effect);
+    return lock;
   };
+  const serially = <A, E>(screenId: ScreenId, effect: Effect.Effect<A, E>) =>
+    lockOf(screenId).withPermit(effect);
 
   const frameOf = (screen: Screen) =>
     Effect.gen(function* () {
       const hand = yield* hands.of(screen);
-      if (hand === null) return null;
-      const png = yield* hand.look.pipe(Effect.option);
-      return png._tag === "Some" ? yield* storeFrame(screen.id, png.value) : null;
+      const png = hand === null ? Option.none() : yield* hand.look.pipe(Effect.option);
+      if (Option.isSome(png)) return yield* storeFrame(screen.id, png.value);
+      yield* Effect.logWarning("screen: no frame · the screen was not observable").pipe(
+        Effect.annotateLogs({ screenId: screen.id, life: screen.life._tag }),
+      );
+      return null;
     }).pipe(Effect.provideContext(context));
 
   /**
-   * Applies `event` under the row's lock, while `still` holds for the row. A transition that logs
-   * stores the frame taken just before it. Releases go ahead of anything queued behind them; a
-   * fence is acknowledged once the hand has stopped the batch and released.
+   * Applies `event` under the row's lock, while `still` holds for the row, and answers `unmet`
+   * when it does not. A transition that logs stores the frame taken just before it. Releases go
+   * ahead of anything queued behind them; a fence is acknowledged once the hand has stopped the
+   * batch and released, and one to a person only while that hand is still open.
    */
   const decide = (
     screenId: ScreenId,
     event: ScreenInputEvent,
     owner: string | null,
     still: (screen: Screen) => boolean = () => true,
+    unmet: ScreenControlAnswer = UNCHANGED,
   ): Effect.Effect<ScreenControlAnswer> =>
     Effect.gen(function* () {
       const screen = yield* screens.byId(screenId);
       if (screen === null) return NO_SCREEN;
-      if (!still(screen)) return UNCHANGED;
+      if (!still(screen)) return unmet;
       const foreseen = transitionInput(screen.input, event, owner);
       const frame =
         foreseen._tag === "Changed" && foreseen.log !== null ? yield* frameOf(screen) : null;
@@ -100,7 +114,7 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
         Effect.gen(function* () {
           const current = yield* screens.byId(screenId);
           if (current === null) return NO_SCREEN;
-          if (!still(current)) return UNCHANGED;
+          if (!still(current)) return unmet;
           const answer = yield* screens
             .control(screenId, event, owner, frame)
             .pipe(Effect.catchTag("ScreenNotFoundError", () => Effect.succeed(NO_SCREEN)));
@@ -109,11 +123,15 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
         }),
       );
       if (decided._tag !== "Changed") return decided;
-      const fencing = decided.next._tag === "Fencing";
-      if (decided.releases || fencing) {
+      const { next } = decided;
+      if (decided.releases || next._tag === "Fencing") {
         yield* Effect.ignore(hands.open(screenId)?.release ?? Effect.void);
       }
-      if (fencing) yield* decide(screenId, { _tag: "Fenced", epoch: decided.next.epoch }, owner);
+      if (next._tag === "Fencing") {
+        // A hand that ended meanwhile resets the input itself, and the fence stays unacknowledged.
+        const handed = () => next.to._tag === "AwaitingAgent" || hands.open(screenId) !== null;
+        yield* decide(screenId, { _tag: "Fenced", epoch: next.epoch }, owner, handed);
+      }
       return decided;
     });
 
@@ -166,15 +184,88 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
       NO_SCREEN,
     );
 
+  /** Waits while the screen's boot runs; at once for one that is not booting. */
+  const booted = (screenId: ScreenId) =>
+    Effect.suspend(() => {
+      const done = booting.get(screenId);
+      return done === undefined ? Effect.void : Deferred.await(done);
+    });
+
+  /**
+   * Take over goes ahead only with a hand to put the person's input on the screen, so it never
+   * reports Person while that input would be dropped. It waits for the screen's boot first, since
+   * the boot is what opens a hand after Mend restarted.
+   */
+  const take = (sessionId: SessionId, userId: string, connection: ViewerConnectionId) =>
+    onSession(
+      sessionId,
+      (screen) =>
+        Effect.gen(function* () {
+          yield* booted(screen.id);
+          const owner = yield* host.ownerOf(sessionId);
+          const event: ScreenInputEvent = { _tag: "Take", by: userId, connection };
+          const current = yield* screens.byId(screen.id);
+          if (current === null) return NO_SCREEN;
+          if (transitionInput(current.input, event, owner)._tag !== "Changed") {
+            return yield* detached(decide(screen.id, event, owner));
+          }
+          if ((yield* hands.of(current)) === null) return NO_HAND;
+          const handed = () => hands.open(screen.id) !== null;
+          return yield* detached(decide(screen.id, event, owner, handed, NO_HAND));
+        }),
+      NO_SCREEN,
+    );
+
   return {
     decide,
     serially,
     arm: (screen: Screen, input: ScreenInput) => serially(screen.id, arm(screen.id, input)),
+    /**
+     * Mend booted: the screen's lock is held from now until `prepare` has run and Boot is stored,
+     * with the frame a fresh hand takes, so nothing else changes the row before its boot.
+     */
+    boot: (screen: Screen, at: Date, prepare: Effect.Effect<void>) =>
+      Effect.gen(function* () {
+        const lock = lockOf(screen.id);
+        yield* lock.take(1);
+        const done = yield* Deferred.make<void>();
+        booting.set(screen.id, done);
+        const boot = Effect.gen(function* () {
+          yield* prepare;
+          const current = yield* screens.byId(screen.id);
+          if (current === null) return;
+          const event: ScreenInputEvent = { _tag: "Boot", at };
+          const foreseen = transitionInput(current.input, event, null);
+          const frame =
+            foreseen._tag === "Changed" && foreseen.log !== null ? yield* frameOf(current) : null;
+          const decided = yield* screens
+            .control(screen.id, event, null, frame)
+            .pipe(Effect.catchTag("ScreenNotFoundError", () => Effect.succeed(NO_SCREEN)));
+          yield* arm(screen.id, decided._tag === "Changed" ? decided.next : current.input);
+          // A fresh hand lets go of whatever the last process's hand left held before anything else.
+          yield* hands.of(current);
+        });
+        const finished = lock
+          .release(1)
+          .pipe(
+            Effect.andThen(Effect.sync(() => booting.delete(screen.id))),
+            Effect.andThen(Deferred.succeed(done, undefined)),
+          );
+        yield* Effect.forkIn(Effect.ensuring(boot, finished), scope);
+      }),
+    booted,
+    /** Mend's own entry in the screen's log, with the frame it shows now if it can be observed. */
+    note: (screen: Screen, body: ScreenLogBody) =>
+      Effect.flatMap(frameOf(screen), (frame) =>
+        screens.append({ screenId: screen.id, actor: { _tag: "Mend" }, body, frame }),
+      ).pipe(
+        Effect.catchTag("ScreenNotFoundError", () => Effect.void),
+        Effect.asVoid,
+      ),
     /** A hand ended by itself. One open since then replaced it, and what it was given stands. */
     ended: (screenId: ScreenId) =>
       decide(screenId, { _tag: "Ended" }, null, () => hands.open(screenId) === null),
-    take: (sessionId: SessionId, userId: string, connection: ViewerConnectionId) =>
-      byOwner(sessionId, { _tag: "Take", by: userId, connection }),
+    take,
     handBack: (sessionId: SessionId, userId: string) =>
       byOwner(sessionId, { _tag: "HandBack", by: userId }),
     lapse: (sessionId: SessionId, connection: ViewerConnectionId, reason: PersonLapse) =>

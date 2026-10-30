@@ -36,6 +36,8 @@ export interface Xvnc {
   readonly x: (command: string) => string;
   /** A client on the display, left running. */
   readonly start: (...argv: ReadonlyArray<string>) => void;
+  /** Writes new passwords over Xvnc's password file, through stdin, as a screen's script does. */
+  readonly signWith: (full: string, viewOnly: string) => void;
   readonly remove: () => void;
 }
 
@@ -63,6 +65,19 @@ export const startXvnc = (name: string): Xvnc => {
       port,
       x,
       start: (...argv) => void docker("exec", "-d", "-e", "DISPLAY=:0", name, ...argv),
+      signWith: (full, viewOnly) =>
+        void execFileSync(
+          "docker",
+          [
+            "exec",
+            "-i",
+            name,
+            "sh",
+            "-c",
+            "vncpasswd -f >/tmp/passwd.next && mv /tmp/passwd.next /tmp/passwd",
+          ],
+          { input: `${full}\n${viewOnly}\n`, timeout: 30_000 },
+        ),
       remove,
     };
   } catch (error) {
@@ -157,6 +172,8 @@ export const connectInside = (container: string, port: number): Connection => {
     "STDIO",
     `TCP:127.0.0.1:${port}`,
   ]);
+  // A write after socat exits (a refused sign-in) fails with EPIPE; the close reports the end.
+  child.stdin.on("error", () => {});
   return connectionOver({
     onData: (deliver) => child.stdout.on("data", (chunk) => deliver(new Uint8Array(chunk))),
     onClose: (closed) => child.on("close", closed),

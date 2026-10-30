@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 
 import { parse } from "yaml";
 
@@ -334,6 +335,33 @@ test("the t3code gateway is in the bundle, and runs only when the operator turne
       ?.MEND_T3_GATEWAY_LABEL,
     "Box",
   );
+});
+
+test("the API bundle carries the screen worker, which encodes a frame once loaded", async () => {
+  const bundled = path.join(root, "apps/api/dist/screen-worker.js");
+  await rm(bundled, { force: true });
+  const build = spawnSync("pnpm", ["--filter", "@mend/api-server", "build"], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 300_000,
+  });
+  assert.equal(build.status, 0, build.stderr);
+  const worker = new Worker(bundled);
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      worker.once("message", resolve);
+      worker.once("error", reject);
+      worker.postMessage({ _tag: "Encode", bytes: new Uint8Array(1280 * 800 * 4).fill(0x80) });
+    });
+    assert.equal(reply._tag, "Png");
+    assert.deepEqual(
+      [...reply.png.subarray(0, 8)],
+      [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+    );
+    assert.equal(Buffer.from(reply.png).readUInt32BE(16), 1280);
+  } finally {
+    await worker.terminate();
+  }
 });
 
 test(

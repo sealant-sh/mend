@@ -2,14 +2,21 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { DisplayNumber, type Screen, type Session } from "@mend/domain/workbench";
+import { makeHarnessLayoutsMemoryState } from "@mend/db";
+import { DisplayNumber, SCREEN_LIMITS, type Screen, type Session } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { sessionStatePathOf } from "@mend/store";
-import { it } from "@mend/test-ci/effect-vitest";
-import { Deferred, Effect, Fiber, Redacted } from "effect";
+import { TestClock, it } from "@mend/test-ci/effect-vitest";
+import { Deferred, Duration, Effect, Fiber, Redacted } from "effect";
 import { describe, expect } from "vitest";
 
-import { onScreenPath, screenArgv, screenReapArgv } from "../src/screen/script.ts";
+import {
+  onScreenPath,
+  screenArgv,
+  screenReapArgv,
+  screenRekeyArgv,
+  screenStartOfArgv,
+} from "../src/screen/script.ts";
 import { makeWorld, type World } from "./engine/fixture.ts";
 import {
   LAUNCHER,
@@ -193,6 +200,212 @@ describe("the session's display for its life (ADR 0020)", () => {
     ),
   );
 
+  it.effect(
+    "signs a screen that outlived its engine for again, as its person, with fresh passwords and no start",
+    () => {
+      const fixture = {
+        world: makeWorld(),
+        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-screen-rekey-")),
+      };
+      const { world } = fixture;
+      const layoutState = makeHarnessLayoutsMemoryState();
+      return Effect.gen(function* () {
+        const first = yield* withScreens(
+          () =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launched(world);
+              const screen = yield* engine.startScreen(session.id);
+              yield* until(
+                () => Effect.map(world.screens.byId(screen.id), (now) => now?.life._tag === "Live"),
+                "the screen live",
+              );
+              const passwords = yield* engine.screenPasswords(session.id);
+              if (passwords === null) throw new Error("no passwords held");
+              return { session, screen, passwords };
+            }),
+          { fixture, layoutState, printed: ["mend-screen ready"] },
+        );
+        const row = world.processes.get(first.screen.processId ?? "");
+        const asked = row === undefined ? null : screenStartOfArgv(row.argv);
+        if (asked === null) throw new Error("no screen process to sign for");
+
+        yield* withScreens(
+          (_, platform) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              expect(yield* engine.rekeyScreen(first.session.id)).toBe(false);
+              expect(yield* engine.screenPasswords(first.session.id)).toBeNull();
+              expect(platform.spawned).toEqual([screenRekeyArgv(asked)]);
+              expect(platform.closed).toEqual([screenRekeyArgv(asked)]);
+            }),
+          { fixture, layoutState, restart: true, rekeyPrinted: [] },
+        );
+
+        yield* withScreens(
+          (_, platform) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              expect(yield* engine.screenPasswords(first.session.id)).toBeNull();
+              expect(yield* engine.rekeyScreen(first.session.id)).toBe(true);
+              const passwords = yield* engine.screenPasswords(first.session.id);
+              if (passwords === null) throw new Error("no passwords after the rekey");
+              expect(Redacted.value(passwords.full)).not.toBe(Redacted.value(first.passwords.full));
+              expect(platform.spawned).toEqual([screenRekeyArgv(asked)]);
+              expect(platform.opened.at(-1)?.user?.name).toBe(LAUNCHER);
+              const handedOver = JSON.stringify([platform.spawned, platform.opened]);
+              for (const password of [passwords.full, passwords.viewOnly]) {
+                expect(handedOver).not.toContain(Redacted.value(password));
+              }
+              expect(screenRows(world)).toHaveLength(1);
+              expect(world.processes.get(first.screen.processId ?? "")?.exitedAt).toBeNull();
+              expect(yield* engine.rekeyScreen(first.session.id)).toBe(true);
+              expect(yield* engine.screenPasswords(first.session.id)).toBe(passwords);
+              expect(platform.spawned).toHaveLength(1);
+            }),
+          { fixture, layoutState, restart: true },
+        );
+      });
+    },
+  );
+
+  it.effect(
+    "gives a rekey up once its deadline passes, its terminal never opened, and holds no passwords",
+    () => {
+      const fixture = {
+        world: makeWorld(),
+        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-screen-rekey-deadline-")),
+      };
+      const { world } = fixture;
+      const layoutState = makeHarnessLayoutsMemoryState();
+      return Effect.gen(function* () {
+        const first = yield* withScreens(
+          () =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launched(world);
+              const screen = yield* engine.startScreen(session.id);
+              yield* until(
+                () => Effect.map(world.screens.byId(screen.id), (now) => now?.life._tag === "Live"),
+                "the screen live",
+              );
+              return { session };
+            }),
+          { fixture, layoutState, printed: ["mend-screen ready"] },
+        );
+        const opening = yield* Deferred.make<void>();
+        yield* withScreens(
+          () =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const rekey = yield* Effect.forkChild(engine.rekeyScreen(first.session.id));
+              yield* Deferred.await(opening);
+              yield* TestClock.adjust(Duration.millis(SCREEN_LIMITS.rekeyMs));
+              yield* until(() => Effect.sync(() => rekey.pollUnsafe() !== undefined), "given up");
+              expect(yield* Fiber.join(rekey)).toBe(false);
+              expect(yield* engine.screenPasswords(first.session.id)).toBeNull();
+            }),
+          {
+            fixture,
+            layoutState,
+            restart: true,
+            aroundOpen: (argv) =>
+              argv[3] === "mend-screen-rekey"
+                ? Effect.andThen(Deferred.succeed(opening, undefined), Effect.never)
+                : Effect.void,
+          },
+        );
+      });
+    },
+  );
+
+  it.effect(
+    "starts a screen its rekey failed for over: the old process stops, and a fresh start holds new passwords",
+    () => {
+      const fixture = {
+        world: makeWorld(),
+        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-screen-rekey-restart-")),
+      };
+      const { world } = fixture;
+      const layoutState = makeHarnessLayoutsMemoryState();
+      return Effect.gen(function* () {
+        const first = yield* withScreens(
+          () =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launched(world);
+              const screen = yield* engine.startScreen(session.id);
+              yield* until(
+                () => Effect.map(world.screens.byId(screen.id), (now) => now?.life._tag === "Live"),
+                "the screen live",
+              );
+              return { session, screen };
+            }),
+          { fixture, layoutState, printed: ["mend-screen ready"] },
+        );
+        const old = world.processes.get(first.screen.processId ?? "");
+        const asked = old === undefined ? null : screenStartOfArgv(old.argv);
+        if (old === undefined || asked === null) throw new Error("no screen process to sign for");
+        yield* withScreens(
+          (_, platform) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              expect(yield* engine.rekeyScreen(first.session.id)).toBe(false);
+              const again = yield* engine.startScreen(first.session.id);
+              expect(again.id).toBe(first.screen.id);
+              expect(again.processId).not.toBe(old.id);
+              expect(world.processes.get(old.id)?.exitedAt).not.toBeNull();
+              const fresh =
+                again.processId === null ? undefined : world.processes.get(again.processId);
+              expect(screenStartOfArgv(fresh?.argv ?? [])?.start).not.toBe(asked.start);
+              expect(yield* engine.screenPasswords(first.session.id)).not.toBeNull();
+              // The old screen's terminal was opened by the engine before, which this fake never saw.
+              expect(platform.closed).toEqual([screenRekeyArgv(asked), []]);
+            }),
+          { fixture, layoutState, restart: true, rekeyPrinted: [], printed: ["mend-screen ready"] },
+        );
+      });
+    },
+  );
+
+  it.effect("closes a rekey's terminal that never says it is done once the deadline passes", () => {
+    const fixture = {
+      world: makeWorld(),
+      tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-screen-rekey-running-")),
+    };
+    const { world } = fixture;
+    const layoutState = makeHarnessLayoutsMemoryState();
+    return Effect.gen(function* () {
+      const first = yield* withScreens(
+        () =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launched(world);
+            const screen = yield* engine.startScreen(session.id);
+            yield* until(
+              () => Effect.map(world.screens.byId(screen.id), (now) => now?.life._tag === "Live"),
+              "the screen live",
+            );
+            return { session, screen };
+          }),
+        { fixture, layoutState, printed: ["mend-screen ready"] },
+      );
+      const row = world.processes.get(first.screen.processId ?? "");
+      const asked = row === undefined ? null : screenStartOfArgv(row.argv);
+      if (asked === null) throw new Error("no screen process to sign for");
+      yield* withScreens(
+        (_, platform) =>
+          Effect.gen(function* () {
+            const engine = yield* SessionEngine;
+            const rekey = yield* Effect.forkChild(engine.rekeyScreen(first.session.id));
+            yield* until(() => Effect.sync(() => platform.spawned.length === 1), "opened");
+            expect(platform.closed).toEqual([]);
+            yield* TestClock.adjust(Duration.millis(SCREEN_LIMITS.rekeyMs));
+            expect(yield* Fiber.join(rekey)).toBe(false);
+            expect(platform.closed).toEqual([screenRekeyArgv(asked)]);
+            expect(yield* engine.screenPasswords(first.session.id)).toBeNull();
+          }),
+        { fixture, layoutState, restart: true, rekeyPrinted: [], rekeyKeepsRunning: true },
+      );
+    });
+  });
+
   it.effect("goes back at boot when its session ended without giving it back", () => {
     const fixture = {
       world: makeWorld(),
@@ -352,10 +565,12 @@ describe("the session's screen (ADR 0020)", () => {
           expect(screen.life).toEqual({ _tag: "Starting" });
           const user = platform.opened.at(-1)?.user;
           expect(user?.name).toBe(LAUNCHER);
-          expect(platform.spawned.at(-1)).toEqual(
-            screenArgv(DisplayNumber.make(10), { uid: user?.uid ?? -1 }),
+          const argv = platform.spawned.at(-1) ?? [];
+          const asked = screenStartOfArgv(argv);
+          expect(asked?.dir).toBe(`/run/user/${user?.uid}/mend-screen-10`);
+          expect(argv).toEqual(
+            screenArgv(DisplayNumber.make(10), { uid: user?.uid ?? -1 }, asked?.start ?? ""),
           );
-          expect(platform.spawned.at(-1)?.at(-1)).toBe(`/run/user/${user?.uid}/mend-screen-10`);
 
           const [row] = screenRows(world);
           expect(row).toMatchObject({

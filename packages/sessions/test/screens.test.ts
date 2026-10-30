@@ -12,7 +12,7 @@ import {
   SessionProcessId,
   ViewerConnectionId,
 } from "@mend/domain";
-import type { Screen, ScreenAction } from "@mend/domain/workbench";
+import type { Screen, ScreenAction, ScreenInputEvent } from "@mend/domain/workbench";
 import { BlobStoreFsLive } from "@mend/store";
 import { TestClock, it } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Layer, Redacted } from "effect";
@@ -91,7 +91,7 @@ const screensLayer = ScreensLive.pipe(
 );
 
 type Needs = Screens | ScreensRepo | SqlClient.SqlClient;
-/** A fresh API process, with hands of its own. */
+/** A fresh API process: its own hands, and a boot over what the last one left. */
 const asProcess = <A, E>(effect: Effect.Effect<A, E, Needs>) =>
   effect.pipe(Effect.provide(screensLayer), Effect.scoped);
 
@@ -110,8 +110,13 @@ const seedSession = Effect.gen(function* () {
   return sessionId;
 }).pipe(Effect.orDie);
 
-/** A session whose project has a screen, reserved and not yet started. */
+/**
+ * A session whose project has a screen, reserved and not yet started. Earlier tests' screens are
+ * released first, so a boot finds only this test's.
+ */
 const sessionWithScreen = Effect.gen(function* () {
+  yield* (yield* SqlClient.SqlClient)`UPDATE screens SET released_at = now()
+    WHERE released_at IS NULL`;
   const sessionId = yield* seedSession;
   const screen = yield* (yield* ScreensRepo).reserve({
     sessionId,
@@ -264,14 +269,36 @@ describe.skipIf(postgres.skip)("who may call, and on what", () => {
 });
 
 describe.skipIf(postgres.skip)("people's input on a screen with no hand", () => {
+  it.live("refuses a take over with no hand for the input, and never reports Person", () =>
+    asProcess(
+      Effect.gen(function* () {
+        const screens = yield* Screens;
+        const { sessionId, screen } = yield* sessionWithScreen;
+        expect(yield* screens.take(sessionId, "bob", CONNECTION)).toEqual({
+          _tag: "Refused",
+          why: "owner-only",
+        });
+        expect(yield* screens.take(sessionId, OWNER, CONNECTION)).toEqual({ _tag: "NoHand" });
+        expect((yield* rowOf(screen.id)).input).toEqual(screen.input);
+        expect(
+          yield* screens.input(sessionId, CONNECTION, [
+            { _tag: "Pointer", buttons: 0, x: 1, y: 1 },
+          ]),
+        ).toBe(false);
+        expect((yield* logOf(screen.id)).map((entry) => entry.body._tag)).not.toContain("Taken");
+      }),
+    ),
+  );
+
+  /** The row as a take over left it: the timers below run on the row alone, with no hand. */
   const takenByPerson = Effect.gen(function* () {
     const screens = yield* Screens;
+    const repo = yield* ScreensRepo;
     const { sessionId, screen } = yield* sessionWithScreen;
-    expect(yield* screens.take(sessionId, "bob", CONNECTION)).toEqual({
-      _tag: "Refused",
-      why: "owner-only",
-    });
-    yield* screens.take(sessionId, OWNER, CONNECTION);
+    const take: ScreenInputEvent = { _tag: "Take", by: OWNER, connection: CONNECTION };
+    const fencing = yield* repo.control(screen.id, take, OWNER);
+    if (fencing._tag !== "Changed") throw new Error("the take over was not taken");
+    yield* repo.control(screen.id, { _tag: "Fenced", epoch: fencing.next.epoch }, OWNER);
     expect((yield* rowOf(screen.id)).input).toMatchObject({
       _tag: "Person",
       connection: CONNECTION,
@@ -339,9 +366,14 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
   beforeAll(() => {
     xvnc = startXvnc(`mend-screens-${process.pid}-${Date.now()}`);
     world.xvncPort = xvnc.port;
+    world.signWith = ({ full, viewOnly }) =>
+      xvnc.signWith(Redacted.value(full), Redacted.value(viewOnly));
   }, 660_000);
 
-  afterAll(() => xvnc?.remove());
+  afterAll(() => {
+    world.signWith = null;
+    xvnc?.remove();
+  });
 
   it.live(
     "looks: the screen started on demand, its frame stored, the receipt returned, a retry answered from the store",
@@ -633,6 +665,170 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
           ).toBe(false);
         }),
       ),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "boots a claim stored without its outcome into outcome_unknown, sending its input never again",
+    () =>
+      Effect.gen(function* () {
+        const crashed = yield* asProcess(
+          Effect.gen(function* () {
+            const screens = yield* Screens;
+            const { sessionId, screen } = yield* sessionWithScreen;
+            const agent = agentOf(sessionId);
+            yield* screens.look(agent.call());
+            const params = { actions: [movedTo({ x: 222, y: 111 })] };
+            yield* (yield* ScreensRepo).claim({
+              screenId: screen.id,
+              callKey: "crashed",
+              args: { tool: "screen_act", params },
+            });
+            return { sessionId, screen, agent, params };
+          }),
+        );
+        yield* asProcess(
+          Effect.gen(function* () {
+            const screens = yield* Screens;
+            x("xdotool mousemove 7 7");
+            expect(yield* screens.act(crashed.agent.call("crashed"), crashed.params)).toEqual({
+              _tag: "NoEntry",
+              outcome: "outcome_unknown",
+            });
+            expect(pointer()).toEqual([7, 7]);
+            expect(
+              yield* screens.act(crashed.agent.call(), { actions: [movedTo({ x: 1, y: 1 })] }),
+            ).toEqual({ _tag: "Refused", refusal: "look_first" });
+            expect((yield* rowOf(crashed.screen.id)).input._tag).toBe("AwaitingAgent");
+            expect(world.starts.filter((started) => started === crashed.sessionId).length).toBe(1);
+          }),
+        );
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "boots a fence committed without its acknowledgement into Paused",
+    () =>
+      Effect.gen(function* () {
+        const fenced = yield* asProcess(
+          Effect.gen(function* () {
+            const { sessionId, screen } = yield* sessionWithScreen;
+            yield* (yield* Screens).look(agentOf(sessionId).call());
+            yield* (yield* ScreensRepo).control(
+              screen.id,
+              { _tag: "Take", by: OWNER, connection: CONNECTION },
+              OWNER,
+            );
+            expect((yield* rowOf(screen.id)).input._tag).toBe("Fencing");
+            return { sessionId, screen };
+          }),
+        );
+        yield* asProcess(
+          Effect.gen(function* () {
+            const screens = yield* Screens;
+            x("xsetroot -solid '#55aa33'");
+            expect(yield* screens.heartbeat(fenced.sessionId, CONNECTION)).toBe(false);
+            const row = yield* rowOf(fenced.screen.id);
+            expect(row.input).toMatchObject({ _tag: "Paused", reason: "restart" });
+            expect(row.input.epoch).toBe(3);
+            const last = (yield* logOf(fenced.screen.id)).at(-1);
+            expect(last?.body).toEqual({ _tag: "Paused", reason: "restart" });
+            if (last?.frame == null) throw new Error("the restart's pause kept no frame");
+            const stored = path.join(
+              blobRoot,
+              "screen-frames",
+              fenced.screen.id,
+              `${last.frame.digest}.png`,
+            );
+            expect(decodePng(readFileSync(stored)).at(640, 400)).toEqual([0x55, 0xaa, 0x33]);
+            expect(keysDown()).toBe(0);
+          }),
+        );
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "starts a screen over when its rekey after Mend restarted fails: the log says why, with a frame, and a take over moves its pointer",
+    () =>
+      Effect.gen(function* () {
+        const before = yield* asProcess(
+          Effect.gen(function* () {
+            const { sessionId, screen } = yield* sessionWithScreen;
+            answered(yield* (yield* Screens).look(agentOf(sessionId).call()));
+            return { sessionId, screen };
+          }),
+        );
+        world.rekeyFails.add(before.sessionId);
+        x("xsetroot -solid '#3366cc'");
+        yield* asProcess(
+          Effect.gen(function* () {
+            const screens = yield* Screens;
+            const viewer = ViewerConnectionId.make("viewer-after-failed-rekey");
+            yield* screens.take(before.sessionId, OWNER, viewer);
+            expect((yield* rowOf(before.screen.id)).input).toMatchObject({
+              _tag: "Person",
+              connection: viewer,
+            });
+            const moved = yield* screens.input(before.sessionId, viewer, [
+              { _tag: "Pointer", buttons: 0, x: 555, y: 222 },
+            ]);
+            expect(moved).toBe(true);
+            expect(pointer()).toEqual([555, 222]);
+            expect(world.starts.filter((started) => started === before.sessionId)).toHaveLength(2);
+
+            const restarted = (yield* logOf(before.screen.id)).find(
+              (entry) => entry.body._tag === "Restarted",
+            );
+            expect(restarted).toMatchObject({
+              actor: { _tag: "Mend" },
+              body: { _tag: "Restarted", reason: "rekey-failed" },
+            });
+            if (restarted?.frame == null) throw new Error("the restart kept no frame");
+            const stored = path.join(
+              blobRoot,
+              "screen-frames",
+              before.screen.id,
+              `${restarted.frame.digest}.png`,
+            );
+            expect(decodePng(readFileSync(stored)).at(640, 400)).toEqual([0x33, 0x66, 0xcc]);
+          }),
+        );
+      }).pipe(Effect.ensuring(Effect.sync(() => world.rekeyFails.clear()))),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "takes over a screen that outlived Mend, signed for again rather than started over, and moves its pointer",
+    () =>
+      Effect.gen(function* () {
+        const before = yield* asProcess(
+          Effect.gen(function* () {
+            const { sessionId, screen } = yield* sessionWithScreen;
+            answered(yield* (yield* Screens).look(agentOf(sessionId).call()));
+            return { sessionId, screen };
+          }),
+        );
+        yield* asProcess(
+          Effect.gen(function* () {
+            const screens = yield* Screens;
+            const viewer = ViewerConnectionId.make("viewer-after-restart");
+            yield* screens.take(before.sessionId, OWNER, viewer);
+            expect((yield* rowOf(before.screen.id)).input).toMatchObject({
+              _tag: "Person",
+              connection: viewer,
+            });
+            const moved = yield* screens.input(before.sessionId, viewer, [
+              { _tag: "Pointer", buttons: 0, x: 444, y: 333 },
+            ]);
+            expect(moved).toBe(true);
+            expect(pointer()).toEqual([444, 333]);
+            expect(world.rekeys).toContain(before.sessionId);
+            expect(world.starts.filter((started) => started === before.sessionId)).toHaveLength(1);
+          }),
+        );
+      }),
     { timeout: 60_000 },
   );
 });

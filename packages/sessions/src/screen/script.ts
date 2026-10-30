@@ -8,8 +8,9 @@ import {
 } from "../session-socket.ts";
 
 /**
- * The screen's process (ADR 0020), as `sh -c SCREEN_SCRIPT mend-screen :<n> <width>x<height> <dir>`:
- * it travels in argv, so the image holds no Mend file. The passwords come from the session channel
+ * The screen's process (ADR 0020), as `sh -c SCREEN_SCRIPT mend-screen :<n> <width>x<height> <dir>
+ * <start>`: it travels in argv, so the image holds no Mend file. `<start>` names this start, and
+ * its fresh directory keeps it for a rekey to check. The passwords come from the session channel
  * and never touch argv or env; the X cookie is written through stdin for the same reason. One
  * child waits for the display, starts the window manager and the browser (through the wrapper,
  * so the agent's `chromium <url>` reaches the same one), says how the window manager went, and
@@ -22,6 +23,7 @@ dir=$3
 umask 077
 rm -rf "$dir"
 mkdir -m 700 "$dir"
+printf '%s\\n' "$4" >"$dir/start"
 secret=$(${MEND_HELPER_PATH} screen-secret)
 printf '%s\\n' "$secret" | vncpasswd -f >"$dir/passwd"
 cookie=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')
@@ -95,7 +97,12 @@ export const screenEnvOf = (
   XAUTHORITY: `${screenDirOf(display, user)}/auth`,
 });
 
-export const screenArgv = (display: DisplayNumber, user: ScreenUser): ReadonlyArray<string> => [
+/** `start` names this start of the screen, so a rekey can tell it from a later one. */
+export const screenArgv = (
+  display: DisplayNumber,
+  user: ScreenUser,
+  start: string,
+): ReadonlyArray<string> => [
   "sh",
   "-c",
   SCREEN_SCRIPT,
@@ -103,6 +110,55 @@ export const screenArgv = (display: DisplayNumber, user: ScreenUser): ReadonlyAr
   `:${display}`,
   `${SCREEN_LIMITS.width}x${SCREEN_LIMITS.height}`,
   screenDirOf(display, user),
+  start,
+];
+
+/** One start of a screen: its directory, and the name that start wrote into it. */
+export interface ScreenStart {
+  readonly dir: string;
+  readonly start: string;
+}
+
+/** The start a screen process was, read from the argv it was started with. */
+export const screenStartOfArgv = (argv: ReadonlyArray<string>): ScreenStart | null => {
+  const [, , , name, , , dir, start] = argv;
+  return argv.length === 8 && name === "mend-screen" && dir !== undefined && start !== undefined
+    ? { dir, start }
+    : null;
+};
+
+/** The line the rekey script ends with once the new passwords are in place. */
+export const SCREEN_REKEYED = "mend-screen rekeyed";
+
+/**
+ * A running screen signed for again, as its person, when Mend restarted and kept none of its
+ * passwords: fresh ones fetched over the session channel replace the old file in one rename. Xvnc
+ * reads its password file at each sign-in, so the screen and its apps keep running.
+ *
+ * It writes only for the start it was asked about. It holds that start's directory as its working
+ * directory and writes only relative to it, and it goes no further unless the directory names
+ * that start. A later start removes the directory and makes a new one, so a rekey left running
+ * from before can only write into the removed one, and one that begins after finds another
+ * start's name and fetches nothing.
+ */
+const REKEY_SCRIPT = `set -eu
+cd "$1"
+[ "$(cat start 2>/dev/null)" = "$2" ] || { echo "mend-screen rekey refused"; exit 1; }
+umask 077
+secret=$(${MEND_HELPER_PATH} screen-secret)
+printf '%s\\n' "$secret" | vncpasswd -f >passwd.next
+unset secret
+mv -f passwd.next passwd
+echo "${SCREEN_REKEYED}"
+`;
+
+export const screenRekeyArgv = ({ dir, start }: ScreenStart): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  REKEY_SCRIPT,
+  "mend-screen-rekey",
+  dir,
+  start,
 ];
 
 const REAP_SCRIPT = `lock=/tmp/.X$1-lock

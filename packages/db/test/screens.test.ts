@@ -261,6 +261,7 @@ const screenContract = (runFixture: RunFixture) => {
         ]);
         expect(log[1]?.frame).toEqual({ ...frame(2), state: "stored" });
         expect(log[2]?.frame).toEqual({ ...frame(1), state: "stored" });
+        expect((yield* screens.held()).map((held) => held.id)).toContain(screen.id);
         const missing = yield* Effect.flip(
           screens.append({
             screenId: ScreenId.make("missing"),

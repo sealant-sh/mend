@@ -110,7 +110,8 @@ it.effect("keeps the Paused timeout when a heartbeat read the holder before it l
           return snapshot;
         }),
     };
-    const control = yield* controlOver(repo, { of: () => Effect.succeed(null), open: () => null });
+    const hand = handOf({ gate: null });
+    const control = yield* controlOver(repo, { of: () => Effect.succeed(hand), open: () => hand });
     yield* control.take(sessionId, OWNER, CONNECTION);
     holdNextRead = true;
     const heartbeat = yield* Effect.forkChild(control.heartbeat(sessionId, CONNECTION));
@@ -125,4 +126,35 @@ it.effect("keeps the Paused timeout when a heartbeat read the holder before it l
     });
     expect(renewed).toBe(false);
   }),
+);
+
+it.effect(
+  "leaves a take over unacknowledged when its hand ended before the fence, never Person",
+  () =>
+    Effect.gen(function* () {
+      const repo = makeScreensMemory();
+      const sessionId = SessionId.make("s-hand-gone");
+      const screen = yield* repo.reserve({
+        sessionId,
+        workspaceId: SealantWorkspaceId.make("ws-hand-gone"),
+      });
+      let ended = false;
+      const hand: Hand = {
+        ...handOf({ gate: null }),
+        release: Effect.sync(() => {
+          ended = true;
+        }),
+      };
+      const control = yield* controlOver(repo, {
+        of: () => Effect.succeed(ended ? null : hand),
+        open: () => (ended ? null : hand),
+      });
+      const answer = yield* control.take(sessionId, OWNER, CONNECTION);
+      expect(answer).toMatchObject({ _tag: "Changed", next: { _tag: "Fencing" } });
+      expect((yield* repo.byId(screen.id))?.input._tag).toBe("Fencing");
+      expect((yield* repo.log(screen.id)).map((entry) => entry.body._tag)).not.toContain("Taken");
+      expect(yield* control.take(sessionId, OWNER, ViewerConnectionId.make("viewer-2"))).toEqual({
+        _tag: "NoHand",
+      });
+    }),
 );

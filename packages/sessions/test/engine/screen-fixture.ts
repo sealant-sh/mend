@@ -1,4 +1,8 @@
-import { linuxLoginNameOf, type SessionChannelTokensRepo } from "@mend/db";
+import {
+  type HarnessLayoutsMemoryState,
+  linuxLoginNameOf,
+  type SessionChannelTokensRepo,
+} from "@mend/db";
 import { defaultWorkspaceImage } from "@mend/domain";
 import type { HarnessLayout } from "@mend/domain/workbench";
 import {
@@ -10,6 +14,7 @@ import { ServiceHost, SessionEngine } from "@mend/sessions";
 import type { CreateOptions, SessionOptions } from "@sealant/sdk";
 import { Effect, Layer } from "effect";
 
+import { SCREEN_REKEYED } from "../../src/screen/script.ts";
 import { makeMemoryCaptureStore } from "../capture-store-memory.ts";
 import { sealantLaunchLayer, setup, withPreparedEngineEffect, type World } from "./fixture.ts";
 import { answerLayout, LAYOUT_READY, personPlatform } from "./person-fixture.ts";
@@ -25,6 +30,8 @@ export interface Platform {
   readonly execs: Array<ReadonlyArray<string>>;
   readonly execUsers: Array<string | null>;
   readonly listeners: Array<string>;
+  /** The argv of each process whose terminal Mend closed. */
+  readonly closed: Array<ReadonlyArray<string>>;
 }
 
 /** A person-layout launch of `claude` with a screen beside it, Xvnc's output scripted. */
@@ -42,7 +49,13 @@ export const withScreens = <A, E>(
       options: PersonExecOptions | undefined,
     ) => Effect.Effect<ExecAnswer, SealantPlatformError> | undefined;
     readonly printed?: ReadonlyArray<string>;
+    /** What the rekey script prints; its own last line unless set. */
+    readonly rekeyPrinted?: ReadonlyArray<string>;
+    /** The rekey script prints and then never ends. */
+    readonly rekeyKeepsRunning?: boolean;
     readonly layout?: HarnessLayout;
+    /** The recorded layouts, kept across the engines that boot over one world. */
+    readonly layoutState?: HarnessLayoutsMemoryState;
     readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
     readonly screen?: boolean;
     /** A world the caller keeps; `restart` boots another engine over one an engine already set up. */
@@ -50,7 +63,14 @@ export const withScreens = <A, E>(
     readonly restart?: boolean;
   } = {},
 ) => {
-  const platform: Platform = { spawned: [], opened: [], execs: [], execUsers: [], listeners: [] };
+  const platform: Platform = {
+    spawned: [],
+    opened: [],
+    execs: [],
+    execUsers: [],
+    listeners: [],
+    closed: [],
+  };
   const created: Array<CreateOptions> = [];
   return withPreparedEngineEffect(
     (world, tmp) => (options.restart === true ? Effect.void : setup(tmp, world)),
@@ -74,8 +94,16 @@ export const withScreens = <A, E>(
         undefined,
         {
           execUsers: platform.execUsers,
+          closed: platform.closed,
+          ptyKeepsRunning: (argv) =>
+            argv[3] === "mend-screen-rekey" && options.rekeyKeepsRunning === true,
           exec: answerLayout(LAYOUT_READY),
-          ptyOutput: (argv) => (argv[3] === "mend-screen" ? (options.printed ?? []) : []),
+          ptyOutput: (argv) => {
+            if (argv[3] === "mend-screen") return options.printed ?? [];
+            return argv[3] === "mend-screen-rekey"
+              ? (options.rekeyPrinted ?? [SCREEN_REKEYED])
+              : [];
+          },
           ...(options.openFails === undefined ? {} : { openFails: options.openFails }),
           execEffect: (argv, execOptions) =>
             argv[3] === "mend-screen-reap" ? options.reap?.(argv, execOptions) : undefined,
@@ -85,6 +113,7 @@ export const withScreens = <A, E>(
       harnessLayout: {
         flag: options.layout ?? "person",
         platform: personPlatform([], { person: true }),
+        ...(options.layoutState === undefined ? {} : { state: options.layoutState }),
       },
       serviceHostLayer: Layer.succeed(ServiceHost, {
         bindAddresses: () => Effect.succeed(["127.0.0.1"]),

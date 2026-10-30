@@ -485,6 +485,10 @@ export const sealantLaunchLayer = (
     readonly openFails?: () => boolean;
     /** What a process opened with `argv` prints, line by line; nothing unless a test says. */
     readonly ptyOutput?: (argv: ReadonlyArray<string>) => ReadonlyArray<string>;
+    /** A process opened with `argv` that prints its lines and then never ends. */
+    readonly ptyKeepsRunning?: (argv: ReadonlyArray<string>) => boolean;
+    /** The argv of each opened process whose terminal was closed, in order. */
+    readonly closed?: Array<ReadonlyArray<string>>;
     /** Stands in for the executor's flush itself — what it ships and registers before answering. */
     readonly flush?: (
       workspace: Workspace,
@@ -555,9 +559,11 @@ export const sealantLaunchLayer = (
 ) => {
   let nextPty = 0;
   const ptys = new Map<string, InteractiveSession>();
+  const argvOfPty = new Map<string, ReadonlyArray<string>>();
   const openPty = (
     mode: "pty" | "pipe" = "pty",
     printed: ReadonlyArray<string> = [],
+    keepsRunning = false,
   ): InteractiveSession => {
     nextPty += 1;
     const pty: InteractiveSession = {
@@ -570,11 +576,12 @@ export const sealantLaunchLayer = (
         for (const [at, line] of printed.entries()) {
           yield { sequence: BigInt(at), data: new TextEncoder().encode(`${line}\n`) };
         }
+        if (keepsRunning) await new Promise(() => undefined);
       },
       resize: async () => undefined,
       signal: async () => undefined,
       status: async () => ptyStates?.get(pty.id) ?? { status: "running", outputHighWater: 0n },
-      close: async () => undefined,
+      close: async () => void captureOps?.closed?.push(argvOfPty.get(pty.id) ?? []),
       attach: async () => new Promise(() => undefined),
     };
     ptys.set(pty.id, pty);
@@ -762,7 +769,13 @@ export const sealantLaunchLayer = (
                   captureOps?.beforeOpen?.(argv);
                   spawned?.push(argv);
                   if (options !== undefined) openedOptions?.push(options);
-                  return openPty(options?.mode ?? "pty", captureOps?.ptyOutput?.(argv));
+                  const pty = openPty(
+                    options?.mode ?? "pty",
+                    captureOps?.ptyOutput?.(argv),
+                    captureOps?.ptyKeepsRunning?.(argv) === true,
+                  );
+                  argvOfPty.set(pty.id, argv);
+                  return pty;
                 }),
           ),
         ),
