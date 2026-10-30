@@ -421,6 +421,30 @@ describe.skipIf(!hasOpenssl)("a registry that is not a mirror, over HTTPS", () =
     expect(remote.seen.map((each) => each.url)).toEqual(["/v2/acme/app/manifests/1"]);
   });
 
+  it.each([
+    [
+      "redirect",
+      (mirror: string): Handler =>
+        (_request, response) => {
+          response.writeHead(307, { location: `${mirror}/v2/acme/app/manifests/1` });
+          response.end();
+        },
+    ],
+    ["token realm", (mirror: string) => challenge(`${mirror}/token`)],
+  ])(
+    "refuses a registry's %s to an operator's mirror, asking the mirror nothing",
+    async (_, at) => {
+      const mirror = await registry(serve(index("1")));
+      const remote = await secure("registry.test", at(mirror.origin));
+      const result = await resolveWith(
+        { ...publicLoopback().access, mirrors: [new URL(mirror.origin)] },
+        `${remote.host}/acme/app:1`,
+      );
+      expect(failureOf(result)).toBe("registry-refused");
+      expect(mirror.seen).toEqual([]);
+    },
+  );
+
   it("refuses a name that resolves to a public address and a private one, dialing neither", async () => {
     const remote = await secure("registry.test", serve(index("1")));
     const names = publicLoopback({ "registry.test": ["127.0.0.1", "10.0.0.5"] });

@@ -12,9 +12,10 @@ import * as Context from "effect/Context";
 /**
  * Pins a resource's image at approval (ADR 0019, "Approving a definition"): the digest of the
  * manifest a registry serves for its tag, through the OCI distribution API. Mend asks the
- * operator's Docker Hub mirrors first, then the registry. Only an operator's mirror may be private
- * or plain HTTP; any other destination, a redirect's or a token realm's included, must be HTTPS on
- * a public address, checked on the address the connection dials. No credential is sent but the
+ * operator's Docker Hub mirrors first, then the registry. Only an operator's mirror, asked as a
+ * mirror, may be private or plain HTTP; any other destination, a registry's redirect or token realm
+ * that names a mirror included, must be HTTPS on a public address, checked on the address the
+ * connection dials. No credential is sent but the
  * anonymous token a registry hands out, and only back to that registry's origin.
  */
 
@@ -130,6 +131,13 @@ const bearerChallenge = (value: string | undefined) => {
   return realm === undefined ? null : { realm, service: params.get("service") ?? null };
 };
 
+/** One registry's requests: its manifest, its redirects and its token. */
+interface Attempt {
+  readonly signal: AbortSignal;
+  /** Whether it began at an operator's mirror, so that mirror's origin may be private or HTTP. */
+  readonly fromMirror: boolean;
+}
+
 const makeResolve = (access: RegistryAccess) => {
   const operatorOrigins = new Set(access.mirrors.map((mirror) => mirror.origin));
 
@@ -138,9 +146,9 @@ const makeResolve = (access: RegistryAccess) => {
     url: URL,
     headers: Readonly<Record<string, string>>,
     maxBytes: number,
-    signal: AbortSignal,
+    { signal, fromMirror }: Attempt,
   ): Promise<Reply> => {
-    const operator = operatorOrigins.has(url.origin);
+    const operator = fromMirror && operatorOrigins.has(url.origin);
     if (!operator && url.protocol !== "https:") throw new Refused("not https");
     if (url.protocol !== "https:" && url.protocol !== "http:") throw new Refused("not http");
     const host = url.hostname.replace(/^\[|\]$/g, "");
@@ -184,12 +192,12 @@ const makeResolve = (access: RegistryAccess) => {
   const tokenFor = async (
     challenge: { readonly realm: string; readonly service: string | null },
     repository: string,
-    signal: AbortSignal,
+    attempt: Attempt,
   ): Promise<string | ImageFailure> => {
     const realm = new URL(challenge.realm);
     if (challenge.service !== null) realm.searchParams.set("service", challenge.service);
     realm.searchParams.set("scope", `repository:${repository}:pull`);
-    const reply = await get(realm, { accept: "application/json" }, MAX_TOKEN_BYTES, signal);
+    const reply = await get(realm, { accept: "application/json" }, MAX_TOKEN_BYTES, attempt);
     if (reply.status === 429 || reply.status >= 500) return "unavailable";
     if (reply.status !== 200 || reply.body === null) return "login-required";
     let parsed: unknown;
@@ -229,7 +237,7 @@ const makeResolve = (access: RegistryAccess) => {
   const manifestAt = async (
     base: string,
     reference: Reference,
-    signal: AbortSignal,
+    attempt: Attempt,
   ): Promise<ImageDigest | ImageFailure> => {
     let url = new URL(`/v2/${reference.repository}/manifests/${reference.tag}`, base);
     let token: { readonly origin: string; readonly value: string } | null = null;
@@ -243,7 +251,7 @@ const makeResolve = (access: RegistryAccess) => {
         url,
         { accept: MANIFEST_TYPES.join(", "), ...authorization },
         access.maxManifestBytes,
-        signal,
+        attempt,
       );
       const location = header(reply.headers, "location");
       if (reply.status >= 300 && reply.status < 400 && location !== undefined) {
@@ -256,7 +264,7 @@ const makeResolve = (access: RegistryAccess) => {
         challenged = true;
         const challenge = bearerChallenge(header(reply.headers, "www-authenticate"));
         if (challenge === null) return "login-required";
-        const issued = await tokenFor(challenge, reference.repository, signal);
+        const issued = await tokenFor(challenge, reference.repository, attempt);
         if (issued === "unavailable" || issued === "login-required") return issued;
         token = { origin: url.origin, value: issued };
         continue;
@@ -272,18 +280,22 @@ const makeResolve = (access: RegistryAccess) => {
     reference: Reference,
     signal: AbortSignal,
   ): Promise<ResolvedImage | ImageFailure> => {
-    const bases = reference.hub
-      ? [...access.mirrors.map((mirror) => mirror.origin), reference.origin]
-      : [reference.origin];
+    const bases = [
+      ...(reference.hub
+        ? access.mirrors.map((mirror) => ({ origin: mirror.origin, mirror: true }))
+        : []),
+      { origin: reference.origin, mirror: false },
+    ];
     let failure: ImageFailure = "unavailable";
     // A mirror that does not answer hands over to the next, then to the registry; any other
     // answer is final, since a pull-through mirror says what the registry would.
     for (const base of bases) {
-      const answer = await manifestAt(base, reference, signal).catch(
+      const attempt = { signal, fromMirror: base.mirror };
+      const answer = await manifestAt(base.origin, reference, attempt).catch(
         (cause: unknown): ImageFailure =>
           cause instanceof Refused ? "registry-refused" : "unavailable",
       );
-      if (!isFailure(answer)) return { digest: answer, resolvedBy: new URL(base).host };
+      if (!isFailure(answer)) return { digest: answer, resolvedBy: new URL(base.origin).host };
       failure = answer;
       if (failure !== "unavailable") break;
     }
