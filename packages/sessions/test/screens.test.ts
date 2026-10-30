@@ -338,6 +338,29 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
   );
 
   it.live(
+    "refuses an act on a turn someone other than the screen's person sent, sending nothing",
+    () =>
+      asProcess(
+        Effect.gen(function* () {
+          const screens = yield* Screens;
+          const { sessionId, screen } = yield* sessionWithScreen;
+          const agent = agentOf(sessionId);
+          answered(yield* screens.look(agent.call()));
+          x("xdotool mousemove 17 19");
+          const seen = (yield* logOf(screen.id)).length;
+          const steered = { ...agent.call(), accountId: "bob" };
+          expect(yield* screens.act(steered, { actions: [movedTo({ x: 777, y: 555 })] })).toEqual({
+            _tag: "Refused",
+            refusal: "owner_only",
+          });
+          expect(pointer()).toEqual([17, 19]);
+          expect((yield* logOf(screen.id)).length).toBe(seen);
+        }),
+      ),
+    { timeout: 60_000 },
+  );
+
+  it.live(
     "resets the input when the hand's connection ends, and dials a new hand at the next call",
     () =>
       asProcess(
