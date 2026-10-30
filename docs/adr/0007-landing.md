@@ -387,14 +387,14 @@ no origin, work past the base is on no remote at all, and the refusal says so.
 Amended 2026-10-30 (SLNT-96, decisions Q1 to Q4 of 2026-10-25). Worktree and project removal follow
 one rule set (`decideRemoval` in `@mend/domain`), and every client reads one refusal: a 409
 `RemovalRefused` that lists every blocker at once. A blocker is a live session (or a process or
-Service forward still running), a save under way, a change not on origin, a repository nested in
-the worktree, a session of another project holding it, declared resources, or another removal under
-way. Only the change's owner removes a worktree; anyone else, an organization owner included, gets a
-403 `RemovalForbidden` that names the owner. A worktree with no known owner keeps the earlier rule:
+Service forward still running), a save under way, a change not on origin, a repository nested in the
+worktree, a session of another project holding it, declared resources, or another removal under way.
+Only the change's owner removes a worktree; anyone else, an organization owner included, gets a 403
+`RemovalForbidden` that names the owner. A worktree with no known owner keeps the earlier rule:
 whoever manages the project, or a caller who owns every session in it. The owner's `force` lifts
-only a change not on origin and nested repositories, never running or unsaved work. Project
-removal refuses on the same blockers in every worktree, whoever's, and has no force. Neither ever
-stops a session or a Service for the caller.
+only a change not on origin and nested repositories, never running or unsaved work. Project removal
+refuses on the same blockers in every worktree, whoever's, and has no force. Neither ever stops a
+session or a Service for the caller.
 
 A removal marks its worktree or project row (`checking`, then `deleting`) while it reads and
 deletes. A session that would become live there, or a new worktree in a marked project, is refused

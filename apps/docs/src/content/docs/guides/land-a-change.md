@@ -374,11 +374,11 @@ git access to check.
 
 ## Removing a project
 
-Removing a project deletes every worktree in it, so it is refused while any of them, whoever
-started it, has a session live, a workspace saving, or a change not on origin. The refusal names
-each worktree and whose work it is, and the project, its worktrees and its sessions stay as they
-were. There is no force for a project: each owner lands or removes their own worktree first. Only
-an organization owner, or the creator of a private project, removes a project.
+Removing a project deletes every worktree in it, so it is refused while any of them, whoever started
+it, has a session live, a workspace saving, or a change not on origin. The refusal names each
+worktree and whose work it is, and the project, its worktrees and its sessions stay as they were.
+There is no force for a project: each owner lands or removes their own worktree first. Only an
+organization owner, or the creator of a private project, removes a project.
 
 ## Pull a change into your own clone
 
