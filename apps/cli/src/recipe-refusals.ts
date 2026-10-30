@@ -1,3 +1,5 @@
+import { resourceProposalsSection } from "@mend/domain/workbench";
+
 /** One refusal of `GET /sessions/:id/declarations`: the recipe, the key it names, and why. */
 export interface RecipeRefusalDto {
   readonly name: string | null;
@@ -8,9 +10,10 @@ export interface RecipeRefusalDto {
 /** The parts of `GET /sessions/:id/declarations` the CLI reads; a server before 0.37 has none. */
 export interface ServiceDeclarationsDto {
   readonly refused: ReadonlyArray<RecipeRefusalDto>;
+  readonly ignored: ReadonlyArray<{ readonly name: string | null; readonly key: string }>;
 }
 
-export const missingRecipeLine = (
+const recipeLine = (
   name: string,
   declared: ReadonlyArray<{ readonly name: string }>,
   declarations: ServiceDeclarationsDto | null,
@@ -25,3 +28,13 @@ export const missingRecipeLine = (
     ? `no mend.toml recipes in this worktree — declare [service.${name}] first`
     : `no recipe named "${name}" — declared: ${declared.map((entry) => entry.name).join(", ")}`;
 };
+
+export const missingRecipeLine = (
+  name: string,
+  declared: ReadonlyArray<{ readonly name: string }>,
+  declarations: ServiceDeclarationsDto | null,
+): string =>
+  [
+    recipeLine(name, declared, declarations),
+    ...(declarations === null ? [] : resourceProposalsSection(declarations)),
+  ].join("\n");

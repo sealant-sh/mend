@@ -24,6 +24,7 @@ import { makeEngineClock } from "./engine/clock-fixture.ts";
 import {
   makeWorld,
   sealantLaunchLayer,
+  servedSocketApis,
   setup,
   withEngine,
   withPreparedEngineEffect,
@@ -273,6 +274,57 @@ describe("a recipe's launch", () => {
           const declared = yield* engine.serviceDeclarations(session.id);
           expect(declared.recipes.map((recipe) => recipe.name)).toEqual(["api"]);
           expect(yield* engine.listServiceRecipes(session.id)).toHaveLength(1);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("names the file's resource proposal notices when no recipe matches, in what the in-workspace helper prints", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const { engine, session } = yield* provisionIn(project);
+          yield* engine.launch(session.id, ["codex"]);
+          const served = servedSocketApis.get(session.id);
+          if (served === undefined) throw new Error("the session serves no channel");
+          // The channel answers a failed route with its message; the helper prints "mend: " + it.
+          const helperPrints = (name: string) =>
+            Effect.promise(() =>
+              Effect.runPromise(served.runServiceRecipe(name)).then(
+                () => "mend: (started)",
+                (error: unknown) =>
+                  `mend: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+          const recipes = '[service.web]\ncommand = "pnpm dev"\nport = 3000\n';
+          writeMendToml(tmp, session.worktree, recipes);
+          expect(yield* helperPrints("absent")).toBe(
+            'mend: No Service recipe named "absent" exists in this session.',
+          );
+
+          writeMendToml(
+            tmp,
+            session.worktree,
+            recipes +
+              '[service.api]\ncommand = "x"\nport = 4000\ncwd = "/srv"\n' +
+              '[resource.bad]\nimage = "alpine:3.22"\nports = { http = 70000 }\n',
+          );
+          const missing = (yield* helperPrints("absent")).split("\n");
+          expect(missing.slice(0, 2)).toEqual([
+            'mend: No Service recipe named "absent" exists in this session.',
+            "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings):",
+          ]);
+          expect(missing.filter((line) => line.includes("resource.bad.ports.http"))).toEqual([
+            expect.stringMatching(/^ {2}resource\.bad\.ports\.http · /),
+          ]);
+
+          const refused = (yield* helperPrints("api")).split("\n");
+          expect(refused.slice(0, 2)).toEqual([
+            "mend: mend.toml refuses api: api · cwd · is absolute; name a directory inside the repository",
+            "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings):",
+          ]);
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );

@@ -100,6 +100,7 @@ import {
   previewControlDecider,
   previewStartId,
   recipeRefusalLine,
+  resourceProposalsSection,
   PreviewStartRefusal,
   type PreviewStartRequest,
   type ServiceStartCause,
@@ -598,6 +599,7 @@ import {
   RecipeFileError,
   resolveDeclarations,
 } from "./recipes.ts";
+import { declarationsNote } from "./resource-proposals.ts";
 import {
   HOT_POOL_MAX_OWNERS,
   HOT_POOL_RECENT_OWNER_WINDOW,
@@ -13146,11 +13148,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ` — start one with \`mend service run <name>\`.\n\n`) +
           (read instanceof RecipeFileError
             ? `mend.toml declares nothing this session can run: ${read.message}\n\n`
-            : declared.refused.length === 0
-              ? ""
-              : `Refused in mend.toml (fix these before running them):\n\n` +
-                declared.refused.map((refusal) => `- ${recipeRefusalLine(refusal)}`).join("\n") +
-                `\n\n`);
+            : declarationsNote(declared));
         const servicesSection =
           `## Mend Services\n\n` +
           `For any long-running server (dev server, database), use ` +
@@ -23598,18 +23596,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           file,
           yield* projectRecipes.listForProject(session.projectId),
         );
+        // The in-workspace helper prints this message as is, so it carries the file's notices.
+        const notRun = (line: string) =>
+          new ServiceStartError({
+            message: [line, ...resourceProposalsSection(declared)].join("\n"),
+          });
         const refusals = declared.refused.filter((refusal) => refusal.name === name);
         if (refusals.length > 0) {
-          return yield* new ServiceStartError({
-            message: `mend.toml refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
-          });
+          return yield* notRun(
+            `mend.toml refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
+          );
         }
         const steps = planStart(declared, name);
         const recipe = steps.at(-1);
         if (recipe === undefined || recipe.name !== name) {
-          return yield* new ServiceStartError({
-            message: `No Service recipe named "${name}" exists in this session.`,
-          });
+          return yield* notRun(`No Service recipe named "${name}" exists in this session.`);
         }
         const key = planKey(sessionId, startId ?? crypto.randomUUID());
         const running = servicePlans.get(key);
