@@ -2,16 +2,23 @@ import { ResourceDefinitionId, ResourceProposalId, WorktreeId } from "@mend/doma
 import {
   presetDefinition,
   PresetVersion,
+  type ResourceApprovalRequest,
   ResourceName,
   ResourceSpecDigest,
 } from "@mend/domain/workbench";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { EMPTY_DRAFT, type ResourceSettingView, type ResourcesPageView } from "#/lib/resources";
+import {
+  EMPTY_DRAFT,
+  type ResourceProposalView,
+  type ResourceSettingView,
+  type ResourcesPageView,
+} from "#/lib/resources";
 
 import {
   ProposalForm,
+  ReadState,
   type ResourceHandlers,
   ResourcesView,
   type ResourcesViewProps,
@@ -34,29 +41,37 @@ const handlers: ResourceHandlers = {
   choose: nothing,
   reload: nothing,
 };
+const none = { project: null, worktree: null };
+const forProject: ResourceApprovalRequest = {
+  source: { kind: "settings", id: ResourceDefinitionId.make("rdef_db"), digest },
+  worktreeId: null,
+};
 
 const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingView => ({
   id: ResourceDefinitionId.make("rdef_db"),
   digest,
   spec: db,
-  approval: { by: "alice", for: "project" },
+  approvals: { project: { by: "alice" }, worktree: null },
+  approve: none,
   choice: "shared",
   canRemove: false,
-  canApprove: false,
   canChoose: false,
   statusLine: "@db · postgres 17 · project · approved by Alice · shared database · not started",
   ...overrides,
 });
 
-const proposal = {
+const proposal = (overrides: Partial<ResourceProposalView> = {}): ResourceProposalView => ({
   id: ResourceProposalId.make("rprop_1"),
   digest,
   spec: db,
   proposedBy: "carol",
+  mine: true,
   canRemove: true,
-  canApprove: false,
-  statusLine: "@db · postgres 17 · project · proposed by Carol · same as settings",
-};
+  approvals: none,
+  approve: none,
+  statusLine: "@db · postgres 17 · project · proposed by Carol · waiting for approval",
+  ...overrides,
+});
 
 const render = (page: Partial<ResourcesPageView>, overrides: Partial<ResourcesViewProps> = {}) =>
   renderToStaticMarkup(
@@ -70,7 +85,7 @@ const render = (page: Partial<ResourcesPageView>, overrides: Partial<ResourcesVi
       }}
       worktreeId={worktree}
       worktreeName="checkout"
-      busy={null}
+      busy={new Map()}
       notes={new Map()}
       confirming={null}
       handlers={handlers}
@@ -86,36 +101,35 @@ describe("the resources card", () => {
     expect(render({})).toContain("No resources yet.");
   });
 
-  it("shows each line as the server sent it, proposals apart, and only the acts the flags allow", () => {
-    const markup = render({ settings: [setting()], proposals: [proposal] });
+  it("shows each line as the server sent it, and only the acts the page offers", () => {
+    const markup = render({ settings: [setting()], proposals: [proposal()] });
     expect(markup).toContain(
       "@db · postgres 17 · project · approved by Alice · shared database · not started",
     );
-    expect(markup).toContain("proposals · not approved");
-    expect(markup).toContain("proposed by Carol · same as settings");
+    expect(markup).toContain(">proposals<");
+    expect(markup).not.toContain("not approved");
     expect(buttons(markup)).toEqual(["withdraw"]);
   });
 
-  it("offers no approval of a proposal settings already hold", () => {
-    const markup = render(
-      { settings: [setting()], proposals: [{ ...proposal, canApprove: true }] },
-      { worktreeId: null },
-    );
-    expect(buttons(markup)).toEqual(["withdraw"]);
-    const other = {
-      ...proposal,
-      digest: ResourceSpecDigest.make("d".repeat(64)),
-      canApprove: true,
-    };
-    expect(
-      buttons(render({ settings: [setting()], proposals: [other] }, { worktreeId: null })),
-    ).toEqual(["approve for the project…", "withdraw"]);
+  it("says withdraw for the reader's own proposal and remove for a manager removing another's", () => {
+    expect(buttons(render({ proposals: [proposal({ mine: false })] }))).toEqual(["remove"]);
+  });
+
+  it("offers one approval per target the server built a request for", () => {
+    const markup = render({
+      settings: [
+        setting({
+          approvals: none,
+          approve: { project: forProject, worktree: { ...forProject, worktreeId: worktree } },
+        }),
+      ],
+    });
+    expect(buttons(markup)).toEqual(["approve for the project…", "approve for worktree checkout…"]);
   });
 
   it("names the mode in use to a reader who cannot change it, and offers no choice", () => {
     const markup = render({ settings: [setting()] });
     expect(markup).toContain("checkout uses shared.");
-    expect(markup).toContain("Any worktree on shared can change or drop its tables.");
     expect(markup).not.toContain("aria-pressed");
   });
 
@@ -124,43 +138,39 @@ describe("the resources card", () => {
     expect(
       [...markup.matchAll(/aria-pressed="true"[^>]*>([^<]*)</g)].map((match) => match[1]),
     ).toEqual(["shared"]);
-    expect(buttons(markup)).toEqual(["shared", "own", "off"]);
   });
 
-  it("says nothing was chosen yet, and the default at the first launch", () => {
-    const markup = render({ settings: [setting({ choice: null, canChoose: true })] });
-    expect(markup).toContain("checkout · nothing chosen yet · own at its first launch");
-    expect(markup).not.toContain('aria-pressed="true"');
-  });
-
-  it("shows the runtime's refusal for an approved definition, and never a start button", () => {
+  it("says a session, not this one, can run its own while starting is refused", () => {
     const markup = render({ settings: [setting()] });
     expect(markup).toContain(
-      "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+      "@db · resources need a newer Sealant on this runtime · a session can run its own [service.db]",
     );
+    expect(markup).not.toContain("this session");
     expect(buttons(markup)).not.toContain("start");
   });
 
-  it("reviews the exact definition and its digest before an approval is sent", () => {
-    const entry = setting({ approval: null, canApprove: true, choice: null });
-    const markup = render(
-      { settings: [entry] },
-      {
-        worktreeId: null,
-        confirming: {
-          key: "s:rdef_db",
-          spec: db,
-          digest,
-          request: { source: { kind: "settings", id: entry.id, digest }, worktreeId: null },
-        },
-      },
-    );
+  it("reviews every field apart and the definition digest, for the read it was opened on", () => {
+    const entry = setting({ approvals: none, approve: { project: forProject, worktree: null } });
+    const confirming = {
+      key: "s:rdef_db",
+      spec: db,
+      digest,
+      request: forProject,
+      target: "for the project",
+      worktreeId: null,
+    };
+    const markup = render({ settings: [entry] }, { worktreeId: null, confirming });
     expect(markup).toContain(`sha256:${digest}`);
-    expect(markup).toContain("postgres:17");
+    expect(markup).toContain(">definition digest<");
+    expect(markup).toContain("[&quot;-c&quot;,&quot;fsync=on&quot;");
     expect(markup).toContain("Approve exactly this definition for the project.");
+    // Read for another worktree, the same item shows no review it was not opened on.
+    expect(render({ settings: [entry] }, { worktreeId: worktree, confirming })).not.toContain(
+      "Approve exactly",
+    );
   });
 
-  it("offers a reload beside a write that changed since it was read", () => {
+  it("writes each refusal on its own line, with a reload beside a stale read", () => {
     const markup = render(
       { settings: [setting({ canRemove: true })] },
       {
@@ -169,15 +179,50 @@ describe("the resources card", () => {
             "s:rdef_db",
             {
               refused: true,
-              lines: ["the definition changed since you read it · nothing was removed"],
+              lines: ["@db · worktree is one worktree", "@db · image is sha256:1"],
               reload: true,
             },
           ],
         ]),
       },
     );
-    expect(markup).toContain("the definition changed since you read it · nothing was removed");
+    expect(markup).toContain(">@db · worktree is one worktree</p>");
+    expect(markup).toContain(">@db · image is sha256:1</p>");
     expect(buttons(markup)).toContain("reload");
+  });
+
+  it("says busy only on the action running, and holds the item's other actions", () => {
+    const markup = render(
+      { settings: [setting({ canRemove: true, canChoose: true })] },
+      { busy: new Map([["s:rdef_db", "choose"]]) },
+    );
+    expect(buttons(markup)).toContain("remove");
+    expect(markup).not.toContain("removing…");
+    expect(markup).toMatch(/<button type="button" disabled=""[^>]*>remove<\/button>/);
+  });
+});
+
+const emptyPage: ResourcesPageView = {
+  settings: [],
+  proposals: [],
+  file: { kind: "not-selected" },
+  canPropose: true,
+};
+
+describe("reading the card", () => {
+  const show = (read: Parameters<typeof ReadState>[0]["read"]) =>
+    renderToStaticMarkup(
+      <ReadState read={read} worktreeName="checkout" onRetry={nothing}>
+        {() => <p>loaded</p>}
+      </ReadState>,
+    );
+
+  it("tells a read in flight from a failed one, which offers a retry", () => {
+    expect(show({ kind: "pending" })).toContain("reading resources for checkout…");
+    const failed = show({ kind: "failed", message: "Not found. It may have been removed." });
+    expect(failed).toContain("resources for checkout not read · Not found.");
+    expect(buttons(failed)).toEqual(["retry"]);
+    expect(show({ kind: "loaded", page: emptyPage, worktreeId: worktree })).toContain("loaded");
   });
 });
 
@@ -202,5 +247,23 @@ describe("the proposal form", () => {
     expect(refusal).toBeGreaterThan(ports);
     expect(refusal).toBeLessThan(markup.indexOf('aria-label="Volumes"'));
     expect(markup.indexOf("exports.URL names {x}")).toBeGreaterThan(markup.indexOf("+ env"));
+  });
+
+  it("lets each env row be removed", () => {
+    const markup = renderToStaticMarkup(
+      <ProposalForm
+        draft={{
+          ...EMPTY_DRAFT,
+          kind: "image",
+          env: [{ key: "MP_UI_AUTH", from: "secret", value: "MAILPIT_AUTH" }],
+        }}
+        refusals={[]}
+        busy={false}
+        onChange={nothing}
+        onCancel={nothing}
+        onSubmit={nothing}
+      />,
+    );
+    expect(markup).toContain('aria-label="Remove env MP_UI_AUTH"');
   });
 });

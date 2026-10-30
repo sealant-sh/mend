@@ -1,21 +1,21 @@
 import type { WorktreeId } from "@mend/domain";
 import {
   choicesFor,
+  type ResourceApprovalOffers,
   type ResourceApprovalRequest,
   type ResourceDefinitionInput,
   type ResourceRefusal,
   resourceProposalNotices,
+  resourceReviewRows,
   resourceRuntimeRefusal,
   type WorktreeChoice,
 } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useRef, useState } from "react";
 
 import {
-  approvalRequest,
   approveResource,
-  awaitsApproval,
   choiceInUse,
   choiceWords,
   chooseResource,
@@ -27,33 +27,39 @@ import {
   proposeResource,
   readerZone,
   removeResourceDefinition,
+  type ResourceProposalView,
   type ResourcesPageView,
   type ResourceSettingView,
-  reviewFields,
-  sameAsSettings,
   withdrawResourceProposal,
 } from "#/lib/resources";
+import {
+  type Answer,
+  answered,
+  type ItemNote,
+  refusedNote,
+  resourcesRead,
+  settleChoice,
+} from "#/lib/resources-card";
 import { useTRPC } from "#/lib/trpc";
 
 /**
  * A project's resources in its setup (ADR 0019): definitions settings hold, members' proposals,
  * and a chosen worktree's `mend.toml` tables, each on the one status line the server sends. Every
- * control appears only where the page's flags allow the act; the server decides it again.
+ * control comes from the page: its flags, and the approval requests the server built for it.
  */
 
-/** What answered an act on one item: the server's lines, and whether a reload helps. */
-export interface ItemNote {
-  readonly refused: boolean;
-  readonly lines: ReadonlyArray<string>;
-  readonly reload: boolean;
-}
-
+/** An approval under review: the request the server built, and the read it came from. */
 export interface Confirming {
   readonly key: string;
   readonly spec: ResourceDefinitionInput;
   readonly digest: string;
   readonly request: ResourceApprovalRequest;
+  readonly target: string;
+  readonly worktreeId: WorktreeId | null;
 }
+
+/** The act running on each item, by item key; one at a time per item. */
+export type Busy = ReadonlyMap<string, string>;
 
 const quiet =
   "shrink-0 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50";
@@ -67,168 +73,178 @@ const toggle = (on: boolean) =>
       : "border-border bg-card text-muted-foreground hover:text-foreground"
   }`;
 
-/** A refused write, in the server's words; a read that changed since is offered a reload. */
-const refusedNote = (outcome: { readonly kind: string; readonly message: string }): ItemNote => ({
-  refused: true,
-  lines: [outcome.message],
-  reload: outcome.kind === "stale",
-});
-
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const PROPOSE = "form";
+
+/** An act answered with nothing to say: the item's earlier note goes. */
+const none = (key: string): Answer => ({ at: key, note: null });
 
 export function ResourcesSection({ projectId }: { readonly projectId: string }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const [worktreeId, setWorktreeId] = useState<WorktreeId | null>(null);
-  const worktrees = useQuery(trpc.worktrees.list.queryOptions({ projectId })).data?.worktrees ?? [];
+  const worktreesQuery = useQuery(trpc.worktrees.list.queryOptions({ projectId }));
+  const worktrees = worktreesQuery.data?.worktrees ?? [];
   const listOptions = trpc.resources.list.queryOptions({
     projectId,
     timeZone: readerZone(),
     worktreeId,
   });
-  const page = useQuery({ ...listOptions, placeholderData: keepPreviousData }).data;
-  const [busy, setBusy] = useState<string | null>(null);
+  const query = useQuery(listOptions);
+  const read = resourcesRead(query, worktreeId);
+  const [busy, setBusy] = useState<Busy>(new Map());
+  const running = useRef(new Map<string, string>());
   const [notes, setNotes] = useState<ReadonlyMap<string, ItemNote>>(new Map());
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [draft, setDraft] = useState<ProposalDraft | null>(null);
   const [formRefusals, setFormRefusals] = useState<ReadonlyArray<ResourceRefusal>>([]);
 
-  const note = (key: string, value: ItemNote | null) =>
-    setNotes((current) => {
-      const next = new Map(current);
-      if (value === null) next.delete(key);
-      else next.set(key, value);
-      return next;
-    });
+  const invalidate = () => queryClient.invalidateQueries(trpc.resources.pathFilter());
   const reload = () => {
     setNotes(new Map());
     setConfirming(null);
-    return queryClient.invalidateQueries(trpc.resources.pathFilter());
+    return invalidate();
   };
-  /** One act on one item: its answer lands as that item's note. */
-  const act = (key: string, run: () => Promise<ItemNote | null>) => {
-    setBusy(key);
-    note(key, null);
+  /**
+   * One act on one item, never two at once on it: the guard reads a ref, so a second click before
+   * the next render is refused too. Its answer lands once, where the act says.
+   */
+  const act = (key: string, action: string, run: () => Promise<Answer>) => {
+    if (running.current.has(key)) return;
+    running.current.set(key, action);
+    setBusy(new Map(running.current));
     void run()
-      .then((answered) => note(key, answered))
-      .catch((error: unknown) =>
-        note(key, { refused: true, lines: [message(error)], reload: false }),
-      )
-      .finally(() => setBusy(null));
+      .catch((error: unknown) => ({
+        at: key,
+        note: { refused: true, lines: [message(error)], reload: false },
+      }))
+      .then((answer) => setNotes((current) => answered(current, key, answer)))
+      .finally(() => {
+        running.current.delete(key);
+        setBusy(new Map(running.current));
+      });
   };
 
   const handlers: ResourceHandlers = {
-    withdraw: (entry) =>
-      act(`p:${entry.id}`, async () => {
+    withdraw: (entry) => {
+      const key = `p:${entry.id}`;
+      act(key, "withdraw", async () => {
         const outcome = await withdrawResourceProposal(projectId, entry.id);
         if (!outcome.ok) {
           return {
-            refused: true,
-            lines: [`@${entry.spec.name} · this proposal is gone since you read it`],
-            reload: true,
+            at: key,
+            note: {
+              refused: true,
+              lines: [`@${entry.spec.name} · this proposal is gone since you read it`],
+              reload: true,
+            },
           };
         }
-        await reload();
-        return null;
-      }),
-    remove: (entry) =>
-      act(`s:${entry.id}`, async () => {
+        await invalidate();
+        return none(key);
+      });
+    },
+    remove: (entry) => {
+      const key = `s:${entry.id}`;
+      act(key, "remove", async () => {
         const outcome = await removeResourceDefinition(projectId, entry);
-        if (!outcome.ok) return refusedNote(outcome);
-        await reload();
-        return null;
-      }),
+        if (!outcome.ok) return { at: key, note: refusedNote(outcome) };
+        await invalidate();
+        return none(key);
+      });
+    },
     confirm: setConfirming,
     approve: (pending) =>
-      act(pending.key, async () => {
+      act(pending.key, "approve", async () => {
         const outcome = await approveResource(projectId, pending.request);
         setConfirming(null);
-        if (!outcome.ok) return refusedNote(outcome);
+        if (!outcome.ok) return { at: pending.key, note: refusedNote(outcome) };
         const { definition, image, resolvedBy } = outcome.result;
-        await queryClient.invalidateQueries(trpc.resources.pathFilter());
+        await invalidate();
         // A proposal or a file table approved is now the definition settings hold.
-        note(`s:${definition.id}`, {
-          refused: false,
-          lines: [`image ${image}${resolvedBy === null ? "" : ` · digest from ${resolvedBy}`}`],
-          reload: false,
-        });
-        return null;
+        return {
+          at: `s:${definition.id}`,
+          note: {
+            refused: false,
+            lines: [`image ${image}${resolvedBy === null ? "" : ` · digest from ${resolvedBy}`}`],
+            reload: false,
+          },
+        };
       }),
-    choose: (entry, mode) => {
-      if (worktreeId === null) return;
-      act(`s:${entry.id}`, async () => {
-        const outcome = await chooseResource(projectId, worktreeId, entry.id, mode);
-        if (!outcome.ok) return refusedNote(outcome);
-        const { statusLine } = outcome.result;
-        queryClient.setQueryData(listOptions.queryKey, (current) =>
-          current === undefined
-            ? current
-            : {
-                ...current,
-                settings: current.settings.map((each) =>
-                  each.id === entry.id
-                    ? { ...each, choice: outcome.result.mode, statusLine }
-                    : each,
-                ),
-              },
-        );
-        return null;
+    choose: (entry, readFor, mode) => {
+      if (readFor === null) return;
+      const key = `s:${entry.id}`;
+      act(key, "choose", async () => {
+        const outcome = await chooseResource(projectId, readFor, entry.id, mode);
+        if (!outcome.ok) return { at: key, note: refusedNote(outcome) };
+        await settleChoice(queryClient, listOptions.queryKey, outcome.result);
+        return none(key);
       });
     },
     reload: () => void reload(),
   };
 
   const propose = (current: ProposalDraft) => {
+    if (running.current.has(PROPOSE)) return;
     const checked = proposalOf(current);
     if (!checked.ok) return setFormRefusals(checked.refusals);
-    setBusy("propose");
     setFormRefusals([]);
-    void proposeResource(projectId, checked.proposal)
-      .then(async (outcome) => {
-        if (!outcome.ok) {
-          return setFormRefusals(
-            outcome.kind === "rejected"
-              ? outcome.refusals
-              : [{ key: "proposal", message: outcome.message }],
-          );
-        }
-        setDraft(null);
-        await reload();
-        return note(`p:${outcome.result.id}`, {
-          refused: false,
-          lines: ["Proposed. A manager approves it here."],
-          reload: false,
-        });
-      })
-      .catch((error: unknown) => setFormRefusals([{ key: "proposal", message: message(error) }]))
-      .finally(() => setBusy(null));
+    act(PROPOSE, "propose", async () => {
+      const outcome = await proposeResource(projectId, checked.proposal);
+      if (!outcome.ok) {
+        setFormRefusals(
+          outcome.kind === "rejected"
+            ? outcome.refusals
+            : [{ key: "proposal", message: outcome.message }],
+        );
+        return none(PROPOSE);
+      }
+      setDraft(null);
+      await invalidate();
+      return {
+        at: `p:${outcome.result.id}`,
+        note: { refused: false, lines: ["Proposed. A manager approves it here."], reload: false },
+      };
+    });
   };
 
-  const worktreeName = worktrees.find((each) => each.id === worktreeId)?.name ?? null;
+  const readName = (id: WorktreeId | null) =>
+    id === null ? null : (worktrees.find((each) => each.id === id)?.name ?? id);
   return (
     <section id="resources" className="project-setup-card">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <h2 className="font-sans text-sm font-semibold">Resources</h2>
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          read for worktree
-          <select
-            value={worktreeId ?? ""}
-            onChange={(event) => {
-              const chosen = worktrees.find((each) => each.id === event.target.value);
-              setWorktreeId(chosen?.id ?? null);
-              setNotes(new Map());
-              setConfirming(null);
-            }}
-            className="rounded-lg border border-input bg-background px-2 py-1 font-mono text-[11px] text-foreground"
-          >
-            <option value="">none</option>
-            {worktrees.map((each) => (
-              <option key={each.id} value={each.id}>
-                {each.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="flex flex-col items-end gap-1">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            read for worktree
+            <select
+              value={worktreeId ?? ""}
+              onChange={(event) => {
+                const chosen = worktrees.find((each) => each.id === event.target.value);
+                setWorktreeId(chosen?.id ?? null);
+                setNotes(new Map());
+                setConfirming(null);
+              }}
+              className="rounded-lg border border-input bg-background px-2 py-1 font-mono text-[11px] text-foreground"
+            >
+              <option value="">none</option>
+              {worktrees.map((each) => (
+                <option key={each.id} value={each.id}>
+                  {each.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {worktreesQuery.isError ? (
+            <p className="font-mono text-[11px] text-danger">
+              worktrees not read · {message(worktreesQuery.error)}{" "}
+              <button type="button" onClick={() => void worktreesQuery.refetch()} className={quiet}>
+                retry
+              </button>
+            </p>
+          ) : null}
+        </div>
       </div>
       <p className="mt-2.5 max-w-[64ch] text-xs leading-relaxed text-muted-foreground">
         Long-running services for the project or for one worktree, such as a database or a mail
@@ -236,20 +252,24 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
         approves it, and a worktree&apos;s change owner chooses how that worktree uses it. Approving
         pins the image; nothing starts until a runtime runs resources.
       </p>
-      {page === undefined ? (
-        <p className="mt-4 font-mono text-[11px] text-faint">reading resources…</p>
-      ) : (
-        <ResourcesView
-          page={page}
-          worktreeId={worktreeId}
-          worktreeName={worktreeName}
-          busy={busy}
-          notes={notes}
-          confirming={confirming}
-          handlers={handlers}
-        />
-      )}
-      {page?.canPropose !== true ? null : draft === null ? (
+      <ReadState
+        read={read}
+        worktreeName={readName(worktreeId)}
+        onRetry={() => void query.refetch()}
+      >
+        {(page, readWorktree) => (
+          <ResourcesView
+            page={page}
+            worktreeId={readWorktree}
+            worktreeName={readName(readWorktree)}
+            busy={busy}
+            notes={notes}
+            confirming={confirming}
+            handlers={handlers}
+          />
+        )}
+      </ReadState>
+      {read.kind !== "loaded" || !read.page.canPropose ? null : draft === null ? (
         <button
           type="button"
           onClick={() => {
@@ -264,7 +284,7 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
         <ProposalForm
           draft={draft}
           refusals={formRefusals}
-          busy={busy === "propose"}
+          busy={busy.has(PROPOSE)}
           onChange={(next) => {
             // A refusal answered the draft that was sent; an edit makes a new one.
             setDraft(next);
@@ -278,47 +298,109 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
   );
 }
 
+/** A read in flight, failed with its words and a retry, or loaded and handed on. */
+export function ReadState(props: {
+  readonly read: ReturnType<typeof resourcesRead>;
+  readonly worktreeName: string | null;
+  readonly onRetry: () => void;
+  readonly children: (page: ResourcesPageView, worktreeId: WorktreeId | null) => ReactNode;
+}) {
+  const { read } = props;
+  const where = props.worktreeName === null ? "" : ` for ${props.worktreeName}`;
+  switch (read.kind) {
+    case "pending":
+      return <p className="mt-4 font-mono text-[11px] text-faint">reading resources{where}…</p>;
+    case "failed":
+      return (
+        <div className="mt-4 border-l-2 border-[var(--sw-red)] pl-2">
+          <p className="font-mono text-[11px] text-danger">
+            resources{where} not read · {read.message}
+          </p>
+          <button type="button" onClick={props.onRetry} className={`${quiet} mt-1`}>
+            retry
+          </button>
+        </div>
+      );
+    case "loaded":
+      return props.children(read.page, read.worktreeId);
+  }
+}
+
 export interface ResourceHandlers {
-  readonly withdraw: (entry: ResourcesPageView["proposals"][number]) => void;
+  readonly withdraw: (entry: ResourceProposalView) => void;
   readonly remove: (entry: ResourceSettingView) => void;
   readonly confirm: (pending: Confirming | null) => void;
   readonly approve: (pending: Confirming) => void;
-  readonly choose: (entry: ResourceSettingView, mode: WorktreeChoice) => void;
+  /** `read`: the worktree the page on screen was read for, which the choice is made for. */
+  readonly choose: (
+    entry: ResourceSettingView,
+    read: WorktreeId | null,
+    mode: WorktreeChoice,
+  ) => void;
   readonly reload: () => void;
 }
 
 export interface ResourcesViewProps {
   readonly page: ResourcesPageView;
+  /** The worktree this page was read for; every action on it is for that worktree. */
   readonly worktreeId: WorktreeId | null;
   readonly worktreeName: string | null;
-  readonly busy: string | null;
+  readonly busy: Busy;
   readonly notes: ReadonlyMap<string, ItemNote>;
   readonly confirming: Confirming | null;
   readonly handlers: ResourceHandlers;
 }
 
-/** The lists, each item with its line, its image and the acts its flags allow. */
+/** The lists, each item with its line, its image and the acts the page offers on it. */
 export function ResourcesView(props: ResourcesViewProps) {
   const { page, worktreeId, worktreeName, busy, handlers } = props;
-  const forLabel = (spec: ResourceDefinitionInput) =>
-    spec.scope === "worktree" && worktreeName !== null
-      ? `for worktree ${worktreeName}`
-      : "for the project";
-  const approveAction = (
+  const label = (key: string, action: string, idle: string, running: string) =>
+    busy.get(key) === action ? running : idle;
+  /** One button per target the server built a request for. */
+  const approveActions = (
     key: string,
-    spec: ResourceDefinitionInput,
-    digest: string,
-    request: ResourceApprovalRequest,
-  ) => (
-    <button
-      type="button"
-      disabled={busy !== null}
-      onClick={() => handlers.confirm({ key, spec, digest, request })}
-      className={quiet}
-    >
-      approve {forLabel(spec)}…
-    </button>
-  );
+    item: { readonly spec: ResourceDefinitionInput; readonly digest: string },
+    offers: ResourceApprovalOffers,
+  ) =>
+    (
+      [
+        ["for the project", offers.project],
+        [`for worktree ${worktreeName ?? ""}`, offers.worktree],
+      ] as const
+    ).map(([target, request]) =>
+      request === null ? null : (
+        <button
+          key={target}
+          type="button"
+          disabled={busy.has(key)}
+          onClick={() =>
+            handlers.confirm({
+              key,
+              spec: item.spec,
+              digest: item.digest,
+              request,
+              target,
+              worktreeId,
+            })
+          }
+          className={quiet}
+        >
+          approve {target}…
+        </button>
+      ),
+    );
+  const review = (key: string) => {
+    const { confirming } = props;
+    // A review belongs to the read it was opened on; another worktree's read closes it.
+    return confirming?.key === key && confirming.worktreeId === worktreeId ? (
+      <ApprovalReview
+        pending={confirming}
+        busy={busy.get(key) === "approve"}
+        onCancel={() => handlers.confirm(null)}
+        onApprove={handlers.approve}
+      />
+    ) : null;
+  };
   const item = (
     key: string,
     line: string,
@@ -337,18 +419,11 @@ export function ResourcesView(props: ResourcesViewProps) {
       onReload={handlers.reload}
     >
       {body}
-      {props.confirming?.key === key ? (
-        <ApprovalReview
-          pending={props.confirming}
-          forLabel={forLabel(spec)}
-          busy={busy === key}
-          onCancel={() => handlers.confirm(null)}
-          onApprove={handlers.approve}
-        />
-      ) : null}
+      {review(key)}
     </ResourceItem>
   );
   const { file } = page;
+  const notices = file.kind === "read" ? resourceProposalNotices(file) : [];
   const empty = page.settings.length === 0 && page.proposals.length === 0 && file.kind !== "read";
   return (
     <div className="mt-4 space-y-5">
@@ -359,28 +434,22 @@ export function ResourcesView(props: ResourcesViewProps) {
         <Group label="definitions">
           {page.settings.map((entry) => {
             const key = `s:${entry.id}`;
+            const approved = entry.approvals.project !== null || entry.approvals.worktree !== null;
             return item(
               key,
               entry.statusLine,
               entry.spec,
               entry.id,
               <>
-                {awaitsApproval(entry, worktreeId)
-                  ? approveAction(
-                      key,
-                      entry.spec,
-                      entry.digest,
-                      approvalRequest(page, { kind: "settings", entry }, worktreeId),
-                    )
-                  : null}
+                {approveActions(key, entry, entry.approve)}
                 {entry.canRemove ? (
                   <button
                     type="button"
-                    disabled={busy !== null}
+                    disabled={busy.has(key)}
                     onClick={() => handlers.remove(entry)}
                     className={`${quiet} hover:text-danger`}
                   >
-                    {busy === key ? "working…" : "remove"}
+                    {label(key, "remove", "remove", "removing…")}
                   </button>
                 ) : null}
               </>,
@@ -389,47 +458,41 @@ export function ResourcesView(props: ResourcesViewProps) {
                   <ChoiceLine
                     entry={entry}
                     worktreeName={worktreeName ?? ""}
-                    busy={busy !== null}
-                    onChoose={(mode) => handlers.choose(entry, mode)}
+                    busy={busy.has(key)}
+                    onChoose={(mode) => handlers.choose(entry, worktreeId, mode)}
                   />
                 )}
-                {entry.approval === null ? null : (
+                {approved ? (
                   <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
                     <span className="text-label">start</span>{" "}
-                    {resourceRuntimeRefusal(entry.spec.name)}
+                    {resourceRuntimeRefusal(entry.spec.name, "project")}
                   </p>
-                )}
+                ) : null}
               </>,
             );
           })}
         </Group>
       )}
       {page.proposals.length === 0 ? null : (
-        <Group label="proposals · not approved">
+        <Group label="proposals">
           {page.proposals.map((entry) => {
             const key = `p:${entry.id}`;
+            const removal = entry.mine ? "withdraw" : "remove";
             return item(
               key,
               entry.statusLine,
               entry.spec,
               entry.id,
               <>
-                {entry.canApprove && !sameAsSettings(page, entry)
-                  ? approveAction(
-                      key,
-                      entry.spec,
-                      entry.digest,
-                      approvalRequest(page, { kind: "proposal", entry }, worktreeId),
-                    )
-                  : null}
+                {approveActions(key, entry, entry.approve)}
                 {entry.canRemove ? (
                   <button
                     type="button"
-                    disabled={busy !== null}
+                    disabled={busy.has(key)}
                     onClick={() => handlers.withdraw(entry)}
                     className={`${quiet} hover:text-danger`}
                   >
-                    {busy === key ? "working…" : "withdraw"}
+                    {label(key, "withdraw", removal, entry.mine ? "withdrawing…" : "removing…")}
                   </button>
                 ) : null}
               </>,
@@ -438,7 +501,7 @@ export function ResourcesView(props: ResourcesViewProps) {
         </Group>
       )}
       {file.kind === "not-selected" ? null : (
-        <Group label={`mend.toml in ${worktreeName ?? "this worktree"} · not approved`}>
+        <Group label={`mend.toml in ${worktreeName ?? "this worktree"}`}>
           {file.kind === "read" ? (
             <>
               <p className="px-4 pt-3 font-mono text-[11px] text-faint">{file.observed}</p>
@@ -449,26 +512,15 @@ export function ResourcesView(props: ResourcesViewProps) {
                   entry.statusLine,
                   entry.spec,
                   null,
-                  entry.canApprove && !sameAsSettings(page, entry)
-                    ? approveAction(
-                        key,
-                        entry.spec,
-                        entry.digest,
-                        approvalRequest(
-                          page,
-                          { kind: "file", entry, worktreeId: file.worktreeId },
-                          worktreeId,
-                        ),
-                      )
-                    : null,
+                  approveActions(key, entry, entry.approve),
                 );
               })}
-              {resourceProposalNotices(file).map((notice) => (
+              {notices.map((notice) => (
                 <p key={notice} className="px-4 py-2 font-mono text-[11px] text-ink-2">
                   {notice}
                 </p>
               ))}
-              {file.proposals.length === 0 && resourceProposalNotices(file).length === 0 ? (
+              {file.proposals.length === 0 && notices.length === 0 ? (
                 <p className="px-4 py-3 text-xs text-muted-foreground">No [resource.*] tables.</p>
               ) : null}
             </>
@@ -512,7 +564,7 @@ function ResourceItem(props: {
     <div className="px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
         <p className="min-w-0 font-mono text-[12px] break-words text-foreground">{props.line}</p>
-        <div className="flex items-center gap-3">{props.actions}</div>
+        <div className="flex flex-wrap items-center gap-3">{props.actions}</div>
       </div>
       <p className="mt-1 font-mono text-[11px] break-all text-faint">
         {props.image}
@@ -590,10 +642,9 @@ export function ChoiceLine(props: {
   );
 }
 
-/** The exact definition an approval approves, by its digest, before it is sent. */
+/** The exact definition an approval approves, every field apart, before it is sent. */
 export function ApprovalReview(props: {
   readonly pending: Confirming;
-  readonly forLabel: string;
   readonly busy: boolean;
   readonly onCancel: () => void;
   readonly onApprove: (pending: Confirming) => void;
@@ -601,18 +652,16 @@ export function ApprovalReview(props: {
   return (
     <div className="mt-3 rounded-xl bg-sunken p-3">
       <p className="text-xs text-ink-2">
-        Approve exactly this definition {props.forLabel}. Mend asks the registry for the
+        Approve exactly this definition {props.pending.target}. Mend asks the registry for the
         image&apos;s digest and pins it; nothing starts.
       </p>
       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 font-mono text-[11px]">
-        {reviewFields(props.pending.spec).map(([label, value]) => (
-          <div key={label} className="contents">
-            <dt className="text-label">{label}</dt>
-            <dd className="break-all text-foreground">{value}</dd>
+        {resourceReviewRows(props.pending.spec, props.pending.digest).map((row) => (
+          <div key={row.label} className="contents">
+            <dt className="text-label">{row.label}</dt>
+            <dd className="break-all whitespace-pre-wrap text-foreground">{row.value}</dd>
           </div>
         ))}
-        <dt className="text-label">digest</dt>
-        <dd className="break-all text-foreground">sha256:{props.pending.digest}</dd>
       </dl>
       <div className="mt-3 flex items-center justify-end gap-2.5">
         <button type="button" onClick={props.onCancel} className={quiet}>
@@ -771,6 +820,19 @@ export function ProposalForm(props: {
                   placeholder={row.from === "secret" ? "project secret's name" : "value"}
                   className={`${field} min-w-0 flex-1`}
                 />
+                <button
+                  type="button"
+                  aria-label={`Remove env ${row.key === "" ? "row" : row.key}`}
+                  onClick={() =>
+                    set(
+                      "env",
+                      draft.env.filter((_, at) => at !== index),
+                    )
+                  }
+                  className={`${quiet} hover:text-danger`}
+                >
+                  remove
+                </button>
               </div>
             );
           })}
