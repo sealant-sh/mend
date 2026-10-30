@@ -185,7 +185,7 @@ describe("what would stop if a pre-release executor were replaced now", () => {
     ["svc-toml", { name: "db", declarationSource: "recipe-file" }],
   ]);
 
-  it("lists terminals, shells, hand-started Services and turns in flight; not idle agents or mend.toml Services", () => {
+  it("lists terminals, shells, hand-started Services and turns in flight; not idle agents, mend.toml Services or screens", () => {
     const stops = retirementStopsOf({
       processes: [
         row("p-term", "agent-pty", { harness: "claude" }),
@@ -194,6 +194,7 @@ describe("what would stop if a pre-release executor were replaced now", () => {
         row("p-db", "service", { serviceId: "svc-toml" }),
         row("p-idle", "agent-protocol", { harness: "codex" }),
         row("p-busy", "agent-protocol", { harness: "claude" }),
+        row("p-screen", "screen", { label: "screen" }),
       ],
       services,
       sessionLabel: () => "fix auth",

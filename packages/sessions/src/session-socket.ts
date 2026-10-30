@@ -30,6 +30,7 @@ import {
   MEND_MCP_TOOL_TIMEOUT_SECONDS,
 } from "./mend-mcp/caller.ts";
 import type { PickupGrant } from "./pickup-tickets.ts";
+import type { ScreenPasswords } from "./screen/passwords.ts";
 import { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
 import {
   handleGitConnect,
@@ -169,6 +170,11 @@ export interface SessionSocketApi {
   readonly pickupAs?:
     | ((grant: PickupGrant) => (ticket: string) => Effect.Effect<PickupAnswer, Error>)
     | undefined;
+  /**
+   * `mend screen-secret` (ADR 0020): the passwords of this session's screen, once per start and
+   * only to the person it runs as; null otherwise. Absent where a grant reaches no screen.
+   */
+  readonly screenSecret?: (() => Effect.Effect<ScreenPasswords | null>) | undefined;
   /**
    * What the network channel serves a token of `launchId` (docs/adr/0016, decision 4): the
    * launch's own token (`accountId` null) or one person's. The engine answers from the launch's
@@ -639,6 +645,15 @@ const main = async () => {
   }
   if (group === "hook") {
     hook(verb);
+    return;
+  }
+  if (group === "screen-secret") {
+    try {
+      const answer = await request("POST", "/session/screen-secret", undefined, 30 * 1000);
+      process.stdout.write(answer.full + "\\n" + answer.viewOnly + "\\n");
+    } catch (error) {
+      fail(error.message);
+    }
     return;
   }
   if (group === "land") {

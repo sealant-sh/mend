@@ -8,10 +8,11 @@ import { SessionChannelTokensRepo, SessionChannelTokensRepoMemory } from "@mend/
 import { ProjectId, SessionId, SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
 import { SessionRepository } from "@mend/domain/workbench";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { frame, makeFrameFeed } from "../src/git-transport.ts";
+import { makeScreenPasswords } from "../src/screen/passwords.ts";
 import {
   SessionChannelNetworkHost,
   SessionChannelNetworkHostLive,
@@ -835,6 +836,55 @@ describe("SessionChannelNetworkHost", () => {
           // The usage names the verb.
           const usage = yield* helper(["publish"]);
           expect(usage.stderr).toContain("mend land");
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("mend screen-secret prints the screen's two passwords once, over the session's own channel", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const held = makeScreenPasswords();
+          const dir = yield* sockets.start(SESSION, {
+            ...api([]),
+            screenSecret: () => Effect.sync(() => held.fetch(SESSION, null)),
+          });
+          const token = yield* tokens.issue(SESSION, SESSION);
+          const helper = () =>
+            Effect.promise(() =>
+              runScript(path.join(dir, "bin", "mend"), ["screen-secret"], {
+                MEND_SESSION_ENDPOINT: `http://${network.address ?? ""}`,
+                MEND_SESSION_ID: SESSION,
+                MEND_SESSION_TOKEN: token,
+              }),
+            );
+
+          const none = yield* helper();
+          expect(none.code).toBe(1);
+          expect(none.stdout).toBe("");
+
+          const passwords = held.issue(SESSION, null);
+          const fetched = yield* helper();
+          expect(fetched).toEqual({
+            code: 0,
+            stdout: `${Redacted.value(passwords.full)}\n${Redacted.value(passwords.viewOnly)}\n`,
+            stderr: "",
+          });
+          expect(Redacted.value(passwords.full)).toMatch(/^[A-Za-z0-9_-]{8}$/);
+          expect(Redacted.value(passwords.viewOnly)).not.toBe(Redacted.value(passwords.full));
+
+          const again = yield* helper();
+          expect(again.code).toBe(1);
+          expect(again.stderr).toContain("no screen of this session is waiting");
+          expect(held.of(SESSION)).toBe(passwords);
         }).pipe(
           Effect.provide(
             layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),

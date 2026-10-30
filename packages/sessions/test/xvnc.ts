@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import * as net from "node:net";
 import { fileURLToPath } from "node:url";
 
@@ -73,50 +73,89 @@ export interface Connection {
   readonly cut: () => void;
 }
 
+interface Pipe {
+  readonly onData: (deliver: (chunk: Uint8Array) => void) => void;
+  readonly onClose: (closed: () => void) => void;
+  readonly write: (bytes: Uint8Array, done: () => void) => void;
+  readonly end: () => void;
+  readonly destroy: () => void;
+}
+
+const connectionOver = (pipe: Pipe): Connection => {
+  const chunks: Array<Uint8Array> = [];
+  const readers: Array<(read: ForwardRead) => void> = [];
+  const written: Array<Uint8Array> = [];
+  let ended = false;
+  const deliver = () => {
+    for (;;) {
+      const reader = readers[0];
+      if (reader === undefined || (chunks.length === 0 && !ended)) return;
+      readers.shift();
+      const next = chunks.shift();
+      reader(next === undefined ? { kind: "eof" } : { kind: "bytes", bytes: next });
+    }
+  };
+  pipe.onData((chunk) => {
+    chunks.push(chunk);
+    deliver();
+  });
+  pipe.onClose(() => {
+    ended = true;
+    deliver();
+  });
+  return {
+    written,
+    cut: pipe.destroy,
+    bytes: {
+      read: () =>
+        Effect.callback<ForwardRead>((resume) => {
+          readers.push((read) => resume(Effect.succeed(read)));
+          deliver();
+        }),
+      write: (bytes) =>
+        Effect.callback<void>((resume) => {
+          written.push(bytes);
+          pipe.write(bytes, () => resume(Effect.void));
+        }),
+      finish: () => Effect.sync(pipe.end),
+      close: () => Effect.sync(pipe.destroy),
+    },
+  };
+};
+
 /** One TCP connection as forward bytes, the way the forward adapter hands them over. */
 export const connect = (port: number): Promise<Connection> =>
   new Promise((resolve, reject) => {
     const socket = net.connect(port, "127.0.0.1");
-    const chunks: Array<Uint8Array> = [];
-    const readers: Array<(read: ForwardRead) => void> = [];
-    const written: Array<Uint8Array> = [];
-    let ended = false;
-    const deliver = () => {
-      for (;;) {
-        const reader = readers[0];
-        if (reader === undefined || (chunks.length === 0 && !ended)) return;
-        readers.shift();
-        const next = chunks.shift();
-        reader(next === undefined ? { kind: "eof" } : { kind: "bytes", bytes: next });
-      }
-    };
-    socket.on("data", (chunk) => {
-      chunks.push(new Uint8Array(chunk));
-      deliver();
-    });
-    socket.on("close", () => {
-      ended = true;
-      deliver();
-    });
     socket.once("error", reject);
     socket.once("connect", () =>
-      resolve({
-        written,
-        cut: () => socket.destroy(),
-        bytes: {
-          read: () =>
-            Effect.callback<ForwardRead>((resume) => {
-              readers.push((read) => resume(Effect.succeed(read)));
-              deliver();
-            }),
-          write: (bytes) =>
-            Effect.callback<void>((resume) => {
-              written.push(bytes);
-              socket.write(bytes, () => resume(Effect.void));
-            }),
-          finish: () => Effect.sync(() => void socket.end()),
-          close: () => Effect.sync(() => void socket.destroy()),
-        },
-      }),
+      resolve(
+        connectionOver({
+          onData: (deliver) => socket.on("data", (chunk) => deliver(new Uint8Array(chunk))),
+          onClose: (closed) => socket.on("close", closed),
+          write: (bytes, done) => void socket.write(bytes, done),
+          end: () => void socket.end(),
+          destroy: () => void socket.destroy(),
+        }),
+      ),
     );
   });
+
+/** A connection to a port on a container's own loopback, through `socat` inside it. */
+export const connectInside = (container: string, port: number): Connection => {
+  const child = spawn("docker", [
+    "exec",
+    "-i",
+    container,
+    "socat",
+    "STDIO",
+    `TCP:127.0.0.1:${port}`,
+  ]);
+  return connectionOver({
+    onData: (deliver) => child.stdout.on("data", (chunk) => deliver(new Uint8Array(chunk))),
+    onClose: (closed) => child.on("close", closed),
+    write: (bytes, done) => void child.stdin.write(bytes, done),
+    end: () => void child.stdin.end(),
+    destroy: () => void child.kill(),
+  });
+};

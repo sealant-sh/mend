@@ -27,6 +27,8 @@ import { EFFORT_LEVELS, PERMISSION_MODES } from "./harness-launch.ts";
  *                    observed from harness-state writes, and the row ends when
  *                    the writes go quiet.
  * - `service`        a recipe command: dev server, database (logs + port)
+ * - `screen`         the session's display: Xvnc and its window manager (ADR 0020). It keeps
+ *                    neither its session `running` nor its workspace up.
  *
  * A session holds several agent processes over its life (relaunch, follow-up,
  * resume); the change stays one per session because it is worktree vs base.
@@ -37,6 +39,7 @@ export const SessionProcessKind = Schema.Literals([
   "agent-protocol",
   "agent-external",
   "service",
+  "screen",
 ]);
 export type SessionProcessKind = typeof SessionProcessKind.Type;
 
@@ -49,6 +52,9 @@ export const AGENT_PROCESS_KINDS: ReadonlySet<SessionProcessKind> = new Set<Sess
 
 export const isAgentProcessKind = (kind: SessionProcessKind): boolean =>
   AGENT_PROCESS_KINDS.has(kind);
+
+/** Whether a live row of this kind is one of its workspace's leases. A screen never is. */
+export const holdsWorkspace = (kind: SessionProcessKind): boolean => kind !== "screen";
 
 /**
  * Observed lifecycle only — never a judgment about the work. `reachable` /

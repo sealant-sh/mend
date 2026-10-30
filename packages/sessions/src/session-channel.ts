@@ -12,7 +12,7 @@ import {
   type ServiceBrowserScheme,
 } from "@mend/domain/workbench";
 import { DeploymentConfig } from "@mend/store";
-import { Effect, Exit, Layer, Schema } from "effect";
+import { Effect, Exit, Layer, Redacted, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { CAPTURE_ROUTES, dispatchCaptureRoute, MAX_CAPTURE_BODY_BYTES } from "./capture-channel.ts";
@@ -284,6 +284,17 @@ export const handleSessionRequest = async (
       return answer._tag === "Success"
         ? respond(200, answer.success)
         : respond(403, { message: answer.failure.message });
+    }
+    if (route === "POST /session/screen-secret") {
+      const passwords =
+        api.screenSecret === undefined ? null : await Effect.runPromise(api.screenSecret());
+      if (passwords === null) {
+        return respond(409, { message: "no screen of this session is waiting for its passwords" });
+      }
+      return respond(200, {
+        full: Redacted.value(passwords.full),
+        viewOnly: Redacted.value(passwords.viewOnly),
+      });
     }
     if (route === "GET /recipes") return respond(200, await Effect.runPromise(api.recipes()));
     if (route === "GET /services") return respond(200, await Effect.runPromise(api.listServices()));

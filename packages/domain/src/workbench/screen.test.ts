@@ -9,6 +9,7 @@ import {
   ScreenActParams,
   type ScreenInput,
   type ScreenLife,
+  screenIdleStopDue,
   ScreenSpan,
   screenStatusLine,
 } from "./screen.ts";
@@ -157,5 +158,46 @@ describe("screenStatusLine", () => {
     expect(line(agent, { life: { _tag: "Ended", reason: "session-stopped" } })).toBe(
       "screen · ended · session stopped",
     );
+  });
+});
+
+describe("screenIdleStopDue", () => {
+  const started = new Date("2026-10-30T10:00:00Z");
+  const after = (ms: number) => started.getTime() + ms;
+  const live: ScreenLife = { _tag: "Live", degraded: null };
+  const awaiting: ScreenInput = { _tag: "AwaitingAgent", epoch: 0 };
+  const person: ScreenInput = {
+    _tag: "Person",
+    epoch: 1,
+    userId: "yiannis",
+    connection: ViewerConnectionId.make("connection-1"),
+  };
+
+  it("stops a started screen 15 minutes after its last activity", () => {
+    const screen = { life: live, input: awaiting };
+    expect(screenIdleStopDue(screen, started, after(SCREEN_LIMITS.idleStopMs - 1))).toBe(false);
+    expect(screenIdleStopDue(screen, started, after(SCREEN_LIMITS.idleStopMs))).toBe(true);
+    expect(
+      screenIdleStopDue(
+        { life: { _tag: "Starting" }, input: awaiting },
+        started,
+        after(SCREEN_LIMITS.idleStopMs),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps a screen a person holds, and has nothing to stop on one that is not running", () => {
+    const late = after(10 * SCREEN_LIMITS.idleStopMs);
+    expect(screenIdleStopDue({ life: live, input: person }, started, late)).toBe(false);
+    expect(
+      screenIdleStopDue({ life: { _tag: "NotStarted" }, input: awaiting }, started, late),
+    ).toBe(false);
+    expect(
+      screenIdleStopDue(
+        { life: { _tag: "Ended", reason: "idle" }, input: awaiting },
+        started,
+        late,
+      ),
+    ).toBe(false);
   });
 });

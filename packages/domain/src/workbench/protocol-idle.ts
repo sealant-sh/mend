@@ -24,6 +24,8 @@ export interface ProtocolIdleFacts {
    * turn open, so a running one holds the stop and the latest change counts as activity.
    */
   readonly tasks?: { readonly running: number; readonly lastUpdatedAt: Date | null };
+  /** A person holds the session's screen's input (`screenHeldByPerson`); watching holds nothing. */
+  readonly screenHeld?: boolean;
   /**
    * Capture mode: what the executor answered when asked just now — captures still pending (bulk
    * included on today's sealantd), and whether bulk changed since its last snapshot once sealantd
@@ -38,14 +40,21 @@ export interface ProtocolIdleFacts {
 }
 
 /** What holds a live protocol agent up while it is not idle. */
-export type ProtocolIdleHold = "turn" | "task" | "request" | "services" | "shell" | "capture";
+export type ProtocolIdleHold =
+  | "turn"
+  | "task"
+  | "request"
+  | "services"
+  | "shell"
+  | "screen"
+  | "capture";
 
 /**
  * - `not-protocol`: settled, or the session's agent is not a live protocol process; nothing here
  *   stops it.
  * - `held`: a turn is in flight, a background task runs, a question or approval waits, Services
- *   or a shell hold the workspace, which someone is using, or the executor still has captures to
- *   ship (a stop now would only sit draining them; the next pass looks again).
+ *   or a shell hold the workspace, which someone is using, a person holds the screen's input, or
+ *   the executor still has captures to ship (a stop now would only sit draining them; the next pass looks again).
  * - `idle`: none of those, since `since` — the latest activity seen.
  */
 export type ProtocolIdleReading =
@@ -82,6 +91,7 @@ export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReadi
   if (facts.processes.some((process) => process.kind === "shell" && isLiveProcess(process))) {
     return { kind: "held", by: "shell" };
   }
+  if (facts.screenHeld === true) return { kind: "held", by: "screen" };
   if (
     facts.capture !== undefined &&
     facts.capture !== null &&
