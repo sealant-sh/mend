@@ -4,7 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api } from "@/data/live";
+import { usePairing } from "@/data/pairing-scope";
 
 export interface NotificationSettingsDto {
   /** Sessions started from Slack push what their thread already says. */
@@ -16,20 +16,23 @@ export interface NotificationSettingsDto {
 
 const KEY = ["notification-settings"] as const;
 
-export const useNotificationSettings = (enabled: boolean) =>
-  useQuery({
+export const useNotificationSettings = (enabled: boolean) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: KEY,
     enabled,
-    queryFn: () => api<NotificationSettingsDto>("GET", "/me/notifications"),
+    queryFn: () => machine.read<NotificationSettingsDto>("/me/notifications"),
     staleTime: 60_000,
   });
+};
 
 /** Save the whole setting; the switch moves at once and moves back if the server says no. */
 export const useSetNotificationSettings = () => {
+  const { machine } = usePairing();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (next: NotificationSettingsDto) =>
-      api<NotificationSettingsDto>("PUT", "/me/notifications", next),
+      machine.write<NotificationSettingsDto>("PUT", "/me/notifications", next),
     onMutate: async (next) => {
       await queryClient.cancelQueries({ queryKey: KEY });
       const previous = queryClient.getQueryData<NotificationSettingsDto>(KEY);

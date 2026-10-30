@@ -37,11 +37,6 @@ export const pageCallFailureOf = (item: AgentItemDto): string | null => {
   return failure == null ? null : `page not shown · ${failure.message}`;
 };
 
-export interface PageConnection {
-  readonly url: string;
-  readonly token: string;
-}
-
 export const pageFrameKey = (pageId: string) => ["page-frame", pageId] as const;
 
 export const pageFrameQuery = (pageId: string, mint: () => Promise<string>) => ({

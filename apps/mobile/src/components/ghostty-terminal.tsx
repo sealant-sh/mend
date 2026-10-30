@@ -16,8 +16,8 @@ import { Pressable, View } from "react-native";
 import { WebView } from "react-native-webview";
 
 import { MonoText, useTextScale } from "@/components/typography";
-import { api } from "@/data/live";
 import { ApiError } from "@/data/machine";
+import { usePairing } from "@/data/pairing-scope";
 import { legacyBearerAfterMint404, useTtySocket } from "@/data/tty-socket";
 import { useEvidenceTheme } from "@/theme/evidence";
 
@@ -82,16 +82,12 @@ const makeDecoder = (): TextDecoder | null =>
   typeof TextDecoder === "undefined" ? null : new TextDecoder();
 
 export function GhosttyTerminal({
-  serverUrl,
-  token,
   sessionId,
   processId,
   registerSend,
   transformInput,
   readOnly = false,
 }: {
-  readonly serverUrl: string;
-  readonly token: string;
   readonly sessionId: string;
   /** A supporting shell process. Omitted only for legacy agent-terminal links. */
   readonly processId?: string;
@@ -154,8 +150,6 @@ export function GhosttyTerminal({
   );
 
   const tty = useTtySocket({
-    serverUrl,
-    token,
     target:
       processId === undefined
         ? { kind: "session", id: sessionId }
@@ -171,8 +165,6 @@ export function GhosttyTerminal({
     // Binary without the native module — the WebView terminal still works.
     return (
       <EmbeddedTerminal
-        serverUrl={serverUrl}
-        token={token}
         sessionId={sessionId}
         processId={processId}
         background={colors.panel}
@@ -239,15 +231,11 @@ export function GhosttyTerminal({
  * with 404, and only then does the bearer ride the URL, as it always did with that server.
  */
 const EmbeddedTerminal = ({
-  serverUrl,
-  token,
   sessionId,
   processId,
   background,
   readOnly,
 }: {
-  readonly serverUrl: string;
-  readonly token: string;
   readonly sessionId: string;
   readonly processId: string | undefined;
   readonly background: string;
@@ -257,18 +245,23 @@ const EmbeddedTerminal = ({
   const address = `session=${encodeURIComponent(sessionId)}${
     processId === undefined ? "" : `&process=${encodeURIComponent(processId)}`
   }`;
+  const { machine } = usePairing();
   const credential = useQuery({
-    queryKey: ["tty-embed-ticket", serverUrl, sessionId, processId ?? null],
+    queryKey: ["tty-embed-ticket", sessionId, processId ?? null],
     queryFn: async (): Promise<string> => {
       try {
-        const minted = await api<{ readonly ticket: string }>("POST", "/upgrade-tickets", {
-          target: "tty-embed",
-          ...(processId === undefined ? { session: sessionId } : { process: processId }),
-        });
+        const minted = await machine.write<{ readonly ticket: string }>(
+          "POST",
+          "/upgrade-tickets",
+          {
+            target: "tty-embed",
+            ...(processId === undefined ? { session: sessionId } : { process: processId }),
+          },
+        );
         return `ticket=${encodeURIComponent(minted.ticket)}`;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) {
-          return `token=${encodeURIComponent(await legacyBearerAfterMint404(token))}`;
+          return `token=${encodeURIComponent(await legacyBearerAfterMint404(machine))}`;
         }
         throw error;
       }
@@ -290,7 +283,7 @@ const EmbeddedTerminal = ({
     <WebView
       key={credential.dataUpdatedAt}
       source={{
-        uri: `${serverUrl}/tty-embed?${address}&${credential.data}${readOnly ? "&readOnly=1" : ""}`,
+        uri: `${machine.connection.url}/tty-embed?${address}&${credential.data}${readOnly ? "&readOnly=1" : ""}`,
       }}
       style={{ flex: 1, backgroundColor: background }}
       keyboardDisplayRequiresUserAction={false}

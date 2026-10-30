@@ -6,7 +6,7 @@
 
 import { terminalReadOnlyLine } from "@mend/domain/workbench";
 import * as Clipboard from "expo-clipboard";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 
@@ -14,8 +14,8 @@ import { useAsk } from "@/components/ask";
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
 import { usePaneEdges } from "@/components/pane";
 import { MonoText, UiText } from "@/components/typography";
-import { pasteSessionImage, terminalInputOf, useOwnerName, useSession } from "@/data/live";
-import { loadConfig } from "@/data/pairing-config";
+import { terminalInputOf, uploadSessionImage, useOwnerName, useSession } from "@/data/live";
+import { usePairing } from "@/data/pairing-scope";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 const ACCESSORY_HEIGHT = 44;
@@ -69,7 +69,6 @@ export function TerminalPane({
   const detail = useSession(sessionId);
   const readOnly = !terminalInputOf(detail.data?.control);
   const ownerName = useOwnerName(detail.data?.session);
-  const [base, setBase] = useState<{ url: string; token: string } | null>(null);
   // Sticky modifier (t3code's key-bar pattern): tap ctrl, then the key it
   // applies to — phone keyboards can't chord. The ref mirrors the state so
   // the input transform reads the latch without re-wiring the surface.
@@ -80,9 +79,7 @@ export function TerminalPane({
     setCtrlLatched(latched);
   };
   const sendRef = useRef<((data: string) => void) | null>(null);
-  useEffect(() => {
-    void loadConfig().then((config) => setBase({ url: config.url, token: config.token }));
-  }, []);
+  const { machine } = usePairing();
 
   // A screenshot on the clipboard: the TUI's own Ctrl+V reads the clipboard
   // of the container it runs in, which has none. Mend stores the bytes beside
@@ -98,10 +95,11 @@ export function TerminalPane({
         ask("No image on the clipboard", "Copy a screenshot or photo first, then tap img.");
         return;
       }
-      const stored = await pasteSessionImage(
+      const stored = await uploadSessionImage(
+        machine,
         sessionId,
         image.data.slice(image.data.indexOf(",") + 1),
-      );
+      ).result;
       sendRef.current?.(bracketedPaste(stored.path));
     } catch (error) {
       ask("Image not pasted", error instanceof Error ? error.message : "The image was not stored.");
@@ -160,24 +158,21 @@ export function TerminalPane({
     </View>
   );
 
-  const surface =
-    base === null ? null : (
-      <GhosttyTerminal
-        serverUrl={base.url}
-        token={base.token}
-        sessionId={sessionId}
-        {...(processId === undefined ? {} : { processId })}
-        readOnly={readOnly}
-        registerSend={(send) => {
-          sendRef.current = send;
-        }}
-        transformInput={(data) => {
-          if (!ctrlLatchedRef.current) return data;
-          latchCtrl(false);
-          return applyCtrl(data);
-        }}
-      />
-    );
+  const surface = (
+    <GhosttyTerminal
+      sessionId={sessionId}
+      {...(processId === undefined ? {} : { processId })}
+      readOnly={readOnly}
+      registerSend={(send) => {
+        sendRef.current = send;
+      }}
+      transformInput={(data) => {
+        if (!ctrlLatchedRef.current) return data;
+        latchCtrl(false);
+        return applyCtrl(data);
+      }}
+    />
+  );
 
   if (readOnly) {
     return (

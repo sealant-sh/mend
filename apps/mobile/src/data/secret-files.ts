@@ -5,7 +5,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { api } from "@/data/live";
+import { usePairing } from "@/data/pairing-scope";
 
 export interface SecretFileDto {
   readonly id: string;
@@ -20,10 +20,13 @@ export interface SecretFileDto {
 
 const KEY = ["secret-files"] as const;
 
-export const useSecretFiles = (enabled: boolean) =>
-  useQuery({
+export const useSecretFiles = (enabled: boolean) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: KEY,
     enabled,
-    queryFn: () => api<{ readonly files: ReadonlyArray<SecretFileDto> }>("GET", "/me/secret-files"),
+    queryFn: () =>
+      machine.read<{ readonly files: ReadonlyArray<SecretFileDto> }>("/me/secret-files"),
     staleTime: 60_000,
   });
+};

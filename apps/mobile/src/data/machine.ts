@@ -28,7 +28,7 @@ export class PairingEnded extends Error {
 }
 
 /** A refusal as an `ApiError` in words, its call, status and tag logged. */
-export const refusal = (method: string, route: string, status: number, body: unknown): ApiError => {
+const refusal = (method: string, route: string, status: number, body: unknown): ApiError => {
   console.warn(failureLogLine(`${method} ${route}`, status, body));
   const failure = failureWords(status, body);
   return new ApiError(failure.words, status, failure.tag, failure.serverWords !== null);
