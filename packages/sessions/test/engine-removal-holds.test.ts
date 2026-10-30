@@ -1,7 +1,8 @@
 import { isRemovalFenced } from "@mend/db";
+import { Session } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import type { CreateOptions } from "@sealant/sdk";
-import { Effect, Exit } from "effect";
+import { Deferred, Effect, Exit, Fiber } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
@@ -97,15 +98,119 @@ describe("new work in a session a removal has marked", () => {
           });
           yield* engine.launch(session.id, ["claude"]);
           const opened = spawned.length;
+          const running = world.sessions.get(session.id);
+          if (running === undefined) return yield* Effect.die("no session row");
+          world.sessions.set(session.id, new Session({ ...running, status: "completed" }));
           world.removalMarkedSessions.add(session.id);
           const refused = yield* engine.openShell(session.id).pipe(Effect.exit);
           expect(Exit.isFailure(refused) && isRemovalFenced(refused.cause)).toBe(true);
           expect(spawned).toHaveLength(opened);
-          world.removalMarkedSessions.delete(session.id);
+          // A live session's shell goes ahead: the removal reads the session itself, and refuses.
+          world.sessions.set(session.id, running);
           yield* engine.openShell(session.id);
           expect(spawned).toHaveLength(opened + 1);
+          expect([...world.admissions.values()]).toEqual([]);
         }),
       { sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned) },
     );
   });
+});
+
+describe("a launch admitted before the platform runs anything", () => {
+  const holdingCreate = () => {
+    const reached = Effect.runSync(Deferred.make<void>());
+    const proceed = Effect.runSync(Deferred.make<void>());
+    const created: Array<CreateOptions> = [];
+    const layer = sealantLaunchLayer(
+      created,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        beforeCreate: () =>
+          Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+      },
+    );
+    return { reached, proceed, created, layer };
+  };
+
+  it(
+    "holds its admission while the platform creates the workspace, before any process row",
+    { timeout: 20_000 },
+    async () => {
+      const held = holdingCreate();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              start: { kind: "base", base: null },
+            });
+            const launching = yield* engine
+              .launch(session.id, ["claude"])
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* Deferred.await(held.reached);
+            const whileCreating = {
+              admitted: [...world.admissions.values()],
+              processes: [...world.processes.values()].filter(
+                (process) => process.sessionId === session.id,
+              ).length,
+            };
+            yield* Deferred.succeed(held.proceed, undefined);
+            yield* Fiber.join(launching);
+            expect(whileCreating).toEqual({ admitted: [session.id], processes: 0 });
+            expect([...world.admissions.values()]).toEqual([]);
+          }),
+        { sealantLayer: held.layer },
+      );
+    },
+  );
+
+  it(
+    "creates nothing on the platform for a settled session a removal marks",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              start: { kind: "base", base: null },
+            });
+            const settled = world.sessions.get(session.id);
+            if (settled === undefined) return yield* Effect.die("no session row");
+            world.sessions.set(
+              session.id,
+              new Session({ ...settled, status: "failed", settledAt: new Date() }),
+            );
+            world.removalMarkedSessions.add(session.id);
+            const refused = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
+            expect(Exit.isFailure(refused) && isRemovalFenced(refused.cause)).toBe(true);
+            expect(created).toHaveLength(0);
+            expect([...world.admissions.values()]).toEqual([]);
+          }),
+        { sealantLayer: sealantLaunchLayer(created) },
+      );
+    },
+  );
 });

@@ -7,8 +7,8 @@ import { pipeline } from "node:stream/promises";
 
 import {
   InstanceRolesRepo,
-  RemovalFenced,
   RemovalFencesRepo,
+  whileAdmitted,
   AgentConversationRepo,
   MessageSettingsRepo,
   AgentTurnNotFoundError,
@@ -19090,8 +19090,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * owed and did not start is (`endPlannedLaunch`). A process that dies first leaves the plan
        * for the reaper (`resumeDrain`).
        */
+      // A launch runs the agent on the platform before the session reads live again: admitted
+      // first (0164), so a removal that marks the session's worktree meanwhile reads it as
+      // starting, and refused before anything runs while one already does.
       const launchInternal: typeof launchInternalBody = (sessionId, ...rest) =>
-        launchInternalBody(sessionId, ...rest).pipe(
+        whileAdmitted(removalFences, sessionId, launchInternalBody(sessionId, ...rest)).pipe(
           Effect.onExit((exit) =>
             Effect.suspend(() => {
               const own = relaunching.get(sessionId);
@@ -22496,18 +22499,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
       });
 
-      const openShell = Effect.fn("SessionEngine.openShell")(function* (
+      const openShellBody = Effect.fn("SessionEngine.openShell")(function* (
         sessionId: SessionId,
         openedBy?: string,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
-        }
-        // A shell opens on the platform before its row is written, so a removal's mark is read
-        // first (0164); one taken in between refuses the row, and the shell is closed again.
-        if (!(yield* removalFences.admitsSessionWork(sessionId))) {
-          return yield* Effect.die(new RemovalFenced(`session ${sessionId} is being removed`));
         }
         const workspace = yield* workspaceForSupportingProcess(session);
         // Nothing new starts in an executor being replaced; a shell is the launcher's or nobody's
@@ -22569,6 +22567,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* Effect.forkIn(watchProcess(shellProcess), scope);
         return shellProcess;
       });
+
+      // A shell opens on the platform before its row exists: admitted first (0164), so a removal
+      // that marks the session's worktree meanwhile reads it as starting.
+      const openShell: typeof openShellBody = (sessionId, openedBy) =>
+        whileAdmitted(removalFences, sessionId, openShellBody(sessionId, openedBy));
 
       const stopShell = Effect.fn("SessionEngine.stopShell")(function* (
         processId: SessionProcessId,

@@ -97,7 +97,11 @@ export const stampLabel = (stamp: ReadStamp): string =>
     ? "observed on the worktree"
     : `observed at capture ${stamp.captureN ?? "?"}${stamp.seq === null ? "" : ` · seq ${stamp.seq}`}${stamp.partial ? " · partial" : ""}`;
 
-/** The chain has no head yet (capture 0 never registered) — nothing to read. */
+/**
+ * Nothing Mend can read is the change: the chain has no head yet (capture 0 never registered), or
+ * the capture it names cannot be restored (its manifest missing or invalid, its objects not
+ * restorable). `message` says which.
+ */
 export class WorktreeNotCapturedError extends Schema.TaggedError<WorktreeNotCapturedError>()(
   "WorktreeNotCapturedError",
   { worktreeId: Schema.String, message: Schema.String },
@@ -487,7 +491,8 @@ export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
 
 /**
  * The runner cache over exactly `head`. A strict restore refuses evidence that does not match its
- * row, where a lenient one (the chain head's) dies on it or answers git's own error.
+ * row as historical evidence; a lenient one (the chain head's) answers git's own error, or that
+ * the head's capture cannot be restored. Either is a failure a reader answers, never a defect.
  */
 const restoreCapture = Effect.fnUntraced(function* (
   projectId: ProjectId,
@@ -505,13 +510,20 @@ const restoreCapture = Effect.fnUntraced(function* (
       worktreeId,
       message: `the checkpoint's historical Git evidence is unavailable · ${reason}`,
     });
+  const headUnavailable = (reason: string) =>
+    new WorktreeNotCapturedError({
+      worktreeId,
+      message: `the change's last capture cannot be restored · ${reason}`,
+    });
   const bytes = yield* blobs
     .get(head.manifestKey)
     .pipe(
       Effect.catch((error) =>
-        historical === undefined
-          ? Effect.die(`capture reads: head manifest: ${error._tag}`)
-          : Effect.fail(unavailable("its capture manifest could not be read")),
+        Effect.fail(
+          historical === undefined
+            ? headUnavailable(`its capture manifest could not be read (${error._tag})`)
+            : unavailable("its capture manifest could not be read"),
+        ),
       ),
     );
   if (historical !== undefined && sha256Hex(bytes) !== historical.captureId) {
@@ -519,9 +531,11 @@ const restoreCapture = Effect.fnUntraced(function* (
   }
   const manifest = yield* decodeManifest(head.manifestKey, bytes).pipe(
     Effect.catch((error) =>
-      historical === undefined
-        ? Effect.die(`capture reads: head manifest: ${error.reason}`)
-        : Effect.fail(unavailable("its capture manifest is invalid")),
+      Effect.fail(
+        historical === undefined
+          ? headUnavailable(`its capture manifest is invalid (${error.reason})`)
+          : unavailable("its capture manifest is invalid"),
+      ),
     ),
   );
   if (
@@ -553,7 +567,9 @@ const restoreCapture = Effect.fnUntraced(function* (
             ? Effect.fail(unavailable("its retained Git objects could not be restored"))
             : error._tag === "GitError"
               ? Effect.fail(error)
-              : Effect.die(`capture reads: runner ensure: ${error._tag}`),
+              : Effect.fail(
+                  headUnavailable(`its Git objects could not be restored (${error._tag})`),
+                ),
       ),
     );
   // `worktree_tree` (the `git_trees` feature), else the pseudo-ref of a capture from before it.

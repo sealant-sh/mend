@@ -72,7 +72,9 @@ import {
   type AgentMemoryHomes,
   makeScreensMemory,
   ScreensRepo,
+  RemovalFenced,
   RemovalFencesRepo,
+  SessionAdmissionId,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -1481,8 +1483,10 @@ export interface World {
   readonly serviceForwards: Map<string, ServiceForward>;
   readonly serviceObservations: Map<string, ServiceObservation>;
   readonly reachedAttempts: Set<string>;
-  /** Sessions a removal's mark covers (`RemovalFencesRepo.admitsSessionWork`). */
+  /** Sessions a removal's mark covers: their starts are not admitted (`RemovalFencesRepo.admit`). */
   readonly removalMarkedSessions: Set<string>;
+  /** Starts admitted and not yet ended, by admission id: the session each is for. */
+  readonly admissions: Map<string, string>;
   /** Each Service attempt's recorded launch (`launch_cwd`, `launch_env`, `launch_ready`). */
   readonly launches: Map<string, ServiceLaunch>;
   readonly setupRuns: Array<WorldSetupRun>;
@@ -1592,6 +1596,7 @@ export const makeWorld = (): World => ({
   serviceObservations: new Map(),
   reachedAttempts: new Set(),
   removalMarkedSessions: new Set(),
+  admissions: new Map(),
   launches: new Map(),
   setupRuns: [],
   setupFinishing: undefined,
@@ -2247,6 +2252,10 @@ export const setupRunsLayer = (world: World) => {
     runningIn: (workspaceId) =>
       Effect.sync(
         () => world.setupRuns.filter((row) => row.workspaceId === workspaceId && live(row)).length,
+      ),
+    unendedInWorktree: (worktreeId) =>
+      Effect.sync(() =>
+        world.setupRuns.some((row) => row.worktreeId === worktreeId && row.state === "running"),
       ),
     renew: (claimId, leaseMs) =>
       Effect.sync(() => {
@@ -3930,7 +3939,20 @@ export const withPreparedEngineEffect = <B, A, E>(
     const engineLayer = SessionEngineLive.pipe(
       Layer.provide(
         Layer.mock(RemovalFencesRepo, {
-          admitsSessionWork: (id) => Effect.sync(() => !world.removalMarkedSessions.has(id)),
+          admit: (sessionId) =>
+            Effect.suspend(() => {
+              const live = ["starting", "running", "waiting", "idle"].includes(
+                world.sessions.get(sessionId)?.status ?? "",
+              );
+              if (world.removalMarkedSessions.has(sessionId) && !live) {
+                return Effect.die(new RemovalFenced(`session ${sessionId} is being removed`));
+              }
+              const id = SessionAdmissionId.make(`adm_${world.admissions.size + 1}_${sessionId}`);
+              world.admissions.set(id, sessionId);
+              return Effect.succeed(id);
+            }),
+          renewAdmission: () => Effect.void,
+          endAdmission: (id) => Effect.sync(() => void world.admissions.delete(id)),
         }),
       ),
       Layer.provide(
