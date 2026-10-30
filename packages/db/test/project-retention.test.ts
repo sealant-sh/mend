@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
+import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { CaptureStoreRepo, CaptureStoreRepoLive } from "../src/repos/capture-store.ts";
 import { HotWorkspacesRepo, HotWorkspacesRepoLive } from "../src/repos/hot-workspaces.ts";
 import {
@@ -42,6 +43,7 @@ const repos = Layer.mergeAll(
   ProjectServiceRecipesRepoLive,
   UpgradeTicketsRepoLive,
   HotWorkspacesRepoLive,
+  SessionsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(pool))));
 const run = <A, E>(
   effect: Effect.Effect<
@@ -53,6 +55,7 @@ const run = <A, E>(
     | ProjectServiceRecipesRepo
     | UpgradeTicketsRepo
     | HotWorkspacesRepo
+    | SessionsRepo
     | SqlClient.SqlClient
   >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(repos), Effect.scoped));
@@ -303,11 +306,70 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
       }),
     ));
 
+  it("keeps a removed project's sessions, names, recipes and review comments from a late delete", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sessions = yield* SessionsRepo;
+        const recipes = yield* ProjectServiceRecipesRepo;
+        const id = yield* seed("late-delete");
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES ('w-late', ${id}, 'work', 'work', 'work', 'abc')`;
+        yield* sql`INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id, label)
+          VALUES ('s-late', ${id}, 'w-late', 'claude', 'work', 'work', 'abc', 'anna', 'kept name')`;
+        yield* sql`INSERT INTO worktree_changes (id, project_id, worktree_id, session_id, branch, base_sha)
+          VALUES ('c-late', ${id}, 'w-late', 's-late', 'work', 'abc')`;
+        yield* sql`INSERT INTO review_comments (id, change_id, author_kind, author_name, body)
+          VALUES ('rc-late', 'c-late', 'human', 'Anna', 'kept words')`;
+        yield* recipes.create({
+          projectId: id,
+          name: "web",
+          command: "pnpm dev",
+          port: 3000,
+          protocol: "tcp",
+          browserScheme: "http",
+        });
+        // Each request read the project listed, then acted after the removal committed.
+        yield* keep(id);
+        const refusedLate = (effect: Effect.Effect<unknown, unknown>) =>
+          Effect.exit(effect).pipe(
+            Effect.map(
+              (exit) => Exit.isFailure(exit) && isRemovedProject(Cause.squash(exit.cause)),
+            ),
+          );
+        expect(yield* refusedLate(sessions.remove(SessionId.make("s-late")))).toBe(true);
+        expect(yield* refusedLate(recipes.remove(id, "web"))).toBe(true);
+        expect(
+          yield* refusedLate(sql`UPDATE agent_sessions SET label = 'renamed' WHERE id = 's-late'`),
+        ).toBe(true);
+        expect(yield* refusedLate(sql`DELETE FROM review_comments WHERE id = 'rc-late'`)).toBe(
+          true,
+        );
+        expect(
+          yield* refusedLate(sql`UPDATE review_comments SET body = 'changed' WHERE id = 'rc-late'`),
+        ).toBe(true);
+        expect(yield* sql`SELECT label FROM agent_sessions WHERE id = 's-late'`).toEqual([
+          { label: "kept name" },
+        ]);
+        expect(yield* sql`SELECT body FROM review_comments WHERE id = 'rc-late'`).toEqual([
+          { body: "kept words" },
+        ]);
+        expect(
+          yield* sql`SELECT name FROM project_service_recipes WHERE project_id = ${id}`,
+        ).toEqual([{ name: "web" }]);
+        const fences = yield* RemovalFencesRepo;
+        const purge = yield* fences.takePurge(id, "anna");
+        if (purge._tag !== "finish") return yield* Effect.die("expected purge mark");
+        expect(yield* fences.finishPurge(id, purge.id, "anna")).toBe(true);
+        expect(yield* sql`SELECT id FROM review_comments WHERE id = 'rc-late'`).toEqual([]);
+      }),
+    ));
+
   it("fences every table that holds a project's content, or names why it need not", async () =>
     run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         // Written only by a session's work or by a removal itself; their own fences refuse it.
+        // A session's name and deletion are fenced by the same function (asserted below).
         const fencedElsewhere = new Set([
           "agent_sessions",
           "worktrees",
@@ -320,11 +382,13 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           "worktree_changes",
           "store_refs",
         ]);
+        // tgtype bits: 4 INSERT, 8 DELETE, 16 UPDATE. A fence that misses one lets it through.
         const rows = yield* sql<{ readonly table: string; readonly fenced: boolean }>`
           SELECT c.table_name AS table,
                  EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_proc f ON f.oid = t.tgfoid
                           WHERE t.tgrelid = (quote_ident(c.table_name))::regclass
-                            AND f.proname = 'project_retention_admit_content') AS fenced
+                            AND f.proname = 'project_retention_admit_content'
+                            AND t.tgtype & 28 = 28) AS fenced
             FROM information_schema.columns c
             JOIN information_schema.tables t
               ON t.table_name = c.table_name AND t.table_schema = c.table_schema
@@ -336,6 +400,12 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
             .filter((row) => !row.fenced && !fencedElsewhere.has(row.table))
             .map((row) => row.table),
         ).toEqual([]);
+        const deletes = yield* sql<{ readonly table: string }>`
+          SELECT t.tgrelid::regclass::text AS table FROM pg_trigger t JOIN pg_proc f ON f.oid = t.tgfoid
+           WHERE f.proname = 'project_retention_admit_content' AND t.tgtype & 8 = 8
+             AND t.tgrelid IN ('agent_sessions'::regclass, 'review_comments'::regclass)
+           ORDER BY 1`;
+        expect(deletes.map((row) => row.table)).toEqual(["agent_sessions", "review_comments"]);
       }),
     ));
 

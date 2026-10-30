@@ -4535,21 +4535,27 @@ const projectRetentionMigration = Effect.gen(function* () {
     BEFORE INSERT OR UPDATE ON project_links
     FOR EACH ROW EXECUTE FUNCTION project_retention_link()`;
 
-  // A project's settings and content are written only while it is listed: a request that read
-  // it listed and writes after the removal committed is refused. A cascade from a deletion is
-  // not a write into the project.
+  // A project's settings and content are written or deleted only while it is listed: a request
+  // that read it listed and acts after the removal committed is refused. A cascade from a
+  // deletion is not a write into the project, and a purge holding the project deletes it.
+  // TG_ARGV[0] 'change': the row reaches its project through its change.
   yield* sql.unsafe(`CREATE FUNCTION project_retention_admit_content() RETURNS trigger
     LANGUAGE plpgsql AS $$
-    DECLARE removed boolean;
+    DECLARE r jsonb; pid text; removed boolean; purging boolean;
     BEGIN
-      IF pg_trigger_depth() > 1 OR NEW.project_id IS NULL THEN
-        RETURN NEW;
+      IF TG_OP = 'DELETE' THEN r := to_jsonb(OLD); ELSE r := to_jsonb(NEW); END IF;
+      IF pg_trigger_depth() <= 1 THEN
+        pid := CASE TG_ARGV[0]
+          WHEN 'change' THEN (SELECT project_id FROM worktree_changes WHERE id = r->>'change_id')
+          ELSE r->>'project_id' END;
+        SELECT removed_at IS NOT NULL, removal_phase = 'deleting' INTO removed, purging
+          FROM projects WHERE id = pid FOR SHARE;
+        IF removed AND NOT (TG_OP = 'DELETE' AND purging) THEN
+          RAISE EXCEPTION 'project % is unavailable; restore a removed project before changing it', pid
+            USING ERRCODE = 'MRFRM';
+        END IF;
       END IF;
-      SELECT removed_at IS NOT NULL INTO removed FROM projects WHERE id = NEW.project_id FOR SHARE;
-      IF removed THEN
-        RAISE EXCEPTION 'project % is unavailable; restore a removed project before changing it', NEW.project_id
-          USING ERRCODE = 'MRFRM';
-      END IF;
+      IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
       RETURN NEW;
     END $$`);
   for (const table of [
@@ -4571,9 +4577,17 @@ const projectRetentionMigration = Effect.gen(function* () {
     "slack_user_defaults",
   ]) {
     yield* sql.unsafe(`CREATE TRIGGER ${table}_project_retention
-      BEFORE INSERT OR UPDATE ON ${table}
+      BEFORE INSERT OR UPDATE OR DELETE ON ${table}
       FOR EACH ROW EXECUTE FUNCTION project_retention_admit_content()`);
   }
+  // A session's own rows are written by its work, which a removed project no longer runs; what a
+  // person did to them (its name, its deletion) and their review comments are fenced.
+  yield* sql`CREATE TRIGGER agent_sessions_project_retention
+    BEFORE DELETE OR UPDATE OF label ON agent_sessions
+    FOR EACH ROW EXECUTE FUNCTION project_retention_admit_content()`;
+  yield* sql`CREATE TRIGGER review_comments_project_retention
+    BEFORE INSERT OR UPDATE OR DELETE ON review_comments
+    FOR EACH ROW EXECUTE FUNCTION project_retention_admit_content('change')`;
 
   // Inherited capture objects still need their owner's register/retention guard after purge.
   yield* sql`ALTER TABLE worktree_chain ADD COLUMN orphaned boolean NOT NULL DEFAULT false,
