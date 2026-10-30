@@ -66,7 +66,11 @@ import * as Context from "effect/Context";
 
 import { changeStandingOf } from "./landing-state.ts";
 import { LIVE_STATES } from "./live-states.ts";
-import { purgeProjectBlobs } from "./project-purge-blobs.ts";
+import {
+  purgeProjectBlobs,
+  type UploadAuthorityOpen,
+  uploadsLanded,
+} from "./project-purge-blobs.ts";
 
 /** Who asks for a removal, as the route resolved them. */
 export interface RemovalCaller {
@@ -138,6 +142,12 @@ export const refuseStartWhileRemoving = Effect.fn("refuseStartWhileRemoving")(fu
     );
   }
 });
+
+/** An upload started before the removal may still land: purge waits it out. */
+const uploadOpen = ({ until }: UploadAuthorityOpen) =>
+  new ProjectPurgeIncomplete({
+    message: `An upload this project started may still land until ${until.toISOString()}. Purge again after then to finish.`,
+  });
 
 /** This removal's mark went to another removal while it deleted: it stops where it is. */
 class MarkLost extends Data.TaggedError("MarkLost") {}
@@ -674,6 +684,12 @@ export const RemovalLive: Layer.Layer<
         return yield* new PurgeNotConfirmed({
           message: "Type the project's name exactly to confirm purge.",
         });
+      // Asked before the mark too, so a purge that cannot start leaves the project restorable.
+      if (capture.enabled)
+        yield* uploadsLanded(
+          capture,
+          (yield* worktrees.listForProject(id)).map((tree) => tree.id),
+        ).pipe(Effect.mapError(uploadOpen));
       const taken = yield* fences.takePurge(id, viewer.userId);
       if (taken._tag === "gone") return yield* new NotFound({ id });
       if (taken._tag === "forbidden") return yield* retentionForbidden;
@@ -713,12 +729,7 @@ export const RemovalLive: Layer.Layer<
                         message: "Some stored objects could not be deleted. Purge again to finish.",
                       }),
                     ),
-                  UploadAuthorityOpen: ({ until }) =>
-                    Effect.fail(
-                      new ProjectPurgeIncomplete({
-                        message: `An upload this project started may still land until ${until.toISOString()}. Purge again after then to finish.`,
-                      }),
-                    ),
+                  UploadAuthorityOpen: (open) => Effect.fail(uploadOpen(open)),
                 }),
               );
             yield* holding;

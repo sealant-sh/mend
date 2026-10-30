@@ -15,6 +15,25 @@ export class UploadAuthorityOpen extends Data.TaggedError("UploadAuthorityOpen")
   readonly until: Date;
 }> {}
 
+interface PurgeStores {
+  readonly repo: CaptureStoreRepo["Service"];
+  readonly blobs: BlobStore["Service"];
+}
+
+/**
+ * Fails while an upload URL issued for the worktrees, or the blob store's startup window, could
+ * still land bytes. A removed project is issued no new URL, so this only ever moves earlier.
+ */
+export const uploadsLanded = (capture: PurgeStores, worktrees: ReadonlyArray<WorktreeId>) =>
+  Effect.gen(function* () {
+    const until = Math.max(
+      (yield* capture.repo.putAuthorityUntilFor(worktrees))?.getTime() ?? 0,
+      yield* capture.blobs.startupUntil,
+    );
+    if (until > (yield* Clock.currentTimeMillis))
+      return yield* new UploadAuthorityOpen({ until: new Date(until) });
+  });
+
 /** Long enough for one group's deletes; renewed before each, like capture retention's. */
 const CLAIM_TTL_SECONDS = 60 * 60;
 
@@ -35,10 +54,7 @@ const purgeKeys = (
  * `step` runs before every deletion and fails once the purge no longer holds its mark.
  */
 export const purgeProjectBlobs = <E>(
-  capture: {
-    readonly repo: CaptureStoreRepo["Service"];
-    readonly blobs: BlobStore["Service"];
-  },
+  capture: PurgeStores,
   purge: { readonly projectId: ProjectId; readonly mark: RemovalFenceId },
   worktrees: ReadonlyArray<WorktreeId>,
   foreignHandoffPacks: ReadonlyArray<string>,
@@ -46,12 +62,7 @@ export const purgeProjectBlobs = <E>(
 ): Effect.Effect<void, E | PurgeBlobFailure | UploadAuthorityOpen> =>
   Effect.gen(function* () {
     const { repo, blobs } = capture;
-    const until = Math.max(
-      (yield* repo.putAuthorityUntilFor(worktrees))?.getTime() ?? 0,
-      yield* blobs.startupUntil,
-    );
-    if (until > (yield* Clock.currentTimeMillis))
-      return yield* new UploadAuthorityOpen({ until: new Date(until) });
+    yield* uploadsLanded(capture, worktrees);
 
     const failed = (key: string) => () => new PurgeBlobFailure({ key });
     const own = new Set(worktrees);
