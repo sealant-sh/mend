@@ -1,10 +1,12 @@
 import { createAuthHandler } from "@mend/auth";
+import { CliAuthRequest } from "@mend/db";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { observedWebHandler } from "@mend/network/http-observation";
 import { Effect, Layer, Logger, Tracer } from "effect";
 import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/http";
 import { describe, expect, it } from "vitest";
 
+import { createTenancyApi } from "../test/support/tenancy-api.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
 import { apiObservation, RedactedRequestPartsLive } from "./request-observation.ts";
 
@@ -64,7 +66,65 @@ const betterAuthBoundary = () => {
   return { logs, spans, get, post, dispose };
 };
 
+const logLines = (logs: ReadonlyArray<string>) =>
+  logs.map((line): { readonly annotations: Record<string, unknown> } => JSON.parse(line));
+
 describe("secrets in request URLs", () => {
+  it("keeps a CLI sign-in's user code out of the request log and traces in every spelling the router accepts", async () => {
+    const logs: string[] = [];
+    const spans: Tracer.Span[] = [];
+    const waiting = new CliAuthRequest({
+      userCode: "CODE7SEC",
+      name: "Work laptop",
+      client: "cli",
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 10 * 60_000),
+    });
+    const api = await createTenancyApi(
+      {},
+      {
+        logs,
+        spans,
+        implement: {
+          devices: {
+            getCliAuth: () => Effect.succeed(waiting),
+            approveCliAuth: () => Effect.succeed(waiting),
+            denyCliAuth: () => Effect.succeed(waiting),
+          },
+        },
+      },
+    );
+    const requests = [
+      ["GET", "/api/me/cli-auth/CODE-7SEC", "/api/me/cli-auth/:code"],
+      ["POST", "/api/me/cli-auth/CODE-7SEC/approve", "/api/me/cli-auth/:code/approve"],
+      ["POST", "/api/me/cli-auth/CODE-7SEC/deny", "/api/me/cli-auth/:code/deny"],
+      ["GET", "/API/Me/CLI-AUTH/code-7sec", "/api/me/cli-auth/:code"],
+      ["GET", "//api//me/cli-auth//CODE-7SEC/", "/api/me/cli-auth/:code"],
+      ["GET", "/api/me/cli-auth/CODE%2D7SEC", "/api/me/cli-auth/:code"],
+      [
+        "POST",
+        "/api/me/cli-auth/code-7sec/approve?code=CODE-7SEC",
+        "/api/me/cli-auth/:code/approve",
+      ],
+    ] as const;
+    try {
+      const answers: string[] = [];
+      for (const [method, path] of requests)
+        answers.push(`${method} ${(await api.request("carol", method, path)).status}`);
+      expect(answers).toEqual(requests.map(([method]) => `${method} 200`));
+      expect.soft(logs.filter((line) => /7sec/i.test(line))).toEqual([]);
+      expect.soft(traced(spans)).not.toMatch(/7sec/i);
+      expect(
+        logLines(logs)
+          .map(({ annotations }) => annotations)
+          .filter((annotations) => annotations["http.status"] !== undefined)
+          .map((annotations) => [annotations["http.method"], annotations["http.route"]]),
+      ).toEqual(requests.map(([method, , route]) => [method, route]));
+    } finally {
+      await api.dispose();
+    }
+  });
+
   it("refuses a password reset token in Better Auth's link path, and keeps it out of the request log and traces", async () => {
     const boundary = betterAuthBoundary();
     try {

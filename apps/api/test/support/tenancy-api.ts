@@ -320,6 +320,7 @@ export const createTenancyApi = async (
       readonly removalFences?: Partial<RemovalFencesRepo["Service"]>;
       readonly setupRuns?: Layer.PartialEffectful<SetupRunsRepo["Service"]>;
       readonly users?: Layer.PartialEffectful<UsersRepo["Service"]>;
+      readonly devices?: Layer.PartialEffectful<DevicesRepo["Service"]>;
       readonly images?: Layer.PartialEffectful<ResourceImageResolver["Service"]>;
       readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
       readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
@@ -479,7 +480,7 @@ export const createTenancyApi = async (
       recording(SessionGitOpsRepo, "gitOps", options.implement?.gitOps ?? {}, calls),
       recording(ChangeToursRepo, "changeTours", {}, calls),
       recording(CheckpointsRepo, "checkpoints", options.implement?.checkpoints ?? {}, calls),
-      recording(DevicesRepo, "devices", {}, calls),
+      recording(DevicesRepo, "devices", options.implement?.devices ?? {}, calls),
       recording(FollowUpsRepo, "followUps", {}, calls),
       recording(HotWorkspacesRepo, "hotWorkspaces", options.implement?.hotWorkspaces ?? {}, calls),
       recording(IssuesRepo, "issues", {}, calls),
