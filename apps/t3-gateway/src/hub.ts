@@ -3331,19 +3331,32 @@ export const makePersonHub = (input: {
           ? mend.ensureScratchProject(session.deviceToken)
           : mend.createProject(session.deviceToken, request.name),
       );
-      return yield* loadLock.withPermits(1)(
-        Effect.gen(function* () {
-          yield* refreshProject(created.id);
-          const ready = projects.get(created.id)?.project;
-          if (ready === undefined)
-            return yield* refused(
-              "Mend created the project, but it could not be loaded into this environment. Refresh projects before trying again.",
-            );
-          if (request.kind === "scratch" && ready.scratchOwnerUserId !== session.mendUser.id)
-            return yield* refused("Mend did not return this person's scratch project.");
-          return ready;
-        }),
-      );
+      if (request.kind === "scratch" && created.scratchOwnerUserId !== session.mendUser.id)
+        return yield* refused("Mend did not return this person's scratch project.");
+      const shown = yield* loadLock
+        .withPermits(1)(
+          refreshProject(created.id).pipe(
+            Effect.map(() => projects.get(created.id)?.project ?? null),
+          ),
+        )
+        .pipe(
+          Effect.catch((error) =>
+            Effect.as(
+              Effect.logWarning("t3 gateway could not read a created project", {
+                cause: error.message,
+              }),
+              null,
+            ),
+          ),
+          Effect.repeat({
+            until: (project) => project !== null,
+            times: CREATED_READ_ATTEMPTS,
+            schedule: Schedule.spaced(CREATED_READ_RETRY),
+          }),
+        );
+      // The project exists in Mend either way: answering a failure would invite a retry that
+      // creates `name-2`. t3code waits for the shell itself, and the project's event brings it.
+      return shown ?? created;
     });
 
     /**
@@ -4647,6 +4660,10 @@ export class Projections extends Context.Service<
     readonly isDeviceRefused: (deviceToken: string) => boolean;
   }
 >()("@mend/t3-gateway/Projections") {}
+
+/** How project creation reads the created project before it answers, well inside t3code's 10 s. */
+const CREATED_READ_RETRY = "250 millis";
+const CREATED_READ_ATTEMPTS = 4;
 
 /** How a launch reads its new session's project before it answers, and then in the background. */
 const OPENING_READ_RETRY = "500 millis";

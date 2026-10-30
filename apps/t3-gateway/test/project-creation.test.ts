@@ -60,7 +60,7 @@ const fixture = () =>
     const writes: Array<{ token: string; name: string; kind: string }> = [];
     const createdSessions: Array<{ projectId: string; name: string | null; base: string | null }> =
       [];
-    let readable = true;
+    let unreadableReads = 0;
     let refusal = false;
     const calls: MendClient["Service"] = {
       ...unreachableMend,
@@ -70,7 +70,7 @@ const fixture = () =>
       projectSkills: () => Effect.succeed([]),
       events: () => Stream.never,
       projectDetail: (_token, id) =>
-        readable && projects.has(id)
+        unreadableReads-- <= 0 && projects.has(id)
           ? Effect.succeed({
               project: projects.get(id) ?? makeProject(id, "missing"),
               sessions: sessions.filter((s) => s.projectId === id),
@@ -164,8 +164,8 @@ const fixture = () =>
       projects,
       writes,
       createdSessions,
-      unreadable: () => {
-        readable = false;
+      unreadableFor: (reads: number) => {
+        unreadableReads = reads;
       },
       revoke: () => {
         refusal = true;
@@ -335,17 +335,34 @@ describe("project creation through the gateway", () => {
         expect(personProjectPaths(person.id)).not.toEqual(personProjectPaths("someone-else"));
       }),
     ));
-  it("does not answer a project absent from the shell or create with a refused/read-only device", async () =>
+  it("reads a created project again until the shell holds it", async () =>
     run(
       Effect.gen(function* () {
         const f = yield* fixture();
-        f.unreadable();
-        expect(
-          Exit.isFailure(
-            yield* f.rpc[WS_METHODS.projectsCreateNew]({ name: "notes" }).pipe(Effect.exit),
-          ),
-        ).toBe(true);
+        f.unreadableFor(2);
+        const answer = yield* f.rpc[WS_METHODS.projectsCreateNew]({ name: "notes" });
+        expect((yield* f.hub.shellSnapshot).projects.map((p) => p.id)).toEqual([answer.projectId]);
+      }),
+    ));
+  it("answers the project Mend created even when the shell cannot load it yet", async () =>
+    run(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        f.unreadableFor(Number.POSITIVE_INFINITY);
+        const named = yield* f.rpc[WS_METHODS.projectsCreateNew]({ name: "notes" });
+        expect(named).toEqual({
+          projectId: "named-0",
+          workspaceRoot: "/store/named-0/repo.git",
+        });
+        expect(yield* f.rpc[WS_METHODS.projectsEnsureScratch]()).toEqual({ projectId: "scratch" });
         expect((yield* f.hub.shellSnapshot).projects).toEqual([]);
+        expect(f.writes.map((w) => w.kind)).toEqual(["named", "scratch"]);
+      }),
+    ));
+  it("does not create with a refused or read-only device", async () =>
+    run(
+      Effect.gen(function* () {
+        const f = yield* fixture();
         const readOnly = handlers(f.hub, { ...testBearerSession, scopes: ["orchestration:read"] });
         expect(
           Exit.isFailure(yield* readOnly[WS_METHODS.projectsEnsureScratch]().pipe(Effect.exit)),
@@ -354,7 +371,7 @@ describe("project creation through the gateway", () => {
         expect(
           Exit.isFailure(yield* f.rpc[WS_METHODS.projectsEnsureScratch]().pipe(Effect.exit)),
         ).toBe(true);
-        expect(f.writes).toHaveLength(1);
+        expect(f.writes).toEqual([]);
       }),
     ));
   it("starts every new scratch thread in its own worktree from main, including root requests", async () =>
