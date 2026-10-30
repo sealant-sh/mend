@@ -742,10 +742,14 @@ names this project from your display name, falling back to your email's local pa
 `scratch-person`. Renaming your account keeps the original project and name.
 
 The gateway calls `POST /api/projects/new` or `POST /api/projects/scratch` with your device token
-and publishes the project's shell before answering. Config advertises `newProjectsRoot` as `Mend`
-and a fixed per-person `scratchWorkspaceRoot`. These are presentation labels. Every path sent back
-is looked up in the person's visible projects and sessions. A client path is never opened as a
-repository source. Folder adoption, clone and `projects.mutate` remain refused.
+and publishes the project's shell before answering. When the shell cannot load the project at once,
+the gateway reads it again for about a second, then answers with the project Mend created anyway, so
+a retry does not create `name-2`; the project's event brings it into the shell. Config advertises
+`newProjectsRoot` as `Mend` to a device with `orchestration:operate` only, and a fixed per-person
+`scratchWorkspaceRoot` to every device, which is how T3 Code recognises the scratch project. These
+are presentation labels. Every path sent back is looked up in the person's visible projects and
+sessions. A client path is never opened as a repository source. Folder adoption, clone and
+`projects.mutate` remain refused.
 
 ## State
 
