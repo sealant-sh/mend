@@ -1,5 +1,6 @@
 export * from "./dotfiles.ts";
 export * from "./engine.ts";
+export { ScreenNeedsPersonError } from "./screen-process.ts";
 export * from "./launch-admission.ts";
 export * from "./session-repository.ts";
 export * from "./session-repository-captured.ts";

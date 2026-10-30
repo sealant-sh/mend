@@ -644,7 +644,11 @@ import {
   INSTALL_SESSION_LABEL,
   mayRunIn,
 } from "./run-eligibility.ts";
-import { makeScreenProcess, type ScreenProcess } from "./screen-process.ts";
+import {
+  makeScreenProcess,
+  type ScreenNeedsPersonError,
+  type ScreenProcess,
+} from "./screen-process.ts";
 import { makeScreenPasswords, type ScreenPasswords } from "./screen/passwords.ts";
 import {
   decodeSecretFilesRecord,
@@ -2905,7 +2909,11 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
     ) => Effect.Effect<
       Screen,
-      SessionNotFoundError | SessionNotLiveError | SealantPlatformError | ScreenDisplaysFullError
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | SealantPlatformError
+      | ScreenDisplaysFullError
+      | ScreenNeedsPersonError
     >;
     /** Ends the session's screen for `reason`; one already ended, or never started, is left. */
     readonly stopScreen: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
@@ -24501,7 +24509,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // cannot be one of the engine's dependencies.
         land: () => gitHooks.landRequested(sessionId, actor),
         agentHook: (report) => agentHook(sessionId, report),
-        screenSecret: () => Effect.sync(() => screenPasswords.fetch(sessionId, actor)),
+        // Only a person's grant: a screen runs as its person, never as the workspace itself.
+        ...(actor === null
+          ? {}
+          : { screenSecret: () => Effect.sync(() => screenPasswords.fetch(sessionId, actor)) }),
         mcpCaller: (named) =>
           Effect.all({
             accountId:

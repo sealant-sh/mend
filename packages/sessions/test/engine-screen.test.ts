@@ -1,7 +1,19 @@
-import { linuxLoginNameOf } from "@mend/db";
-import { DisplayNumber, type Screen } from "@mend/domain/workbench";
+import {
+  linuxLoginNameOf,
+  SessionChannelTokensRepo,
+  SessionChannelTokensRepoMemory,
+} from "@mend/db";
+import { DisplayNumber, type HarnessLayout, type Screen } from "@mend/domain/workbench";
 import type { PersonSessionOptions } from "@mend/sealant";
-import { ServiceHost, SessionEngine } from "@mend/sessions";
+import {
+  ServiceHost,
+  SessionChannelNetworkHost,
+  SessionChannelNetworkHostLive,
+  SessionChannelRegistry,
+  SessionChannelRegistryLive,
+  SessionEngine,
+} from "@mend/sessions";
+import { DeploymentConfig } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
 import { Effect, Layer, Redacted } from "effect";
@@ -11,6 +23,7 @@ import { screenArgv } from "../src/screen/script.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import {
   sealantLaunchLayer,
+  servedSocketApis,
   setup,
   withPreparedEngineEffect,
   type World,
@@ -43,7 +56,12 @@ interface Platform {
 /** A person-layout launch of `claude` with a screen beside it, Xvnc's output scripted. */
 const withScreens = <A, E>(
   work: (world: World, platform: Platform) => Effect.Effect<A, E, SessionEngine>,
-  options: { readonly openFails?: () => boolean; readonly printed?: ReadonlyArray<string> } = {},
+  options: {
+    readonly openFails?: () => boolean;
+    readonly printed?: ReadonlyArray<string>;
+    readonly layout?: HarnessLayout;
+    readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
+  } = {},
 ) => {
   const platform: Platform = { spawned: [], opened: [], execs: [], execUsers: [], listeners: [] };
   const created: Array<CreateOptions> = [];
@@ -52,6 +70,7 @@ const withScreens = <A, E>(
     (world) => work(world, platform),
     {
       captured: makeMemoryCaptureStore(),
+      ...(options.tokensLayer === undefined ? {} : { tokensLayer: options.tokensLayer }),
       sealantLayer: sealantLaunchLayer(
         created,
         undefined,
@@ -71,7 +90,10 @@ const withScreens = <A, E>(
           ...(options.openFails === undefined ? {} : { openFails: options.openFails }),
         },
       ),
-      harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
+      harnessLayout: {
+        flag: options.layout ?? "person",
+        platform: personPlatform([], { person: true }),
+      },
       serviceHostLayer: Layer.succeed(ServiceHost, {
         bindAddresses: () => Effect.succeed(["127.0.0.1"]),
         start: (input) =>
@@ -216,5 +238,106 @@ describe("the session's screen (ADR 0020)", () => {
           expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
         }),
       ),
+  );
+
+  it.effect("refuses a screen in a workspace that cannot give it its own person", () =>
+    withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const [project] = [...world.projects.values()];
+          if (project === undefined) throw new Error("no project");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "screen",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["claude"]);
+
+          const refused = yield* Effect.flip(engine.startScreen(session.id));
+          expect(refused).toMatchObject({
+            _tag: "ScreenNeedsPersonError",
+            sessionId: session.id,
+            message: "this workspace cannot give a screen its own person · no screen was started",
+          });
+          expect(screenRows(world)).toEqual([]);
+          expect(platform.spawned).not.toContainEqual(screenArgv(DisplayNumber.make(10)));
+          expect(yield* engine.screenPasswords(session.id)).toBeNull();
+        }),
+      { layout: "shared" },
+    ),
+  );
+});
+
+const channelLayer = Layer.mergeAll(
+  SessionChannelRegistryLive,
+  SessionChannelTokensRepoMemory,
+  SessionChannelNetworkHostLive.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        SessionChannelRegistryLive,
+        SessionChannelTokensRepoMemory,
+        Layer.succeed(DeploymentConfig, {
+          mode: "kubernetes",
+          sessionEndpoint: { listen: "127.0.0.1:0", url: "http://127.0.0.1:0" },
+          sessionStore: "captured",
+        }),
+      ),
+    ),
+  ),
+);
+
+describe("the screen's secret over the session channel (ADR 0020)", () => {
+  it.live("answers only the person a screen runs as, never a workspace's own token", () =>
+    Effect.gen(function* () {
+      const registry = yield* SessionChannelRegistry;
+      const network = yield* SessionChannelNetworkHost;
+      const tokens = yield* SessionChannelTokensRepo;
+      for (const layout of ["shared", "person"] as const) {
+        yield* withScreens(
+          (world) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const [project] = [...world.projects.values()];
+              if (project === undefined) throw new Error("no project");
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "claude",
+                label: null,
+                name: `screen-${layout}`,
+                ownerUserId: "user-fixture",
+                start: { kind: "base", base: null },
+              });
+              yield* engine.launch(session.id, ["claude"]);
+              const socket = servedSocketApis.get(session.id);
+              const launchId = world.executorLaunches.get(session.id)?.launchId;
+              if (socket === undefined || launchId === undefined) throw new Error("not launched");
+              registry.register(session.id, socket);
+              yield* Effect.ignore(engine.startScreen(session.id));
+              const ask = (token: string) =>
+                Effect.promise(() =>
+                  fetch(`http://${network.address}/session/screen-secret`, {
+                    method: "POST",
+                    headers: { authorization: `Bearer ${token}`, "x-mend-session-id": session.id },
+                  }).then((response) => response.status),
+                );
+              expect([layout, yield* ask(yield* tokens.issue(session.id, launchId))]).toEqual([
+                layout,
+                409,
+              ]);
+              expect([layout, socket.screenSecret]).toEqual([layout, undefined]);
+              const person = yield* tokens.issuePerson(launchId, "user-fixture");
+              expect([layout, yield* ask(person)]).toEqual([
+                layout,
+                layout === "person" ? 200 : 401,
+              ]);
+            }),
+          { layout, tokensLayer: Layer.succeed(SessionChannelTokensRepo, tokens) },
+        );
+      }
+    }).pipe(Effect.provide(channelLayer)),
   );
 });

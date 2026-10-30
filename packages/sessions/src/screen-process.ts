@@ -8,7 +8,7 @@ import { SealantRunId, SealantWorkspaceId, type SessionId } from "@mend/domain";
 import type { Screen, ScreenEndReason, Session, SessionProcess } from "@mend/domain/workbench";
 import type { PersonSessionOptions, ProcessUser, SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession, Workspace } from "@sealant/sdk";
-import { Effect, Stream } from "effect";
+import { Effect, Schema, Stream } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import type { ScreenPasswordsHeld } from "./screen/passwords.ts";
@@ -23,7 +23,7 @@ export interface ScreenProcessDeps<E> {
   readonly workspaceOf: (
     sessionId: SessionId,
   ) => Effect.Effect<{ readonly session: Session; readonly workspace: Workspace }, E>;
-  /** The session's person in a person-layout executor (ADR 0016); null runs as root. */
+  /** The session's person in a person-layout executor (ADR 0016); null where there is none. */
   readonly startAs: (
     session: Session,
     workspace: Workspace,
@@ -49,10 +49,19 @@ export interface ScreenProcessDeps<E> {
   readonly fork: (effect: Effect.Effect<void>) => Effect.Effect<void>;
 }
 
+/** A screen runs only as its session's person (ADR 0020), so nothing else holds its passwords. */
+export class ScreenNeedsPersonError extends Schema.TaggedError<ScreenNeedsPersonError>()(
+  "ScreenNeedsPersonError",
+  { sessionId: Schema.String, message: Schema.String },
+) {}
+
 export interface ScreenProcess<E> {
   readonly start: (
     sessionId: SessionId,
-  ) => Effect.Effect<Screen, E | SealantPlatformError | ScreenDisplaysFullError>;
+  ) => Effect.Effect<
+    Screen,
+    E | SealantPlatformError | ScreenDisplaysFullError | ScreenNeedsPersonError
+  >;
   readonly stop: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
   /** A screen row ended without a stop of ours: its process exited, or its workspace ended. */
   readonly ended: (
@@ -141,7 +150,13 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
         if (running !== null && STARTED.has(screen.life._tag) && signableHere) return screen;
         if (running !== null && !(yield* endedRow(running))) return screen;
         const startAs = yield* deps.startAs(session, workspace);
-        const runsAs = startAs === null ? null : session.ownerUserId;
+        const runsAs = session.ownerUserId;
+        if (startAs === null || runsAs === null) {
+          return yield* new ScreenNeedsPersonError({
+            sessionId,
+            message: "this workspace cannot give a screen its own person · no screen was started",
+          });
+        }
         const argv = screenArgv(screen.display);
         const row = yield* processes.create({
           sessionId,
@@ -158,11 +173,7 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
           .setLife(screen.id, { life: { _tag: "Starting" }, processId: row.id })
           .pipe(Effect.orDie);
         const pty = yield* deps
-          .open(
-            workspace,
-            argv,
-            startAs === null ? undefined : { user: startAs.user, env: startAs.env },
-          )
+          .open(workspace, argv, { user: startAs.user, env: startAs.env })
           .pipe(
             Effect.tapError(() =>
               Effect.gen(function* () {
