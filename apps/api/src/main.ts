@@ -266,6 +266,7 @@ import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
 import { WorkspaceHostUserNamespacesLive } from "./routes/machine.ts";
 import { PreviewAuthRoutes } from "./routes/preview-auth.ts";
+import { TerminalProjectsLive } from "./routes/upgrade-tickets.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
@@ -915,6 +916,7 @@ const MainLive = Layer.unwrap(
           HandoffStartLive.pipe(Layer.provide(captureStore)),
           ResourcesLive.pipe(Layer.provide(ResourceImageResolverLive)),
           RemovalLive.pipe(Layer.provide(landingGit)),
+          TerminalProjectsLive,
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.

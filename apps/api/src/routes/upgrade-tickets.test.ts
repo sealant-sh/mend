@@ -1,3 +1,4 @@
+import { ProjectId } from "@mend/domain";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -220,6 +221,23 @@ describe("the embed exchange", () => {
     expect((await exchange(api, renewOf(first), sharedA.session)).status).toBe(200);
     // It opens no terminal itself and no other session's.
     expect((await tty(api, sharedA.session, renewOf(first))).status).toBe(401);
+    expect((await exchange(api, renewOf(first), privateAlice.session)).status).toBe(401);
+  });
+
+  it("refuses a renewal once the session's project is removed", async () => {
+    api = await createTenancyApi();
+    const embed = ticketOf(
+      (await mint(api, "alice", { target: "tty-embed", session: privateAlice.session })).minted,
+    );
+    const first: unknown = await (await exchange(api, embed, privateAlice.session)).json();
+    const project = api.world.projects.get(ProjectId.make(privateAlice.project));
+    if (project === undefined) throw new Error("missing project fixture");
+    api.world.retainedProjects.set(project.id, {
+      project,
+      removedAt: new Date(),
+      removedByUserId: "alice",
+      state: "removed",
+    });
     expect((await exchange(api, renewOf(first), privateAlice.session)).status).toBe(401);
   });
 

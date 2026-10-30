@@ -17,6 +17,11 @@ import {
   RemovalFencesRepoLive,
   isRemovedProject,
 } from "../src/repos/removal-fences.ts";
+import {
+  UpgradeTicketsRepo,
+  UpgradeTicketsRepoLive,
+  upgradeTicketScope,
+} from "../src/repos/upgrade-tickets.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
@@ -34,6 +39,7 @@ const repos = Layer.mergeAll(
   RemovalFencesRepoLive,
   CaptureStoreRepoLive,
   ProjectServiceRecipesRepoLive,
+  UpgradeTicketsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(pool))));
 const run = <A, E>(
   effect: Effect.Effect<
@@ -43,6 +49,7 @@ const run = <A, E>(
     | RemovalFencesRepo
     | CaptureStoreRepo
     | ProjectServiceRecipesRepo
+    | UpgradeTicketsRepo
     | SqlClient.SqlClient
   >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(repos), Effect.scoped));
@@ -308,6 +315,43 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
             .filter((row) => !row.fenced && !fencedElsewhere.has(row.table))
             .map((row) => row.table),
         ).toEqual([]);
+      }),
+    ));
+
+  it("revokes every ticket that opens a terminal, Service or preview of the project's sessions", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const tickets = yield* UpgradeTicketsRepo;
+        const id = yield* seed("tickets");
+        const other = yield* seed("tickets-other");
+        for (const project of [id, other]) {
+          yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES (${`w-${project}`}, ${project}, 'work', 'work', 'work', 'abc')`;
+          yield* sql`INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id)
+            VALUES (${`s-${project}`}, ${project}, ${`w-${project}`}, 'claude', 'work', 'work', 'abc', 'anna')`;
+        }
+        yield* sql`INSERT INTO session_processes (id, session_id, sealant_workspace_id, kind, exited_at)
+          VALUES ('p-tickets', ${`s-${id}`}, 'ws', 'shell', now())`;
+        yield* sql`INSERT INTO services (id, session_id, name, declaration_source, workspace_port)
+          VALUES ('svc-tickets', ${`s-${id}`}, 'web', 'explicit-run', 3000)`;
+        const minted = yield* Effect.forEach(
+          [
+            ["tty-renew", upgradeTicketScope({ session: `s-${id}` })],
+            ["tty-embed", upgradeTicketScope({ process: "p-tickets" })],
+            ["service-tunnel", upgradeTicketScope({ service: "svc-tickets" })],
+            ["tty-renew", upgradeTicketScope({ session: `s-${other}` })],
+          ] as const,
+          ([target, scope]) =>
+            Effect.map(
+              tickets.mint({ userId: "anna", credential: null, target, scope }),
+              ({ ticket }) => ({ ticket, target, scope }),
+            ),
+        );
+        yield* keep(id);
+        const open = yield* Effect.forEach(minted, (ticket) =>
+          Effect.map(tickets.consume({ ...ticket, keep: true }), (spent) => spent !== null),
+        );
+        expect(open).toEqual([false, false, false, true]);
       }),
     ));
 });

@@ -153,6 +153,7 @@ import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
 import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
+import { TerminalProjectsLive } from "../../src/routes/upgrade-tickets.ts";
 import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
 import { RawReadStallLimit } from "../../src/routes/worktrees.ts";
@@ -805,6 +806,7 @@ export const createTenancyApi = async (
     ResourcesLive,
     ProjectCreationLive,
     RemovalLive,
+    TerminalProjectsLive,
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),

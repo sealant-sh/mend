@@ -8,6 +8,7 @@ import { notifyEvent } from "../events.ts";
 import { ProjectNameTakenError } from "./projects.ts";
 import { isDriverError } from "./unique-violation.ts";
 import { uniqueViolationConstraint } from "./unique-violation.ts";
+import { upgradeTicketScope } from "./upgrade-tickets.ts";
 
 /** One removal attempt's mark: only its holder advances or clears it. */
 export const RemovalFenceId = Schema.String.pipe(Schema.brand("RemovalFenceId"));
@@ -197,13 +198,20 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
               AND removal_fence_fresh(removal_since) RETURNING id`;
               if (rows.length === 0) return false;
               yield* sql`DELETE FROM preview_grants WHERE preview_id IN (SELECT id FROM previews WHERE project_id = ${id})`;
-              const previews = yield* sql<{
-                readonly id: string;
-              }>`SELECT id FROM previews WHERE project_id = ${id}`;
-              for (const preview of previews) {
-                yield* sql`DELETE FROM upgrade_tickets WHERE target = 'preview'
-              AND ${`preview=${encodeURIComponent(preview.id)}`} = ANY(string_to_array(scope, '&'))`;
-              }
+              // Every ticket that opens something of the project: a renewal would otherwise mint
+              // terminal tickets again once the project is restored. Scopes are built by
+              // `upgradeTicketScope`, so the pairs are too.
+              const opened = yield* sql<{ readonly key: string; readonly value: string }>`
+                SELECT 'session' AS key, id AS value FROM agent_sessions WHERE project_id = ${id}
+                UNION ALL SELECT 'process', p.id FROM session_processes p
+                  JOIN agent_sessions a ON a.id = p.session_id WHERE a.project_id = ${id}
+                UNION ALL SELECT 'service', v.id FROM services v
+                  JOIN agent_sessions a ON a.id = v.session_id WHERE a.project_id = ${id}
+                UNION ALL SELECT 'preview', id FROM previews WHERE project_id = ${id}`;
+              const pairs = opened.map(({ key, value }) => upgradeTicketScope({ [key]: value }));
+              if (pairs.length > 0)
+                yield* sql`DELETE FROM upgrade_tickets t WHERE EXISTS (
+                  SELECT 1 FROM regexp_split_to_table(t.scope, '&') pair WHERE pair IN ${sql.in(pairs)})`;
               yield* sql`INSERT INTO preview_controls (preview_id, revision, state)
             SELECT id, 1, 'automatic' FROM previews WHERE project_id = ${id}
             ON CONFLICT (preview_id) DO UPDATE SET revision = preview_controls.revision + 1, updated_at = now()`;
