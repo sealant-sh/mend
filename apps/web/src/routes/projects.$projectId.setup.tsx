@@ -21,6 +21,7 @@ import {
   VisibilitySection,
 } from "#/components/project-setup";
 import { ProjectSkillsSection } from "#/components/project-skills-section";
+import { ResourcesSection } from "#/components/resources-section";
 import {
   setProjectWorkspaceImage,
   type ProjectDto,
@@ -60,6 +61,7 @@ import {
   issuesFor,
   projectEnvironmentFormReducer,
 } from "#/lib/project-environment-form";
+import { readerZone } from "#/lib/resources";
 import { useTRPC } from "#/lib/trpc";
 import { useInheritedSettings } from "#/lib/viewer";
 import { copyText } from "#/lib/workbench-menus";
@@ -99,6 +101,13 @@ export const Route = createFileRoute("/projects/$projectId/setup")({
       queryClient.ensureQueryData(trpc.projects.recipes.queryOptions({ id: params.projectId })),
       queryClient.ensureQueryData(trpc.skills.list.queryOptions()),
       queryClient.ensureQueryData(trpc.skills.forProject.queryOptions({ id: params.projectId })),
+      queryClient.prefetchQuery(
+        trpc.resources.list.queryOptions({
+          projectId: params.projectId,
+          timeZone: readerZone(),
+          worktreeId: null,
+        }),
+      ),
     ]);
   },
   component: ProjectSetupPage,
@@ -158,6 +167,7 @@ function ProjectSetupPage() {
             You can start sessions and review changes as it stands.
           </p>
         )}
+        <ResourcesSection projectId={projectId} />
         {capabilities.remove ? <RemoveProjectSection projectId={projectId} /> : null}
       </div>
     </div>

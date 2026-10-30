@@ -304,10 +304,14 @@ const clockIn = (now: Date, timeZone: string): Clock => {
 
 /**
  * What every start of `@name` answers while this runtime's Sealant runs no resources: a launch, a
- * `mend resource start` and a recipe's `depends` on it all say this sentence, from here.
+ * `mend resource start` and a recipe's `depends` on it all say this sentence, from here. A
+ * surface with no session in view, such as project setup, names a session rather than this one.
  */
-export const resourceRuntimeRefusal = (name: string): string =>
-  `@${name} · ${BLOCKED["needs-newer-sealant"]} · this session can run its own [service.${name}]`;
+export const resourceRuntimeRefusal = (
+  name: string,
+  surface: "session" | "project" = "session",
+): string =>
+  `@${name} · ${BLOCKED["needs-newer-sealant"]} · ${surface === "session" ? "this" : "a"} session can run its own [service.${name}]`;
 
 const launchParts = (because: ResourceLaunchHold) =>
   because.kind === "stopped-by"

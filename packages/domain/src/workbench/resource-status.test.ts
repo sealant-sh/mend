@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   type ResourceInstanceObservation,
+  resourceRuntimeRefusal,
   resourceStatusLine,
   type ResourceStatusView,
 } from "./resource-status.ts";
@@ -403,6 +404,17 @@ describe("a resource only declared", () => {
     ).toBe("@db · postgres 17 · project · approved by Maria · its own database · not started");
     expect(declared(cache, { kind: "settings", approval: null, choice: "shared" })).toBe(
       "@cache · redis 8 · project · waiting for approval · shared",
+    );
+  });
+});
+
+describe("a start refused where no session is in view", () => {
+  it("names a session, not this one", () => {
+    expect(resourceRuntimeRefusal("db", "project")).toBe(
+      "@db · resources need a newer Sealant on this runtime · a session can run its own [service.db]",
+    );
+    expect(resourceRuntimeRefusal("db")).toBe(
+      "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
     );
   });
 });
