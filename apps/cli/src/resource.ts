@@ -5,6 +5,7 @@ import {
   type ResourceDefinitionInput,
   resourceProposalNotices,
   type ResourcePreset,
+  resourceReviewRows,
   type ResourceSelectionEntry,
   type ResourcesPage,
   WorktreeChoice,
@@ -354,35 +355,13 @@ export const approvalTarget = (
 export const reviewLines = (
   reviewed: Reviewed & { readonly statusLine: string },
   forWorktree: string | null,
-): ReadonlyArray<string> => {
-  const { spec } = reviewed;
-  const env = Object.entries(spec.env).map(([key, value]) =>
-    typeof value === "string" ? `${key}=${value}` : `${key}={secret ${value.secret}}`,
-  );
-  const fields: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
-    ["image", [spec.image]],
-    ["command", spec.command === null ? [] : [spec.command.join(" ")]],
-    ["ports", spec.ports.map((port) => `${port.name}=${port.port}/${port.protocol}`)],
-    ["volumes", spec.volumes.map((volume) => `${volume.name}=${volume.mountPath}`)],
-    ["env", env],
-    [
-      "limits",
-      [
-        `${spec.limits.cpu} CPU · ${spec.limits.memoryMiB} MiB memory · ${spec.limits.diskGiB} GiB disk`,
-      ],
-    ],
-    ["ready", [spec.ready.kind === "command" ? spec.ready.argv.join(" ") : spec.ready.kind]],
-    ["exports", Object.entries(spec.exports).map(([key, value]) => `${key}=${value}`)],
-  ];
-  return [
-    printable(reviewed.statusLine),
-    ...fields.flatMap(([label, values]) =>
-      values.length === 0 ? [] : [`  ${label} ${values.map(printable).join(", ")}`],
-    ),
-    `  digest sha256:${reviewed.digest}`,
-    `  for ${forWorktree === null ? "the project" : `worktree ${printable(forWorktree)}`}`,
-  ];
-};
+): ReadonlyArray<string> => [
+  printable(reviewed.statusLine),
+  ...resourceReviewRows(reviewed.spec, reviewed.digest).map(
+    (row) => `  ${printable(row.label)} ${printable(row.value)}`,
+  ),
+  `  for ${forWorktree === null ? "the project" : `worktree ${printable(forWorktree)}`}`,
+];
 
 const isChoice = Schema.is(WorktreeChoice);
 
