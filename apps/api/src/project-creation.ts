@@ -42,43 +42,27 @@ export const ProjectCreationLive: Layer.Layer<
     const access = yield* UserGitAccessRepo;
     const store = yield* Store;
     const refuse = (message: string) => Effect.fail(new ProjectCreationRefused({ message }));
-    const create = Effect.fn("ProjectCreation.create")(function* (requested: ProjectName | null) {
+    const exhausted = refuse("No project name is available for this request. Choose another name.");
+
+    const currentCreator = Effect.gen(function* () {
       const caller = yield* CurrentUser;
       const membership = yield* organizations.membershipOf(caller.user.id);
       if (membership === null)
         return yield* refuse(
           "This account belongs to no organization, so it cannot create projects.",
         );
-      const organizationId = membership.organization.id;
-      const scratch = requested === null;
-      const existing = () =>
-        projects
-          .byScratchOwner(caller.user.id)
-          .pipe(
-            Effect.flatMap((project) =>
-              project === null || project.organizationId === organizationId
-                ? Effect.succeed(project)
-                : refuse(
-                    "The scratch project belongs to a different organization. Ask an organization owner to recover it.",
-                  ),
-            ),
-          );
-      if (scratch) {
-        const project = yield* existing();
-        if (project !== null) return project;
-      }
-      const author = firstCommitAuthor((yield* authors.resolve(caller.user.id)) ?? caller.user);
-      const gitAuthMode = (yield* access.mode(caller.user.id)) ?? "mend-key";
-      const base = requested ?? scratchProjectName(caller.user);
-      for (const name of projectNameCandidates(base)) {
-        if (scratch) {
-          const project = yield* existing();
-          if (project !== null) return project;
-        }
-        if ((yield* projects.byName(organizationId, name)) !== null) continue;
+      return { user: caller.user, organizationId: membership.organization.id };
+    });
+    type Creator = Effect.Success<typeof currentCreator>;
+
+    /** The repository is the attempt's until SQL takes it; "lost" means another request won. */
+    const attempt = (creator: Creator, name: ProjectName, purpose: "named" | "scratch") =>
+      Effect.gen(function* () {
+        const author = firstCommitAuthor((yield* authors.resolve(creator.user.id)) ?? creator.user);
+        const gitAuthMode = (yield* access.mode(creator.user.id)) ?? "mend-key";
         const id = ProjectId.make(crypto.randomUUID());
         // Keep the ownership handoff to SQL uninterrupted; only confirmed rollback permits cleanup.
-        const made = yield* Effect.uninterruptible(
+        return yield* Effect.uninterruptible(
           Effect.gen(function* () {
             const repository = yield* store
               .createRepository(id, {
@@ -92,18 +76,18 @@ export const ProjectCreationLive: Layer.Layer<
             const inserted = yield* projects
               .publishInitialized({
                 id,
-                organizationId,
-                createdByUserId: caller.user.id,
+                organizationId: creator.organizationId,
+                createdByUserId: creator.user.id,
                 name,
                 storePath: repository.storePath,
                 gitAuthMode,
-                purpose: scratch ? "scratch" : "named",
+                purpose,
               })
               .pipe(
                 Effect.map((project) => ({ kind: "created" as const, project })),
                 Effect.catchTags({
-                  ProjectNameTakenError: () => Effect.succeed({ kind: "conflict" as const }),
-                  ScratchProjectExistsError: () => Effect.succeed({ kind: "conflict" as const }),
+                  ProjectNameTakenError: () => Effect.succeed({ kind: "lost" as const }),
+                  ScratchProjectExistsError: () => Effect.succeed({ kind: "lost" as const }),
                   ProjectMembershipChanged: () => Effect.succeed({ kind: "departed" as const }),
                   ProjectNotPublished: () => Effect.succeed({ kind: "unpublished" as const }),
                   ProjectPublicationUnconfirmed: () =>
@@ -124,21 +108,59 @@ export const ProjectCreationLive: Layer.Layer<
               return yield* refuse(
                 "Mend could not register the project, so it made nothing. Try again.",
               );
-            return null;
+            return "lost" as const;
           }),
         );
-        if (made !== null) return made;
-        if (scratch) {
-          const project = yield* existing();
-          if (project !== null) return project;
+      });
+
+    const scratchOf = (creator: Creator) =>
+      projects
+        .byScratchOwner(creator.user.id)
+        .pipe(
+          Effect.flatMap((project) =>
+            project === null || project.organizationId === creator.organizationId
+              ? Effect.succeed(project)
+              : refuse(
+                  "The scratch project belongs to a different organization. Ask an organization owner to recover it.",
+                ),
+          ),
+        );
+
+    /**
+     * The project made from the first free candidate of `base`; null when every one is taken. A
+     * scratch request answers with the person's scratch project once a concurrent first use has
+     * made it, whichever name it took.
+     */
+    const allocate = (creator: Creator, base: ProjectName, purpose: "named" | "scratch") =>
+      Effect.gen(function* () {
+        for (const name of projectNameCandidates(base)) {
+          const taken = yield* projects.byName(creator.organizationId, name);
+          if (taken !== null) {
+            if (purpose === "scratch" && taken.scratchOwnerUserId === creator.user.id) return taken;
+            continue;
+          }
+          const made = yield* attempt(creator, name, purpose);
+          if (made !== "lost") return made;
+          if (purpose === "scratch") {
+            const winner = yield* scratchOf(creator);
+            if (winner !== null) return winner;
+          }
         }
-      }
-      if (scratch) {
-        const project = yield* existing();
-        if (project !== null) return project;
-      }
-      return yield* refuse("No project name is available for this request. Choose another name.");
-    });
-    return { createNew: (name) => create(name), ensureScratch: () => create(null) };
+        return null;
+      });
+
+    return {
+      createNew: Effect.fn("ProjectCreation.createNew")(function* (name: ProjectName) {
+        return (yield* allocate(yield* currentCreator, name, "named")) ?? (yield* exhausted);
+      }),
+      ensureScratch: Effect.fn("ProjectCreation.ensureScratch")(function* () {
+        const creator = yield* currentCreator;
+        return (
+          (yield* scratchOf(creator)) ??
+          (yield* allocate(creator, scratchProjectName(creator.user), "scratch")) ??
+          (yield* exhausted)
+        );
+      }),
+    };
   }),
 );

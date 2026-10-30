@@ -729,12 +729,14 @@ export const createTenancyWorld = async (
       "projects",
       {
         byName: (org, name) =>
-          Effect.succeed(
-            [...projects.values()].find((p) => p.organizationId === org && p.name === name) ?? null,
+          Effect.sync(
+            () =>
+              [...projects.values()].find((p) => p.organizationId === org && p.name === name) ??
+              null,
           ),
         byScratchOwner: (userId) =>
-          Effect.succeed(
-            [...projects.values()].find((p) => p.scratchOwnerUserId === userId) ?? null,
+          Effect.sync(
+            () => [...projects.values()].find((p) => p.scratchOwnerUserId === userId) ?? null,
           ),
         publishInitialized: (input) =>
           Effect.gen(function* () {
