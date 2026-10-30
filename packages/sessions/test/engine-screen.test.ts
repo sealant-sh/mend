@@ -1,39 +1,11 @@
-import {
-  linuxLoginNameOf,
-  SessionChannelTokensRepo,
-  SessionChannelTokensRepoMemory,
-} from "@mend/db";
-import { DisplayNumber, type HarnessLayout, type Screen } from "@mend/domain/workbench";
-import type { PersonSessionOptions } from "@mend/sealant";
-import {
-  ServiceHost,
-  SessionChannelNetworkHost,
-  SessionChannelNetworkHostLive,
-  SessionChannelRegistry,
-  SessionChannelRegistryLive,
-  SessionEngine,
-} from "@mend/sessions";
-import { DeploymentConfig } from "@mend/store";
+import { DisplayNumber, type Screen } from "@mend/domain/workbench";
+import { SessionEngine } from "@mend/sessions";
 import { it } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions } from "@sealant/sdk";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Redacted } from "effect";
 import { describe, expect } from "vitest";
 
-import { screenArgv } from "../src/screen/script.ts";
-import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import {
-  sealantLaunchLayer,
-  servedSocketApis,
-  setup,
-  withPreparedEngineEffect,
-  type World,
-} from "./engine/fixture.ts";
-import { answerLayout, LAYOUT_READY, personPlatform } from "./engine/person-fixture.ts";
-
-const LAUNCHER = linuxLoginNameOf("user-fixture");
-
-const screenRows = (world: World) =>
-  [...world.processes.values()].filter((process) => process.kind === "screen");
+import { screenArgv, screenReapArgv } from "../src/screen/script.ts";
+import { LAUNCHER, lostReap, lostStart, screenRows, withScreens } from "./engine/screen-fixture.ts";
 
 /** The engine's own fibers run on the event loop: give them turns until `done` holds. */
 const until = (done: () => Effect.Effect<boolean>, what: string) =>
@@ -44,70 +16,6 @@ const until = (done: () => Effect.Effect<boolean>, what: string) =>
     }
     throw new Error(`never observed: ${what}`);
   });
-
-interface Platform {
-  readonly spawned: Array<ReadonlyArray<string>>;
-  readonly opened: Array<PersonSessionOptions>;
-  readonly execs: Array<ReadonlyArray<string>>;
-  readonly execUsers: Array<string | null>;
-  readonly listeners: Array<string>;
-}
-
-/** A person-layout launch of `claude` with a screen beside it, Xvnc's output scripted. */
-const withScreens = <A, E>(
-  work: (world: World, platform: Platform) => Effect.Effect<A, E, SessionEngine>,
-  options: {
-    readonly openFails?: () => boolean;
-    readonly printed?: ReadonlyArray<string>;
-    readonly layout?: HarnessLayout;
-    readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
-  } = {},
-) => {
-  const platform: Platform = { spawned: [], opened: [], execs: [], execUsers: [], listeners: [] };
-  const created: Array<CreateOptions> = [];
-  return withPreparedEngineEffect(
-    (world, tmp) => setup(tmp, world),
-    (world) => work(world, platform),
-    {
-      captured: makeMemoryCaptureStore(),
-      ...(options.tokensLayer === undefined ? {} : { tokensLayer: options.tokensLayer }),
-      sealantLayer: sealantLaunchLayer(
-        created,
-        undefined,
-        undefined,
-        platform.spawned,
-        undefined,
-        undefined,
-        undefined,
-        platform.opened,
-        undefined,
-        platform.execs,
-        undefined,
-        {
-          execUsers: platform.execUsers,
-          exec: answerLayout(LAYOUT_READY),
-          ptyOutput: (argv) => (argv[3] === "mend-screen" ? (options.printed ?? []) : []),
-          ...(options.openFails === undefined ? {} : { openFails: options.openFails }),
-        },
-      ),
-      harnessLayout: {
-        flag: options.layout ?? "person",
-        platform: personPlatform([], { person: true }),
-      },
-      serviceHostLayer: Layer.succeed(ServiceHost, {
-        bindAddresses: () => Effect.succeed(["127.0.0.1"]),
-        start: (input) =>
-          Effect.sync(() => {
-            platform.listeners.push(String(input.serviceId));
-            return { hostPort: 43127, boundAddresses: ["127.0.0.1"] };
-          }),
-        hold: () => Effect.void,
-        sever: () => Effect.void,
-        stop: () => Effect.void,
-      }),
-    },
-  );
-};
 
 describe("the session's screen (ADR 0020)", () => {
   it.effect(
@@ -240,6 +148,122 @@ describe("the session's screen (ADR 0020)", () => {
       ),
   );
 
+  it.effect("reaps a lost start's display as the person and opens it again, once", () => {
+    const lost = lostStart(1);
+    return withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const [project] = [...world.projects.values()];
+          if (project === undefined) throw new Error("no project");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "screen",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          lost.arm();
+          const screen = yield* engine.startScreen(session.id);
+          const reap = screenReapArgv(DisplayNumber.make(10));
+          const reaps = platform.execs.flatMap((argv, at) =>
+            argv.join("\n") === reap.join("\n") ? [platform.execUsers[at]] : [],
+          );
+          expect(reaps).toEqual([LAUNCHER]);
+          expect(screen.display).toBe(10);
+          expect(platform.spawned.filter((argv) => argv[3] === "mend-screen")).toHaveLength(1);
+          expect(screenRows(world)).toMatchObject([
+            { exitedAt: null, sealantSessionId: expect.any(String) },
+          ]);
+        }),
+      { openFails: lost.openFails },
+    );
+  });
+
+  it.effect("gives up after one retry, reaps that attempt too, and the screen reads ended", () => {
+    const lost = lostStart(2);
+    return withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const [project] = [...world.projects.values()];
+          if (project === undefined) throw new Error("no project");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "screen",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          lost.arm();
+          const failed = yield* engine.startScreen(session.id).pipe(Effect.flip);
+          expect(failed).toMatchObject({ _tag: "SealantPlatformError" });
+          const reap = screenReapArgv(DisplayNumber.make(10)).join("\n");
+          const reaps = platform.execs.flatMap((argv, at) =>
+            argv.join("\n") === reap ? [platform.execUsers[at]] : [],
+          );
+          expect(reaps).toEqual([LAUNCHER, LAUNCHER]);
+          expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
+          expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
+            _tag: "Ended",
+            reason: "process-exited",
+          });
+          expect(yield* engine.screenPasswords(session.id)).toBeNull();
+        }),
+      { openFails: lost.openFails },
+    );
+  });
+
+  it.effect("keeps a lost start it could not reap, and a later Stop reaps its display", () => {
+    const lost = lostStart(2);
+    let reapFails = false;
+    return withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const [project] = [...world.projects.values()];
+          if (project === undefined) throw new Error("no project");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "screen",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          lost.arm();
+          reapFails = true;
+          yield* Effect.flip(engine.startScreen(session.id));
+          expect(screenRows(world)).toMatchObject([{ exitedAt: null, sealantSessionId: null }]);
+          expect((yield* world.screens.ofSession(session.id))?.life._tag).toBe("Starting");
+          expect(yield* engine.screenPasswords(session.id)).toBeNull();
+
+          reapFails = false;
+          const reap = screenReapArgv(DisplayNumber.make(10)).join("\n");
+          const reapsBefore = platform.execs.filter((argv) => argv.join("\n") === reap).length;
+          yield* engine.stopScreen(session.id, "idle");
+          const reaps = platform.execs.flatMap((argv, at) =>
+            argv.join("\n") === reap ? [platform.execUsers[at]] : [],
+          );
+          expect(reaps.slice(reapsBefore)).toEqual([LAUNCHER]);
+          expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
+          expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
+            _tag: "Ended",
+            reason: "idle",
+          });
+        }),
+      {
+        openFails: lost.openFails,
+        reap: () => (reapFails ? Effect.fail(lostReap) : undefined),
+      },
+    );
+  });
+
   it.effect("refuses a screen in a workspace that cannot give it its own person", () =>
     withScreens(
       (world, platform) =>
@@ -269,75 +293,5 @@ describe("the session's screen (ADR 0020)", () => {
         }),
       { layout: "shared" },
     ),
-  );
-});
-
-const channelLayer = Layer.mergeAll(
-  SessionChannelRegistryLive,
-  SessionChannelTokensRepoMemory,
-  SessionChannelNetworkHostLive.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        SessionChannelRegistryLive,
-        SessionChannelTokensRepoMemory,
-        Layer.succeed(DeploymentConfig, {
-          mode: "kubernetes",
-          sessionEndpoint: { listen: "127.0.0.1:0", url: "http://127.0.0.1:0" },
-          sessionStore: "captured",
-        }),
-      ),
-    ),
-  ),
-);
-
-describe("the screen's secret over the session channel (ADR 0020)", () => {
-  it.live("answers only the person a screen runs as, never a workspace's own token", () =>
-    Effect.gen(function* () {
-      const registry = yield* SessionChannelRegistry;
-      const network = yield* SessionChannelNetworkHost;
-      const tokens = yield* SessionChannelTokensRepo;
-      for (const layout of ["shared", "person"] as const) {
-        yield* withScreens(
-          (world) =>
-            Effect.gen(function* () {
-              const engine = yield* SessionEngine;
-              const [project] = [...world.projects.values()];
-              if (project === undefined) throw new Error("no project");
-              const session = yield* engine.provision({
-                projectId: project.id,
-                harness: "claude",
-                label: null,
-                name: `screen-${layout}`,
-                ownerUserId: "user-fixture",
-                start: { kind: "base", base: null },
-              });
-              yield* engine.launch(session.id, ["claude"]);
-              const socket = servedSocketApis.get(session.id);
-              const launchId = world.executorLaunches.get(session.id)?.launchId;
-              if (socket === undefined || launchId === undefined) throw new Error("not launched");
-              registry.register(session.id, socket);
-              yield* Effect.ignore(engine.startScreen(session.id));
-              const ask = (token: string) =>
-                Effect.promise(() =>
-                  fetch(`http://${network.address}/session/screen-secret`, {
-                    method: "POST",
-                    headers: { authorization: `Bearer ${token}`, "x-mend-session-id": session.id },
-                  }).then((response) => response.status),
-                );
-              expect([layout, yield* ask(yield* tokens.issue(session.id, launchId))]).toEqual([
-                layout,
-                409,
-              ]);
-              expect([layout, socket.screenSecret]).toEqual([layout, undefined]);
-              const person = yield* tokens.issuePerson(launchId, "user-fixture");
-              expect([layout, yield* ask(person)]).toEqual([
-                layout,
-                layout === "person" ? 200 : 401,
-              ]);
-            }),
-          { layout, tokensLayer: Layer.succeed(SessionChannelTokensRepo, tokens) },
-        );
-      }
-    }).pipe(Effect.provide(channelLayer)),
   );
 });

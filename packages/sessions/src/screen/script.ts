@@ -59,6 +59,25 @@ export const screenArgv = (display: DisplayNumber): ReadonlyArray<string> => [
   `${SCREEN_LIMITS.width}x${SCREEN_LIMITS.height}`,
 ];
 
+const REAP_SCRIPT = `lock=/tmp/.X$1-lock
+pid=$(tr -d ' ' <"$lock" 2>/dev/null) || exit 0
+[ -n "$pid" ] || exit 0
+kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || exit 0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -e "$lock" ] || exit 0
+  sleep 0.2
+done
+`;
+
+/** Ends what a lost start left on the display: the process group its X lock names, Xvnc's. */
+export const screenReapArgv = (display: DisplayNumber): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  REAP_SCRIPT,
+  "mend-screen-reap",
+  String(display),
+];
+
 /** Xvnc's port inside the workspace, on its loopback only. */
 export const screenPort = (display: DisplayNumber): number => 5900 + display;
 

@@ -1,5 +1,6 @@
 import {
   AgentConversationRepo,
+  ScreensRepo,
   ServicesRepo,
   SessionControlEventsRepo,
   SessionProcessesRepo,
@@ -13,6 +14,8 @@ import {
   isLiveProcess,
   protocolIdleReading,
   protocolIdleStopDue,
+  screenHeldByPerson,
+  screenIdleStopDue,
   type Session,
   type SessionProcess,
 } from "@mend/domain/workbench";
@@ -29,7 +32,8 @@ import * as Context from "effect/Context";
  * session reads `idle · stopped after 15 min · reply to resume`, its control log records an
  * `idle-stop` by its owner, and the next message resumes it. In capture mode an executor still
  * shipping captures holds the stop (`capture`), and the stop itself drains before the workspace
- * goes, as every stop does.
+ * goes, as every stop does. A person holding a session's screen holds its stop (`screen`), and the
+ * same pass stops each screen idle past its own limit (ADR 0020, D7), whatever the minutes say.
  */
 export class ProtocolIdleStop extends Context.Service<
   ProtocolIdleStop,
@@ -56,10 +60,14 @@ const liveProtocolAgent = (rows: ReadonlyArray<SessionProcess>): SessionProcess 
   return agent !== null && agent.kind === "agent-protocol" && isLiveProcess(agent) ? agent : null;
 };
 
+const screenLive = (rows: ReadonlyArray<SessionProcess>): boolean =>
+  rows.some((row) => row.kind === "screen" && isLiveProcess(row));
+
 export const ProtocolIdleStopLive: Layer.Layer<
   ProtocolIdleStop,
   Config.ConfigError,
   | AgentConversationRepo
+  | ScreensRepo
   | ServicesRepo
   | SessionControlEventsRepo
   | SessionEngine
@@ -73,6 +81,7 @@ export const ProtocolIdleStopLive: Layer.Layer<
     const processes = yield* SessionProcessesRepo;
     const conversations = yield* AgentConversationRepo;
     const services = yield* ServicesRepo;
+    const screens = yield* ScreensRepo;
     const controlEvents = yield* SessionControlEventsRepo;
     const engine = yield* SessionEngine;
     const summary = idleStopSummary(minutes);
@@ -85,6 +94,7 @@ export const ProtocolIdleStopLive: Layer.Layer<
       liveServices: number,
       nowMs: number,
     ) {
+      const screen = screenLive(rows) ? yield* screens.ofSession(session.id) : null;
       const facts = {
         session,
         processes: rows,
@@ -92,6 +102,7 @@ export const ProtocolIdleStopLive: Layer.Layer<
         requests: yield* conversations.listRequests(session.id, false),
         liveServices,
         tasks: yield* conversations.taskActivity(agent.id),
+        screenHeld: screen !== null && screenHeldByPerson(screen.input),
       };
       if (!protocolIdleStopDue(protocolIdleReading(facts), nowMs, minutes)) return false;
       // Capture mode: an executor with captures still to ship is not idle — a stop now would only
@@ -155,8 +166,21 @@ export const ProtocolIdleStopLive: Layer.Layer<
       return true;
     });
 
+    const stopScreenIfIdle = Effect.fn("ProtocolIdleStop.stopScreenIfIdle")(function* (
+      session: Session,
+      nowMs: number,
+    ) {
+      const screen = yield* screens.ofSession(session.id);
+      const lastActivity = screen === null ? null : yield* screens.lastActivityAt(screen.id);
+      if (screen === null || lastActivity === null) return;
+      if (!screenIdleStopDue(screen, lastActivity, nowMs)) return;
+      yield* engine.stopScreen(session.id, "idle");
+      yield* Effect.logInfo("protocol idle stop: stopped an idle screen").pipe(
+        Effect.annotateLogs({ sessionId: session.id, idleSince: lastActivity.toISOString() }),
+      );
+    });
+
     const sweep = Effect.fn("ProtocolIdleStop.sweep")(function* () {
-      if (minutes <= 0) return [];
       const nowMs = yield* Clock.currentTimeMillis;
       const candidates: Array<{
         readonly session: Session;
@@ -165,10 +189,19 @@ export const ProtocolIdleStopLive: Layer.Layer<
       }> = [];
       for (const session of yield* sessions.listUnsettled()) {
         const rows = yield* processes.listForSession(session.id);
+        if (screenLive(rows)) {
+          yield* stopScreenIfIdle(session, nowMs).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("protocol idle stop: a screen was not read").pipe(
+                Effect.annotateLogs({ sessionId: session.id, cause: String(cause) }),
+              ),
+            ),
+          );
+        }
         const agent = liveProtocolAgent(rows);
         if (agent !== null) candidates.push({ session, rows, agent });
       }
-      if (candidates.length === 0) return [];
+      if (minutes <= 0 || candidates.length === 0) return [];
       const liveCounts = yield* services.liveCountsForSessions(
         candidates.map((candidate) => candidate.session.id),
       );

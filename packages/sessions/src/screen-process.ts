@@ -5,14 +5,20 @@ import type {
   SessionProcessesRepo,
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, type SessionId } from "@mend/domain";
-import type { Screen, ScreenEndReason, Session, SessionProcess } from "@mend/domain/workbench";
+import type {
+  DisplayNumber,
+  Screen,
+  ScreenEndReason,
+  Session,
+  SessionProcess,
+} from "@mend/domain/workbench";
 import type { PersonSessionOptions, ProcessUser, SealantPlatformError } from "@mend/sealant";
-import type { InteractiveSession, Workspace } from "@sealant/sdk";
+import type { InteractiveSession, Workspace, WorkspaceExecResult } from "@sealant/sdk";
 import { Effect, Schema, Stream } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import type { ScreenPasswordsHeld } from "./screen/passwords.ts";
-import { type ScreenReport, screenArgv, screenReportOf } from "./screen/script.ts";
+import { type ScreenReport, screenArgv, screenReapArgv, screenReportOf } from "./screen/script.ts";
 
 /** What the screen process needs of the engine (ADR 0020): its process primitives, no more. */
 export interface ScreenProcessDeps<E> {
@@ -39,6 +45,11 @@ export interface ScreenProcessDeps<E> {
     argv: ReadonlyArray<string>,
     options?: PersonSessionOptions,
   ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
+  /** Runs `argv` in `process`'s workspace as the person it runs as. */
+  readonly exec: (
+    process: SessionProcess,
+    argv: ReadonlyArray<string>,
+  ) => Effect.Effect<WorkspaceExecResult, SealantPlatformError>;
   /** Closes a process's terminal; false when the platform would not. */
   readonly close: (workspaceId: SealantWorkspaceId, ptyId: string) => Effect.Effect<boolean>;
   readonly markExited: (process: SessionProcess, how: "exited" | "stopped") => Effect.Effect<void>;
@@ -69,6 +80,9 @@ export interface ScreenProcess<E> {
     reason: ScreenEndReason,
   ) => Effect.Effect<void>;
 }
+
+/** No answer, or the platform's own failure: Xvnc may have started anyway. */
+const lostAnswer = (error: SealantPlatformError) => error.status === null || error.status >= 500;
 
 const STARTED = new Set<Screen["life"]["_tag"]>(["Starting", "Live"]);
 
@@ -103,12 +117,23 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
       .setLife(screen.id, change)
       .pipe(Effect.catchTag("ScreenNotFoundError", () => Effect.void));
 
-  const endedRow = (row: SessionProcess) =>
+  /** Ends what a start with no answer left on `display`; false when the reap did not run. */
+  const reaped = (row: SessionProcess, display: DisplayNumber) =>
+    Effect.logWarning("screen: a start's answer was lost · reaping").pipe(
+      Effect.annotateLogs({ sessionId: row.sessionId, display }),
+      Effect.andThen(deps.exec(row, screenReapArgv(display))),
+      Effect.map((result) => result.exitCode === 0),
+      Effect.orElseSucceed(() => false),
+    );
+
+  /** A row without a terminal is a start that never answered: only its display reaches it. */
+  const endedRow = (row: SessionProcess, display: DisplayNumber) =>
     Effect.gen(function* () {
-      if (
-        row.sealantSessionId !== null &&
-        !(yield* deps.close(row.sealantWorkspaceId, row.sealantSessionId))
-      ) {
+      const ended =
+        row.sealantSessionId === null
+          ? yield* reaped(row, display)
+          : yield* deps.close(row.sealantWorkspaceId, row.sealantSessionId);
+      if (!ended) {
         yield* deps.notStopped(row);
         return false;
       }
@@ -148,7 +173,7 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
         const running = yield* live(screen.processId);
         const signableHere = passwords.of(sessionId) !== null;
         if (running !== null && STARTED.has(screen.life._tag) && signableHere) return screen;
-        if (running !== null && !(yield* endedRow(running))) return screen;
+        if (running !== null && !(yield* endedRow(running, screen.display))) return screen;
         const startAs = yield* deps.startAs(session, workspace);
         const runsAs = session.ownerUserId;
         if (startAs === null || runsAs === null) {
@@ -168,21 +193,30 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
           status: "starting",
           runsAs,
         });
-        passwords.issue(sessionId, runsAs);
         const starting = yield* screens
           .setLife(screen.id, { life: { _tag: "Starting" }, processId: row.id })
           .pipe(Effect.orDie);
-        const pty = yield* deps
-          .open(workspace, argv, { user: startAs.user, env: startAs.env })
-          .pipe(
-            Effect.tapError(() =>
-              Effect.gen(function* () {
-                passwords.forget(sessionId);
-                yield* deps.markExited(row, "exited");
-                yield* setLife(starting, { life: { _tag: "Ended", reason: "process-exited" } });
-              }),
+        const openWithFreshPasswords = Effect.suspend(() => {
+          passwords.issue(sessionId, runsAs);
+          return deps.open(workspace, argv, { user: startAs.user, env: startAs.env });
+        });
+        const pty = yield* openWithFreshPasswords.pipe(
+          Effect.catchIf(lostAnswer, (lost) =>
+            Effect.flatMap(reaped(row, screen.display), (reap) =>
+              reap ? openWithFreshPasswords : Effect.fail(lost),
             ),
-          );
+          ),
+          Effect.tapError((error) =>
+            Effect.gen(function* () {
+              passwords.forget(sessionId);
+              if (lostAnswer(error) && !(yield* reaped(row, screen.display))) {
+                return yield* deps.notStopped(row);
+              }
+              yield* deps.markExited(row, "exited");
+              yield* setLife(starting, { life: { _tag: "Ended", reason: "process-exited" } });
+            }),
+          ),
+        );
         yield* processes.setSealantSessionId(row.id, pty.id, SealantRunId.make(pty.runId));
         yield* processes.setStatus(row.id, "running");
         yield* deps.watch({ ...row, sealantSessionId: pty.id, status: "running" });
@@ -198,7 +232,7 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
         const screen = yield* screens.ofSession(sessionId);
         if (screen === null || !STARTED.has(screen.life._tag)) return;
         const running = yield* live(screen.processId);
-        if (running !== null && !(yield* endedRow(running))) return;
+        if (running !== null && !(yield* endedRow(running, screen.display))) return;
         passwords.forget(sessionId);
         yield* setLife(screen, { life: { _tag: "Ended", reason } });
       }),

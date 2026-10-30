@@ -23141,6 +23141,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         startAs: (session, workspace) =>
           startAsPerson(session, workspace, Effect.succeed(session.ownerUserId), "shell"),
         open: sealant.openSession,
+        exec: (row, argv) =>
+          Effect.gen(function* () {
+            const [person] =
+              row.runsAs === null ? [] : yield* harnessLayouts.identitiesOf([row.runsAs]);
+            if (person === undefined) {
+              return yield* new SealantPlatformError({
+                code: "process_person_unknown",
+                status: null,
+                message: "this process has no person to run as",
+                cause: null,
+              });
+            }
+            const workspace = yield* sealant.getWorkspace(row.sealantWorkspaceId);
+            return yield* sealant.exec(workspace, argv, { user: processUserOf(person) });
+          }),
         close: closeProcessPty,
         markExited: (row, how) => markProcessExited(row.id, how, null),
         notStopped,
