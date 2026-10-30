@@ -1,6 +1,6 @@
 import type { SessionId, ViewerConnectionId } from "@mend/domain";
 import type { ForwardBytes, ForwardIssueReason } from "@mend/sealant";
-import { Duration, Effect, Redacted, type Scope } from "effect";
+import { Duration, Effect, Queue, Redacted, type Scope } from "effect";
 
 import type { Input } from "./rfb-client.ts";
 import { ByteQueue } from "./rfb-queue.ts";
@@ -43,7 +43,10 @@ export type WatchEnd =
       readonly _tag: "Unreachable";
       readonly reason: ForwardIssueReason | SignInRefusal | "sign-in-deadline";
     }
-  /** The viewer broke the handshake, or sent a message outside the allow-list. */
+  /**
+   * The viewer broke the handshake, sent a message outside the allow-list or past its ceiling, or
+   * got further ahead of the screen than `VIEWER_UNREAD_CEILING`.
+   */
   | {
       readonly _tag: "ViewerRefused";
       readonly reason: "handshake" | "unknown-type" | "oversized";
@@ -68,11 +71,21 @@ const RESET: WatchEnd = { _tag: "ScreenEnded", how: "reset" };
 const CLOSED: WatchEnd = { _tag: "ScreenEnded", how: "closed" };
 
 /**
+ * Most viewer input the relay holds while the screen takes what came before it. A watcher's
+ * messages are a few bytes each, so a viewer this far ahead of its screen is refused.
+ */
+const VIEWER_UNREAD_CEILING = 1024 * 1024;
+
+/**
  * A watcher's view of a screen (ADR 0020, "Watch-only is a filter on RFB messages"). The relay
  * answers the viewer's RFB handshake itself, dials the screen, signs in with the view-only
  * password, and passes the screen's bytes on untouched. Each viewer message goes through
  * `viewerVerdict`: the holder's keys, pointer and paste reach the screen only through its hand,
  * and a message outside the allow-list ends the watch.
+ *
+ * Once the viewer has said hello, each side is read on its own: no wait on a write, to either
+ * side, keeps the relay from hearing that the viewer or the screen has gone, or from closing a
+ * viewer that has fallen behind.
  */
 export const relayViewer = (
   watcher: Watcher,
@@ -81,23 +94,13 @@ export const relayViewer = (
 ): Effect.Effect<WatchEnd, never, Scope.Scope> =>
   Effect.gen(function* () {
     const incoming = new ByteQueue();
-
     const fromViewer = Effect.flatMap(viewer.read, (chunk) =>
       chunk === null ? Effect.fail<WatchEnd>({ _tag: "ViewerLeft" }) : Effect.succeed(chunk),
     );
-    const toViewer = (bytes: Uint8Array) =>
-      viewer.write(bytes).pipe(
-        Effect.andThen(viewer.unsent),
-        Effect.flatMap((unsent) =>
-          unsent > VIEWER_UNSENT_CEILING
-            ? Effect.fail<WatchEnd>({ _tag: "FellBehind", unsent })
-            : Effect.void,
-        ),
-      );
 
-    yield* viewer.write(VIEWER_GREETING);
     const hello = new ViewerHello();
     yield* Effect.gen(function* () {
+      yield* viewer.write(VIEWER_GREETING);
       for (;;) {
         incoming.push(yield* fromViewer);
         const step = hello.read(incoming);
@@ -114,42 +117,74 @@ export const relayViewer = (
       }),
     );
 
-    const screen = yield* ports.dial;
-    const fromScreen = screen.bytes.read().pipe(
-      Effect.mapError(() => RESET),
-      Effect.flatMap((read) =>
-        read.kind === "eof" ? Effect.fail(CLOSED) : Effect.succeed(read.bytes),
-      ),
-    );
-    const toScreen = (bytes: Uint8Array) =>
-      screen.bytes.write(bytes).pipe(Effect.mapError(() => RESET));
-
-    const signIn = new VncSignIn(Redacted.value(screen.password));
-    const handshake = new ByteQueue();
-    yield* Effect.gen(function* () {
-      for (;;) {
-        handshake.push(yield* fromScreen);
-        const step = signIn.read(handshake);
-        if (step._tag === "Refused") {
-          return yield* Effect.fail<WatchEnd>({ _tag: "Unreachable", reason: step.reason });
+    // Bytes after ClientInit are already in `incoming`; each later chunk joins them.
+    const arrived = yield* Queue.sliding<void>(1);
+    const viewerIn = Effect.forever(
+      Effect.gen(function* () {
+        incoming.push(yield* fromViewer);
+        if (incoming.length > VIEWER_UNREAD_CEILING) {
+          return yield* Effect.fail<WatchEnd>({ _tag: "ViewerRefused", reason: "oversized" });
         }
-        if (step.send.length > 0) yield* toScreen(Buffer.concat(step.send));
-        if (step._tag === "SignedIn") break;
-      }
-      // The screen's ServerInit, after the viewer's ClientInit as RFB orders it.
-      if (handshake.length > 0) yield* toViewer(handshake.take(handshake.length));
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: SIGN_IN_DEADLINE,
-        orElse: () => Effect.fail<WatchEnd>({ _tag: "Unreachable", reason: "sign-in-deadline" }),
+        yield* Queue.offer(arrived, undefined);
       }),
     );
 
-    const down = Effect.forever(Effect.flatMap(fromScreen, toViewer));
-
-    const up = Effect.forever(
+    const outgoing = yield* Queue.unbounded<Uint8Array>();
+    let queued = 0;
+    /** Checked before the bytes are queued, so nothing past the ceiling is ever written. */
+    const toViewer = (bytes: Uint8Array) =>
       Effect.gen(function* () {
-        incoming.push(yield* fromViewer);
+        const unsent = queued + (yield* viewer.unsent) + bytes.length;
+        if (unsent > VIEWER_UNSENT_CEILING) {
+          return yield* Effect.fail<WatchEnd>({ _tag: "FellBehind", unsent });
+        }
+        queued += bytes.length;
+        yield* Queue.offer(outgoing, bytes);
+      });
+    const viewerOut = Effect.forever(
+      Effect.gen(function* () {
+        const bytes = yield* Queue.take(outgoing);
+        yield* viewer.write(bytes);
+        queued -= bytes.length;
+      }),
+    );
+
+    const watch = Effect.gen(function* () {
+      const screen = yield* ports.dial;
+      const fromScreen = screen.bytes.read().pipe(
+        Effect.mapError(() => RESET),
+        Effect.flatMap((read) =>
+          read.kind === "eof" ? Effect.fail(CLOSED) : Effect.succeed(read.bytes),
+        ),
+      );
+      const toScreen = (bytes: Uint8Array) =>
+        screen.bytes.write(bytes).pipe(Effect.mapError(() => RESET));
+
+      const signIn = new VncSignIn(Redacted.value(screen.password));
+      const handshake = new ByteQueue();
+      yield* Effect.gen(function* () {
+        for (;;) {
+          handshake.push(yield* fromScreen);
+          const step = signIn.read(handshake);
+          if (step._tag === "Refused") {
+            return yield* Effect.fail<WatchEnd>({ _tag: "Unreachable", reason: step.reason });
+          }
+          if (step.send.length > 0) yield* toScreen(Buffer.concat(step.send));
+          if (step._tag === "SignedIn") break;
+        }
+        // The screen's ServerInit, after the viewer's ClientInit as RFB orders it.
+        if (handshake.length > 0) yield* toViewer(handshake.take(handshake.length));
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: SIGN_IN_DEADLINE,
+          orElse: () => Effect.fail<WatchEnd>({ _tag: "Unreachable", reason: "sign-in-deadline" }),
+        }),
+      );
+
+      const screenIn = Effect.forever(Effect.flatMap(fromScreen, toViewer));
+
+      /** Every whole message already read, before the relay waits for more. */
+      const forward = Effect.gen(function* () {
         let held: Array<Input> = [];
         const flush = Effect.suspend(() => {
           const inputs = held;
@@ -181,8 +216,11 @@ export const relayViewer = (
           }
         }
         yield* flush;
-      }),
-    );
+      });
+      const screenOut = Effect.forever(Effect.andThen(forward, Effect.asVoid(Queue.take(arrived))));
 
-    return yield* Effect.raceFirst(down, up);
+      return yield* Effect.raceAllFirst([screenIn, viewerOut, screenOut]);
+    });
+
+    return yield* Effect.raceAllFirst([viewerIn, watch]);
   }).pipe(Effect.flip);
