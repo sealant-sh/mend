@@ -264,7 +264,7 @@ describe("a page by URL (docs/adr/0004, Agent pages)", () => {
 });
 
 describe("the page-view token never reaches the API's log", () => {
-  it("leaves no line for a page view", async () => {
+  it("logs a page view by its route's template, never its token", async () => {
     const lines: Array<string> = [];
     const routes = HttpRouter.use((router) =>
       router.add("GET", PAGE_VIEW_PATH, () => Effect.succeed(HttpServerResponse.text("page"))),
@@ -288,7 +288,13 @@ describe("the page-view token never reaches the API's log", () => {
     } finally {
       await dispose();
     }
-    expect(lines).toEqual([]);
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      {
+        message: ["Sent HTTP response"],
+        annotations: expect.objectContaining({ "http.route": PAGE_VIEW_PATH, "http.status": 200 }),
+      },
+    ]);
+    expect(lines.filter((line) => line.includes("secret-token-value"))).toEqual([]);
   });
 });
 
@@ -298,7 +304,7 @@ const getSpan = (route: string, status: number) => [
 ];
 
 describe("the page-view token never reaches a trace", () => {
-  it("records no span for a page view on any spelling or a raw read, and the usual span for every other route", async () => {
+  it("records a page view on any spelling and a raw read by their routes' templates, never a token or a file name", async () => {
     const spans: Array<{ readonly name: string; readonly attributes: Map<string, unknown> }> = [];
     class RecordedSpan extends Tracer.NativeSpan {
       readonly recorded = new Map<string, unknown>();
@@ -360,7 +366,9 @@ describe("the page-view token never reaches a trace", () => {
     expect(JSON.stringify(recorded)).not.toContain("secret-file-name");
     expect(JSON.stringify(recorded)).not.toContain("secret-ticket-value");
     expect(recorded).toEqual([
+      ...Array.from({ length: 6 }, () => getSpan(PAGE_VIEW_PATH, 200)),
       getSpan("unrouted", 404),
+      getSpan("/api/worktrees/:id/raw", 200),
       getSpan("/api/health", 200),
       getSpan("/api/health", 200),
     ]);

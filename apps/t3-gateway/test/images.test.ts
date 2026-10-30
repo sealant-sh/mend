@@ -468,7 +468,7 @@ describe("where an image lands", () => {
 });
 
 describe("an image's signed URL", () => {
-  it.live("is never written to the request log, which production keeps on", () =>
+  it.live("is never written to the request log, which names the asset route by its template", () =>
     Effect.gen(function* () {
       const mend = yield* startFakeMend;
       const logs: Array<string> = [];
@@ -497,11 +497,10 @@ describe("an image's signed URL", () => {
         assert.strictEqual((yield* http.get("/api/assets/ast_forged/x.png")).status, 404);
         const token = url.relativeUrl.split("/")[3] ?? "";
         assert.isTrue(token.startsWith("ast_"));
-        // The logger is on: other requests are logged.
-        assert.isTrue(logs.some((line) => line.includes("Sent HTTP response")));
+        const assets = logs.filter((line) => line.includes(`"http.route":"/api/assets/*"`));
+        assert.strictEqual(assets.length, 2);
         const leaked = logs.filter(
-          (line) =>
-            line.includes(token) || line.includes("secret-screen") || line.includes("/api/assets/"),
+          (line) => line.includes(token) || line.includes("secret-screen"),
         );
         assert.deepStrictEqual(leaked, []);
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, ":memory:", { logs })));
