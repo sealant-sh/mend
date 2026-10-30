@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 /** Where a server process's code comes from: the API, and every package it can load. */
 const SOURCES = [path.join(ROOT, "apps/api/src"), path.join(ROOT, "packages")];
-/** `listenEvents` itself, not a caller. */
+/** `listenEvents` and `openEvents` themselves, not callers. */
 const DEFINITION = path.join(ROOT, "packages/db/src/events.ts");
 
 const sourceFiles = (dir: string): ReadonlyArray<string> =>
@@ -32,6 +32,8 @@ const files = SOURCES.flatMap(sourceFiles).filter((file) => file !== DEFINITION)
 const occurrences = (pattern: RegExp, of: ReadonlyArray<string>) =>
   of.flatMap((file) => [...codeOf(file).matchAll(pattern)].map(() => path.relative(ROOT, file)));
 
+const LISTENS = /\b(?:listenEvents|openEvents)\(/gu;
+
 const FIX =
   "subscribe to the events bus (apps/api/src/events-bus.ts) instead of calling listenEvents";
 
@@ -39,10 +41,11 @@ const FIX =
 // that would take its last connection (`guardListens`, packages/db/src/events.ts).
 describe("the LISTEN connections one server pins (ADR 0017 10a outage, 2026-10-30)", () => {
   it("leave the default pool a connection for queries", () => {
-    // Every `listenEvents` stream pins one pooled connection for good, and a server under
-    // MEND_MODE=all runs every one of them: at the pool's size, no query runs and the server never
-    // answers /api/health. A worker that hears events subscribes to the events bus instead.
-    const listeners = occurrences(/\blistenEvents\(/gu, files);
+    // Every `listenEvents` stream, and the bus's `openEvents`, pins one pooled connection for
+    // good, and a server under MEND_MODE=all runs every one of them: at the pool's size, no query
+    // runs and the server never answers /api/health. A worker that hears events subscribes to the
+    // events bus instead.
+    const listeners = occurrences(LISTENS, files);
     expect(
       listeners.length,
       `LISTEN connections a server pins: ${listeners.length} (${listeners.join(", ")}), of a default pool of ${DEFAULT_POOL_MAX} · ${FIX}`,
@@ -51,7 +54,7 @@ describe("the LISTEN connections one server pins (ADR 0017 10a outage, 2026-10-3
 
   it("are four: the events bus, automatic landing, the session notifier and review prep", () => {
     // The Slack reporter and preview preparation subscribe to the events bus (ADR 0017 step 11).
-    expect(occurrences(/\blistenEvents\(/gu, files).toSorted()).toEqual([
+    expect(occurrences(LISTENS, files).toSorted()).toEqual([
       "apps/api/src/automatic-landing.ts",
       "apps/api/src/events-bus.ts",
       "packages/jobs/src/review-prep.ts",

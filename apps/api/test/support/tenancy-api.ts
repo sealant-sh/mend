@@ -951,16 +951,18 @@ export const createTenancyApi = async (
     EventBus,
     Effect.map(
       makeEventBus(
-        Stream.fromQueue(source).pipe(
-          Stream.onStart(
-            Effect.sync(() => {
-              listen.starts += 1;
-            }),
-          ),
-          Stream.ensuring(
-            Effect.sync(() => {
-              listen.ends += 1;
-            }),
+        Effect.succeed(
+          Stream.fromQueue(source).pipe(
+            Stream.onStart(
+              Effect.sync(() => {
+                listen.starts += 1;
+              }),
+            ),
+            Stream.ensuring(
+              Effect.sync(() => {
+                listen.ends += 1;
+              }),
+            ),
           ),
         ),
       ),

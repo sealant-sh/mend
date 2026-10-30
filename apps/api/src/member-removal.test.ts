@@ -503,7 +503,7 @@ describe("the connection registry", () => {
   const buildRegistry = <E>(listen: Stream.Stream<string, E>, members: ReadonlySet<string>) =>
     Layer.build(
       ConnectionRegistryLive.pipe(
-        Layer.provide(Layer.effect(EventBus, makeEventBus(listen))),
+        Layer.provide(Layer.effect(EventBus, makeEventBus(Effect.succeed(listen)))),
         Layer.provide(membersOnly(members)),
       ),
     ).pipe(Effect.map((built) => Context.get(built, ConnectionRegistry)));
@@ -592,7 +592,9 @@ describe("the connection registry", () => {
         }),
       ).pipe(Effect.provide(TestClock.layer()), Effect.timeout("3 seconds")),
     );
-    expect(closed).toEqual(["carol"]);
+    // The bus says resync when the connection drops and again once it listens; this socket never
+    // ends, so the second resync closes it again.
+    expect(closed).toEqual(["carol", "carol"]);
   });
 
   it("keeps closing on later events after one signal could not be handled", async () => {
@@ -605,16 +607,14 @@ describe("the connection registry", () => {
           // The first listen drops once carol is connected (a resync whose membership read dies);
           // the bus reconnects and the second listen carries events.
           let attempts = 0;
-          const listen = Stream.unwrap(
-            Effect.sync(() => {
-              attempts += 1;
-              return attempts === 1
-                ? Stream.fromEffect(Deferred.await(lost)).pipe(
-                    Stream.flatMap(() => Stream.fail("connection lost")),
-                  )
-                : Stream.fromQueue(source);
-            }),
-          );
+          const listen = Effect.sync(() => {
+            attempts += 1;
+            return attempts === 1
+              ? Stream.fromEffect(Deferred.await(lost)).pipe(
+                  Stream.flatMap(() => Stream.fail("connection lost")),
+                )
+              : Stream.fromQueue(source);
+          });
           const built = yield* Layer.build(
             ConnectionRegistryLive.pipe(
               Layer.provide(Layer.effect(EventBus, makeEventBus(listen))),
