@@ -409,6 +409,69 @@ describe("push on a phone whose pairing ends", () => {
     expect((await loadConfig()).pushToken).toBe(PHONE_TOKEN);
   });
 
+  it("registers again when Settings saves the same connection back after Unpair, while the first registration runs", async () => {
+    const registration = holdNextRegistration();
+    await pairByLink("a.example");
+    const { url, token } = await loadConfig();
+
+    act(() => root.render(null));
+    show(<SettingsScreen />);
+    press("Unpair");
+    await settle();
+    press("Advanced");
+    type("https://mend.example.com", url);
+    type("token", token);
+    press("Save");
+    await settle();
+    registration.resolve();
+    await settle();
+    await settle();
+
+    expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
+    expect(deviceCallsTo("a.example")).toEqual([
+      "POST /api/devices",
+      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
+      "POST /api/devices",
+    ]);
+    expect(await loadConfig()).toMatchObject({ url, token, pushToken: PHONE_TOKEN });
+  });
+
+  it("registers again on a machine the phone pairs back to through another, while the first registration runs", async () => {
+    const registration = holdNextRegistration();
+    await pairByLink("a.example");
+    const { token } = await loadConfig();
+
+    await pairByLink("b.example");
+    await pairByLink("a.example");
+    registration.resolve();
+    await settle();
+    await settle();
+
+    expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
+    expect(pushDevicesOf("b.example")).toEqual([]);
+    expect(deviceCallsTo("a.example")).toEqual([
+      "POST /api/devices",
+      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
+      "POST /api/devices",
+    ]);
+    expect(await loadConfig()).toMatchObject({ token, pushToken: PHONE_TOKEN });
+  });
+
+  it("sends one registration for a pairing, however many ask while it runs", async () => {
+    const registration = holdNextRegistration();
+    await pairByLink("a.example");
+
+    act(() => root.render(null));
+    show(<SettingsScreen />);
+    press("Enable notifications");
+    registration.resolve();
+    await settle();
+
+    expect(deviceCallsTo("a.example")).toEqual(["POST /api/devices"]);
+    expect(text()).toContain("registered");
+    expect((await loadConfig()).pushToken).toBe(PHONE_TOKEN);
+  });
+
   it("gives up on a token lookup after Unpair that never ends, and sends nothing for it once it does", async () => {
     phone.notificationsAllowed = false;
     await act(() =>
