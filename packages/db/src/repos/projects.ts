@@ -232,8 +232,9 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       const db = yield* MendDB;
       const sql = yield* PgClient.PgClient;
 
-      const retained = (row: typeof projects.$inferSelect): RetainedProject => {
-        if (row.removedAt === null) throw new Error("retained project has no removal time");
+      /** Null for a listed row: the queries below read removed rows only. */
+      const retained = (row: typeof projects.$inferSelect): RetainedProject | null => {
+        if (row.removedAt === null) return null;
         return {
           project: toProject(row),
           removedAt: row.removedAt,
@@ -262,7 +263,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           .where(and(eq(projects.organizationId, id), isNotNull(projects.removedAt)))
           .orderBy(asc(projects.removedAt), asc(projects.id))
           .pipe(Effect.orDie);
-        return rows.map(retained);
+        return rows.flatMap((row) => retained(row) ?? []);
       });
       const storeClaimed = Effect.fn("ProjectsRepo.storeClaimed")(function* (storePath: string) {
         const rows = yield* db

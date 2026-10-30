@@ -158,8 +158,9 @@ export function RemovedProjects() {
       client.invalidateQueries(trpc.projects.removed.queryFilter()),
     ]);
   };
-  const restore = useMutation(trpc.projects.restore.mutationOptions({ onSuccess: refresh }));
-  const purge = useMutation(trpc.projects.purge.mutationOptions({ onSuccess: refresh }));
+  // A failed purge has still begun (Restore is refused from then on): re-read either way.
+  const restore = useMutation(trpc.projects.restore.mutationOptions({ onSettled: refresh }));
+  const purge = useMutation(trpc.projects.purge.mutationOptions({ onSettled: refresh }));
   return (
     <details className="mt-10 rounded-2xl bg-card px-5 py-4 shadow-sm">
       <summary className="cursor-pointer text-sm font-medium">
