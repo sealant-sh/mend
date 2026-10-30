@@ -78,6 +78,18 @@ const shownTo = (engine: SessionEngine["Service"], session: Session, viewer = "u
       ),
     );
 
+const ioTurn = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+
+const slowAgentOpen = Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+
+const pickupCarriedOut = (engine: SessionEngine["Service"], world: World, sessionId: SessionId) =>
+  Effect.gen(function* () {
+    while (world.relaunches.has(sessionId) || engine.launchUnderWay(sessionId)) {
+      yield* TestClock.adjust("100 millis");
+      yield* ioTurn;
+    }
+  });
+
 describe("pre-release executors and the migration of their shared home (docs/adr/0016, Delivery 19)", () => {
   const IMAGE_KEY = "digest:sha256:img\u0000docker";
 
@@ -385,10 +397,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
               });
               seen.holder = (yield* Fiber.join(launching))._tag;
               yield* engine.reapCaptureLeases();
-              for (let step = 0; step < 100 && world.relaunches.has(session.id); step += 1) {
-                yield* TestClock.adjust("100 millis");
-                yield* Effect.yieldNow;
-              }
+              yield* pickupCarriedOut(engine, world, session.id);
               seen.status = world.sessions.get(session.id)?.status ?? "";
               seen.planLeft = world.relaunches.has(session.id);
             }),
@@ -417,6 +426,83 @@ describe("pre-release executors and the migration of their shared home (docs/adr
         expect(seen).toMatchObject({ holder: "Failure", status: "running", planLeft: false });
         expect(run.created).toHaveLength(2);
         expect([...run.state.retirements.values()]).toEqual([]);
+      }),
+    { timeout: 30_000 },
+  );
+
+  it.effect(
+    "the SLNT-167 pickup wait lasts until a held-off pickup slow to open its agent has resumed it (SLNT-340)",
+    () =>
+      Effect.gen(function* () {
+        const held = yield* Deferred.make<void>();
+        const answer = yield* Deferred.make<HostUserNamespaces | null>();
+        let holding = false;
+        const seen = { holder: "", status: "", planLeft: true };
+        const flushing = yield* Deferred.make<void>();
+        const flushed = yield* Deferred.make<void>();
+        let holdFlush = false;
+        const pickupOpening = yield* Deferred.make<void>();
+        const pickupOpen = yield* Deferred.make<void>();
+        let holdPickup = false;
+        yield* retiringWorldEffect(
+          (engine, world, { session }) =>
+            Effect.gen(function* () {
+              holdFlush = true;
+              const sweeping = yield* Effect.forkChild(engine.sweepRetirements());
+              yield* Deferred.await(flushing);
+              holding = true;
+              const launching = yield* engine
+                .launch(session.id, ["codex"], { over: Restart })
+                .pipe(Effect.result, Effect.forkChild);
+              yield* Deferred.await(held);
+              yield* Deferred.succeed(flushed, undefined);
+              yield* Fiber.join(sweeping);
+              yield* Deferred.succeed(answer, {
+                allowed: false,
+                setting: "kernel.unprivileged_userns_clone=1",
+              });
+              seen.holder = (yield* Fiber.join(launching))._tag;
+              holdPickup = true;
+              yield* engine.reapCaptureLeases();
+              yield* Deferred.await(pickupOpening);
+              yield* slowAgentOpen.pipe(
+                Effect.andThen(Deferred.succeed(pickupOpen, undefined)),
+                Effect.forkChild,
+              );
+              yield* pickupCarriedOut(engine, world, session.id);
+              seen.status = world.sessions.get(session.id)?.status ?? "";
+              seen.planLeft = world.relaunches.has(session.id);
+            }),
+          {
+            aroundOpen: () =>
+              Effect.suspend(() => {
+                if (!holdPickup) return Effect.void;
+                holdPickup = false;
+                return Deferred.succeed(pickupOpening, undefined).pipe(
+                  Effect.andThen(Deferred.await(pickupOpen)),
+                );
+              }),
+            aroundFlush: () =>
+              Effect.suspend(() => {
+                if (!holdFlush) return Effect.void;
+                holdFlush = false;
+                return Deferred.succeed(flushing, undefined).pipe(
+                  Effect.andThen(Deferred.await(flushed)),
+                );
+              }),
+            hostUserNamespaces: Layer.succeed(WorkspaceHostUserNamespaces, {
+              observe: () =>
+                Effect.suspend(() => {
+                  if (!holding) return Effect.succeed(null);
+                  holding = false;
+                  return Deferred.succeed(held, undefined).pipe(
+                    Effect.andThen(Deferred.await(answer)),
+                  );
+                }),
+            }),
+          },
+        );
+        expect(seen).toMatchObject({ holder: "Failure", status: "running", planLeft: false });
       }),
     { timeout: 30_000 },
   );
