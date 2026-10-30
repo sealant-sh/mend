@@ -465,6 +465,23 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
       }),
     ));
 
+  it(
+    "removes a project with more sessions than a statement takes parameters",
+    async () =>
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const id = yield* seed("long-history");
+          yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES ('w-long', ${id}, 'work', 'work', 'work', 'abc')`;
+          yield* sql`INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id, status)
+          SELECT 's-long-' || n, ${id}, 'w-long', 'claude', 'work', 'work', 'abc', 'anna', 'stopped'
+          FROM generate_series(1, 70000) n`;
+          expect(yield* removeAs(id, "anna")).toBe("kept");
+        }),
+      ),
+    120_000,
+  );
+
   it("answers Restore, purge and removal by what the person may do when they commit", async () =>
     run(
       Effect.gen(function* () {
