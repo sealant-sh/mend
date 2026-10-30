@@ -16,12 +16,18 @@ const SECRET_NAMES = [
 const namesSecret = (name: string) =>
   SECRET_NAMES.some((secret) => name.toLowerCase().endsWith(secret));
 
+interface PathParameter {
+  readonly name: string;
+  readonly colonIndex: number;
+  readonly wholeSegment: boolean;
+}
+
 /**
- * Parameter names as Effect's router reads a path: `::` is a literal colon, a name ends at `/`,
- * `-`, `.`, `(` or an optional's `?`, and a `(…)` pattern after it is not a name.
+ * Parameters as Effect's router reads a path: `::` is a literal colon, a name ends at `/`, `-`,
+ * `.`, `(` or an optional's `?`, and a `(…)` pattern after it is not a name.
  */
-const pathParameterNames = (path: string): ReadonlyArray<string> => {
-  const names: Array<string> = [];
+const pathParameters = (path: string): ReadonlyArray<PathParameter> => {
+  const parameters: Array<PathParameter> = [];
   for (let at = 0; at < path.length; at++) {
     if (path[at] === "(") {
       for (let depth = 1; depth > 0 && at < path.length - 1; ) {
@@ -34,11 +40,16 @@ const pathParameterNames = (path: string): ReadonlyArray<string> => {
       at++;
     } else if (path[at] === ":") {
       const name = /^[^/\-.(?]*/.exec(path.slice(at + 1))?.[0] ?? "";
-      names.push(name);
-      at += name.length;
+      const end = at + 1 + name.length;
+      parameters.push({
+        name,
+        colonIndex: at,
+        wholeSegment: path[at - 1] === "/" && (end === path.length || path[end] === "/"),
+      });
+      at = end - 1;
     }
   }
-  return names;
+  return parameters;
 };
 
 const queryFieldNames = (query: Schema.Top | undefined): ReadonlyArray<string> => {
@@ -47,9 +58,23 @@ const queryFieldNames = (query: Schema.Top | undefined): ReadonlyArray<string> =
   return SchemaAST.isObjects(ast) ? ast.propertySignatures.map(({ name }) => String(name)) : [];
 };
 
-const redactedAtTheEdge = (path: string, name: string) =>
-  SECRET_SEGMENT_PREFIXES.some(
-    (prefix) => path === `${prefix}/:${name}` || path.startsWith(`${prefix}/:${name}/`),
+const REDACTED_API_SEGMENTS: ReadonlyMap<string, string> = new Map([
+  [
+    "/api/me/cli-auth",
+    "the short code a person reads off `mend login` and types into the approve page; the CLI's " +
+      "secret device code rides a body",
+  ],
+  ["/api/devices", "apps released before 0.37 still unpair here; the handler ignores the token"],
+  [
+    "/api/auth/reset-password",
+    "Better Auth's own reset link, which the API answers 404 before Better Auth reads it",
+  ],
+]);
+
+const redactedAtTheEdge = (path: string, parameter: PathParameter) =>
+  parameter.wholeSegment &&
+  [...REDACTED_API_SEGMENTS.keys()].some(
+    (prefix) => path.slice(0, parameter.colonIndex) === `${prefix}/`,
   );
 
 const secretsIn = <Id extends string, Groups extends HttpApiGroup.Constraint>(
@@ -60,8 +85,9 @@ const secretsIn = <Id extends string, Groups extends HttpApiGroup.Constraint>(
     onGroup: () => {},
     onEndpoint: ({ endpoint }) => {
       const exposed = [
-        ...pathParameterNames(endpoint.path).filter(
-          (name) => namesSecret(name) && !redactedAtTheEdge(endpoint.path, name),
+        ...pathParameters(endpoint.path).filter(
+          (parameter) =>
+            namesSecret(parameter.name) && !redactedAtTheEdge(endpoint.path, parameter),
         ),
         ...queryFieldNames(endpoint.query).filter(namesSecret),
       ];
@@ -72,6 +98,12 @@ const secretsIn = <Id extends string, Groups extends HttpApiGroup.Constraint>(
 };
 
 describe("endpoint URLs", () => {
+  it("are allowed a secret segment only after an API path the edge redacts", () => {
+    expect([...REDACTED_API_SEGMENTS.keys()]).toEqual(
+      SECRET_SEGMENT_PREFIXES.filter((prefix) => prefix.startsWith("/api/")),
+    );
+  });
+
   it("carry no secret in a path parameter or a query field", () => {
     expect(
       secretsIn(MendApi),
