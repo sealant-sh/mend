@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
-import type { SlackPendingMention } from "@mend/domain/workbench";
+import { SlackStatusKey, type SlackPendingMention } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -28,6 +28,8 @@ import {
 } from "../src/repos/slack-links.ts";
 import { SlackThreadsRepo, SlackThreadsRepoLive } from "../src/repos/slack-threads.ts";
 import { postgresTestConfig } from "./postgres.ts";
+
+const shows = (key: SlackStatusKey) => ({ _tag: "Rendered", key }) as const;
 
 describe("slack link codes", () => {
   it("mints recognisable, url-safe codes and stores only a hash", () => {
@@ -448,34 +450,62 @@ describe.skipIf(postgres.skip)("slack in Postgres", () => {
           statusTs: null,
           external: false,
           reportedState: null,
-          reportedStatus: null,
+          shown: { _tag: "Unknown" },
         });
+        const starting = SlackStatusKey.make(`k1:${"a".repeat(64)}`);
+        const running = {
+          state: "running",
+          key: SlackStatusKey.make(`k1:${"b".repeat(64)}`),
+        } as const;
         // Nothing to move before the status message exists.
-        const running = { state: "running", line: "api · running" } as const;
-        expect(yield* threads.claimStatus(first.id, null, running)).toBe(false);
+        expect(yield* threads.claimStatus(first.id, { _tag: "Unknown" }, running)).toBe(false);
         yield* threads.setStatusTs(first.id, "1726000001.000300", {
           state: "starting",
-          line: "api · starting",
+          key: starting,
         });
         expect(yield* threads.forSession(first.id)).toMatchObject({
           statusTs: "1726000001.000300",
           reportedState: "starting",
-          reportedStatus: "api · starting",
+          shown: shows(starting),
         });
         // Two workers saw the same move: one edits the message.
         const moves = yield* Effect.all(
-          Array.from({ length: 8 }, () => threads.claimStatus(first.id, "api · starting", running)),
+          Array.from({ length: 8 }, () => threads.claimStatus(first.id, shows(starting), running)),
           { concurrency: "unbounded" },
         );
         expect(moves.filter(Boolean)).toHaveLength(1);
-        // A worker that read the old line cannot move it back.
+        // A worker that read the old rendering cannot move it back.
         expect(
-          yield* threads.claimStatus(first.id, "api · starting", {
+          yield* threads.claimStatus(first.id, shows(starting), {
             state: "starting",
-            line: "api · starting",
+            key: starting,
           }),
         ).toBe(false);
         expect((yield* threads.forSession(first.id))?.reportedState).toBe("running");
+
+        // Slack refused the edit: the message shows nothing Mend knows, and the state stays.
+        expect(yield* threads.releaseStatus(first.id, starting)).toBe(false);
+        expect(yield* threads.releaseStatus(first.id, running.key)).toBe(true);
+        expect(yield* threads.forSession(first.id)).toMatchObject({
+          reportedState: "running",
+          shown: { _tag: "Unknown" },
+        });
+        expect(yield* threads.claimStatus(first.id, { _tag: "Unknown" }, running)).toBe(true);
+
+        // A line an earlier release wrote reads as that line, and moves only from it.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE slack_threads SET reported_status = 'api · running' WHERE session_id = ${first.id}`;
+        expect((yield* threads.forSession(first.id))?.shown).toEqual({
+          _tag: "Legacy",
+          text: "api · running",
+        });
+        expect(
+          yield* threads.claimStatus(first.id, { _tag: "Legacy", text: "api · starting" }, running),
+        ).toBe(false);
+        expect(
+          yield* threads.claimStatus(first.id, { _tag: "Legacy", text: "api · running" }, running),
+        ).toBe(true);
+        expect((yield* threads.forSession(first.id))?.shown).toEqual(shows(running.key));
 
         const posts = yield* Effect.all(
           Array.from({ length: 8 }, () => threads.claimPost(first.id, "turn:t-1")),
@@ -484,6 +514,22 @@ describe.skipIf(postgres.skip)("slack in Postgres", () => {
         expect(posts.filter(Boolean)).toHaveLength(1);
         expect(yield* threads.claimPost(first.id, "turn:t-2")).toBe(true);
         expect(yield* threads.claimPost(second.id, "turn:t-1")).toBe(true);
+
+        // A switch restarts the same request in a new session: its reaction is the new one's.
+        expect(yield* threads.ownsRequestReaction(first.id)).toBe(true);
+        const switched = yield* newSession("s-slack-3", "slack");
+        yield* threads.record({
+          ...thread,
+          sessionId: switched.id,
+          requestTs: "1726000000.000100",
+          slackUserId: "U-ALICE",
+          projectSource: "picked",
+          external: false,
+        });
+        expect(yield* threads.ownsRequestReaction(first.id)).toBe(false);
+        expect(yield* threads.ownsRequestReaction(switched.id)).toBe(true);
+        expect(yield* threads.ownsRequestReaction(second.id)).toBe(true);
+        expect(yield* threads.ownsRequestReaction(fromWeb.id)).toBe(false);
 
         const twice = yield* threads
           .record({

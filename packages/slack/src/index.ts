@@ -9,4 +9,5 @@ export * from "./previews.ts";
 export * from "./privacy.ts";
 export * from "./repository.ts";
 export * from "./state.ts";
+export * from "./status-key.ts";
 export * from "./thread.ts";

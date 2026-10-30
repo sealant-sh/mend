@@ -55,12 +55,14 @@ import {
   Project,
   Session,
   SessionProcess,
+  SlackStatusKey,
   type AgentInputQuestion,
   type AgentTurnStatus,
   type RequestIntentReading,
   type SessionStatus,
   type SlackLinkedMentionJob,
   type SlackPendingMention,
+  type SlackStatusShown,
 } from "@mend/domain/workbench";
 import {
   InferenceError,
@@ -68,6 +70,7 @@ import {
   ThreadProjectReaderLive,
   type InferenceRequest,
 } from "@mend/inference";
+import { SlackReports } from "@mend/jobs";
 import { Landing, LandingNotStartedError, type LandInput } from "@mend/landing";
 import { SealantClients, SealantPrincipal } from "@mend/sealant";
 import {
@@ -96,7 +99,7 @@ import {
   SecretCipher,
   Store,
 } from "@mend/store";
-import { Effect, Layer, Logger } from "effect";
+import { Effect, Layer, Logger, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ADMISSION_REFUSED, refusedAdmissions } from "../test/support/refused-admissions.ts";
@@ -388,6 +391,13 @@ const inferred = (
  * records what it was asked. `effects` holds acks, claims and starts in order; Slack's writes are
  * in `slack.calls`. Alice is linked and sees every project; Bob is not linked.
  */
+const shownOf = (stored: string | undefined): SlackStatusShown =>
+  stored === undefined
+    ? { _tag: "Unknown" }
+    : Schema.is(SlackStatusKey)(stored)
+      ? { _tag: "Rendered", key: stored }
+      : { _tag: "Legacy", text: stored };
+
 const world = (options: WorldOptions = {}) => {
   const effects: Array<string> = [];
   const note = (entry: string) => Effect.sync(() => void effects.push(entry));
@@ -529,7 +539,7 @@ const world = (options: WorldOptions = {}) => {
     return {
       ...row,
       statusTs: statusTs.get(row.sessionId) ?? null,
-      reportedStatus: reported.get(row.sessionId) ?? null,
+      shown: shownOf(reported.get(row.sessionId)),
       reportedState:
         state === "starting" || state === "running" || state === "failed" || state === "stopped"
           ? state
@@ -644,11 +654,11 @@ const world = (options: WorldOptions = {}) => {
     Layer.mock(SlackThreadsRepo, {
       record: (input) =>
         Effect.sync(() => {
-          const row = {
+          const row: SlackThreadSession = {
             ...input,
             statusTs: null,
             reportedState: null,
-            reportedStatus: null,
+            shown: { _tag: "Unknown" },
             createdAt: NOW,
           };
           recorded.push(row);
@@ -668,7 +678,7 @@ const world = (options: WorldOptions = {}) => {
                 projectSource: "picked",
                 external: false,
                 reportedState: null,
-                reportedStatus: null,
+                shown: { _tag: "Unknown" },
                 createdAt: NOW,
               }
             : null,
@@ -684,7 +694,7 @@ const world = (options: WorldOptions = {}) => {
             Effect.sync(() => {
               statusTs.set(sessionId, ts);
               shownState.set(sessionId, shown.state);
-              reported.set(sessionId, options.reporterMovedFirst === true ? "moved" : shown.line);
+              reported.set(sessionId, options.reporterMovedFirst === true ? "moved" : shown.key);
             }),
           ),
         ),
@@ -694,9 +704,17 @@ const world = (options: WorldOptions = {}) => {
         ),
       claimStatus: (sessionId, from, to) =>
         Effect.sync(() => {
-          if (reported.get(sessionId) !== from) return false;
-          reported.set(sessionId, to.line);
+          if (JSON.stringify(shownOf(reported.get(sessionId))) !== JSON.stringify(from)) {
+            return false;
+          }
+          reported.set(sessionId, to.key);
           shownState.set(sessionId, to.state);
+          return true;
+        }),
+      releaseStatus: (sessionId, key) =>
+        Effect.sync(() => {
+          if (reported.get(sessionId) !== key) return false;
+          reported.delete(sessionId);
           return true;
         }),
     }),
@@ -966,6 +984,10 @@ const world = (options: WorldOptions = {}) => {
   );
 
   const layer = Layer.mergeAll(
+    Layer.succeed(SlackReports, {
+      request: (target) =>
+        note(`reports.request:${target._tag === "Session" ? target.id : target._tag}`),
+    }),
     options.liveBoundaries === true
       ? SessionSteeringLive
       : Layer.mock(SessionSteering, {
@@ -1750,15 +1772,13 @@ describe("the Slack runner, switching a session's project", () => {
       `start.createAs:alice:${billing.id}:claude:null:slack`,
       "engine.stop:session-1",
       "controls.record:session-1:stop:alice",
+      // The reporter shows the stop, from all it reads: the runner writes no status of its own.
+      "reports.request:session-1",
       "threads.setStatusTs:session-2:1700000000.000003",
       "start.launchAs:alice:session-2",
     ]);
     const updates = w.slack.calls.flatMap((call) => (call.kind === "update" ? [call.input] : []));
-    expect(updates.map((update) => update.text)).toContain(
-      "web · named in the request · claude · stopped · mend/wt-1",
-    );
-    const stopped = updates.find((update) => update.text.includes("stopped"));
-    expect(JSON.stringify(stopped?.blocks)).not.toContain(SLACK_ACTIONS.switchProject);
+    expect(updates.some((update) => update.text.includes("stopped"))).toBe(false);
     expect(w.recorded[1]).toMatchObject({ sessionId: "session-2", projectSource: "picked" });
     expect(w.audited[1]?.data).toMatchObject({
       switchedFrom: "session-1",
@@ -2210,7 +2230,7 @@ describe("the Slack runner, for `settings` and `list`", () => {
       projectSource: "picked",
       external: false,
       reportedState: state,
-      reportedStatus: null,
+      shown: { _tag: "Unknown" },
       createdAt: NOW,
       projectId,
       label: null,
@@ -2351,6 +2371,8 @@ describe("the Slack runner, for the thread reporter", () => {
     await w.deliver(sharedMention(w, "Ev1", "1.1", "U-alice", false));
     expect(w.effects).toContain("start.launchAs:alice:session-1");
     expect(w.slack.calls.filter((call) => call.kind === "update")).toEqual([]);
+    // The launch's outcome reaches the thread through the reporter instead.
+    expect(w.effects).toContain("reports.request:session-1");
   });
 });
 
@@ -3226,7 +3248,7 @@ describe("existing-thread authorization and joined-session landing", () => {
       projectSource: "picked",
       external: false,
       reportedState: null,
-      reportedStatus: null,
+      shown: { _tag: "Unknown" },
       createdAt: NOW,
     };
     const w = world({

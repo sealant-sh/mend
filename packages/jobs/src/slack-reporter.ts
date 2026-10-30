@@ -23,11 +23,13 @@ import {
   type AgentItem,
   type AgentRequest,
   type AgentTurn,
+  showsRendering,
   type AgentWaitLine,
   type Change,
   type ChangeLanding,
   type ChangePass,
   type Session,
+  type SlackStatusKey,
 } from "@mend/domain/workbench";
 import { WorktreeReads } from "@mend/sessions";
 import {
@@ -49,6 +51,7 @@ import {
   slackSessionState,
   splitDiff,
   statusMayMove,
+  statusKey,
   statusMessage,
   switchOffered,
   threadShowsReplies,
@@ -57,7 +60,7 @@ import {
   type SlackMessage,
   type SlackSessionState,
 } from "@mend/slack";
-import { SlackApi, type SlackApiError } from "@mend/slack/client";
+import { SlackApi, SlackApiError, updateRefusalOf } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
 import { Cause, Clock, Effect, Layer, Queue } from "effect";
 import * as Context from "effect/Context";
@@ -96,18 +99,25 @@ import * as Context from "effect/Context";
  * reading `running`.
  *
  * What was posted lives in Postgres, not in memory, so a restart or a second worker never posts
- * twice: the status line moves only by compare-and-set (`claimStatus`), and each reply is claimed
- * by key (`claimPost`) before it is posted. A claimed reply whose post fails is logged, not
- * retried, as a claimed Slack event is.
+ * twice: the status message moves only by compare-and-set over the key of its whole rendering
+ * (`claimStatus`, `statusKey`), and each reply is claimed by key (`claimPost`) before it is posted.
+ * A claimed reply
+ * whose post fails is logged, not retried, as a claimed Slack event is. After launch the reporter
+ * is the status message's one writer: the runner asks it to report.
  *
  * While the session runs, its status line moves at most once every `STATUS_EDIT_EVERY_MS`: a loop
  * that flips it between `running` and `waiting` would otherwise edit the message on every flip. A
- * move held back looks again when the window ends, so the line still lands on the latest state. A
+ * change to the previews alone moves at most once every `STATUS_PREVIEW_EVERY_MS`. A move
+ * held back looks again when the window ends, so the message still lands on the latest state. A
  * move into a settled state, and the first move out of one, is edited at once.
  */
 
 const REPORT_FRESHNESS_MS = 2 * 60_000;
 export const STATUS_EDIT_EVERY_MS = 30_000;
+/** A change to a status message's previews alone edits it at most this often. */
+export const STATUS_PREVIEW_EVERY_MS = 10_000;
+/** How long one status edit may take, the Slack client's own retries and waits included. */
+export const STATUS_EDIT_DEADLINE_MS = 15_000;
 
 /** A settled session not looked at for this long is forgotten: its next look is a baseline. */
 const SEEN_SETTLED_TTL_MS = 60 * 60_000;
@@ -267,7 +277,14 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const scope = yield* Effect.scope;
 
     const seen = new Map<string, Seen>();
-    const editedAt = new Map<string, number>();
+    const editedAt = new Map<
+      string,
+      {
+        readonly at: number;
+        readonly settled: boolean;
+        readonly keyWithoutPreviews: SlackStatusKey;
+      }
+    >();
     const heldBack = new Set<string>();
     let sweptAt = 0;
 
@@ -395,40 +412,92 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       });
 
     /**
-     * Edit the status message to `message` and move the reaction to the state, once, whichever
-     * worker gets there first. A line that stays the same (a private project's) still moves the
-     * reaction when the state does.
+     * Bounded in time, the Slack client's own retries included. A refused edit releases its claim,
+     * since the message does not show it; a transient refusal looks again after Slack's
+     * Retry-After.
+     */
+    const sendStatus = (
+      token: string,
+      thread: SlackThreadSession,
+      statusTs: string,
+      message: SlackMessage,
+      key: SlackStatusKey,
+    ) =>
+      slack.update(token, { channel: thread.channelId, ts: statusTs, ...message }).pipe(
+        Effect.as(true),
+        Effect.timeoutOrElse({
+          duration: STATUS_EDIT_DEADLINE_MS,
+          orElse: () =>
+            Effect.fail(
+              new SlackApiError({
+                method: "chat.update",
+                code: "timeout",
+                message: "Slack did not answer in time",
+              }),
+            ),
+        }),
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            const refusal = updateRefusalOf(error);
+            yield* Effect.logWarning("slack reporter: chat.update failed").pipe(
+              Effect.annotateLogs({
+                method: error.method,
+                code: error.code,
+                sessionId: thread.sessionId,
+                refusal: refusal._tag,
+              }),
+            );
+            if (refusal._tag === "MessageGone") return false;
+            yield* threads.releaseStatus(thread.sessionId, key);
+            if (refusal._tag === "Transient") {
+              yield* lookAgainIn(thread.sessionId, refusal.retryInMs);
+            }
+            return false;
+          }),
+        ),
+      );
+
+    /**
+     * Edit the status message and move the reaction, once across workers. Only the session the
+     * request last started takes its reaction: a switch reuses the request. Previews can move
+     * several times a minute while one prepares, so a change to them alone waits
+     * `STATUS_PREVIEW_EVERY_MS`.
      */
     const moveStatus = Effect.fn("SlackReporter.moveStatus")(function* (
       token: string,
       look: Look,
       message: SlackMessage,
+      withoutPreviews: SlackMessage = message,
     ) {
       const { thread, session, state } = look;
       if (thread.statusTs === null) return;
-      const edit = message.text !== thread.reportedStatus;
+      const key = statusKey(message);
+      const keyWithoutPreviews = statusKey(withoutPreviews);
+      const edit = !showsRendering(thread.shown, key, message.text);
       if (!edit && state === thread.reportedState) return;
-      const lastEdit = editedAt.get(session.id);
-      if (edit && !isSettledState(state) && lastEdit !== undefined) {
-        const wait = lastEdit + STATUS_EDIT_EVERY_MS - now();
+      const last = editedAt.get(session.id);
+      if (edit && last !== undefined) {
+        const wait = Math.max(
+          !isSettledState(state) && !last.settled ? last.at + STATUS_EDIT_EVERY_MS - now() : 0,
+          state === thread.reportedState && keyWithoutPreviews === last.keyWithoutPreviews
+            ? last.at + STATUS_PREVIEW_EVERY_MS - now()
+            : 0,
+        );
         if (wait > 0) return yield* lookAgainIn(session.id, wait);
       }
-      const moved = yield* threads.claimStatus(session.id, thread.reportedStatus, {
-        state,
-        line: message.text,
-      });
+      const moved = yield* threads.claimStatus(session.id, thread.shown, { state, key });
       if (!moved) return;
-      if (edit) {
-        if (isSettledState(state)) editedAt.delete(session.id);
-        else editedAt.set(session.id, now());
-        yield* quietly(
-          "chat.update",
-          slack.update(token, { channel: thread.channelId, ts: thread.statusTs, ...message }),
-        );
+      if (edit && (yield* sendStatus(token, thread, thread.statusTs, message, key))) {
+        editedAt.set(session.id, {
+          at: now(),
+          settled: isSettledState(state),
+          keyWithoutPreviews,
+        });
       }
       const was = reactionFor(thread.reportedState ?? "starting");
       const is = reactionFor(state);
       if (was === is) return;
+      if (!(yield* threads.ownsRequestReaction(session.id))) return;
       const at = { channel: thread.channelId, timestamp: thread.requestTs };
       if (is !== null)
         yield* quietly("reactions.add", slack.reactionsAdd(token, { ...at, name: is }));
@@ -439,17 +508,26 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
 
     /**
      * Keep the status message and the reaction on the observed state. A null `projectName` is a
-     * channel thread whose project is private now: the message says so and names nothing.
+     * channel thread whose project is private now: the message says so and names nothing. Nothing
+     * moves the state back to `starting` (`statusMayMove`): a launch that failed keeps `failed`,
+     * and the rest of the message still follows what changes.
      */
     const reportStatus = Effect.fn("SlackReporter.reportStatus")(function* (
       install: SealedSlackInstall,
       token: string,
-      look: Look,
+      observed: Look,
       projectName: string | null,
     ) {
-      const { thread, session, state } = look;
+      const { thread } = observed;
       if (thread.statusTs === null) return;
-      if (!statusMayMove(thread.reportedState, state)) return;
+      const look: Look = {
+        ...observed,
+        state:
+          thread.reportedState === null || statusMayMove(thread.reportedState, observed.state)
+            ? observed.state
+            : thread.reportedState,
+      };
+      const { session, state } = look;
       if (projectName === null) {
         return yield* moveStatus(token, look, privateProjectStatusMessage());
       }

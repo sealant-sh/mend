@@ -310,7 +310,7 @@ const thread = (channelId: string): SlackThreadSession => ({
   projectSource: "channel-default",
   external: false,
   reportedState: null,
-  reportedStatus: null,
+  shown: { _tag: "Unknown" },
   createdAt: new Date("2026-09-27T10:00:00.000Z"),
 });
 const install = (organizationId: OrganizationId): SealedSlackInstall => ({

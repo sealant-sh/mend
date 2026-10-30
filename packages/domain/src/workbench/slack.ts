@@ -71,6 +71,40 @@ export const SlackSessionState = Schema.Literals([
 export type SlackSessionState = typeof SlackSessionState.Type;
 
 /**
+ * What a status message shows, as one key over its whole rendering (`statusKey`): its text and
+ * every block, buttons included. Two renderings with the same key look the same in Slack, so the
+ * reporter edits only when the key moves.
+ */
+export const SlackStatusKey = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^k1:[0-9a-f]{64}$/)),
+  Schema.brand("@mend/domain/SlackStatusKey"),
+);
+export type SlackStatusKey = typeof SlackStatusKey.Type;
+
+/**
+ * What the status message last showed, as far as Mend knows. `Unknown` before anything was
+ * recorded, and after Slack refused an edit: the next look edits again. `Legacy` is the line a
+ * release before keys recorded, compared by its text alone, so an upgrade edits no message whose
+ * line is unchanged.
+ */
+export type SlackStatusShown =
+  | { readonly _tag: "Unknown" }
+  | { readonly _tag: "Legacy"; readonly text: string }
+  | { readonly _tag: "Rendered"; readonly key: SlackStatusKey };
+
+/** Whether a message rendered as `key`, with fallback `text`, is what the status message shows. */
+export const showsRendering = (shown: SlackStatusShown, key: SlackStatusKey, text: string) => {
+  switch (shown._tag) {
+    case "Unknown":
+      return false;
+    case "Legacy":
+      return shown.text === text;
+    case "Rendered":
+      return shown.key === key;
+  }
+};
+
+/**
  * A file on a mention, as Slack described it (`files:read`): enough to fetch it with the bot token
  * when the mention runs, so a screenshot sent before linking still reaches the session.
  */

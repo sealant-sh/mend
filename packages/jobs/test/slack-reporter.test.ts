@@ -54,11 +54,12 @@ import {
   type AgentRequestKind,
   type AgentTurnStatus,
   type SlackInstallSettings,
+  type SlackStatusShown,
   type TurnLanding,
 } from "@mend/domain/workbench";
 import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
 import { PRIVATE_PROJECT_STATUS, SLACK_ACTIONS, statusLine, SUMMARY_PROVENANCE } from "@mend/slack";
-import { makeFakeSlack, type FakeSlackCall } from "@mend/slack/client";
+import { makeFakeSlack, SlackApiError, type FakeSlackCall } from "@mend/slack/client";
 import { SecretCipher, Store, StoreConfig, type ChangedFile } from "@mend/store";
 import { TestClock } from "@mend/test-ci/effect-vitest";
 import { Context, Effect, Exit, Layer, Scope } from "effect";
@@ -459,7 +460,7 @@ const world = (options: WorldOptions = {}) => {
       projectSource: "thread-link",
       external: options.external ?? false,
       reportedState: "starting",
-      reportedStatus: startingLine,
+      shown: { _tag: "Legacy", text: startingLine },
       createdAt: options.threadCreatedAt ?? minutesAgo(30),
     } satisfies SlackThreadSession as SlackThreadSession,
     session: sessionWith("running"),
@@ -477,6 +478,8 @@ const world = (options: WorldOptions = {}) => {
     project,
     /** The thread row is gone (its session deleted). */
     threadGone: false,
+    /** A later session started from the same request (a switch): its reaction is that one's. */
+    requestReused: false,
     /** The reporter's clock. */
     now: NOW.getTime(),
   };
@@ -502,10 +505,21 @@ const world = (options: WorldOptions = {}) => {
         Effect.sync(() => (id === SESSION && !state.threadGone ? state.thread : null)),
       claimStatus: (_id, from, to) =>
         Effect.sync(() => {
-          if (state.thread.statusTs === null || state.thread.reportedStatus !== from) return false;
-          state.thread = { ...state.thread, reportedState: to.state, reportedStatus: to.line };
+          if (state.thread.statusTs === null || !sameShown(state.thread.shown, from)) return false;
+          state.thread = {
+            ...state.thread,
+            reportedState: to.state,
+            shown: { _tag: "Rendered", key: to.key },
+          };
           return true;
         }),
+      releaseStatus: (_id, key) =>
+        Effect.sync(() => {
+          if (!sameShown(state.thread.shown, { _tag: "Rendered", key })) return false;
+          state.thread = { ...state.thread, shown: { _tag: "Unknown" } };
+          return true;
+        }),
+      ownsRequestReaction: () => Effect.sync(() => !state.requestReused),
       claimPost: (id, key) =>
         Effect.sync(() => {
           const claimed = `${id}:${key}`;
@@ -609,6 +623,9 @@ const world = (options: WorldOptions = {}) => {
 };
 
 const blockText = (post: { readonly blocks?: ReadonlyArray<unknown> }) => JSON.stringify(post);
+
+const sameShown = (a: SlackStatusShown, b: SlackStatusShown) =>
+  JSON.stringify(a) === JSON.stringify(b);
 
 const statusWith = (state: string) =>
   `billing-api · from a link in the thread · claude · ${state} · mend/flaky-login-test`;
@@ -1344,12 +1361,79 @@ describe("the Slack thread reporter", () => {
     expect(w.writes().filter((call) => call.kind === "reactionsAdd")).toHaveLength(1);
   });
 
+  it("does not record an edit Slack refused as shown, and edits again after Slack's Retry-After", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.slack.refuseUpdates(
+      new SlackApiError({
+        method: "chat.update",
+        code: "ratelimited",
+        message: "rate limited",
+        retryAfterSeconds: 3,
+      }),
+    );
+    w.state.turns = [turn(1, "running")];
+    await w.observe(reporter);
+    expect(w.slack.refused.map((input) => input.text)).toEqual([statusWith("running")]);
+    expect(w.updates()).toEqual([]);
+    expect(w.state.thread.shown).toEqual({ _tag: "Unknown" });
+    expect(w.state.thread.reportedState).toBe("running");
+
+    await w.advance(3_000);
+    await vi.waitFor(() => expect(w.updates()).toEqual([statusWith("running")]));
+    // Shown now: a look at the same message edits nothing.
+    await w.observe(reporter);
+    expect(w.updates()).toHaveLength(1);
+  });
+
+  it("stops editing a status message Slack says is gone", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.slack.refuseUpdates(
+      new SlackApiError({ method: "chat.update", code: "message_not_found", message: "gone" }),
+    );
+    w.state.turns = [turn(1, "running")];
+    await w.observe(reporter);
+    await w.advance(60_000);
+    await w.observe(reporter);
+    expect(w.slack.refused).toHaveLength(1);
+    expect(w.updates()).toEqual([]);
+  });
+
+  it("leaves the request's reaction to the session a switch started from it", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.state.requestReused = true;
+    w.state.turns = [turn(1, "completed", NOW)];
+    await w.observe(reporter);
+    expect(w.updates()).toEqual([statusWith("completed · observed")]);
+    expect(w.reactions()).toEqual(new Set(["hourglass_flowing_sand"]));
+    expect(w.state.thread.reportedState).toBe("completed");
+  });
+
+  it("keeps a failed launch's state while the rest of its status message still moves", async () => {
+    const w = world();
+    w.state.thread = {
+      ...w.state.thread,
+      reportedState: "failed",
+      shown: { _tag: "Legacy", text: statusWith("failed · observed") },
+    };
+    w.state.session = sessionWith("idle");
+    w.state.processes = [];
+    w.state.project = new Project({ ...project, name: "billing" });
+    await w.observe(w.worker());
+    expect(w.updates()).toEqual([
+      "billing · from a link in the thread · claude · failed · observed · mend/flaky-login-test",
+    ]);
+    expect(w.state.thread.reportedState).toBe("failed");
+  });
+
   it("never moves a failed launch back to starting, and writes nothing for a removed app", async () => {
     const w = world();
     w.state.thread = {
       ...w.state.thread,
       reportedState: "failed",
-      reportedStatus: "billing-api · … · failed",
+      shown: { _tag: "Legacy", text: statusWith("failed · observed") },
     };
     w.state.session = sessionWith("idle");
     w.state.processes = [];
