@@ -93,6 +93,7 @@ const fakeWorkspace = (id: string): Workspace => ({
     put: async () => new Promise(() => {}),
     release: async () => new Promise(() => {}),
     list: async () => [],
+    prune: async () => new Promise(() => {}),
   },
 });
 

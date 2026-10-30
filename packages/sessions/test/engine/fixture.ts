@@ -609,6 +609,9 @@ export const sealantLaunchLayer = (
         throw new Error("not in test");
       },
       list: async () => [],
+      prune: async () => {
+        throw new Error("not in test");
+      },
     },
   };
   return Layer.succeed(SealantClient, {

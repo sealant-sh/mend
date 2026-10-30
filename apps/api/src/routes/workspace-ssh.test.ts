@@ -150,6 +150,9 @@ const featuresOf = (ends: boolean): SealantFeatures => ({
   personBinding: true,
   sshKeyRemovalEndsConnections: ends,
   connectedAccountDefaults: false,
+  connectedAccountLoginClass: false,
+  credentialPlacements: false,
+  connectedAccountApiKeys: false,
 });
 
 describe("workspace SSH keys", () => {
