@@ -40,6 +40,7 @@ import {
   type ResourceProposalEntry,
   type ResourceProposalInput,
   resourceProposalNotices,
+  ResourceRefusal,
   type ResourceSelectionEntry,
   type ResourcesPage,
   type ResourceSpecDigest,
@@ -59,6 +60,7 @@ import { SessionChannelRegistry } from "../session-channel.ts";
 import { stampLabel, WorktreeReads } from "../worktree-reads.ts";
 import {
   ImageFailureReason,
+  imageRefusalClause,
   imageRefusalLine,
   type ImageResolutionError,
   ResourceImageResolver,
@@ -84,10 +86,18 @@ export class ResourceStaleReadError extends Schema.TaggedError<ResourceStaleRead
   { message: Schema.String },
 ) {}
 
-/** The image could not be pinned: `@db · image postgres:17 · … · not approved`. */
+/**
+ * The image could not be pinned: `message` is the line, `@db · image postgres:17 · … · not
+ * approved`, and `refusal` its `image` key with the clause after it.
+ */
 export class ResourceImageRefusedError extends Schema.TaggedError<ResourceImageRefusedError>()(
   "ResourceImageRefusedError",
-  { message: Schema.String, reason: ImageFailureReason },
+  {
+    name: Schema.String,
+    refusal: ResourceRefusal,
+    message: Schema.String,
+    reason: ImageFailureReason,
+  },
 ) {}
 
 /** A reader's clock, for the status lines a reply carries. */
@@ -607,6 +617,8 @@ export const ResourcesLive: Layer.Layer<
         Effect.mapError(
           (error: ImageResolutionError) =>
             new ResourceImageRefusedError({
+              name: spec.name,
+              refusal: { key: "image", message: imageRefusalClause(error) },
               reason: error.reason,
               message: imageRefusalLine(spec.name, error),
             }),

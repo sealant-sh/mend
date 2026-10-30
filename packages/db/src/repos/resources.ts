@@ -179,7 +179,7 @@ export class ResourceSettingsStaleError extends Schema.TaggedError<ResourceSetti
 
 export class ResourceSelectionRefusedError extends Schema.TaggedError<ResourceSelectionRefusedError>()(
   "ResourceSelectionRefusedError",
-  { definitionId: ResourceDefinitionId, refusal: ResourceRefusal },
+  { definitionId: ResourceDefinitionId, name: Schema.String, refusal: ResourceRefusal },
 ) {}
 
 /** Nothing archives a resource yet, so a project that has one is not removed (ADR 0019, step 4). */
@@ -452,6 +452,7 @@ const lockForWorktree = Effect.fn("ResourcesRepo.lockForWorktree")(function* (
   if ((yield* worktreeProject(tx, worktreeId)) !== projectId) {
     return yield* new ResourceSelectionRefusedError({
       definitionId,
+      name: definition.spec.name,
       refusal: {
         key: "worktree",
         message: `is not a worktree of the project that declares @${definition.spec.name}`,
@@ -1155,7 +1156,11 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
             const wanted = withRevision(spec, choice.mode, revision);
             const refusal = selectionRefusal(spec, wanted);
             if (refusal !== null) {
-              return yield* new ResourceSelectionRefusedError({ definitionId, refusal });
+              return yield* new ResourceSelectionRefusedError({
+                definitionId,
+                name: spec.name,
+                refusal,
+              });
             }
             if (stored !== null && stored.mode === choice.mode) {
               const current = yield* toSelection(stored);

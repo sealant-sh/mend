@@ -815,9 +815,16 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       });
       resolveImage = (image) =>
         Effect.fail(new ImageResolutionError({ image, reason: "not-found" }));
-      expect(await approveVia("alice", body)).toMatchObject({
+      expect(await approveVia("alice", body)).toEqual({
         status: 422,
-        body: { message: "@db · image postgres:17 · not found in the registry · not approved" },
+        body: {
+          _tag: "ResourceRejected",
+          name: "db",
+          refusals: [
+            { key: "image", message: "postgres:17 · not found in the registry · not approved" },
+          ],
+          message: "@db · image postgres:17 · not found in the registry · not approved",
+        },
       });
       expect(await approvals()).toEqual([]);
     });
@@ -866,6 +873,27 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       // The reads took no revision: the next choice is the first one after "own".
       expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "off")).body).toMatchObject({
         revision: 1,
+      });
+    });
+
+    it("names the resource a refused choice is of, and says each refusal as a clause", async () => {
+      await start();
+      const cache = await declareSpec(
+        presetDefinition({
+          name: ResourceName.make("cache"),
+          preset: "redis",
+          version: PresetVersion.make("8"),
+          scope: "project",
+        }),
+      );
+      expect(await use("carol", CAROL_WORKTREE_IN_SHARED_A, cache.id, "own")).toEqual({
+        status: 422,
+        body: {
+          _tag: "ResourceRejected",
+          name: "cache",
+          refusals: [{ key: "mode", message: "is own, and @cache offers shared, off" }],
+          message: "@cache · mode is own, and @cache offers shared, off",
+        },
       });
     });
 

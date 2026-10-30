@@ -45,12 +45,12 @@ const projectWorktree = Effect.fn("resources.projectWorktree")(function* (
 });
 
 /** A registry that could not say the image's digest: unreachable is 503, unverifiable 502. */
-const imageRefused = ({ reason, message }: ResourceImageRefusedError) =>
+const imageRefused = ({ name, refusal, reason, message }: ResourceImageRefusedError) =>
   reason === "unavailable"
     ? new ResourceRegistryUnavailable({ message })
     : reason === "unverifiable"
       ? new ResourceManifestUnverifiable({ message })
-      : new ResourceRejected({ name: "", refusals: [{ key: "image", message }], message });
+      : rejected(name, [refusal]);
 
 /**
  * A project's resources (ADR 0019). Every caller here is a person, whatever device their token is
@@ -161,7 +161,8 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
               ResourceActRefusedError: (error) => Effect.fail(denied(error)),
               ResourceDefinitionNotFoundError: () =>
                 Effect.fail(new NotFound({ id: params.definitionId })),
-              ResourceSelectionRefusedError: ({ refusal }) => Effect.fail(rejected("", [refusal])),
+              ResourceSelectionRefusedError: ({ name, refusal }) =>
+                Effect.fail(rejected(name, [refusal])),
             }),
           );
       }),
