@@ -85,7 +85,7 @@ const ownerRecord = (worktree: string) =>
     return row;
   });
 
-/** Migration 0164's lease, as `removal_fence_fresh` holds it. */
+/** Migration 0166's lease, as `removal_fence_fresh` holds it. */
 const LEASE_SECONDS = 120;
 const secondsAgo = (seconds: number) => `${seconds} seconds`;
 const age = (table: "worktrees" | "projects", id: string, seconds: number) =>
@@ -96,7 +96,7 @@ const age = (table: "worktrees" | "projects", id: string, seconds: number) =>
       WHERE id = ${id}`;
   });
 
-describe.skipIf(postgres.skip)("removal fences (migration 0164)", () => {
+describe.skipIf(postgres.skip)("removal fences (migration 0166)", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {

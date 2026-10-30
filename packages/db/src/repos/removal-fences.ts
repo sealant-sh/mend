@@ -35,11 +35,11 @@ export type FenceTaken =
   /** No such row: removed already. */
   | { readonly _tag: "gone" };
 
-/** How often a holder renews its mark or an admission: a quarter of migration 0164's 120 s. */
+/** How often a holder renews its mark or an admission: a quarter of migration 0166's 120 s. */
 export const REMOVAL_FENCE_RENEW_EVERY = "30 seconds";
 
 /**
- * The SQLSTATEs migration 0164's triggers raise for new work a removal's mark refuses: MRFEN while
+ * The SQLSTATEs migration 0166's triggers raise for new work a removal's mark refuses: MRFEN while
  * a removal is at work, MRFES for a deletion that stopped partway.
  */
 export const REMOVAL_FENCED_SQLSTATE = "MRFEN";
@@ -64,7 +64,7 @@ export const isRemovalStopped = (error: unknown): boolean =>
 /**
  * A removal's mark on the worktree or project row it removes (docs/adr/0007-landing.md,
  * "Worktree removal"). While a removal reads what stands in the way and while it deletes, the
- * mark makes migration 0164's triggers refuse new work there, so nothing starts between its
+ * mark makes migration 0166's triggers refuse new work there, so nothing starts between its
  * checks and its deletion; a start that committed first is what the checks then read. Whether a
  * mark stands is decided only in SQL (`removal_fence_marked`, `removal_fence_fresh`). Each step is
  * one short transaction: no lock is held across git, the network or the disk.

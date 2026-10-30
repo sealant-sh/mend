@@ -4,7 +4,7 @@ import { REMOVAL_START_REFUSED, REMOVAL_START_REFUSED_STOPPED } from "@mend/doma
 import { type Cause, Effect } from "effect";
 
 /**
- * New work a removal's mark refused (migration 0164's triggers, or `refuseStartWhileRemoving`),
+ * New work a removal's mark refused (migration 0166's triggers, or `refuseStartWhileRemoving`),
  * as the person reads it; null for any other failure. The API's error boundary answers every
  * route with it, and `refusedWhileRemoving` types it for `SessionStart`, whose Slack caller has
  * no boundary.

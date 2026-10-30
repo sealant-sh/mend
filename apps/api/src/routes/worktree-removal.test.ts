@@ -14,7 +14,7 @@ import { ids } from "../../test/support/tenancy-harness.ts";
  * and `force=true` is the override.
  */
 
-/** What migration 0164 keeps of a repository nested in the worktree. */
+/** What migration 0166 keeps of a repository nested in the worktree. */
 const nestedOf = (row: { readonly path: string; readonly branch: string }) => ({
   path: row.path,
   branch: row.branch,

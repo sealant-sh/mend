@@ -4031,7 +4031,7 @@ const pushDeviceCredentialsMigration = Effect.gen(function* () {
 });
 
 /**
- * 0164 (docs/adr/0007-landing.md, "Worktree removal"; decisions Q1-Q8 of 2026-10-25 and 10-30):
+ * 0166 (docs/adr/0007-landing.md, "Worktree removal"; decisions Q1-Q8 of 2026-10-25 and 10-30):
  *
  * - `worktrees.change_owner_user_id`: the change's owner, the owner of the worktree's first
  *   session, recorded once by that session's insert (`change_owner_recorded`), null included, and
@@ -4525,5 +4525,5 @@ export const migrations = {
   "0161_resource_proposals": resourceProposalsMigration,
   "0162_scratch_projects": scratchProjectsMigration,
   "0163_push_device_credentials": pushDeviceCredentialsMigration,
-  "0164_worktree_removal": worktreeRemovalMigration,
+  "0166_worktree_removal": worktreeRemovalMigration,
 };

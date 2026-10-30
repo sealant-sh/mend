@@ -74,7 +74,7 @@ const serve = (mode: "redacted" | "verbose", logs: string[] = []) => {
           }),
         ),
       );
-      // A resumed session, a shell or a forward a removal's mark refused in the database (0164).
+      // A resumed session, a shell or a forward a removal's mark refused in the database (0166).
       yield* router.add("GET", "/api/removal-fenced", () =>
         Effect.die(
           failedQuery({

@@ -70,7 +70,7 @@ export class WorktreesRepo extends Context.Service<
     readonly changeOwnerOf: (id: WorktreeId) => Effect.Effect<string | null>;
     /**
      * Repositories added with `mend repo add` whose files are saved only with this worktree, kept
-     * after the session that added them is deleted (0164).
+     * after the session that added them is deleted (0166).
      */
     readonly nestedRepositories: (
       id: WorktreeId,

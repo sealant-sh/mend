@@ -528,7 +528,7 @@ export const projects = pgTable(
     installCommand: text(),
     // Whether Mend runs an install command for this project at all (0110, "Automatic install").
     installEnabled: boolean().notNull().default(true),
-    // A removal's mark (0164, RemovalFencesRepo): all three set, or none.
+    // A removal's mark (0166, RemovalFencesRepo): all three set, or none.
     removalPhase: text().$type<"checking" | "deleting">(),
     removalId: text(),
     removalSince: timestamp({ mode: "date", withTimezone: true }),
@@ -566,12 +566,12 @@ export const worktrees = pgTable(
     /** The base as the user named it; null only for rows migrated from pre-column sessions. */
     baseRef: text(),
     handoff: jsonbOf(WorktreeHandoff),
-    /** The owner of the worktree's first session (0164), recorded once by its insert trigger. */
+    /** The owner of the worktree's first session (0166), recorded once by its insert trigger. */
     changeOwnerUserId: text(),
     changeOwnerRecorded: boolean().notNull().default(false),
-    /** Whether the history proves `changeOwnerUserId` was the first session's owner (0164). */
+    /** Whether the history proves `changeOwnerUserId` was the first session's owner (0166). */
     changeOwnerProven: boolean().notNull().default(false),
-    // A removal's mark (0164, RemovalFencesRepo): all three set, or none.
+    // A removal's mark (0166, RemovalFencesRepo): all three set, or none.
     removalPhase: text().$type<"checking" | "deleting">(),
     removalId: text(),
     removalSince: timestamp({ mode: "date", withTimezone: true }),

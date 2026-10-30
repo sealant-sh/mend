@@ -10,7 +10,7 @@ export const postgres = postgresTestConfig();
 const pgLayer = (url: string) => PgClient.layer({ url: Redacted.make(url), maxConnections: 6 });
 
 /**
- * Removal marks as migration 0164 keeps them, in a scratch database holding a row for each of the
+ * Removal marks as migration 0166 keeps them, in a scratch database holding a row for each of the
  * world's projects, worktrees and sessions: what a mark's age decides, which sessions work in a
  * worktree and which starts are admitted, decided by Postgres. `fences` passes to
  * `createTenancyApi` as `implement.removalFences`; `sql` runs statements against the rows.

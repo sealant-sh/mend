@@ -2651,7 +2651,7 @@ export const sessionsLayer = (world: World) => {
           createdAt: world.clock.now(),
           updatedAt: world.clock.now(),
         });
-        // Migration 0164's insert trigger: the first session's owner owns the change.
+        // Migration 0166's insert trigger: the first session's owner owns the change.
         const worktree = world.worktrees.get(session.worktreeId);
         const first = ![...world.sessions.values()].some(
           (other) => other.worktreeId === session.worktreeId,

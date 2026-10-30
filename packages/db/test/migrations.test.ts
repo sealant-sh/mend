@@ -3280,7 +3280,7 @@ describe.skipIf(postgres.skip)("0163 push device credentials", () => {
   });
 });
 
-describe.skipIf(postgres.skip)("0164 worktree removal", () => {
+describe.skipIf(postgres.skip)("0166 worktree removal", () => {
   const DB = `${SCRATCH_DB}_removal`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);
@@ -3354,7 +3354,7 @@ describe.skipIf(postgres.skip)("0164 worktree removal", () => {
                  ('w-deleted-one', 'anna'), ('w-gap', 'anna')`;
         yield* sql`
           INSERT INTO worktree_owner_gaps (worktree_id) VALUES ('w-gap'), ('w-gap-standing')`;
-        yield* migrations["0164_worktree_removal"];
+        yield* migrations["0166_worktree_removal"];
         // A worktree with no session left is recorded by the next one.
         yield* session("s-8", "w-deleted-one", "kostas", "2026-10-31T00:00:00Z");
         yield* session("s-9", "w-empty", "anna", "2026-10-31T00:00:00Z");

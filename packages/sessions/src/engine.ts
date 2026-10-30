@@ -19091,7 +19091,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * for the reaper (`resumeDrain`).
        */
       // A launch runs the agent on the platform before the session reads live again: admitted
-      // first (0164), so a removal that marks the session's worktree meanwhile reads it as
+      // first (0166), so a removal that marks the session's worktree meanwhile reads it as
       // starting, and refused before anything runs while one already does.
       const launchInternal: typeof launchInternalBody = (sessionId, ...rest) =>
         whileAdmitted(removalFences, sessionId, launchInternalBody(sessionId, ...rest)).pipe(
@@ -22568,7 +22568,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return shellProcess;
       });
 
-      // A shell opens on the platform before its row exists: admitted first (0164), so a removal
+      // A shell opens on the platform before its row exists: admitted first (0166), so a removal
       // that marks the session's worktree meanwhile reads it as starting.
       const openShell: typeof openShellBody = (sessionId, openedBy) =>
         whileAdmitted(removalFences, sessionId, openShellBody(sessionId, openedBy));

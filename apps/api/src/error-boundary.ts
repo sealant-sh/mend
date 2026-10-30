@@ -123,7 +123,7 @@ const undecodedRequestPart = (cause: Cause.Cause<unknown>): string | null => {
 };
 
 /**
- * New work a removal's mark refused (migration 0164's triggers): a session that would become
+ * New work a removal's mark refused (migration 0166's triggers): a session that would become
  * live, a shell, a Service, a forward. Every route that can start something declares it, and
  * answers it as the conflict it is, whichever query met the mark.
  */

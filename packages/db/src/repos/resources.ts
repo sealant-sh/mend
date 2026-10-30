@@ -546,7 +546,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            // The project's row lock orders declarations and a removal taking its mark (0164):
+            // The project's row lock orders declarations and a removal taking its mark (0166):
             // each sees the other. A mark that lapsed is a removal that stopped.
             const [project] = yield* tx
               .select({

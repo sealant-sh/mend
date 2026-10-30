@@ -18,7 +18,7 @@ whoever started it, has a session live, a workspace saving or a change not on or
 refusal names each worktree and whose work it is. There is no force for a project. The web app shows
 a refused project removal instead of dropping it.
 
-The worktree stores its change owner (migration 0164), recorded once by its first session, so
+The worktree stores its change owner (migration 0166), recorded once by its first session, so
 deleting that session no longer hands the change, and the right to land it, to whoever owns the next
 one. Existing worktrees keep the owner landing has used until now. While a removal checks or
 deletes, nothing new starts there: no session, shell, Service, forward, added repository, standby or

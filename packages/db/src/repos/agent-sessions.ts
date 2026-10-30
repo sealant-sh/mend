@@ -838,7 +838,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* Effect.die("session insert returned no row");
-        // The insert's own trigger (0164) records its owner in `worktree_session_owners`.
+        // The insert's own trigger (0166) records its owner in `worktree_session_owners`.
         const created = toSession(row);
         yield* notifyEvent(pg, {
           type: "session",

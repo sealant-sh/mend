@@ -278,13 +278,13 @@ project can see the landing record.
 A change whose first session has no owner, or whose owner has no GitHub account connected, cannot
 open a pull request from Mend. The push still works if the project's auth mode allows it.
 
-The worktree stores its change owner (`worktrees.change_owner_user_id`, migration 0164). The first
+The worktree stores its change owner (`worktrees.change_owner_user_id`, migration 0166). The first
 session's insert records it once, a null owner included, and no later session or deletion changes
-it. Before 0164 the owner was folded from the session rows that still stood, so deleting the first
+it. Before 0166 the owner was folded from the session rows that still stood, so deleting the first
 session handed the change to whoever owned the next one. A client that deletes a thread before it
 removes the thread's worktree (t3code does) would have erased the owner the removal checks.
 
-Worktrees from before 0164 keep the owner landing has read until now: the owner of their earliest
+Worktrees from before 0166 keep the owner landing has read until now: the owner of their earliest
 session that still stands. The worktree also records whether that owner is proven
 (`change_owner_proven`): only when the worktree has no gap in its owner history (0118) and nobody
 else ever had a session there. A worktree with no session left is recorded by its next session, on

@@ -35,7 +35,7 @@ const typedEndpointNames = new Set([
 ]);
 
 /**
- * Every endpoint whose handler can start work a removal's mark refuses (migration 0164): a
+ * Every endpoint whose handler can start work a removal's mark refuses (migration 0166): a
  * session, a launch, a shell, a Service, a standby, a new worktree. The API's error boundary
  * answers that refusal `409 RemovalInProgress` on any route, so each must declare it, or the
  * generated client cannot read it.

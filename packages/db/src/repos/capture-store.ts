@@ -635,7 +635,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            // No executor takes a worktree a removal is checking or deleting (0164), unless its
+            // No executor takes a worktree a removal is checking or deleting (0166), unless its
             // launch was admitted before the mark: the removal reads that admission. The project
             // and worktree rows are locked as the removal locks them, so each sees the other.
             const [fenced] = yield* sql<{ readonly marked: boolean }>`

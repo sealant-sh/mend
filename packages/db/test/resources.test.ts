@@ -10,8 +10,8 @@ import { Effect, Layer, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-/** How long migration 0164 keeps a removal's mark fresh without renewal. */
-const MIGRATION_0164_LEASE_SECONDS = 120;
+/** How long migration 0166 keeps a removal's mark fresh without renewal. */
+const MIGRATION_0166_LEASE_SECONDS = 120;
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
@@ -366,7 +366,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
 
     it("refuses nothing once a removal that stopped while checking lets it lapse", async () => {
       const project = await newProject();
-      await mark(project, "checking", MIGRATION_0164_LEASE_SECONDS + 5);
+      await mark(project, "checking", MIGRATION_0166_LEASE_SECONDS + 5);
       expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toBe(
         "accepted",
       );
@@ -374,7 +374,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
 
     it("keeps refusing while a removal that passed its checks still has to delete", async () => {
       const project = await newProject();
-      await mark(project, "deleting", MIGRATION_0164_LEASE_SECONDS + 5);
+      await mark(project, "deleting", MIGRATION_0166_LEASE_SECONDS + 5);
       expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toMatchObject(
         { _tag: "ResourceDefinitionRefusedError", refusals: [{ key: "project" }] },
       );

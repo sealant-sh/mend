@@ -184,7 +184,7 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
     expect(outcomes.head?.headN).toBe(-1);
   });
 
-  it("claim: refused while a removal of the worktree or its project holds its mark (0164)", async () => {
+  it("claim: refused while a removal of the worktree or its project holds its mark (0166)", async () => {
     const outcome = await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;

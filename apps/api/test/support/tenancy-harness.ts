@@ -253,7 +253,7 @@ export interface TenancyWorld {
   readonly setVisibility: (project: HarnessProject, visibility: ProjectVisibility) => void;
   readonly addWorktree: (worktree: Worktree) => void;
   readonly addProject: (project: Project) => void;
-  /** Repositories nested in a worktree, as migration 0164 keeps them past their session. */
+  /** Repositories nested in a worktree, as migration 0166 keeps them past their session. */
   readonly nestedRepositories: Map<
     WorktreeId,
     ReadonlyArray<{ readonly path: string; readonly branch: string }>
@@ -587,7 +587,7 @@ export const createTenancyWorld = async (
     makeSession(NULL_OWNER_SESSION, sharedA.project, sharedA.worktree, null),
   );
   for (const extra of extraSessions) sessions.set(extra.id, extra);
-  // The change's owner, as migration 0164's insert trigger stores it: the first session's owner.
+  // The change's owner, as migration 0166's insert trigger stores it: the first session's owner.
   const inserted = [...sessions.values()].toSorted(
     (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
   );
