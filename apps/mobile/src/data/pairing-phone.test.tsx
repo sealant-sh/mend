@@ -24,7 +24,6 @@ const phone = vi.hoisted(() => ({
   /** Notifications delivered and still in the OS tray. */
   tray: new Array<{ readonly id: string; readonly title: string }>(),
   permissionPrompts: 0,
-  slowTokenLookups: new Array<Promise<{ readonly data: string }>>(),
 }));
 
 vi.mock("react-native", async (importActual) => {
@@ -50,8 +49,7 @@ vi.mock("expo-notifications", () => ({
     return { granted: phone.notificationsAllowed };
   },
   getPermissionsAsync: async () => ({ granted: phone.notificationsAllowed }),
-  getExpoPushTokenAsync: () =>
-    phone.slowTokenLookups.shift() ?? Promise.resolve({ data: "ExponentPushToken[this-phone]" }),
+  getExpoPushTokenAsync: () => Promise.resolve({ data: "ExponentPushToken[this-phone]" }),
   dismissAllNotificationsAsync: async () => {
     phone.tray = [];
   },
@@ -90,19 +88,24 @@ const A_PROCESSES = "terminal payroll-export\nservice payroll-db";
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
-/** Each machine's push devices: the tokens it pushes its sessions' titles to. */
-const pushDevices = new Map<string, Set<string>>();
+type PushToken = string;
+type Bearer = string;
+const pushDevices = new Map<string, Map<PushToken, Bearer>>();
 const pushDevicesOf = (machine: string): ReadonlyArray<string> => [
-  ...(pushDevices.get(machine) ?? []),
+  ...(pushDevices.get(machine)?.keys() ?? []),
 ];
 
-let requests = new Array<{ readonly machine: string; readonly call: string }>();
+let requests = new Array<{
+  readonly machine: string;
+  readonly call: string;
+  readonly bearer: string;
+}>();
 const callsTo = (machine: string): ReadonlyArray<string> =>
   requests.filter((entry) => entry.machine === machine).map(({ call }) => call);
 const deviceCallsTo = (machine: string) =>
   callsTo(machine).filter((call) => call.includes(" /api/devices"));
 const unregistersOf = (machine: string) =>
-  callsTo(machine).filter((call) => call.startsWith("DELETE /api/devices/"));
+  callsTo(machine).filter((call) => call === "DELETE /api/devices");
 const unregisterFailures = new Map<string, "unreachable" | "silent">();
 const registrationAnswers = new Array<
   { readonly after: Promise<void>; readonly answer: "accepted" | "lost" } | "never"
@@ -120,7 +123,8 @@ const silence = (init: RequestInit | undefined): Promise<Response> =>
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(String(input));
   const method = init?.method ?? "GET";
-  requests.push({ machine: url.host, call: `${method} ${url.pathname}` });
+  const bearer = new Headers(init?.headers).get("authorization") ?? "";
+  requests.push({ machine: url.host, call: `${method} ${url.pathname}`, bearer });
   if (url.pathname === "/api/pair") {
     const body: unknown = JSON.parse(String(init?.body));
     const code =
@@ -132,11 +136,10 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
       user: { id: `user-${url.host}`, name: url.host, email: `${url.host}@example.com` },
     });
   }
-  const bearer = new Headers(init?.headers).get("authorization") ?? "";
   if (!bearer.startsWith(`Bearer token-${url.host}-`)) {
     return json({ _tag: "Unauthorized", message: "unknown token" }, 401);
   }
-  const devices = pushDevices.get(url.host) ?? new Set<string>();
+  const devices = pushDevices.get(url.host) ?? new Map<PushToken, Bearer>();
   pushDevices.set(url.host, devices);
   if (method === "POST" && url.pathname === "/api/devices") {
     const held = registrationAnswers.shift();
@@ -145,16 +148,15 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
     const body: unknown = JSON.parse(String(init?.body));
     const token =
       typeof body === "object" && body !== null && "token" in body ? String(body.token) : "";
-    devices.add(token);
+    devices.set(token, bearer);
     if (held?.answer === "lost") throw new TypeError("Network request failed");
     return json({ token, platform: phone.os });
   }
-  const unregister = /^\/api\/devices\/(.+)$/.exec(url.pathname);
-  if (method === "DELETE" && unregister?.[1] !== undefined) {
+  if (method === "DELETE" && url.pathname === "/api/devices") {
     if (unregisterFailures.get(url.host) === "unreachable")
       throw new TypeError("Network request failed");
     if (unregisterFailures.get(url.host) === "silent") return silence(init);
-    devices.delete(decodeURIComponent(unregister[1]));
+    for (const [token, holder] of devices) if (holder === bearer) devices.delete(token);
     return new Response(null, { status: 204 });
   }
   return json({ _tag: "NotFound", message: "not found" }, 404);
@@ -207,7 +209,6 @@ beforeEach(async () => {
   phone.alerts = [];
   phone.tray = [];
   phone.permissionPrompts = 0;
-  phone.slowTokenLookups = [];
   pushDevices.clear();
   requests = [];
   unregisterFailures.clear();
@@ -281,10 +282,9 @@ describe("push on a phone whose pairing ends", () => {
 
     expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
     expect(deviceCallsTo("a.example").slice(-2)).toEqual([
-      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
+      "DELETE /api/devices",
       "POST /api/devices",
     ]);
-    expect((await loadConfig()).pushToken).toBe(PHONE_TOKEN);
     expect(phone.permissionPrompts).toBe(0);
   });
 
@@ -300,9 +300,7 @@ describe("push on a phone whose pairing ends", () => {
     await settle();
 
     expect(pushDevicesOf("a.example")).toEqual([]);
-    expect(deviceCallsTo("a.example").at(-1)).toBe(
-      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
-    );
+    expect(deviceCallsTo("a.example").at(-1)).toBe("DELETE /api/devices");
     expect(phone.permissionPrompts).toBe(0);
   });
 
@@ -378,7 +376,7 @@ describe("push on a phone whose pairing ends", () => {
     await settle();
 
     expect(pushDevicesOf("a.example")).toEqual([]);
-    expect(await loadConfig()).toMatchObject({ url: "", token: "", pushToken: null });
+    expect(await loadConfig()).toMatchObject({ url: "", token: "" });
   });
 
   it("unregisters a registration whose answer was lost, once Unpair runs", async () => {
@@ -393,7 +391,7 @@ describe("push on a phone whose pairing ends", () => {
     await settle();
 
     expect(pushDevicesOf("a.example")).toEqual([]);
-    expect(await loadConfig()).toMatchObject({ url: "", token: "", pushToken: null });
+    expect(await loadConfig()).toMatchObject({ url: "", token: "" });
   });
 
   it("keeps the next pairing's registration when the last one's lands after a re-pair on the same machine", async () => {
@@ -406,7 +404,6 @@ describe("push on a phone whose pairing ends", () => {
     await settle();
 
     expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
-    expect((await loadConfig()).pushToken).toBe(PHONE_TOKEN);
   });
 
   it("registers again when Settings saves the same connection back after Unpair, while the first registration runs", async () => {
@@ -430,10 +427,10 @@ describe("push on a phone whose pairing ends", () => {
     expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
     expect(deviceCallsTo("a.example")).toEqual([
       "POST /api/devices",
-      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
+      "DELETE /api/devices",
       "POST /api/devices",
     ]);
-    expect(await loadConfig()).toMatchObject({ url, token, pushToken: PHONE_TOKEN });
+    expect(await loadConfig()).toMatchObject({ url, token });
   });
 
   it("registers again on a machine the phone pairs back to through another, while the first registration runs", async () => {
@@ -451,10 +448,10 @@ describe("push on a phone whose pairing ends", () => {
     expect(pushDevicesOf("b.example")).toEqual([]);
     expect(deviceCallsTo("a.example")).toEqual([
       "POST /api/devices",
-      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
+      "DELETE /api/devices",
       "POST /api/devices",
     ]);
-    expect(await loadConfig()).toMatchObject({ token, pushToken: PHONE_TOKEN });
+    expect(await loadConfig()).toMatchObject({ token });
   });
 
   it("sends one registration for a pairing, however many ask while it runs", async () => {
@@ -469,32 +466,20 @@ describe("push on a phone whose pairing ends", () => {
 
     expect(deviceCallsTo("a.example")).toEqual(["POST /api/devices"]);
     expect(text()).toContain("registered");
-    expect((await loadConfig()).pushToken).toBe(PHONE_TOKEN);
   });
 
-  it("gives up on a token lookup after Unpair that never ends, and sends nothing for it once it does", async () => {
-    phone.notificationsAllowed = false;
-    await act(() =>
-      saveConfig({
-        url: "https://a.example",
-        token: "token-a.example-typed",
-        deviceName: null,
-        pairedAt: null,
-      }),
-    );
-    phone.notificationsAllowed = true;
-    const lookup = Promise.withResolvers<{ readonly data: string }>();
-    phone.slowTokenLookups.push(lookup.promise);
+  it("asks the machine to forget the phone with the ended pairing's own bearer, and no push token in the URL", async () => {
+    await pairedToAWithItsPushInTheTray();
+    const { token } = await loadConfig();
+    show(null);
+
     await act(() => clearConfig());
     await settle();
 
-    await pairByLink("b.example");
-    await act(() => vi.advanceTimersByTimeAsync(30_000));
-    expect(pushDevicesOf("b.example")).toEqual([PHONE_TOKEN]);
-
-    lookup.resolve({ data: PHONE_TOKEN });
-    await settle();
-    expect(unregistersOf("a.example")).toEqual([]);
+    const forgets = requests.filter((entry) => entry.call.startsWith("DELETE"));
+    expect(forgets).toEqual([
+      { machine: "a.example", call: "DELETE /api/devices", bearer: `Bearer ${token}` },
+    ]);
   });
 
   it("gives up on a registration the machine never answers, and the next machine still gets the phone", async () => {
@@ -519,7 +504,7 @@ describe("push on a phone whose pairing ends", () => {
       "POST /api/pair",
       "POST /api/devices",
       "POST /api/pair",
-      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
+      "DELETE /api/devices",
       "POST /api/devices",
     ]);
   });
@@ -537,6 +522,37 @@ describe("push on a phone whose pairing ends", () => {
 
     expect(callsTo("a.example").filter((call) => call === "POST /api/devices")).toHaveLength(2);
     expect(text()).toContain("registered");
+  });
+});
+
+describe("push on a phone the app opens already paired", () => {
+  const launchPairedTo = async (machine: string) => {
+    vi.resetModules();
+    const keychain = await import("expo-secure-store");
+    await keychain.setItemAsync(
+      "mend-config",
+      JSON.stringify({ url: `https://${machine}`, token: `token-${machine}-${OWNER_CODE}` }),
+    );
+    const launched = await import("@/data/pairing-config");
+    await launched.loadConfig();
+    await settle();
+  };
+
+  it("registers the phone again, without asking, when notifications are allowed", async () => {
+    await launchPairedTo("a.example");
+
+    expect(deviceCallsTo("a.example")).toEqual(["POST /api/devices"]);
+    expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
+    expect(phone.permissionPrompts).toBe(0);
+  });
+
+  it("asks nothing and sends nothing when notifications are not allowed", async () => {
+    phone.notificationsAllowed = false;
+
+    await launchPairedTo("a.example");
+
+    expect(deviceCallsTo("a.example")).toEqual([]);
+    expect(phone.permissionPrompts).toBe(0);
   });
 });
 
