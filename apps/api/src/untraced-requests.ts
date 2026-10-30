@@ -1,4 +1,4 @@
-import { PAGE_VIEW_TOKEN_PARAM } from "@mend/network";
+import { CREDENTIAL_QUERY_PARAMETERS, PAGE_VIEW_TOKEN_PARAM } from "@mend/network";
 import { Effect, Layer } from "effect";
 import { HttpMiddleware, UrlParams } from "effect/http";
 
@@ -17,7 +17,11 @@ export const UntracedRequestsLive: Layer.Layer<never> = Layer.mergeAll(
   Layer.effect(
     UrlParams.CurrentRedactedNames,
     Effect.gen(function* () {
-      return [...(yield* UrlParams.CurrentRedactedNames), PAGE_VIEW_TOKEN_PARAM];
+      return [
+        ...(yield* UrlParams.CurrentRedactedNames),
+        ...CREDENTIAL_QUERY_PARAMETERS,
+        PAGE_VIEW_TOKEN_PARAM,
+      ];
     }),
   ),
 );
