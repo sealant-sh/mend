@@ -5,7 +5,7 @@ import {
 } from "@mend/agent-conversation";
 import { describe, expect, it } from "vitest";
 
-import { reconcileConversation } from "./pending-turns";
+import { conversationRows } from "./conversation-rows";
 import {
   changedSinceLanding,
   newestPullRequest,
@@ -131,7 +131,7 @@ const keys = (placed: ReturnType<typeof withPullRequests>) => placed.map((row) =
 
 describe("withPullRequests", () => {
   const rows = () =>
-    reconcileConversation(
+    conversationRows(
       buildAgentConversation({
         turns: [turn("t1", 0, "2026-10-03T09:00:00Z"), turn("t2", 1, "2026-10-03T09:10:00Z")],
         items: [
@@ -141,7 +141,7 @@ describe("withPullRequests", () => {
         ],
         requests: [],
       }),
-      [],
+      new Map(),
     );
 
   it("closes the turn that opened it: before the first row that happened after", () => {

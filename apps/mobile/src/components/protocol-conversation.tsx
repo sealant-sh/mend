@@ -43,52 +43,44 @@ import { SessionPullRequest } from "@/components/pull-request-card";
 import { TaskCard } from "@/components/task-card";
 import { MonoText, UiText } from "@/components/typography";
 import {
+  ownImages,
   useAgentConversation,
   useAgentConversationActions,
-  useTurnSender,
+  useMessageSender,
 } from "@/data/agent-conversation";
-import { findLastMatching } from "@/data/collections";
-import { composerReadiness, readinessHint, storedImages, type Attachment } from "@/data/composer";
+import { composerReadiness, readinessHint } from "@/data/composer";
+import {
+  conversationRows,
+  steerDeliveryWords,
+  type SteerView,
+  type TurnView,
+} from "@/data/conversation-rows";
 import { useComposerAttachments } from "@/data/image-attach";
-import { useConversationWait, useOrganizationMembers, useSession } from "@/data/live";
+import { useConversationWait, useOrganizationMembers, useSession, useViewerId } from "@/data/live";
 import { pageCallFailureOf, pageOfItem, withPagesInPlace } from "@/data/pages";
-import { hasUnrecordedSend, reconcileConversation, type TurnView } from "@/data/pending-turns";
 import {
   pullRequestCards,
   withPullRequests,
   type ConversationRowWithPullRequests as Row,
 } from "@/data/pull-requests";
+import { KEY_USED, NOT_LOADED, UNCONFIRMED, type MessageOutcome } from "@/data/session-message";
 import { readsWaiting } from "@/data/shared-workspace";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
-/**
- * One message from a person. A send from this phone shows at once, faded while it goes up, and
- * stays where it is — marked, with Retry and Edit — when the machine refused it.
- */
-const TurnRow = memo(function TurnRow({
-  view,
-  onRetry,
-  onEdit,
-}: {
-  readonly view: TurnView;
-  readonly onRetry: (clientId: string) => void;
-  readonly onEdit: (clientId: string) => void;
-}) {
+/** One message from a person. */
+const TurnRow = memo(function TurnRow({ view }: { readonly view: TurnView }) {
   const { colors } = useEvidenceTheme();
-  const { clientId } = view;
   const members = useOrganizationMembers().data;
   // Whose login paid, when it was not the sender's (docs/adr/0013).
   const payerLine = useMemo(
     () =>
-      view.turn === null
-        ? null
-        : turnPayerLine(
-            view.turn,
-            new Map((members ?? []).map((member) => [member.userId, member.name])),
-          ),
+      turnPayerLine(
+        view.turn,
+        new Map((members ?? []).map((member) => [member.userId, member.name])),
+      ),
     [view.turn, members],
   );
-  if (view.turn !== null && isHarnessTurn(view.turn)) {
+  if (isHarnessTurn(view.turn)) {
     // Nobody sent this one: the agent opened it to answer a background task that ended.
     return (
       <View
@@ -105,6 +97,20 @@ const TurnRow = memo(function TurnRow({
       </View>
     );
   }
+  return <PersonMessage view={view} error={view.error} line={payerLine} />;
+});
+
+/** A person's words and images, with an optional error inside and a quiet line under them. */
+function PersonMessage({
+  view,
+  error,
+  line,
+}: {
+  readonly view: Pick<TurnView, "text" | "images">;
+  readonly error: string | null;
+  readonly line: string | null;
+}) {
+  const { colors } = useEvidenceTheme();
   return (
     <View style={{ alignSelf: "flex-end", maxWidth: "85%", alignItems: "flex-end", gap: 4 }}>
       <View
@@ -112,12 +118,9 @@ const TurnRow = memo(function TurnRow({
           backgroundColor: colors.wash,
           borderRadius: radius.xl,
           borderBottomRightRadius: 6,
-          borderLeftWidth: view.delivery === "failed" ? 2 : 0,
-          borderLeftColor: view.delivery === "failed" ? colors.red : "transparent",
           paddingHorizontal: 14,
           paddingVertical: 10,
           gap: 8,
-          opacity: view.delivery === "sending" ? 0.6 : 1,
         }}
       >
         <TurnImages images={view.images} />
@@ -126,34 +129,36 @@ const TurnRow = memo(function TurnRow({
             {view.text}
           </UiText>
         )}
-        {view.delivery !== "failed" && view.error !== null ? (
+        {error === null ? null : (
           <MonoText tone="danger" size={10.5}>
-            {view.error}
+            {error}
           </MonoText>
-        ) : null}
+        )}
       </View>
-      {view.delivery === "sending" ? (
+      {line === null ? null : (
         <MonoText tone="faint" size={10.5}>
-          sending…
-        </MonoText>
-      ) : null}
-      {payerLine === null ? null : (
-        <MonoText tone="faint" size={10.5}>
-          {payerLine}
+          {line}
         </MonoText>
       )}
-      {view.delivery === "failed" && clientId !== null ? (
-        <View style={{ alignItems: "flex-end", gap: 2 }}>
-          <MonoText tone="danger" size={10.5} numberOfLines={3}>
-            not sent · {view.error ?? "the machine did not answer"}
-          </MonoText>
-          <View style={{ flexDirection: "row", gap: 4 }}>
-            <EvButton size="sm" variant="ghost" label="Edit" onPress={() => onEdit(clientId)} />
-            <EvButton size="sm" variant="outline" label="Retry" onPress={() => onRetry(clientId)} />
-          </View>
-        </View>
-      ) : null}
     </View>
+  );
+}
+
+/** Words a person sent into a running turn, with who sent them and what became of them. */
+const SteerRow = memo(function SteerRow({ view }: { readonly view: SteerView }) {
+  const members = useOrganizationMembers().data;
+  const viewerId = useViewerId();
+  const { author, delivery } = view.steer;
+  const who =
+    author === viewerId
+      ? "you"
+      : ((members ?? []).find((member) => member.userId === author)?.name ?? "a member");
+  return (
+    <PersonMessage
+      view={view}
+      error={null}
+      line={`${who} steered · ${steerDeliveryWords(delivery)}`}
+    />
   );
 });
 
@@ -413,26 +418,43 @@ function ConversationRow({
   entry,
   responding,
   onRespond,
-  onRetry,
-  onEdit,
 }: {
   readonly sessionId: string;
   readonly entry: Row;
   readonly responding: boolean;
   readonly onRespond: (requestId: string, response: AgentRequestResponse) => void;
-  readonly onRetry: (clientId: string) => void;
-  readonly onEdit: (clientId: string) => void;
 }) {
   switch (entry.kind) {
     case "pull-request":
       return <SessionPullRequest sessionId={sessionId} card={entry.card} />;
     case "turn":
-      return <TurnRow view={entry.view} onRetry={onRetry} onEdit={onEdit} />;
+      return <TurnRow view={entry.view} />;
+    case "steer":
+      return <SteerRow view={entry.view} />;
     case "item":
       return <ItemRow item={entry.item} />;
     case "request":
       return <RequestRow request={entry.request} responding={responding} onRespond={onRespond} />;
   }
+}
+
+/** What Mend said about the last send, quietly: the receipt's own sentence as it came. */
+function MessageOutcomeLine({ outcome }: { readonly outcome: MessageOutcome }) {
+  const { colors } = useEvidenceTheme();
+  let line: { readonly words: string; readonly tone: "ink2" | "danger" | "warning" } | null = null;
+  if (outcome._tag === "Answered") line = { words: outcome.explanation, tone: "ink2" };
+  else if (outcome._tag === "Refused") line = { words: outcome.words, tone: "danger" };
+  else if (outcome._tag === "KeyUsed") {
+    line = { words: `${outcome.words} · ${KEY_USED}`, tone: "warning" };
+  } else if (outcome._tag === "Unconfirmed") line = { words: UNCONFIRMED, tone: "warning" };
+  if (line === null) return null;
+  return (
+    <View style={{ alignItems: "center", paddingVertical: 4, backgroundColor: colors.sunken }}>
+      <MonoText tone={line.tone} size={11} numberOfLines={4}>
+        {line.words}
+      </MonoText>
+    </View>
+  );
 }
 
 export function ProtocolConversation({
@@ -451,13 +473,15 @@ export function ProtocolConversation({
   const pane = usePaneEdges();
   const conversation = useAgentConversation(sessionId, true, active);
   const { respond, interrupt } = useAgentConversationActions(sessionId);
-  const sender = useTurnSender(sessionId);
-  const images = useComposerAttachments(sessionId);
+  const message = useMessageSender(sessionId);
+  const sending = message.outcome._tag === "Sending";
+  const images = useComposerAttachments(sessionId, {
+    images: message.draft.images,
+    add: message.addImage,
+    remove: message.removeImage,
+  });
   const listRef = useRef<LegendListRef>(null);
-  const [draft, setDraft] = useState("");
   const [composerHeight, setComposerHeight] = useState(64);
-  // Stop was pressed while the message it would stop was still on its way.
-  const [stopWaiting, setStopWaiting] = useState(false);
   const keyboard = useKeyboardState((state) => ({
     height: state.height,
     isVisible: state.isVisible,
@@ -477,15 +501,16 @@ export function ProtocolConversation({
   const landings = sessionRead?.landings;
   const cards = useMemo(() => pullRequestCards(landings ?? []), [landings]);
   const rows = useMemo(
-    () => withPullRequests(reconcileConversation(entries, sender.pending), cards),
-    [entries, sender.pending, cards],
+    () => withPullRequests(conversationRows(entries, ownImages), cards),
+    [entries, cards],
   );
   const openTurn = openTurnOf(data.turns);
-  // A send the conversation has not read back yet already has the agent busy: the working line
-  // and Stop show from the tap, not from the next poll.
-  const sendOnItsWay = hasUnrecordedSend(entries, sender.pending);
-  const activity = conversationActivity(data) ?? (sendOnItsWay ? "working" : null);
-  const readiness = composerReadiness({ draft, attachments: images.attachments, starting });
+  const activity = conversationActivity(data);
+  const readiness = composerReadiness({
+    draft: message.draft.text,
+    attachments: images.attachments,
+    starting,
+  });
   // A sticky composer floats over the list's end; in a pane it sits below it.
   const bottomPad = pane.sticky
     ? (keyboard.isVisible ? keyboard.height : pane.bottom) +
@@ -498,58 +523,12 @@ export function ProtocolConversation({
     [respond],
   );
 
-  const send = () => {
-    if (!readiness.canSend) return;
-    sender.send(draft, storedImages(images.attachments));
-    setDraft("");
-    images.clear();
-    // Following the end already keeps a reader who is there; one who scrolled back and sends
-    // wants to see what they sent.
+  const send = async () => {
+    if (!message.ready || !readiness.canSend || sending) return;
+    if (!(await message.send())) return;
+    // Following the end already keeps a reader who is there; one who scrolled back and sends wants
+    // to see what they sent.
     requestAnimationFrame(() => void listRef.current?.scrollToEnd({ animated: true }));
-  };
-
-  const stop = () => {
-    if (openTurn !== undefined) {
-      interrupt.mutate(openTurn.id);
-      return;
-    }
-    const recorded = new Set(data.turns.map((turn) => turn.id));
-    const latest = findLastMatching(
-      sender.pending,
-      (turn) =>
-        turn.status === "sending" ||
-        (turn.status === "sent" && turn.turnId !== null && !recorded.has(turn.turnId)),
-    );
-    if (latest === undefined) return;
-    if (latest.turnId !== null) {
-      interrupt.mutate(latest.turnId);
-      return;
-    }
-    setStopWaiting(true);
-    const stopWhenRecorded = async () => {
-      const turnId = await sender.turnIdOf(latest.clientId);
-      setStopWaiting(false);
-      if (turnId !== null) interrupt.mutate(turnId);
-    };
-    void stopWhenRecorded();
-  };
-
-  const onRetry = (clientId: string) => sender.retry(clientId);
-  const onEdit = (clientId: string) => {
-    const failed = sender.pending.find((turn) => turn.clientId === clientId);
-    if (failed === undefined) return;
-    setDraft((current) => (current.trim() === "" ? failed.text : `${failed.text}\n${current}`));
-    images.restore(
-      failed.images.map(
-        (image, index): Attachment => ({
-          id: `${clientId}:${index}`,
-          uri: image.uri,
-          name: image.name,
-          phase: { kind: "stored", path: image.path, bytes: 0 },
-        }),
-      ),
-    );
-    sender.discard(clientId);
   };
 
   const actionError = respond.error ?? interrupt.error;
@@ -567,10 +546,11 @@ export function ProtocolConversation({
   let composerHint: string | null = readinessHint(readiness, images.attachments.length);
   if (active && starting) {
     composerHint = "starting up — the conversation opens when the agent is ready…";
+  } else if (message.unreadable) {
+    composerHint = NOT_LOADED;
   } else if (composerHint === null && active && rows.length === 0 && !conversation.isLoading) {
     composerHint = "ready for your first message";
   }
-  const canStop = openTurn !== undefined || sendOnItsWay;
 
   return (
     <View style={{ flex: 1 }}>
@@ -587,8 +567,6 @@ export function ProtocolConversation({
             entry={item}
             responding={respond.isPending}
             onRespond={onRespond}
-            onRetry={onRetry}
-            onEdit={onEdit}
           />
         )}
         estimatedItemSize={76}
@@ -643,6 +621,7 @@ export function ProtocolConversation({
               </MonoText>
             </View>
           ) : null}
+          <MessageOutcomeLine outcome={message.outcome} />
           {composerHint === null ? null : (
             <View
               style={{ alignItems: "center", paddingVertical: 4, backgroundColor: colors.sunken }}
@@ -673,7 +652,7 @@ export function ProtocolConversation({
             <AttachButton
               room={images.room}
               held={images.attachments.length}
-              disabled={starting}
+              disabled={starting || sending || !message.ready}
               onChosen={images.attach}
             />
             <ComposerField>
@@ -683,20 +662,25 @@ export function ProtocolConversation({
                 onRetry={images.retry}
               />
               <ComposerTextInput
-                value={draft}
-                onChangeText={setDraft}
+                value={message.draft.text}
+                onChangeText={message.setText}
                 placeholder="Message the session…"
+                editable={message.ready && !sending}
               />
             </ComposerField>
-            {canStop && (
+            {openTurn !== undefined && (
               <EvButton
                 variant="ghost"
-                label={interrupt.isPending || stopWaiting ? "…" : "Stop"}
-                disabled={interrupt.isPending || stopWaiting}
-                onPress={stop}
+                label={interrupt.isPending ? "…" : "Stop"}
+                disabled={interrupt.isPending}
+                onPress={() => interrupt.mutate(openTurn.id)}
               />
             )}
-            <EvButton label="Send" onPress={send} disabled={!readiness.canSend} />
+            <EvButton
+              label={sending ? "Sending…" : "Send"}
+              onPress={() => void send()}
+              disabled={!message.ready || !readiness.canSend || sending}
+            />
           </View>
         </ComposerDock>
       )}

@@ -12,7 +12,6 @@ import {
   fitWithin,
   imageName,
   readinessHint,
-  storedImages,
   type Attachment,
   type AttachmentEvent,
 } from "./composer";
@@ -28,20 +27,14 @@ const added = (id: string): AttachmentEvent => ({
 });
 
 describe("attachmentsReducer", () => {
-  it("walks one image from preparing to stored", () => {
+  it("walks one image from preparing to uploading", () => {
     const state = run([
       added("a"),
       { type: "prepared", id: "a" },
       { type: "progress", id: "a", sent: 0.4 },
-      { type: "stored", id: "a", path: "/p/a.jpg", bytes: 1200 },
     ]);
     expect(state).toEqual([
-      {
-        id: "a",
-        uri: "file:///a.jpg",
-        name: "a.jpg",
-        phase: { kind: "stored", path: "/p/a.jpg", bytes: 1200 },
-      },
+      { id: "a", uri: "file:///a.jpg", name: "a.jpg", phase: { kind: "uploading", sent: 0.4 } },
     ]);
   });
 
@@ -57,17 +50,16 @@ describe("attachmentsReducer", () => {
   });
 
   it("ignores events that arrive for a phase the image has left", () => {
-    const stored = run([
+    const failed = run([
       added("a"),
       { type: "prepared", id: "a" },
-      { type: "stored", id: "a", path: "/p/a.jpg", bytes: 1 },
+      { type: "failed", id: "a", message: "offline" },
     ]);
-    expect(run([{ type: "progress", id: "a", sent: 0.5 }], stored)).toBe(stored);
-    expect(run([{ type: "failed", id: "a", message: "late" }], stored)).toBe(stored);
-    expect(run([{ type: "prepared", id: "a" }], stored)).toBe(stored);
-    // Stored straight from preparing skips the upload: refused.
+    expect(run([{ type: "progress", id: "a", sent: 0.5 }], failed)).toBe(failed);
+    expect(run([{ type: "prepared", id: "a" }], failed)).toBe(failed);
+    // Progress before the upload started: refused.
     const preparing = run([added("b")]);
-    expect(run([{ type: "stored", id: "b", path: "/p", bytes: 1 }], preparing)).toBe(preparing);
+    expect(run([{ type: "progress", id: "b", sent: 0.5 }], preparing)).toBe(preparing);
   });
 
   it("drops what finishes after the image was removed", () => {
@@ -75,7 +67,8 @@ describe("attachmentsReducer", () => {
       added("a"),
       { type: "prepared", id: "a" },
       { type: "removed", id: "a" },
-      { type: "stored", id: "a", path: "/p/a.jpg", bytes: 1 },
+      { type: "progress", id: "a", sent: 1 },
+      { type: "failed", id: "a", message: "late" },
     ]);
     expect(state).toEqual([]);
   });
@@ -97,44 +90,20 @@ describe("attachmentsReducer", () => {
     expect(run(ids.map(added))).toHaveLength(MAX_IMAGES_PER_MESSAGE);
     expect(run([added("a"), added("a")])).toHaveLength(1);
   });
-
-  it("clears on send and restores a message that did not send", () => {
-    const stored = run([
-      added("a"),
-      { type: "prepared", id: "a" },
-      { type: "stored", id: "a", path: "/p/a.jpg", bytes: 1 },
-    ]);
-    expect(run([{ type: "cleared" }], stored)).toEqual([]);
-    expect(run([{ type: "restored", attachments: stored }], [])).toEqual(stored);
-    // Restoring what the composer already holds adds nothing.
-    expect(run([{ type: "restored", attachments: stored }], stored)).toBe(stored);
-  });
-});
-
-describe("storedImages", () => {
-  it("is the stored images in attach order, without the ones still going up", () => {
-    const state = run([
-      added("a"),
-      added("b"),
-      added("c"),
-      { type: "prepared", id: "c" },
-      { type: "stored", id: "c", path: "/p/c.jpg", bytes: 1 },
-      { type: "prepared", id: "a" },
-      { type: "stored", id: "a", path: "/p/a.jpg", bytes: 1 },
-    ]);
-    expect(storedImages(state).map((image) => image.path)).toEqual(["/p/a.jpg", "/p/c.jpg"]);
-  });
 });
 
 const at = (attachments: ReadonlyArray<Attachment>) =>
   composerReadiness({ draft: "hi", attachments, starting: false });
 
 describe("composerReadiness", () => {
-  const stored = run([
-    added("a"),
-    { type: "prepared", id: "a" },
-    { type: "stored", id: "a", path: "/p/a.jpg", bytes: 1 },
-  ]);
+  const stored: ReadonlyArray<Attachment> = [
+    {
+      id: "stored:/p/a.jpg",
+      uri: "file:///a.jpg",
+      name: "a.jpg",
+      phase: { kind: "stored", path: "/p/a.jpg", bytes: 1 },
+    },
+  ];
 
   it("sends text, images, or both — never nothing", () => {
     expect(composerReadiness({ draft: "  ", attachments: [], starting: false })).toEqual({

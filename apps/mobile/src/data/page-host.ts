@@ -14,6 +14,8 @@ import {
 } from "@mend/ui/page-frame";
 import type { PageTheme } from "@mend/ui/page-theme";
 
+import { randomBytes } from "@/data/random";
+
 /**
  * An unguessable token per host document. Both platforms expose the bridge to every frame in the
  * WebView (WKScriptMessageHandler and Android's WebMessageListener with "*" are not main-frame
@@ -21,13 +23,8 @@ import type { PageTheme } from "@mend/ui/page-theme";
  * is enough when Web Crypto is missing: the page runs in another JavaScript engine and never sees
  * its output.
  */
-export const pageHostSecret = (): string => {
-  const bytes = new Uint8Array(16);
-  const crypto = globalThis.crypto;
-  if (typeof crypto?.getRandomValues === "function") crypto.getRandomValues(bytes);
-  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.random() * 256;
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-};
+export const pageHostSecret = (): string =>
+  Array.from(randomBytes(16), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 // JSON inside a <script>: `<`, `>` and `&` escaped, so no value closes the element.
 const inline = (value: unknown): string =>

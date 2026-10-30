@@ -12,7 +12,8 @@ import {
   pushPermissionGranted,
   type PushRegistration,
 } from "@/data/notifications";
-import { pairingKeyOf } from "@/data/pairing-key";
+import { pairingKeyOf, type PairingKey } from "@/data/pairing-key";
+import { settleDraftScope } from "@/data/session-message";
 
 export interface Connection {
   readonly url: string;
@@ -102,12 +103,17 @@ const removeStoredConfig = async (): Promise<void> => {
   await AsyncStorage.removeItem(CONFIG_KEY);
 };
 
+/** The pairing a connection is, for what belongs to it; null when it is no pairing. */
+const pairingOf = (connection: Connection): PairingKey | null =>
+  connection.token === "" ? null : pairingKeyOf(connection);
+
 const hydrated: Promise<void> = readStoredConfig()
   .then((raw) => {
     settle((raw === null ? null : parseConfig(raw)) ?? EMPTY);
     return undefined;
   })
   .catch(() => settle(EMPTY));
+void hydrated.then(() => settleDraftScope(pairingOf(current ?? EMPTY)));
 
 export const loadConfig = async (): Promise<Connection> => {
   await hydrated;
@@ -162,8 +168,10 @@ const write = async (change: (before: Connection) => Connection): Promise<void> 
   const after = change(before);
   if (after === before) return;
   settle(after);
+  let drafts = Promise.resolve();
   if (!samePairing(before, after)) {
     pairingGeneration += 1;
+    drafts = settleDraftScope(pairingOf(after));
     if (before.token !== "") endPairing(before);
     if (after.token !== "") void registerPushIfAllowed(after);
   }
@@ -171,7 +179,7 @@ const write = async (change: (before: Connection) => Connection): Promise<void> 
     after === EMPTY ? removeStoredConfig() : writeStoredConfig(JSON.stringify(after)),
   );
   stored = saved.catch(() => undefined);
-  await saved;
+  await Promise.all([saved, drafts]);
 };
 
 export const saveConfig = (connection: Connection): Promise<void> => write(() => connection);

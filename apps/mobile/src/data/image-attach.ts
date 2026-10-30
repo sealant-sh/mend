@@ -24,6 +24,7 @@ import {
   imageName,
   type Attachment,
 } from "@/data/composer";
+import type { LocalImage } from "@/data/conversation-rows";
 import { uploadSessionImage, type PastedImageDto } from "@/data/live";
 import type { Upload } from "@/data/machine";
 import { usePairing } from "@/data/pairing-scope";
@@ -129,21 +130,35 @@ export const pasteFromClipboard = async (ordinal: number): Promise<ChosenImage |
 
 // ─── the composer's images ──────────────────────────────────────────────────
 
+/** The images the draft carries once stored: the draft owns them, so they outlive the composer. */
+export interface DraftImages {
+  readonly images: ReadonlyArray<LocalImage>;
+  readonly add: (image: LocalImage) => void;
+  readonly remove: (path: string) => void;
+}
+
 export interface ComposerAttachments {
+  /** The draft's stored images, then the ones still on their way. */
   readonly attachments: ReadonlyArray<Attachment>;
   /** How many more images this message can carry. */
   readonly room: number;
   readonly attach: (images: ReadonlyArray<ChosenImage>) => void;
   readonly remove: (id: string) => void;
   readonly retry: (id: string) => void;
-  /** The message went: forget its images here (they stay stored beside the session). */
-  readonly clear: () => void;
-  /** A message that did not send comes back with its stored images. */
-  readonly restore: (attachments: ReadonlyArray<Attachment>) => void;
 }
 
-export const useComposerAttachments = (sessionId: string): ComposerAttachments => {
-  const [attachments, dispatch] = useReducer(attachmentsReducer, []);
+const storedAttachment = (image: LocalImage): Attachment => ({
+  id: `stored:${image.path}`,
+  uri: image.uri,
+  name: image.name,
+  phase: { kind: "stored", path: image.path, bytes: 0 },
+});
+
+export const useComposerAttachments = (
+  sessionId: string,
+  draft: DraftImages,
+): ComposerAttachments => {
+  const [going, dispatch] = useReducer(attachmentsReducer, []);
   const { machine } = usePairing();
   // Live ids, prepared bytes (a retry after a failed upload skips preparing again), the upload
   // in flight, and the one-at-a-time queue. Refs: the queue outlives the render that started it.
@@ -153,12 +168,12 @@ export const useComposerAttachments = (sessionId: string): ComposerAttachments =
   const queue = useRef<Promise<void>>(Promise.resolve());
   const seq = useRef(0);
 
-  const work = async (id: string, uri: string): Promise<void> => {
+  const work = async (id: string, image: ChosenImage): Promise<void> => {
     if (!live.current.has(id)) return;
     let base64 = prepared.current.get(id);
     if (base64 === undefined) {
       try {
-        base64 = await prepareImage(uri);
+        base64 = await prepareImage(image.uri);
       } catch (error) {
         dispatch({ type: "failed", id, message: errorText(error, "The image could not be read.") });
         return;
@@ -174,7 +189,10 @@ export const useComposerAttachments = (sessionId: string): ComposerAttachments =
     try {
       const stored = await upload.result;
       prepared.current.delete(id);
-      dispatch({ type: "stored", id, path: stored.path, bytes: stored.bytes });
+      if (!live.current.has(id)) return;
+      live.current.delete(id);
+      dispatch({ type: "removed", id });
+      draft.add({ name: image.name, path: stored.path, uri: image.uri });
     } catch (error) {
       if (live.current.has(id)) {
         dispatch({ type: "failed", id, message: errorText(error, "The image was not stored.") });
@@ -183,8 +201,8 @@ export const useComposerAttachments = (sessionId: string): ComposerAttachments =
       uploads.current.delete(id);
     }
   };
-  const enqueue = (id: string, uri: string) => {
-    queue.current = queue.current.then(() => work(id, uri));
+  const enqueue = (id: string, image: ChosenImage) => {
+    queue.current = queue.current.then(() => work(id, image));
   };
 
   const forget = (id: string) => {
@@ -194,37 +212,34 @@ export const useComposerAttachments = (sessionId: string): ComposerAttachments =
     uploads.current.delete(id);
   };
 
+  const attachments = [...draft.images.map(storedAttachment), ...going];
   return {
     attachments,
     room: Math.max(0, MAX_IMAGES_PER_MESSAGE - attachments.length),
     attach: (images) => {
-      for (const image of images.slice(0, MAX_IMAGES_PER_MESSAGE - live.current.size)) {
+      const room = MAX_IMAGES_PER_MESSAGE - draft.images.length - live.current.size;
+      for (const image of images.slice(0, Math.max(0, room))) {
         seq.current += 1;
         const id = `a${Date.now().toString(36)}-${seq.current}`;
         live.current.add(id);
         dispatch({ type: "added", id, uri: image.uri, name: image.name });
-        enqueue(id, image.uri);
+        enqueue(id, image);
       }
     },
     remove: (id) => {
+      const attachment = attachments.find((candidate) => candidate.id === id);
+      if (attachment?.phase.kind === "stored") {
+        draft.remove(attachment.phase.path);
+        return;
+      }
       forget(id);
       dispatch({ type: "removed", id });
     },
     retry: (id) => {
-      const attachment = attachments.find((candidate) => candidate.id === id);
+      const attachment = going.find((candidate) => candidate.id === id);
       if (attachment === undefined || attachment.phase.kind !== "failed") return;
       dispatch({ type: "retried", id });
-      enqueue(id, attachment.uri);
-    },
-    clear: () => {
-      for (const id of live.current) forget(id);
-      dispatch({ type: "cleared" });
-    },
-    restore: (restored) => {
-      const room = MAX_IMAGES_PER_MESSAGE - live.current.size;
-      const back = restored.filter((attachment) => !live.current.has(attachment.id)).slice(0, room);
-      for (const attachment of back) live.current.add(attachment.id);
-      dispatch({ type: "restored", attachments: back });
+      enqueue(id, attachment);
     },
   };
 };
