@@ -41,6 +41,7 @@ import {
   SourcePolicy,
   Store,
   StoreConfig,
+  UNSETTLED_REPOSITORY_MARKER,
 } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Redacted, Schema, String as Str } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -320,6 +321,9 @@ describe.skipIf(postgres.skip)("project creation, against PostgreSQL and git", (
       });
       expect(project.storePath).toBe(path.join(storeRoot, project.id, "repo.git"));
       expect(project.adoptedSha).toBe(gitIn(project.storePath, "rev-parse", "main"));
+      expect(
+        fs.existsSync(path.join(path.dirname(project.storePath), UNSETTLED_REPOSITORY_MARKER)),
+      ).toBe(false);
       expect(gitIn(project.storePath, "log", "--all", "--format=%an|%ae|%cn|%ce|%s|%P")).toBe(
         "Anna Example|anna@example.com|Anna Example|anna@example.com|Initial commit|",
       );

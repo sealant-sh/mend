@@ -1,3 +1,5 @@
+import * as path from "node:path";
+
 import { CurrentUser } from "@mend/api-contracts";
 import { OrganizationsRepo, ProjectsRepo, UserGitAccessRepo, UserGitAuthorRepo } from "@mend/db";
 import { ProjectId } from "@mend/domain";
@@ -9,7 +11,7 @@ import {
   scratchProjectName,
 } from "@mend/domain/workbench";
 import { Store } from "@mend/store";
-import { Context, DateTime, Effect, Layer, Schema } from "effect";
+import { Clock, Context, DateTime, Duration, Effect, Layer, Schema } from "effect";
 
 /** A creation refusal a caller can display without persistence or Git details. */
 export class ProjectCreationRefused extends Schema.TaggedError<ProjectCreationRefused>()(
@@ -92,13 +94,17 @@ export const ProjectCreationLive: Layer.Layer<
                   ScratchProjectExistsError: () => Effect.succeed({ kind: "lost" as const }),
                   ProjectMembershipChanged: () => Effect.succeed({ kind: "departed" as const }),
                   ProjectNotPublished: () => Effect.succeed({ kind: "unpublished" as const }),
+                  // The repository stays marked: the startup sweep keeps it if the row exists.
                   ProjectPublicationUnconfirmed: () =>
                     refuse(
                       "Project creation could have completed, but Mend could not confirm it. Refresh projects before trying again.",
                     ),
                 }),
               );
-            if (inserted.kind === "created") return inserted.project;
+            if (inserted.kind === "created") {
+              yield* store.settleCreatedRepository(repository.storePath);
+              return inserted.project;
+            }
             const removed = yield* store.removeProjectStore(repository.storePath);
             if (removed.leftover !== null)
               return yield* refuse(
@@ -166,3 +172,62 @@ export const ProjectCreationLive: Layer.Layer<
     };
   }),
 );
+
+/** Outlasts any creation still in flight: one repository and one insert take seconds. */
+const UNSETTLED_REPOSITORY_AGE = Duration.minutes(10);
+
+/**
+ * Decides each repository `createRepository` left unsettled, after a crash or an unconfirmed
+ * publication. One a project row names is settled and kept; one no row names is removed once it
+ * is older than `minimumAge`; one whose row cannot be read waits for the next sweep.
+ */
+export const sweepUnsettledRepositories = Effect.fn("sweepUnsettledRepositories")(function* (
+  minimumAge: Duration.Duration,
+) {
+  const store = yield* Store;
+  const projects = yield* ProjectsRepo;
+  const now = yield* Clock.currentTimeMillis;
+  const settled: Array<string> = [];
+  const removed: Array<string> = [];
+  for (const repository of yield* store.unsettledRepositories()) {
+    const { storePath } = repository;
+    const row = yield* projects.byId(ProjectId.make(path.basename(path.dirname(storePath)))).pipe(
+      Effect.as("registered" as const),
+      Effect.catchTag("ProjectNotFoundError", () => Effect.succeed("absent" as const)),
+      Effect.catchCause((cause) =>
+        Effect.as(
+          Effect.logWarning("project creation: an unsettled repository's row was not read").pipe(
+            Effect.annotateLogs({ storePath, cause: String(cause) }),
+          ),
+          "unknown" as const,
+        ),
+      ),
+    );
+    if (row === "registered") {
+      yield* store.settleCreatedRepository(storePath);
+      settled.push(storePath);
+    } else if (row === "absent" && now - repository.markedAtMs >= Duration.toMillis(minimumAge)) {
+      const { leftover } = yield* store.removeProjectStore(storePath);
+      if (leftover === null) removed.push(storePath);
+      else
+        yield* Effect.logWarning("project creation: an unclaimed repository was not removed").pipe(
+          Effect.annotateLogs({ storePath, leftover }),
+        );
+    }
+  }
+  return { settled, removed };
+});
+
+/** The API process's startup sweep of repositories no project row claimed. */
+export const UnsettledRepositorySweepLive: Layer.Layer<never, never, Store | ProjectsRepo> =
+  Layer.effectDiscard(
+    sweepUnsettledRepositories(UNSETTLED_REPOSITORY_AGE).pipe(
+      Effect.tap(({ settled, removed }) =>
+        settled.length + removed.length === 0
+          ? Effect.void
+          : Effect.logInfo("project creation: unsettled repositories swept").pipe(
+              Effect.annotateLogs({ settled: settled.length, removed: removed.length }),
+            ),
+      ),
+    ),
+  );

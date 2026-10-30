@@ -4,18 +4,22 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
+import { ProjectNotFoundError, ProjectPublicationUnconfirmed, ProjectsRepo } from "@mend/db";
 import { ProjectId } from "@mend/domain";
 import { GitAuthor, Project, ResolvedGitAuthor } from "@mend/domain/workbench";
-import { Store, StoreConfig } from "@mend/store";
-import { Effect, Layer, Schema } from "effect";
+import { Store, StoreConfig, UNSETTLED_REPOSITORY_MARKER } from "@mend/store";
+import { Duration, Effect, Layer, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { createTenancyApi } from "../../test/support/tenancy-api.ts";
+import { sweepUnsettledRepositories } from "../project-creation.ts";
 
 const decodeProject = Schema.decodeUnknownSync(Schema.toCodecJson(Project));
 const git = async (cwd: string, ...args: string[]) =>
   (await promisify(execFile)("git", args, { cwd, encoding: "utf8" })).stdout.trim();
-const fixture = async () => {
+const fixture = async (
+  projects: { readonly publishInitialized?: ProjectsRepo["Service"]["publishInitialized"] } = {},
+) => {
   const profile = { name: "alice", email: "alice@example.invalid" };
   let setting: GitAuthor | null = new GitAuthor({
     name: "Author alice",
@@ -28,11 +32,16 @@ const fixture = async () => {
     {
       profiles: { alice: profile },
       implement: {
+        projects,
         gitAccess: { mode: () => Effect.succeed(null) },
         store: {
           createRepository: (directory, commit) =>
             Effect.gen(function* () {
               return yield* (yield* Store).createRepository(directory, commit);
+            }).pipe(Effect.provide(layer)),
+          settleCreatedRepository: (storePath) =>
+            Effect.gen(function* () {
+              return yield* (yield* Store).settleCreatedRepository(storePath);
             }).pipe(Effect.provide(layer)),
           removeProjectStore: (storePath) =>
             Effect.gen(function* () {
@@ -66,7 +75,6 @@ const fixture = async () => {
     },
     dispose: async () => {
       await api.dispose();
-      fs.readdirSync(root);
       fs.rmSync(root, { recursive: true, force: true });
     },
   };
@@ -300,6 +308,106 @@ describe("private project creation over HTTP", () => {
         (await f.api.request("dave", "POST", "/api/projects/new", { name: "notes" })).status,
       ).toBe(422);
       expect(fs.readdirSync(f.root)).toEqual([]);
+    } finally {
+      await f.dispose();
+    }
+  });
+});
+
+const marked = (storePath: string) =>
+  fs.existsSync(path.join(path.dirname(storePath), UNSETTLED_REPOSITORY_MARKER));
+describe("repositories no project row claimed", () => {
+  it("settles a created project's repository once its row exists", async () => {
+    const f = await fixture();
+    try {
+      const project = await create(f.api, "settled");
+      expect(marked(project.storePath)).toBe(false);
+    } finally {
+      await f.dispose();
+    }
+  });
+  it("keeps an unconfirmed or abandoned repository until the startup sweep finds no row for it and it is old", async () => {
+    const f = await fixture({
+      publishInitialized: (input) =>
+        Effect.fail(new ProjectPublicationUnconfirmed({ projectId: input.id, cause: "lost" })),
+    });
+    try {
+      const refused = await f.api.request("alice", "POST", "/api/projects/new", {
+        name: "unconfirmed",
+      });
+      expect(refused.status).toBe(422);
+      const [unconfirmedId] = fs.readdirSync(f.root);
+      if (unconfirmedId === undefined) throw new Error("the unconfirmed repository is gone");
+      const unconfirmed = path.join(f.root, unconfirmedId, "repo.git");
+      expect(marked(unconfirmed)).toBe(true);
+      const store = Store.layer.pipe(Layer.provide(Layer.succeed(StoreConfig, { root: f.root })));
+      const createdOnly = (id: string) =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            return yield* (yield* Store).createRepository(id, {
+              readme: "# lost\n",
+              author: { name: "alice", email: "alice@example.invalid" },
+              at: new Date(),
+            });
+          }).pipe(Effect.provide(store)),
+        );
+      // A process lost between the repository and its row leaves exactly this behind.
+      const abandoned = await createdOnly("abandoned");
+      const registered = await createdOnly("registered");
+      const template = [...f.api.world.projects.values()][0];
+      if (template === undefined) throw new Error("the world needs a project template");
+      f.api.world.addProject(
+        new Project({
+          ...template,
+          id: ProjectId.make("registered"),
+          name: "registered",
+          storePath: registered.storePath,
+        }),
+      );
+      const sweep = () =>
+        Effect.runPromise(
+          sweepUnsettledRepositories(Duration.minutes(10)).pipe(
+            Effect.provide(
+              Layer.merge(
+                store,
+                Layer.mock(ProjectsRepo, {
+                  byId: (id) => {
+                    const project = f.api.world.projects.get(id);
+                    return project === undefined
+                      ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
+                      : Effect.succeed(project);
+                  },
+                }),
+              ),
+            ),
+          ),
+        );
+      await sweep();
+      expect([unconfirmed, abandoned.storePath, registered.storePath].map(marked)).toEqual([
+        true,
+        true,
+        false,
+      ]);
+      const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      for (const storePath of [unconfirmed, abandoned.storePath])
+        fs.utimesSync(
+          path.join(path.dirname(storePath), UNSETTLED_REPOSITORY_MARKER),
+          hourAgo,
+          hourAgo,
+        );
+      fs.writeFileSync(
+        path.join(path.dirname(registered.storePath), UNSETTLED_REPOSITORY_MARKER),
+        "",
+      );
+      fs.utimesSync(
+        path.join(path.dirname(registered.storePath), UNSETTLED_REPOSITORY_MARKER),
+        hourAgo,
+        hourAgo,
+      );
+      await sweep();
+      expect(fs.readdirSync(f.root)).toEqual(["registered"]);
+      expect(marked(registered.storePath)).toBe(false);
+      expect(await git(registered.storePath, "rev-parse", "main")).toBe(registered.headSha);
     } finally {
       await f.dispose();
     }
