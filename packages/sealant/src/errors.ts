@@ -1,3 +1,4 @@
+import { ReaderWords, type SaysReaderWords } from "@mend/domain";
 import { Schema } from "effect";
 
 /**
@@ -5,9 +6,8 @@ import { Schema } from "effect";
  * a stable `code`, `SealantApiError` with an HTTP `status`). This wraps them
  * back onto a typed Effect channel at the service boundary.
  */
-export class SealantPlatformError extends Schema.TaggedError<SealantPlatformError>()(
-  "SealantPlatformError",
-  {
+export class SealantPlatformError
+  extends Schema.TaggedError<SealantPlatformError>()("SealantPlatformError", {
     /** Stable machine-readable code carried by every SDK error. */
     code: Schema.String,
     /** HTTP status when the failure came from a control-plane response. */
@@ -18,6 +18,20 @@ export class SealantPlatformError extends Schema.TaggedError<SealantPlatformErro
      * `connected-account-missing`, `-invalid` or `-unsupported`), when Core gave one.
      */
     provider: Schema.optionalKey(Schema.String),
+    /**
+     * The message is the SDK's or Core's own text, which Mend never curated: kept for the log, and
+     * withheld from any line other people read, since it can quote what a person sent (SLNT-385).
+     */
+    uncurated: Schema.optionalKey(Schema.Boolean),
     cause: Schema.Defect(),
-  },
-) {}
+  })
+  implements SaysReaderWords
+{
+  get [ReaderWords](): string | undefined {
+    return this.uncurated === true ? undefined : this.message;
+  }
+}
+
+/** A message built from `error`'s words keeps its curation: withheld words stay withheld. */
+export const curationOf = (error: SealantPlatformError): { readonly uncurated?: boolean } =>
+  error.uncurated === true ? { uncurated: true } : {};

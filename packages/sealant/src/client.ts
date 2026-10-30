@@ -49,7 +49,7 @@ import * as Context from "effect/Context";
 import { ConnectedAccount, type ConnectAccountInput } from "./accounts.ts";
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
-import { SealantPlatformError } from "./errors.ts";
+import { curationOf, SealantPlatformError } from "./errors.ts";
 import { type ForwardDestination, type OpenedForward, openWorkspaceForward } from "./forward.ts";
 import { SealantIdentityStore } from "./identity.ts";
 import {
@@ -1924,17 +1924,41 @@ export const imageBuildFailure = (error: SealantPlatformError): SealantPlatformE
         code: error.code,
         status: error.status,
         message: `${lead}: ${error.message}`,
+        ...curationOf(error),
         cause: error,
       });
 };
 
+/**
+ * The SDK's refusal of create options that name no source, or two (`internal/blueprint.js`). Its
+ * code, `invalid_create_options`, also carries messages built from what was sent, so only this
+ * fixed sentence is said, in Mend's own copy (PLATFORM-FEEDBACK.md asks for a reason of its own).
+ */
+export const SOURCE_SELECTION_REFUSAL =
+  "workspaces.create requires exactly one of `repository` (a git remote to clone) or `source` (a caller-owned mount).";
+
+/**
+ * Codes whose messages the SDK or Core builds from fixed words, the workspace's id, a wait, and
+ * the project image's build step: said on a line. Any other code's message is withheld.
+ */
+const CURATED_CODES: ReadonlySet<string> = new Set([
+  "workspace_image_build_stalled",
+  "workspace_image_build_timeout",
+  "workspace_ready_timeout",
+  "workspace-docker-unsupported",
+]);
+
 export const toPlatformError = (cause: unknown) => {
   const provider = cause instanceof SealantApiError ? cause.provider : undefined;
+  const code = platformErrorCode(cause);
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const sourceSelection = code === "invalid_create_options" && message === SOURCE_SELECTION_REFUSAL;
   return new SealantPlatformError({
-    code: platformErrorCode(cause),
+    code,
     status: cause instanceof SealantApiError ? (cause.status ?? null) : null,
-    message: cause instanceof Error ? cause.message : String(cause),
+    message: sourceSelection ? SOURCE_SELECTION_REFUSAL : message,
     ...(provider === undefined ? {} : { provider }),
+    ...(sourceSelection || CURATED_CODES.has(code) ? {} : { uncurated: true }),
     cause,
   });
 };
