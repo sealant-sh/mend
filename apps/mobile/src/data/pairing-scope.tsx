@@ -49,7 +49,14 @@ const heldFor = (key: PairingKey, config: MendConfig): Held => {
     held?.end();
     held = {
       key,
-      client: new QueryClient({ defaultOptions: { queries: { retry: 1 } } }),
+      client: new QueryClient({
+        defaultOptions: {
+          queries: { retry: 1 },
+          // A write the person asked for runs now against its pairing's machine, offline or not:
+          // a paused one would sit in this cache, which the next pairing clears.
+          mutations: { networkMode: "always" },
+        },
+      }),
       asker: createAsker({ beforeAsk: () => Keyboard.dismiss() }),
       ...openMachine(config),
     };
