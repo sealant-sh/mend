@@ -4,7 +4,7 @@
  * upgrade ticket is dead thirty seconds after it was minted and a `?token=` is a long-lived bearer,
  * but a log should hold neither.
  */
-export const CREDENTIAL_QUERY_PARAMETERS: ReadonlyArray<string> = ["token", "ticket", "code"];
+export const CREDENTIAL_QUERY_PARAMETERS: ReadonlyArray<string> = ["token", "ticket", "code", "wsTicket"];
 
 /**
  * The URL (absolute, or a path with a query) with every credential parameter's value replaced.

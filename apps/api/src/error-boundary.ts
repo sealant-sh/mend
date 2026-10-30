@@ -7,6 +7,7 @@ import {
   hostUserNamespacesRefusalParts,
 } from "@mend/domain/host-user-namespaces";
 import { redactDetail } from "@mend/network";
+import { withoutRequestUrl } from "@mend/network/http-observation";
 import { Cause, Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpRouter, HttpServerResponse } from "effect/http";
@@ -27,7 +28,8 @@ import { removalInProgressOf } from "./removal-refusal.ts";
  * - A start a removal's mark refused in the database is `409 RemovalInProgress`, on any route.
  * - A defect, or any 5xx nobody declared, crosses as `InternalError` and a reference. The detail
  *   goes to the log under that reference, which is what an operator searches for, in either mode;
- *   a failed query's parameters are withheld from it, since they are what a person wrote.
+ *   a failed query's parameters are withheld from it, since they are what a person wrote, and the
+ *   request's URL reads as its route's template.
  *
  * `MEND_ERROR_DETAIL=verbose` turns the scrubbing off for an operator debugging a private
  * instance. It is an open item of the public exposure gate.
@@ -205,9 +207,11 @@ export const errorBoundary = (
           const refusal = removalInProgressOf(cause);
           if (refusal !== null) return Effect.succeed(removalInProgress(refusal));
           const reference = makeReference();
-          return Effect.logError("an unhandled failure reached the error boundary").pipe(
-            Effect.annotateLogs({ reference, cause: prettyCause(cause) }),
-            Effect.as(internalError(reference)),
+          return Effect.flatMap(withoutRequestUrl(prettyCause(cause)), (diagnostic) =>
+            Effect.logError("an unhandled failure reached the error boundary").pipe(
+              Effect.annotateLogs({ reference, cause: diagnostic }),
+              Effect.as(internalError(reference)),
+            ),
           );
         }),
       ),
