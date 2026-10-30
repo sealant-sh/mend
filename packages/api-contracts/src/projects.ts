@@ -7,6 +7,8 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import {
+  RemovedProject,
+  ProjectName,
   ProjectLink,
   Project,
   ProjectEnvironmentVariable,
@@ -18,6 +20,15 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
+import {
+  ProjectRemovalReport,
+  ProjectPurgeReport,
+  ProjectNameConflict,
+  ProjectRetentionForbidden,
+  ProjectRestoreUnavailable,
+  PurgeNotConfirmed,
+  ProjectPurgeIncomplete,
+} from "./project-retention.ts";
 import { ProjectFileListing, ProjectPullRequests } from "./settings.ts";
 import {
   AdoptProject,
@@ -45,7 +56,6 @@ import {
   ProjectWorkspaceImageSaveResult,
   RemovalInProgress,
   RemovalRefused,
-  RemovalReport,
   SettingsFailure,
   StoreFailure,
 } from "./workbench-views.ts";
@@ -61,6 +71,36 @@ export class ProjectBranch extends Schema.Class<ProjectBranch>("ProjectBranch")(
 }) {}
 
 export const projectsGroup = HttpApiGroup.make("projects")
+  .add(
+    HttpApiEndpoint.get("removedDisk", "/removed-projects/disk", {
+      success: Schema.Struct({ projects: Schema.Number, bytes: Schema.NullOr(Schema.Number) }),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("removed", "/removed-projects", { success: Schema.Array(RemovedProject) }),
+  )
+  .add(
+    HttpApiEndpoint.post("restore", "/removed-projects/:id/restore", {
+      params: { id: ProjectId },
+      payload: Schema.Struct({ name: Schema.optionalKey(ProjectName) }),
+      success: Project,
+      error: [NotFound, ProjectRetentionForbidden, ProjectRestoreUnavailable, ProjectNameConflict],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("purge", "/removed-projects/:id/purge", {
+      params: { id: ProjectId },
+      payload: Schema.Struct({ confirm: Schema.String }),
+      success: ProjectPurgeReport,
+      error: [
+        NotFound,
+        ProjectRetentionForbidden,
+        PurgeNotConfirmed,
+        ProjectPurgeIncomplete,
+        RemovalRefused,
+      ],
+    }),
+  )
   .add(HttpApiEndpoint.get("list", "/projects", { success: Schema.Array(Project) }))
   .add(
     HttpApiEndpoint.post("adopt", "/projects", {
@@ -100,7 +140,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
     // `leftover` reports a path that would not delete (container-uid files).
     HttpApiEndpoint.delete("remove", "/projects/:id", {
       params: { id: ProjectId },
-      success: RemovalReport,
+      success: ProjectRemovalReport,
       error: [NotFound, RemovalRefused],
     }),
   )
