@@ -42,7 +42,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@mend/api-contracts": "workspace:*",
     "@opentui/core": "0.5.3",
     "@opentui/react": "0.5.3",
     "@tanstack/react-query": "catalog:",
@@ -53,6 +52,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/local-git": "workspace:*",
     "@mend/network": "workspace:*",
