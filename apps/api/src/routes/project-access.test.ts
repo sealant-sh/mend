@@ -905,7 +905,8 @@ const ADMITTED: Readonly<
   "projectRecipes.list": { status: 500, calls: ["recipes.listForProject"] },
   "projectRecipes.add": { status: 500, calls: ["recipes.create"] },
   "projectRecipes.remove": { status: 500, calls: ["recipes.remove"] },
-  "resources.list": { status: 500, calls: ["resources.listWithApprovals"] },
+  // The page's two reads run together, so both are asked before the first unimplemented one fails.
+  "resources.list": { status: 500, calls: ["resources.listWithApprovals", "resources.proposals"] },
   "resources.propose": { status: 500, calls: ["resources.propose"] },
   // The proposal's author decides who may remove it, so it is read first.
   "resources.withdraw": { status: 500, calls: ["resources.proposalById"] },
