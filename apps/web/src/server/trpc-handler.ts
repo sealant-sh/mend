@@ -51,6 +51,7 @@ export const createTrpcHandler =
       endpoint: "/trpc",
       req: request,
       router: appRouter,
+      allowMethodOverride: true,
       createContext: () => ({ headers: request.headers, apiUrl: options.apiUrl }),
     });
   };

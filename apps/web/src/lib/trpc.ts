@@ -38,15 +38,19 @@ export const UNBATCHED_PATHS: ReadonlySet<string> = new Set(["sessions.recipes"]
 
 type TrpcFetch = NonNullable<Parameters<typeof httpLink>[0]["fetch"]>;
 
-/** The client's links: one request per unbatched call, one batch for everything else. */
 export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[] => {
-  const options = { url, transformer: superjson, ...(fetch === undefined ? {} : { fetch }) };
+  const options = {
+    url,
+    transformer: superjson,
+    methodOverride: "POST",
+    ...(fetch === undefined ? {} : { fetch }),
+  } satisfies Parameters<typeof httpLink<AppRouter>>[0];
   return [
     splitLink({
       condition: (op) => UNBATCHED_PATHS.has(op.path),
       true: httpLink(options),
-      // maxURLLength keeps big batched GETs (many ids on one screen) from
-      // overflowing URL limits — tRPC splits the batch instead.
+      // A batch's URL names every procedure in it; maxURLLength splits a big
+      // one instead of overflowing URL limits.
       false: httpBatchLink({ ...options, maxURLLength: 2083 }),
     }),
   ];
