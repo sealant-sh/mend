@@ -690,6 +690,32 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
+  it.effect("puts back a lost claim once storage answers again, and sends what follows", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a", "turn-b"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterClaim = once(Effect.die("lost commit acknowledgement"));
+      world.admission.beforeRequeue = once(Effect.die("storage still down during recovery"));
+      const first = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+      for (let attempt = 0; attempt < 200 && first.pollUnsafe() === undefined; attempt += 1) {
+        yield* TestClock.adjust("1 second");
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+      }
+      yield* Fiber.join(first);
+      // The caller heard its turn was not sent, so the turn put back is withdrawn, never sent later.
+      expect(turnWith(world, "first")).toMatchObject({ status: "cancelled", providerTurnId: null });
+      yield* submit(host, "second");
+      expect(startsWith(peer, "first")).toBe(0);
+      expect(turnWith(world, "second")).toMatchObject({
+        status: "running",
+        providerTurnId: "turn-a",
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
   it.effect("puts back only the turn a failed claim took", () => {
     const world = makeConversationWorld();
     const earlier = world.seed("earlier");

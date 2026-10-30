@@ -1475,7 +1475,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         .returning()
         .pipe(Effect.orDie);
       if (row === undefined) return null;
-      yield* notify(row.sessionId);
+      yield* notifyCommitted(row.sessionId);
       return toTurn(row);
     });
 

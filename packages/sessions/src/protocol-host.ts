@@ -373,6 +373,29 @@ const toPlatformError = (operation: string, cause: unknown): SealantPlatformErro
     cause,
   });
 
+/**
+ * Runs `attempt` again, a second apart, until it succeeds, the host stops it, or `live` says
+ * the process it is for is gone. For writes that must land once storage answers again.
+ */
+const untilItLands = (
+  attempt: Effect.Effect<void>,
+  warning: string,
+  about: Readonly<Record<string, string>>,
+  live: () => boolean = () => true,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    for (;;) {
+      const done = yield* Effect.exit(attempt);
+      if (Exit.isSuccess(done)) return;
+      if (Cause.hasInterruptsOnly(done.cause)) return yield* Effect.failCause(done.cause);
+      yield* Effect.logWarning(warning).pipe(
+        Effect.annotateLogs({ ...about, failure: failureName(done.cause) }),
+      );
+      if (!live()) return;
+      yield* Effect.sleep("1 second");
+    }
+  });
+
 export const ProtocolHostLive: Layer.Layer<
   ProtocolHost,
   never,
@@ -442,38 +465,50 @@ export const ProtocolHostLive: Layer.Layer<
 
     /** Records the turn the harness took, again until it lands or the turn ended. */
     const recordSent = (turnId: AgentTurnId, payer: TurnPayer, providerTurnId: string) =>
-      Effect.gen(function* () {
-        const record = Effect.gen(function* () {
+      untilItLands(
+        Effect.gen(function* () {
           yield* conversations.setTurnPayer(turnId, payer);
           yield* conversations.setProviderTurnId(turnId, providerTurnId);
-        }).pipe(Effect.catchTag("AgentTurnNotFoundError", () => Effect.void));
-        for (;;) {
-          const recorded = yield* Effect.exit(record);
-          if (Exit.isSuccess(recorded)) return;
-          if (Cause.hasInterruptsOnly(recorded.cause))
-            return yield* Effect.failCause(recorded.cause);
-          yield* Effect.logWarning("protocol host: a sent turn was not recorded").pipe(
-            Effect.annotateLogs({ turnId, cause: String(recorded.cause) }),
-          );
-          yield* Effect.sleep("1 second");
-        }
-      });
+        }).pipe(Effect.catchTag("AgentTurnNotFoundError", () => Effect.void)),
+        "protocol host: a sent turn was not recorded",
+        { turnId },
+      );
 
+    /**
+     * After a failure mid-dispatch, the turn this pass took goes back or is settled, again until
+     * that lands: a turn left running and unbound would block the process's queue for good.
+     */
     const leaveNothingStuck = (entry: HostedProcess): Effect.Effect<void> => {
       const phase = entry.dispatch;
+      const live = () => hosted.get(entry.process.id) === entry;
       switch (phase._tag) {
         case "Idle":
         case "Written":
           return Effect.void;
         case "Claiming":
-          return requeueUnsent(entry, phase.since);
+          return untilItLands(
+            requeueUnsent(entry, phase.since),
+            "protocol host: a claimed turn was not put back",
+            { processId: entry.process.id },
+            live,
+          );
         case "Claimed":
-          return conversations.requeueClaimedTurn(phase.turn.id);
+          return untilItLands(
+            conversations.requeueClaimedTurn(phase.turn.id),
+            "protocol host: a claimed turn was not put back",
+            { turnId: phase.turn.id },
+            live,
+          );
         case "Writing":
-          return settleUnconfirmed(entry, phase.turn.id).pipe(
-            Effect.flatMap((failed) =>
-              failed ? Effect.asVoid(Effect.forkIn(dispatchNext(entry), scope)) : Effect.void,
+          return untilItLands(
+            settleUnconfirmed(entry, phase.turn.id).pipe(
+              Effect.flatMap((failed) =>
+                failed ? Effect.asVoid(Effect.forkIn(dispatchNext(entry), scope)) : Effect.void,
+              ),
             ),
+            "protocol host: an unconfirmed turn was not settled",
+            { turnId: phase.turn.id },
+            live,
           );
       }
     };
