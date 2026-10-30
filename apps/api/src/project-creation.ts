@@ -1,5 +1,3 @@
-import * as path from "node:path";
-
 import { CurrentUser } from "@mend/api-contracts";
 import { OrganizationsRepo, ProjectsRepo, UserGitAccessRepo, UserGitAuthorRepo } from "@mend/db";
 import { ProjectId } from "@mend/domain";
@@ -191,9 +189,8 @@ export const sweepUnsettledRepositories = Effect.fn("sweepUnsettledRepositories"
   const removed: Array<string> = [];
   for (const repository of yield* store.unsettledRepositories()) {
     const { storePath } = repository;
-    const row = yield* projects.byId(ProjectId.make(path.basename(path.dirname(storePath)))).pipe(
-      Effect.as("registered" as const),
-      Effect.catchTag("ProjectNotFoundError", () => Effect.succeed("absent" as const)),
+    const row = yield* projects.storeClaimed(storePath).pipe(
+      Effect.map((claimed) => (claimed ? ("registered" as const) : ("absent" as const))),
       Effect.catchCause((cause) =>
         Effect.as(
           Effect.logWarning("project creation: an unsettled repository's row was not read").pipe(

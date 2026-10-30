@@ -26,6 +26,13 @@
 // for the real API fixture setup, account selection, CLI force and DELETE request trace.
 // Observed end states: 2026-10-30.
 //
+// Retention: MEND_VERIFY_T3_RETENTION=absent|restored checks the project picker after a
+// separate removal or restore. scratch removes No project and creates the next scratch;
+// scratch-restore restores its predecessor under <name>-restored. The project/name selector is
+// MEND_VERIFY_T3_RETENTION_PROJECT (verify-fixture by default; scratch-verifier for scratch-restore).
+// See features/t3-gateway.md, "Restorable project removal", for web, CLI, disk and API steps.
+// Observed end states: 2026-10-30.
+//
 // Needs the stack's account in $P/account.json (Launch, step 7) and a Claude login connected to the
 // stack: the skill's fake one (`mend connect claude --from-stdin` with FAKES.claude), on which each
 // turn starts and ends at once with Claude's own refusal. The browser starts empty: the client keeps
@@ -285,6 +292,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     .map((device) => device.label ?? device.name)
     .filter((label) => /^t3code/.test(label ?? ""));
   note(`observed · Mend's devices (via api, HTTP ${devices.status}): ${JSON.stringify(labels)}`);
+
+  if (process.env.MEND_VERIFY_T3_RETENTION) {
+    await retentionProjects({ page, web, capture, note, api, ok, until, descriptor });
+    return;
+  }
 
   if (process.env.MEND_VERIFY_T3_REMOVAL) {
     await removalChecks({ page, web, capture, note, api, ok, until, rpc });
@@ -1807,4 +1819,86 @@ async function removalChecks({ page, web, capture, note, api, ok, until, rpc }) 
     note(`file-retained · ${JSON.stringify(file)}`);
     ok(file.body.file.contents === "keep this work\n", "no-origin file retains its contents");
   }
+}
+
+/** Restorable projects through the hosted v0.1.2 client, driven on 2026-10-30. */
+async function retentionProjects({ page, web, capture, note, api, ok, until, descriptor }) {
+  const mode = process.env.MEND_VERIFY_T3_RETENTION;
+  const name = process.env.MEND_VERIFY_T3_RETENTION_PROJECT ?? "verify-fixture";
+  const projects = async () => (await api("/api/projects")).body;
+  const shot = async (label) => {
+    // Decorative icon paths match the driver's QR heuristic; retain its other capture checks.
+    await page
+      .locator('#t3code-pierre-file-icon-sprite svg, svg[viewBox="0 0 256 257"]')
+      .evaluateAll((nodes) => {
+        for (const node of nodes) node.remove();
+      });
+    await capture(label);
+  };
+  const home = async () => {
+    await page.goto(web);
+    await page.getByRole("textbox", { name: "Message" }).waitFor();
+  };
+  if (mode === "absent" || mode === "restored") {
+    await page.goto(web);
+    await page.waitForTimeout(2000);
+    await page.getByRole("combobox", { name: "Filter threads by project", exact: true }).click();
+    await shot(`retention-${mode}-picker`);
+    const count = await page.getByRole("option", { name, exact: true }).count();
+    ok(count === (mode === "absent" ? 0 : 1), `${mode} · ${name} option count ${count}`);
+    return;
+  }
+  if (mode === "scratch-restore") {
+    const removed = (await api("/api/removed-projects")).body.find(
+      (project) => project.name === name && project.state === "removed",
+    );
+    ok(!!removed, `removed scratch ${name} exists`);
+    const result = await api(`/api/removed-projects/${removed.id}/restore`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: `${name}-restored` }),
+    });
+    note(`scratch-restored-renamed · ${JSON.stringify(result)}`);
+    ok(
+      result.status === 200 &&
+        result.body.scratchOwnerUserId === null &&
+        result.body.visibility === "private",
+      "old scratch restores as a plain private project with its new name",
+    );
+    await home();
+    await page.getByRole("combobox", { name: "Filter threads by project", exact: true }).click();
+    await page.getByRole("option", { name: `${name}-restored`, exact: true }).waitFor();
+    await shot("retention-scratch-restored-plain-project");
+    return;
+  }
+  ok(mode === "scratch", "known retention drive mode");
+  const withoutProject = async () => {
+    await home();
+    await page.keyboard.press("Control+k");
+    await page.getByPlaceholder("Search commands, projects, and threads...").waitFor();
+    await page.getByRole("option", { name: /New thread without a project/ }).click();
+    await page.getByRole("combobox").filter({ hasText: "No project" }).waitFor();
+  };
+  await withoutProject();
+  const old = await until("old scratch", async () =>
+    (await projects()).find((project) => project.scratchOwnerUserId !== null),
+  );
+  note(`scratch-before · ${JSON.stringify(old)}`);
+  await shot("retention-scratch-before");
+  const root = `/__mend__/people/${Buffer.from(old.scratchOwnerUserId, "utf8").toString("hex")}/scratch`;
+  await page.goto(
+    `${web}/settings/projects?project=${encodeURIComponent(`${descriptor.environmentId}:${root}`)}`,
+  );
+  await page.getByRole("button", { name: "Remove project", exact: true }).click();
+  await shot("retention-scratch-confirm");
+  await page.getByRole("button", { name: "Confirm", exact: true }).click();
+  await until("scratch removed", async () => (await api(`/api/projects/${old.id}`)).status === 404);
+  note(`scratch-removed · ${JSON.stringify(await api("/api/removed-projects"))}`);
+  await withoutProject();
+  const next = await until("new scratch", async () =>
+    (await projects()).find((project) => project.scratchOwnerUserId !== null),
+  );
+  ok(next.id !== old.id, "next No project creates another scratch project");
+  note(`scratch-next · ${JSON.stringify(next)}`);
+  await shot("retention-scratch-new");
 }

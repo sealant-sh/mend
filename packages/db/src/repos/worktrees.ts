@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, WorktreeId, type ProjectId, type Sha } from "@mend/domain";
 import { Worktree, WorktreeHandoff } from "@mend/domain/workbench";
-import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -51,7 +51,7 @@ export class WorktreesRepo extends Context.Service<
      * The delta pack every handoff seed names. Retention keeps each while its row stands: before
      * capture 0 is laid down nothing else names it, and capture 0 keeps it after.
      */
-    readonly handoffPacks: () => Effect.Effect<ReadonlyArray<string>>;
+    readonly handoffPacks: (excludingProject?: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
     /** Directory names are the store-path key pre-pivot rows are matched by. */
     readonly byDirectory: (
       projectId: ProjectId,
@@ -168,11 +168,20 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return row === undefined ? null : toWorktree(row);
       });
 
-      const handoffPacks = Effect.fn("WorktreesRepo.handoffPacks")(function* () {
+      const handoffPacks = Effect.fn("WorktreesRepo.handoffPacks")(function* (
+        excludingProject?: ProjectId,
+      ) {
         const rows = yield* db
           .select({ deltaPack: sql<string>`${worktrees.handoff}->>'deltaPack'` })
           .from(worktrees)
-          .where(isNotNull(worktrees.handoff))
+          .where(
+            and(
+              isNotNull(worktrees.handoff),
+              excludingProject === undefined
+                ? undefined
+                : ne(worktrees.projectId, excludingProject),
+            ),
+          )
           .pipe(Effect.orDie);
         return rows.map((row) => row.deltaPack);
       });

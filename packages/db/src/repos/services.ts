@@ -32,6 +32,7 @@ import {
   services,
   sessionProcesses,
 } from "../schema/workbench.ts";
+import { sessionInListedProject } from "./projects.ts";
 
 export interface NewService {
   readonly id?: ServiceId;
@@ -258,6 +259,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         const rows = yield* db
           .select()
           .from(services)
+          .where(sessionInListedProject(db, services.sessionId))
           .orderBy(desc(services.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toService);

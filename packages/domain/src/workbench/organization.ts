@@ -125,8 +125,8 @@ export const canManageProject = (project: ProjectTenancy, viewer: Viewer): boole
   (viewer.role === "owner" || project.createdByUserId === viewer.userId);
 
 /**
- * Removing a project stops every session in it, teammates' included, so it is narrower than
- * managing it: an owner, or the creator of a project nobody else can see.
+ * Removing, restoring or purging a shared project belongs to an organization owner;
+ * a private project belongs to its creator. A member-creator cannot purge shared work.
  */
 export const canRemoveProject = (project: ProjectTenancy, viewer: Viewer): boolean =>
   canSeeProject(project, viewer) &&

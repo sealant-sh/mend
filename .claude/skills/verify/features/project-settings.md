@@ -16,7 +16,8 @@ and `Landing` panels for the operator only.
   project.
 - `settings-landing` sets `Land when a turn completes` per project.
 - `settings-visibility` makes a project `private` or `shared` (owners only).
-- `settings-remove` removes the project and its store copy with a two-step confirm.
+- `settings-remove` removes the project from listed projects while retaining its files and history.
+- `settings-retention` restores a removed project or purges it with name confirmation.
 - `settings-org-defaults` lets owners pick `Instance · <on|off>`, `On` or `Off` per switch for the
   organization; members read the value and its source.
 - `settings-instance-defaults` lets the operator set the instance's `On`/`Off` for each switch.
@@ -92,12 +93,16 @@ Preconditions:
   `shared` reports `aria-pressed="true"`. Choose `private` to restore it.
 - **Remove the project.** Use a disposable project (`mend adopt <repo-url> --name <project>-rm`). On
   its Setup tab run `await page.getByRole("button", { name: "Remove project…" }).click()`. The
-  button now reads `Really remove project and store copy?` and the line
-  `Stops live sessions, deletes sessions and reviews, and removes the store copy. The origin repository is untouched.`
-  appears. Run
-  `await page.getByRole("button", { name: "Really remove project and store copy?" }).click()`. It
-  reads `Removing…`, then the browser lands on `/projects`. `mend projects` no longer lists
-  `<project>-rm`.
+  button now reads `Remove project? It can be restored.` and explains that files and history are
+  kept, with restore at Projects → Removed projects. Click the armed button. The browser lands on
+  `/projects`; the listed-project directory omits it. Expand Removed projects and click Restore
+  within its `article`. Reload: the project is listed again. Purge is a separate action requiring
+  its exact name. Shared projects require an organization owner; private projects require their
+  creator. The full retention drive, CLI commands and evidence are in
+  [T3 gateway → Restorable project removal](./t3-gateway.md#restorable-project-removal). Observed
+  2026-10-30 for `st-verify-retention-control`:
+  `/var/tmp/t3s1-retention-verify.3CxTpp/evidence/web/remove-control/`, captures
+  `web-removal-confirm`, `web-removed-control` and `web-restored-control`.
 - **Proof.** ARIA snapshots and screenshots of `section("Landing")` before and after `off`, of the
   `Defaults · <organization>` panel, and of the remove confirmation; the `mend claude` launch
   transcripts with the automatic landing lines; the `mend sessions --all --json` output for

@@ -311,10 +311,10 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
       const project = yield* projects
         .byId(session.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
-      const latestSender =
-        project === null || ownerOnly
-          ? null
-          : yield* latestSenderWhoSees(organizations, project, turns);
+      if (project === null) return;
+      const latestSender = ownerOnly
+        ? null
+        : yield* latestSenderWhoSees(organizations, project, turns);
       const slackThread = yield* slackReachOf(slackThreads, slackInstalls, session, project);
       const targets = yield* pushTargets(devices, notificationSettings, session, latestSender, {
         kind,

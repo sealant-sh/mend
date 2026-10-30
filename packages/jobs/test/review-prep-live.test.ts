@@ -31,7 +31,7 @@ import {
 import { makeMemoryCaptureStore } from "@mend/sessions/testing";
 import { BlobStore, GitError } from "@mend/store";
 import { buildManifest } from "@mend/store/testing";
-import { Deferred, Effect, Fiber, Layer, Queue, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, Logger, Queue, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { type Enqueued, JobRunner, type JobSpec } from "../src/job-runner.ts";
@@ -190,6 +190,8 @@ interface Options {
   readonly read?: "files" | "empty" | "git-error";
   readonly missingChange?: boolean;
   readonly noOwner?: boolean;
+  /** The session's project was removed: it reads as gone. */
+  readonly removed?: boolean;
   readonly blockedJob?: {
     readonly entered: Deferred.Deferred<void>;
     readonly release: Deferred.Deferred<void>;
@@ -234,7 +236,7 @@ const makeWorld = (events: Events, options: Options) => {
     }),
     Layer.mock(ProjectsRepo, {
       byId: (id) =>
-        id === PROJECT
+        id === PROJECT && options.removed !== true
           ? Effect.succeed(project)
           : Effect.fail(new ProjectNotFoundError({ projectId: id })),
     }),
@@ -334,6 +336,7 @@ type World = ReturnType<typeof makeWorld>;
 const withWorld = <E>(
   options: Options,
   work: (world: World, head: string | null) => Effect.Effect<void, E>,
+  logs: Array<string> = [],
 ) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -349,7 +352,12 @@ const withWorld = <E>(
         }),
       );
       expect(events.closed()).toBe(true);
-    }).pipe(Effect.scoped),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Logger.layer([Logger.make((entry) => logs.push(String(Logger.formatJson.log(entry))))]),
+      ),
+    ),
   );
 const expectedPasses: ReadonlyArray<JobSpec> = [
   {
@@ -475,4 +483,23 @@ describe("ReviewPrepLive event worker", () => {
         expect(world.jobs).toEqual(expectedPasses);
       }),
     ));
+
+  it("skips a session of a removed project quietly when it settles", () => {
+    const logs: Array<string> = [];
+    return withWorld(
+      { removed: true, captured: true },
+      (world) =>
+        Effect.gen(function* () {
+          world.setSession({ status: "completed", settledAt: NOW });
+          yield* world.publish();
+          expect({ jobs: world.jobs, queued: world.queued, reads: world.reads }).toEqual({
+            jobs: [],
+            queued: [],
+            reads: [],
+          });
+          expect(logs.filter((line) => line.includes("review prep"))).toEqual([]);
+        }),
+      logs,
+    );
+  });
 });

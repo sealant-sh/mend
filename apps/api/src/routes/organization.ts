@@ -277,7 +277,14 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         const found = yield* ownership(ORGANIZATION);
         const members = yield* (yield* OrganizationsRepo).members(found.organization.id);
         const current = new Set(members.map((member) => member.userId));
-        const projects = yield* (yield* ProjectsRepo).listForOrganization(found.organization.id);
+        const repo = yield* ProjectsRepo;
+        // A removed one too: taken over, it is its new creator's to Restore or purge.
+        const projects = [
+          ...(yield* repo.listForOrganization(found.organization.id)),
+          ...(yield* repo.removedForOrganization(found.organization.id)).map(
+            ({ project }) => project,
+          ),
+        ];
         return projects.filter(
           (project) => project.createdByUserId === null || !current.has(project.createdByUserId),
         );
@@ -292,7 +299,13 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         const projects = yield* ProjectsRepo;
         const project = yield* projects
           .byId(params.id)
-          .pipe(Effect.catchTag("ProjectNotFoundError", () => new NotFound({ id: params.id })));
+          .pipe(
+            Effect.catchTag("ProjectNotFoundError", () =>
+              Effect.flatMap(projects.removedById(params.id), (kept) =>
+                kept === null ? new NotFound({ id: params.id }) : Effect.succeed(kept.project),
+              ),
+            ),
+          );
         if (project.organizationId !== found.organization.id) {
           return yield* new NotFound({ id: params.id });
         }

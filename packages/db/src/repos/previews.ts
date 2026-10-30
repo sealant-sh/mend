@@ -36,6 +36,7 @@ import {
   sessionProcesses,
   worktrees,
 } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 import { toService } from "./services.ts";
 import { toSessionProcess } from "./session-processes.ts";
 import { uniqueViolationConstraint } from "./unique-violation.ts";
@@ -362,7 +363,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
               const [parent] = yield* tx
                 .select({ projectId: projects.id })
                 .from(projects)
-                .innerJoin(worktrees, eq(worktrees.projectId, projects.id))
+                .innerJoin(worktrees, and(projectListed, eq(worktrees.projectId, projects.id)))
                 .where(eq(worktrees.id, id))
                 .for("key share", { of: projects });
               const [worktree] = yield* tx

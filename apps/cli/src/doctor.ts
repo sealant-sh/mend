@@ -16,6 +16,7 @@ import {
   type DockerStopReading,
   observeHostDockerStop,
 } from "./docker-shutdown.ts";
+import { formatBytes } from "./doctor-bundle.ts";
 import { redactCredentials } from "./shared.ts";
 
 /**
@@ -463,6 +464,19 @@ const answeredServer = async (
 };
 
 /** Every fact the checklist prints, in the order a first run needs them. */
+/** What removed projects keep on disk, and how much of it another project's captures share. */
+export const removedDiskWords = (disk: {
+  readonly bytes: number | null;
+  readonly sharedBytes?: number | null;
+}): string => {
+  if (disk.bytes === null) return "disk usage unread";
+  const shared =
+    disk.sharedBytes === undefined || disk.sharedBytes === null || disk.sharedBytes === 0
+      ? ""
+      : `, ${formatBytes(disk.sharedBytes)} of it shared with other projects and kept by purge`;
+  return `${formatBytes(disk.bytes)} on disk${shared}`;
+};
+
 export const runChecks = async (
   config: DoctorConfig,
   probes: DoctorProbes,
@@ -635,6 +649,20 @@ export const runChecks = async (
     }
   }
 
+  const retained = signedIn
+    ? await getJson<{
+        readonly projects: number;
+        readonly bytes: number | null;
+        readonly sharedBytes?: number | null;
+      }>(config, "/removed-projects/disk")
+    : null;
+  if (retained?.value !== null && retained?.value !== undefined)
+    checks.push({
+      label: "removed projects",
+      state: "ok",
+      detail: `${retained.value.projects} kept · ${removedDiskWords(retained.value)} · kept indefinitely`,
+      fix: "mend projects removed",
+    });
   const adopted = projects === null ? null : projects.value;
   if (adopted === null) checks.push(notChecked("projects"));
   else if (adopted.length === 0) {

@@ -16,13 +16,18 @@ import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vitest";
 
-import { UpgradeTicketExchangeGroupLive } from "./upgrade-tickets.ts";
+import { TerminalProjects, UpgradeTicketExchangeGroupLive } from "./upgrade-tickets.ts";
 
 const exchangeApi = HttpApiBuilder.layer(
   HttpApi.make("mend").add(upgradeTicketExchangeGroup).prefix("/api"),
 ).pipe(Layer.provide(UpgradeTicketExchangeGroupLive), Layer.provide(HttpServer.layerServices));
+/** Every terminal here belongs to a listed project: these tests are about deadlines. */
+const listedTerminals: TerminalProjects["Service"] = { listed: () => Effect.succeed(true) };
 const send = (
-  handler: (request: Request, context: Context.Context<UpgradeTicketsRepo>) => Promise<Response>,
+  handler: (
+    request: Request,
+    context: Context.Context<UpgradeTicketsRepo | TerminalProjects>,
+  ) => Promise<Response>,
   context: Context.Context<UpgradeTicketsRepo>,
   ticket: string,
 ) =>
@@ -32,7 +37,7 @@ const send = (
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ticket, session: "s1" }),
     }),
-    context,
+    Context.add(context, TerminalProjects, listedTerminals),
   );
 const ticketOf = (body: unknown, kind: "ticket" | "renew") => {
   if (body === null || typeof body !== "object") throw new Error("Missing exchange body");

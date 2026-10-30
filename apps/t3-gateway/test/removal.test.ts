@@ -498,6 +498,42 @@ describe("Removing a project from t3code", () => {
       ...(force === undefined ? {} : { force }),
     });
 
+  it.live("a restored project and its same sessions return to T3 Code", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        const { rpc } = yield* pairAndConnect(mend, "RESTORE");
+        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+        yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* remove(rpc);
+        yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "project.removed" }> =>
+            item.kind === "project.removed" && item.projectId === "project-1",
+        );
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.emit({ type: "project", projectId: "project-1" });
+        yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "project.updated" }> =>
+            item.kind === "project.updated",
+          "4 seconds",
+        );
+        yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "thread.updated" }> =>
+            item.kind === "thread.updated",
+          "4 seconds",
+        );
+        assert.deepStrictEqual(
+          deletes(mend).map((call) => call.path),
+          ["/api/projects/project-1"],
+        );
+      }),
+    ),
+  );
+
   it.live("removes the project in Mend without force, and its threads leave the shell", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

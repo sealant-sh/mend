@@ -5,6 +5,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
+import { RemovalInProgress } from "./workbench-views.ts";
 
 /**
  * Organization folders (docs/adr/0003-organizations-and-tenancy.md): Mend-managed directories that
@@ -111,7 +112,7 @@ export const foldersGroup = HttpApiGroup.make("folders")
       params: { id: ProjectId },
       payload: SetProjectFoldersRequest,
       success: Schema.Array(ProjectFolderView),
-      error: [NotFound, FolderRejected],
+      error: [NotFound, FolderRejected, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

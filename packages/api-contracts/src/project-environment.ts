@@ -49,7 +49,7 @@ import {
   EnvironmentRejected,
   EnvironmentStaleWrite,
 } from "./projects.ts";
-import { StoreFailure } from "./workbench-views.ts";
+import { RemovalInProgress, StoreFailure } from "./workbench-views.ts";
 
 export const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
   .add(
@@ -65,7 +65,7 @@ export const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
       payload: ProjectEnvironmentVariableRequest,
       success: ProjectEnvironmentMutationResult,
       // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.
-      error: [NotFound, EnvironmentRejected],
+      error: [NotFound, EnvironmentRejected, RemovalInProgress],
     }),
   )
   .add(
@@ -73,7 +73,7 @@ export const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
       params: { id: ProjectId, variableId: ProjectEnvironmentVariableId },
       payload: ProjectEnvironmentVariableUpdateRequest,
       success: ProjectEnvironmentMutationResult,
-      error: [NotFound, EnvironmentRejected, EnvironmentStaleWrite],
+      error: [NotFound, EnvironmentRejected, EnvironmentStaleWrite, RemovalInProgress],
     }),
   )
   .add(
@@ -81,7 +81,7 @@ export const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
       params: { id: ProjectId, variableId: ProjectEnvironmentVariableId },
       payload: ProjectEnvironmentVariableRemoveRequest,
       success: ProjectEnvironmentMutationResult,
-      error: [NotFound, EnvironmentStaleWrite],
+      error: [NotFound, EnvironmentStaleWrite, RemovalInProgress],
     }),
   )
   .add(
@@ -89,7 +89,7 @@ export const projectEnvironmentGroup = HttpApiGroup.make("projectEnvironment")
       params: { id: ProjectId },
       payload: EnvironmentLoadRequest,
       success: EnvironmentLoadReport,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);
@@ -148,7 +148,7 @@ export const projectSecretsGroup = HttpApiGroup.make("projectSecrets")
       params: { id: ProjectId },
       payload: ProjectSecretRequest,
       success: ProjectSecretMutationResult,
-      error: [NotFound, EnvironmentRejected],
+      error: [NotFound, EnvironmentRejected, RemovalInProgress],
     }),
   )
   .add(
@@ -156,7 +156,7 @@ export const projectSecretsGroup = HttpApiGroup.make("projectSecrets")
       params: { id: ProjectId, secretId: ProjectSecretId },
       payload: ProjectSecretUpdateRequest,
       success: ProjectSecretMutationResult,
-      error: [NotFound, EnvironmentRejected, EnvironmentStaleWrite],
+      error: [NotFound, EnvironmentRejected, EnvironmentStaleWrite, RemovalInProgress],
     }),
   )
   .add(
@@ -164,7 +164,7 @@ export const projectSecretsGroup = HttpApiGroup.make("projectSecrets")
       params: { id: ProjectId, secretId: ProjectSecretId },
       payload: ProjectSecretRemoveRequest,
       success: ProjectSecretMutationResult,
-      error: [NotFound, EnvironmentStaleWrite],
+      error: [NotFound, EnvironmentStaleWrite, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);
@@ -248,14 +248,14 @@ export const projectClusterBindingsGroup = HttpApiGroup.make("projectClusterBind
       payload: ClusterBindingRequest,
       success: ClusterBindingMutationResult,
       // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.
-      error: [NotFound, ClusterBindingRejected, ClusterBindingDuplicate],
+      error: [NotFound, ClusterBindingRejected, ClusterBindingDuplicate, RemovalInProgress],
     }),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/projects/:id/cluster-bindings/:bindingId", {
       params: { id: ProjectId, bindingId: ProjectClusterBindingId },
       success: ClusterBindingMutationResult,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -263,7 +263,7 @@ export const projectClusterBindingsGroup = HttpApiGroup.make("projectClusterBind
       params: { id: ProjectId },
       payload: ClusterServiceAccountRequest,
       success: ClusterServiceAccountResult,
-      error: [NotFound, ClusterBindingRejected],
+      error: [NotFound, ClusterBindingRejected, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);
@@ -297,13 +297,13 @@ export const projectRecipesGroup = HttpApiGroup.make("projectRecipes")
       params: { id: ProjectId },
       payload: AddProjectServiceRecipe,
       success: ServiceRecipe,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/projects/:id/service-recipes/:name", {
       params: { id: ProjectId, name: Schema.String },
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

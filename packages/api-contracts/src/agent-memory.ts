@@ -11,6 +11,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
+import { RemovalInProgress } from "./workbench-views.ts";
 
 /** An import Mend refuses whole: it names the same path more than once. */
 export class AgentMemoryImportInvalid extends Schema.TaggedError<AgentMemoryImportInvalid>()(
@@ -44,7 +45,7 @@ export const agentMemoryGroup = HttpApiGroup.make("agentMemory")
       params: { id: ProjectId },
       query: { path: Schema.String },
       success: AgentMemoryRemoved,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -52,7 +53,7 @@ export const agentMemoryGroup = HttpApiGroup.make("agentMemory")
       params: { id: ProjectId },
       payload: AgentMemoryImport,
       success: AgentMemoryImported,
-      error: [NotFound, AgentMemoryImportInvalid],
+      error: [NotFound, AgentMemoryImportInvalid, RemovalInProgress],
     }),
   )
   .add(
@@ -61,7 +62,7 @@ export const agentMemoryGroup = HttpApiGroup.make("agentMemory")
       params: { id: ProjectId },
       payload: AgentMemoryImport,
       success: AgentMemoryImported,
-      error: [NotFound, AgentMemoryImportInvalid],
+      error: [NotFound, AgentMemoryImportInvalid, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

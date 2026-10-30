@@ -2,7 +2,7 @@ import { WorktreesRepo } from "@mend/db";
 import { WorktreeId } from "@mend/domain";
 import { CaptureRuntime, stampOf, WorktreeReads } from "@mend/sessions";
 import { type ChangeSummary, decodeChangeSummary, observedChangeSummaryKey } from "@mend/store";
-import { Effect, Layer, Schema } from "effect";
+import { Clock, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { JobRunner } from "./job-runner.ts";
@@ -18,6 +18,10 @@ export class SummaryObserveJob extends Schema.Class<SummaryObserveJob>("SummaryO
   worktreeId: WorktreeId,
   captureId: Schema.String,
 }) {}
+
+/** How long a purge waits for the observed summary's write: past its timeout, with room. */
+const SUMMARY_PUT_TIMEOUT_MS = 5 * 60_000;
+const SUMMARY_PUT_WINDOW_MS = 2 * SUMMARY_PUT_TIMEOUT_MS;
 
 export type SummaryObserveOutcome =
   | { readonly outcome: "observed"; readonly agreed: boolean }
@@ -134,7 +138,18 @@ export const SummaryObserverLive: Layer.Layer<
       // Agreement does not protect the posted key from a concurrent executor repost.
       const bytes = new Uint8Array(Buffer.from(JSON.stringify(observed), "utf8"));
       const key = observedChangeSummaryKey(job.worktreeId, head.n, bytes);
-      yield* capture.blobs.put(key, bytes, { ifAbsent: true }).pipe(Effect.orDie);
+      // The write goes on record first, refused once the project is removed: a purge waits it
+      // out, so its object never lands after the purge read what to delete.
+      const admitted = yield* capture.repo.recordUploadWindow(
+        job.worktreeId,
+        new Date((yield* Clock.currentTimeMillis) + SUMMARY_PUT_WINDOW_MS),
+      );
+      if (!admitted) {
+        return { outcome: "skipped", reason: "the project was removed" } as const;
+      }
+      yield* capture.blobs
+        .put(key, bytes, { ifAbsent: true })
+        .pipe(Effect.timeout(SUMMARY_PUT_TIMEOUT_MS), Effect.orDie);
       const published = yield* capture.repo.publishObservedSummary({
         worktreeId: job.worktreeId,
         captureId: job.captureId,

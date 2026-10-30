@@ -1486,6 +1486,7 @@ export const launchSkill = (
 
 /** Mutable repository state retained by one engine fixture. */
 export interface World {
+  readonly removedProjects: Set<ProjectId>;
   /** Repository timestamps follow the Clock of the engine scope that owns this world. */
   readonly clock: { now: () => Date };
   readonly projects: Map<string, Project>;
@@ -1600,6 +1601,7 @@ const newerObservation = <T extends { readonly position?: CapturePosition | null
 
 /** Create an isolated in-memory engine repository world. */
 export const makeWorld = (): World => ({
+  removedProjects: new Set(),
   clock: { now },
   projects: new Map(),
   sessions: new Map(),
@@ -1917,7 +1919,13 @@ const servicesLayer = (world: World) =>
       Effect.succeed(
         [...world.services.values()].filter((service) => service.sessionId === sessionId),
       ),
-    listAll: () => Effect.succeed([...world.services.values()]),
+    listAll: () =>
+      Effect.succeed(
+        [...world.services.values()].filter((service) => {
+          const session = world.sessions.get(service.sessionId);
+          return session !== undefined && !world.removedProjects.has(session.projectId);
+        }),
+      ),
     liveCountsForSessions: (sessionIds) =>
       Effect.sync(() => {
         const counts = new Map<SessionId, number>();
@@ -2439,6 +2447,7 @@ export const projectLinksEmptyLayer = Layer.succeed(ProjectLinksRepo, {
   create: () => Effect.die("not in test"),
   byId: (id) => Effect.fail(new ProjectLinkNotFoundError({ linkId: id })),
   listForProject: () => Effect.succeed([]),
+  listAllForProject: () => Effect.succeed([]),
   remove: () => Effect.void,
 });
 
@@ -2588,6 +2597,9 @@ export const referencesEmptyLayer = Layer.succeed(ReferencesRepo, {
 /** Shared projectsLayer fixture for engine scenarios. */
 export const projectsLayer = (world: World) =>
   Layer.succeed(ProjectsRepo, {
+    removedById: () => Effect.succeed(null),
+    removedForOrganization: () => Effect.succeed([]),
+    storeClaimed: () => Effect.succeed(true),
     byScratchOwner: () => Effect.succeed(null),
     publishInitialized: () => Effect.die("not in test"),
     create: () => Effect.die("not in test"),
@@ -2607,7 +2619,7 @@ export const projectsLayer = (world: World) =>
     setInstallEnabled: () => Effect.die("not in test"),
     byId: (id) => {
       const found = world.projects.get(id);
-      return found === undefined
+      return found === undefined || world.removedProjects.has(id)
         ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
         : Effect.succeed(found);
     },
@@ -2618,10 +2630,12 @@ export const projectsLayer = (world: World) =>
             (project) => project.organizationId === organizationId && project.name === name,
           ) ?? null,
       ),
-    listAll: () => Effect.succeed([...world.projects.values()]),
+    listAll: () =>
+      Effect.succeed(
+        [...world.projects.values()].filter((project) => !world.removedProjects.has(project.id)),
+      ),
     setAutomation: () => Effect.die("not in test"),
     setAutoLand: () => Effect.die("not in test"),
-    remove: () => Effect.die("not in test"),
   });
 
 /**
@@ -2745,7 +2759,11 @@ export const sessionsLayer = (world: World) => {
     listForProjectView: () => Effect.die("not in test"),
     viewById: () => Effect.die("not in test"),
     listUnsettled: () =>
-      Effect.succeed([...world.sessions.values()].filter((s) => s.settledAt === null)),
+      Effect.succeed(
+        [...world.sessions.values()].filter(
+          (s) => !world.removedProjects.has(s.projectId) && s.settledAt === null,
+        ),
+      ),
     setSharedControl: () => Effect.die("not in test"),
     disableSharedControlForOwner: () => Effect.succeed([]),
     listUnsettledForOwner: () => Effect.succeed([]),
@@ -2767,7 +2785,10 @@ export const sessionsLayer = (world: World) => {
     listRecentlySettled: () =>
       Effect.succeed(
         [...world.sessions.values()].filter(
-          (s) => s.settledAt !== null && s.sealantWorkspaceId !== null,
+          (s) =>
+            !world.removedProjects.has(s.projectId) &&
+            s.settledAt !== null &&
+            s.sealantWorkspaceId !== null,
         ),
       ),
     setSealantIds: (id, sealantRunId, sealantWorkspaceId) =>
@@ -2808,7 +2829,12 @@ export const sessionsLayer = (world: World) => {
     listSettledUnclassified: (limit) =>
       Effect.succeed(
         [...world.sessions.values()]
-          .filter((session) => session.settledAt !== null && session.hasTranscript === null)
+          .filter(
+            (session) =>
+              !world.removedProjects.has(session.projectId) &&
+              session.settledAt !== null &&
+              session.hasTranscript === null,
+          )
           .slice(0, limit),
       ),
     setReferenceMounts: (id: string, mounts: ReadonlyArray<SessionReferenceMount>) =>
@@ -3802,6 +3828,8 @@ interface EngineOptions {
   readonly pagesLayer?: Layer.Layer<SessionPagesRepo>;
   /** Every log line the engine writes, in order, when a test reads them. */
   readonly logs?: Array<string>;
+  /** Every log line with its level, when a test asserts what was warned. */
+  readonly leveledLogs?: Array<{ readonly level: string; readonly message: string }>;
   /** Every channel token issue and revocation (`issue:<launch>`, `revoke:<session>`, `revokeLaunch:<launch>`). */
   readonly tokenEvents?: Array<string>;
   /** The channel tokens, when a test shares them with a network channel of its own. */
@@ -4142,12 +4170,15 @@ export const withPreparedEngineEffect = <B, A, E>(
       ),
     );
     const logs = options.logs;
+    const leveledLogs = options.leveledLogs;
     const loggerLayer =
-      logs === undefined
+      logs === undefined && leveledLogs === undefined
         ? Layer.empty
         : Logger.layer([
-            Logger.make(({ message }) => {
-              logs.push(Array.isArray(message) ? message.map(String).join(" ") : String(message));
+            Logger.make(({ message, logLevel }) => {
+              const line = Array.isArray(message) ? message.map(String).join(" ") : String(message);
+              logs?.push(line);
+              leveledLogs?.push({ level: logLevel, message: line });
             }),
           ]);
     // The engine lives in its own scope, closed the moment `work` returns and before anything

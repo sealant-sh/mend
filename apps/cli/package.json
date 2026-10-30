@@ -52,6 +52,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/local-git": "workspace:*",
     "@mend/network": "workspace:*",

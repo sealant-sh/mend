@@ -7,6 +7,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { text as streamText } from "node:stream/consumers";
 
+import { ProjectPurgeReport, ProjectRemovalReport } from "@mend/api-contracts";
+import { RemovedProject, Project } from "@mend/domain/workbench";
 import {
   AMBIENT_REMOVED_GUIDANCE,
   agentMemoryPathOf,
@@ -27,6 +29,7 @@ import {
 } from "@mend/domain/workbench";
 import { type AgentShareHandle, shareAgent, startAgentShare } from "@mend/local-git/agent-share";
 import { tunnelListener } from "@mend/network/tunnel-client";
+import { Schema } from "effect";
 
 import { agentLoginsLine, parseAgentLoginsArgs, type AgentLoginsDto } from "./agent-logins.ts";
 import {
@@ -100,6 +103,7 @@ import {
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand, type T3GatewayDto } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
+import { parseProjectRetentionArgs } from "./project-retention.ts";
 import { isTerminalGone, leaveRawMode } from "./raw-mode.ts";
 import {
   approvedVersionLine,
@@ -5663,6 +5667,50 @@ interface ProjectsJson {
 }
 
 const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  if (args[0] !== undefined && ["rm", "removed", "restore", "purge"].includes(args[0])) {
+    const command = parseProjectRetentionArgs(args);
+    if ("error" in command) return fail(command.error);
+    if (command.command === "removed") {
+      const rows = Schema.decodeUnknownSync(Schema.toCodecJson(Schema.Array(RemovedProject)))(
+        await api<unknown>(config, "GET", "/removed-projects"),
+      );
+      if (command.json) return printJson({ version: 1, removed: rows });
+      for (const row of rows)
+        say(
+          `${row.id}  ${row.name} · ${row.state} · ${row.removedAt.toISOString()}${row.rights.restore ? " · Restore available" : ""}`,
+        );
+      if (rows.length === 0) say("No removed projects.");
+      return;
+    }
+    const id = encodeURIComponent(command.id);
+    if (command.command === "rm") {
+      const result = Schema.decodeUnknownSync(Schema.toCodecJson(ProjectRemovalReport))(
+        await api<unknown>(config, "DELETE", `/projects/${id}`),
+      );
+      if (command.json) return printJson(result);
+      return say(result.message);
+    }
+    if (command.command === "restore") {
+      const result = Schema.decodeUnknownSync(Schema.toCodecJson(Project))(
+        await api<unknown>(
+          config,
+          "POST",
+          `/removed-projects/${id}/restore`,
+          command.name === undefined ? {} : { name: command.name },
+        ),
+      );
+      if (command.json) return printJson(result);
+      return say(`Restored ${result.name} · ${result.visibility}`);
+    }
+    const result = Schema.decodeUnknownSync(Schema.toCodecJson(ProjectPurgeReport))(
+      await api<unknown>(config, "POST", `/removed-projects/${id}/purge`, {
+        confirm: command.confirm,
+      }),
+    );
+    if (command.json) return printJson(result);
+    return say(result.message);
+  }
+
   const unknown = args.find((arg) => arg !== "--json");
   if (unknown !== undefined) return fail(`unknown argument ${unknown} · ${usageOf("projects")}`);
   const [projects, active] = await Promise.all([

@@ -55,6 +55,10 @@ export class HotWorkspacesRepo extends Context.Service<
     readonly create: (entry: NewHotWorkspace) => Effect.Effect<HotWorkspace>;
     readonly byId: (id: SessionId) => Effect.Effect<HotWorkspace | null>;
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<HotWorkspace>>;
+    /**
+     * Every standby, a removed project's included: the sweep drains those (their project reads
+     * as gone), retrying until each is.
+     */
     readonly listAll: () => Effect.Effect<ReadonlyArray<HotWorkspace>>;
     readonly setReady: (id: SessionId, stamps: HotWorkspaceStamps) => Effect.Effect<void>;
     /** Capture mode: the base the standby's plan was prepared from (`hot-pool.ts`). */

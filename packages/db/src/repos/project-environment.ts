@@ -10,13 +10,14 @@ import {
   validateProjectEnvironmentName,
   validateProjectEnvironmentValue,
 } from "@mend/domain/workbench";
-import { asc, eq, sql as drizzleSql } from "drizzle-orm";
+import { and, asc, eq, sql as drizzleSql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { projectEnvironmentVariables, projects } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 import { ProjectNotFoundError } from "./projects.ts";
 
 /** Name or value refused by the policy. Field + rule + wording only — never the value. */
@@ -198,7 +199,7 @@ const lockProject = (tx: Tx, projectId: ProjectId) =>
     const [row] = yield* tx
       .select({ environmentRevision: projects.environmentRevision })
       .from(projects)
-      .where(eq(projects.id, projectId))
+      .where(and(projectListed, eq(projects.id, projectId)))
       .for("update")
       .pipe(Effect.orDie);
     if (row === undefined) return yield* new ProjectNotFoundError({ projectId });
@@ -237,7 +238,7 @@ const bumpAggregate = (tx: Tx, projectId: ProjectId) =>
         environmentRevision: drizzleSql`${projects.environmentRevision} + 1`,
         updatedAt: yield* DateTime.nowAsDate,
       })
-      .where(eq(projects.id, projectId))
+      .where(and(projectListed, eq(projects.id, projectId)))
       .returning({ environmentRevision: projects.environmentRevision })
       .pipe(Effect.orDie);
     if (row === undefined) return yield* Effect.die("aggregate bump lost the project row");
@@ -267,7 +268,7 @@ export const ProjectEnvironmentRepoLive: Layer.Layer<
           projectEnvironmentVariables,
           eq(projectEnvironmentVariables.projectId, projects.id),
         )
-        .where(eq(projects.id, projectId))
+        .where(and(projectListed, eq(projects.id, projectId)))
         .orderBy(asc(projectEnvironmentVariables.name))
         .pipe(Effect.orDie);
       const first = rows[0];

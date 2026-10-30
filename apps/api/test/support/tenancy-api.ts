@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { ProjectNameTakenError } from "@mend/db";
 import {
   AuditEventsRepo,
   MemberRevocationsRepo,
@@ -40,6 +41,7 @@ import {
   RemovalFenced,
   RemovalFenceId,
   RemovalFencesRepo,
+  RemovedProjectRefused,
   SessionAdmissionId,
   SetupRunsRepo,
   ReviewCommentsRepo,
@@ -66,7 +68,8 @@ import {
   makeUpgradeTicketsMemory,
   UpgradeTicketsRepo,
 } from "@mend/db";
-import type { DotfilesRepository, SessionId } from "@mend/domain";
+import { AuditEventId, type DotfilesRepository, type SessionId } from "@mend/domain";
+import { AuditEvent, canRemoveProject, Project } from "@mend/domain/workbench";
 import {
   emptyHarnessModelCatalog,
   type Session,
@@ -151,6 +154,7 @@ import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
 import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
+import { TerminalProjects, TerminalProjectsLive } from "../../src/routes/upgrade-tickets.ts";
 import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
 import { RawReadStallLimit } from "../../src/routes/worktrees.ts";
@@ -286,6 +290,8 @@ export const createTenancyApi = async (
     readonly rawReadStall?: Duration.Duration;
     /** Runs as a removal takes its mark, before anything else it reads: for races. */
     readonly beforeTake?: Effect.Effect<void>;
+    /** In place of the embed exchange's lifecycle read: for races after it answered. */
+    readonly terminalProjects?: TerminalProjects["Service"];
     readonly implement?: {
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
@@ -317,6 +323,7 @@ export const createTenancyApi = async (
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
       readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
+      readonly links?: Layer.PartialEffectful<ProjectLinksRepo["Service"]>;
       /** In place of the in-memory removal marks: Postgres's (`removal-postgres.ts`), or a part. */
       readonly removalFences?: Partial<RemovalFencesRepo["Service"]>;
       readonly setupRuns?: Layer.PartialEffectful<SetupRunsRepo["Service"]>;
@@ -350,7 +357,20 @@ export const createTenancyApi = async (
   const ticketsLayer = Layer.mergeAll(
     Layer.succeed(
       UpgradeTicketsRepo,
-      makeUpgradeTicketsMemory(options.clock, options.revokedCredentials),
+      makeUpgradeTicketsMemory(options.clock, options.revokedCredentials, (scope) => {
+        const pairs = new Set(scope.split("&"));
+        const owners = [
+          ...[...world.sessions.values()].filter((session) => pairs.has(`session=${session.id}`)),
+          ...[...world.processes.values()].flatMap((process) =>
+            pairs.has(`process=${process.id}`) ? [world.sessions.get(process.sessionId)] : [],
+          ),
+        ];
+        return owners.some(
+          (session) => session !== undefined && world.retainedProjects.has(session.projectId),
+        )
+          ? Effect.die(new RemovedProjectRefused("the ticket's project was removed"))
+          : Effect.void;
+      }),
     ),
     Layer.succeed(UrlBearers, { mode: options.urlBearers ?? "accept" }),
     Layer.succeed(PageViewTokens, options.pageViewTokens ?? clearPageViewTokens),
@@ -366,7 +386,101 @@ export const createTenancyApi = async (
     { readonly phase: "checking" | "deleting"; readonly id: string }
   >();
   const marked = (key: string) => removalMarks.has(key);
+  /** Each purged project's `project.purged` audit entry, written as Postgres writes it with the purge. */
+  const purged = new Map<string, AuditEvent>();
+  /** `canRemoveProject` as the person's membership reads at the commit, as Postgres asks it. */
+  const mayRemove = (project: Project, userId: string) => {
+    const viewer = world.viewerOf(userId);
+    return viewer !== null && canRemoveProject(project, viewer);
+  };
   const inMemoryFences: RemovalFencesRepo["Service"] = {
+    keep: (id, mark, userId) =>
+      Effect.sync(() => {
+        const project = world.projects.get(id);
+        if (project === undefined || removalMarks.get(`project:${id}`)?.id !== mark)
+          return "lost" as const;
+        if (!mayRemove(project, userId)) return "forbidden" as const;
+        world.retainedProjects.set(id, {
+          project,
+          removedAt: new Date(),
+          removedByUserId: userId,
+          state: "removed",
+        });
+        return "kept" as const;
+      }),
+    restore: (id, userId, name) =>
+      Effect.gen(function* () {
+        const kept = world.retainedProjects.get(id);
+        if (kept === undefined)
+          return world.projects.has(id) ? ("listed" as const) : ("gone" as const);
+        if (!mayRemove(kept.project, userId)) return "forbidden" as const;
+        if (kept.state === "purging") return "purging" as const;
+        if (kept.state === "recovery-required") return "legacy" as const;
+        const desiredName = name ?? kept.project.name;
+        if (
+          [...world.projects.values()].some(
+            (p) =>
+              !world.retainedProjects.has(p.id) &&
+              p.organizationId === kept.project.organizationId &&
+              p.name === desiredName,
+          )
+        )
+          return yield* new ProjectNameTakenError({ name: desiredName });
+        const scratchTaken = [...world.projects.values()].some(
+          (p) =>
+            !world.retainedProjects.has(p.id) &&
+            p.scratchOwnerUserId !== null &&
+            p.scratchOwnerUserId === kept.project.scratchOwnerUserId,
+        );
+        world.addProject(
+          new Project({
+            ...kept.project,
+            name: desiredName,
+            scratchOwnerUserId: scratchTaken ? null : kept.project.scratchOwnerUserId,
+          }),
+        );
+        world.retainedProjects.delete(id);
+        removalMarks.delete(`project:${id}`);
+        return "restored" as const;
+      }),
+    finishPurge: (id, mark, userId) =>
+      Effect.sync(() => {
+        if (removalMarks.get(`project:${id}`)?.id !== mark) return false;
+        world.calls.push(`projects.purge:${id}`);
+        const kept = world.retainedProjects.get(id);
+        if (kept !== undefined)
+          purged.set(
+            id,
+            new AuditEvent({
+              id: AuditEventId.make(`purged-${id}`),
+              organizationId: kept.project.organizationId,
+              actorUserId: userId,
+              action: "project.purged",
+              subjectType: "project",
+              subjectId: id,
+              data: { name: kept.project.name, visibility: kept.project.visibility },
+              createdAt: new Date(),
+            }),
+          );
+        world.purgeProject(id);
+        removalMarks.delete(`project:${id}`);
+        return true;
+      }),
+    takePurge: (id, userId, confirmed) =>
+      Effect.sync((): Effect.Success<ReturnType<RemovalFencesRepo["Service"]["takePurge"]>> => {
+        const kept = world.retainedProjects.get(id);
+        if (kept === undefined) return { _tag: "gone" };
+        if (!mayRemove(kept.project, userId)) return { _tag: "forbidden" };
+        if (
+          kept.project.name !== confirmed.name ||
+          kept.removedAt.getTime() !== confirmed.removedAt.getTime()
+        )
+          return { _tag: "changed" };
+        const mark = RemovalFenceId.make(`rmv_${crypto.randomUUID()}`);
+        world.retainedProjects.set(id, { ...kept, state: "purging" });
+        removalMarks.set(`project:${id}`, { phase: "deleting", id: mark });
+        return { _tag: "finish", id: mark };
+      }),
     take: (row) =>
       Effect.andThen(
         options.beforeTake ?? Effect.void,
@@ -468,7 +582,15 @@ export const createTenancyApi = async (
       recording(
         AuditEventsRepo,
         "audit",
-        options.implement?.audit ?? { record: () => Effect.void },
+        {
+          record: () => Effect.void,
+          latest: ({ organizationId, action, subjectId }) =>
+            Effect.sync(() => {
+              const event = action === "project.purged" ? purged.get(subjectId) : undefined;
+              return event?.organizationId === organizationId ? event : null;
+            }),
+          ...options.implement?.audit,
+        },
         calls,
       ),
       recording(BriefCommentsRepo, "briefComments", {}, calls),
@@ -488,7 +610,7 @@ export const createTenancyApi = async (
       recording(OrganizationSettingsRepo, "organizationSettings", {}, calls),
       recording(ProjectClusterBindingsRepo, "clusterBindings", {}, calls),
       recording(ProjectEnvironmentRepo, "environment", options.implement?.environment ?? {}, calls),
-      recording(ProjectLinksRepo, "links", {}, calls),
+      recording(ProjectLinksRepo, "links", options.implement?.links ?? {}, calls),
       // A session's repositories (docs/adr/0010): none in these worlds, so the detail lists none.
       recording(
         SessionRepositoriesRepo,
@@ -748,6 +870,9 @@ export const createTenancyApi = async (
     ResourcesLive,
     ProjectCreationLive,
     RemovalLive,
+    options.terminalProjects === undefined
+      ? TerminalProjectsLive
+      : Layer.succeed(TerminalProjects, options.terminalProjects),
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),

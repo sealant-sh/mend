@@ -4,7 +4,10 @@ import type { StoppedRemoval } from "@mend/domain/workbench";
 import { Effect, Fiber, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { notifyEvent } from "../events.ts";
+import { ProjectNameTakenError } from "./projects.ts";
 import { isDriverError } from "./unique-violation.ts";
+import { uniqueViolationConstraint } from "./unique-violation.ts";
 
 /** One removal attempt's mark: only its holder advances or clears it. */
 export const RemovalFenceId = Schema.String.pipe(Schema.brand("RemovalFenceId"));
@@ -44,6 +47,7 @@ export const REMOVAL_FENCE_RENEW_EVERY = "30 seconds";
  */
 export const REMOVAL_FENCED_SQLSTATE = "MRFEN";
 export const REMOVAL_STOPPED_SQLSTATE = "MRFES";
+export const REMOVED_PROJECT_SQLSTATE = "MRFRM";
 
 /**
  * New work refused before it reached the database, as its triggers would have refused it: the
@@ -53,9 +57,19 @@ export class RemovalFenced extends Error {
   readonly code = REMOVAL_FENCED_SQLSTATE;
 }
 
+/** A write into a removed project refused before it reached the database, as its triggers would. */
+export class RemovedProjectRefused extends Error {
+  readonly code = REMOVED_PROJECT_SQLSTATE;
+}
+
 /** Whether a failed query was new work refused by a removal's mark. */
 export const isRemovalFenced = (error: unknown): boolean =>
-  isDriverError(error, REMOVAL_FENCED_SQLSTATE) || isDriverError(error, REMOVAL_STOPPED_SQLSTATE);
+  isDriverError(error, REMOVAL_FENCED_SQLSTATE) ||
+  isDriverError(error, REMOVAL_STOPPED_SQLSTATE) ||
+  isRemovedProject(error);
+
+export const isRemovedProject = (error: unknown): boolean =>
+  isDriverError(error, REMOVED_PROJECT_SQLSTATE);
 
 /** Whether the mark that refused it is a deletion that stopped partway. */
 export const isRemovalStopped = (error: unknown): boolean =>
@@ -72,6 +86,43 @@ export const isRemovalStopped = (error: unknown): boolean =>
 export class RemovalFencesRepo extends Context.Service<
   RemovalFencesRepo,
   {
+    /**
+     * `checking` → `removed` under mark `mark`, with its audit entry, revoking what opens the
+     * project. `forbidden`: `userId` may no longer remove it (`canRemoveProject`), read under the
+     * lock of their membership. `lost`: the mark lapsed or went to another removal.
+     */
+    readonly keep: (
+      id: ProjectId,
+      mark: RemovalFenceId,
+      userId: string,
+    ) => Effect.Effect<"kept" | "lost" | "forbidden">;
+    readonly restore: (
+      id: ProjectId,
+      userId: string,
+      name?: string,
+    ) => Effect.Effect<
+      "restored" | "listed" | "purging" | "legacy" | "gone" | "forbidden",
+      ProjectNameTakenError
+    >;
+    /**
+     * Takes the purge's mark, with its `project.purge_started` entry, only while the project is
+     * still the removal `confirmed` was read from: that name, removed at that moment. `changed`:
+     * it was restored, renamed or removed again since, and the person confirmed something else.
+     */
+    readonly takePurge: (
+      id: ProjectId,
+      userId: string,
+      confirmed: { readonly name: string; readonly removedAt: Date },
+    ) => Effect.Effect<FenceTaken | { readonly _tag: "forbidden" } | { readonly _tag: "changed" }>;
+    /**
+     * Deletes the purged project's row, its exclusive context snapshots and its audit entry in one
+     * transaction, only while `mark` is still the purge's and fresh. False: it is not.
+     */
+    readonly finishPurge: (
+      id: ProjectId,
+      mark: RemovalFenceId,
+      userId: string,
+    ) => Effect.Effect<boolean>;
     readonly take: (row: FencedRow) => Effect.Effect<FenceTaken>;
     /**
      * Keeps the mark fresh while its holder checks or deletes; false once the mark is no longer
@@ -79,10 +130,14 @@ export class RemovalFencesRepo extends Context.Service<
      */
     readonly renew: (row: FencedRow, id: RemovalFenceId) => Effect.Effect<boolean>;
     /**
-     * `checking` → `deleting`, only while the mark is still `id` and fresh. False: the mark lapsed,
-     * or another removal took it over; nothing may be deleted.
+     * A worktree's `checking` → `deleting`, only while the mark is still `id` and fresh. False:
+     * the mark lapsed, or another removal took it over; nothing may be deleted. A project is never
+     * committed: removal keeps it (`keep`), and a purge marks it `deleting` (`takePurge`).
      */
-    readonly commit: (row: FencedRow, id: RemovalFenceId) => Effect.Effect<boolean>;
+    readonly commit: (
+      row: Extract<FencedRow, { readonly kind: "worktree" }>,
+      id: RemovalFenceId,
+    ) => Effect.Effect<boolean>;
     /** Clears the mark, only while it is still `id`. */
     readonly release: (row: FencedRow, id: RemovalFenceId) => Effect.Effect<void>;
     /**
@@ -163,6 +218,176 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
 
+      /** `canRemoveProject` for `by` on project `p`, as their membership reads now. */
+      const mayRemove = (by: string) => sql`EXISTS (SELECT 1 FROM organization_members m
+        WHERE m.user_id = ${by} AND m.organization_id = p.organization_id
+          AND ((p.visibility = 'private' AND p.created_by_user_id = ${by})
+               OR (p.visibility = 'shared' AND m.role = 'owner')))`;
+      /** Holds `by`'s membership, so a demotion or a removal waits for this lifecycle change. */
+      const lockMembership = (id: ProjectId, by: string) =>
+        sql`SELECT 1 FROM organization_members WHERE user_id = ${by}
+          AND organization_id = (SELECT organization_id FROM projects WHERE id = ${id}) FOR SHARE`;
+      /** The entry names the project: once purged, nothing else in the log does. */
+      const audited = (id: ProjectId, by: string, action: string) =>
+        sql`INSERT INTO audit_events (id, organization_id, actor_user_id, action, subject_type, subject_id, data)
+          SELECT ${crypto.randomUUID()}, organization_id, ${by}, ${action}, 'project', id,
+                 jsonb_build_object('name', name, 'visibility', visibility)
+          FROM projects WHERE id = ${id}`;
+
+      const keep = Effect.fn("RemovalFencesRepo.keep")(function* (
+        id: ProjectId,
+        mark: RemovalFenceId,
+        userId: string,
+      ) {
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* lockMembership(id, userId);
+              const [row] = yield* sql<{ readonly held: boolean; readonly allowed: boolean }>`
+                SELECT (removal_id = ${mark} AND removal_phase = 'checking'
+                        AND removal_fence_fresh(removal_since)) AS held,
+                       ${mayRemove(userId)} AS allowed
+                FROM projects p WHERE id = ${id} FOR NO KEY UPDATE`;
+              if (row?.held !== true) return "lost" as const;
+              if (!row.allowed) return "forbidden" as const;
+              yield* sql`UPDATE projects SET removal_phase = 'removed', removed_at = now(),
+                removed_by_user_id = ${userId}, updated_at = now() WHERE id = ${id}`;
+              yield* sql`DELETE FROM preview_grants WHERE preview_id IN (SELECT id FROM previews WHERE project_id = ${id})`;
+              // Every ticket that opens something of the project: a renewal would otherwise mint
+              // terminal tickets again once the project is restored. One statement over the few
+              // live tickets, whatever the project's history (`upgradeTicketScope` pairs; ids
+              // need no escaping).
+              yield* sql`DELETE FROM upgrade_tickets t WHERE EXISTS (
+                SELECT 1 FROM regexp_split_to_table(t.scope, '&') pair WHERE pair IN (
+                  SELECT 'session=' || id FROM agent_sessions WHERE project_id = ${id}
+                  UNION ALL SELECT 'process=' || p.id FROM session_processes p
+                    JOIN agent_sessions a ON a.id = p.session_id WHERE a.project_id = ${id}
+                  UNION ALL SELECT 'service=' || v.id FROM services v
+                    JOIN agent_sessions a ON a.id = v.session_id WHERE a.project_id = ${id}
+                  UNION ALL SELECT 'preview=' || id FROM previews WHERE project_id = ${id}))`;
+              yield* sql`INSERT INTO preview_controls (preview_id, revision, state)
+                SELECT id, 1, 'automatic' FROM previews WHERE project_id = ${id}
+                ON CONFLICT (preview_id) DO UPDATE SET revision = preview_controls.revision + 1, updated_at = now()`;
+              yield* audited(id, userId, "project.removed");
+              yield* notifyEvent(sql, { type: "project", projectId: id });
+              return "kept" as const;
+            }),
+          )
+          .pipe(Effect.orDie);
+      });
+
+      const restore = Effect.fn("RemovalFencesRepo.restore")(function* (
+        id: ProjectId,
+        userId: string,
+        name?: string,
+      ) {
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              // Serialize scratch recovery with other restores by the same creator.
+              yield* sql`SELECT 1 FROM "user" WHERE id = ${userId} FOR UPDATE`;
+              yield* lockMembership(id, userId);
+              const [row] = yield* sql<{
+                readonly phase: string | null;
+                readonly legacy: boolean;
+                readonly allowed: boolean;
+              }>`
+                SELECT removal_phase AS phase, removal_legacy AS legacy, ${mayRemove(userId)} AS allowed
+                FROM projects p WHERE id = ${id} FOR NO KEY UPDATE`;
+              if (row === undefined) return "gone" as const;
+              if (!row.allowed) return "forbidden" as const;
+              if (row.legacy) return "legacy" as const;
+              if (row.phase === "deleting") return "purging" as const;
+              if (row.phase !== "removed") return "listed" as const;
+              yield* sql`UPDATE projects p SET name = coalesce(${name ?? null}, name),
+                scratch_owner_user_id = CASE WHEN EXISTS (SELECT 1 FROM projects other
+                  WHERE other.id <> p.id AND other.removed_at IS NULL
+                    AND other.scratch_owner_user_id = p.scratch_owner_user_id) THEN NULL ELSE p.scratch_owner_user_id END,
+                removal_phase = NULL, removal_id = NULL, removal_since = NULL,
+                removed_at = NULL, removed_by_user_id = NULL, updated_at = now()
+                WHERE id = ${id}`;
+              yield* audited(id, userId, "project.restored");
+              yield* notifyEvent(sql, { type: "project", projectId: id });
+              return "restored" as const;
+            }),
+          )
+          .pipe(
+            Effect.catch((error) =>
+              uniqueViolationConstraint(error) === "projects_organization_name_key"
+                ? Effect.fail(new ProjectNameTakenError({ name: name ?? "" }))
+                : Effect.die(error),
+            ),
+          );
+      });
+
+      const takePurge = Effect.fn("RemovalFencesRepo.takePurge")(function* (
+        projectId: ProjectId,
+        userId: string,
+        confirmed: { readonly name: string; readonly removedAt: Date },
+      ) {
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* lockMembership(projectId, userId);
+              // `removedAt` was read through the driver, which keeps milliseconds only.
+              const [row] = yield* sql<{
+                readonly phase: string | null;
+                readonly fresh: boolean;
+                readonly removed: boolean;
+                readonly allowed: boolean;
+                readonly confirmed: boolean;
+              }>`
+                SELECT removal_phase AS phase, removal_fence_fresh(removal_since) AS fresh,
+                       removed_at IS NOT NULL AS removed, ${mayRemove(userId)} AS allowed,
+                       coalesce(name = ${confirmed.name} AND removed_at >= ${confirmed.removedAt}
+                         AND removed_at < ${confirmed.removedAt}::timestamptz + interval '1 millisecond', false) AS confirmed
+                FROM projects p WHERE id = ${projectId} FOR NO KEY UPDATE`;
+              if (row === undefined || !row.removed) return { _tag: "gone" } as const;
+              if (!row.allowed) return { _tag: "forbidden" } as const;
+              if (!row.confirmed) return { _tag: "changed" } as const;
+              if (row.phase === "deleting" && row.fresh)
+                return { _tag: "underway", stopped: null } as const;
+              const id = RemovalFenceId.make(`rmv_${crypto.randomUUID()}`);
+              yield* sql`UPDATE projects SET removal_phase = 'deleting', removal_id = ${id}, removal_since = now()
+                WHERE id = ${projectId}`;
+              yield* audited(projectId, userId, "project.purge_started");
+              return { _tag: "finish", id } as const;
+            }),
+          )
+          .pipe(Effect.orDie);
+      });
+
+      const finishPurge = Effect.fn("RemovalFencesRepo.finishPurge")(function* (
+        id: ProjectId,
+        mark: RemovalFenceId,
+        userId: string,
+      ) {
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const held = yield* sql`SELECT id FROM projects
+                WHERE id = ${id} AND removal_id = ${mark} AND removal_phase = 'deleting'
+                  AND removal_fence_fresh(removal_since) FOR UPDATE`;
+              if (held.length === 0) return false;
+              const snapshots = yield* sql<{ readonly id: string }>`SELECT id FROM context_snapshots
+                WHERE id IN (SELECT context_snapshot_id FROM agent_sessions WHERE project_id = ${id}) FOR UPDATE`;
+              yield* audited(id, userId, "project.purged");
+              yield* sql`DELETE FROM previews WHERE project_id = ${id}`;
+              // Inherited capture objects still need their owner's register/retention guard.
+              yield* sql`UPDATE worktree_chain SET orphaned = true, head_capture = NULL, head_n = -1,
+                head_epoch = 0, guard = guard + 1 WHERE worktree_id IN (SELECT id FROM worktrees WHERE project_id = ${id})`;
+              yield* sql`DELETE FROM projects WHERE id = ${id}`;
+              for (const snapshot of snapshots) {
+                yield* sql`DELETE FROM context_snapshots WHERE id = ${snapshot.id}
+                  AND NOT EXISTS (SELECT 1 FROM agent_sessions WHERE context_snapshot_id = ${snapshot.id})`;
+              }
+              yield* notifyEvent(sql, { type: "project", projectId: id });
+              return true;
+            }),
+          )
+          .pipe(Effect.orDie);
+      });
+
       /** A removal of the project, or of one of its worktrees, whose mark stands. */
       const relativesMarked = (row: FencedRow) =>
         row.kind === "worktree"
@@ -187,6 +412,11 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
                   SELECT 1 FROM projects
                   WHERE id = (SELECT project_id FROM worktrees WHERE id = ${row.id})
                   FOR SHARE`;
+              }
+              if (row.kind === "project") {
+                const removed =
+                  yield* sql`SELECT id FROM projects WHERE id = ${row.id} AND removed_at IS NOT NULL FOR NO KEY UPDATE`;
+                if (removed.length > 0) return { _tag: "gone" } as const;
               }
               const [found] = yield* sql`
                 SELECT removal_fence_marked(removal_phase, removal_since) AS marked,
@@ -230,11 +460,11 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
       });
 
       const commit = Effect.fn("RemovalFencesRepo.commit")(function* (
-        row: FencedRow,
+        row: Extract<FencedRow, { readonly kind: "worktree" }>,
         id: RemovalFenceId,
       ) {
         const updated = yield* sql`
-          UPDATE ${sql(tableOf(row))}
+          UPDATE worktrees
           SET removal_phase = 'deleting', removal_since = now()
           WHERE id = ${row.id} AND removal_id = ${id} AND removal_phase = 'checking'
             AND removal_fence_fresh(removal_since)
@@ -249,7 +479,10 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         yield* sql`
           UPDATE ${sql(tableOf(row))}
           SET removal_phase = NULL, removal_id = NULL, removal_since = NULL
-          WHERE id = ${row.id} AND removal_id = ${id}`.pipe(Effect.orDie);
+          WHERE id = ${row.id} AND removal_id = ${id}
+            ${row.kind === "project" ? sql`AND removal_phase = 'checking'` : sql``}`.pipe(
+          Effect.orDie,
+        );
       });
 
       const handOver = Effect.fn("RemovalFencesRepo.handOver")(function* (
@@ -324,6 +557,10 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
       });
 
       return {
+        keep,
+        restore,
+        takePurge,
+        finishPurge,
         take,
         renew,
         commit,

@@ -7,13 +7,14 @@ import {
   skillBundleBytes,
   validateSkillBundle,
 } from "@mend/domain/workbench";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { projects, skills } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 import { ProjectNotFoundError } from "./projects.ts";
 
 export class SkillNotFoundError extends Schema.TaggedError<SkillNotFoundError>()(
@@ -174,7 +175,7 @@ const checkOwner = (tx: Tx, owner: SkillOwner) =>
     const [row] = yield* tx
       .select({ id: projects.id })
       .from(projects)
-      .where(eq(projects.id, owner.projectId))
+      .where(and(projectListed, eq(projects.id, owner.projectId)))
       .limit(1)
       .pipe(Effect.orDie);
     if (row === undefined) {

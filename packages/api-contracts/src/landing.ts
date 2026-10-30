@@ -10,7 +10,7 @@ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
-import { StoreFailure } from "./workbench-views.ts";
+import { RemovalInProgress, StoreFailure } from "./workbench-views.ts";
 
 // ─── Landing (docs/adr/0007-landing.md) ─────────────────────────────────────
 // One push of a change's branch to origin, plus its pull request, recorded against a
@@ -216,7 +216,7 @@ export const landingsGroup = HttpApiGroup.make("landings")
       payload: LandRequest,
       success: LandingReportView,
       // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.
-      error: [NotFound, LandingNotAllowed, LandingNotStarted],
+      error: [NotFound, LandingNotAllowed, LandingNotStarted, RemovalInProgress],
     }),
   )
   .add(
@@ -241,7 +241,7 @@ export const landingsGroup = HttpApiGroup.make("landings")
     HttpApiEndpoint.post("checkGitHub", "/changes/:id/pull-request/check", {
       params: { id: ChangeId },
       success: PullRequestCheckView,
-      error: [NotFound, LandingNotAllowed, PullRequestStepFailed],
+      error: [NotFound, LandingNotAllowed, PullRequestStepFailed, RemovalInProgress],
     }),
   )
   .add(
@@ -249,7 +249,7 @@ export const landingsGroup = HttpApiGroup.make("landings")
     HttpApiEndpoint.post("refresh", "/landings/:id/refresh", {
       params: { id: ChangeLandingId },
       success: ChangeLanding,
-      error: [NotFound, LandingNotAllowed, PullRequestStepFailed],
+      error: [NotFound, LandingNotAllowed, PullRequestStepFailed, RemovalInProgress],
     }),
   )
   .add(

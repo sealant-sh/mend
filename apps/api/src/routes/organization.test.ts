@@ -76,6 +76,12 @@ const projectRows = new Map<
   ["p-carol", { organizationId: OrganizationId.make("org-acme"), createdByUserId: "carol" }],
   ["p-elsewhere", { organizationId: OrganizationId.make("org-other"), createdByUserId: "zed" }],
 ]);
+/** Bob also removed a private project before he left: kept, and listed nowhere. */
+const removedRows = new Set(["p-bob-removed"]);
+projectRows.set("p-bob-removed", {
+  organizationId: OrganizationId.make("org-acme"),
+  createdByUserId: "bob",
+});
 const minted: Array<Parameters<OrganizationsRepo["Service"]["createInvitation"]>[0]> = [];
 
 const invitation = (email: string | null, expiresAt: Date) =>
@@ -237,14 +243,32 @@ const dependencies = Layer.mergeAll(
     listForOrganization: (organizationId) =>
       Effect.succeed(
         [...projectRows.keys()]
+          .filter((id) => !removedRows.has(id))
           .map(projectOf)
           .filter((project): project is Project => project?.organizationId === organizationId),
       ),
+    removedForOrganization: (organizationId) =>
+      Effect.succeed(
+        [...removedRows].flatMap((id) => {
+          const project = projectOf(id);
+          return project?.organizationId === organizationId
+            ? [{ project, removedAt: NOW, removedByUserId: "bob", state: "removed" as const }]
+            : [];
+        }),
+      ),
     byId: (id) => {
-      const project = projectOf(id);
+      const project = removedRows.has(id) ? null : projectOf(id);
       return project === null
         ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
         : Effect.succeed(project);
+    },
+    removedById: (id) => {
+      const project = removedRows.has(id) ? projectOf(id) : null;
+      return Effect.succeed(
+        project === null
+          ? null
+          : { project, removedAt: NOW, removedByUserId: "bob", state: "removed" as const },
+      );
     },
     setCreatedBy: (id, userId) =>
       Effect.sync(() => {
@@ -599,6 +623,18 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
     expect(audited.map((event) => [event.action, event.subjectId, event.data])).toEqual([
       ["project.taken_over", "p-bob", { fromUserId: "bob" }],
     ]);
+  });
+
+  it("lists and takes over a departed member's removed project, so an owner can Restore or purge it", async () => {
+    const orphaned: unknown = await (
+      await call("alice", "/api/organization/orphaned-projects")
+    ).json();
+    expect(JSON.stringify(orphaned)).toContain("p-bob-removed");
+    const taken = await call("alice", "/api/organization/projects/p-bob-removed/takeover", {
+      method: "POST",
+    });
+    expect(taken.status).toBe(200);
+    expect(writes).toEqual(["setCreatedBy:p-bob-removed:alice"]);
   });
 
   it("an owner hands a member a reset link; owners and other callers get none", async () => {

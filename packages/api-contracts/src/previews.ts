@@ -4,6 +4,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
+import { RemovalInProgress } from "./workbench-views.ts";
 
 /**
  * Where a client without Mend's cookie signs in to a preview (docs/adr/0017, "Where the link
@@ -43,7 +44,7 @@ export const previewsGroup = HttpApiGroup.make("previews")
     HttpApiEndpoint.post("open", "/previews/:id/open", {
       params: { id: PreviewId },
       success: PreviewOpening,
-      error: [NotFound, PreviewNotOpenable, PreviewsUnavailable],
+      error: [NotFound, PreviewNotOpenable, PreviewsUnavailable, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

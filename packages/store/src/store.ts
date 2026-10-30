@@ -1052,13 +1052,26 @@ const capListing = (paths: ReadonlyArray<string>, limit: number): FileListing =>
   return { files: sorted.slice(0, limit), truncated: sorted.length > limit };
 };
 
+/** File system lookups a disk measurement keeps in flight at once. */
+const DISK_WALK_IN_FLIGHT = 64;
+
+/** Only a lookup that answers ENOENT proves a path is gone: a refused one says nothing. */
+const confirmedAbsent = (target: string): boolean => {
+  try {
+    fs.lstatSync(target);
+    return false;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "ENOENT";
+  }
+};
+
 const rmBestEffort = (target: string): { readonly leftover: string | null } => {
   try {
     fs.rmSync(target, { recursive: true, force: true });
   } catch {
     // EACCES on container-uid files — what survives is reported by the caller.
   }
-  return { leftover: fs.existsSync(target) ? target : null };
+  return { leftover: confirmedAbsent(target) ? null : target };
 };
 
 /** Where a named worktree lives relative to its project's bare repo. */
@@ -1202,12 +1215,25 @@ export class Store extends Context.Service<
       name: string,
     ) => Effect.Effect<{ readonly leftover: string | null }>;
     /**
+     * Why a removed project's kept files cannot be restored as they are (the bare repository and,
+     * for each of `directories`, its worktree checkout), in words for the person; null: they can.
+     */
+    readonly retainedStoreProblem: (
+      storePath: string,
+      directories: ReadonlyArray<string>,
+    ) => Effect.Effect<string | null>;
+    /** Bytes on disk under the project's store directory; null when it cannot be measured. */
+    readonly projectDiskUsage: (storePath: string) => Effect.Effect<number | null>;
+    /**
      * Remove the project's whole store directory (bare repo + worktrees).
-     * Same honesty contract: a path that would not delete is the answer.
+     * Same honesty contract: a path that would not delete is the answer, and only a lookup that
+     * found nothing there counts as deleted. `outsideRoot`: the recorded directory is outside the
+     * store root Mend runs with now (`MEND_STORE_ROOT` changed since adoption), so nothing was
+     * touched.
      */
     readonly removeProjectStore: (
       storePath: string,
-    ) => Effect.Effect<{ readonly leftover: string | null }>;
+    ) => Effect.Effect<{ readonly leftover: string | null; readonly outsideRoot?: string }>;
     /**
      * Snapshot the worktree without touching HEAD, index, or files: throwaway
      * index → write-tree → commit-tree (parented on the previous checkpoint)
@@ -1899,10 +1925,107 @@ export class Store extends Context.Service<
         return result;
       });
 
+      const withinStore = (directory: string) => {
+        const relative = path.relative(path.resolve(config.root), path.resolve(directory));
+        return (
+          relative !== "" &&
+          relative !== ".." &&
+          !relative.startsWith(`..${path.sep}`) &&
+          !path.isAbsolute(relative)
+        );
+      };
+
+      /** Throws when `entry` is missing. A configured root reached through a link is fine. */
+      const linkFreeBelowRoot = (entry: string) =>
+        fs.realpathSync(entry) ===
+        path.join(
+          fs.realpathSync(config.root),
+          path.relative(path.resolve(config.root), path.resolve(entry)),
+        );
+
+      const retainedStoreProblem = Effect.fn("Store.retainedStoreProblem")(function* (
+        storePath: string,
+        directories: ReadonlyArray<string>,
+      ) {
+        const problem = yield* Effect.sync(() => {
+          const parent = path.dirname(storePath);
+          if (!withinStore(parent))
+            return `The kept repository is at ${storePath}, outside the store root ${config.root} Mend runs with now. Run Mend with the store root it was adopted under to restore it.`;
+          try {
+            if (!linkFreeBelowRoot(storePath))
+              return "The kept repository uses a symbolic link. Its identity needs recovery.";
+            if (!fs.statSync(storePath).isDirectory()) return "The kept repository is missing.";
+            for (const directory of directories) {
+              const base = path.join(parent, "worktrees");
+              const checkout = path.resolve(base, directory);
+              if (!checkout.startsWith(`${base}${path.sep}`))
+                return "A kept worktree path is outside its project.";
+              if (!linkFreeBelowRoot(checkout) || !fs.statSync(checkout).isDirectory())
+                return `The kept worktree ${directory} is missing.`;
+            }
+            return null;
+          } catch {
+            return "The kept repository or one of its worktrees is missing or unreadable.";
+          }
+        });
+        if (problem !== null) return problem;
+        return yield* git(["rev-parse", "--is-bare-repository"], storePath).pipe(
+          Effect.map((value) =>
+            value.trim() === "true" ? null : "The kept repository is not a bare repository.",
+          ),
+          Effect.orElseSucceed(() => "The kept repository cannot be read by git."),
+        );
+      });
+
+      // Off the event loop: a kept project's worktrees can hold hundreds of thousands of files.
+      const projectDiskUsage = Effect.fn("Store.projectDiskUsage")(function* (storePath: string) {
+        const parent = path.dirname(storePath);
+        if (!withinStore(parent)) return null;
+        return yield* Effect.promise(async () => {
+          try {
+            if (!linkFreeBelowRoot(parent)) return null;
+            const seen = new Set<string>();
+            let total = 0;
+            let pending = [parent];
+            while (pending.length > 0) {
+              const level = pending;
+              pending = [];
+              for (let start = 0; start < level.length; start += DISK_WALK_IN_FLIGHT) {
+                await Promise.all(
+                  level.slice(start, start + DISK_WALK_IN_FLIGHT).map(async (entry) => {
+                    const stat = await fs.promises.lstat(entry);
+                    const identity = `${stat.dev}:${stat.ino}`;
+                    if (seen.has(identity)) return;
+                    seen.add(identity);
+                    total += stat.blocks * 512;
+                    if (stat.isDirectory())
+                      for (const child of await fs.promises.readdir(entry))
+                        pending.push(path.join(entry, child));
+                  }),
+                );
+              }
+            }
+            return total;
+          } catch {
+            return null;
+          }
+        });
+      });
+
       const removeProjectStore = Effect.fn("Store.removeProjectStore")(function* (
         storePath: string,
       ) {
-        return yield* Effect.sync(() => rmBestEffort(path.dirname(storePath)));
+        return yield* Effect.sync(() => {
+          const parent = path.dirname(storePath);
+          if (!withinStore(parent)) return { leftover: parent, outsideRoot: config.root };
+          if (confirmedAbsent(parent)) return { leftover: null };
+          try {
+            if (!linkFreeBelowRoot(parent)) return { leftover: parent };
+          } catch {
+            return { leftover: parent };
+          }
+          return rmBestEffort(parent);
+        });
       });
 
       const checkpoint = Effect.fn("Store.checkpoint")(function* (
@@ -2465,6 +2588,8 @@ export class Store extends Context.Service<
         removeWorktree,
         removeWorktreeForce,
         removeProjectStore,
+        retainedStoreProblem,
+        projectDiskUsage,
         checkpoint,
         diffRange,
         diffWorktree,

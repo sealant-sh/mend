@@ -235,7 +235,8 @@ export class RemovalForbidden extends Schema.TaggedError<RemovalForbidden>()(
 
 /**
  * A session start or a new worktree in a worktree or project a removal is checking or deleting.
- * Asked again once that removal is refused, the start goes ahead.
+ * Asked again once that removal is refused, the start goes ahead. Also any change asked of a
+ * removed project by someone who can see it: its words say to restore it first.
  */
 export class RemovalInProgress extends Schema.TaggedError<RemovalInProgress>()(
   "RemovalInProgress",

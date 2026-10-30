@@ -331,7 +331,7 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       params: { id: WorktreeId },
       query: { force: Schema.optional(Schema.String) },
       success: RemovalReport,
-      error: [WorktreeNotFound, RemovalForbidden, RemovalRefused],
+      error: [WorktreeNotFound, RemovalForbidden, RemovalRefused, RemovalInProgress],
     }),
   )
   .add(
@@ -381,7 +381,7 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       params: { id: WorktreeId },
       payload: CheckpointRequest,
       success: Checkpoint,
-      error: [WorktreeNotFound, StoreFailure],
+      error: [WorktreeNotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(

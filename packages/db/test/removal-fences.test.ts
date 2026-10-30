@@ -622,9 +622,9 @@ describe.skipIf(postgres.skip)("removal fences (migration 0166)", () => {
         const finished = yield* fences.take(worktreeRow);
         if (finished._tag !== "finish") return yield* Effect.die("stopped deletion not resumed");
         yield* fences.release(worktreeRow, finished.id);
-        const project = yield* fences.take(projectRow);
-        if (project._tag !== "held") return yield* Effect.die("project fence not taken");
-        yield* fences.commit(projectRow, project.id);
+        // A project's deletion is a purge of the removed project, stopped partway.
+        yield* (yield* SqlClient.SqlClient)`UPDATE projects SET removal_phase = 'deleting',
+          removal_id = 'rmv_stopped_purge', removal_since = now(), removed_at = now() WHERE id = 'p-1'`;
         yield* age("projects", "p-1", 600);
         const worktreeUnderStoppedProject = yield* fences.take(worktreeRow);
         return { projectOverStoppedWorktree, worktreeUnderStoppedProject };

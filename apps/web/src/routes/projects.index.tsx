@@ -10,6 +10,7 @@ import {
   projectEntries,
   type ProjectMenuHandler,
 } from "#/components/projects-index/model";
+import { RemovedProjects } from "#/components/removed-projects";
 import { AppShell } from "#/components/shell";
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/viewer";
@@ -127,6 +128,7 @@ function ProjectsPage() {
           </>
         )}
       </div>
+      <RemovedProjects />
       {menuElement}
     </AppShell>
   );

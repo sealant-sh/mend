@@ -1,6 +1,8 @@
-import { SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectNotFoundError } from "@mend/db";
+import { ProjectId, SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
 import {
   Project,
+  PURGING_PROJECT_WORK_REFUSED,
   Session,
   SessionProcess,
   SessionRepository,
@@ -38,6 +40,7 @@ const file = (path: string, additions: number, deletions: number) => ({
 });
 
 interface Scene {
+  readonly failFirstPurge?: boolean;
   /** Files past the base, per worktree; none unless named. */
   readonly changed?: ReadonlyMap<string, ReadonlyArray<ReturnType<typeof file>>>;
   readonly holds?: ReadonlyMap<string, ReadonlyArray<CaptureHold>>;
@@ -88,6 +91,8 @@ const world = async (scene: Scene = {}) => {
             Effect.succeed(scene.setupRunning?.includes(worktreeId) === true),
         },
         engine: {
+          refreshCaptureStatus: () => Effect.void,
+          reconcileHotSessions: () => Effect.void,
           launchUnderWay: () => false,
           captureHolds: (worktreeId) => Effect.succeed(scene.holds?.get(worktreeId) ?? []),
           provisionSessionIn: () =>
@@ -96,6 +101,7 @@ const world = async (scene: Scene = {}) => {
               return session === undefined ? Effect.die("no session") : Effect.succeed(session);
             }),
         },
+        checkpoints: { listForWorktree: () => Effect.succeed([]) },
         forwards: { listOpen: () => Effect.succeed([]) },
         reads: {
           changedFiles: (_projectId, worktreeId) =>
@@ -134,19 +140,17 @@ const world = async (scene: Scene = {}) => {
           byId: (id) =>
             Effect.suspend(() => {
               const project = api?.world.projects.get(id);
-              if (project === undefined) return Effect.die(`no project ${id}`);
+              if (project === undefined || api?.world.retainedProjects.has(id))
+                return Effect.fail(new ProjectNotFoundError({ projectId: id }));
               return Effect.succeed(
                 scene.projectsWithoutOrigin?.includes(id) === true
                   ? new Project({ ...project, originUrl: null })
                   : project,
               );
             }),
-          remove: (id) =>
-            Effect.sync(() => {
-              removedStores.push(`row:${id}`);
-            }),
         },
         store: {
+          retainedStoreProblem: () => Effect.succeed(null),
           removeWorktreeForce: (_storePath, directory) =>
             Effect.gen(function* () {
               removedWorktrees.push(directory);
@@ -156,7 +160,9 @@ const world = async (scene: Scene = {}) => {
           removeProjectStore: (storePath) =>
             Effect.sync(() => {
               removedStores.push(storePath);
-              return { leftover: null };
+              return {
+                leftover: scene.failFirstPurge && removedStores.length === 1 ? storePath : null,
+              };
             }),
         },
       },
@@ -731,18 +737,32 @@ describe.skipIf(postgres.skip)("a removal against Postgres's marks", () => {
     expect(instance.world.calls.filter((call) => call === "worktrees.remove")).toHaveLength(1);
   }, 60_000);
 
-  it("refuses a worktree whose project's deletion stopped partway, saying how to finish it", async () => {
+  it("refuses a worktree of a project whose purge stopped partway, saying so, deleting nothing", async () => {
     const instance = await marked();
-    await setMark("projects", privateAlice.project, "deleting", "10 minutes");
+    await database?.sql(
+      (sql) => sql`
+        UPDATE projects
+        SET removal_phase = 'deleting', removal_id = 'rmv_earlier',
+            removal_since = now() - interval '10 minutes', removed_at = now() - interval '1 hour'
+        WHERE id = ${privateAlice.project}`,
+    );
+    const project = ProjectId.make(privateAlice.project);
+    const kept = instance.world.projects.get(project);
+    if (kept === undefined) throw new Error("missing project fixture");
+    instance.world.retainedProjects.set(project, {
+      project: kept,
+      removedAt: new Date(),
+      removedByUserId: "alice",
+      state: "purging",
+    });
     const response = await instance.request(
       "alice",
       "DELETE",
       `/api/worktrees/${privateAlice.worktree}`,
     );
-    expect(response.status).toBe(409);
-    expect(await bodyOf(response)).toMatchObject({
-      blockers: [{ _tag: "RemovalUnderway", stopped: { kind: "project", name: "private-alice" } }],
-      message: expect.stringContaining("remove that project again to finish it"),
+    expect({ status: response.status, body: await bodyOf(response) }).toEqual({
+      status: 409,
+      body: { _tag: "RemovalInProgress", message: PURGING_PROJECT_WORK_REFUSED },
     });
     expect(removedWorktrees).toEqual([]);
   }, 60_000);
@@ -807,20 +827,6 @@ describe.skipIf(postgres.skip)("a removal against Postgres's marks", () => {
 });
 
 describe("DELETE /projects/:id", () => {
-  it("removes a project whose every worktree is at its base and idle", async () => {
-    const instance = await world();
-    const response = await instance.request(
-      "alice",
-      "DELETE",
-      `/api/projects/${privateAlice.project}`,
-    );
-    expect(response.status).toBe(200);
-    expect(removedStores).toEqual([
-      instance.world.projects.get(privateAlice.project)?.storePath,
-      `row:${privateAlice.project}`,
-    ]);
-  });
-
   it("refuses for a teammate's running process, names them, and stops nothing (Q1, Q2)", async () => {
     const instance = await world();
     const response = await instance.request("alice", "DELETE", `/api/projects/${sharedA.project}`);
