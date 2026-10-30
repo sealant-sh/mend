@@ -359,7 +359,6 @@ describe("the page-view token never reaches a trace", () => {
     expect(JSON.stringify(recorded)).not.toContain("secret-token-value");
     expect(JSON.stringify(recorded)).not.toContain("secret-file-name");
     expect(JSON.stringify(recorded)).not.toContain("secret-ticket-value");
-    // `/api/auth/%2e%2e/page-view` is a route of neither: the router answers 404 by itself.
     expect(recorded).toEqual([
       getSpan("unrouted", 404),
       getSpan("/api/health", 200),

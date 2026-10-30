@@ -47,10 +47,6 @@ const queryFieldNames = (query: Schema.Top | undefined): ReadonlyArray<string> =
   return SchemaAST.isObjects(ast) ? ast.propertySignatures.map(({ name }) => String(name)) : [];
 };
 
-/**
- * A secret may be a path's segment only right after a path the edge redacts the next segment of.
- * The API logs and traces a route's template, never the segment itself.
- */
 const redactedAtTheEdge = (path: string, name: string) =>
   SECRET_SEGMENT_PREFIXES.some(
     (prefix) => path === `${prefix}/:${name}` || path.startsWith(`${prefix}/:${name}/`),

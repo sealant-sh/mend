@@ -30,7 +30,6 @@ const codeForStatus = (status: number): TrpcCode => {
 
 const isRoutePath = (path: string): path is HttpRouter.PathInput => path.startsWith("/");
 
-/** Each contract call by its route, named `group.endpoint`. */
 const operations = FindMyWay.make<string>();
 HttpApi.reflect(MendApi, {
   onGroup: () => {},
@@ -40,10 +39,6 @@ HttpApi.reflect(MendApi, {
   },
 });
 
-/**
- * What a log line calls a failed call: an API URL can carry a secret in its path (a CLI
- * sign-in's user code), so the line names the contract's operation instead.
- */
 const operationOf = (request: HttpClientRequest.HttpClientRequest): string =>
   operations.find(request.method, URL.parse(request.url)?.pathname ?? "")?.handler ??
   "unknown operation";

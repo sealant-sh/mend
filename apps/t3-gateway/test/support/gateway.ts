@@ -110,12 +110,7 @@ export const gatewayTestLayer = (
   options: ClientObservers & {
     readonly hubIdleTimeToLive?: Duration.Input;
     readonly queueTimings?: Partial<QueueTimings>;
-    /**
-     * Collects every log line (JSON) here, the request log's among them. Without it, nothing is
-     * logged.
-     */
     readonly logs?: Array<string>;
-    /** Collects every span the gateway's requests start, through a recording tracer. */
     readonly spans?: Array<Tracer.Span>;
     /**
      * Find's parser, to share one worker pool across gateways. Without it the gateway starts its

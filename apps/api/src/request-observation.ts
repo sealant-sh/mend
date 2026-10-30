@@ -6,7 +6,6 @@ import { routesToPageView } from "./routes/pages.ts";
 const RAW_FILE_READ = /^\/api\/worktrees\/.+\/raw$/;
 const UNREGISTER_NAMING_PUSH_TOKEN = /^\/api\/devices\/./;
 
-/** What the API leaves out of its request log and traces: a raw file read, a device, a page view. */
 export const apiObservation: ObservationPolicy = {
   unobserved: (request) => {
     const path = routedPath(requestPathOf(request.url)).replace(/\/+$/, "");

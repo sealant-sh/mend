@@ -99,7 +99,6 @@ const spanOutcome = (span: Tracer.Span) => ({
   status: span.attributes.get("http.response.status_code"),
 });
 
-/** Everything a span holds that an exporter would ship: name, attributes, events and its exit. */
 const recorded = (spans: ReadonlyArray<Tracer.Span>) =>
   JSON.stringify(
     spans.map((span) => [

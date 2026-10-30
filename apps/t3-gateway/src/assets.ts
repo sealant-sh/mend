@@ -687,5 +687,4 @@ export const isAssetRequest = (request: HttpServerRequest.HttpServerRequest): bo
   }
   return /^\/+api\/+assets(\/|$)/i.test(decoded) || path.startsWith(`${ASSET_ROUTE_PREFIX}/`);
 };
-/** What the gateway leaves out of its request log and traces: an asset, whose URL is its token. */
 export const gatewayObservation: ObservationPolicy = { unobserved: isAssetRequest };

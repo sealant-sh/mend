@@ -609,8 +609,6 @@ test(
         target: `custom+audit.v1-test://SYN_CUSTOM_USER:SYN_CUSTOM_PASSWORD@${host}/custom-userinfo?${credentials(10)}`,
         userinfo: true,
       },
-      // A link in the path form issued before 0.37, and the API's paths whose next segment is a
-      // secret: Mend's log keeps the path with that segment redacted.
       { target: "/join/SYN_INVITATION", path: "/join/REDACTED" },
       { target: "/Slack//Link/SYN_SLACK_CODE?next=SYN_NEXT", path: "/Slack//Link/REDACTED" },
       {
@@ -760,8 +758,6 @@ test(
       "/api/worktrees/w1/contents?path=SYNQ_README",
       "/api/projects/p1/join/kept",
     ];
-    // Links in the path form issued before 0.37, and the API's paths whose next segment is a
-    // secret, in the spellings a router accepts.
     const links = [
       "/join/SYNQ_INVITATION",
       "/RESET//SYNQ_RESET?callbackURL=%2F",

@@ -16,17 +16,15 @@ export interface ObservationPolicy {
 /** The route of a request no route answered: none matched, or a middleware refused it first. */
 export const UNROUTED = "unrouted";
 
+type RouteTemplate = HttpRouter.PathInput | typeof UNROUTED;
+
 type Outcome =
   | { readonly kind: "response"; readonly status: number }
   | { readonly kind: "aborted" };
 
-/**
- * What a request leaves in the log and the trace. The route is the router's registered template,
- * so no part of the URL a client sent is ever written.
- */
 interface HttpObservation {
   readonly method: string;
-  readonly route: string;
+  readonly route: RouteTemplate;
   readonly outcome: Outcome;
   readonly durationMillis: number;
 }
@@ -37,7 +35,7 @@ class HttpRequestFailed extends Data.TaggedError("HttpRequestFailed")<{
 
 class MatchedRoute extends Context.Service<
   MatchedRoute,
-  { readonly matched: (template: string) => void }
+  { readonly matched: (template: HttpRouter.PathInput) => void }
 >()("@mend/network/http-observation/MatchedRoute") {}
 
 const reportsMatchedRoute = HttpRouter.middleware((effect) =>
@@ -97,7 +95,7 @@ const observed = <E, R>(
   app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ) =>
   Effect.gen(function* () {
-    let route = UNROUTED;
+    let route: RouteTemplate = UNROUTED;
     const startTime = yield* Clock.currentTimeNanos;
     const span = yield* Effect.makeSpan(request.method, {
       kind: "server",
