@@ -8,6 +8,7 @@ import {
   InstanceRolesRepo,
   SessionChannelTokensRepoMemory,
   harnessLayoutsRepoMemory,
+  ScreensRepo,
 } from "@mend/db";
 import {
   ProjectId,
@@ -1066,6 +1067,7 @@ describe("SessionEngine", () => {
           SessionRepositoriesRepoMemory,
           organizationsLayer(world),
           auditLayer(world),
+          Layer.succeed(ScreensRepo, world.screens),
           sourcePolicyLayer,
           Layer.mock(InstanceRolesRepo, { isOperator: () => Effect.succeed(true) }),
           foldersEmptyLayer,

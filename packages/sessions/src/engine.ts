@@ -41,6 +41,7 @@ import {
   type SessionOutcome,
   ProjectServiceRecipesRepo,
   PreviewsRepo,
+  ScreensRepo,
   SessionProcessesRepo,
   SessionPagesRepo,
   type NewSessionProcess,
@@ -61,6 +62,7 @@ import {
   HarnessLayoutsRepo,
   type ExecutorRetirementRecord,
   type PreReleaseMigrationRecord,
+  type ScreenDisplaysFullError,
   type RetirementStopRecord,
 } from "@mend/db";
 import {
@@ -98,6 +100,8 @@ import type {
   SessionDotfiles,
   SessionDotfilesNotApplied,
   SessionOrigin,
+  Screen,
+  ScreenEndReason,
   SessionProcess,
   SessionRun,
   SessionStatus,
@@ -640,6 +644,8 @@ import {
   INSTALL_SESSION_LABEL,
   mayRunIn,
 } from "./run-eligibility.ts";
+import { makeScreenProcess, type ScreenProcess } from "./screen-process.ts";
+import { makeScreenPasswords, type ScreenPasswords } from "./screen/passwords.ts";
 import {
   decodeSecretFilesRecord,
   encodeSecretFilesRecord,
@@ -2891,6 +2897,20 @@ export class SessionEngine extends Context.Service<
     readonly stopShell: (
       processId: SessionProcessId,
     ) => Effect.Effect<SessionProcess, ShellProcessNotFoundError>;
+    /**
+     * The session's screen (ADR 0020): Xvnc on the session's display, as its person, recorded as a
+     * `screen` process. Idempotent: a live screen this process started is answered as it is.
+     */
+    readonly startScreen: (
+      sessionId: SessionId,
+    ) => Effect.Effect<
+      Screen,
+      SessionNotFoundError | SessionNotLiveError | SealantPlatformError | ScreenDisplaysFullError
+    >;
+    /** Ends the session's screen for `reason`; one already ended, or never started, is left. */
+    readonly stopScreen: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
+    /** The live screen's passwords, held only by the process that started it. */
+    readonly screenPasswords: (sessionId: SessionId) => Effect.Effect<ScreenPasswords | null>;
     /** Rename one live supporting shell inside its owning session. */
     readonly renameShell: (
       processId: SessionProcessId,
@@ -3300,6 +3320,7 @@ type SessionEngineRequirements =
   | SecretCipher
   | ProjectServiceRecipesRepo
   | PreviewsRepo
+  | ScreensRepo
   | SettingsRepo
   | SessionRepository
   | SessionGitOpsRepo
@@ -3412,6 +3433,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ...(api.pickup === undefined ? {} : { pickup: api.pickup }),
         ...(api.pickupAs === undefined ? {} : { pickupAs: api.pickupAs }),
         ...(api.channelFor === undefined ? {} : { channelFor: api.channelFor }),
+        ...(api.screenSecret === undefined ? {} : { screenSecret: api.screenSecret }),
       });
       const conversations = yield* AgentConversationRepo;
       const messageSettings = yield* MessageSettingsRepo;
@@ -8138,6 +8160,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
       const sessionPages = yield* SessionPagesRepo;
+      const screens = yield* ScreensRepo;
+      const screenPasswords = makeScreenPasswords();
 
       // ── Pickups: secrets reach a workspace over the channel, never through argv ──────────
       // The platform keeps every exec's argv in plaintext for good (review of mend#552/#553,
@@ -8587,6 +8611,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         yield* sessions.settle(sessionId, outcome, summary);
         yield* settleRunsOfSettled(sessionId);
+        yield* screenProcess.stop(sessionId, "session-stopped").pipe(owned(sessionId));
       });
 
       /**
@@ -11471,14 +11496,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.asVoid,
               Effect.catchTag("SessionNotFoundError", () => Effect.void),
             )
-          : endServiceAttempt(ended, how, exitCode).pipe(
-              Effect.andThen(markProcessExited(ended.id, how, exitCode)),
-              Effect.andThen(
-                reconcileSession(ended.sessionId, { sweep: true }).pipe(
-                  Effect.catchTag("SessionNotFoundError", () => Effect.void),
+          : ended.kind === "screen"
+            ? markProcessExited(ended.id, how, exitCode).pipe(
+                Effect.andThen(screenProcess.ended([ended], "process-exited")),
+              )
+            : endServiceAttempt(ended, how, exitCode).pipe(
+                Effect.andThen(markProcessExited(ended.id, how, exitCode)),
+                Effect.andThen(
+                  reconcileSession(ended.sessionId, { sweep: true }).pipe(
+                    Effect.catchTag("SessionNotFoundError", () => Effect.void),
+                  ),
                 ),
-              ),
-            );
+              );
 
       /**
        * A Service attempt's end and its forward's close, in one lifecycle transition: a start
@@ -21379,6 +21408,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (waitingLaunches.has(sessionId)) stoppedWhileWaiting.add(sessionId);
         // One further along stands down before its agent starts, or is stopped again as it ends.
         if (launchGate.underWay(sessionId)) stoppedDuringLaunch.add(sessionId);
+        yield* screenProcess.stop(sessionId, "session-stopped");
         const rows = yield* processes.listForSession(sessionId);
         endOwnership.stopContinuations(rows.map((row) => row.id));
         const activeRun = yield* sessionRuns.activeForSession(sessionId);
@@ -23076,6 +23106,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (process !== null) yield* stoppedAfterAll(process);
       });
 
+      const screenProcess: ScreenProcess<
+        SessionNotFoundError | SessionNotLiveError | SealantPlatformError
+      > = makeScreenProcess({
+        screens,
+        processes,
+        passwords: screenPasswords,
+        workspaceOf: (sessionId) =>
+          Effect.gen(function* () {
+            const session = yield* sessions.byId(sessionId);
+            const workspace = yield* workspaceForSupportingProcess(session);
+            const retired = yield* retirementRefusalFor(
+              SealantWorkspaceId.make(workspace.id),
+              session.ownerUserId,
+            );
+            if (retired !== null) {
+              return yield* new SealantPlatformError({
+                code: "workspace_retiring",
+                status: 409,
+                message: retired,
+                cause: null,
+              });
+            }
+            return { session, workspace };
+          }),
+        startAs: (session, workspace) =>
+          startAsPerson(session, workspace, Effect.succeed(session.ownerUserId), "shell"),
+        open: sealant.openSession,
+        close: closeProcessPty,
+        markExited: (row, how) => markProcessExited(row.id, how, null),
+        notStopped,
+        watch: (row) => Effect.asVoid(Effect.forkIn(watchProcess(row), scope)),
+        fork: (effect) => Effect.asVoid(Effect.forkIn(effect, scope)),
+      });
+
       /** A whole executor ended: clear refusals for the rows its bulk reap ends too. */
       const reapWorkspaceProcesses = Effect.fn("SessionEngine.reapWorkspaceProcesses")(function* (
         workspaceId: SealantWorkspaceId,
@@ -23083,11 +23147,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Its homes went with it: nothing of its people is kept (docs/adr/0016).
         layoutSteps.forgetExecutor(workspaceId);
         conversationSteps.forgetExecutor(workspaceId);
-        if (closeFailed.size === 0 && !layoutSteps.personPossible()) {
-          return yield* processes.reapLiveForWorkspace(workspaceId);
-        }
         const live = yield* processes.listLiveForWorkspace(workspaceId);
         yield* processes.reapLiveForWorkspace(workspaceId);
+        yield* screenProcess.ended(live, "workspace-ended");
+        if (closeFailed.size === 0 && !layoutSteps.personPossible()) return;
         // The executor ended: the conversations its processes held are free (decision 6).
         for (const process of live) {
           if (
@@ -24438,6 +24501,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // cannot be one of the engine's dependencies.
         land: () => gitHooks.landRequested(sessionId, actor),
         agentHook: (report) => agentHook(sessionId, report),
+        screenSecret: () => Effect.sync(() => screenPasswords.fetch(sessionId, actor)),
         mcpCaller: (named) =>
           Effect.all({
             accountId:
@@ -26759,6 +26823,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         flushCaptures: (sessionId, why) => owned(sessionId)(flushCaptures(sessionId, why)),
         stop: (sessionId, summary) => owned(sessionId)(stop(sessionId, summary ?? null)),
         openShell: (sessionId, openedBy) => owned(sessionId)(openShell(sessionId, openedBy)),
+        startScreen: (sessionId) => owned(sessionId)(screenProcess.start(sessionId)),
+        stopScreen: (sessionId, reason) => owned(sessionId)(screenProcess.stop(sessionId, reason)),
+        screenPasswords: (sessionId) => Effect.sync(() => screenPasswords.of(sessionId)),
         stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
         personTyped,

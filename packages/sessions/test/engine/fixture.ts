@@ -70,6 +70,8 @@ import {
   WorktreeNotFoundError,
   type ExecutorCaptureEvidence,
   type AgentMemoryHomes,
+  makeScreensMemory,
+  ScreensRepo,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -473,6 +475,8 @@ export const sealantLaunchLayer = (
     readonly runtimeDeadline?: () => Date | null;
     /** While true, opening the harness's PTY fails the way the platform refuses one. */
     readonly openFails?: () => boolean;
+    /** What a process opened with `argv` prints, line by line; nothing unless a test says. */
+    readonly ptyOutput?: (argv: ReadonlyArray<string>) => ReadonlyArray<string>;
     /** Stands in for the executor's flush itself — what it ships and registers before answering. */
     readonly flush?: (
       workspace: Workspace,
@@ -543,7 +547,10 @@ export const sealantLaunchLayer = (
 ) => {
   let nextPty = 0;
   const ptys = new Map<string, InteractiveSession>();
-  const openPty = (mode: "pty" | "pipe" = "pty"): InteractiveSession => {
+  const openPty = (
+    mode: "pty" | "pipe" = "pty",
+    printed: ReadonlyArray<string> = [],
+  ): InteractiveSession => {
     nextPty += 1;
     const pty: InteractiveSession = {
       id: `pty-${nextPty}`,
@@ -551,7 +558,11 @@ export const sealantLaunchLayer = (
       runId: `run-${nextPty}`,
       mode,
       send: async () => undefined,
-      output: async function* () {},
+      output: async function* () {
+        for (const [at, line] of printed.entries()) {
+          yield { sequence: BigInt(at), data: new TextEncoder().encode(`${line}\n`) };
+        }
+      },
       resize: async () => undefined,
       signal: async () => undefined,
       status: async () => ptyStates?.get(pty.id) ?? { status: "running", outputHighWater: 0n },
@@ -743,7 +754,7 @@ export const sealantLaunchLayer = (
                   captureOps?.beforeOpen?.(argv);
                   spawned?.push(argv);
                   if (options !== undefined) openedOptions?.push(options);
-                  return openPty(options?.mode ?? "pty");
+                  return openPty(options?.mode ?? "pty", captureOps?.ptyOutput?.(argv));
                 }),
           ),
         ),
@@ -1474,6 +1485,8 @@ export interface World {
   /** Runs after a setup stamp is written, before its answer, so a test can hold the reply. */
   setupFinished: (() => Effect.Effect<void>) | undefined;
   readonly recipeApprovals: Map<WorktreeId, Map<string, Map<string, RecipeApproval>>>;
+  /** Screens and their displays (ADR 0020), as the store keeps them. */
+  readonly screens: ScreensRepo["Service"];
   controlSeq: number;
   readonly previews: Map<string, Preview>;
   readonly previewControls: Map<string, PreviewControl>;
@@ -1577,6 +1590,7 @@ export const makeWorld = (): World => ({
   setupFinishing: undefined,
   setupFinished: undefined,
   recipeApprovals: new Map(),
+  screens: makeScreensMemory(),
   controlSeq: 0,
   previews: new Map(),
   previewControls: new Map(),
@@ -3983,6 +3997,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           options.seals ?? CaptureSealsNone,
           options.hostUserNamespaces ?? WorkspaceHostUserNamespacesUnobserved,
           options.previewUrls ?? PreviewUrlsNone,
+          Layer.succeed(ScreensRepo, world.screens),
         ),
       ),
       Layer.provide(
