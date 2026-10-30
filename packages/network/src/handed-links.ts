@@ -1,4 +1,4 @@
-import { requestPathOf, routedPath } from "./page-view.ts";
+import { requestPathOf, routedPath } from "./request-path.ts";
 
 const HANDED_LINK_PAGES = {
   invitation: "/join",
