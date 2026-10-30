@@ -269,10 +269,14 @@ type Reviewed = {
 };
 
 export type ApprovalTarget =
-  | { readonly ok: true; readonly reviewed: Reviewed; readonly request: ResourceApprovalRequest }
-  | { readonly ok: false; readonly message: string }
-  /** Already approved as read: nothing to do, and not a failure. */
-  | { readonly ok: "approved"; readonly message: string };
+  | {
+      readonly kind: "ready";
+      readonly reviewed: Reviewed;
+      readonly request: ResourceApprovalRequest;
+    }
+  | { readonly kind: "refused"; readonly message: string }
+  /** Approved already, as `reviewed` reads: nothing to post, and no failure. */
+  | { readonly kind: "approved"; readonly reviewed: Reviewed; readonly message: string };
 
 /** The offer's request when it is ready, else why there is none, as the approve route says it. */
 const offered = (
@@ -283,18 +287,21 @@ const offered = (
   const name = `@${printable(reviewed.spec.name)}`;
   switch (offer.kind) {
     case "ready":
-      return { ok: true, reviewed, request: offer.request };
+      return { kind: "ready", reviewed, request: offer.request };
     case "denied":
-      return { ok: false, message: printable(offer.message) };
+      return { kind: "refused", message: `${printable(offer.message)} · nothing was approved` };
     case "rejected":
       return {
-        ok: false,
-        message: offer.refusals
-          .map((refusal) => `${name} · ${printable(resourceRefusalWords(refusal))}`)
-          .join("\n"),
+        kind: "refused",
+        message: [
+          ...offer.refusals.map(
+            (refusal) => `${name} · ${printable(resourceRefusalWords(refusal))}`,
+          ),
+          "nothing was approved",
+        ].join("\n"),
       };
     case "approved":
-      return { ok: "approved", message: `${name} is approved ${target} already` };
+      return { kind: "approved", reviewed, message: `${name} is approved ${target} already` };
   }
 };
 
@@ -315,21 +322,29 @@ export const approvalTarget = (
   },
 ): ApprovalTarget => {
   const held = page.settings.find((entry) => entry.spec.name === name);
-  const target = (reviewed: Reviewed): ApprovalTarget =>
-    reviewed.approve.worktree !== null && named.worktree !== null && !named.forProject
-      ? offered(
-          reviewed,
-          reviewed.approve.worktree,
-          `for worktree ${printable(named.worktree.label)}`,
-        )
+  const target = (reviewed: Reviewed): ApprovalTarget => {
+    if (named.worktree === null || named.forProject) {
+      return offered(reviewed, reviewed.approve.project, "for the project");
+    }
+    const forWorktree = `for worktree ${printable(named.worktree.label)}`;
+    if (reviewed.approve.worktree !== null) {
+      return offered(reviewed, reviewed.approve.worktree, forWorktree);
+    }
+    // A worktree resource is approved for the worktree it was read for, never widened to the project.
+    return reviewed.spec.scope === "worktree"
+      ? {
+          kind: "refused",
+          message: `@${printable(reviewed.spec.name)} · the page offers no approval ${forWorktree} · nothing was approved`,
+        }
       : offered(reviewed, reviewed.approve.project, "for the project");
+  };
   /** The only proposal of the name, or why there is none to approve. */
   const fromProposals = (none: string): ApprovalTarget => {
     const proposals = page.proposals.filter((entry) => entry.spec.name === name);
     const [only] = proposals;
     if (only !== undefined && proposals.length === 1) return target(only);
     return {
-      ok: false,
+      kind: "refused",
       message:
         proposals.length === 0
           ? none
@@ -343,7 +358,7 @@ export const approvalTarget = (
     const entry = page.proposals.find((each) => each.id === named.proposal);
     if (entry?.spec.name !== name) {
       return {
-        ok: false,
+        kind: "refused",
         message: `no proposal ${printable(named.proposal)} of @${printable(name)}`,
       };
     }
@@ -455,15 +470,23 @@ export const resourceCommand = async (
         worktree,
         forProject: rest.includes("--for-project"),
       });
-      if (target.ok === "approved") return say(target.message);
-      if (!target.ok) return fail(target.message);
-      const forWorktree = target.request.worktreeId === null ? null : (worktree?.label ?? null);
-      for (const line of reviewLines(target.reviewed, forWorktree)) say(line);
       // What is approved is the digest the approver read: the one they pass, or the one shown.
       const passed = takeFlagValue(rest, "--digest");
       if (passed !== null && !/^sha256:[0-9a-f]{64}$/.test(passed)) {
         return fail("--digest is sha256: and 64 lower-case hex digits, as printed above");
       }
+      if (target.kind === "refused") return fail(target.message);
+      if (target.kind === "approved") {
+        // An approval already made answers only for the definition the approver read.
+        if (passed !== null && passed.slice("sha256:".length) !== target.reviewed.digest) {
+          return fail(
+            `@${printable(name)} · changed since you read it · mend resource list shows what settings hold · nothing was approved`,
+          );
+        }
+        return say(target.message);
+      }
+      const forWorktree = target.request.worktreeId === null ? null : (worktree?.label ?? null);
+      for (const line of reviewLines(target.reviewed, forWorktree)) say(line);
       if (passed === null && (process.stdin.isTTY !== true || process.stdout.isTTY !== true)) {
         return fail(
           "approving without a terminal takes --digest sha256:… of the definition you read, as printed above · nothing was approved",

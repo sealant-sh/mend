@@ -108,7 +108,7 @@ const reasons = (markup: string) =>
       .replaceAll("<!-- -->", "")
       .replaceAll("&#x27;", "'")
       .matchAll(/<span class="text-label">approve ([^<]*)<\/span> ([^<]*)<\/p>/g),
-  ].map((match) => `${match[1]} · ${match[2]}`);
+  ].map((match) => `${match[1]} ${match[2]}`);
 
 describe("the resources card", () => {
   it("says so when there are none", () => {

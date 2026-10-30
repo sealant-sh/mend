@@ -454,18 +454,18 @@ describe("mend resource approve", () => {
 
   it("names a proposal when several share the name, and refuses an id of another name", () => {
     expect(approvalTarget(page, "mail", unnamed)).toEqual({
-      ok: false,
+      kind: "refused",
       message: "2 proposals of @mail · name one with --proposal rprop_1 | rprop_2",
     });
     expect(approvalTarget(page, "db", { ...unnamed, proposal: "rprop_1" })).toEqual({
-      ok: false,
+      kind: "refused",
       message: "no proposal rprop_1 of @db",
     });
   });
 
   it("says a target that approves the spec already, and approves nothing again", () => {
-    expect(approvalTarget(page, "db", unnamed)).toEqual({
-      ok: "approved",
+    expect(approvalTarget(page, "db", unnamed)).toMatchObject({
+      kind: "approved",
       message: "@db is approved for the project already",
     });
   });
@@ -660,14 +660,18 @@ describe("approving, choosing and starting against a server", () => {
     const cases = [
       {
         args: ["cache"],
-        words: "@cache · exports.URL sets MEND_RESOURCE_CACHE_URL, as db does too",
+        words:
+          "@cache · exports.URL sets MEND_RESOURCE_CACHE_URL, as db does too\nnothing was approved",
       },
       {
         args: ["mail", "--worktree", "checkout"],
         words:
-          "@mail · image is not one a manager approved for this project · a manager approves @mail for the project first",
+          "@mail · image is not one a manager approved for this project · a manager approves @mail for the project first\nnothing was approved",
       },
-      { args: ["mail", "--proposal", "rprop_1"], words: NOT_A_MANAGER.project.message },
+      {
+        args: ["mail", "--proposal", "rprop_1"],
+        words: `${NOT_A_MANAGER.project.message} · nothing was approved`,
+      },
     ];
     for (const { args, words } of cases) {
       const out = stdout();
@@ -698,6 +702,79 @@ describe("approving, choosing and starting against a server", () => {
     expect(out).toEqual(["@db is approved for the project already\n"]);
     expect(err).toEqual([]);
     expect(posted(mend.calls)).toEqual([]);
+  });
+
+  it("reads the page for the worktree --worktree names, and never widens its resource to the project", async () => {
+    const box = offering.proposals.find((entry) => entry.spec.name === "box");
+    if (box === undefined) throw new Error("the page proposes box");
+    expect(box.spec.scope).toBe("worktree");
+    const unread = {
+      ...offering,
+      proposals: offering.proposals.map((entry) =>
+        entry === box ? { ...entry, approve: { ...entry.approve, worktree: null } } : entry,
+      ),
+    };
+    stdout();
+    const err = stderr();
+    exits();
+    const mend = server({ ...answers, "GET /projects/p_shop/resources": unread });
+    await expect(
+      resourceCommand(mend.api, async () => shop, [
+        "approve",
+        "box",
+        "--worktree",
+        "checkout",
+        "--digest",
+        `sha256:${box.digest}`,
+      ]),
+    ).rejects.toThrow("exit 1");
+    expect(mend.calls.filter((call) => call.startsWith("GET /projects/p_shop/resources"))).toEqual([
+      expect.stringMatching(/[?&]worktreeId=wt_1(&|$)/),
+    ]);
+    expect(err.join("")).toBe(
+      "mend: @box · the page offers no approval for worktree checkout · nothing was approved\n",
+    );
+    expect(posted(mend.calls)).toEqual([]);
+  });
+
+  it("answers an approval already made only for the definition the approver read", async () => {
+    const [db] = page.settings;
+    if (db === undefined) throw new Error("the page holds db");
+    const run = async (passed: string) => {
+      const out = stdout();
+      const err = stderr();
+      exits();
+      const mend = server({ ...answers, "GET /projects/p_shop/resources": page });
+      const done = await resourceCommand(mend.api, async () => shop, [
+        "approve",
+        "db",
+        "--digest",
+        passed,
+      ]).then(
+        () => "exit 0",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+      vi.restoreAllMocks();
+      return { done, out: out.join(""), err: err.join(""), posted: posted(mend.calls) };
+    };
+    expect(await run(`sha256:${db.digest}`)).toEqual({
+      done: "exit 0",
+      out: "@db is approved for the project already\n",
+      err: "",
+      posted: [],
+    });
+    expect(await run(`sha256:${"e".repeat(64)}`)).toEqual({
+      done: "exit 1",
+      out: "",
+      err: "mend: @db · changed since you read it · mend resource list shows what settings hold · nothing was approved\n",
+      posted: [],
+    });
+    expect(await run("not-a-digest")).toEqual({
+      done: "exit 1",
+      out: "",
+      err: "mend: --digest is sha256: and 64 lower-case hex digits, as printed above\n",
+      posted: [],
+    });
   });
 
   it("approves the digest passed, and prints the line and the image pinned", async () => {

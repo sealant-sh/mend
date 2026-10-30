@@ -428,7 +428,7 @@ export function ResourcesView(props: ResourcesViewProps) {
           key={`${kind}:${reason}`}
           className="mt-1.5 font-mono text-[11px] break-words text-muted-foreground"
         >
-          <span className="text-label">approve {target}</span> {reason}
+          <span className="text-label">approve {target} ·</span> {reason}
         </p>
       )),
     );
@@ -767,7 +767,7 @@ export function ProposalForm(props: {
             key={`${refusal.key}:${refusal.message}`}
             className="font-mono text-[11px] text-danger"
           >
-            {refusal.key} {refusal.message}
+            {resourceRefusalWords(refusal)}
           </p>
         ))}
       </div>
