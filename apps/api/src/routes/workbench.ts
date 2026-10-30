@@ -517,6 +517,32 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
 
 export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (handlers) =>
   handlers
+    .handle("removedDisk", () =>
+      Effect.gen(function* () {
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        return viewer === null ? { projects: 0, bytes: 0 } : yield* (yield* Removal).disk(viewer);
+      }),
+    )
+    .handle("removed", () =>
+      Effect.gen(function* () {
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        return viewer === null ? [] : yield* (yield* Removal).removed(viewer);
+      }),
+    )
+    .handle("restore", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        if (viewer === null) return yield* new NotFound({ id: params.id });
+        return yield* (yield* Removal).restore(params.id, viewer, payload.name);
+      }),
+    )
+    .handle("purge", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        if (viewer === null) return yield* new NotFound({ id: params.id });
+        return yield* (yield* Removal).purge(params.id, viewer, payload.confirm);
+      }),
+    )
     .handle("list", () =>
       Effect.gen(function* () {
         const access = yield* ProjectAccess;

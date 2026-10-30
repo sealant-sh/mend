@@ -1,4 +1,5 @@
-import { SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectNotFoundError } from "@mend/db";
+import { ProjectId, SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
 import {
   Project,
   Session,
@@ -38,6 +39,7 @@ const file = (path: string, additions: number, deletions: number) => ({
 });
 
 interface Scene {
+  readonly failFirstPurge?: boolean;
   /** Files past the base, per worktree; none unless named. */
   readonly changed?: ReadonlyMap<string, ReadonlyArray<ReturnType<typeof file>>>;
   readonly holds?: ReadonlyMap<string, ReadonlyArray<CaptureHold>>;
@@ -88,6 +90,7 @@ const world = async (scene: Scene = {}) => {
             Effect.succeed(scene.setupRunning?.includes(worktreeId) === true),
         },
         engine: {
+          refreshCaptureStatus: () => Effect.void,
           launchUnderWay: () => false,
           captureHolds: (worktreeId) => Effect.succeed(scene.holds?.get(worktreeId) ?? []),
           provisionSessionIn: () =>
@@ -96,6 +99,7 @@ const world = async (scene: Scene = {}) => {
               return session === undefined ? Effect.die("no session") : Effect.succeed(session);
             }),
         },
+        checkpoints: { listForWorktree: () => Effect.succeed([]) },
         forwards: { listOpen: () => Effect.succeed([]) },
         reads: {
           changedFiles: (_projectId, worktreeId) =>
@@ -134,7 +138,8 @@ const world = async (scene: Scene = {}) => {
           byId: (id) =>
             Effect.suspend(() => {
               const project = api?.world.projects.get(id);
-              if (project === undefined) return Effect.die(`no project ${id}`);
+              if (project === undefined || api?.world.retainedProjects.has(id))
+                return Effect.fail(new ProjectNotFoundError({ projectId: id }));
               return Effect.succeed(
                 scene.projectsWithoutOrigin?.includes(id) === true
                   ? new Project({ ...project, originUrl: null })
@@ -144,9 +149,11 @@ const world = async (scene: Scene = {}) => {
           remove: (id) =>
             Effect.sync(() => {
               removedStores.push(`row:${id}`);
+              api?.world.purgeProject(id);
             }),
         },
         store: {
+          retainedStoreProblem: () => Effect.succeed(null),
           removeWorktreeForce: (_storePath, directory) =>
             Effect.gen(function* () {
               removedWorktrees.push(directory);
@@ -156,7 +163,9 @@ const world = async (scene: Scene = {}) => {
           removeProjectStore: (storePath) =>
             Effect.sync(() => {
               removedStores.push(storePath);
-              return { leftover: null };
+              return {
+                leftover: scene.failFirstPurge && removedStores.length === 1 ? storePath : null,
+              };
             }),
         },
       },
@@ -807,7 +816,7 @@ describe.skipIf(postgres.skip)("a removal against Postgres's marks", () => {
 });
 
 describe("DELETE /projects/:id", () => {
-  it("removes a project whose every worktree is at its base and idle", async () => {
+  it("removes a project while keeping its store and records, and hides all ordinary reads", async () => {
     const instance = await world();
     const response = await instance.request(
       "alice",
@@ -815,11 +824,215 @@ describe("DELETE /projects/:id", () => {
       `/api/projects/${privateAlice.project}`,
     );
     expect(response.status).toBe(200);
-    expect(removedStores).toEqual([
-      instance.world.projects.get(privateAlice.project)?.storePath,
-      `row:${privateAlice.project}`,
-    ]);
+    expect(removedStores).toEqual([]);
+    expect(instance.world.sessions.has(privateAlice.session)).toBe(true);
+    for (const path of [
+      `/api/projects/${privateAlice.project}`,
+      `/api/sessions/${privateAlice.session}`,
+      `/api/worktrees/${privateAlice.worktree}`,
+    ])
+      expect((await instance.request("alice", "GET", path)).status).toBe(404);
+    const removed = await instance.request("alice", "GET", "/api/removed-projects");
+    expect(removed.status).toBe(200);
+    expect(await bodyOf(removed)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: privateAlice.project,
+          rights: { restore: true, purge: true },
+        }),
+      ]),
+    );
   });
+
+  it("Restore brings back the same project and sessions without starting anything, and is idempotent", async () => {
+    const instance = await world();
+    const before = await bodyOf(await instance.request("alice", "GET", "/api/projects"));
+    await instance.request("alice", "DELETE", `/api/projects/${privateAlice.project}`);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const response = await instance.request(
+        "alice",
+        "POST",
+        `/api/removed-projects/${privateAlice.project}/restore`,
+        {},
+      );
+      expect(response.status).toBe(200);
+      expect(await bodyOf(response)).toMatchObject({ id: privateAlice.project });
+    }
+    expect(await bodyOf(await instance.request("alice", "GET", "/api/projects"))).toEqual(before);
+    expect(
+      (await instance.request("alice", "GET", `/api/sessions/${privateAlice.session}`)).status,
+    ).toBe(200);
+    expect(removedStores).toEqual([]);
+    expect(
+      instance.world.calls.filter((call) =>
+        /engine\.(?:provision|start|resume|launchSession|land)/.test(call),
+      ),
+    ).toEqual([]);
+  });
+
+  it("only removal authority may Restore, and private removed projects stay hidden", async () => {
+    const instance = await world();
+    await instance.request("alice", "DELETE", `/api/projects/${privateAlice.project}`);
+    expect(
+      (
+        await instance.request(
+          "bob",
+          "POST",
+          `/api/removed-projects/${privateAlice.project}/restore`,
+          {},
+        )
+      ).status,
+    ).toBe(404);
+    expect(await bodyOf(await instance.request("bob", "GET", "/api/removed-projects"))).toEqual([]);
+  });
+
+  it("Restore refuses a taken name with a typed conflict and accepts a supplied new name", async () => {
+    const instance = await world();
+    await instance.request("alice", "DELETE", `/api/projects/${privateAlice.project}`);
+    const conflict = await instance.request(
+      "alice",
+      "POST",
+      `/api/removed-projects/${privateAlice.project}/restore`,
+      { name: "shared-a" },
+    );
+    expect(conflict.status).toBe(409);
+    expect(await bodyOf(conflict)).toMatchObject({ _tag: "ProjectNameConflict", name: "shared-a" });
+    const restored = await instance.request(
+      "alice",
+      "POST",
+      `/api/removed-projects/${privateAlice.project}/restore`,
+      { name: "restored-api" },
+    );
+    expect(restored.status).toBe(200);
+    expect(await bodyOf(restored)).toMatchObject({
+      id: privateAlice.project,
+      name: "restored-api",
+    });
+    expect(removedStores).toEqual([]);
+  });
+
+  it("purge requires the exact project name before deleting its retained store and rows", async () => {
+    const instance = await world();
+    await instance.request("alice", "DELETE", `/api/projects/${privateAlice.project}`);
+    const wrong = await instance.request(
+      "alice",
+      "POST",
+      `/api/removed-projects/${privateAlice.project}/purge`,
+      { confirm: "wrong" },
+    );
+    expect(wrong.status).toBe(422);
+    expect(await bodyOf(wrong)).toMatchObject({ _tag: "PurgeNotConfirmed" });
+    expect(removedStores).toEqual([]);
+    const storePath = instance.world.projects.get(privateAlice.project)?.storePath;
+    const purged = await instance.request(
+      "alice",
+      "POST",
+      `/api/removed-projects/${privateAlice.project}/purge`,
+      { confirm: "private-alice" },
+    );
+    expect(purged.status).toBe(200);
+    expect(await bodyOf(purged)).toMatchObject({ purged: true });
+    expect(removedStores).toEqual([storePath, `row:${privateAlice.project}`]);
+    expect(instance.world.sessions.has(privateAlice.session)).toBe(false);
+  });
+
+  it("a failed purge keeps the project hidden, refuses Restore, and a second purge finishes", async () => {
+    const instance = await world({ failFirstPurge: true });
+    await instance.request("alice", "DELETE", `/api/projects/${privateAlice.project}`);
+    const first = await instance.request(
+      "alice",
+      "POST",
+      `/api/removed-projects/${privateAlice.project}/purge`,
+      { confirm: "private-alice" },
+    );
+    expect(first.status).toBe(503);
+    expect(instance.world.sessions.has(privateAlice.session)).toBe(true);
+    expect(
+      (
+        await instance.request(
+          "alice",
+          "POST",
+          `/api/removed-projects/${privateAlice.project}/restore`,
+          {},
+        )
+      ).status,
+    ).toBe(409);
+    expect(
+      (await instance.request("alice", "GET", `/api/projects/${privateAlice.project}`)).status,
+    ).toBe(404);
+    expect(
+      (
+        await instance.request(
+          "alice",
+          "POST",
+          `/api/removed-projects/${privateAlice.project}/purge`,
+          { confirm: "private-alice" },
+        )
+      ).status,
+    ).toBe(200);
+    expect(instance.world.sessions.has(privateAlice.session)).toBe(false);
+  });
+
+  it("a shared member can see removal metadata but cannot Restore or purge, even as creator", async () => {
+    const instance = await world();
+    const project = instance.world.projects.get(privateAlice.project);
+    if (project === undefined) throw new Error("missing project");
+    instance.world.addProject(
+      new Project({ ...project, visibility: "shared", createdByUserId: "carol" }),
+    );
+    expect((await instance.request("alice", "DELETE", `/api/projects/${project.id}`)).status).toBe(
+      200,
+    );
+    const rows = await bodyOf(await instance.request("carol", "GET", "/api/removed-projects"));
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: project.id, rights: { restore: false, purge: false } }),
+      ]),
+    );
+    for (const verb of ["restore", "purge"])
+      expect(
+        (
+          await instance.request(
+            "carol",
+            "POST",
+            `/api/removed-projects/${project.id}/${verb}`,
+            verb === "purge" ? { confirm: project.name } : {},
+          )
+        ).status,
+      ).toBe(403);
+  });
+
+  it.each([false, true])(
+    "restores a removed scratch project with an occupied slot: %s",
+    async (occupied) => {
+      const instance = await world();
+      const project = instance.world.projects.get(privateAlice.project);
+      if (project === undefined) throw new Error("missing project");
+      instance.world.addProject(new Project({ ...project, scratchOwnerUserId: "alice" }));
+      await instance.request("alice", "DELETE", `/api/projects/${project.id}`);
+      if (occupied)
+        instance.world.addProject(
+          new Project({
+            ...project,
+            id: ProjectId.make("new-scratch"),
+            name: "new-scratch",
+            scratchOwnerUserId: "alice",
+          }),
+        );
+      const response = await instance.request(
+        "alice",
+        "POST",
+        `/api/removed-projects/${project.id}/restore`,
+        {},
+      );
+      expect(response.status).toBe(200);
+      expect(await bodyOf(response)).toMatchObject({
+        id: project.id,
+        scratchOwnerUserId: occupied ? null : "alice",
+        visibility: "private",
+      });
+    },
+  );
 
   it("refuses for a teammate's running process, names them, and stops nothing (Q1, Q2)", async () => {
     const instance = await world();

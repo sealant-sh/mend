@@ -1,5 +1,12 @@
 import {
   NotFound,
+  ProjectRemovalReport,
+  ProjectPurgeReport,
+  ProjectNameConflict,
+  ProjectRetentionForbidden,
+  ProjectRestoreUnavailable,
+  PurgeNotConfirmed,
+  ProjectPurgeIncomplete,
   RemovalForbidden,
   RemovalRefused,
   RemovalReport,
@@ -8,6 +15,7 @@ import {
 import {
   type FencedRow,
   type RemovalFenceId,
+  AuditEventsRepo,
   HotWorkspacesRepo,
   ProjectsRepo,
   REMOVAL_FENCE_RENEW_EVERY,
@@ -33,6 +41,11 @@ import {
   notChangeOwnerWords,
   type Person,
   type Project,
+  type Viewer,
+  RemovedProject,
+  canSeeProject,
+  canRemoveProject,
+  projectRetentionRights,
   projectRefusalWords,
   type RemovalDecision,
   type Session,
@@ -49,13 +62,14 @@ import {
   worktreeRemovalRight,
 } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient } from "@mend/sealant";
-import { SessionEngine } from "@mend/sessions";
+import { SessionEngine, CaptureRuntime } from "@mend/sessions";
 import { Store } from "@mend/store";
 import { Data, Effect, Fiber, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { changeStandingOf } from "./landing-state.ts";
 import { LIVE_STATES } from "./live-states.ts";
+import { purgeProjectBlobs } from "./project-purge-blobs.ts";
 
 /** Who asks for a removal, as the route resolved them. */
 export interface RemovalCaller {
@@ -84,7 +98,31 @@ export class Removal extends Context.Service<
     readonly project: (
       project: Project,
       caller: RemovalCaller,
-    ) => Effect.Effect<RemovalReport, NotFound | RemovalRefused>;
+    ) => Effect.Effect<ProjectRemovalReport, NotFound | RemovalRefused>;
+    readonly disk: (
+      viewer: Viewer,
+    ) => Effect.Effect<{ readonly projects: number; readonly bytes: number | null }>;
+    readonly removed: (viewer: Viewer) => Effect.Effect<ReadonlyArray<RemovedProject>>;
+    readonly restore: (
+      id: ProjectId,
+      viewer: Viewer,
+      name?: string,
+    ) => Effect.Effect<
+      Project,
+      NotFound | ProjectRetentionForbidden | ProjectRestoreUnavailable | ProjectNameConflict
+    >;
+    readonly purge: (
+      id: ProjectId,
+      viewer: Viewer,
+      confirm: string,
+    ) => Effect.Effect<
+      ProjectPurgeReport,
+      | NotFound
+      | ProjectRetentionForbidden
+      | PurgeNotConfirmed
+      | ProjectPurgeIncomplete
+      | RemovalRefused
+    >;
   }
 >()("@mend/api/Removal") {}
 
@@ -152,6 +190,8 @@ export const RemovalLive: Layer.Layer<
   Removal,
   never,
   | StandingServices
+  | CaptureRuntime
+  | AuditEventsRepo
   | HotWorkspacesRepo
   | ProjectsRepo
   | RemovalFencesRepo
@@ -171,6 +211,8 @@ export const RemovalLive: Layer.Layer<
 > = Layer.effect(
   Removal,
   Effect.gen(function* () {
+    const capture = yield* CaptureRuntime;
+    const audit = yield* AuditEventsRepo;
     const fences = yield* RemovalFencesRepo;
     const worktrees = yield* WorktreesRepo;
     const projects = yield* ProjectsRepo;
@@ -348,7 +390,7 @@ export const RemovalLive: Layer.Layer<
      * next removal to finish at once. A removal that meets another under way reports that with
      * every other blocker, read without a mark.
      */
-    const underFence = <Target, Denied, E, Gone>(
+    const underFence = <Target, Denied, E, Gone, Report>(
       row: FencedRow,
       scope: "worktree" | "project",
       steps: {
@@ -358,10 +400,11 @@ export const RemovalLive: Layer.Layer<
         readonly remove: (
           target: Target,
           step: Effect.Effect<void, MarkLost>,
-        ) => Effect.Effect<RemovalReport, MarkLost>;
+        ) => Effect.Effect<Report, MarkLost>;
         readonly gone: Gone;
+        readonly commit?: (target: Target, mark: RemovalFenceId) => Effect.Effect<boolean>;
       },
-    ): Effect.Effect<RemovalReport, Denied | E | Gone | RemovalRefused> =>
+    ): Effect.Effect<Report, Denied | E | Gone | RemovalRefused> =>
       Effect.gen(function* () {
         const taken = yield* fences.take(row);
         if (taken._tag === "gone") return yield* Effect.fail(steps.gone);
@@ -387,7 +430,12 @@ export const RemovalLive: Layer.Layer<
         const lost = (stopped: StoppedRemoval | null) => refused(scope, underway(stopped), false);
         return yield* Effect.uninterruptible(
           Effect.gen(function* () {
-            if (taken._tag === "held" && !(yield* fences.commit(row, taken.id))) {
+            if (
+              taken._tag === "held" &&
+              !(yield* steps.commit === undefined
+                ? fences.commit(row, taken.id)
+                : steps.commit(target, taken.id))
+            ) {
               yield* giveBack;
               return yield* lost(null);
             }
@@ -472,6 +520,7 @@ export const RemovalLive: Layer.Layer<
     ) {
       return yield* underFence({ kind: "project", id: target.id }, "project", {
         authorize: Effect.succeed(target),
+        commit: (_, mark) => fences.keep(target.id, mark, caller.userId),
         // Resources keep their data only in their volumes (docs/adr/0019, "Durability"): a
         // declaration made while this removal's mark stands is refused, so the names read here
         // are every one there will be.
@@ -505,16 +554,200 @@ export const RemovalLive: Layer.Layer<
                     ),
               { concurrency: 4 },
             );
-            yield* step;
-            const { leftover } = yield* store.removeProjectStore(target.storePath);
-            yield* step;
-            yield* projects.remove(target.id);
-            return new RemovalReport({ removed: true, leftover });
+            yield* audit.record({
+              organizationId: target.organizationId,
+              actorUserId: caller.userId,
+              action: "project.removed",
+              subjectType: "project",
+              subjectId: target.id,
+            });
+            return new ProjectRemovalReport({
+              removed: true,
+              leftover: null,
+              retained: true,
+              message:
+                "Project removed. Its files and history are kept. Restore it from Removed projects.",
+            });
           }),
         gone: new NotFound({ id: target.id }),
       });
     });
 
-    return { worktree: removeWorktree, project: removeProject };
+    const disk = Effect.fn("Removal.disk")(function* (viewer: Viewer) {
+      const kept = (yield* projects.removedForOrganization(viewer.organizationId)).filter(
+        ({ project }) => canSeeProject(project, viewer),
+      );
+      const sizes = yield* Effect.forEach(
+        kept,
+        ({ project }) => store.projectDiskUsage(project.storePath),
+        { concurrency: 4 },
+      );
+      return {
+        projects: kept.length,
+        bytes: sizes.some((size) => size === null)
+          ? null
+          : sizes.reduce<number>((total, size) => total + (size ?? 0), 0),
+      };
+    });
+
+    const removed = Effect.fn("Removal.removed")(function* (viewer: Viewer) {
+      return (yield* projects.removedForOrganization(viewer.organizationId))
+        .filter(({ project }) => canSeeProject(project, viewer))
+        .map(
+          ({ project, removedAt, removedByUserId, state }) =>
+            new RemovedProject({
+              id: project.id,
+              name: project.name,
+              organizationId: project.organizationId,
+              visibility: project.visibility,
+              createdByUserId: project.createdByUserId,
+              removedAt,
+              removedByUserId,
+              state,
+              rights: {
+                ...projectRetentionRights(project, viewer),
+                restore: state === "removed" && canRemoveProject(project, viewer),
+              },
+            }),
+        );
+    });
+
+    const authorizedRetained = Effect.fn("Removal.authorizedRetained")(function* (
+      id: ProjectId,
+      viewer: Viewer,
+    ) {
+      const kept = yield* projects.removedById(id);
+      if (kept === null || !canSeeProject(kept.project, viewer)) return yield* new NotFound({ id });
+      if (!canRemoveProject(kept.project, viewer))
+        return yield* new ProjectRetentionForbidden({
+          message:
+            "Only the private project's creator or an organization owner for a shared project can Restore or purge it.",
+        });
+      return kept;
+    });
+
+    const restore = Effect.fn("Removal.restore")(function* (
+      id: ProjectId,
+      viewer: Viewer,
+      name?: string,
+    ) {
+      const listed = yield* projects
+        .byId(id)
+        .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+      if (listed !== null) {
+        if (!canSeeProject(listed, viewer)) return yield* new NotFound({ id });
+        if (!canRemoveProject(listed, viewer))
+          return yield* new ProjectRetentionForbidden({
+            message: "You cannot Restore this project.",
+          });
+        return listed;
+      }
+      const kept = yield* authorizedRetained(id, viewer);
+      if (kept.state !== "removed")
+        return yield* new ProjectRestoreUnavailable({
+          message:
+            kept.state === "recovery-required"
+              ? "An earlier deletion stopped partway. The inventory of files and records it deleted is missing, so completeness cannot be proved. Purge again to finish deleting it."
+              : "Purge has started. Its files may be incomplete. Purge again to finish.",
+        });
+      const problem = yield* store.retainedStoreProblem(
+        kept.project.storePath,
+        capture.enabled
+          ? []
+          : (yield* worktrees.listForProject(id)).map((worktree) => worktree.directory),
+      );
+      if (problem !== null) return yield* new ProjectRestoreUnavailable({ message: problem });
+      const outcome = yield* fences.restore(id, viewer.userId, name ?? kept.project.name).pipe(
+        Effect.catchTag("ProjectNameTakenError", () =>
+          Effect.fail(
+            new ProjectNameConflict({
+              name: name ?? kept.project.name,
+              message: "A listed project has that name. Supply a new name to Restore this project.",
+            }),
+          ),
+        ),
+      );
+      if (outcome === "gone") return yield* new NotFound({ id });
+      if (outcome === "purging" || outcome === "legacy")
+        return yield* new ProjectRestoreUnavailable({
+          message: "Purge has started. Purge again to finish.",
+        });
+      if (outcome === "restored")
+        yield* audit.record({
+          organizationId: kept.project.organizationId,
+          actorUserId: viewer.userId,
+          action: "project.restored",
+          subjectType: "project",
+          subjectId: id,
+        });
+      return yield* projects
+        .byId(id)
+        .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.fail(new NotFound({ id }))));
+    });
+
+    const purge = Effect.fn("Removal.purge")(function* (
+      id: ProjectId,
+      viewer: Viewer,
+      confirm: string,
+    ) {
+      const kept = yield* authorizedRetained(id, viewer);
+      if (confirm !== kept.project.name)
+        return yield* new PurgeNotConfirmed({
+          message: "Type the project's name exactly to confirm purge.",
+        });
+      const taken = yield* fences.takePurge(id);
+      if (taken._tag === "gone") return yield* new NotFound({ id });
+      if (taken._tag === "underway")
+        return yield* refused("project", underway(taken.stopped), false);
+      const row = { kind: "project", id } as const;
+      return yield* Effect.uninterruptible(
+        renewing(
+          row,
+          taken.id,
+          Effect.gen(function* () {
+            if (!(yield* fences.renew(row, taken.id)))
+              return yield* new ProjectPurgeIncomplete({
+                message:
+                  "Another purge is working on this project. Retry purge to observe its result.",
+              });
+            yield* purgeProjectBlobs(
+              capture,
+              id,
+              (yield* worktrees.listForProject(id)).map((tree) => tree.id),
+              capture.enabled ? yield* worktrees.handoffPacks(id) : [],
+            ).pipe(
+              Effect.catch(() =>
+                Effect.fail(
+                  new ProjectPurgeIncomplete({
+                    message: "Some stored objects could not be deleted. Purge again to finish.",
+                  }),
+                ),
+              ),
+            );
+            const { leftover } = yield* store.removeProjectStore(kept.project.storePath);
+            if (leftover !== null)
+              return yield* new ProjectPurgeIncomplete({
+                message:
+                  "Some files could not be deleted. Fix their permissions and purge again to finish.",
+              });
+            if (!(yield* fences.renew(row, taken.id)))
+              return yield* new ProjectPurgeIncomplete({
+                message: "Purge stopped before deleting records. Purge again to finish.",
+              });
+            yield* projects.remove(id);
+            yield* audit.record({
+              organizationId: kept.project.organizationId,
+              actorUserId: viewer.userId,
+              action: "project.purged",
+              subjectType: "project",
+              subjectId: id,
+            });
+            return new ProjectPurgeReport({ id, purged: true });
+          }),
+        ).pipe(Effect.onError(() => fences.handOver(row, taken.id))),
+      );
+    });
+
+    return { worktree: removeWorktree, project: removeProject, removed, restore, purge, disk };
   }),
 );

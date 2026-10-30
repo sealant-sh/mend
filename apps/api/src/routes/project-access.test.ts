@@ -86,6 +86,11 @@ interface AccessCase {
 
 /** Endpoints with no project behind them: authenticated-only, public, or tested on their own. */
 const UNSCOPED: ReadonlySet<string> = new Set([
+  // Recovery authority and hidden descendants are exercised in removal.test.ts.
+  "projects.removed",
+  "projects.removedDisk",
+  "projects.restore",
+  "projects.purge",
   "health.status",
   "instance.get",
   "machine.get",

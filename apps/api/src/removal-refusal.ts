@@ -1,6 +1,10 @@
 import { RemovalInProgress } from "@mend/api-contracts";
-import { isRemovalFenced, isRemovalStopped } from "@mend/db";
-import { REMOVAL_START_REFUSED, REMOVAL_START_REFUSED_STOPPED } from "@mend/domain/workbench";
+import { isRemovalFenced, isRemovalStopped, isRemovedProject } from "@mend/db";
+import {
+  REMOVED_PROJECT_START_REFUSED,
+  REMOVAL_START_REFUSED,
+  REMOVAL_START_REFUSED_STOPPED,
+} from "@mend/domain/workbench";
 import { type Cause, Effect } from "effect";
 
 /**
@@ -12,7 +16,11 @@ import { type Cause, Effect } from "effect";
 export const removalInProgressOf = (cause: Cause.Cause<unknown>): RemovalInProgress | null =>
   isRemovalFenced(cause)
     ? new RemovalInProgress({
-        message: isRemovalStopped(cause) ? REMOVAL_START_REFUSED_STOPPED : REMOVAL_START_REFUSED,
+        message: isRemovedProject(cause)
+          ? REMOVED_PROJECT_START_REFUSED
+          : isRemovalStopped(cause)
+            ? REMOVAL_START_REFUSED_STOPPED
+            : REMOVAL_START_REFUSED,
       })
     : null;
 

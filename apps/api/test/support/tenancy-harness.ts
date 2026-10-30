@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Auth } from "@mend/auth";
+import type { RetainedProject } from "@mend/db";
 import { ProjectNameTakenError, ScratchProjectExistsError } from "@mend/db";
 import {
   AgentConversationRepo,
@@ -241,6 +242,8 @@ export interface TenancyWorld {
   readonly root: string;
   readonly calls: Array<string>;
   readonly projects: ReadonlyMap<ProjectId, Project>;
+  readonly retainedProjects: Map<ProjectId, RetainedProject>;
+  readonly purgeProject: (id: ProjectId) => void;
   readonly sessions: ReadonlyMap<SessionId, Session>;
   readonly worktrees: ReadonlyMap<WorktreeId, Worktree>;
   readonly changes: ReadonlyMap<ChangeId, Change>;
@@ -386,6 +389,7 @@ export const createTenancyWorld = async (
   );
 
   const projects = new Map<ProjectId, Project>();
+  const retainedProjects = new Map<ProjectId, RetainedProject>();
   const worktrees = new Map<WorktreeId, Worktree>();
   const nestedRepositories: TenancyWorld["nestedRepositories"] = new Map();
   const changes = new Map<ChangeId, Change>();
@@ -764,27 +768,44 @@ export const createTenancyWorld = async (
       ProjectsRepo,
       "projects",
       {
+        removedById: (id) => Effect.sync(() => retainedProjects.get(id) ?? null),
+        removedForOrganization: (id) =>
+          Effect.sync(() =>
+            [...retainedProjects.values()].filter(({ project }) => project.organizationId === id),
+          ),
+        storeClaimed: (storePath) =>
+          Effect.sync(() => [...projects.values()].some((p) => p.storePath === storePath)),
         byName: (org, name) =>
           Effect.sync(
             () =>
-              [...projects.values()].find((p) => p.organizationId === org && p.name === name) ??
-              null,
+              [...projects.values()].find(
+                (p) => !retainedProjects.has(p.id) && p.organizationId === org && p.name === name,
+              ) ?? null,
           ),
         byScratchOwner: (userId) =>
           Effect.sync(
-            () => [...projects.values()].find((p) => p.scratchOwnerUserId === userId) ?? null,
+            () =>
+              [...projects.values()].find(
+                (p) => !retainedProjects.has(p.id) && p.scratchOwnerUserId === userId,
+              ) ?? null,
           ),
         publishInitialized: (input) =>
           Effect.gen(function* () {
             if (
               [...projects.values()].some(
-                (p) => p.organizationId === input.organizationId && p.name === input.name,
+                (p) =>
+                  !retainedProjects.has(p.id) &&
+                  p.organizationId === input.organizationId &&
+                  p.name === input.name,
               )
             )
               return yield* new ProjectNameTakenError({ name: input.name });
             if (
               input.purpose === "scratch" &&
-              [...projects.values()].some((p) => p.scratchOwnerUserId === input.createdByUserId)
+              [...projects.values()].some(
+                (p) =>
+                  !retainedProjects.has(p.id) && p.scratchOwnerUserId === input.createdByUserId,
+              )
             )
               return yield* new ScratchProjectExistsError({ userId: input.createdByUserId });
             const { headSha, purpose, ...row } = input;
@@ -797,13 +818,22 @@ export const createTenancyWorld = async (
             projects.set(created.id, created);
             return created;
           }),
-        byId: (id) => found(projects, id, () => new ProjectNotFoundError({ projectId: id })),
+        byId: (id) =>
+          Effect.suspend(() =>
+            retainedProjects.has(id)
+              ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
+              : found(projects, id, () => new ProjectNotFoundError({ projectId: id })),
+          ),
         listForOrganization: (organizationId) =>
           Effect.succeed(
-            [...projects.values()].filter((project) => project.organizationId === organizationId),
+            [...projects.values()].filter(
+              (project) =>
+                !retainedProjects.has(project.id) && project.organizationId === organizationId,
+            ),
           ),
         // A dotfiles change rewarms every project that keeps hot workspaces.
-        listAll: () => Effect.succeed([...projects.values()]),
+        listAll: () =>
+          Effect.sync(() => [...projects.values()].filter((p) => !retainedProjects.has(p.id))),
         ...implement.projects,
       },
       calls,
@@ -999,6 +1029,13 @@ export const createTenancyWorld = async (
   );
 
   return {
+    retainedProjects,
+    purgeProject: (id) => {
+      projects.delete(id);
+      retainedProjects.delete(id);
+      for (const [key, session] of sessions) if (session.projectId === id) sessions.delete(key);
+      for (const [key, worktree] of worktrees) if (worktree.projectId === id) worktrees.delete(key);
+    },
     root,
     calls,
     projects,

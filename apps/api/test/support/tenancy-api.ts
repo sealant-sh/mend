@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { ProjectNameTakenError } from "@mend/db";
 import {
   AuditEventsRepo,
   MemberRevocationsRepo,
@@ -67,6 +68,7 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import type { DotfilesRepository, SessionId } from "@mend/domain";
+import { Project } from "@mend/domain/workbench";
 import {
   emptyHarnessModelCatalog,
   type Session,
@@ -367,6 +369,61 @@ export const createTenancyApi = async (
   >();
   const marked = (key: string) => removalMarks.has(key);
   const inMemoryFences: RemovalFencesRepo["Service"] = {
+    keep: (id, mark, userId) =>
+      Effect.sync(() => {
+        const project = world.projects.get(id);
+        if (project === undefined || removalMarks.get(`project:${id}`)?.id !== mark) return false;
+        world.retainedProjects.set(id, {
+          project,
+          removedAt: new Date(),
+          removedByUserId: userId,
+          state: "removed",
+        });
+        return true;
+      }),
+    restore: (id, _userId, name) =>
+      Effect.gen(function* () {
+        const kept = world.retainedProjects.get(id);
+        if (kept === undefined)
+          return world.projects.has(id) ? ("listed" as const) : ("gone" as const);
+        if (kept.state === "purging") return "purging" as const;
+        if (kept.state === "recovery-required") return "legacy" as const;
+        const desiredName = name ?? kept.project.name;
+        if (
+          [...world.projects.values()].some(
+            (p) =>
+              !world.retainedProjects.has(p.id) &&
+              p.organizationId === kept.project.organizationId &&
+              p.name === desiredName,
+          )
+        )
+          return yield* new ProjectNameTakenError({ name: desiredName });
+        const scratchTaken = [...world.projects.values()].some(
+          (p) =>
+            !world.retainedProjects.has(p.id) &&
+            p.scratchOwnerUserId !== null &&
+            p.scratchOwnerUserId === kept.project.scratchOwnerUserId,
+        );
+        world.addProject(
+          new Project({
+            ...kept.project,
+            name: desiredName,
+            scratchOwnerUserId: scratchTaken ? null : kept.project.scratchOwnerUserId,
+          }),
+        );
+        world.retainedProjects.delete(id);
+        removalMarks.delete(`project:${id}`);
+        return "restored" as const;
+      }),
+    takePurge: (id) =>
+      Effect.sync((): FenceTaken => {
+        const kept = world.retainedProjects.get(id);
+        if (kept === undefined) return { _tag: "gone" };
+        const mark = RemovalFenceId.make(`rmv_${crypto.randomUUID()}`);
+        world.retainedProjects.set(id, { ...kept, state: "purging" });
+        removalMarks.set(`project:${id}`, { phase: "deleting", id: mark });
+        return { _tag: "finish", id: mark };
+      }),
     take: (row) =>
       Effect.andThen(
         options.beforeTake ?? Effect.void,
