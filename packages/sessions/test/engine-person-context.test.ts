@@ -45,7 +45,7 @@ import {
   type WorkspaceCaptureOwnerMap,
   type WorkspaceCaptureReplanned,
 } from "@sealant/sdk";
-import { Clock, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
+import { Cause, Clock, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { LEASE_REAPER_INTERVAL_SECONDS } from "../src/capture-runtime.ts";
@@ -1468,9 +1468,10 @@ describe("per-person harness homes (docs/adr/0016)", () => {
   /**
    * A person launch whose layout decision dies with `defect`: the box's 500 (0.36.0-next.645),
    * the operator's person launch with the flag unset and the SDK refusing the image question's
-   * options by throwing. Answers the session's line once nothing was created.
+   * options by throwing. Answers the session's line and the launch's defects once nothing was
+   * created; with `settleRefused`, the store refuses the settlement with it too.
    */
-  const launchWhoseLayoutDecisionDies = async (defect: unknown) => {
+  const launchWhoseLayoutDecisionDies = async (defect: unknown, settleRefused?: unknown) => {
     const throwing = Layer.effect(
       PersonLayoutPlatform,
       Effect.map(PersonLayoutPlatform, (inner) => ({
@@ -1480,7 +1481,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ).pipe(Layer.provide(personPlatform([], { person: true })));
     const created: Array<CreateOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
-    const summary = await withEngine(
+    const outcome = await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
           const project = yield* setup(tmp, world);
@@ -1494,11 +1495,16 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             start: { kind: "base", base: null },
             harnessLayout: "person",
           });
+          if (settleRefused !== undefined) world.settleRefused = () => settleRefused;
           const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
-          expect(launched._tag).toBe("Failure");
           const row = world.sessions.get(session.id);
-          expect(row?.status).toBe("failed");
-          return row?.summary ?? null;
+          return {
+            status: row?.status,
+            summary: row?.summary ?? null,
+            defects: Exit.isFailure(launched)
+              ? launched.cause.reasons.filter(Cause.isDieReason).map((each) => each.defect)
+              : null,
+          };
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -1523,28 +1529,39 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     );
     expect(created).toHaveLength(0);
     expect(execCalls).toHaveLength(0);
-    return summary;
+    return outcome;
   };
 
   it("settles a launch whose layout decision throws the SDK's options refusal: failed, the refusal on the session line, nothing created (box, 0.36.0-next.645)", async () => {
     const words =
       "workspaces.create requires exactly one of `repository` (a git remote to clone) or `source` (a caller-owned mount).";
     const refusal = new SealantError(words, { code: "invalid_create_options" });
-    expect(await launchWhoseLayoutDecisionDies(toPlatformError(refusal))).toBe(
-      `launch failed: ${words}`,
-    );
+    const launched = await launchWhoseLayoutDecisionDies(toPlatformError(refusal));
+    expect(launched.status).toBe("failed");
+    expect(launched.summary).toBe(`launch failed: ${words}`);
   });
 
   it("settles a launch whose layout decision dies with an error of its own: failed, its words withheld from the session line (SLNT-385)", async () => {
     const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
-    const summary = await launchWhoseLayoutDecisionDies(new Error(words));
+    const { status, summary } = await launchWhoseLayoutDecisionDies(new Error(words));
+    expect(status).toBe("failed");
     expect(summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
     expect(summary).not.toContain(words);
   });
 
+  it("keeps a launch's own failure when the store refuses its settlement too, for the leftover sweep to settle (SLNT-385)", async () => {
+    const decision = new Error("the layout decision broke");
+    const { status, defects } = await launchWhoseLayoutDecisionDies(
+      decision,
+      new Error("could not extend file: No space left on device"),
+    );
+    expect(status).not.toBe("failed");
+    expect(defects).toEqual([decision]);
+  });
+
   it("withholds an SDK error whose words Mend never curated from the session line (SLNT-385)", async () => {
     const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
-    const summary = await launchWhoseLayoutDecisionDies(
+    const { summary } = await launchWhoseLayoutDecisionDies(
       toPlatformError(new SealantApiError(`request refused: ${words}`, { status: 500 })),
     );
     expect(summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);

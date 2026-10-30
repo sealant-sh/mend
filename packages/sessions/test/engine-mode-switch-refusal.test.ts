@@ -846,6 +846,10 @@ describe("a mode switch to the terminal continues the conversation it checked (S
       run.layers,
     );
     expect(codeOf(refusal)).toBe("mode_switch_terminal_not_opened");
+    // The answer names a reference to the log, never the defect's own words (SLNT-385).
+    expect(refusal instanceof SealantPlatformError ? refusal.message : "").toMatch(
+      /^The terminal did not open \(internal error · reference [0-9a-f]{16}\) · the conversation goes on$/,
+    );
     expect.soft(conversations).toHaveLength(1);
     expect.soft(conversations[0]?.providerSessionId).toBe(PROVIDER);
     expect(laterTurn).toBe("delivered");
