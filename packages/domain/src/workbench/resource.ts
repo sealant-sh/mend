@@ -388,19 +388,41 @@ export const RESOURCE_PRESETS: {
   },
 };
 
-/** The port and data directory a preset's own image uses, by its major version. */
+/**
+ * The port and data directory a preset's own image uses, by its major version, and the command
+ * that runs its engine with every acknowledged write durable (ADR 0019, "Engine settings are part
+ * of the preset"). The command is in the definition, so approving it approves those settings.
+ */
 const PRESET_LAYOUT: {
   readonly [P in ResourcePreset]: {
     readonly port: number;
     readonly data: (major: number) => string;
+    readonly command: readonly [string, ...Array<string>];
   };
 } = {
   postgres: {
     port: 5432,
     data: (major) => (major >= 18 ? "/var/lib/postgresql" : "/var/lib/postgresql/data"),
+    command: ["postgres", "-c", "fsync=on", "-c", "synchronous_commit=on"],
   },
-  mysql: { port: 3306, data: () => "/var/lib/mysql" },
-  redis: { port: 6379, data: () => "/data" },
+  mysql: {
+    port: 3306,
+    data: () => "/var/lib/mysql",
+    command: ["mysqld", "--innodb-flush-log-at-trx-commit=1"],
+  },
+  redis: {
+    port: 6379,
+    data: () => "/data",
+    command: [
+      "redis-server",
+      "--appendonly",
+      "yes",
+      "--appendfsync",
+      "always",
+      "--maxmemory-policy",
+      "noeviction",
+    ],
+  },
 };
 
 export const PRESET_VERSION_RULE =
@@ -419,7 +441,7 @@ export type PresetVersion = typeof PresetVersion.Type;
 
 /**
  * The definition `--preset postgres --version 17` names: the preset's own image at that tag, its
- * port, one data volume and its own ready check. Built in one place so every client proposes the
+ * engine settings, its port, one data volume and its own ready check. Built in one place so every client proposes the
  * same spec.
  */
 export const presetDefinition = (input: {
@@ -433,7 +455,7 @@ export const presetDefinition = (input: {
     name: input.name,
     preset: input.preset,
     image: `${RESOURCE_PRESETS[input.preset].images[0] ?? input.preset}:${input.version}`,
-    command: null,
+    command: layout.command,
     ports: [{ name: input.preset, port: layout.port, protocol: "tcp" as const }],
     env: {},
     volumes: [

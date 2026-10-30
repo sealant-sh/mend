@@ -8,6 +8,8 @@ import {
   ResourceRefusal,
   ResourceScope,
   ResourceSpecDigest,
+  SelectionRevision,
+  WorktreeChoice,
 } from "./resource.ts";
 
 /**
@@ -136,3 +138,66 @@ export interface ResourcesStatus {
         readonly notices: ReadonlyArray<string>;
       };
 }
+
+/** A definition settings hold, as its reader saw it: a write over it holds only while it still is. */
+export const ResourceDefinitionVersion = Schema.Struct({
+  id: ResourceDefinitionId,
+  digest: ResourceSpecDigest,
+});
+
+/**
+ * What an approver read and approves, by the digest they read: the definition settings hold, a
+ * member's proposal, or one `[resource.*]` table in a worktree's `mend.toml`. Adopting a proposal
+ * or a table names what settings held under its name when it was read (null for nothing), so it
+ * never writes over a definition its approver did not see.
+ */
+export const ResourceApprovalSource = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("settings"),
+    id: ResourceDefinitionId,
+    digest: ResourceSpecDigest,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("proposal"),
+    id: ResourceProposalId,
+    digest: ResourceSpecDigest,
+    settings: Schema.NullOr(ResourceDefinitionVersion),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("file"),
+    worktreeId: WorktreeId,
+    name: ResourceName,
+    digest: ResourceSpecDigest,
+    settings: Schema.NullOr(ResourceDefinitionVersion),
+  }),
+]);
+export type ResourceApprovalSource = typeof ResourceApprovalSource.Type;
+
+export const ResourceApprovalRequest = Schema.Struct({
+  source: ResourceApprovalSource,
+  /** Null approves for the project; a worktree approves a worktree resource for it alone (G4). */
+  worktreeId: Schema.NullOr(WorktreeId),
+});
+export type ResourceApprovalRequest = typeof ResourceApprovalRequest.Type;
+
+export const ResourceApproved = Schema.Struct({
+  definition: ResourceSettingEntry,
+  /** The image as it runs, pinned to the digest it resolved to: `postgres:17@sha256:…`. */
+  image: Schema.String,
+  /** The registry or mirror that answered; null when nothing was asked, as for an image pinned already. */
+  resolvedBy: Schema.NullOr(Schema.String),
+});
+export type ResourceApproved = typeof ResourceApproved.Type;
+
+export const ResourceUseRequest = Schema.Struct({ mode: WorktreeChoice });
+
+/** A worktree's choice, as the write that made it stored it. */
+export const ResourceSelectionEntry = Schema.Struct({
+  definitionId: ResourceDefinitionId,
+  worktreeId: WorktreeId,
+  mode: WorktreeChoice,
+  revision: SelectionRevision,
+  chosenBy: Schema.NullOr(Schema.String),
+  statusLine: Schema.String,
+});
+export type ResourceSelectionEntry = typeof ResourceSelectionEntry.Type;

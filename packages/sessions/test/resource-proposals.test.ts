@@ -66,8 +66,8 @@ describe("[resource.*] proposals in mend.toml", () => {
       },
     ]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
-      "web · depends · @db · shared services are not available yet",
-      "web · depends · @queue · shared services are not available yet",
+      "web · depends · @db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+      "web · depends · @queue · resources need a newer Sealant on this runtime · this session can run its own [service.queue]",
     ]);
     expect(file.ignored).toEqual([]);
   });

@@ -17,6 +17,7 @@ import {
   type RepoRelativePath,
   repoRelativePathOf,
   type ResourceDefinitionInput,
+  resourceRuntimeRefusal,
   ServiceDeclarations,
   type ServiceAddress,
   type ServiceHostPolicy,
@@ -96,9 +97,6 @@ const mendsEnvName = (name: string): string | null =>
     : name === "PORT"
       ? "PORT is Mend's: it is the recipe's port"
       : null;
-
-/** The reserved spellings of a shared service (P-SLNT-46), refused until it exists. */
-const sharedServiceRefusal = (alias: string) => `@${alias} · shared services are not available yet`;
 
 interface RecipeFields {
   readonly command: string | null;
@@ -239,13 +237,13 @@ const READERS: { readonly [K in keyof RecipeFields]: KeyReader<K> } = {
     for (const entry of value) {
       if (typeof entry === "string" && entry.startsWith("@")) {
         refused = true;
-        context.refuse("depends", sharedServiceRefusal(entry.slice(1)));
+        context.refuse("depends", resourceRuntimeRefusal(entry.slice(1)));
       } else if (isRecord(entry) && typeof entry["shared"] === "string") {
         refused = true;
-        context.refuse("depends", sharedServiceRefusal(entry["shared"]));
+        context.refuse("depends", resourceRuntimeRefusal(entry["shared"]));
       } else if (isRecord(entry) && typeof entry["resource"] === "string") {
         refused = true;
-        context.refuse("depends", sharedServiceRefusal(entry["resource"]));
+        context.refuse("depends", resourceRuntimeRefusal(entry["resource"]));
       } else if (typeof entry === "string" && RECIPE_NAME.test(entry)) {
         if (!names.includes(entry)) names.push(entry);
       } else {

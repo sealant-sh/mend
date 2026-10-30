@@ -713,6 +713,34 @@ describe("a preset's definition", () => {
     expect(db.volumes).toEqual([{ name: "data", mountPath: "/var/lib/postgresql" }]);
     expect(db.scope).toBe("worktree");
   });
+
+  it.each([
+    ["postgres", "17", ["postgres", "-c", "fsync=on", "-c", "synchronous_commit=on"]],
+    ["mysql", "8.4", ["mysqld", "--innodb-flush-log-at-trx-commit=1"]],
+    [
+      "redis",
+      "8",
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--appendfsync",
+        "always",
+        "--maxmemory-policy",
+        "noeviction",
+      ],
+    ],
+  ] as const)("runs %s with its durable engine settings, inside the approved digest", (preset, version, command) => {
+    const input = {
+      name: ResourceName.make("db"),
+      preset,
+      version: PresetVersion.make(version),
+      scope: "project",
+    } as const;
+    const def = presetDefinition(input);
+    expect(def.command).toEqual(command);
+    expect(resourceSpecDigest(def)).not.toBe(resourceSpecDigest({ ...def, command: null }));
+  });
 });
 
 describe("a definition's free text and image", () => {

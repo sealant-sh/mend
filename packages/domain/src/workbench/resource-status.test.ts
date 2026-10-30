@@ -392,4 +392,17 @@ describe("a resource only declared", () => {
       "@mail · mailpit · worktree · approved by Tom for this worktree · not started",
     );
   });
+
+  it("says what a worktree chose, in the words its use is read in", () => {
+    expect(
+      declared(db, {
+        kind: "settings",
+        approval: { by: "Maria", for: "project" },
+        choice: "own",
+      }),
+    ).toBe("@db · postgres 17 · project · approved by Maria · its own database · not started");
+    expect(declared(cache, { kind: "settings", approval: null, choice: "shared" })).toBe(
+      "@cache · redis 8 · project · waiting for approval · shared",
+    );
+  });
 });

@@ -12,13 +12,13 @@ describe("mend service run <name> with no recipe to run", () => {
             key: "cwd",
             message: "is absolute; name a path inside the repository",
           },
-          { name: "web", key: "depends", message: "@db · shared services are not available yet" },
+          { name: "web", key: "depends", message: "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]" },
           { name: "api", key: "port", message: "must be a port in 1..65535" },
         ],
         ignored: [],
       }),
     ).toBe(
-      "web is refused by mend.toml · cwd is absolute; name a path inside the repository · depends @db · shared services are not available yet",
+      "web is refused by mend.toml · cwd is absolute; name a path inside the repository · depends @db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
     );
   });
 
