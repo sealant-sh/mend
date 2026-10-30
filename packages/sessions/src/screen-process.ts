@@ -5,13 +5,14 @@ import type {
   SessionProcessesRepo,
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, type SessionId } from "@mend/domain";
-import type { Screen, ScreenEndReason, Session, SessionProcess } from "@mend/domain/workbench";
 import type {
-  PersonExecOptions,
-  PersonSessionOptions,
-  ProcessUser,
-  SealantPlatformError,
-} from "@mend/sealant";
+  DisplayNumber,
+  Screen,
+  ScreenEndReason,
+  Session,
+  SessionProcess,
+} from "@mend/domain/workbench";
+import type { PersonSessionOptions, ProcessUser, SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession, Workspace, WorkspaceExecResult } from "@sealant/sdk";
 import { Effect, Schema, Stream } from "effect";
 import * as Semaphore from "effect/Semaphore";
@@ -44,10 +45,10 @@ export interface ScreenProcessDeps<E> {
     argv: ReadonlyArray<string>,
     options?: PersonSessionOptions,
   ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
+  /** Runs `argv` in `process`'s workspace as the person it runs as. */
   readonly exec: (
-    workspace: Workspace,
+    process: SessionProcess,
     argv: ReadonlyArray<string>,
-    options?: PersonExecOptions,
   ) => Effect.Effect<WorkspaceExecResult, SealantPlatformError>;
   /** Closes a process's terminal; false when the platform would not. */
   readonly close: (workspaceId: SealantWorkspaceId, ptyId: string) => Effect.Effect<boolean>;
@@ -116,12 +117,23 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
       .setLife(screen.id, change)
       .pipe(Effect.catchTag("ScreenNotFoundError", () => Effect.void));
 
-  const endedRow = (row: SessionProcess) =>
+  /** Ends what a start with no answer left on `display`; false when the reap did not run. */
+  const reaped = (row: SessionProcess, display: DisplayNumber) =>
+    Effect.logWarning("screen: a start's answer was lost · reaping").pipe(
+      Effect.annotateLogs({ sessionId: row.sessionId, display }),
+      Effect.andThen(deps.exec(row, screenReapArgv(display))),
+      Effect.map((result) => result.exitCode === 0),
+      Effect.orElseSucceed(() => false),
+    );
+
+  /** A row without a terminal is a start that never answered: only its display reaches it. */
+  const endedRow = (row: SessionProcess, display: DisplayNumber) =>
     Effect.gen(function* () {
-      if (
-        row.sealantSessionId !== null &&
-        !(yield* deps.close(row.sealantWorkspaceId, row.sealantSessionId))
-      ) {
+      const ended =
+        row.sealantSessionId === null
+          ? yield* reaped(row, display)
+          : yield* deps.close(row.sealantWorkspaceId, row.sealantSessionId);
+      if (!ended) {
         yield* deps.notStopped(row);
         return false;
       }
@@ -161,7 +173,7 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
         const running = yield* live(screen.processId);
         const signableHere = passwords.of(sessionId) !== null;
         if (running !== null && STARTED.has(screen.life._tag) && signableHere) return screen;
-        if (running !== null && !(yield* endedRow(running))) return screen;
+        if (running !== null && !(yield* endedRow(running, screen.display))) return screen;
         const startAs = yield* deps.startAs(session, workspace);
         const runsAs = session.ownerUserId;
         if (startAs === null || runsAs === null) {
@@ -188,20 +200,18 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
           passwords.issue(sessionId, runsAs);
           return deps.open(workspace, argv, { user: startAs.user, env: startAs.env });
         });
-        const reapThenReopen = Effect.logWarning(
-          "screen: a start's answer was lost · reaping",
-        ).pipe(
-          Effect.annotateLogs({ sessionId, display: screen.display }),
-          Effect.andThen(
-            deps.exec(workspace, screenReapArgv(screen.display), { user: startAs.user }),
-          ),
-          Effect.andThen(openWithFreshPasswords),
-        );
         const pty = yield* openWithFreshPasswords.pipe(
-          Effect.catchIf(lostAnswer, () => reapThenReopen),
-          Effect.tapError(() =>
+          Effect.catchIf(lostAnswer, (lost) =>
+            Effect.flatMap(reaped(row, screen.display), (reap) =>
+              reap ? openWithFreshPasswords : Effect.fail(lost),
+            ),
+          ),
+          Effect.tapError((error) =>
             Effect.gen(function* () {
               passwords.forget(sessionId);
+              if (lostAnswer(error) && !(yield* reaped(row, screen.display))) {
+                return yield* deps.notStopped(row);
+              }
               yield* deps.markExited(row, "exited");
               yield* setLife(starting, { life: { _tag: "Ended", reason: "process-exited" } });
             }),
@@ -222,7 +232,7 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
         const screen = yield* screens.ofSession(sessionId);
         if (screen === null || !STARTED.has(screen.life._tag)) return;
         const running = yield* live(screen.processId);
-        if (running !== null && !(yield* endedRow(running))) return;
+        if (running !== null && !(yield* endedRow(running, screen.display))) return;
         passwords.forget(sessionId);
         yield* setLife(screen, { life: { _tag: "Ended", reason } });
       }),

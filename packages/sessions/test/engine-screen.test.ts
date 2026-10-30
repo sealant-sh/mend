@@ -1,10 +1,17 @@
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
 import {
   linuxLoginNameOf,
   SessionChannelTokensRepo,
   SessionChannelTokensRepoMemory,
 } from "@mend/db";
 import { DisplayNumber, type HarnessLayout, type Screen } from "@mend/domain/workbench";
-import type { PersonSessionOptions } from "@mend/sealant";
+import {
+  type PersonExecOptions,
+  type PersonSessionOptions,
+  SealantPlatformError,
+} from "@mend/sealant";
 import {
   ServiceHost,
   SessionChannelNetworkHost,
@@ -15,9 +22,9 @@ import {
 } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions } from "@sealant/sdk";
+import type { CreateOptions, SessionOptions } from "@sealant/sdk";
 import { Effect, Layer, Redacted } from "effect";
-import { describe, expect } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect } from "vitest";
 
 import { screenArgv, screenReapArgv } from "../src/screen/script.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
@@ -29,8 +36,10 @@ import {
   type World,
 } from "./engine/fixture.ts";
 import { answerLayout, LAYOUT_READY, personPlatform } from "./engine/person-fixture.ts";
+import { dockerReady } from "./xvnc.ts";
 
 const LAUNCHER = linuxLoginNameOf("user-fixture");
+const IMAGE = "mend-screen-script:local";
 
 const screenRows = (world: World) =>
   [...world.processes.values()].filter((process) => process.kind === "screen");
@@ -58,6 +67,15 @@ const withScreens = <A, E>(
   work: (world: World, platform: Platform) => Effect.Effect<A, E, SessionEngine>,
   options: {
     readonly openFails?: () => boolean;
+    readonly aroundOpen?: (
+      argv: ReadonlyArray<string>,
+      options: SessionOptions | PersonSessionOptions | undefined,
+    ) => Effect.Effect<void>;
+    /** Stands in for a reap of a display; undefined falls through to the fake's exec. */
+    readonly reap?: (
+      argv: ReadonlyArray<string>,
+      options: PersonExecOptions | undefined,
+    ) => Effect.Effect<ExecAnswer, SealantPlatformError> | undefined;
     readonly printed?: ReadonlyArray<string>;
     readonly layout?: HarnessLayout;
     readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
@@ -88,6 +106,9 @@ const withScreens = <A, E>(
           exec: answerLayout(LAYOUT_READY),
           ptyOutput: (argv) => (argv[3] === "mend-screen" ? (options.printed ?? []) : []),
           ...(options.openFails === undefined ? {} : { openFails: options.openFails }),
+          execEffect: (argv, execOptions) =>
+            argv[3] === "mend-screen-reap" ? options.reap?.(argv, execOptions) : undefined,
+          ...(options.aroundOpen === undefined ? {} : { aroundOpen: options.aroundOpen }),
         },
       ),
       harnessLayout: {
@@ -108,6 +129,19 @@ const withScreens = <A, E>(
     },
   );
 };
+
+interface ExecAnswer {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+const lostReap = new SealantPlatformError({
+  code: "exec_failed",
+  status: null,
+  message: "the reap's answer was lost",
+  cause: null,
+});
 
 const lostStart = (failures: number) => {
   let failing = 0;
@@ -284,7 +318,7 @@ describe("the session's screen (ADR 0020)", () => {
     );
   });
 
-  it.effect("gives up after one reap, and the screen reads ended", () => {
+  it.effect("gives up after one retry, reaps that attempt too, and the screen reads ended", () => {
     const lost = lostStart(2);
     return withScreens(
       (world, platform) =>
@@ -305,7 +339,10 @@ describe("the session's screen (ADR 0020)", () => {
           const failed = yield* engine.startScreen(session.id).pipe(Effect.flip);
           expect(failed).toMatchObject({ _tag: "SealantPlatformError" });
           const reap = screenReapArgv(DisplayNumber.make(10)).join("\n");
-          expect(platform.execs.filter((argv) => argv.join("\n") === reap)).toHaveLength(1);
+          const reaps = platform.execs.flatMap((argv, at) =>
+            argv.join("\n") === reap ? [platform.execUsers[at]] : [],
+          );
+          expect(reaps).toEqual([LAUNCHER, LAUNCHER]);
           expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
           expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
             _tag: "Ended",
@@ -316,6 +353,53 @@ describe("the session's screen (ADR 0020)", () => {
       { openFails: lost.openFails },
     );
   });
+
+  it.effect("keeps a lost start it could not reap, and a later Stop reaps its display", () => {
+    const lost = lostStart(2);
+    let reapFails = false;
+    return withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const [project] = [...world.projects.values()];
+          if (project === undefined) throw new Error("no project");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "screen",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          lost.arm();
+          reapFails = true;
+          yield* Effect.flip(engine.startScreen(session.id));
+          expect(screenRows(world)).toMatchObject([{ exitedAt: null, sealantSessionId: null }]);
+          expect((yield* world.screens.ofSession(session.id))?.life._tag).toBe("Starting");
+          expect(yield* engine.screenPasswords(session.id)).toBeNull();
+
+          reapFails = false;
+          const reap = screenReapArgv(DisplayNumber.make(10)).join("\n");
+          const reapsBefore = platform.execs.filter((argv) => argv.join("\n") === reap).length;
+          yield* engine.stopScreen(session.id, "idle");
+          const reaps = platform.execs.flatMap((argv, at) =>
+            argv.join("\n") === reap ? [platform.execUsers[at]] : [],
+          );
+          expect(reaps.slice(reapsBefore)).toEqual([LAUNCHER]);
+          expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
+          expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
+            _tag: "Ended",
+            reason: "idle",
+          });
+        }),
+      {
+        openFails: lost.openFails,
+        reap: () => (reapFails ? Effect.fail(lostReap) : undefined),
+      },
+    );
+  });
+
   it.effect("refuses a screen in a workspace that cannot give it its own person", () =>
     withScreens(
       (world, platform) =>
@@ -415,5 +499,180 @@ describe("the screen's secret over the session channel (ADR 0020)", () => {
         );
       }
     }).pipe(Effect.provide(channelLayer)),
+  );
+});
+
+const docker = (...args: ReadonlyArray<string>) =>
+  execFileSync("docker", [...args], { encoding: "utf8", timeout: 30_000 });
+
+const launched = (world: World) =>
+  Effect.gen(function* () {
+    const engine = yield* SessionEngine;
+    const [project] = [...world.projects.values()];
+    if (project === undefined) throw new Error("no project");
+    const session = yield* engine.provision({
+      projectId: project.id,
+      harness: "claude",
+      label: null,
+      name: "screen",
+      ownerUserId: "user-fixture",
+      start: { kind: "base", base: null },
+    });
+    yield* engine.launch(session.id, ["claude"]);
+    return { engine, session };
+  });
+
+describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a container", () => {
+  const container = `mend-screen-lost-${process.pid}-${Date.now()}`;
+  const running = () =>
+    docker("exec", container, "ps", "-e", "-o", "comm=").trim().split("\n").toSorted();
+  const IDLE = ["docker-init", "ps", "sleep"];
+  const opened: Array<ChildProcess> = [];
+
+  beforeAll(() => {
+    const context = fileURLToPath(new URL("fixtures/rfb", import.meta.url));
+    execFileSync("docker", ["build", "-q", "--target", "screen", "-t", IMAGE, context], {
+      stdio: "ignore",
+      timeout: 600_000,
+    });
+    docker(
+      "run",
+      "-d",
+      "--init",
+      "--network",
+      "none",
+      "--name",
+      container,
+      IMAGE,
+      "sleep",
+      "infinity",
+    );
+    execFileSync(
+      "docker",
+      [
+        "exec",
+        "-i",
+        container,
+        "sh",
+        "-c",
+        "mkdir -p /run/mend/bin && cat > /run/mend/bin/mend && chmod 755 /run/mend/bin/mend",
+      ],
+      { input: '#!/bin/sh\nprintf "%s\\n%s\\n" fullpass viewpass\n', timeout: 30_000 },
+    );
+  }, 660_000);
+
+  afterEach(() => {
+    docker(
+      "exec",
+      container,
+      "sh",
+      "-c",
+      "pkill -KILL -u person; rm -f /tmp/.X10-lock /tmp/.X11-unix/X10",
+    );
+  });
+
+  afterAll(() => {
+    for (const child of opened) child.kill();
+    execFileSync("docker", ["rm", "-f", container], { stdio: "ignore" });
+  });
+
+  /** The platform starts the screen as the container's person, and its answer is still to come. */
+  const xvncStarts = (
+    argv: ReadonlyArray<string>,
+    options: SessionOptions | PersonSessionOptions | undefined,
+  ) =>
+    argv[3] !== "mend-screen"
+      ? Effect.void
+      : Effect.callback<void>((resume) => {
+          const user = options?.user;
+          expect(typeof user === "string" ? user : user?.name).toBe(LAUNCHER);
+          const child = spawn("docker", [
+            "exec",
+            "-u",
+            "person",
+            "-e",
+            "XDG_RUNTIME_DIR=/run/user/40001",
+            container,
+            "setsid",
+            "-w",
+            ...argv,
+          ]);
+          opened.push(child);
+          let printed = "";
+          child.stdout.on("data", (chunk) => {
+            printed += String(chunk);
+            if (printed.includes("mend-screen ready")) resume(Effect.void);
+          });
+          child.once("close", () => resume(Effect.die(new Error(`no ready line: ${printed}`))));
+        });
+
+  const reapsInside = (argv: ReadonlyArray<string>, options: PersonExecOptions | undefined) =>
+    Effect.sync((): ExecAnswer => {
+      expect(options?.user?.name).toBe(LAUNCHER);
+      return {
+        exitCode: 0,
+        stdout: docker("exec", "-u", "person", container, ...argv),
+        stderr: "",
+      };
+    });
+
+  const settled = Effect.promise(async () => {
+    for (let tries = 0; tries < 50 && running().join() !== IDLE.join(); tries++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return running();
+  });
+
+  it.live(
+    "two lost answers leave nothing on the display once the screen reads ended",
+    () => {
+      const lost = lostStart(2);
+      return withScreens(
+        (world) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launched(world);
+            lost.arm();
+            yield* Effect.flip(engine.startScreen(session.id));
+            expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
+              _tag: "Ended",
+              reason: "process-exited",
+            });
+            expect(yield* settled).toEqual(IDLE);
+          }),
+        { openFails: lost.openFails, aroundOpen: xvncStarts, reap: reapsInside },
+      );
+    },
+    { timeout: 120_000 },
+  );
+
+  it.live(
+    "a Stop reaps a lost start whose own reap was lost",
+    () => {
+      const lost = lostStart(2);
+      let reapFails = false;
+      return withScreens(
+        (world) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launched(world);
+            lost.arm();
+            reapFails = true;
+            yield* Effect.flip(engine.startScreen(session.id));
+            expect(running()).toContain("Xvnc");
+            reapFails = false;
+            yield* engine.stopScreen(session.id, "idle");
+            expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
+              _tag: "Ended",
+              reason: "idle",
+            });
+            expect(yield* settled).toEqual(IDLE);
+          }),
+        {
+          openFails: lost.openFails,
+          aroundOpen: xvncStarts,
+          reap: (argv, options) => (reapFails ? Effect.fail(lostReap) : reapsInside(argv, options)),
+        },
+      );
+    },
+    { timeout: 120_000 },
   );
 });

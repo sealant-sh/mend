@@ -434,10 +434,13 @@ export const sealantLaunchLayer = (
     /** A faithful process hook: the harness writes through HOME after relocation. */
     readonly beforeOpen?: (argv: ReadonlyArray<string>) => void;
     /**
-     * Holds the agent's open on the platform until it completes (a slow PTY start); `openFails`
+     * Holds an open of `argv` on the platform until it completes (a slow PTY start); `openFails`
      * is read once it does, so a held open can still fail.
      */
-    readonly aroundOpen?: () => Effect.Effect<void>;
+    readonly aroundOpen?: (
+      argv: ReadonlyArray<string>,
+      options: SessionOptions | PersonSessionOptions | undefined,
+    ) => Effect.Effect<void>;
     /**
      * `workspaces.findByIdempotencyKey` (Core's next SDK); absent answers `unsupported`, as the
      * 0.37.2 seam does.
@@ -737,7 +740,7 @@ export const sealantLaunchLayer = (
     startHarnessInWorkspace: () => Effect.die("not in test"),
     waitRun: () => captureOps?.waitRun?.() ?? Effect.die("not in test"),
     openSession: (_workspace, argv, options) =>
-      (captureOps?.aroundOpen?.() ?? Effect.void).pipe(
+      (captureOps?.aroundOpen?.(argv, options) ?? Effect.void).pipe(
         Effect.andThen(
           Effect.suspend(() =>
             captureOps?.openFails?.() === true
