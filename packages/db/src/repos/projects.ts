@@ -61,6 +61,9 @@ export interface InitializedProject {
   readonly createdByUserId: string;
   readonly name: string;
   readonly storePath: string;
+  /** The branch and commit the store created; the commit is the README's. */
+  readonly defaultBranch: string;
+  readonly headSha: Sha;
   readonly gitAuthMode: GitAuthMode;
   readonly purpose: "named" | "scratch";
 }
@@ -252,7 +255,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       const publishInitialized = Effect.fn("ProjectsRepo.publishInitialized")(function* (
         project: InitializedProject,
       ) {
-        const { purpose, ...input } = project;
+        const { purpose, headSha, ...input } = project;
         // Set when the body succeeds: only a failure after that can be a COMMIT with an unknown
         // outcome, and an uncertain COMMIT must never cause the caller to delete a registered store.
         let commitRequested = false;
@@ -307,8 +310,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
                   ...input,
                   visibility: "private",
                   originUrl: null,
-                  adoptedSha: null,
-                  defaultBranch: "main",
+                  adoptedSha: headSha,
                   scratchOwnerUserId: purpose === "scratch" ? project.createdByUserId : null,
                 })
                 .returning();

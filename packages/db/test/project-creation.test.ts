@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
-import { OrganizationId, ProjectId } from "@mend/domain";
+import { OrganizationId, ProjectId, Sha } from "@mend/domain";
 import { Effect, Layer, Redacted, Result, String as Str } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -38,6 +38,8 @@ const input = (name: string, purpose: "named" | "scratch", user = "anna"): Initi
     name,
     purpose,
     storePath: `/store/${id}/repo.git`,
+    defaultBranch: "main",
+    headSha: Sha.make("f1ebb8f298a55eec763d618731331fd2cc0cd444"),
     gitAuthMode: "mend-key",
   };
 };
@@ -96,7 +98,7 @@ describe.skipIf(postgres.skip)("initialized project publication in Postgres", ()
           visibility: "private",
           createdByUserId: "anna",
           originUrl: null,
-          adoptedSha: null,
+          adoptedSha: "f1ebb8f298a55eec763d618731331fd2cc0cd444",
           defaultBranch: "main",
           scratchOwnerUserId: null,
         });

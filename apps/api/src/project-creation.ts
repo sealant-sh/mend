@@ -80,6 +80,8 @@ export const ProjectCreationLive: Layer.Layer<
                 createdByUserId: creator.user.id,
                 name,
                 storePath: repository.storePath,
+                defaultBranch: repository.defaultBranch,
+                headSha: repository.headSha,
                 gitAuthMode,
                 purpose,
               })

@@ -319,6 +319,7 @@ describe.skipIf(postgres.skip)("project creation, against PostgreSQL and git", (
         scratchOwnerUserId: null,
       });
       expect(project.storePath).toBe(path.join(storeRoot, project.id, "repo.git"));
+      expect(project.adoptedSha).toBe(gitIn(project.storePath, "rev-parse", "main"));
       expect(gitIn(project.storePath, "log", "--all", "--format=%an|%ae|%cn|%ce|%s|%P")).toBe(
         "Anna Example|anna@example.com|Anna Example|anna@example.com|Initial commit|",
       );

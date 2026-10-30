@@ -751,11 +751,12 @@ export const createTenancyWorld = async (
               [...projects.values()].some((p) => p.scratchOwnerUserId === input.createdByUserId)
             )
               return yield* new ScratchProjectExistsError({ userId: input.createdByUserId });
+            const { headSha, purpose, ...row } = input;
             const created = new Project({
-              ...makeProject({ ...input, visibility: "private" }),
-              ...input,
-              adoptedSha: null,
-              scratchOwnerUserId: input.purpose === "scratch" ? input.createdByUserId : null,
+              ...makeProject({ ...row, visibility: "private" }),
+              ...row,
+              adoptedSha: headSha,
+              scratchOwnerUserId: purpose === "scratch" ? input.createdByUserId : null,
             });
             projects.set(created.id, created);
             return created;

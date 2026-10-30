@@ -232,7 +232,7 @@ describe("private project creation over HTTP", () => {
         visibility: "private",
         createdByUserId: "alice",
         originUrl: null,
-        adoptedSha: null,
+        adoptedSha: await git(first.storePath, "rev-parse", "main"),
         defaultBranch: "main",
         scratchOwnerUserId: null,
       });
