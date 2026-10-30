@@ -4481,15 +4481,33 @@ const projectRetentionMigration = Effect.gen(function* () {
         JOIN projects p ON p.id = place.project_id
         WHERE s.id = sid AND p.removed_at IS NOT NULL)
     $$`);
+  // A write into a removed project is refused. A reference to another project's objects is
+  // refused only while that project is purged: captures/ objects are fenced by their chain's guard
+  // and tombstones, but a project's own packs have no chain, and purge reads its inventory once.
+  yield* sql.unsafe(`CREATE FUNCTION project_retention_admit_references(own text, referenced text[])
+    RETURNS void LANGUAGE plpgsql AS $$
+    DECLARE marked text;
+    BEGIN
+      PERFORM 1 FROM projects WHERE id = own OR id = ANY(referenced) ORDER BY id FOR SHARE;
+      SELECT id INTO marked FROM projects
+        WHERE (id = own AND removed_at IS NOT NULL)
+           OR (id = ANY(referenced) AND id IS DISTINCT FROM own AND removed_at IS NOT NULL
+               AND removal_phase = 'deleting')
+        ORDER BY id LIMIT 1;
+      IF marked IS NOT NULL THEN
+        RAISE EXCEPTION 'project % is unavailable; restore a removed project before starting work', marked
+          USING ERRCODE = 'MRFRM';
+      END IF;
+    END $$`);
   yield* sql.unsafe(`CREATE FUNCTION project_retention_capture_references() RETURNS trigger
     LANGUAGE plpgsql AS $$
-    DECLARE ps text[]; ws text[];
+    DECLARE ps text[];
     BEGIN
-      SELECT array_agg(split_part(value, '/', 2)) FILTER (WHERE value LIKE 'projects/%'),
-             array_agg(split_part(value, '/', 2)) FILTER (WHERE value LIKE 'captures/%')
-        INTO ps, ws
-        FROM jsonb_array_elements_text(jsonb_path_query_array(NEW.sections, '$.** ? (@.type() == "string")'));
-      PERFORM removal_fence_admit(coalesce(ps, '{}'), array_append(coalesce(ws, '{}'), NEW.worktree_id));
+      SELECT array_agg(DISTINCT split_part(value, '/', 2)) INTO ps
+        FROM jsonb_array_elements_text(jsonb_path_query_array(NEW.sections, '$.** ? (@.type() == "string")'))
+        WHERE value LIKE 'projects/%';
+      PERFORM project_retention_admit_references(
+        (SELECT project_id FROM worktrees WHERE id = NEW.worktree_id), coalesce(ps, '{}'));
       RETURN NEW;
     END $$`);
   yield* sql`CREATE TRIGGER captures_project_retention
@@ -4500,11 +4518,8 @@ const projectRetentionMigration = Effect.gen(function* () {
     DECLARE k text;
     BEGIN
       k := NEW.handoff->>'deltaPack';
-      IF k LIKE 'captures/%' THEN
-        PERFORM removal_fence_admit(ARRAY[NEW.project_id], ARRAY[split_part(k, '/', 2)]);
-      ELSIF k LIKE 'projects/%' THEN
-        PERFORM removal_fence_admit(ARRAY[NEW.project_id, split_part(k, '/', 2)], '{}');
-      END IF;
+      PERFORM project_retention_admit_references(NEW.project_id,
+        CASE WHEN k LIKE 'projects/%' THEN ARRAY[split_part(k, '/', 2)] ELSE '{}'::text[] END);
       RETURN NEW;
     END $$`);
   yield* sql`CREATE TRIGGER worktrees_retention_handoff

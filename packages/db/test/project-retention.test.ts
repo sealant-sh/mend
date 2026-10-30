@@ -1,11 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
-import { OrganizationId, ProjectId } from "@mend/domain";
-import { Effect, Exit, Layer, Redacted, String as Str } from "effect";
+import { OrganizationId, ProjectId, WorktreeId } from "@mend/domain";
+import { Cause, Effect, Exit, Layer, Redacted, String as Str } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
+import { CaptureStoreRepo, CaptureStoreRepoLive } from "../src/repos/capture-store.ts";
 import { ProjectsRepo, ProjectsRepoLive } from "../src/repos/projects.ts";
 import {
   RemovalFencesRepo,
@@ -24,11 +25,15 @@ const pool = PgClient.layer({
   transformResultNames: Str.snakeToCamel,
   transformQueryNames: Str.camelToSnake,
 });
-const repos = Layer.merge(ProjectsRepoLive, RemovalFencesRepoLive).pipe(
+const repos = Layer.mergeAll(ProjectsRepoLive, RemovalFencesRepoLive, CaptureStoreRepoLive).pipe(
   Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(pool))),
 );
 const run = <A, E>(
-  effect: Effect.Effect<A, E, ProjectsRepo | RemovalFencesRepo | SqlClient.SqlClient>,
+  effect: Effect.Effect<
+    A,
+    E,
+    ProjectsRepo | RemovalFencesRepo | CaptureStoreRepo | SqlClient.SqlClient
+  >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(repos), Effect.scoped));
 const manage = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(admin), Effect.scoped));
@@ -170,6 +175,67 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           { id: "shared" },
           { id: "unrelated" },
         ]);
+      }),
+    ));
+
+  it("keeps registering captures in a project that inherited objects from one since removed", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const capture = yield* CaptureStoreRepo;
+        const owner = yield* seed("shared-owner");
+        const consumer = yield* seed("consumer");
+        const [ownerTree, consumerTree] = [
+          WorktreeId.make("w-owner"),
+          WorktreeId.make("w-consumer"),
+        ];
+        for (const [tree, project] of [
+          [ownerTree, owner],
+          [consumerTree, consumer],
+        ] as const) {
+          yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES (${tree}, ${project}, ${tree}, ${tree}, ${tree}, ${"a".repeat(40)})`;
+          yield* capture.init(tree);
+        }
+        const inherited = `captures/${ownerTree}/1/packs/${"c".repeat(64)}`;
+        const base = `projects/${owner}/packs/${"d".repeat(64)}`;
+        const { epoch } = yield* capture.claim(consumerTree, "exec", 3600);
+        const register = (n: number, parent: string | null) =>
+          Effect.gen(function* () {
+            const state = yield* capture.referenceState([ownerTree, consumerTree], [inherited]);
+            const id = `cap-consumer-${n}`;
+            yield* capture.register({
+              worktreeId: consumerTree,
+              id,
+              n,
+              parent,
+              epoch,
+              seq: BigInt(n),
+              kind: n === 0 ? "checkpoint" : "auto",
+              manifestKey: `captures/${consumerTree}/${epoch}/manifests/${id}`,
+              sections: { git: { packs: [inherited, base] } },
+              gitFsck: "verified",
+              guards: [ownerTree, consumerTree].map((worktreeId) => ({
+                worktreeId,
+                guard: state.guards.get(worktreeId) ?? -1,
+              })),
+              names: [inherited, base],
+            });
+            return id;
+          });
+        const first = yield* register(0, null);
+        yield* keep(owner);
+        const next = yield* Effect.exit(register(1, first));
+        expect(Exit.isFailure(next) ? Cause.pretty(next.cause) : "registered").toBe("registered");
+        const ownWrite = yield* Effect.exit(
+          sql`INSERT INTO captures (id, worktree_id, n, parent, epoch, seq, kind, manifest_key, sections, git_fsck)
+            VALUES ('cap-owner', ${ownerTree}, 0, NULL, 0, 0, 'checkpoint', 'm', '{}'::jsonb, 'verified')`,
+        );
+        expect(Exit.isFailure(ownWrite) && isRemovedProject(Cause.squash(ownWrite.cause))).toBe(
+          true,
+        );
+        expect(
+          yield* sql`SELECT n FROM captures WHERE worktree_id = ${consumerTree} ORDER BY n`,
+        ).toEqual([{ n: 0 }, { n: 1 }]);
       }),
     ));
 });
