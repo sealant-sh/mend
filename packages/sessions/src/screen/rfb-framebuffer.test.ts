@@ -101,6 +101,10 @@ const decodeCapture = (chunks: ReadonlyArray<Uint8Array>) => {
   return { digest: digest(framebuffer.pixels), events };
 };
 
+/** The same cuts on every run, so a failure reproduces; CI's shared runners get a budget. */
+const CHUNKING_SEED = 1185;
+const CHUNKING_BUDGET_MS = 30_000;
+
 describe("Framebuffer on the capture", () => {
   const whole = decodeCapture([RELAYED_SERVER]);
 
@@ -115,27 +119,38 @@ describe("Framebuffer on the capture", () => {
     expect(whole.digest).toBe(digest(RELAYED_CANVAS));
   });
 
-  it("decodes the same at any chunk boundaries, one byte at a time included", () => {
-    const oneByOne = decodeCapture(
-      Array.from(RELAYED_SERVER, (_, at) => RELAYED_SERVER.subarray(at, at + 1)),
-    );
-    expect(oneByOne).toEqual(whole);
-    FastCheck.assert(
-      FastCheck.property(
-        FastCheck.uniqueArray(FastCheck.integer({ min: 1, max: RELAYED_SERVER.length - 1 }), {
-          maxLength: 40,
-        }),
-        (cuts) => {
-          const bounds = [0, ...cuts.toSorted((a, b) => a - b), RELAYED_SERVER.length];
-          const chunks = bounds
-            .slice(1)
-            .map((end, index) => RELAYED_SERVER.subarray(bounds[index], end));
-          expect(decodeCapture(chunks)).toEqual(whole);
-        },
-      ),
-      { numRuns: 30 },
-    );
-  });
+  it(
+    "decodes the same one byte at a time",
+    () => {
+      const oneByOne = decodeCapture(
+        Array.from(RELAYED_SERVER, (_, at) => RELAYED_SERVER.subarray(at, at + 1)),
+      );
+      expect(oneByOne).toEqual(whole);
+    },
+    CHUNKING_BUDGET_MS,
+  );
+
+  it(
+    "decodes the same at any chunk boundaries",
+    () => {
+      FastCheck.assert(
+        FastCheck.property(
+          FastCheck.uniqueArray(FastCheck.integer({ min: 1, max: RELAYED_SERVER.length - 1 }), {
+            maxLength: 40,
+          }),
+          (cuts) => {
+            const bounds = [0, ...cuts.toSorted((a, b) => a - b), RELAYED_SERVER.length];
+            const chunks = bounds
+              .slice(1)
+              .map((end, index) => RELAYED_SERVER.subarray(bounds[index], end));
+            expect(decodeCapture(chunks)).toEqual(whole);
+          },
+        ),
+        { numRuns: 30, seed: CHUNKING_SEED },
+      );
+    },
+    CHUNKING_BUDGET_MS,
+  );
 });
 
 describe("Framebuffer", () => {
