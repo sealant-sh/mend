@@ -365,3 +365,232 @@ describe("a call to Mend's screen tools as the harness records it", () => {
     expectNoPayload([read, cut]);
   });
 });
+
+const TYPED_NUMBER = 271828182845;
+
+/** The shapes an agent can give `screen_act`, valid or not; none may keep its typed text. */
+const ARGUMENT_SHAPES: ReadonlyArray<readonly [string, unknown]> = [
+  ["a valid batch", { actions: [{ kind: "type", text: TYPED }] }],
+  [
+    "a batch over the limits",
+    {
+      actions: Array.from({ length: 21 }, () => ({
+        kind: "type",
+        text: `${TYPED}${"x".repeat(2001)}`,
+      })),
+    },
+  ],
+  ["an unknown kind", { actions: [{ kind: "typo", text: TYPED }] }],
+  ["an action in an array", { actions: [[{ kind: "type", text: TYPED }]] }],
+  ["arrays of arrays", { actions: [[[[{ kind: "type", text: TYPED }]], [{ text: TYPED }]]] }],
+  ["text in a nested object", { actions: [{ kind: "type", payload: { text: TYPED } }] }],
+  ["text at odd depths", { text: TYPED, a: [{ b: { text: TYPED, c: [[{ text: TYPED }]] } }] }],
+  ["a root array", [{ kind: "type", text: TYPED }]],
+  ["a number as text", { actions: [{ kind: "type", text: TYPED_NUMBER }] }],
+  ["an object as text", { actions: [{ kind: "type", text: { value: TYPED } }] }],
+  ["an array as text", { actions: [{ kind: "type", text: [TYPED] }] }],
+  ["actions encoded as a string", { actions: JSON.stringify([{ kind: "type", text: TYPED }]) }],
+  ["arguments as a JSON string", JSON.stringify({ actions: [[{ kind: "type", text: TYPED }]] })],
+  ["an unparseable string", `{"actions":[{"kind":"type","text":"${TYPED}`],
+  ["a JSON string of text", JSON.stringify(TYPED)],
+  [
+    "Mend's envelope around a nested batch",
+    {
+      "$mend.toolInput": {
+        format: "json",
+        value: JSON.stringify({ actions: [[{ kind: "type", text: TYPED }]] }),
+      },
+    },
+  ],
+  [
+    "Mend's envelope around an object",
+    { "$mend.toolInput": { format: "json", value: { actions: [{ kind: "type", text: TYPED }] } } },
+  ],
+  ["Mend's envelope of plain text", { "$mend.toolInput": { format: "text", value: TYPED } }],
+  [
+    "Mend's envelope beside more text",
+    { "$mend.toolInput": { format: "json", value: "{}" }, more: { text: TYPED } },
+  ],
+  [
+    "Mend's envelope inside the arguments",
+    { actions: [{ "$mend.toolInput": { format: "text", value: TYPED } }] },
+  ],
+];
+
+const expectNoTyped = (published: unknown) => {
+  const text = JSON.stringify(published);
+  expect(text).not.toContain(TYPED);
+  expect(text).not.toContain(String(TYPED_NUMBER));
+};
+
+describe("typed text in any shape of a screen_act's arguments", () => {
+  it.effect("Claude: neither the live items nor the approvals keep it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* fakeTransport(() => undefined);
+        const seen = recorded();
+        const session = yield* ClaudeAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          onEvent: seen.onEvent,
+        });
+        yield* session.sendTurn("open the page");
+        ARGUMENT_SHAPES.forEach(([, args], index) => {
+          const id = `toolu_shape_${index}`;
+          fake.push({
+            type: "assistant",
+            message: {
+              id: `m${index}`,
+              content: [{ type: "tool_use", id, name: "mcp__mend__screen_act", input: args }],
+            },
+          });
+          fake.push(claudeResult(id, [{ type: "text", text: JSON.stringify(HELD) }], true));
+          fake.push({
+            type: "control_request",
+            request_id: `permission-${index}`,
+            request: { subtype: "can_use_tool", tool_name: "mcp__mend__screen_act", input: args },
+          });
+        });
+        yield* fake.drain;
+        const opened = seen.events.filter((event) => event._tag === "request.opened");
+        expect(opened).toHaveLength(ARGUMENT_SHAPES.length);
+        expectNoTyped(seen.events);
+        expect(
+          seen.items().findLast((item) => item.providerItemId === "toolu_shape_3")?.data,
+        ).toMatchObject({
+          input: { actions: [[{ kind: "type", length: TYPED.length }]] },
+        });
+      }),
+    ),
+  );
+
+  it.effect("Codex: the live items keep none of it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* fakeTransport(codexServer);
+        const seen = recorded();
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          onEvent: seen.onEvent,
+        });
+        yield* session.sendTurn("open the page");
+        ARGUMENT_SHAPES.forEach(([, args], index) => {
+          fake.push({
+            method: "item/completed",
+            params: {
+              turnId: "turn-1",
+              item: {
+                type: "mcpToolCall",
+                id: `call_shape_${index}`,
+                server: "mend",
+                tool: "screen_act",
+                arguments: args,
+                status: "failed",
+                durationMs: 3,
+                error: { message: "MCP error -32602: invalid params" },
+                result: null,
+              },
+            },
+          });
+        });
+        yield* fake.drain;
+        expect(seen.items()).toHaveLength(ARGUMENT_SHAPES.length);
+        expectNoTyped(seen.events);
+        for (const item of seen.items()) {
+          expect(item.data).toMatchObject({
+            [MEND_SCREEN_CALL_FIELD]: { receipt: null, outcome: "outcome_unknown" },
+          });
+        }
+      }),
+    ),
+  );
+});
+
+describe("a call to another server's screen_act or html_render", () => {
+  const OTHER_TOOLS = [
+    "mcp__other__screen_act",
+    "mcp__t3-code__html_render",
+    "screen_act",
+    "html_render",
+  ];
+  const PAGE_HTML = "<p>a chart from another server</p>";
+
+  it.effect("Claude: the live items and the approval keep what the harness wrote", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* fakeTransport(() => undefined);
+        const seen = recorded();
+        const session = yield* ClaudeAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          onEvent: seen.onEvent,
+        });
+        yield* session.sendTurn("open the page");
+        const input = { actions: ACTIONS, html: PAGE_HTML };
+        OTHER_TOOLS.forEach((name, index) => {
+          const id = `toolu_other_${index}`;
+          fake.push({
+            type: "assistant",
+            message: { id: `m${index}`, content: [{ type: "tool_use", id, name, input }] },
+          });
+          fake.push(claudeResult(id, [{ type: "text", text: JSON.stringify(ANSWERED) }]));
+          fake.push({
+            type: "control_request",
+            request_id: `permission-${index}`,
+            request: { subtype: "can_use_tool", tool_name: name, input },
+          });
+        });
+        yield* fake.drain;
+        OTHER_TOOLS.forEach((name, index) => {
+          const item = seen
+            .items()
+            .findLast((each) => each.providerItemId === `toolu_other_${index}`);
+          expect(item?.data).toEqual({ type: "tool_use", id: `toolu_other_${index}`, name, input });
+        });
+        expect(
+          seen.events.flatMap((event) =>
+            event._tag === "request.opened" ? [event.request.detail] : [],
+          ),
+        ).toEqual(OTHER_TOOLS.map((toolName) => ({ toolName, input, suggestions: [] })));
+      }),
+    ),
+  );
+
+  it.effect("Codex: the live items keep their arguments and their result", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* fakeTransport(codexServer);
+        const seen = recorded();
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          onEvent: seen.onEvent,
+        });
+        yield* session.sendTurn("open the page");
+        const calls = [
+          ["other", "screen_act"],
+          ["t3-code", "html_render"],
+        ].map(([server, tool], index) => ({
+          type: "mcpToolCall",
+          id: `call_other_${index}`,
+          server,
+          tool,
+          arguments: { actions: ACTIONS, html: PAGE_HTML },
+          status: "completed",
+          durationMs: 3,
+          error: null,
+          result: {
+            content: [{ type: "text", text: JSON.stringify(ANSWERED) }],
+            structuredContent: null,
+          },
+        }));
+        for (const item of calls) {
+          fake.push({ method: "item/completed", params: { turnId: "turn-1", item } });
+        }
+        yield* fake.drain;
+        expect(seen.items().map((item) => item.data)).toEqual(calls);
+      }),
+    ),
+  );
+});

@@ -1,3 +1,5 @@
+import { PageId, SessionId } from "@mend/domain";
+import { PageRef } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import { backfillFromNative } from "../src/native-backfill.ts";
@@ -166,4 +168,193 @@ describe("a call to Mend's screen tools in a native transcript", () => {
       expect(JSON.parse(call.output)).toMatchObject({ receipt: RECEIPT, outcome: "applied" });
     },
   );
+});
+
+const TYPED_NUMBER = 271828182845;
+
+/** The shapes an agent can give `screen_act`, valid or not; none may keep its typed text. */
+const ARGUMENT_SHAPES: ReadonlyArray<readonly [string, unknown]> = [
+  ["a valid batch", { actions: ACTIONS }],
+  ["an unknown kind", { actions: [{ kind: "typo", text: TYPED }] }],
+  ["an action in an array", { actions: [[{ kind: "type", text: TYPED }]] }],
+  ["arrays of arrays", { actions: [[[[{ kind: "type", text: TYPED }]], [{ text: TYPED }]]] }],
+  ["text in a nested object", { actions: [{ kind: "type", payload: { text: TYPED } }] }],
+  ["text at odd depths", { text: TYPED, a: [{ b: { text: TYPED, c: [[{ text: TYPED }]] } }] }],
+  ["a root array", [{ kind: "type", text: TYPED }]],
+  ["a number as text", { actions: [{ kind: "type", text: TYPED_NUMBER }] }],
+  ["an object as text", { actions: [{ kind: "type", text: { value: TYPED } }] }],
+  ["actions encoded as a string", { actions: JSON.stringify([{ kind: "type", text: TYPED }]) }],
+  ["an unparseable string", `{"actions":[{"kind":"type","text":"${TYPED}`],
+  ["a JSON string of text", JSON.stringify(TYPED)],
+  [
+    "Mend's envelope around a nested batch",
+    {
+      "$mend.toolInput": {
+        format: "json",
+        value: JSON.stringify({ actions: [[{ kind: "type", text: TYPED }]] }),
+      },
+    },
+  ],
+  [
+    "Mend's envelope inside the arguments",
+    { actions: [{ "$mend.toolInput": { format: "text", value: TYPED } }] },
+  ],
+];
+
+interface NativeCall {
+  readonly namespace: string | null;
+  readonly name: string;
+  readonly args: unknown;
+}
+
+/** An answer that quotes the call's arguments, as a schema refusal does. */
+const refusalOf = (call: NativeCall): string => `invalid params: ${JSON.stringify(call.args)}`;
+
+const claudeCallsOf = (calls: ReadonlyArray<NativeCall>, output = refusalOf) =>
+  jsonl([
+    { type: "user", uuid: "u1", message: { role: "user", content: "open the app" } },
+    ...calls.flatMap((call, index) => [
+      {
+        type: "assistant",
+        uuid: `a${index}`,
+        message: {
+          id: `msg_${index}`,
+          content: [{ type: "tool_use", id: `toolu_${index}`, name: call.name, input: call.args }],
+        },
+      },
+      {
+        type: "user",
+        uuid: `r${index}`,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: `toolu_${index}`,
+              is_error: output === refusalOf,
+              content: [{ type: "text", text: output(call) }],
+            },
+          ],
+        },
+      },
+    ]),
+  ]);
+
+const codexCallsOf = (calls: ReadonlyArray<NativeCall>, output = refusalOf) =>
+  jsonl([
+    { type: "session_meta", payload: { id: "codex-session" } },
+    {
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "open the app" }],
+      },
+    },
+    ...calls.flatMap((call, index) => [
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          namespace: call.namespace,
+          name: call.name,
+          arguments: typeof call.args === "string" ? call.args : JSON.stringify(call.args),
+          call_id: `call_${index}`,
+        },
+      },
+      {
+        type: "response_item",
+        payload: { type: "function_call_output", call_id: `call_${index}`, output: output(call) },
+      },
+    ]),
+  ]);
+
+const expectNoTyped = (stored: unknown) => {
+  const text = JSON.stringify(stored);
+  expect(text).not.toContain(TYPED);
+  expect(text).not.toContain(String(TYPED_NUMBER));
+};
+
+describe("typed text in any shape of a screen_act's arguments", () => {
+  const shapes = ARGUMENT_SHAPES.map(([, args]) => args);
+  const transcripts = [
+    [
+      "claude",
+      claudeCallsOf(
+        shapes.map((args) => ({ namespace: null, name: "mcp__mend__screen_act", args })),
+      ),
+    ],
+    [
+      "codex",
+      codexCallsOf(shapes.map((args) => ({ namespace: "mcp__mend__", name: "screen_act", args }))),
+    ],
+  ] as const;
+
+  it.each(transcripts)("%s: the backfilled items keep none of it", (harness, native) => {
+    expect(native).toContain(TYPED);
+    const items = backfillFromNative(harness, "sess-shapes", native, null)?.turns.flatMap(
+      (turn) => turn.items,
+    );
+    expect(items?.filter((item) => item.kind === "tool-call")).toHaveLength(shapes.length);
+    expectNoTyped(items);
+  });
+
+  it.each(transcripts)("%s: the transcript view shows none of it", (harness, native) => {
+    const events = ingestNativeSession(harness, native, "/workspace/repo")?.events ?? [];
+    const entries = withPages(events, []);
+    expect(entries.filter((entry) => entry.kind === "tool")).toHaveLength(shapes.length);
+    expectNoTyped(entries);
+  });
+});
+
+describe("a call to another server's screen_act or html_render", () => {
+  const PAGE = PageId.make("5f2c9a7e-1d3b-4e8a-9c0f-7b6a5d4c3e2f");
+  const page = new PageRef({
+    id: PAGE,
+    sessionId: SessionId.make("sess-other"),
+    title: "Latency",
+    height: 420,
+    publishedAt: new Date(),
+  });
+  const args = { actions: ACTIONS, html: "<p>another server's chart</p>" };
+  // The answer names one of this session's pages, so only the caller's identity tells them apart.
+  const answer = () =>
+    JSON.stringify({ ...JSON.parse(ANSWERED), htmlRender: { attachmentId: PAGE } });
+
+  it.each([
+    [
+      "claude",
+      claudeCallsOf(
+        ["mcp__other__screen_act", "mcp__t3-code__html_render", "screen_act", "html_render"].map(
+          (name) => ({ namespace: null, name, args }),
+        ),
+        answer,
+      ),
+    ],
+    [
+      "codex",
+      codexCallsOf(
+        [
+          { namespace: "mcp__other__", name: "screen_act", args },
+          { namespace: "mcp__t3-code__", name: "html_render", args },
+        ],
+        answer,
+      ),
+    ],
+  ])("%s: backfill and the transcript view keep what the harness wrote", (harness, native) => {
+    const items =
+      backfillFromNative(harness, "sess-other", native, null)?.turns.flatMap(
+        (turn) => turn.items,
+      ) ?? [];
+    const calls = items.filter((item) => item.kind === "tool-call");
+    expect(calls.length).toBeGreaterThan(1);
+    for (const call of calls) {
+      expect(JSON.stringify(call.data)).toContain(TYPED);
+      expect(call.data).not.toHaveProperty("mendScreenCall");
+      expect(call.data).not.toHaveProperty("mendPageCall");
+    }
+    const events = ingestNativeSession(harness, native, "/workspace/repo")?.events ?? [];
+    expect(events.filter((event) => event.kind === "tool").length).toBe(calls.length);
+    expect(withPages(events, [page])).toEqual([...events, { kind: "page", page }]);
+  });
 });

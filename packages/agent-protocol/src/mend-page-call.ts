@@ -35,15 +35,30 @@ export interface ToolIdentity {
   readonly namespace: string | null;
 }
 
-/** Whether a call names Mend's own MCP tool `tool`, in any form a harness writes it. */
+/**
+ * Whether a call names Mend's own MCP tool `tool`, in any form a harness writes it. A bare name
+ * is Mend's only beside Mend's namespace: another server, or a harness's own tool, can share it.
+ */
 export const isMendTool = (tool: string, { name, namespace }: ToolIdentity): boolean => {
   if (name === null) return false;
   const bare = name.replace(IMPORTED, "");
   // Claude names an MCP tool `mcp__<server>__<tool>`, and so does Codex without a namespace.
   return (
     bare === `mcp__${MEND_MCP_SERVER}__${tool}` ||
-    (bare === tool && (namespace === null || MEND_NAMESPACES.has(namespace)))
+    (bare === tool && namespace !== null && MEND_NAMESPACES.has(namespace))
   );
+};
+
+// Codex shows a namespaced tool as its namespace followed by its name, and a top-level one by its
+// name alone (codex-rs `protocol/src/tool_name.rs`).
+const CODEX_TOP_LEVEL = new Set(["", "functions"]);
+
+/** A call's tool name with its server kept in it; Mend's own as Claude writes it. */
+export const toolNameWithNamespace = (name: string, namespace: string | null): string => {
+  if (namespace === null || CODEX_TOP_LEVEL.has(namespace)) return name;
+  return MEND_NAMESPACES.has(namespace)
+    ? `mcp__${MEND_MCP_SERVER}__${name}`
+    : `${namespace}${name}`;
 };
 
 export const isMendPageTool = (identity: ToolIdentity): boolean =>

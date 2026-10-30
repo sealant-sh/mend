@@ -25,36 +25,70 @@ const parsed = (raw: string): unknown => {
   }
 };
 
-/** A `text` in any action becomes its length, so an action that failed to decode keeps none. */
-const typedLength = (action: unknown): unknown => {
-  if (!isObject(action)) return action;
-  const { text, ...rest } = action;
-  return typeof text === "string" ? { ...rest, length: text.length } : rest;
+/**
+ * `value` with every `text` string, at any depth, as its length; undefined when a `text` holds
+ * anything else, a string holds encoded JSON, or a tool input envelope sits inside, since Mend
+ * cannot tell what typed text those carry.
+ */
+const withTextLengths = (value: unknown): unknown => {
+  if (typeof value === "string") {
+    const decoded = parsed(value);
+    return typeof decoded === "object" && decoded !== null ? undefined : value;
+  }
+  if (Array.isArray(value)) {
+    const kept = value.map(withTextLengths);
+    return kept.includes(undefined) ? undefined : kept;
+  }
+  if (!isObject(value)) return value;
+  const kept: Array<readonly [string, unknown]> = [];
+  for (const [key, field] of Object.entries(value)) {
+    if (key === TOOL_INPUT_ENVELOPE) return undefined;
+    if (key === "text") {
+      if (typeof field !== "string") return undefined;
+      kept.push(["length", field.length]);
+      continue;
+    }
+    const keptField = withTextLengths(field);
+    if (keptField === undefined) return undefined;
+    kept.push([key, keptField]);
+  }
+  return Object.fromEntries(kept);
+};
+
+/** The JSON Mend's own envelope carries, when `args` is that envelope and nothing else. */
+const envelopedJson = (args: JsonObject): string | null => {
+  const envelope = args[TOOL_INPUT_ENVELOPE];
+  return Object.keys(args).length === 1 &&
+    isObject(envelope) &&
+    envelope["format"] === "json" &&
+    typeof envelope["value"] === "string"
+    ? envelope["value"]
+    : null;
 };
 
 /**
  * A screen call's arguments without typed text, in each form a harness writes them: an object, a
- * JSON string, or Mend's own envelope around one. A string that is not a JSON object is dropped.
+ * JSON string of one, or Mend's own envelope around one. Arguments in any other shape are dropped.
  */
 export const screenArgumentsWithoutText = (args: unknown): unknown => {
   if (typeof args === "string") {
     const value = parsed(args);
-    return isObject(value) ? JSON.stringify(screenArgumentsWithoutText(value)) : null;
+    const kept = isObject(value) ? screenArgumentsWithoutText(value) : null;
+    return kept === null ? null : JSON.stringify(kept);
   }
-  if (!isObject(args)) return args;
-  const envelope = args[TOOL_INPUT_ENVELOPE];
-  if (isObject(envelope) && typeof envelope["value"] === "string") {
-    return {
-      ...args,
-      [TOOL_INPUT_ENVELOPE]: {
-        ...envelope,
-        value: screenArgumentsWithoutText(envelope["value"]) ?? "{}",
-      },
-    };
+  if (!isObject(args)) return null;
+  if (TOOL_INPUT_ENVELOPE in args) {
+    const value = envelopedJson(args);
+    return value === null
+      ? null
+      : {
+          [TOOL_INPUT_ENVELOPE]: {
+            format: "json",
+            value: screenArgumentsWithoutText(value) ?? "{}",
+          },
+        };
   }
-  const actions = args["actions"];
-  if (actions === undefined) return args;
-  return { ...args, actions: Array.isArray(actions) ? actions.map(typedLength) : null };
+  return withTextLengths(args) ?? null;
 };
 
 const isScreenText = Schema.is(ScreenToolText);
