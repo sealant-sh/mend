@@ -1,6 +1,6 @@
 import { type Auth, type AuthSession } from "@mend/auth";
 import { makeUpgradeTicketsMemory, OrganizationsRepo, type UpgradeTicketsRepo } from "@mend/db";
-import { Context, Effect, Option } from "effect";
+import { Context, Effect, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -231,5 +231,36 @@ describe("query ticket precedence at the cookie authentication service boundary"
       expect(caller.userId).toBe("bob");
       expect(await Effect.runPromise(caller.stillAdmitted)).toBe(true);
       expect(fixture.reads).toEqual([]);
+    }));
+});
+
+describe("a bearer in a URL from a client that predates upgrade tickets", () => {
+  it("is logged by its target, with no part of the URL it came in", async () =>
+    withCookieFixture(async (fixture) => {
+      const lines: Array<string> = [];
+      const answer = await Effect.runPromise(
+        resolveUpgradeCaller({
+          auth: fixture.auth,
+          tickets: fixture.tickets,
+          organizations: fixture.organizations,
+          urlBearers: { mode: "accept" },
+          headers: new Headers(),
+          url: new URL(
+            "http://fixture/api/tty?session=SYN_SESSION&token=SYN_BEARER&wsTicket=SYN_WS_TICKET&view=SYN_VIEW",
+          ),
+          target: "tty",
+        }).pipe(
+          Effect.provide(
+            Logger.layer([
+              Logger.make((entry) => lines.push(String(Logger.formatJson.log(entry)))),
+            ]),
+          ),
+        ),
+      );
+      expect(isUpgradeCaller(answer)).toBe(false);
+      expect(lines.map((line): Record<string, unknown> => JSON.parse(line).annotations)).toEqual([
+        { target: "tty" },
+      ]);
+      expect(lines.filter((line) => line.includes("SYN_"))).toEqual([]);
     }));
 });
