@@ -954,6 +954,49 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       ]);
     });
 
+    it("approves a worktree for the image the manager approved, whatever its tag resolves to now", async () => {
+      await start();
+      const table = await fileTable("alice", CAROL_WORKTREE_IN_SHARED_A);
+      expect((await approveVia("alice", table.approve.project)).status).toBe(200);
+      // The tag moves in the registry after the manager approved it, before anyone reads again.
+      resolveImage = () =>
+        Effect.succeed({ digest: digestFor("a tag moved since"), resolvedBy: "fake-registry" });
+      resolved.length = 0;
+      const page = (await list("carol", `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`)).body;
+      const offered = page.settings.find((entry: Listed) => entry.spec.name === "mail").approve
+        .worktree;
+      expect(offered).not.toBeNull();
+      expect(await approveVia("carol", offered)).toMatchObject({
+        status: 200,
+        body: {
+          image: `axllent/mailpit:v1.21@${digestFor("axllent/mailpit:v1.21")}`,
+          resolvedBy: null,
+          definition: { approvals: { worktree: { by: "carol" } } },
+        },
+      });
+      expect(resolved).toEqual([]);
+    });
+
+    it("offers no replacement that changes what own is while a worktree holds it as own", async () => {
+      await start();
+      const db = await declare();
+      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own")).status).toBe(200);
+      await runtime.runPromise(
+        Effect.flatMap(repoNow, (repo) =>
+          repo.propose(shared.project, { ...db.spec, scope: "worktree" }, "carol"),
+        ),
+      );
+      const offered = async () =>
+        (await list("alice", `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`)).body.proposals[0]
+          .approve;
+      expect(await offered()).toEqual({ project: null, worktree: null });
+
+      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared")).status).toBe(200);
+      const now = await offered();
+      expect(now.project).not.toBeNull();
+      expect((await approveVia("alice", now.project)).status).toBe(200);
+    });
+
     it("approves a worktree's mend.toml table for the project, then for the worktree, as the page offers", async () => {
       await start();
       const read = (as: HarnessUser) =>

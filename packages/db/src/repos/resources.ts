@@ -8,6 +8,7 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import {
+  changesWhatOwnIs,
   defaultChoiceFor,
   envCollisionRefusals,
   type ImageDigest,
@@ -239,6 +240,13 @@ export class ResourcesRepo extends Context.Service<
      * manager's for the project, and, for a worktree resource, `worktreeId`'s own (decision G4);
      * and `worktreeId`'s stored choice, read as it is, writing no default. Three queries.
      */
+    /**
+     * How many worktrees hold each of the project's definitions as `own`; a definition none holds
+     * is absent. One query, and nothing written.
+     */
+    readonly ownSelections: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, number>>;
     readonly listWithApprovals: (
       projectId: ProjectId,
       worktreeId: WorktreeId | null,
@@ -667,7 +675,7 @@ const declareIn = Effect.fn("ResourcesRepo.declareIn")(function* (
     Effect.catchTag("ResourceDefinitionNotFoundError", Effect.die),
   );
   if (existing.specDigest === specDigest) return existing;
-  if (existing.spec.scope !== spec.scope || existing.spec.preset !== spec.preset) {
+  if (changesWhatOwnIs(existing.spec, spec)) {
     yield* redefaultSelections(tx, existing, spec);
   }
   const [updated] = yield* tx
@@ -973,6 +981,24 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       return yield* Effect.forEach(rows, toDefinition);
     });
 
+    const ownSelections = Effect.fn("ResourcesRepo.ownSelections")(function* (
+      projectId: ProjectId,
+    ) {
+      const rows = yield* db
+        .select({
+          definitionId: resourceSelections.definitionId,
+          owning: sql<number>`count(*)::int`,
+        })
+        .from(resourceSelections)
+        .innerJoin(resourceDefinitions, eq(resourceDefinitions.id, resourceSelections.definitionId))
+        .where(
+          and(eq(resourceDefinitions.projectId, projectId), eq(resourceSelections.mode, "own")),
+        )
+        .groupBy(resourceSelections.definitionId)
+        .pipe(Effect.orDie);
+      return new Map(rows.map((row) => [row.definitionId, row.owning]));
+    });
+
     const listWithApprovals = Effect.fn("ResourcesRepo.listWithApprovals")(function* (
       projectId: ProjectId,
       worktreeId: WorktreeId | null,
@@ -1167,6 +1193,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       withdrawProposal,
       listForProject,
       listWithApprovals,
+      ownSelections,
       byName,
       declaredNames,
       approve,
