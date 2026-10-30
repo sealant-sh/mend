@@ -456,6 +456,8 @@ describe("SessionEngine capture mode", () => {
       }),
   );
 
+  /** Each case runs a real git origin and three provisions, which loaded two-core runners stretch past 5 s. */
+  const DOTFILES_CASE_BUDGET_MS = 15_000;
   const unreachableDotfiles = "git://127.0.0.1:1";
   const warmedRepository: DotfilesRepository = {
     url: `${unreachableDotfiles}/dots`,
@@ -516,89 +518,92 @@ describe("SessionEngine capture mode", () => {
         world.projects.set(project.id, new Project({ ...project, applyDotfiles: false }));
       },
     },
-  ])("a standby is claimed only while its owner's dotfiles are unchanged: $label", ({ change }) =>
-    Effect.gen(function* () {
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const pool = memoryHotPool();
-      const clock = yield* makePoolClock(pool);
-      const state: DotfilesState = { repository: warmedRepository, snapshot: SNAPSHOT };
-      yield* withPreparedEngineEffect(
-        (world, tmp) => setup(tmp, world),
-        (world, tmp, adopted) =>
-          Effect.gen(function* () {
-            const project = new Project({ ...adopted, hotSessions: 1 });
-            world.projects.set(project.id, project);
-            const engine = yield* SessionEngine;
-            const provision = engine.provision({
-              projectId: project.id,
-              harness: "codex",
-              label: null,
-              name: null,
-              ownerUserId: "user-fixture",
-              start: { kind: "base", base: null },
-            });
-            yield* engine.reconcileHotSessions(project.id);
-            yield* clock.untilReady(
-              () => pool.entries.some((entry) => entry.status === "ready"),
-              "a standby",
-            );
-            expect(created[0]?.dotfiles).toEqual({
-              archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
-            });
+  ])(
+    "a standby is claimed only while its owner's dotfiles are unchanged: $label",
+    ({ change }) =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        const state: DotfilesState = { repository: warmedRepository, snapshot: SNAPSHOT };
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, adopted) =>
+            Effect.gen(function* () {
+              const project = new Project({ ...adopted, hotSessions: 1 });
+              world.projects.set(project.id, project);
+              const engine = yield* SessionEngine;
+              const provision = engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                start: { kind: "base", base: null },
+              });
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status === "ready"),
+                "a standby",
+              );
+              expect(created[0]?.dotfiles).toEqual({
+                archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
+              });
 
-            const stale = pool.entries.find((entry) => entry.status === "ready");
-            if (stale === undefined) throw new Error("no standby before the change");
-            change(state, world, project);
-            const session = yield* provision;
-            expect(session.id).not.toBe(stale.id);
+              const stale = pool.entries.find((entry) => entry.status === "ready");
+              if (stale === undefined) throw new Error("no standby before the change");
+              change(state, world, project);
+              const session = yield* provision;
+              expect(session.id).not.toBe(stale.id);
 
-            yield* engine.reconcileHotSessions(project.id);
-            yield* clock.untilReady(
-              () =>
-                pool.entries.every((entry) => entry.id !== stale.id) &&
-                pool.entries.some((entry) => entry.status === "ready"),
-              "the stale standby to drain and a fresh one to warm",
-            );
-            const applies = world.projects.get(project.id)?.applyDotfiles === true;
-            const fresh = pool.entries.find((entry) => entry.status === "ready");
-            expect(fresh?.dotfiles).toMatchObject({
-              repository:
-                !applies || state.repository === null
-                  ? null
-                  : { url: state.repository.url, ref: state.repository.ref },
-              snapshotSha: applies ? state.snapshot.sha : null,
-            });
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () =>
+                  pool.entries.every((entry) => entry.id !== stale.id) &&
+                  pool.entries.some((entry) => entry.status === "ready"),
+                "the stale standby to drain and a fresh one to warm",
+              );
+              const applies = world.projects.get(project.id)?.applyDotfiles === true;
+              const fresh = pool.entries.find((entry) => entry.status === "ready");
+              expect(fresh?.dotfiles).toMatchObject({
+                repository:
+                  !applies || state.repository === null
+                    ? null
+                    : { url: state.repository.url, ref: state.repository.ref },
+                snapshotSha: applies ? state.snapshot.sha : null,
+              });
 
-            const claimed = yield* clock.claim(provision);
-            expect(claimed.id).toBe(fresh?.id);
-          }),
-        {
-          captured: memory,
-          sealantLayer: sealantLaunchLayer(created),
-          hotWorkspacesLayer: clock.poolLayer,
-          wrapCaptureChannel: clock.wrapCaptureChannel,
-          userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
-            repository: () => Effect.sync(() => state.repository),
-            setRepository: (_userId, value) => Effect.succeed(value),
-            startAgentsAfterInstall: () => Effect.succeed(false),
-            setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
-          }),
-          dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
-            snapshot: () => Effect.die("not in test"),
-            current: () =>
-              Effect.sync(() => ({
-                sha: state.snapshot.sha,
-                source: "laptop",
-                committedAt: new Date(0),
-                files: [],
-              })),
-            archive: () => Effect.sync(() => state.snapshot),
-            clear: () => Effect.void,
-          }),
-        },
-      );
-    }),
+              const claimed = yield* clock.claim(provision);
+              expect(claimed.id).toBe(fresh?.id);
+            }),
+          {
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(created),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
+              repository: () => Effect.sync(() => state.repository),
+              setRepository: (_userId, value) => Effect.succeed(value),
+              startAgentsAfterInstall: () => Effect.succeed(false),
+              setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
+            }),
+            dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
+              snapshot: () => Effect.die("not in test"),
+              current: () =>
+                Effect.sync(() => ({
+                  sha: state.snapshot.sha,
+                  source: "laptop",
+                  committedAt: new Date(0),
+                  files: [],
+                })),
+              archive: () => Effect.sync(() => state.snapshot),
+              clear: () => Effect.void,
+            }),
+          },
+        );
+      }),
+    DOTFILES_CASE_BUDGET_MS,
   );
 
   it.effect(
