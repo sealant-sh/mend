@@ -17,5 +17,10 @@ The web tier's log about a failed call to Mend's server names the call
 The edge that `mend server setup --edge` writes keeps paths in Mend's log, and now redacts the
 segment after `/join/`, `/reset/` and `/slack/link/` (links issued before this version),
 `/api/me/cli-auth/`, `/api/devices/` and `/api/auth/reset-password/`, in any case and with repeated
-slashes: an old invitation link is logged as `/join/REDACTED`. `mend server upgrade` from this
-version writes the new edge files. Lines written before the upgrade keep what they hold.
+slashes: an old invitation link is logged as `/join/REDACTED`. A path with a dot segment, a `;` or a
+backslash is logged as `/REDACTED`, and one with a leading `//` as `//REDACTED`.
+`mend server upgrade` from this version writes the new edge files. Lines written before the upgrade
+keep what they hold.
+
+A 5xx's log line carries its cause with the request's URL replaced by the route's template. Better
+Auth's console lines no longer hold the URL a sign-in rejected.

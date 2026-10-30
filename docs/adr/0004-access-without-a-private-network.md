@@ -331,8 +331,23 @@ which an operator debugs from, keeps its paths and redacts the few that carry a 
   handler's spans. It fails only for a 5xx or an abort, with a bounded reason (`status 500`,
   `aborted`): an `HttpServerError`'s message names the URL. The gateway's `?wsTicket=` no longer
   reaches a span.
-- **The deliberate omissions are one predicate per server**, read by the log and the span alike: a
-  raw file read, a device and a page view on the API, an asset on the gateway.
+- **Every request is observed**, a page view, a device's unpairing, a raw file read and a gateway
+  asset included: their templates hold no token and no file name.
+- **A 5xx's line is written at error level with its cause**, and the API's error boundary writes its
+  diagnostic the same way: the request's URL, in every spelling Effect writes it, reads as the
+  route's template. A body that could not be read, and a URL a Web `Request` cannot hold, name the
+  URL in their message.
+- **The request's line is written inside its span**, so it carries the request's trace and span ids,
+  and every line a handler writes names `http.route`.
+- **A request is `aborted` when its client went away before the response.** The observation ends
+  when the response starts: a client that leaves while a body streams is logged with the status it
+  was sent, and the duration does not count the body.
+- **Mend's credential names stay redacted inside a handler.** Effect redacts `token`, `ticket`,
+  `code`, `wsTicket` and `view` in a URL, and `X-Mend-Invitation` in headers, in what a handler logs
+  and in the spans of the calls it makes.
+- **Two lines that wrote a URL now write less.** A bearer in a socket's URL, from a client that
+  predates upgrade tickets, is logged by its target alone. Better Auth's own console lines keep the
+  words before the first colon and an error's name: it writes a rejected `callbackURL` whole.
 - **The web tier logs a failed API call by operation, failure and status**
   (`userDevices.cliAuthRequest StatusCodeError 404`), never `HttpClientError.message`, which names
   the API URL it called.
@@ -340,9 +355,11 @@ which an operator debugs from, keeps its paths and redacts the few that carry a 
   `SECRET_SEGMENT_PREFIXES` in `@mend/network` names them: `/join`, `/reset` and `/slack/link` for a
   link issued in the path form (read from the handed-link definitions), `/api/me/cli-auth`,
   `/api/devices` and `/api/auth/reset-password`. Mend's log writes `/join/REDACTED` in any case and
-  with any number of slashes, in the uri and in a `Location`. A test holds the Caddyfile to that
-  list in every spelling, and the contract test allows a secret-named path parameter only as the
-  segment after one of those paths.
+  with any number of slashes, in the uri and in a `Location`. A path the edge cannot classify, one
+  with a dot segment, a `;`, a backslash or a leading `//`, keeps only its first `/`
+  (`/a/../join/<token>` is logged as `/REDACTED`), or its `//` for a leading `//`. A test holds the
+  Caddyfile to that list in every spelling, and the contract test allows a secret-named path
+  parameter only as the segment right after one of the `/api/` paths, each with its reason.
 - **The CLI approval contract is unchanged.** Its routes keep their paths; their log lines show the
   template.
 
