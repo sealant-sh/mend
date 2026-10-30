@@ -13,10 +13,17 @@ import {
   AgentTurnNotFoundError,
   type AgentRequestAlreadyResolvedError,
   type AgentRequestNotFoundError,
+  type DispatchClaim,
+  type HarnessTurn,
   SessionProcessesRepo,
   SessionsRepo,
 } from "@mend/db";
-import type { AgentTurnId, SessionId, SessionProcessId } from "@mend/domain";
+import {
+  DispatchAttemptId,
+  type AgentTurnId,
+  type SessionId,
+  type SessionProcessId,
+} from "@mend/domain";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -35,25 +42,14 @@ import {
   CONVERSATION_UNREPORTED_WAIT_MS,
   CONVERSATION_WAIT_BOUNDS_MS,
   STARTED_BEFORE_STEERING,
+  TURN_DELIVERY_UNCONFIRMED,
   UNREPORTED_WORK_REFUSAL,
   type AgentTurnSteer,
   type TurnSteerQueueReason,
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
-import {
-  Cause,
-  Clock,
-  DateTime,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  Layer,
-  Schema,
-  Scope,
-  Stream,
-} from "effect";
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -234,17 +230,36 @@ interface ProviderEventPosition {
   readonly eventIndex: number;
 }
 
-/** Where a process's dispatch is with the turn it took; `Claiming` began at `since`. */
+type TurnCompleted = Extract<AgentEvent, { readonly _tag: "turn.completed" }>;
+
+/** What the harness said about a dispatch's own send while the send's answer was out. */
+interface SendWatch {
+  /** Whose login the turn runs on. */
+  readonly payer: TurnPayer;
+  /** The turn a `turn.started` reported meanwhile, bound until the answer names another. */
+  started: string | null;
+  /** Turn ends that matched no turn, or `started`'s: whose they were waits for the answer. */
+  readonly held: Array<TurnCompleted>;
+}
+
+/**
+ * Where a process's dispatch is with the turn it claimed as `attempt`. While the turn is unsent,
+ * only this dispatch moves it.
+ */
 type DispatchPhase =
   | { readonly _tag: "Idle" }
-  | { readonly _tag: "Claiming"; readonly since: Date }
-  | { readonly _tag: "Claimed"; readonly turn: AgentTurn }
-  | { readonly _tag: "Writing"; readonly turn: AgentTurn }
-  | { readonly _tag: "Written"; readonly turn: AgentTurn };
+  | { readonly _tag: "Claiming"; readonly attempt: DispatchAttemptId }
+  | { readonly _tag: "Claimed"; readonly attempt: DispatchAttemptId; readonly turn: AgentTurn }
+  | {
+      readonly _tag: "Writing";
+      readonly attempt: DispatchAttemptId;
+      readonly turn: AgentTurn;
+      readonly send: SendWatch;
+    }
+  | { readonly _tag: "Written"; readonly attempt: DispatchAttemptId; readonly turn: AgentTurn };
 
-/** Dispatch holds a turn it has not written: the process's running unbound turn is no harness's. */
-const claimedUnsent = (entry: HostedProcess): boolean =>
-  entry.dispatch._tag === "Claiming" || entry.dispatch._tag === "Claimed";
+const sendWatch = (entry: HostedProcess): SendWatch | null =>
+  entry.dispatch._tag === "Writing" ? entry.dispatch.send : null;
 
 interface HostedProcess {
   readonly process: SessionProcess;
@@ -268,9 +283,24 @@ interface HostedProcess {
   /** The process was told to stop: a turn its harness opens now ends with it. */
   stopping: boolean;
   steerHolds: number;
-  /** A turn `Writing` or `Written` may have reached the harness: nothing puts it back. */
   dispatch: DispatchPhase;
+  /**
+   * A turn the harness opened on its own while another turn held the process: recorded once a
+   * dispatch frees the process, or as ended when it ends first.
+   */
+  parked: HarnessTurn | null;
 }
+
+const claimOf = (entry: HostedProcess, attempt: DispatchAttemptId | null): DispatchClaim => ({
+  sessionId: entry.process.sessionId,
+  processId: entry.process.id,
+  attempt,
+});
+
+/** A claim's move that freed the process recorded the harness turn waiting for it. */
+const released = (entry: HostedProcess, harness: HarnessTurn | null, turn: AgentTurn | null) => {
+  if (turn !== null && harness !== null && entry.parked === harness) entry.parked = null;
+};
 
 /**
  * The login a conversation's workspace launches with: Mend creates it with `{ claude: true }` or
@@ -441,56 +471,156 @@ export const ProtocolHostLive: Layer.Layer<
       return null;
     });
 
-    /** Fails a turn and says so; a turn that ended otherwise meanwhile (a Stop) is left alone. */
+    /** Fails a queued turn and says so; a turn that ended otherwise meanwhile (a Stop) is left alone. */
     const failTurnAndReport = (entry: HostedProcess, turnId: AgentTurnId, words: string) =>
       conversations.failTurn(turnId, words).pipe(
         Effect.flatMap(entry.hooks.onTurnCompleted),
         Effect.catchTag("AgentTurnNotFoundError", () => Effect.void),
       );
 
-    /**
-     * A turn whose words may have reached the harness, never sent again: failed with fixed words
-     * unless the harness's turn was bound to it meanwhile. True when it was failed.
-     */
-    const settleUnconfirmed = (entry: HostedProcess, turnId: AgentTurnId) =>
-      conversations
-        .failUnconfirmedTurn(turnId)
-        .pipe(
-          Effect.flatMap((failed) =>
-            failed === null
-              ? Effect.succeed(false)
-              : entry.hooks.onTurnCompleted(failed).pipe(Effect.as(true)),
-          ),
-        );
+    /** Every dispatch of this host that holds a claim: no one else moves its turn. */
+    const liveAttempts = new Set<DispatchAttemptId>();
+    /** Left by a dispatch that is gone, or claimed before attempts were recorded. */
+    const heldByNoDispatch = (attempt: DispatchAttemptId | null) =>
+      attempt === null || !liveAttempts.has(attempt);
 
-    /** A claim whose answer was lost may have committed: the turn it took goes back, unsent. */
-    const requeueUnsent = (entry: HostedProcess, since: Date) =>
+    /** The harness turn that waits for the process, unless the process is being stopped. */
+    const waitingHarness = (entry: HostedProcess): HarnessTurn | null =>
+      entry.stopping || hosted.get(entry.process.id) !== entry ? null : entry.parked;
+
+    /** An ended turn: its open requests close, and the engine hears of it. */
+    const reportEnded = (entry: HostedProcess, turn: AgentTurn) =>
       Effect.gen(function* () {
-        for (const turn of yield* conversations.openTurns(entry.process.sessionId)) {
-          if (
-            turn.processId === entry.process.id &&
-            turn.status === "running" &&
-            turn.providerTurnId === null &&
-            turn.startedAt !== null &&
-            turn.startedAt >= since
-          )
-            yield* conversations.requeueClaimedTurn(turn.id);
+        yield* conversations.cancelOpenForTurn(turn.id);
+        yield* entry.hooks.onRequestChanged(entry.process.sessionId);
+        yield* entry.hooks.onTurnCompleted(turn);
+      });
+
+    /** Puts back the claimed, unsent turn; the harness turn waiting for the process takes it. */
+    const putBack = (
+      entry: HostedProcess,
+      attempt: DispatchAttemptId,
+      bound: string | null = null,
+    ) =>
+      Effect.gen(function* () {
+        const harness = waitingHarness(entry);
+        const turn = yield* conversations.putBackOwn(claimOf(entry, attempt), { bound, harness });
+        released(entry, harness, turn);
+        return turn;
+      });
+
+    /**
+     * Fails the claimed, unsent turn with `words` and says so; true when it did. A turn a Stop,
+     * a hand-over or a restart decided first is left alone.
+     */
+    const failClaimed = (
+      entry: HostedProcess,
+      attempt: DispatchAttemptId,
+      words: string,
+      bound: string | null = null,
+    ) =>
+      Effect.gen(function* () {
+        const harness = waitingHarness(entry);
+        const turn = yield* conversations.failOwn(claimOf(entry, attempt), words, {
+          bound,
+          harness,
+        });
+        released(entry, harness, turn);
+        if (turn === null) return false;
+        yield* entry.hooks.onTurnCompleted(turn);
+        return true;
+      });
+
+    /** A turn's end, matched by its provider turn id only; null when no turn has that id. */
+    const applyCompletion = (entry: HostedProcess, ended: TurnCompleted) =>
+      Effect.gen(function* () {
+        const turn = yield* conversations.completeTurn(
+          ended.providerTurnId,
+          entry.process.sessionId,
+          ended.status,
+          ended.usage,
+          ended.error,
+        );
+        if (turn !== null) yield* reportEnded(entry, turn);
+        return turn;
+      });
+
+    /**
+     * A turn's end. One no turn matches while a send is out may be that send's own (Codex can end
+     * a fast turn before it answers): it waits for the answer. A waiting harness turn that ends is
+     * recorded as ended. Anything else is nobody's turn and changes no row.
+     */
+    const settleCompletion = (entry: HostedProcess, ended: TurnCompleted): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        for (;;) {
+          const send = sendWatch(entry);
+          if (send !== null && send.started === ended.providerTurnId) {
+            send.held.push(ended);
+            return;
+          }
+          if ((yield* applyCompletion(entry, ended)) !== null) return;
+          const parked = entry.parked;
+          if (parked !== null && parked.providerTurnId === ended.providerTurnId) {
+            entry.parked = null;
+            const opening = yield* conversations.openHarnessTurn(
+              entry.process.sessionId,
+              entry.process.id,
+              parked.providerTurnId,
+              parked.reason,
+              parked.payer,
+              { status: ended.status, usage: ended.usage, error: ended.error },
+            );
+            if (opening._tag === "Recorded") yield* reportEnded(entry, opening.turn);
+            return;
+          }
+          if (send === null) return;
+          if (sendWatch(entry) === send) {
+            send.held.push(ended);
+            return;
+          }
+          // The send was answered meanwhile, and bound before it stopped holding ends: once more.
         }
       });
 
-    /** Records the turn the harness took, again until it lands or the turn ended. */
-    const recordSent = (turnId: AgentTurnId, payer: TurnPayer, providerTurnId: string) =>
-      untilItLands(
-        Effect.gen(function* () {
-          yield* conversations.setTurnPayer(turnId, payer);
-          yield* conversations.setProviderTurnId(turnId, providerTurnId);
-        }).pipe(Effect.catchTag("AgentTurnNotFoundError", () => Effect.void)),
-        "protocol host: a sent turn was not recorded",
-        { turnId },
-      );
+    /**
+     * Records the turn the harness took for this send, again until it lands. A claim another
+     * decided meanwhile (a Stop, a hand-over, a restart) binds nothing, and what was written is
+     * interrupted. Then the ends the send held are applied, its own by id, the rest dropped.
+     */
+    const finishSend = (
+      entry: HostedProcess,
+      phase: Extract<DispatchPhase, { readonly _tag: "Writing" }>,
+      providerTurnId: string,
+    ) =>
+      Effect.gen(function* () {
+        const { attempt, turn, send } = phase;
+        const replacing =
+          send.started !== null && send.started !== providerTurnId ? send.started : null;
+        if (replacing !== null)
+          yield* Effect.logWarning(
+            "protocol host: Codex answered a send with another turn than the one that started meanwhile",
+          ).pipe(Effect.annotateLogs({ turnId: turn.id, started: replacing, providerTurnId }));
+        const bound = yield* retried(
+          Effect.suspend(() =>
+            conversations.bindOwnSend(
+              claimOf(entry, attempt),
+              providerTurnId,
+              send.payer,
+              replacing,
+            ),
+          ),
+          "protocol host: a sent turn was not recorded",
+          { turnId: turn.id },
+        );
+        entry.dispatch = { _tag: "Written", attempt, turn };
+        const own = send.held.filter((ended) => ended.providerTurnId === providerTurnId);
+        if (bound === null && own.length === 0)
+          yield* entry.adapter.interrupt().pipe(Effect.ignore);
+        for (const ended of own) yield* applyCompletion(entry, ended);
+      });
 
     /**
-     * After a failure mid-dispatch, the turn this pass took goes back or is settled, again until
+     * After a failure mid-dispatch, the turn this pass claimed goes back or is settled, again until
      * that lands: a turn left running and unbound would block the process's queue for good.
      */
     const leaveNothingStuck = (entry: HostedProcess): Effect.Effect<void> => {
@@ -501,24 +631,19 @@ export const ProtocolHostLive: Layer.Layer<
         case "Written":
           return Effect.void;
         case "Claiming":
+        case "Claimed":
+          // A claim whose answer was lost may have committed: its attempt names what it took.
           return untilItLands(
-            requeueUnsent(entry, phase.since),
+            Effect.asVoid(putBack(entry, phase.attempt)),
             "protocol host: a claimed turn was not put back",
             { processId: entry.process.id },
-            live,
-          );
-        case "Claimed":
-          return untilItLands(
-            conversations.requeueClaimedTurn(phase.turn.id),
-            "protocol host: a claimed turn was not put back",
-            { turnId: phase.turn.id },
             live,
           );
         case "Writing":
           // The next turn is dispatched however the settling went: one whose answer was lost may
           // have landed, and a turn still running holds the queue by itself.
           return untilItLands(
-            Effect.asVoid(settleUnconfirmed(entry, phase.turn.id)),
+            Effect.asVoid(failClaimed(entry, phase.attempt, TURN_DELIVERY_UNCONFIRMED)),
             "protocol host: an unconfirmed turn was not settled",
             { turnId: phase.turn.id },
             live,
@@ -532,17 +657,19 @@ export const ProtocolHostLive: Layer.Layer<
       }
     };
 
-    const dispatchOne = (entry: HostedProcess): Effect.Effect<"next" | "done"> =>
-      Effect.gen(function* () {
-        entry.dispatch = { _tag: "Claiming", since: yield* DateTime.nowAsDate };
-        const turn = yield* conversations.claimNextTurn(entry.process.id);
+    const dispatchOne = (entry: HostedProcess): Effect.Effect<"next" | "done"> => {
+      const attempt = DispatchAttemptId.make(crypto.randomUUID());
+      return Effect.gen(function* () {
+        liveAttempts.add(attempt);
+        entry.dispatch = { _tag: "Claiming", attempt };
+        const turn = yield* conversations.claimNextTurn(entry.process.id, attempt);
         if (turn === null) return "done";
-        entry.dispatch = { _tag: "Claimed", turn };
+        entry.dispatch = { _tag: "Claimed", attempt, turn };
         const steering = entry.hooks.sharedControl;
         if (steering !== undefined) {
           const decision = yield* steering.decide(turn);
           if (decision.kind === "refuse") {
-            yield* failTurnAndReport(entry, turn.id, decision.words);
+            yield* failClaimed(entry, attempt, decision.words);
             return "next";
           }
           if (decision.kind === "hand-over") {
@@ -551,11 +678,11 @@ export const ProtocolHostLive: Layer.Layer<
             // nobody else's until it ends or restarts (review 2 of mend#572, P2-1).
             if (!(yield* entry.adapter.reportsBackgroundWork())) {
               if (decision.sender !== entry.runsAs) {
-                yield* failTurnAndReport(entry, turn.id, STARTED_BEFORE_STEERING);
+                yield* failClaimed(entry, attempt, STARTED_BEFORE_STEERING);
                 return "next";
               }
             } else {
-              yield* conversations.requeueClaimedTurn(turn.id);
+              yield* putBack(entry, attempt);
               yield* beginHandOver(entry, turn, decision.sender, steering);
               return "done";
             }
@@ -564,39 +691,55 @@ export const ProtocolHostLive: Layer.Layer<
         const payer = yield* loginForTurn(entry);
         // A stop that began meanwhile puts back what was claimed: nothing may be written now.
         if (hosted.get(entry.process.id) !== entry || entry.stopping) {
-          yield* conversations.requeueClaimedTurn(turn.id);
+          yield* putBack(entry, attempt);
           return "done";
         }
-        entry.dispatch = { _tag: "Writing", turn };
+        const writing = {
+          _tag: "Writing",
+          attempt,
+          turn,
+          send: { payer, started: null, held: [] },
+        } as const satisfies DispatchPhase;
+        entry.dispatch = writing;
         const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
         if (sent._tag === "Success") {
-          entry.dispatch = { _tag: "Written", turn };
-          yield* recordSent(turn.id, payer, sent.success);
+          yield* finishSend(entry, writing, sent.success);
           return "done";
         }
         const failure = sent.failure;
+        const uncertain =
+          failure._tag === "AgentTurnDeliveryError" && failure.certainty === "uncertain";
+        const started = writing.send.started;
+        // The answer was lost, and the harness said meanwhile that the turn started: it was written.
+        if (uncertain && started !== null) {
+          yield* finishSend(entry, writing, started);
+          return "done";
+        }
+        // From here what started meanwhile was another turn: the send was refused or never written.
         // Busy: the harness is in a turn of its own, and that turn's end dispatches this one.
         // Not written: the next trigger dispatches it, never a loop here.
         if (
           failure._tag === "AgentTurnBusyError" ||
           (failure._tag === "AgentTurnDeliveryError" && failure.certainty === "not-written")
         ) {
-          entry.dispatch = { _tag: "Claimed", turn };
-          yield* conversations.requeueClaimedTurn(turn.id);
+          entry.dispatch = { _tag: "Claimed", attempt, turn };
+          yield* putBack(entry, attempt, started);
           return "done";
         }
-        if (failure._tag === "AgentTurnDeliveryError")
-          return (yield* settleUnconfirmed(entry, turn.id)) ? "next" : "done";
-        yield* failTurnAndReport(entry, turn.id, String(failure));
+        if (uncertain)
+          return (yield* failClaimed(entry, attempt, TURN_DELIVERY_UNCONFIRMED)) ? "next" : "done";
+        yield* failClaimed(entry, attempt, String(failure), started);
         return "next";
       }).pipe(
         Effect.onError(() => leaveNothingStuck(entry)),
         Effect.ensuring(
           Effect.sync(() => {
             entry.dispatch = { _tag: "Idle" };
+            liveAttempts.delete(attempt);
           }),
         ),
       );
+    };
 
     const dispatchNext = (entry: HostedProcess): Effect.Effect<void> =>
       entry.dispatchPermit.withPermit(
@@ -837,6 +980,57 @@ export const ProtocolHostLive: Layer.Layer<
         );
       });
 
+    /**
+     * Records a turn the harness opened on its own. While another turn holds the process it stays
+     * parked, unless that turn is a claim no dispatch of this host holds (one left by a dispatch
+     * that is gone): that goes back to the queue, and the harness turn takes the process.
+     */
+    const openHarness = (entry: HostedProcess, harness: HarnessTurn): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const opening = yield* conversations.openHarnessTurn(
+          entry.process.sessionId,
+          entry.process.id,
+          harness.providerTurnId,
+          harness.reason,
+          harness.payer,
+        );
+        if (opening._tag === "Recorded") {
+          if (entry.parked === harness) entry.parked = null;
+          // Started after the process was told to stop (a goal, a queued prompt): it ends with
+          // the process, under its person (decision 6, "The stop").
+          if (entry.stopping && opening.turn.status === "running")
+            yield* conversations.completeTurn(
+              harness.providerTurnId,
+              entry.process.sessionId,
+              "interrupted",
+              null,
+              INTERRUPTED_BY_HAND_OVER,
+            );
+          return;
+        }
+        const claim = yield* conversations.unsentClaim(entry.process.id);
+        if (
+          claim !== null &&
+          heldByNoDispatch(claim.attempt) &&
+          waitingHarness(entry) === harness
+        ) {
+          released(
+            entry,
+            harness,
+            yield* conversations.putBackOwn(claimOf(entry, claim.attempt), { harness }),
+          );
+          return;
+        }
+        yield* Effect.logWarning(
+          "protocol host: the harness opened a turn while another turn holds the process",
+        ).pipe(
+          Effect.annotateLogs({
+            processId: entry.process.id,
+            providerTurnId: harness.providerTurnId,
+          }),
+        );
+      });
+
     const projectEvent = Effect.fn("ProtocolHost.projectEvent")(function* (
       entry: HostedProcess,
       event: AgentEvent,
@@ -849,70 +1043,48 @@ export const ProtocolHostLive: Layer.Layer<
             yield* sessions.setProviderSessionId(entry.process.sessionId, event.providerSessionId);
           }
           return;
-        case "turn.started":
-          if (!claimedUnsent(entry))
-            yield* conversations.bindRunningProviderTurn(
-              entry.process.sessionId,
-              entry.process.id,
-              event.providerTurnId,
-            );
-          return;
-        case "harness-turn.started": {
-          const opened = yield* conversations.openHarnessTurn(
-            entry.process.sessionId,
-            entry.process.id,
+        case "turn.started": {
+          // Only a dispatch's own send binds a turn: what starts while its answer is out.
+          const phase = entry.dispatch;
+          if (phase._tag !== "Writing") return;
+          const send = phase.send;
+          if (send.started !== null) {
+            if (send.started !== event.providerTurnId)
+              yield* Effect.logWarning(
+                "protocol host: a second turn started while a send was out",
+              ).pipe(
+                Effect.annotateLogs({
+                  turnId: phase.turn.id,
+                  providerTurnId: event.providerTurnId,
+                }),
+              );
+            return;
+          }
+          send.started = event.providerTurnId;
+          yield* conversations.bindOwnSend(
+            claimOf(entry, phase.attempt),
             event.providerTurnId,
-            event.reason,
-            // Nobody sent it: it runs on whatever login the workspace holds, the person's whose
-            // process it is in a person-layout executor.
-            entry.holds,
+            send.payer,
           );
-          // Started after the process was told to stop (a goal, a queued prompt): it ends with
-          // the process, under its person (decision 6, "The stop").
-          if (opened !== null && entry.stopping) {
-            yield* conversations.completeTurn(
-              event.providerTurnId,
-              entry.process.sessionId,
-              "interrupted",
-              null,
-              INTERRUPTED_BY_HAND_OVER,
-            );
-          }
-          if (opened === null) {
-            yield* Effect.logWarning(
-              "protocol host: the harness opened a turn while a sent turn still runs",
-            ).pipe(
-              Effect.annotateLogs({
-                processId: entry.process.id,
-                providerTurnId: event.providerTurnId,
-              }),
-            );
-          }
           return;
         }
-        case "turn.completed": {
-          if (!claimedUnsent(entry))
-            yield* conversations.bindRunningProviderTurn(
-              entry.process.sessionId,
-              entry.process.id,
-              event.providerTurnId,
-            );
-          const turn = yield* conversations.completeTurn(
-            event.providerTurnId,
-            entry.process.sessionId,
-            event.status,
-            event.usage,
-            event.error,
-          );
-          // A turn Mend failed as unconfirmed matches nothing; its end still frees the harness.
-          if (turn !== null) {
-            yield* conversations.cancelOpenForTurn(turn.id);
-            yield* entry.hooks.onRequestChanged(entry.process.sessionId);
-            yield* entry.hooks.onTurnCompleted(turn);
-          }
+        case "harness-turn.started": {
+          // Nobody sent it: it runs on whatever login the workspace holds, the person's whose
+          // process it is in a person-layout executor. Parked first, so that a dispatch freeing
+          // the process meanwhile records it in the same move.
+          const harness: HarnessTurn = {
+            providerTurnId: event.providerTurnId,
+            reason: event.reason,
+            payer: entry.holds,
+          };
+          entry.parked = harness;
+          yield* openHarness(entry, harness);
+          return;
+        }
+        case "turn.completed":
+          yield* settleCompletion(entry, event);
           yield* Effect.forkIn(dispatchNext(entry), scope);
           return;
-        }
         case "drain.ended":
           yield* Effect.forkIn(dispatchNext(entry), scope);
           return;
@@ -1124,6 +1296,7 @@ export const ProtocolHostLive: Layer.Layer<
         stopping: false,
         steerHolds: 0,
         dispatch: { _tag: "Idle" },
+        parked: null,
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
@@ -1501,15 +1674,14 @@ export const ProtocolHostLive: Layer.Layer<
       if (entry === undefined) return;
       entry.stopping = true;
       if (queueOnConversation) handingOver.set(entry.process.sessionId, processId);
+      // A claim no dispatch of this host holds goes back to the queue; one a dispatch holds is
+      // that dispatch's to settle, and it sees the stop.
+      const claim = yield* conversations.unsentClaim(processId);
+      if (claim !== null && heldByNoDispatch(claim.attempt))
+        yield* conversations.putBackOwn(claimOf(entry, claim.attempt));
       for (const turn of yield* conversations.openTurns(entry.process.sessionId)) {
         if (turn.processId !== processId || turn.status !== "running") continue;
-        if (turn.providerTurnId === null) {
-          const phase = entry.dispatch;
-          const mayBeWritten =
-            (phase._tag === "Writing" || phase._tag === "Written") && phase.turn.id === turn.id;
-          if (!mayBeWritten) yield* conversations.requeueClaimedTurn(turn.id);
-          continue;
-        }
+        if (turn.providerTurnId === null) continue;
         const ended = yield* conversations.completeTurn(
           turn.providerTurnId,
           turn.sessionId,

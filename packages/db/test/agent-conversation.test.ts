@@ -13,6 +13,7 @@ import {
   AgentConversationRepo,
   AgentConversationRepoLive,
 } from "../src/repos/agent-conversation.ts";
+import { NO_PAYER, newAttempt, sendNext } from "./dispatch.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
@@ -58,8 +59,7 @@ const runningTurn = Effect.gen(function* () {
   const session = SessionId.make("sess-codex");
   const process = SessionProcessId.make("p-codex-1");
   const turn = yield* repo.submitTurn(session, process, "start", "user-1");
-  yield* repo.claimNextTurn(process);
-  yield* repo.setProviderTurnId(turn.id, "native");
+  yield* sendNext(session, process, "native");
   return { session, process, turn };
 });
 
@@ -111,21 +111,15 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         const sessionId = SessionId.make("sess-codex");
         const processId = SessionProcessId.make("p-codex-1");
         const turn = yield* conversation.submitTurn(sessionId, processId, "replay", "user-1");
-        const running = yield* conversation.claimNextTurn(processId);
-        if (running === null) return yield* Effect.die("turn was not claimed");
-        const bound = yield* conversation.bindRunningProviderTurn(
-          sessionId,
-          processId,
-          "provider-turn-repository",
-        );
-        if (bound?.id !== turn.id) return yield* Effect.die("provider turn was not bound");
+        const bound = yield* sendNext(sessionId, processId, "provider-turn-repository");
+        if (bound.id !== turn.id) return yield* Effect.die("provider turn was not bound");
         const secondTurn = yield* conversation.submitTurn(
           sessionId,
           processId,
           "queued second",
           "user-2",
         );
-        const whileBusy = yield* conversation.claimNextTurn(processId);
+        const whileBusy = yield* conversation.claimNextTurn(processId, newAttempt());
         const first = yield* conversation.upsertItem({
           sessionId,
           processId,
@@ -213,7 +207,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           null,
           null,
         );
-        const claimedSecond = yield* conversation.claimNextTurn(processId);
+        const claimedSecond = yield* conversation.claimNextTurn(processId, newAttempt());
         const deliveryRequest = yield* conversation.openRequest({
           sessionId,
           processId,
@@ -296,7 +290,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
     expect(result.secondTurnMessages).toEqual([]);
   });
 
-  it("records a turn the harness opened, and sends a claimed unsent turn back to the queue", async () => {
+  it("records a turn the harness opened once the claim it waited for is put back", async () => {
     const result = await withConversation(
       Effect.gen(function* () {
         const conversation = yield* AgentConversationRepo;
@@ -304,29 +298,41 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         const processId = SessionProcessId.make("p-codex-1");
         // This case creates the follow-up it claims, independently of replay tests.
         yield* conversation.submitTurn(sessionId, processId, "follow-up", null, "follow-up:1");
-        const claimed = yield* conversation.claimNextTurn(processId);
+        const attempt = newAttempt();
+        const claimed = yield* conversation.claimNextTurn(processId, attempt);
         if (claimed === null) return yield* Effect.die("nothing to claim");
-        const opened = yield* conversation.openHarnessTurn(
+        const harness = {
+          providerTurnId: "harness:init-1",
+          reason: 'Dynamic workflow "tiny" completed',
+          payer: NO_PAYER,
+        };
+        const whileClaimed = yield* conversation.openHarnessTurn(
           sessionId,
           processId,
-          "harness:init-1",
-          'Dynamic workflow "tiny" completed',
-          { userId: null, accountId: null, accountName: null },
+          harness.providerTurnId,
+          harness.reason,
+          harness.payer,
         );
+        const kept = yield* conversation.byTurnId(claimed.id);
+        // The harness was busy in its own turn: the claim goes back and that turn takes the slot.
+        const sentBack = yield* conversation.putBackOwn(
+          { sessionId, processId, attempt },
+          { harness },
+        );
+        const opened = yield* conversation.byProviderTurnId(sessionId, harness.providerTurnId);
         const again = yield* conversation.openHarnessTurn(
           sessionId,
           processId,
-          "harness:init-1",
+          harness.providerTurnId,
           "ignored",
           { userId: null, accountId: null, accountName: "ignored" },
         );
-        const sentBack = yield* conversation.byTurnId(claimed.id);
-        const whileHarness = yield* conversation.claimNextTurn(processId);
+        const whileHarness = yield* conversation.claimNextTurn(processId, newAttempt());
         yield* conversation.completeTurn("harness:init-1", sessionId, "completed", null, null);
-        const afterHarness = yield* conversation.claimNextTurn(processId);
+        const retry = newAttempt();
+        const afterHarness = yield* conversation.claimNextTurn(processId, retry);
         // Claimed again and refused by a busy harness: back in the queue, unsent.
-        if (afterHarness !== null) yield* conversation.requeueClaimedTurn(afterHarness.id);
-        const requeued = yield* conversation.byTurnId(claimed.id);
+        const requeued = yield* conversation.putBackOwn({ sessionId, processId, attempt: retry });
         const task = (status: "in-progress" | "completed", seq: bigint, taskId = "wf1") =>
           conversation.upsertItem({
             sessionId,
@@ -355,6 +361,8 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         const tasksEnded = yield* conversation.taskActivity(processId);
         return {
           claimed,
+          whileClaimed,
+          kept,
           opened,
           again,
           sentBack,
@@ -377,9 +385,11 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
       providerTurnId: "harness:init-1",
     });
     expect(result.opened?.ordinal).toBeGreaterThan(result.claimed.ordinal);
-    expect(result.again?.id).toBe(result.opened?.id);
+    expect(result.whileClaimed).toEqual({ _tag: "SlotHeld" });
+    expect(result.kept).toMatchObject({ status: "running", providerTurnId: null });
+    expect(result.again).toMatchObject({ _tag: "Recorded", turn: { id: result.opened?.id } });
     // A replayed open keeps the payer the first one recorded.
-    expect(result.again?.billedAccountName).toBeNull();
+    expect(result.again._tag === "Recorded" && result.again.turn.billedAccountName).toBeNull();
     expect(result.sentBack).toMatchObject({ status: "queued", startedAt: null });
     expect(result.whileHarness).toBeNull();
     expect(result.afterHarness?.id).toBe(result.claimed.id);
@@ -450,7 +460,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         const sessionId = SessionId.make("sess-codex");
         const processId = SessionProcessId.make("p-codex-1");
         const sending = yield* conversation.submitTurn(sessionId, processId, "sending", "user-1");
-        yield* conversation.claimNextTurn(processId);
+        yield* conversation.claimNextTurn(processId, newAttempt());
         yield* conversation.cancelOpenForProcess(processId);
         const refused = yield* conversation.failTurn(sending.id, "late").pipe(Effect.flip);
         const queued = yield* conversation.submitTurn(sessionId, processId, "queued", "user-1");
@@ -471,12 +481,11 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         const sessionId = SessionId.make("sess-codex");
         const processId = SessionProcessId.make("p-codex-1");
         const bound = yield* conversation.submitTurn(sessionId, processId, "bound", "user-1");
-        yield* conversation.claimNextTurn(processId);
-        yield* conversation.bindRunningProviderTurn(sessionId, processId, "provider-bound");
+        yield* sendNext(sessionId, processId, "provider-bound");
         const keptBound = yield* conversation.failUnconfirmedTurn(bound.id);
         yield* conversation.completeTurn("provider-bound", sessionId, "completed", null, null);
         const unbound = yield* conversation.submitTurn(sessionId, processId, "unbound", "user-1");
-        yield* conversation.claimNextTurn(processId);
+        yield* conversation.claimNextTurn(processId, newAttempt());
         const settled = yield* conversation.failUnconfirmedTurn(unbound.id);
         const queued = yield* conversation.submitTurn(sessionId, processId, "queued", "user-1");
         const keptQueued = yield* conversation.failUnconfirmedTurn(queued.id);
@@ -500,25 +509,6 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
     expect(result.queued).toMatchObject({ status: "queued", error: null });
   });
 
-  it("binds a provider turn only to a running turn", async () => {
-    const result = await withConversation(
-      Effect.gen(function* () {
-        const conversation = yield* AgentConversationRepo;
-        const sessionId = SessionId.make("sess-codex");
-        const processId = SessionProcessId.make("p-codex-1");
-        const turn = yield* conversation.submitTurn(sessionId, processId, "words", "user-1");
-        yield* conversation.claimNextTurn(processId);
-        yield* conversation.requeueClaimedTurn(turn.id);
-        const refused = yield* conversation
-          .setProviderTurnId(turn.id, "provider-late")
-          .pipe(Effect.flip);
-        return { refused, turn: yield* conversation.byTurnId(turn.id) };
-      }),
-    );
-    expect(result.refused._tag).toBe("AgentTurnNotFoundError");
-    expect(result.turn).toMatchObject({ status: "queued", providerTurnId: null });
-  });
-
   it("keeps every admitted steer through completion and allocates ordinals once", async () => {
     await withConversation(
       Effect.gen(function* () {
@@ -526,8 +516,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         const session = SessionId.make("sess-codex");
         const process = SessionProcessId.make("p-codex-1");
         const turn = yield* repo.submitTurn(session, process, "start", "user-1");
-        yield* repo.claimNextTurn(process);
-        yield* repo.setProviderTurnId(turn.id, "native");
+        yield* sendNext(session, process, "native");
         const key = crypto.randomUUID();
         const [first, retry] = yield* Effect.all(
           [
@@ -732,7 +721,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         });
         yield* repo.completeTurn("native", session, "completed", null, null);
         const taken = yield* repo.queueTurnSteer((yield* admit("taken")).id, process, "turn-ended");
-        expect((yield* repo.claimNextTurn(process))?.id).toBe(taken.queuedTurnId);
+        expect((yield* repo.claimNextTurn(process, newAttempt()))?.id).toBe(taken.queuedTurnId);
         expect(yield* repo.withdrawTurnSteer(taken.id, process)).toEqual(taken);
       }),
     );

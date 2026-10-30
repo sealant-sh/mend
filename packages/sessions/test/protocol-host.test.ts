@@ -34,6 +34,7 @@ import {
 } from "../src/protocol-host.ts";
 import type { SteerTurnInput } from "../src/protocol-steer.ts";
 import { makePipe, type PeerRequest } from "./support/codex-peer.ts";
+import { makeDispatchStore } from "./support/dispatch-store.ts";
 import { makeSteerStore } from "./support/steer-store.ts";
 
 const now = () => new Date();
@@ -142,6 +143,7 @@ const makeConversationWorld = () => {
   const items = new Map<string, AgentItem>();
   const cancelSweeps: Array<AgentTurnId> = [];
   const steerStore = makeSteerStore(turns, () => admission.stopping);
+  const dispatch = makeDispatchStore(turns, () => ordinal++);
   const layer = Layer.succeed(AgentConversationRepo, {
     ...steerStore,
     withdrawMessageTurn: (id, onProcess) =>
@@ -191,75 +193,36 @@ const makeConversationWorld = () => {
       Effect.succeed(
         [...turns.values()].filter((turn) => turn.status === "queued" || turn.status === "running"),
       ),
-    claimNextTurn: (onProcess) =>
+    claimNextTurn: (onProcess, attempt) =>
       Effect.suspend(() => admission.beforeClaim).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            const all = [...turns.values()]
-              .filter((row) => row.processId === onProcess)
-              .toSorted((a, b) => a.ordinal - b.ordinal);
-            if (all.some((turn) => turn.status === "running")) return null;
-            const queued = all.find((turn) => turn.status === "queued");
-            return queued === undefined
-              ? null
-              : update(queued.id, { status: "running", startedAt: now() });
-          }),
-        ),
+        Effect.andThen(dispatch.claimNextTurn(onProcess, attempt)),
         Effect.tap(() => Effect.suspend(() => admission.afterClaim)),
       ),
-    openHarnessTurn: (_session, _process, providerTurnId, reason, payer) =>
+    openHarnessTurn: (session, onProcess, providerTurnId, reason, payer, ended) =>
       admission.beforeHarnessTurn.pipe(
         Effect.andThen(
-          Effect.sync(() => {
-            const all = [...turns.values()];
-            const existing = all.find((turn) => turn.providerTurnId === providerTurnId);
-            if (existing !== undefined) return existing;
-            for (const turn of all) {
-              if (turn.status === "running" && turn.providerTurnId === null) {
-                update(turn.id, { status: "queued", startedAt: null });
-              }
-            }
-            if ([...turns.values()].some((turn) => turn.status === "running")) return null;
-            const turn = new AgentTurn({
-              id: AgentTurnId.make(`turn-${ordinal}`),
-              sessionId,
-              processId,
-              ordinal: ordinal++,
-              author: null,
-              origin: "harness",
-              input: reason,
-              status: "running",
-              providerTurnId,
-              error: null,
-              usage: null,
-              billedUserId: payer.userId,
-              billedAccountId: payer.accountId,
-              billedAccountName: payer.accountName,
-              createdAt: now(),
-              startedAt: now(),
-              endedAt: null,
-            });
-            turns.set(turn.id, turn);
-            return turn;
-          }),
+          dispatch.openHarnessTurn(session, onProcess, providerTurnId, reason, payer, ended),
         ),
       ),
-    requeueClaimedTurn: (id) =>
+    unsentClaim: dispatch.unsentClaim,
+    putBackOwn: (claim, release) =>
       Effect.suspend(() => admission.beforeRequeue).pipe(
-        Effect.map(() => {
-          const turn = turns.get(id);
-          if (turn?.status === "running" && turn.providerTurnId === null) {
-            update(id, { status: "queued", startedAt: null });
-          }
-        }),
-        Effect.andThen(Deferred.succeed(requeued, undefined)),
-        Effect.asVoid,
+        Effect.andThen(dispatch.putBackOwn(claim, release)),
+        Effect.tap(() => Deferred.succeed(requeued, undefined)),
       ),
-    setProviderTurnId: (id, providerTurnId) =>
-      Effect.suspend(() =>
-        turns.get(id)?.status === "running"
-          ? Effect.succeed(update(id, { providerTurnId }))
-          : Effect.fail(new AgentTurnNotFoundError({ turnId: id })),
+    bindOwnSend: (claim, providerTurnId, payer, replacing) =>
+      Effect.suspend(() => admission.beforeBind).pipe(
+        Effect.andThen(Effect.suspend(() => admission.beforePayer)),
+        Effect.andThen(dispatch.bindOwnSend(claim, providerTurnId, payer, replacing)),
+      ),
+    failOwn: (claim, error, release) =>
+      Effect.suspend(() => admission.beforeFail).pipe(
+        Effect.andThen(dispatch.failOwn(claim, error, release)),
+        Effect.tap(() =>
+          error === TURN_DELIVERY_UNCONFIRMED
+            ? Effect.suspend(() => admission.afterUnconfirmed)
+            : Effect.void,
+        ),
       ),
     setTurnPayer: (id, payer) =>
       Effect.suspend(() => admission.beforePayer).pipe(
@@ -270,21 +233,6 @@ const makeConversationWorld = () => {
             billedAccountName: payer.accountName,
           }),
         ),
-      ),
-    bindRunningProviderTurn: (_session, onProcess, providerTurnId) =>
-      Effect.suspend(() => admission.beforeBind).pipe(
-        Effect.map(() => {
-          const all = [...turns.values()];
-          const bound = all.find((turn) => turn.providerTurnId === providerTurnId);
-          if (bound !== undefined) return bound;
-          const running = all.find(
-            (turn) =>
-              turn.processId === onProcess &&
-              turn.status === "running" &&
-              turn.providerTurnId === null,
-          );
-          return running === undefined ? null : update(running.id, { providerTurnId });
-        }),
       ),
     failTurn: (id, error) =>
       Effect.suspend(() => admission.beforeFail).pipe(
@@ -976,12 +924,13 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     },
   );
 
-  it.effect("keeps a turn Codex said it started while Mend was failing it, and its replies", () => {
+  it.effect("keeps a turn Codex said it started while its answer was lost, and its replies", () => {
     const world = makeConversationWorld();
     const peer = makePipe([], { start: () => Promise.resolve() });
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* attachCodex(host, peer.pipe);
+      // Codex says the turn started; its bind is still on its way when the send's answer is lost.
       const bind = yield* Deferred.make<void>();
       let binding = false;
       world.admission.beforeBind = once(
@@ -989,11 +938,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           binding = true;
         }).pipe(Effect.andThen(Deferred.await(bind))),
       );
-      world.admission.beforeFail = once(
-        Deferred.succeed(bind, undefined).pipe(
-          Effect.andThen(waitUntil(() => turnWith(world, "first")?.providerTurnId === "turn-a")),
-        ),
-      );
+      world.admission.beforePayer = once(Deferred.succeed(bind, undefined).pipe(Effect.asVoid));
       const first = yield* submit(host, "first").pipe(Effect.forkChild);
       yield* waitUntil(() => turnStarts(peer) === 1);
       peer.push({

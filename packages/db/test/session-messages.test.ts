@@ -19,6 +19,7 @@ import {
   AgentConversationRepoLive,
 } from "../src/repos/agent-conversation.ts";
 import { MessageSettingsRepo, MessageSettingsRepoLive } from "../src/repos/message-settings.ts";
+import { newAttempt, sendNext } from "./dispatch.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
@@ -54,8 +55,7 @@ const runningTurn = Effect.gen(function* () {
   const session = SessionId.make("sess-codex");
   const process = SessionProcessId.make("p-codex-1");
   const turn = yield* repo.submitTurn(session, process, "start", "user-1");
-  yield* repo.claimNextTurn(process);
-  yield* repo.setProviderTurnId(turn.id, "native");
+  yield* sendNext(session, process, "native");
   return { session, process, turn };
 });
 
@@ -353,7 +353,7 @@ describe.skipIf(postgres.skip)("message admission and settings against current m
         const session = SessionId.make("sess-codex");
         const process = SessionProcessId.make("p-codex-1");
         const turn = yield* repo.submitTurn(session, process, "start", "user-1");
-        yield* repo.claimNextTurn(process);
+        yield* repo.claimNextTurn(process, newAttempt());
         const pg = yield* PgClient.PgClient;
         const noNotify = new Proxy(pg, {
           apply(target, thisArg, args: Parameters<typeof pg>) {
@@ -398,7 +398,7 @@ describe.skipIf(postgres.skip)("message admission and settings against current m
           status: "queued",
           processId: next,
         });
-        yield* repo.claimNextTurn(next);
+        yield* repo.claimNextTurn(next, newAttempt());
         expect(yield* repo.withdrawMessageTurn(a.result.turn.id, next)).toBe(false);
         expect(yield* repo.byTurnId(a.result.turn.id)).toMatchObject({ status: "running" });
         const b = yield* repo.admitTurnMessage(request(session), process, "queue-requested");

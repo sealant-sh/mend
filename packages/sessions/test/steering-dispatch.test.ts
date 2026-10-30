@@ -11,7 +11,7 @@ import {
   SessionId,
   SessionProcessId,
 } from "@mend/domain";
-import { AgentItem, AgentTurn, SessionProcess, type TurnPayer } from "@mend/domain/workbench";
+import { AgentItem, AgentTurn, SessionProcess } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSession } from "@sealant/sdk";
@@ -28,6 +28,7 @@ import {
   type SharedControlDecision,
   waitedOut,
 } from "../src/protocol-host.ts";
+import { makeDispatchStore } from "./support/dispatch-store.ts";
 import { makeSteerStore } from "./support/steer-store.ts";
 
 /**
@@ -114,55 +115,7 @@ const conversationWorld = () => {
       Effect.sync(() =>
         ordered().filter((turn) => turn.status === "queued" || turn.status === "running"),
       ),
-    claimNextTurn: (processId) =>
-      Effect.sync(() => {
-        const all = ordered();
-        if (all.some((turn) => turn.status === "running")) return null;
-        const queued = all.find((turn) => turn.status === "queued" && turn.processId === processId);
-        return queued === undefined
-          ? null
-          : update(queued.id, { status: "running", startedAt: now() });
-      }),
-    openHarnessTurn: (_session, processId, providerTurnId, reason, payer: TurnPayer) =>
-      Effect.sync(() => {
-        const existing = ordered().find((turn) => turn.providerTurnId === providerTurnId);
-        if (existing !== undefined) return existing;
-        for (const turn of ordered()) {
-          if (turn.status === "running" && turn.providerTurnId === null) {
-            update(turn.id, { status: "queued", startedAt: null });
-          }
-        }
-        if (ordered().some((turn) => turn.status === "running")) return null;
-        const turn = new AgentTurn({
-          id: AgentTurnId.make(`turn-${ordinal}`),
-          sessionId,
-          processId,
-          ordinal: ordinal++,
-          author: null,
-          origin: "harness",
-          input: reason,
-          status: "running",
-          providerTurnId,
-          error: null,
-          usage: null,
-          billedUserId: payer.userId,
-          billedAccountId: payer.accountId,
-          billedAccountName: payer.accountName,
-          createdAt: now(),
-          startedAt: now(),
-          endedAt: null,
-        });
-        turns.set(turn.id, turn);
-        return turn;
-      }),
-    requeueClaimedTurn: (id) =>
-      Effect.sync(() => {
-        const turn = turns.get(id);
-        if (turn?.status === "running" && turn.providerTurnId === null) {
-          update(id, { status: "queued", startedAt: null });
-        }
-      }),
-    setProviderTurnId: (id, providerTurnId) => Effect.sync(() => update(id, { providerTurnId })),
+    ...makeDispatchStore(turns, () => ordinal++),
     setTurnPayer: (id, payer) =>
       Effect.sync(() =>
         update(id, {
@@ -171,7 +124,6 @@ const conversationWorld = () => {
           billedAccountName: payer.accountName,
         }),
       ),
-    bindRunningProviderTurn: () => Effect.succeed(null),
     failTurn: (id, error) =>
       Effect.suspend(() => faults.beforeFail).pipe(
         Effect.flatMap(() =>
