@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { FAKE_FORMS, FAKES } from "./fakes.mjs";
+import { redact } from "./redact.mjs";
 import { loadSecrets, register } from "./secrets.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -190,4 +191,16 @@ test("the scan stays strict: cookies, stored tokens, snake_case logins and real 
     for (const value of [deviceToken, opaque, access])
       assert.ok(!`${result.stdout}${result.stderr}`.includes(value), "the scan printed a value");
   });
+});
+
+test("a handed-over link's secret is redacted by shape in its fragment form and its older path form", () => {
+  const token = "Kq3v_9zX-2mB0aLwYtE7rN4cHdUjF8sPiQ1oGxVbZeA";
+  assert.equal(
+    redact(`/join#${token} /join/${token} /reset#${token} /reset/${token}`),
+    "/join#<token> /join/<token> /reset#<token> /reset/<token>",
+  );
+  assert.equal(
+    redact(`/slack/link#msl_${token} /slack/link/msl_${token}`),
+    "/slack/link#<code> /slack/link/<code>",
+  );
 });

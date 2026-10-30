@@ -3,7 +3,7 @@
 An organization is the tenant: it owns its members, projects, folders, references and audit log, and
 every account belongs to exactly one. Registration closes after the first account, so everyone else
 joins through a single-use invitation link that an owner prints with `mend invite` or creates in
-Settings → Invitations; Mend sends no email. Whoever opens the link at `/join/<token>` creates an
+Settings → Invitations; Mend sends no email. Whoever opens the link at `/join#<token>` creates an
 account and joins with the link's role. Owners change roles, reset members' passwords, remove
 people, take over projects a removed member left, and read the audit log; members read the roster. A
 project is `private` (its creator only) or `shared` (the organization), and a project someone cannot
@@ -16,7 +16,7 @@ see answers as a missing one does.
 - `invite-web` creates a one-time link from Settings → Invitations, optionally bound to an email.
 - `invite-cli` prints a one-time link with `mend invite`, with `--role`, `--email` and `--days`.
 - `invite-revoke` revokes an open invitation; spent ones are counted under `<n> spent`.
-- `join` opens `/join/<token>`, creates an account and joins with the link's role.
+- `join` opens `/join#<token>`, creates an account and joins with the link's role.
 - `join-refused` shows why a link cannot be used: not an invitation, spent, or the account already
   belongs to an organization.
 - `role-change` makes a member an owner or an owner a member; the last owner is refused.
@@ -36,7 +36,8 @@ see answers as a missing one does.
   [references-folders.md](./references-folders.md). The `Defaults · <org>` and
   `Workspace environment · <org>` panels near the top are mapped in
   [project-environment.md](./project-environment.md).
-- Web: an invitation link `/join/<token>`, opened by the person it was handed to.
+- Web: an invitation link `/join#<token>`, opened by the person it was handed to. A link from an
+  older Mend, `/join/<token>`, opens the same page and the address bar then reads `/join#<token>`.
 - Web: on a project's Setup tab (`/projects/<id>/setup`), the `Visibility` section at the top, for
   owners. The project header line ends with its visibility (`… · private` or `… · shared`).
 - Web: the adopt panel's `only you` / `everyone in <org>` choice (mapped in
@@ -65,7 +66,7 @@ Preconditions:
 - **Refuse a bad role offline.** Run `mend invite --role admin`. Exit code `1`, stderr
   `mend: --role takes "member" or "owner", not "admin"`.
 - **Invite from the CLI.** Run `mend invite --email verify-member@example.invalid --days 3`. Stdout
-  line 1 is `<web>/join/<token>`, line 2 is
+  line 1 is `<web>/join#<token>`, line 2 is
   `works once · member · for verify-member@example.invalid · expires <YYYY-MM-DD>`. Exit code `0`.
 - **Invitations panel.** Go to `<web>/settings`. The heading `Invitations` is visible
   (`page.getByRole("heading", { name: "Invitations" })`) and a row reads
@@ -79,9 +80,9 @@ Preconditions:
   the link and the buttons `Copy` and `Done`. Choose `Done`. Run
   `await page.locator("#invitations > div:last-child > div").filter({ hasText: "revoke-me@example.invalid" }).getByRole("button", { name: "Revoke" }).click()`
   (a CSS scope; see Gotchas). The row leaves the open list and a summary `1 spent` appears.
-- **Open a link that is not one.** Run `await memberPage.goto("<web>/join/not-a-token")`. The
+- **Open a link that is not one.** Run `await memberPage.goto("<web>/join#not-a-token")`. The
   heading `This link is not an invitation` is visible.
-- **Join.** Run `await memberPage.goto("<web>/join/<token>")` with the CLI's link. The heading is
+- **Join.** Run `await memberPage.goto("<web>/join#<token>")` with the CLI's link. The heading is
   `<org>` and the line under it reads `as member · expires <day>`. Fill
   `memberPage.getByRole("textbox", { name: "Name" })` with `<member>`,
   `memberPage.getByRole("textbox", { name: "Email" })` with `verify-member@example.invalid`,
@@ -89,7 +90,7 @@ Preconditions:
   `memberPage.getByLabel("Password, again")` with one new password, then run
   `await memberPage.getByRole("button", { name: "Create account and join" }).click()`. The button
   reads `One moment…`, then the page lands on `/welcome`.
-- **The link is spent.** Run `await memberPage.goto("<web>/join/<token>")` again from a fresh,
+- **The link is spent.** Run `await memberPage.goto("<web>/join#<token>")` again from a fresh,
   signed-out context. The page reads
   `This invitation was already used. Ask an owner for a new link.`
 - **Roster, both views.** Run `mend members`. Line 1 is `<org> · 2 members`; the `<owner>` row
@@ -123,7 +124,7 @@ Preconditions:
 - **Password reset link.** Run `await page.getByRole("button", { name: "Reset password" }).click()`.
   A line reads
   `A password reset link for <member>. Setting a password with it signs them out everywhere.` above
-  a one-time link to `/reset/<token>`. The reset page itself is mapped in
+  a one-time link to `/reset#<token>`. The reset page itself is mapped in
   [sign-in.md](./sign-in.md). Choose `Done`.
 - **Leave a private project behind.** As `<member>`, adopt one:
   `XDG_CONFIG_HOME=/tmp/verify-member mend adopt <repo-url> --name <project>-left`. Stdout contains
@@ -160,7 +161,7 @@ Preconditions:
   `<owner> revoked an invitation link` and `<owner> created an invitation link for member`.
 - **Proof.** Capture `/settings` after the invitation, after the join and after the removal
   (`await page.locator("body").ariaSnapshot()` and a screenshot with the `Members` heading visible),
-  `memberPage` at `/join/<token>`, `/welcome` and `/login?reason=access`, and the transcripts of
+  `memberPage` at `/join#<token>`, `/welcome` and `/login?reason=access`, and the transcripts of
   `mend invite`, both `mend members`, both `mend projects` and the refused member commands.
 
 ## Gotchas
@@ -186,7 +187,7 @@ Preconditions:
 - The minted link is a plain `<code>` element with no label (`organization-settings.tsx:357`). Read
   it with `page.getByText(/\/join\//)`. `Copy` writes to the clipboard, which a headless context may
   refuse; read the text instead.
-- The two `Show password` toggles on `/join/<token>` share one name
+- The two `Show password` toggles on `/join#<token>` share one name
   (`apps/web/src/components/auth-fields.tsx:84`) and toggle both fields together. The password
   inputs are not textboxes; use `getByLabel`.
 - The audit log is a plain `<ol>` with no name (`organization-settings.tsx:816`). Assert entries
