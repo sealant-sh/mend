@@ -432,8 +432,34 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       kind: "unparsed",
       worktreeId: shared.worktree,
       observed: "observed at capture 12 · seq 4180",
-      message: expect.stringMatching(/^mend\.toml is not valid TOML: /),
+      message:
+        "mend.toml is not valid TOML: line 1, column 2 · incomplete key-value: cannot find end of key",
     });
+  });
+
+  it("says where a file does not parse and why, and quotes none of its lines to a person either", async () => {
+    await start();
+    file = {
+      text: [
+        "[resource.mail]",
+        'image = "axllent/mailpit:v1.21"',
+        "ports = { smtp = 1025 }",
+        'env = { MP_UI_AUTH = "fake-value-gate1201" BAD }',
+        'device = "/dev/null"',
+      ].join("\n"),
+      stamp: { ...WORKTREE_STAMP, source: "capture", captureN: 2, seq: "1", partial: true },
+    };
+    const page = await list("carol", `&worktreeId=${shared.worktree}`);
+    expect(page.body.file).toEqual({
+      kind: "unparsed",
+      worktreeId: shared.worktree,
+      observed: "observed at capture 2 · seq 1 · partial",
+      message: "mend.toml is not valid TOML: line 4, column 44 · unexpected character encountered",
+    });
+    const wire = JSON.stringify(page.body);
+    for (const excerpt of ["fake-value-gate1201", "MP_UI_AUTH", "BAD", "smtp", "/dev/null"]) {
+      expect(wire).not.toContain(excerpt);
+    }
   });
 
   it("answers a proposal another removal took first as not found, not removed", async () => {

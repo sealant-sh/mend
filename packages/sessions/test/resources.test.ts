@@ -1,3 +1,5 @@
+import * as http from "node:http";
+
 import { PgClient } from "@effect/sql-pg";
 import {
   MendDBLive,
@@ -18,7 +20,12 @@ import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { Resources, ResourcesChannelLive, ResourcesLive } from "../src/resources/resources.ts";
-import { SessionChannelRegistry, SessionChannelRegistryLive } from "../src/session-channel.ts";
+import {
+  handleSessionRequest,
+  SessionChannelRegistry,
+  SessionChannelRegistryLive,
+} from "../src/session-channel.ts";
+import type { SessionSocketApi } from "../src/session-socket.ts";
 import { WORKTREE_STAMP, WorktreeReads } from "../src/worktree-reads.ts";
 
 const postgres = postgresTestConfig();
@@ -40,19 +47,50 @@ env = { MP_UI_AUTH = "tom:hunter2" }
 device = "/dev/null"
 `;
 
+/** The merge-gate verifier's file (mend#1201): an env value on the line that does not parse. */
+const VERIFIER_FILE = `
+[resource.mail]
+image = "axllent/mailpit:v1.21"
+ports = { smtp = 1025 }
+env = { MP_UI_AUTH = "fake-value-gate1201" BAD }
+device = "/dev/null"
+`;
+
+const notHere = () => Effect.die("not in this test");
+const sessionApi: SessionSocketApi = {
+  recipes: notHere,
+  listServices: notHere,
+  runServiceRecipe: notHere,
+  runService: notHere,
+  addService: notHere,
+  stopService: notHere,
+  restartService: notHere,
+  stopSession: notHere,
+  land: notHere,
+  agentHook: notHere,
+  mcpCaller: notHere,
+  resourceSession: () => Effect.succeed(SESSION),
+  listRepositories: notHere,
+  addableProjects: notHere,
+  addRepository: notHere,
+  gitTransport: notHere,
+  gitTransportDone: notHere,
+};
+
 const asked: Array<string> = [];
+let file = { text: MEND_TOML, stamp: WORKTREE_STAMP };
 const reads = Layer.mock(WorktreeReads, {
   readFile: (_project, worktree, relative) =>
     Effect.sync(() => {
       asked.push(`${worktree}:${relative}`);
       return {
         value: {
-          bytes: new TextEncoder().encode(MEND_TOML),
-          size: MEND_TOML.length,
+          bytes: new TextEncoder().encode(file.text),
+          size: file.text.length,
           truncated: false,
           binary: false,
         },
-        stamp: WORKTREE_STAMP,
+        stamp: file.stamp,
       };
     }),
 });
@@ -190,6 +228,42 @@ describe.skipIf(postgres.skip)("a session's read of its project's resources, end
     const wire = JSON.stringify(status);
     for (const secret of ["s3cret-literal", "hunter2", "u-tom", "u-maria", "digest", "spec"]) {
       expect(wire).not.toContain(secret);
+    }
+  });
+
+  it("answers a file that does not parse with its stamp and position over HTTP, never its source", async () => {
+    file = {
+      text: VERIFIER_FILE,
+      stamp: { ...WORKTREE_STAMP, source: "capture", captureN: 2, seq: "1", partial: true },
+    };
+    const registry = await runtime.runPromise(
+      Effect.gen(function* () {
+        return yield* SessionChannelRegistry;
+      }),
+    );
+    const server = http.createServer((request, response) => {
+      void handleSessionRequest(sessionApi, request, response, registry);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      const response = await fetch(`http://127.0.0.1:${port}/resources?timeZone=Europe%2FAthens`);
+      const wire = await response.text();
+      expect(response.status).toBe(200);
+      expect(JSON.parse(wire).file).toEqual({
+        kind: "unparsed",
+        observed: "observed at capture 2 · seq 1 · partial",
+        message:
+          "mend.toml is not valid TOML: line 5, column 44 · unexpected character encountered",
+      });
+      for (const excerpt of ["fake-value-gate1201", "MP_UI_AUTH", "BAD", "smtp", "/dev/null"]) {
+        expect(wire).not.toContain(excerpt);
+      }
+    } finally {
+      file = { text: MEND_TOML, stamp: WORKTREE_STAMP };
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 

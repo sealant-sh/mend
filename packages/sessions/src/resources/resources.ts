@@ -32,7 +32,7 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, TomlError } from "smol-toml";
 
 import { MEND_TOML } from "../recipes.ts";
 import { readResourceProposals } from "../resource-proposals.ts";
@@ -120,6 +120,17 @@ const MEND_TOML_MAX_BYTES = 256 * 1024;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Why `mend.toml` does not parse, by position and the parser's reason alone. The parser's own
+ * message quotes the lines around the error, which can hold env values, and a workspace reads
+ * this text.
+ */
+const tomlDiagnostic = (cause: unknown): string => {
+  if (!(cause instanceof TomlError)) return `${MEND_TOML} is not valid TOML`;
+  const reason = cause.message.replace(/^Invalid TOML document: /, "").split("\n", 1)[0];
+  return `${MEND_TOML} is not valid TOML: line ${cause.line}, column ${cause.column} · ${reason}`;
+};
 
 const line = (
   definition: ResourceDefinitionInput,
@@ -256,9 +267,7 @@ export const ResourcesLive: Layer.Layer<
       try {
         parsed = parseToml(new TextDecoder().decode(file.bytes));
       } catch (cause) {
-        return unparsed(
-          `${MEND_TOML} is not valid TOML: ${cause instanceof Error ? cause.message : String(cause)}`,
-        );
+        return unparsed(tomlDiagnostic(cause));
       }
       const declared = readResourceProposals(isRecord(parsed) ? parsed["resource"] : undefined);
       return {
