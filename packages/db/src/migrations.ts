@@ -3839,6 +3839,32 @@ const resourcesMigration = Effect.gen(function* () {
     ON resource_selections (definition_id, own_target) WHERE mode = 'own'`;
 });
 
+/**
+ * 0151 (docs/adr/0020, "One display per session"): a session's screen in one workspace. The two
+ * partial unique indexes allocate a display among the workspace's held screens and keep one held
+ * screen per session.
+ */
+const screensMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE screens (
+    id text PRIMARY KEY,
+    session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+    workspace_id text NOT NULL,
+    display integer NOT NULL CHECK (display BETWEEN 10 AND 99),
+    process_id text REFERENCES session_processes (id) ON DELETE SET NULL,
+    life jsonb NOT NULL,
+    input jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    released_at timestamptz
+  )`;
+  yield* sql`CREATE UNIQUE INDEX screens_workspace_display_idx ON screens (workspace_id, display)
+    WHERE released_at IS NULL`;
+  yield* sql`CREATE UNIQUE INDEX screens_session_held_idx ON screens (session_id)
+    WHERE released_at IS NULL`;
+  yield* sql`CREATE INDEX screens_session_created_idx ON screens (session_id, created_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3985,4 +4011,5 @@ export const migrations = {
   "0142_turn_steers": turnSteersMigration,
   "0143_recipe_launch": recipeLaunchMigration,
   "0148_resources": resourcesMigration,
+  "0151_screens": screensMigration,
 };

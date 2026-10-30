@@ -1,5 +1,6 @@
 import {
   type ProjectLinkId,
+  type ScreenId,
   BriefDocument,
   DotfilesRepository,
   EvidencePointer,
@@ -87,6 +88,8 @@ import {
   RecordLink,
   ResourceDefinitionInput,
   ReviewCommentAnchor,
+  ScreenInput,
+  ScreenLife,
   SessionDotfiles,
   PiProfileFile,
   SkillFile,
@@ -2033,6 +2036,40 @@ export const sessionPages = pgTable(
   (table) => [
     unique("session_pages_session_call_key").on(table.sessionId, table.callKey),
     index("session_pages_session_published_idx").on(table.sessionId, table.publishedAt),
+  ],
+);
+
+/**
+ * A session's screen in one workspace (docs/adr/0020): its display, held from the session's first
+ * launch there until `releasedAt`, the live process, and who holds the input.
+ */
+export const screens = pgTable(
+  "screens",
+  {
+    id: text().$type<ScreenId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    workspaceId: text().$type<SealantWorkspaceId>().notNull(),
+    display: integer().notNull(),
+    processId: text()
+      .$type<SessionProcessId>()
+      .references(() => sessionProcesses.id, { onDelete: "set null" }),
+    life: jsonbOf(ScreenLife).notNull(),
+    input: jsonbOf(ScreenInput).notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    releasedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("screens_workspace_display_idx")
+      .on(table.workspaceId, table.display)
+      .where(sql`${table.releasedAt} IS NULL`),
+    uniqueIndex("screens_session_held_idx")
+      .on(table.sessionId)
+      .where(sql`${table.releasedAt} IS NULL`),
+    index("screens_session_created_idx").on(table.sessionId, table.createdAt),
   ],
 );
 
