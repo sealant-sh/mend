@@ -404,6 +404,32 @@ describe("project creation through the gateway", () => {
         expect(f.createdSessions).toHaveLength(3);
       }),
     ));
+  it("starts a scratch thread from the scratch project's own default branch", async () =>
+    run(
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        f.projects.set("scratch", {
+          ...makeProject("scratch", "scratch-person", true),
+          defaultBranch: "trunk",
+        });
+        const { projectId } = yield* f.rpc[WS_METHODS.projectsEnsureScratch]();
+        yield* f.rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+          commandId: CommandId.make("command-trunk"),
+          threadId: ThreadId.make("thread-trunk"),
+          projectId: ProjectId.make(projectId),
+          title: "scratch",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-6.1-sol",
+            options: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          workspaceStrategy: { type: "root" },
+        });
+        expect(f.createdSessions).toEqual([{ projectId, name: null, base: "trunk" }]);
+      }),
+    ));
   it("preserves Mend refusal text and keeps path-based creation and browsing refused", async () =>
     run(
       Effect.gen(function* () {

@@ -106,7 +106,7 @@ import {
   type ModelPreferencesTooLarge,
 } from "./model-preferences.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
-import { projectWorkspaceRootOf } from "./project-paths.ts";
+import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
 import * as Queueing from "./queue.ts";
 import {
   makeReplayLog,
@@ -3458,17 +3458,13 @@ export const makePersonHub = (input: {
             }
             const entry = projects.get(request.projectId);
             if (entry === undefined) return { kind: "no-project" as const };
-            const scratch = entry.project.scratchOwnerUserId === request.session.mendUser.id;
-            if (scratch && request.workspace.kind === "join")
-              return { kind: "scratch-join" as const };
-            const workspace: ThreadWorkspace = scratch
-              ? {
-                  kind: "new",
-                  name: null,
-                  strategy: { type: "worktree", baseRef: "main", startFromOrigin: false },
-                }
-              : request.workspace;
-            if (workspace.kind === "root") return { kind: "root" as const };
+            const workspace = launchWorkspaceOf(
+              entry.project,
+              request.session.mendUser.id,
+              request.workspace,
+            );
+            if (workspace.kind === "refused")
+              return { kind: "refused" as const, reason: workspace.reason };
             if (workspace.kind === "new") {
               return {
                 kind: "new" as const,
@@ -3493,12 +3489,7 @@ export const makePersonHub = (input: {
         if (target.kind === "no-project") {
           return yield* refused(`Project ${request.projectId} is not in this environment.`);
         }
-        if (target.kind === "root")
-          return yield* refused(
-            "Every Mend session works in a worktree of its own. Start the thread in a new worktree, or in one a session of this project already uses.",
-          );
-        if (target.kind === "scratch-join")
-          return yield* refused("A new scratch thread starts in a new worktree of its own.");
+        if (target.kind === "refused") return yield* refused(target.reason);
         if (target.kind === "no-worktree") {
           return yield* refused(
             request.workspace.kind === "join"
