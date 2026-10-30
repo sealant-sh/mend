@@ -192,7 +192,7 @@ If you run your own reverse proxy instead, it must do the same five things: term
 exactly the `APP_URL` origin, forward to web only, pass WebSocket upgrades and never buffer
 `/api/events`, append the client address to `X-Forwarded-For` and be listed in
 `MEND_TRUSTED_PROXIES`, and keep query strings on `/api/tty`, `/api/service-tunnel`,
-`/api/keys/bridge/ws`, `/tty-embed` and `/pair` out of its logs.
+`/api/keys/bridge/ws`, `/api/screen-socket`, `/tty-embed` and `/pair` out of its logs.
 
 Before declaring `public`: create the first account over a private path (an instance with no
 operator refuses `public`), set `MEND_SOURCE_POLICY=tenant` and the rest of the

@@ -194,6 +194,10 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "landings.refresh",
   // A preview's id resolves to its project first; preview-open.test.ts covers who may open it.
   "previews.open",
+  // A non-owner who can see the session is answered `Refused: owner-only`, not 403;
+  // screen-socket.test.ts covers who may take over and hand back.
+  "screens.take",
+  "screens.handBack",
   "handoffs.receive",
   "handoffs.instanceTerms",
 ]);
@@ -549,6 +553,7 @@ const CASES: ReadonlyArray<AccessCase> = [
     "sessions.create",
   ),
   session("project-read", "GET", "")("sessions.detail"),
+  session("project-read", "GET", "/screen")("screens.read"),
   session("steer", "POST", "/messages", { input: "Continue" })("sessions.sendMessage"),
   session("steer", "POST", "/turns", { input: "Continue" })("sessions.submitTurn"),
   session("steer", "POST", "/images", { contentsBase64: "iVBORw0KGgo=" })("sessions.pasteImage"),
@@ -720,6 +725,7 @@ const ADMITTED: Readonly<
   >
 > = {
   "settings.scanHostEnvironment": { status: 500, calls: ["hostEnvironment.scan"] },
+  "screens.read": { status: 500, calls: ["screensRepo.ofSession"] },
   // Settings get defects before save.
   "settings.set": { status: 500, calls: ["settings.get"] },
   "settings.setWorkspaceEnvironment": { status: 500, calls: ["sealant.resolveWorkspacePackage"] },

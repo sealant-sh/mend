@@ -29,6 +29,7 @@ import {
 } from "./projects.ts";
 import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
 import { resourcesGroup } from "./resources.ts";
+import { screensGroup } from "./screens.ts";
 import { secretFilesGroup } from "./secret-files.ts";
 import { sessionsGroup } from "./sessions.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
@@ -81,6 +82,7 @@ export const MendApi = HttpApi.make("mend")
   .add(pageViewGroup)
   .add(worktreesGroup)
   .add(previewsGroup)
+  .add(screensGroup)
   .add(sessionChangesGroup)
   .add(landingsGroup)
   .add(handoffsGroup)

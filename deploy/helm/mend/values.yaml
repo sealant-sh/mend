@@ -178,7 +178,8 @@ exposure:
 #   - web.appUrl must be https://<host>, exactly (checked at render);
 #   - api.trustedProxyCidrs must cover the controller's Pods and the web tier, and nothing wider;
 #   - the controller must not log query strings on /api/tty, /api/service-tunnel,
-#     /api/keys/bridge/ws and /tty-embed (they carry single-use tickets; docs/KUBERNETES.md).
+#     /api/keys/bridge/ws, /api/screen-socket and /tty-embed (they carry single-use tickets;
+#     docs/KUBERNETES.md).
 # This Ingress routes web and nothing else: not the API, not Sealant, not the session channel. Live
 # previews get an Ingress of their own (preview.* below), to the preview gateway only.
 ingress:

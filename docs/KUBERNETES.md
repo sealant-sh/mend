@@ -409,10 +409,11 @@ What to check, because the chart cannot:
   must not pass one a client sent as its own. With ingress-nginx keep `use-forwarded-headers` off
   unless another trusted proxy sits in front. Request budgets count the address
   `MEND_TRUSTED_PROXIES` lets through; too wide a range lets a client choose it.
-- **Query strings in logs.** `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws` and
-  `/tty-embed` carry a single-use upgrade ticket in the query, and `/pair` a pairing code. A ticket
-  is dead thirty seconds after it was minted, and a log should still not hold one. With
-  ingress-nginx, set a `log-format-upstream` that uses `$uri` in place of `$request_uri`.
+- **Query strings in logs.** `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws`,
+  `/api/screen-socket` and `/tty-embed` carry a single-use upgrade ticket in the query, and `/pair`
+  a pairing code. A ticket is dead thirty seconds after it was minted, and a log should still not
+  hold one. With ingress-nginx, set a `log-format-upstream` that uses `$uri` in place of
+  `$request_uri`.
 - **Long-lived connections.** The read and send timeouts above keep terminals and the event stream
   open. A controller that buffers responses breaks `/api/events`.
 - **NetworkPolicy enforcement** is a property of your CNI. The web policy admits the controller by

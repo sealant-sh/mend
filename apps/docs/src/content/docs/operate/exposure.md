@@ -318,8 +318,9 @@ The chart refuses to render when `web.appUrl` is not exactly `https://<ingress.h
 `ingress.tls.secretName` is empty, or, with network policies on, when the controller's namespace and
 Pod labels are missing. It also refuses a plain-http session channel unless
 `exposure.executorNetwork` is `private`. The controller must not log query strings on `/api/tty`,
-`/api/service-tunnel`, `/api/keys/bridge/ws` and `/tty-embed`; the chart cannot configure that for
-you. See [Deploy on Kubernetes](/operate/deploy-kubernetes/) for the rest of the chart.
+`/api/service-tunnel`, `/api/keys/bridge/ws`, `/api/screen-socket` and `/tty-embed`; the chart
+cannot configure that for you. See [Deploy on Kubernetes](/operate/deploy-kubernetes/) for the rest
+of the chart.
 
 ### Your own reverse proxy
 
@@ -329,8 +330,8 @@ A proxy you run in place of either must do six things:
 2. Forward to the web tier only, never to the API, Sealant, the session channel or the bucket.
 3. Pass WebSocket upgrades, and never buffer or time out `/api/events`.
 4. Append the client address to `X-Forwarded-For`, and be listed in `MEND_TRUSTED_PROXIES`.
-5. Keep the query strings of `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws`, `/tty-embed`
-   and `/pair` out of its logs.
+5. Keep the query strings of `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws`,
+   `/api/screen-socket`, `/tty-embed` and `/pair` out of its logs.
 6. Keep the `X-Mend-Invitation` request header out of its logs, and the paths under `/join/`,
    `/reset/` and `/slack/link/` while links issued by an older Mend may still be opened: an
    invitation lasts up to thirty days. New links carry their secret after the `#`, which reaches no
