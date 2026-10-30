@@ -130,6 +130,7 @@ import {
   reviewTargetExists,
   reviewTargetFile,
   currentAgentProcess,
+  holdsWorkspace,
   isAgentProcessKind,
   type ReviewSlice,
   formatProjectEnvironmentIssue,
@@ -2420,7 +2421,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const ids = new Set(active.map((session) => session.id));
         const processes = yield* SessionProcessesRepo;
         for (const process of yield* processes.listLive()) {
-          if (!isAgentProcessKind(process.kind)) ids.add(process.sessionId);
+          if (holdsWorkspace(process.kind) && !isAgentProcessKind(process.kind)) {
+            ids.add(process.sessionId);
+          }
         }
         const services = yield* ServicesRepo;
         const forwards = yield* ServiceForwardsRepo;

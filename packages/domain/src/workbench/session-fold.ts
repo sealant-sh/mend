@@ -7,6 +7,7 @@ import {
   withPermissionDefaults,
 } from "./harness-launch.ts";
 import {
+  holdsWorkspace,
   isAgentProcessKind,
   LIVE_PROCESS_STATUSES,
   type SessionProcess,
@@ -22,7 +23,7 @@ import {
  *   any other live agent works                  → `running`
  *   every live agent is a terminal agent that
  *   finished its turn                           → `idle`
- *   no agent live, shells or Services live      → `idle`
+ *   no agent live, shells or Services live      → `idle` (a screen is neither)
  *   nothing live                                → settled (from the last agent outcome)
  *
  * The two `idle`s differ in the agent: live and finished (`agentWaitLine` says
@@ -102,7 +103,9 @@ export const foldSessionLiveness = (
     case "finished":
       return "idle";
     case "none":
-      return processes.some(isLiveProcess) ? "idle" : "settled";
+      return processes.some((process) => holdsWorkspace(process.kind) && isLiveProcess(process))
+        ? "idle"
+        : "settled";
   }
 };
 

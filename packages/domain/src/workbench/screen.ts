@@ -294,6 +294,22 @@ const holderConnection = (input: ScreenInput): ViewerConnectionId | null => {
   return input._tag === "Fencing" && input.to._tag === "Person" ? input.to.connection : null;
 };
 
+/** A person holds the input, or is taking it: what keeps a screen and its session up. */
+export const screenHeldByPerson = (input: ScreenInput): boolean => holderConnection(input) !== null;
+
+/**
+ * D7: a started screen stops once `idleStopMs` passed since its last activity (an agent call, a
+ * change of holder, its start) with no person holding its input. Viewers count for nothing.
+ */
+export const screenIdleStopDue = (
+  screen: Pick<Screen, "life" | "input">,
+  lastActivityAt: Date,
+  nowMs: number,
+): boolean =>
+  (screen.life._tag === "Starting" || screen.life._tag === "Live") &&
+  !screenHeldByPerson(screen.input) &&
+  nowMs - lastActivityAt.getTime() >= SCREEN_LIMITS.idleStopMs;
+
 /** ADR 0020's table of who holds the input, applied under the screen row's lock. */
 export const transitionInput = (
   input: ScreenInput,

@@ -163,8 +163,8 @@ const HAND_STARTED: ReadonlySet<string> = new Set([
 /**
  * What would stop if the executor were replaced now, from what Mend recorded of it (decision 14):
  * terminal agents (they end resumable), shells, Services started by hand, and protocol agents with
- * a turn or background work in flight. A protocol agent that is quiescent, and a `mend.toml`
- * Service (it restarts), stop nothing anyone would miss.
+ * a turn or background work in flight. A protocol agent that is quiescent, a `mend.toml` Service
+ * (it restarts) and a screen (the agent's next look starts it again) stop nothing anyone would miss.
  */
 export const retirementStopsOf = (input: {
   /** The executor's live process rows. */
@@ -203,6 +203,8 @@ export const retirementStopsOf = (input: {
         if (input.quiescent(process.id) !== true) {
           stops.push({ kind: "turn", label: `${session} · ${process.harness ?? "agent"}` });
         }
+        break;
+      case "screen":
         break;
     }
   }

@@ -13,7 +13,7 @@ import {
 import { SessionProcess } from "../src/workbench/session-process.ts";
 
 const process = (
-  kind: "agent-protocol" | "agent-pty" | "agent-external" | "shell",
+  kind: "agent-protocol" | "agent-pty" | "agent-external" | "shell" | "screen",
   extra: Partial<
     Pick<
       SessionProcess,
@@ -96,6 +96,11 @@ describe("foldSessionLiveness", () => {
   it("keeps supporting-only and empty folds unchanged", () => {
     expect(foldSessionLiveness([process("shell")], true)).toBe("idle");
     expect(foldSessionLiveness([], true)).toBe("settled");
+  });
+
+  it("settles a session whose only live process is its screen, and never reads it running", () => {
+    expect(foldSessionLiveness([process("screen")])).toBe("settled");
+    expect(foldSessionLiveness([process("screen"), process("shell")])).toBe("idle");
   });
 });
 

@@ -237,7 +237,10 @@ export const fetchWorkbench = async (ctx: { readonly api: WorkbenchApi }): Promi
     if (detail === null) continue;
     processesBySession.set(
       detail.session.id,
-      detail.processes.filter((process) => process.exitedAt === null && process.kind !== "service"),
+      detail.processes.filter(
+        (process) =>
+          process.exitedAt === null && process.kind !== "service" && process.kind !== "screen",
+      ),
     );
   }
   return {

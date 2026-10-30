@@ -109,6 +109,21 @@ describe("protocolIdleReading", () => {
     ).toEqual({ kind: "held", by: "shell" });
   });
 
+  it("is held while a person holds the screen's input, and not by a live screen alone", () => {
+    expect(protocolIdleReading(idleFacts({ screenHeld: true }))).toEqual({
+      kind: "held",
+      by: "screen",
+    });
+    expect(
+      protocolIdleReading(
+        idleFacts({
+          processes: [process("agent-protocol", true), process("screen", true)],
+          screenHeld: false,
+        }),
+      ),
+    ).toEqual({ kind: "idle", since: at(2) });
+  });
+
   it("is held while its executor still has captures to ship, or bulk changed since its snap", () => {
     expect(protocolIdleReading(idleFacts({ capture: { pending: 2, bulkDirty: null } }))).toEqual({
       kind: "held",

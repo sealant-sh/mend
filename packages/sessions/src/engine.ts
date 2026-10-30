@@ -173,10 +173,12 @@ import {
   nextAgentWait,
   currentAgentProcess,
   foldSessionLiveness,
+  holdsWorkspace,
   isAgentProcessKind,
   isLiveAgentProcess,
   isLiveProcess,
   agentProcessOutcome,
+  type SessionProcessKind,
   type ServiceBrowserScheme,
   type ServiceDeclarationSource,
   resolveServiceEndpoints,
@@ -1939,10 +1941,18 @@ const accessStopReason = (
  */
 const refusalMark = (processId: string) => `(${processId.slice(0, 8)}) could not be stopped`;
 
+const PROCESS_NOUNS: Readonly<Record<SessionProcessKind, string>> = {
+  shell: "shell",
+  "agent-pty": "agent",
+  "agent-protocol": "agent",
+  "agent-external": "agent",
+  service: "Service",
+  screen: "screen",
+};
+
 /** What the session line says for one process the platform would not close. */
 const notStoppedWords = (process: Pick<SessionProcess, "id" | "kind" | "label">) => {
-  const kind =
-    process.kind === "shell" ? "shell" : process.kind === "service" ? "Service" : "agent";
+  const kind = PROCESS_NOUNS[process.kind];
   const named = process.label === null ? kind : `${kind} "${process.label}"`;
   return `the ${named} ${refusalMark(process.id)} · the platform did not close it · stop again`;
 };
@@ -5785,7 +5795,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (capture === null || workspaceId === null) return false;
         if (discards.has(workspaceId)) return false;
         if (queueClosed.has(workspaceId)) return false;
-        const processLeases = yield* processes.listLiveForWorkspace(workspaceId);
+        const processLeases = (yield* processes.listLiveForWorkspace(workspaceId)).filter(
+          (process) => holdsWorkspace(process.kind),
+        );
         const forwardLeases = (yield* serviceForwards.listOpen()).filter(
           (forward) => forward.sealantWorkspaceId === workspaceId,
         );
@@ -6274,7 +6286,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: SealantWorkspaceId,
       ) {
         return (
-          (yield* processes.listLiveForWorkspace(workspaceId)).length +
+          (yield* processes.listLiveForWorkspace(workspaceId)).filter((process) =>
+            holdsWorkspace(process.kind),
+          ).length +
           (yield* serviceForwards.listOpen()).filter(
             (forward) => forward.sealantWorkspaceId === workspaceId,
           ).length +
@@ -10462,7 +10476,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // the pointer is overwritten so no Service remains advertised against a dead target.
             yield* closeWorkspaceServiceForwards(workspaceId);
           } else {
-            const processLeases = yield* processes.listLiveForWorkspace(workspaceId);
+            const processLeases = (yield* processes.listLiveForWorkspace(workspaceId)).filter(
+              (process) => holdsWorkspace(process.kind),
+            );
             const forwardLeases = (yield* serviceForwards.listOpen()).filter(
               (forward) => forward.sealantWorkspaceId === workspaceId,
             );
@@ -20906,7 +20922,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (session.sealantWorkspaceId === null) return false;
           const supportingLeases = (yield* processes.listLiveForWorkspace(
             session.sealantWorkspaceId,
-          )).filter((process) => !isAgentProcessKind(process.kind));
+          )).filter((process) => holdsWorkspace(process.kind) && !isAgentProcessKind(process.kind));
           const forwardLeases = (yield* serviceForwards.listOpen()).filter(
             (forward) => forward.sealantWorkspaceId === session.sealantWorkspaceId,
           );
@@ -21390,7 +21406,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           const held =
             (yield* processes.listLiveForWorkspace(workspaceId)).filter(
-              (process) => !ending.has(process.id),
+              (process) => holdsWorkspace(process.kind) && !ending.has(process.id),
             ).length +
             (yield* serviceForwards.listOpen()).filter(
               (forward) => forward.sealantWorkspaceId === workspaceId,
@@ -26218,6 +26234,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (
             isAgentProcessKind(liveProcess.kind) ||
             liveProcess.kind === "shell" ||
+            liveProcess.kind === "screen" ||
             (liveProcess.kind === "service" && liveProcess.serviceId !== null)
           ) {
             // As the owner: a watcher with no principal is refused its first lookup and retries
