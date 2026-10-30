@@ -14,6 +14,12 @@
 //   node .claude/skills/verify/scripts/drive-web.mjs --web http://127.0.0.1:<client port> \
 //     --out <dir> --private "$P" --recipe .claude/skills/verify/recipes/t3-client.mjs --timeout 60000
 //
+// Scratch projects only: MEND_VERIFY_T3_SCRATCH=owner runs creation, collisions, sessions and a
+// path-shaped name, then makes a second member through Mend's invitation/sign-up boundary. Run
+// MEND_VERIFY_T3_SCRATCH=member MEND_VERIFY_T3_ACCOUNT=scratch-member.json next: the browser pairs
+// as that member and checks isolation and their own No project. Start owner on a fresh stack.
+// Observed end states: 2026-10-30, features/t3-gateway.md, "Scratch projects and projects by name".
+//
 // Needs the stack's account in $P/account.json (Launch, step 7) and a Claude login connected to the
 // stack: the skill's fake one (`mend connect claude --from-stdin` with FAKES.claude), on which each
 // turn starts and ends at once with Claude's own refusal. The browser starts empty: the client keeps
@@ -36,7 +42,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
@@ -52,7 +58,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const record = JSON.parse(readFileSync(join(P, "t3-client.json"), "utf8"));
   const mend = record.web;
   const gateway = record.gateway;
-  const account = JSON.parse(readFileSync(join(P, "account.json"), "utf8"));
+  const account = JSON.parse(
+    readFileSync(join(P, process.env.MEND_VERIFY_T3_ACCOUNT ?? "account.json"), "utf8"),
+  );
   const { token } = account;
   const stamp = new Date().toISOString().slice(11, 19);
 
@@ -271,6 +279,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     .map((device) => device.label ?? device.name)
     .filter((label) => /^t3code/.test(label ?? ""));
   note(`observed · Mend's devices (via api, HTTP ${devices.status}): ${JSON.stringify(labels)}`);
+
+  if (process.env.MEND_VERIFY_T3_SCRATCH) {
+    await scratchProjects({ page, web, capture, note, api, ok, until, registerSecret, mend });
+    return;
+  }
 
   await page.goto(web);
   const main = page.getByRole("main");
@@ -1401,3 +1414,210 @@ const collectThreads = (value, threads) => {
     });
   for (const child of Object.values(value)) collectThreads(child, threads);
 };
+
+/** The real client's project-by-name and per-person scratch flows, driven on 2026-10-30. */
+async function scratchProjects({ page, web, capture, note, api, ok, until, registerSecret, mend }) {
+  const projects = async () => (await api("/api/projects")).body;
+  const home = async () => {
+    await page.goto(web);
+    await page.getByRole("textbox", { name: "Message" }).waitFor();
+  };
+  const palette = async () => {
+    await home();
+    await page.keyboard.press("Control+k");
+    await page.getByPlaceholder("Search commands, projects, and threads...").waitFor();
+  };
+  const withoutProject = async () => {
+    await palette();
+    await page.getByRole("option", { name: /New thread without a project/ }).click();
+    await page.getByRole("combobox").filter({ hasText: "No project" }).waitFor();
+  };
+  const create = async (name, expected) => {
+    await palette();
+    await page.getByRole("option", { name: "New project", exact: true }).click();
+    await page.getByPlaceholder("Project name").fill(name);
+    await capture(`project-${expected}-before`);
+    await page.getByRole("button", { name: /^Create \(/ }).click();
+    const project = await until(`${expected} in Mend`, async () =>
+      (await projects()).find((candidate) => candidate.name === expected),
+    );
+    ok(
+      project.visibility === "private" &&
+        project.defaultBranch === "main" &&
+        project.originUrl === null,
+      `${expected} · private · main · no origin URL (via api)`,
+    );
+    note(`project · ${JSON.stringify(project)}`);
+    await capture(`project-${expected}-after`);
+    return project;
+  };
+  const launch = async (project, prompt, evidence) => {
+    await page.getByRole("textbox", { name: "Message" }).fill(prompt);
+    await capture(`${evidence}-before`);
+    await page.getByRole("button", { name: "Submit message", exact: true }).click();
+    const session = await until(
+      `Mend session for ${prompt}`,
+      async () => (await api("/api/sessions")).body.find((candidate) => candidate.label === prompt),
+      90_000,
+    );
+    await page.getByRole("main").getByRole("heading", { name: prompt, exact: true }).waitFor();
+    ok(
+      session.projectId === project.id && session.baseRef === "main" && !!session.worktreeId,
+      `${evidence} · session ${session.id} · worktree ${session.worktreeId} · base main`,
+    );
+    const branches = await api(`/api/projects/${project.id}/branches`);
+    ok(
+      branches.body.some((branch) => branch.name === "main" && branch.sha === session.baseSha),
+      `${evidence} · worktree base matches the project's main`,
+    );
+    note(`session · ${JSON.stringify(session)}`);
+    note(`thread · ${page.url()}`);
+    note(`project-detail · ${JSON.stringify(await api(`/api/projects/${project.id}`))}`);
+    await capture(`${evidence}-after`);
+    return session;
+  };
+
+  if (process.env.MEND_VERIFY_T3_SCRATCH === "member") {
+    const manifest = JSON.parse(readFileSync(join(P, "scratch-projects.json"), "utf8"));
+    const before = await projects();
+    note(`member-projects-before · ${JSON.stringify(before)}`);
+    ok(
+      !before.some((project) => manifest.privateProjectIds.includes(project.id)),
+      "second member cannot list the first person's private projects",
+    );
+    for (const id of manifest.privateProjectIds) {
+      const result = await api(`/api/projects/${id}`);
+      note(`member-project-read · ${JSON.stringify({ id, ...result })}`);
+      ok(result.status === 404, `second member reads private project ${id} · HTTP 404`);
+    }
+    await home();
+    await page
+      .getByRole("navigation", { name: "Threads", exact: true })
+      .getByRole("combobox", { name: "Filter threads by project" })
+      .click();
+    await capture("member-sidebar");
+    await withoutProject();
+    const own = await until("second member's scratch project", async () =>
+      (await projects()).find((project) => project.scratchOwnerUserId !== null),
+    );
+    ok(
+      own.name === "scratch-second-verifier" &&
+        own.visibility === "private" &&
+        own.organizationId === manifest.organizationId &&
+        !manifest.privateProjectIds.includes(own.id),
+      "second member has their own private scratch-second-verifier in the same organization",
+    );
+    note(`member-scratch · ${JSON.stringify(own)}`);
+    await capture("member-no-project");
+    await page.reload();
+    await page.getByRole("textbox", { name: "Message" }).waitFor();
+    const after = await projects();
+    note(`member-projects-after-reload · ${JSON.stringify(after)}`);
+    ok(
+      after.filter((project) => project.scratchOwnerUserId !== null).length === 1,
+      "second member still has one scratch project after reload",
+    );
+    return;
+  }
+
+  ok(process.env.MEND_VERIFY_T3_SCRATCH === "owner", "scratch recipe mode is owner or member");
+  const before = await projects();
+  ok(
+    !before.some((project) => project.name === "my-notes" || project.scratchOwnerUserId !== null),
+    "fresh project creation baseline",
+  );
+  note(`git-author · ${JSON.stringify(await api("/api/me/git-author"))}`);
+  await palette();
+  await page.getByRole("option", { name: "New project", exact: true }).waitFor();
+  await capture("scratch-new-project-command");
+  await page.getByRole("option", { name: "New thread in...", exact: true }).click();
+  await page.getByRole("option", { name: /No project/ }).waitFor();
+  await capture("scratch-no-project-choice");
+  ok(true, "New project and No project are offered after pairing");
+
+  const named = await create("My Notes", "my-notes");
+  const collision = await create("My Notes", "my-notes-2");
+  ok(
+    (await projects()).some((project) => project.id === named.id),
+    "my-notes and my-notes-2 both exist",
+  );
+  await page
+    .getByRole("navigation", { name: "Threads", exact: true })
+    .getByRole("combobox", { name: "Filter threads by project" })
+    .click();
+  await page.getByRole("option", { name: "my-notes", exact: true }).waitFor();
+  await page.getByRole("option", { name: "my-notes-2", exact: true }).waitFor();
+  await capture("scratch-sidebar-projects");
+  await page.keyboard.press("Escape");
+  const stamp = new Date().toISOString();
+  await launch(collision, `Named project verification ${stamp}`, "named-thread");
+
+  await withoutProject();
+  const scratch = await until("first person's scratch project", async () =>
+    (await projects()).find((project) => project.scratchOwnerUserId !== null),
+  );
+  ok(
+    scratch.name === "scratch-verifier" &&
+      scratch.visibility === "private" &&
+      scratch.createdByUserId === scratch.scratchOwnerUserId,
+    "No project resolves to the paired person's private scratch-verifier",
+  );
+  note(`scratch-project · ${JSON.stringify(scratch)}`);
+  const first = await launch(scratch, `Scratch verification 1 ${stamp}`, "scratch-thread-1");
+  await withoutProject();
+  const reused = (await projects()).filter((project) => project.scratchOwnerUserId !== null);
+  ok(reused.length === 1 && reused[0].id === scratch.id, "No project reuses the same project");
+  const second = await launch(scratch, `Scratch verification 2 ${stamp}`, "scratch-thread-2");
+  ok(first.worktreeId !== second.worktreeId, "two scratch sessions use two different worktrees");
+  await palette();
+  await page.getByRole("option", { name: "New thread in...", exact: true }).click();
+  await capture("scratch-picker");
+  ok(
+    !(await page.getByRole("dialog", { name: "Command palette" }).innerText()).includes(
+      scratch.name,
+    ),
+    "new-thread project picker offers No project and omits scratch-verifier",
+  );
+  const path = await create("../../var/tmp/verify-no-open", "var-tmp-verify-no-open");
+  ok(
+    path.storePath.includes(`/${path.id}/repo.git`),
+    "path-shaped name is a slug in Mend's central store",
+  );
+  await home();
+  await capture("scratch-final-sidebar");
+  writeFileSync(
+    join(P, "scratch-projects.json"),
+    JSON.stringify({
+      organizationId: named.organizationId,
+      privateProjectIds: [named.id, collision.id, scratch.id, path.id],
+    }),
+    { mode: 0o600 },
+  );
+
+  // Setup for a separate fresh-browser member pass; credentials never enter the evidence.
+  const invitation = await api("/api/organization/invitations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ role: "member" }),
+  });
+  ok(invitation.status === 200, "second member invitation minted on the stack");
+  registerSecret("scratch-member-invitation", invitation.body.token);
+  const email = `scratch-second-${randomBytes(6).toString("hex")}@verify.invalid`;
+  const password = `verify-${randomBytes(24).toString("hex")}`;
+  registerSecret("scratch-member-password", password);
+  const signUp = await fetch(`${mend}/api/auth/sign-up/email`, {
+    method: "POST",
+    headers: {
+      origin: mend,
+      "content-type": "application/json",
+      "x-mend-invitation": invitation.body.token,
+    },
+    body: JSON.stringify({ name: "Second Verifier", email, password }),
+  });
+  const token = signUp.headers.get("set-auth-token");
+  if (token) registerSecret("scratch-member-token", token);
+  ok(signUp.ok && !!token, `second member joined · HTTP ${signUp.status}`);
+  writeFileSync(join(P, "scratch-member.json"), JSON.stringify({ email, password, token }), {
+    mode: 0o600,
+  });
+}

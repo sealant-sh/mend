@@ -587,3 +587,60 @@ machine's `PATH`, and the run ends by revoking every `t3code · T3 Code Web` dev
 - ADR 0012 names `mend t3 pair`, which prints a t3code-shaped `https://<gateway>/pair#token=<code>`
   and a QR. The CLI has no such command (`apps/cli/src/help.ts` has no `t3`); use `mend pair` or the
   web's devices page for the code. Product gap.
+
+### Scratch projects and projects by name
+
+Observed on **2026-10-30**, real hosted `v0.1.2` web client, Mend at `15fc327cd8` served as
+`67c78240327d` with the same tree, gateway from that checkout, pinned Sealant releases and fake
+Claude login. Evidence: `/var/tmp/t3s1-scratch-verify-evidence.azP1j5/`, client captures under
+`t3-client/`, Mend answers under `api/`, and bare-repository reads under `git/`.
+
+The focused recipe has two fresh-browser passes. Start from a fresh verify stack, with the account
+handover and fake Claude login described above. Keep the gateway state and served repository outside
+`$P`. Serve the existing hosted client build as above, then run:
+
+```sh
+MEND_VERIFY_T3_SCRATCH=owner node $skill/scripts/drive-web.mjs \
+  --web http://127.0.0.1:<client port> --out "$E/t3-client/scratch-owner" \
+  --private "$P" --recipe $skill/recipes/t3-client.mjs --timeout 60000
+MEND_VERIFY_T3_SCRATCH=member MEND_VERIFY_T3_ACCOUNT=scratch-member.json \
+  node $skill/scripts/drive-web.mjs \
+  --web http://127.0.0.1:<client port> --out "$E/t3-client/scratch-member" \
+  --private "$P" --recipe $skill/recipes/t3-client.mjs --timeout 60000
+```
+
+The owner pass creates the second account through an organization invitation and email sign-up, then
+keeps its credentials in `$P/scratch-member.json` for the member pass. The browser starts empty on
+each pass and pairs through Add pairing link → Add environment. `$P/scratch-projects.json` holds the
+first person's project ids for the member's direct-read checks. Neither file is evidence.
+
+| Drive                                                                                                                                                             | Observed end state on 2026-10-30                                                                                                                                                     | Evidence from this run                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Open the command palette after pairing. Open `New thread in...` from its unfiltered root.                                                                         | `New project` is offered; the project picker offers `No project`.                                                                                                                    | `t3-client/drive-1/scratch-02-palette.aria.yml`, `t3-client/drive-4/scratch-06-no-project-choice.aria.yml`                                                                                          |
+| Choose New project, enter `My Notes`, Create.                                                                                                                     | Mend lists private `my-notes`, default branch `main`, `originUrl: null`.                                                                                                             | `t3-client/drive-1/scratch-05-created.aria.yml`, `api/projects.json`                                                                                                                                |
+| Read its bare repository through this run's session Docker.                                                                                                       | HEAD is `refs/heads/main`; one commit, `Initial commit`; README is `# my-notes`; author and committer are `Verifier <verifier@verify-stack.invalid>`; no remotes.                    | `git/my-notes.stdout`, `api/git-author.json`                                                                                                                                                        |
+| Create `My Notes` again. Open the sidebar's Filter threads by project.                                                                                            | Both `my-notes` and `my-notes-2` appear. Both still exist in Mend's listing.                                                                                                         | `t3-client/drive-4/scratch-08-sidebar-projects.aria.yml`, `api/projects.json`                                                                                                                       |
+| Submit a message in the new project's draft.                                                                                                                      | A client thread, Mend session and worktree exist; `baseRef: main`, base SHA equals the project's main.                                                                               | `t3-client/drive-4/scratch-11-named-thread.aria.yml`, `api/my-notes-2-detail.json`, `api/my-notes-2-branches.json`                                                                                  |
+| Choose New thread without a project, then use it again. Submit a message in each draft.                                                                           | `No project` uses private `scratch-verifier`; both sessions share that project and use different worktrees based on `main`. The picker omits the underlying `scratch-verifier` name. | `t3-client/drive-6/scratch-1-thread.aria.yml`, `t3-client/drive-6/scratch-2-thread.aria.yml`, `t3-client/drive-6/scratch-picker-excludes-project-name.aria.yml`, `api/scratch-verifier-detail.json` |
+| Pair a fresh client as a second member in the same organization. List projects, directly read the first person's new and scratch projects, and choose No project. | The list and sidebar omit the first person's private projects; their detail routes answer 404. The second member gets private `scratch-second-verifier`, retained after reload.      | `t3-client/second-account/steps.log`, `t3-client/second-account/second-sidebar-private-projects-absent.aria.yml`, `t3-client/second-account/second-no-project.aria.yml`                             |
+| Create a project named `../../var/tmp/verify-no-open`.                                                                                                            | Its name is `var-tmp-verify-no-open`; its repository is `<store>/<project id>/repo.git`, with a new README commit and no remotes.                                                    | `t3-client/drive-6/path-name-before.aria.yml`, `t3-client/drive-6/path-name-after.aria.yml`, `api/var-tmp-verify-no-open-detail.json`, `git/var-tmp-verify-no-open.stdout`                          |
+
+Read the initial commit through this run's own session, after taking `<store path>` from its API
+answer. The same command was driven for each created repository:
+
+```sh
+$skill/scripts/capture.sh "$E/git" <project name> -- \
+  mend run --project mend --worktree "$wt" -- docker exec mend-mend-1 sh -c \
+  'git --git-dir=<store path> symbolic-ref HEAD &&
+   git --git-dir=<store path> rev-list --count main &&
+   git --git-dir=<store path> log --format=fuller &&
+   git --git-dir=<store path> show main:README.md &&
+   git --git-dir=<store path> remote -v'
+```
+
+In this single-environment client, the scratch thread rows read `No project` and show their worktree
+branches (`t3-client/drive-6/scratch-final-sidebar.aria.yml`). The pinned client's machine label is
+conditional on project groups spanning environments and the thread having no branch
+(`t3code/apps/web/src/components/Sidebar.tsx`, `scratchMachineLabelFor`, and
+`components/sidebar/SidebarThreadRow.tsx`, `showsScratchMachine`). The scratch drafts and thread
+breadcrumbs read `No project`.
