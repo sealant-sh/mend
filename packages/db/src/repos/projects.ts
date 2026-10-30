@@ -7,13 +7,13 @@ import {
   type GitAuthMode,
   type ProjectVisibility,
 } from "@mend/domain/workbench";
-import { and, asc, eq, isNull, isNotNull } from "drizzle-orm";
+import { type Column, and, asc, eq, inArray, isNull, isNotNull } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { MendDB } from "../client.ts";
+import { type MendDatabase, MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { projects, organizationMembers } from "../schema/workbench.ts";
+import { agentSessions, projects, organizationMembers } from "../schema/workbench.ts";
 import { isUniqueViolation, uniqueViolationConstraint } from "./unique-violation.ts";
 
 export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundError>()(
@@ -56,6 +56,17 @@ export class ScratchProjectPrivate extends Schema.TaggedError<ScratchProjectPriv
 ) {}
 
 export const projectListed = isNull(projects.removedAt);
+
+/** `sessionId` names a session of a listed project: what a sweep over sessions' work reads. */
+export const sessionInListedProject = (db: Pick<MendDatabase, "select">, sessionId: Column) =>
+  inArray(
+    sessionId,
+    db
+      .select({ id: agentSessions.id })
+      .from(agentSessions)
+      .innerJoin(projects, eq(projects.id, agentSessions.projectId))
+      .where(projectListed),
+  );
 
 export interface RetainedProject {
   readonly project: Project;

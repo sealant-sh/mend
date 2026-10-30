@@ -8,7 +8,7 @@ import { sessionsLayer, withPreparedEngineEffect } from "./engine/fixture.ts";
 
 describe("boot with a removed project", () => {
   it("leaves retained session records alone and logs no recovery errors", async () => {
-    const logs: Array<string> = [];
+    const logs: Array<{ readonly level: string; readonly message: string }> = [];
     await Effect.runPromise(
       withPreparedEngineEffect(
         (world, tmp) =>
@@ -38,9 +38,11 @@ describe("boot with a removed project", () => {
           Effect.gen(function* () {
             yield* Effect.sleep("100 millis");
             expect(world.sessions.get(before.id)).toEqual(before);
-            expect(logs.filter((line) => /fail|error|re-attach|reap/i.test(line))).toEqual([]);
+            expect(logs.filter(({ level }) => ["Warn", "Error", "Fatal"].includes(level))).toEqual(
+              [],
+            );
           }),
-        { logs },
+        { leveledLogs: logs },
       ),
     );
   });

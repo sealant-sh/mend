@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { OrganizationId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
+import { OrganizationId, ProjectId, SealantWorkspaceId, SessionId, WorktreeId } from "@mend/domain";
 import { Cause, Effect, Exit, Layer, Redacted, String as Str } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { CaptureStoreRepo, CaptureStoreRepoLive } from "../src/repos/capture-store.ts";
+import { HarnessLayoutsRepo, HarnessLayoutsRepoLive } from "../src/repos/harness-layouts.ts";
 import { HotWorkspacesRepo, HotWorkspacesRepoLive } from "../src/repos/hot-workspaces.ts";
 import {
   ProjectServiceRecipesRepo,
@@ -19,6 +20,10 @@ import {
   RemovalFencesRepoLive,
   isRemovedProject,
 } from "../src/repos/removal-fences.ts";
+import { ScreensRepo, ScreensRepoLive } from "../src/repos/screens.ts";
+import { ServicesRepo, ServicesRepoLive } from "../src/repos/services.ts";
+import { SessionProcessesRepo, SessionProcessesRepoLive } from "../src/repos/session-processes.ts";
+import { SessionRunsRepo, SessionRunsRepoLive } from "../src/repos/session-runs.ts";
 import {
   UpgradeTicketsRepo,
   UpgradeTicketsRepoLive,
@@ -44,6 +49,11 @@ const repos = Layer.mergeAll(
   UpgradeTicketsRepoLive,
   HotWorkspacesRepoLive,
   SessionsRepoLive,
+  HarnessLayoutsRepoLive,
+  ScreensRepoLive,
+  ServicesRepoLive,
+  SessionProcessesRepoLive,
+  SessionRunsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(pool))));
 const run = <A, E>(
   effect: Effect.Effect<
@@ -56,6 +66,11 @@ const run = <A, E>(
     | UpgradeTicketsRepo
     | HotWorkspacesRepo
     | SessionsRepo
+    | HarnessLayoutsRepo
+    | ScreensRepo
+    | ServicesRepo
+    | SessionProcessesRepo
+    | SessionRunsRepo
     | SqlClient.SqlClient
   >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(repos), Effect.scoped));
@@ -96,6 +111,14 @@ const takePurgeAs = (id: ProjectId, by: string) =>
       removedAt: kept.removedAt,
     });
   });
+/** Whether `effect` was refused as a write into a removed project. */
+const refusedLate = (effect: Effect.Effect<unknown, unknown>) =>
+  Effect.exit(effect).pipe(
+    Effect.map((exit) => Exit.isFailure(exit) && isRemovedProject(Cause.squash(exit.cause))),
+  );
+/** The sweep test's sessions among what a sweep read. */
+const sessionsOf = (rows: ReadonlyArray<{ readonly sessionId: string }>) =>
+  rows.map((row) => row.sessionId).filter((id) => id.startsWith("s-sweep-"));
 const member = (user: string, role: "owner" | "member") =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -340,12 +363,6 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         });
         // Each request read the project listed, then acted after the removal committed.
         yield* keep(id);
-        const refusedLate = (effect: Effect.Effect<unknown, unknown>) =>
-          Effect.exit(effect).pipe(
-            Effect.map(
-              (exit) => Exit.isFailure(exit) && isRemovedProject(Cause.squash(exit.cause)),
-            ),
-          );
         expect(yield* refusedLate(sessions.remove(SessionId.make("s-late")))).toBe(true);
         expect(yield* refusedLate(recipes.remove(id, "web"))).toBe(true);
         expect(
@@ -621,7 +638,6 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const capture = yield* CaptureStoreRepo;
-        const fences = yield* RemovalFencesRepo;
         const id = yield* seed("condemned");
         const tree = WorktreeId.make("w-condemned");
         yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES (${tree}, ${id}, ${tree}, ${tree}, ${tree}, ${"a".repeat(40)})`;
@@ -677,6 +693,56 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           byStaleMark: false,
           byPurge: true,
           tombstoned: [key],
+        });
+      }),
+    ));
+
+  it("leaves a removed project's sessions, processes, Services, runs, screens and migrations out of every boot sweep", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const listed = yield* seed("sweep-listed");
+        const removed = yield* seed("sweep-removed");
+        for (const project of [listed, removed]) {
+          yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha, harness_layout)
+            VALUES (${`w-${project}`}, ${project}, 'work', 'work', 'work', 'abc', 'person')`;
+          yield* sql`INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id, status)
+            VALUES (${`s-${project}`}, ${project}, ${`w-${project}`}, 'claude', 'work', 'work', 'abc', 'anna', 'running')`;
+          yield* sql`INSERT INTO session_processes (id, session_id, sealant_workspace_id, kind)
+            VALUES (${`p-${project}`}, ${`s-${project}`}, ${`ws-${project}`}, 'shell')`;
+          yield* sql`INSERT INTO services (id, session_id, name, declaration_source, workspace_port)
+            VALUES (${`svc-${project}`}, ${`s-${project}`}, 'web', 'explicit-run', 3000)`;
+          yield* sql`INSERT INTO session_runs (sealant_run_id, session_id, ordinal, harness, sealant_workspace_id, status)
+            VALUES (${`run-${project}`}, ${`s-${project}`}, 1, 'claude', ${`ws-${project}`}, 'running')`;
+          yield* (yield* ScreensRepo).reserve({
+            sessionId: SessionId.make(`s-${project}`),
+            workspaceId: SealantWorkspaceId.make(`ws-${project}`),
+          });
+        }
+        yield* keep(removed);
+        const sessions = yield* SessionsRepo;
+        expect({
+          active: (yield* sessions.listActive())
+            .map((session) => session.id)
+            .filter((id) => id.startsWith("s-sweep-")),
+          unsettled: (yield* sessions.listUnsettled())
+            .map((session) => session.id)
+            .filter((id) => id.startsWith("s-sweep-")),
+          processes: sessionsOf(yield* (yield* SessionProcessesRepo).listLive()),
+          services: sessionsOf(yield* (yield* ServicesRepo).listAll()),
+          runs: sessionsOf(yield* (yield* SessionRunsRepo).listActive()),
+          screens: sessionsOf(yield* (yield* ScreensRepo).listHeld()),
+          migrations: (yield* (yield* HarnessLayoutsRepo).worktreesAwaitingMigration()).filter(
+            (id) => id.startsWith("w-sweep-"),
+          ),
+        }).toEqual({
+          active: [`s-${listed}`],
+          unsettled: [`s-${listed}`],
+          processes: [`s-${listed}`],
+          services: [`s-${listed}`],
+          runs: [`s-${listed}`],
+          screens: [`s-${listed}`],
+          migrations: [`w-${listed}`],
         });
       }),
     ));

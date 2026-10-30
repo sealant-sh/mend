@@ -25,7 +25,6 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { projects } from "../schema/workbench.ts";
 import {
   agentSessions,
   serviceForwards,
@@ -33,7 +32,7 @@ import {
   services,
   sessionProcesses,
 } from "../schema/workbench.ts";
-import { projectListed } from "./projects.ts";
+import { sessionInListedProject } from "./projects.ts";
 
 export interface NewService {
   readonly id?: ServiceId;
@@ -260,15 +259,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         const rows = yield* db
           .select()
           .from(services)
-          .where(
-            inArray(
-              services.sessionId,
-              db
-                .select({ id: agentSessions.id })
-                .from(agentSessions)
-                .innerJoin(projects, and(projectListed, eq(projects.id, agentSessions.projectId))),
-            ),
-          )
+          .where(sessionInListedProject(db, services.sessionId))
           .orderBy(desc(services.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toService);

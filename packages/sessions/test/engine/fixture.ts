@@ -3827,6 +3827,8 @@ interface EngineOptions {
   readonly pagesLayer?: Layer.Layer<SessionPagesRepo>;
   /** Every log line the engine writes, in order, when a test reads them. */
   readonly logs?: Array<string>;
+  /** Every log line with its level, when a test asserts what was warned. */
+  readonly leveledLogs?: Array<{ readonly level: string; readonly message: string }>;
   /** Every channel token issue and revocation (`issue:<launch>`, `revoke:<session>`, `revokeLaunch:<launch>`). */
   readonly tokenEvents?: Array<string>;
   /** The channel tokens, when a test shares them with a network channel of its own. */
@@ -4167,12 +4169,15 @@ export const withPreparedEngineEffect = <B, A, E>(
       ),
     );
     const logs = options.logs;
+    const leveledLogs = options.leveledLogs;
     const loggerLayer =
-      logs === undefined
+      logs === undefined && leveledLogs === undefined
         ? Layer.empty
         : Logger.layer([
-            Logger.make(({ message }) => {
-              logs.push(Array.isArray(message) ? message.map(String).join(" ") : String(message));
+            Logger.make(({ message, logLevel }) => {
+              const line = Array.isArray(message) ? message.map(String).join(" ") : String(message);
+              logs?.push(line);
+              leveledLogs?.push({ level: logLevel, message: line });
             }),
           ]);
     // The engine lives in its own scope, closed the moment `work` returns and before anything
