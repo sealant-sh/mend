@@ -190,11 +190,22 @@ run:
 mend projects purge <id> --confirm exact-name
 ```
 
-Assets another project still references are kept. Instance audit and existing backups are unchanged.
-If an upload a session started before the removal could still land, purge refuses and says until
-when; purge again after that time. If purge stops partway, purge again to finish. A project left
-mid-deletion by an older Mend is listed here too; Restore refuses when completeness cannot be
-proved.
+Purge acts only on the removal you confirmed. If someone restored, renamed or removed the project
+again since, purge refuses and asks you to confirm again. Assets another project still references
+are kept. Instance audit and existing backups are unchanged. If an upload a session started before
+the removal could still land, purge refuses and says until when; purge again after that time. If
+purge stops partway, purge again to finish. A project left mid-deletion by an older Mend is listed
+here too; Restore refuses when completeness cannot be proved.
+
+While a project is removed, nothing in it changes: a request that read it before the removal and
+tries to delete a session, rename one, edit a review comment or change a setting afterwards is
+refused. A link from another project to a removed one keeps its name; delete that link, or Restore
+the project, to reuse the name.
+
+If a member leaves with a removed private project, an organization owner finds it in the
+organization's orphaned projects and takes it over. The owner can then Restore or purge it.
 
 T3 Code's confirmation currently says project removal cannot be undone. Mend still keeps it; use
-Mend's Restore to bring it back. `mend doctor` reports local disk held by removed projects.
+Mend's Restore to bring it back. `mend doctor` reports the disk removed projects hold: their store
+directories and stored objects, and how much of that another project shares, which purge keeps. For
+an organization owner the report covers every removed project in the organization.
