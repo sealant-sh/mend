@@ -45,8 +45,40 @@ describe("a link Mend hands to a person", () => {
   });
 
   it("decodes the secret once", () => {
-    expect(fragmentSecret("#tok%2541")).toBe("tok%41");
-    expect(legacyPathSecret("invitation", "/join/tok%2541")).toBe("tok%41");
+    expect(fragmentSecret("#reset%5Fcarol")).toBe("reset_carol");
+    expect(legacyPathSecret("invitation", "/join/reset%5Fcarol")).toBe("reset_carol");
+    expect(fragmentSecret("#reset%255Fcarol")).toBeNull();
+    expect(legacyPathSecret("invitation", "/join/reset%255Fcarol")).toBeNull();
+  });
+
+  it("builds and reads only a secret of eight to 256 URL-safe base64 characters", () => {
+    for (const secret of ["a".repeat(8), "a".repeat(256), "Az09_-Az09_-"]) {
+      expect(fragmentSecret(handedLinkPath("invitation", secret).slice("/join".length))).toBe(
+        secret,
+      );
+    }
+    for (const secret of [
+      "a".repeat(7),
+      "a".repeat(257),
+      "two#parts",
+      "slash/ed",
+      "spa ced!",
+      "tok%41en",
+    ]) {
+      expect(() => handedLinkPath("invitation", secret), secret).toThrow();
+    }
+    for (const hash of [
+      "#aaaaaaa",
+      `#${"a".repeat(257)}`,
+      "#aaaaaaaa#b",
+      "#aaaa/aaaa",
+      "#aaaa%2Faaaa",
+      "#aaaa.aaaa",
+    ]) {
+      expect(fragmentSecret(hash), hash).toBeNull();
+    }
+    expect(legacyPathSecret("invitation", "/join/aaaaaaa")).toBeNull();
+    expect(legacyPathSecret("invitation", "/join/aaaa%23aaaa")).toBeNull();
   });
 
   it("finds no secret in a missing, malformed or oversized fragment", () => {
