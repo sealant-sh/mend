@@ -26,12 +26,12 @@ export const projectNameFrom = (text: string): ProjectName => {
   );
 };
 
-/** A collision shortens only the stem, preserving the suffix through -100. */
+/** `base`, then `base-2` through `base-100`, the stem shortened only as far as the suffix needs. */
 export const projectNameCandidates = (base: ProjectName): ReadonlyArray<ProjectName> =>
   Array.from({ length: 100 }, (_, index) => {
     if (index === 0) return base;
     const suffix = `-${index + 1}`;
-    return ProjectName.make(`${base.slice(0, 64 - suffix.length).replace(/[._-]+$/, "")}${suffix}`);
+    return ProjectName.make(`${base.slice(0, 64 - suffix.length)}${suffix}`);
   });
 
 /** Derived once on first use; account renaming never changes scratch identity. */

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   firstCommitAuthor,
+  PROJECT_NAME_PATTERN,
   ProjectName,
   projectNameFrom,
   projectNameCandidates,
@@ -21,20 +22,32 @@ describe("project creation names", () => {
     expect(projectNameFrom(input)).toBe(expected);
   });
   it("allocates exactly base and -2 through -100 within the stored name limit", () => {
+    const names = projectNameCandidates(projectNameFrom("a".repeat(100)));
+    expect(names[1]).toBe(`${"a".repeat(62)}-2`);
+    expect(names[99]).toBe(`${"a".repeat(60)}-100`);
+  });
+  it("keeps any valid requested name as the stem, shortening it only to fit the suffix", () => {
+    expect(projectNameCandidates(ProjectName.make("notes_")).slice(0, 3)).toEqual([
+      "notes_",
+      "notes_-2",
+      "notes_-3",
+    ]);
+    expect(projectNameCandidates(ProjectName.make("notes."))[1]).toBe("notes.-2");
+    expect(projectNameCandidates(ProjectName.make("notes-"))[1]).toBe("notes--2");
     fc.assert(
-      fc.property(fc.string(), (text) => {
-        const base = projectNameFrom(text);
+      fc.property(fc.stringMatching(PROJECT_NAME_PATTERN), (text) => {
+        const base = ProjectName.make(text);
         const names = projectNameCandidates(base);
         expect(names).toHaveLength(100);
         expect(new Set(names).size).toBe(100);
         expect(names[0]).toBe(base);
-        expect(names[99]).toMatch(/-100$/);
-        for (const name of names) expect(Schema.is(ProjectName)(name)).toBe(true);
+        names.slice(1).forEach((name, index) => {
+          const suffix = `-${index + 2}`;
+          expect(name).toBe(`${base.slice(0, 64 - suffix.length)}${suffix}`);
+          expect(Schema.is(ProjectName)(name)).toBe(true);
+        });
       }),
     );
-    const names = projectNameCandidates(projectNameFrom("a".repeat(100)));
-    expect(names[1]).toBe(`${"a".repeat(62)}-2`);
-    expect(names[99]).toBe(`${"a".repeat(60)}-100`);
   });
   it("names scratch from the display name's slug, else the email local part's slug, else person", () => {
     expect(scratchProjectName({ name: "Yiannis Panagidis", email: "ignored@example.com" })).toBe(
