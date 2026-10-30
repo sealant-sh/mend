@@ -582,6 +582,13 @@ describe("what the edge logs (ADR 0004)", () => {
     }
   });
 
+  it("keeps the invitation token a sign-up carries in its header out of every log", () => {
+    const mend = EDGE_CADDYFILE.match(/^\tlog mend \{\n[\s\S]*?^\t\}$/m)?.[0] ?? "";
+    const uriFree = EDGE_CADDYFILE.match(/^\(uri-free\) \{\n([\s\S]*?)^\}$/m)?.[1] ?? "";
+    for (const filters of [mend, uriFree])
+      expect(filters).toMatch(/^\t+request>headers>X-Mend-Invitation delete$/m);
+  });
+
   it("strips the raw route's file headers from every response that leaves the edge", () => {
     for (const caddyfile of [EDGE_CADDYFILE, T3_GATEWAY_CADDYFILE])
       expect(caddyfile).toContain("\theader -X-Mend-File-*\n");
