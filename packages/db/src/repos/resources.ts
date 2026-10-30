@@ -1,5 +1,6 @@
 import {
   ProjectId,
+  ProjectRemovalFenceId,
   ResourceApprovalId,
   ResourceDatabaseId,
   ResourceDefinitionId,
@@ -144,14 +145,19 @@ export class ResourcesRepo extends Context.Service<
       name: string,
     ) => Effect.Effect<StoredResourceDefinition | null>;
     /**
-     * Fences the project against new definitions, unless it has one: then it names them and sets
-     * no fence. The fence goes with the project's row, or with `liftProjectRemovalFence`.
+     * Fences the project against new definitions for one removal, unless it has one: then it names
+     * them and sets no fence. Each removal holds its own fence, so the project stays fenced while
+     * any removal is in flight. A fence goes with the project's row, or with
+     * `liftProjectRemovalFence` of the fence its removal was given.
      */
     readonly fenceProjectRemoval: (
       projectId: ProjectId,
-    ) => Effect.Effect<void, ProjectHasResourcesError>;
-    readonly liftProjectRemovalFence: (projectId: ProjectId) => Effect.Effect<void>;
-    /** Approves the declared spec the approver read, pinned; approving it twice is one row. */
+    ) => Effect.Effect<ProjectRemovalFenceId, ProjectHasResourcesError>;
+    readonly liftProjectRemovalFence: (fence: ProjectRemovalFenceId) => Effect.Effect<void>;
+    /**
+     * Approves the declared spec the approver read, pinned, as the current approval of that spec;
+     * approving it again with the image it already pins is one row.
+     */
     readonly approve: (
       request: ApprovalRequest,
     ) => Effect.Effect<
@@ -477,9 +483,10 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
               return yield* Effect.die(new Error(`project ${projectId} does not exist`));
             }
             const [fence] = yield* tx
-              .select()
+              .select({ id: projectRemovalFences.id })
               .from(projectRemovalFences)
-              .where(eq(projectRemovalFences.projectId, projectId));
+              .where(eq(projectRemovalFences.projectId, projectId))
+              .limit(1);
             if (fence !== undefined) return yield* fenceRefusal(spec);
 
             const others = yield* tx
@@ -576,7 +583,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
     const fenceProjectRemoval = Effect.fn("ResourcesRepo.fenceProjectRemoval")(function* (
       projectId: ProjectId,
     ) {
-      yield* db
+      return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
             // Waits for a declaration in flight, then reads what it stored. Names only, so a spec
@@ -597,18 +604,20 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
                 names: declared.map((row) => row.name),
               });
             }
-            yield* tx.insert(projectRemovalFences).values({ projectId }).onConflictDoNothing();
+            const id = ProjectRemovalFenceId.make(`rfen_${crypto.randomUUID()}`);
+            yield* tx.insert(projectRemovalFences).values({ id, projectId });
+            return id;
           }),
         )
         .pipe(Effect.catchTags(queryErrorsDie));
     });
 
     const liftProjectRemovalFence = Effect.fn("ResourcesRepo.liftProjectRemovalFence")(function* (
-      projectId: ProjectId,
+      fence: ProjectRemovalFenceId,
     ) {
       yield* db
         .delete(projectRemovalFences)
-        .where(eq(projectRemovalFences.projectId, projectId))
+        .where(eq(projectRemovalFences.id, fence))
         .pipe(Effect.orDie);
     });
 

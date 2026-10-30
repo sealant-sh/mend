@@ -62,6 +62,10 @@ export type ResourceDefinitionId = typeof ResourceDefinitionId.Type;
 export const ResourceApprovalId = Schema.String.pipe(Schema.brand("ResourceApprovalId"));
 export type ResourceApprovalId = typeof ResourceApprovalId.Type;
 
+/** One project removal's fence against new resources; only that removal lifts it (ADR 0019). */
+export const ProjectRemovalFenceId = Schema.String.pipe(Schema.brand("ProjectRemovalFenceId"));
+export type ProjectRemovalFenceId = typeof ProjectRemovalFenceId.Type;
+
 /** One running instance of a resource definition (ADR 0019). */
 export const ResourceInstanceId = Schema.String.pipe(Schema.brand("ResourceInstanceId"));
 export type ResourceInstanceId = typeof ResourceInstanceId.Type;

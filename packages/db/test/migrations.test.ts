@@ -3101,7 +3101,7 @@ describe.skipIf(postgres.skip)("0148 resources", () => {
         const sharedTarget = yield* attempt(sql`
           INSERT INTO resource_selections (worktree_id, definition_id, mode, revision, own_target)
           VALUES ('wt-2', 'rdef_1', 'own', 0, ${target}::jsonb)`);
-        yield* sql`INSERT INTO project_removal_fences (project_id) VALUES ('p-1')`;
+        yield* sql`INSERT INTO project_removal_fences (id, project_id) VALUES ('rfen_1', 'p-1')`;
         const projectDeleted = yield* attempt(sql`DELETE FROM projects WHERE id = 'p-1'`);
         // A worktree's approvals go with it, and the rest with their definition.
         yield* sql`DELETE FROM worktrees WHERE id = 'wt-1'`;

@@ -335,7 +335,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
   describe("the removal fence", () => {
     it("refuses a declaration once set, and lifting it lets one through", async () => {
       const project = await newProject();
-      await withRepo((repo) => repo.fenceProjectRemoval(project));
+      const fence = await withRepo((repo) => repo.fenceProjectRemoval(project));
       expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toMatchObject(
         {
           _tag: "ResourceDefinitionRefusedError",
@@ -345,7 +345,23 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         },
       );
       expect(await withRepo((repo) => repo.listForProject(project))).toEqual([]);
-      await withRepo((repo) => repo.liftProjectRemovalFence(project));
+      await withRepo((repo) => repo.liftProjectRemovalFence(fence));
+      expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toBe(
+        "accepted",
+      );
+    });
+
+    it("stands while any removal holds one: lifting one removal's fence leaves another's", async () => {
+      const project = await newProject();
+      const first = await withRepo((repo) => repo.fenceProjectRemoval(project));
+      const second = await withRepo((repo) => repo.fenceProjectRemoval(project));
+      expect(first).not.toBe(second);
+
+      await withRepo((repo) => repo.liftProjectRemovalFence(first));
+      expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toMatchObject(
+        { _tag: "ResourceDefinitionRefusedError", refusals: [{ key: "project" }] },
+      );
+      await withRepo((repo) => repo.liftProjectRemovalFence(second));
       expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toBe(
         "accepted",
       );

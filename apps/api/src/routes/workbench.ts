@@ -700,7 +700,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         // archives them yet: refuse before anything is stopped or the store is removed. The fence
         // refuses a declaration from here on, so none lands between this check and the row delete.
         const resources = yield* ResourcesRepo;
-        yield* resources.fenceProjectRemoval(params.id).pipe(
+        const fence = yield* resources.fenceProjectRemoval(params.id).pipe(
           Effect.catchTag(
             "ProjectHasResourcesError",
             ({ names }) =>
@@ -790,11 +790,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           yield* projects.remove(params.id);
           return new RemovalReport({ removed: true, leftover });
         });
-        // A removal that stops early, a refusal among them, lifts the fence; a finished one took
-        // it with the project's row.
+        // A removal that stops early, a refusal among them, lifts its own fence and no other
+        // removal's; a finished one took them all with the project's row.
         return yield* removal.pipe(
           Effect.onExit((exit) =>
-            Exit.isSuccess(exit) ? Effect.void : resources.liftProjectRemovalFence(params.id),
+            Exit.isSuccess(exit) ? Effect.void : resources.liftProjectRemovalFence(fence),
           ),
         );
       }),

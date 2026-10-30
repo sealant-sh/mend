@@ -45,6 +45,7 @@ import type {
   ProjectSecretId,
   ProjectMountId,
   ReferenceId,
+  ProjectRemovalFenceId,
   ResourceApprovalId,
   ResourceDefinitionId,
   RoutedAction,
@@ -659,14 +660,22 @@ export const resourceDefinitions = pgTable(
   (table) => [unique("resource_definitions_project_name_key").on(table.projectId, table.name)],
 );
 
-/** A project being removed: no resource is declared in it until the row goes or the fence lifts. */
-export const projectRemovalFences = pgTable("project_removal_fences", {
-  projectId: text()
-    .$type<ProjectId>()
-    .primaryKey()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  fencedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-});
+/**
+ * One removal of a project in flight: no resource is declared in the project while any stands. Each
+ * removal holds its own row and lifts only that one; a finished removal's goes with the project.
+ */
+export const projectRemovalFences = pgTable(
+  "project_removal_fences",
+  {
+    id: text().$type<ProjectRemovalFenceId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    fencedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("project_removal_fences_project_idx").on(table.projectId)],
+);
 
 /**
  * One approved spec of a definition, its image pinned to a digest. `definitionDigest` is the

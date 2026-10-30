@@ -3766,8 +3766,8 @@ const recipeLaunchMigration = Effect.gen(function* () {
 
 /**
  * 0148 (docs/adr/0019): resource definitions a project declares, each approved spec of one (never
- * updated, one per pinned digest and worktree), each worktree's selection of a project resource,
- * and the fence a project removal sets. A project with definitions is not deleted: removal is
+ * updated), each worktree's selection of a project resource, and the fence each project removal in
+ * flight sets. A project with definitions is not deleted: removal is
  * refused until step 8 archives them (ADR 0019, "Durability").
  */
 const resourcesMigration = Effect.gen(function* () {
@@ -3790,9 +3790,11 @@ const resourcesMigration = Effect.gen(function* () {
     )
   )`;
   yield* sql`CREATE TABLE project_removal_fences (
-    project_id text PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    id text PRIMARY KEY,
+    project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     fenced_at timestamptz NOT NULL DEFAULT now()
   )`;
+  yield* sql`CREATE INDEX project_removal_fences_project_idx ON project_removal_fences (project_id)`;
   yield* sql`CREATE TABLE resource_approvals (
     id text PRIMARY KEY,
     definition_id text NOT NULL REFERENCES resource_definitions(id) ON DELETE CASCADE,
