@@ -729,6 +729,24 @@ A claim Mend refuses for the limit answers `429 Too Many Requests` with Mend's `
 rate-limit error, so its clients report "returned undeclared status 429", as a transient failure,
 not as a wrong code. The code is not spent.
 
+## Create a project
+
+T3 Code's **New project** creates a private Mend project by name. Mend allocates the first free
+name, trying suffixes `-2` through `-100` when needed, and returns the allocated name in the
+sidebar. The repository has one `Initial commit` on `main`, a README naming the project, your Mend
+Git author, and no origin. The existing client toast still uses the name you typed.
+
+**No project** uses your private scratch project, made on first use and reused across devices and
+gateway restarts. Each new scratch thread starts a session in its own worktree from `main`. Mend
+names this project from your display name, falling back to your email's local part and then
+`scratch-person`. Renaming your account keeps the original project and name.
+
+The gateway calls `POST /api/projects/new` or `POST /api/projects/scratch` with your device token
+and publishes the project's shell before answering. Config advertises `newProjectsRoot` as `Mend`
+and a fixed per-person `scratchWorkspaceRoot`. These are presentation labels. Every path sent back
+is looked up in the person's visible projects and sessions. A client path is never opened as a
+repository source. Folder adoption, clone and `projects.mutate` remain refused.
+
 ## State
 
 One `node:sqlite` file the gateway owns: the environment id, bearer sessions (the bearer's sha256
