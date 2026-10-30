@@ -1,17 +1,18 @@
 import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { AuthSessionId, EnvironmentId } from "@mend/t3-contracts";
 import { Clock, Context, Effect, Layer, Logger, Tracer } from "effect";
-import { HttpClient, HttpClientResponse, HttpRouter, HttpServer } from "effect/http";
+import { HttpClient, HttpClientResponse, HttpServer } from "effect/http";
 
 import {
   AssetLimits,
   AssetRouteLive,
   DEFAULT_ASSET_LIMITS,
-  AssetTracingDisabledLive,
   AssetUrls,
   AssetUrlsLive,
+  gatewayObservation,
 } from "../../src/assets.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
 import { GatewayConfig } from "../../src/config.ts";
@@ -259,7 +260,6 @@ export const withAssetHarness = <A, E, R>(
       const client = Context.get(services, MendClient);
       const routes = Layer.mergeAll(AssetRouteLive, GatewayCorsLive).pipe(
         Layer.provide(Layer.succeedContext(services)),
-        Layer.provideMerge(AssetTracingDisabledLive),
         Layer.provideMerge(Layer.succeed(Tracer.Tracer, tracer)),
         Layer.provide(Layer.succeed(Clock.Clock, clock)),
         Layer.provideMerge(
@@ -268,10 +268,13 @@ export const withAssetHarness = <A, E, R>(
           ]),
         ),
       );
-      const app = HttpRouter.toWebHandler(routes.pipe(Layer.provide(HttpServer.layerServices)));
+      const app = observedWebHandler(
+        routes.pipe(Layer.provide(HttpServer.layerServices)),
+        gatewayObservation,
+      );
       const served = node
         ? yield* Layer.build(
-            HttpRouter.serve(routes, { disableListenLog: true }).pipe(
+            serveObserved(routes, { ...gatewayObservation, disableListenLog: true }).pipe(
               Layer.provideMerge(
                 NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }),
               ),

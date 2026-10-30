@@ -5,6 +5,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import { PageFrame } from "@mend/api-contracts";
 import { PAGE_FRAME_TTL_MS, PageRef } from "@mend/domain/workbench";
 import { PAGE_VIEW_PATH } from "@mend/network";
+import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import {
   Effect,
   Layer,
@@ -22,8 +23,8 @@ import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-ap
 import { type HarnessProject, type HarnessUser, ids } from "../../test/support/tenancy-harness.ts";
 import { pageDocument } from "../page-document.ts";
 import { pageViewKeyOf, pageViewTokensOf } from "../page-view-tokens.ts";
+import { apiObservation, RedactedRequestPartsLive } from "../request-observation.ts";
 import { API_RESPONSE_HEADERS, responseHeadersFor } from "../response-headers.ts";
-import { UntracedRequestsLive } from "../untraced-requests.ts";
 
 const KEY = pageViewKeyOf("pages-test-secret");
 const decodeFrame = Schema.decodeUnknownSync(PageFrame);
@@ -263,7 +264,7 @@ describe("a page by URL (docs/adr/0004, Agent pages)", () => {
 });
 
 describe("the page-view token never reaches the API's log", () => {
-  it("logs the route's path and never its query", async () => {
+  it("leaves no line for a page view", async () => {
     const lines: Array<string> = [];
     const routes = HttpRouter.use((router) =>
       router.add("GET", PAGE_VIEW_PATH, () => Effect.succeed(HttpServerResponse.text("page"))),
@@ -275,8 +276,9 @@ describe("the page-view token never reaches the API's log", () => {
         );
       }),
     ]);
-    const { handler, dispose } = HttpRouter.toWebHandler(
+    const { handler, dispose } = observedWebHandler(
       Layer.mergeAll(routes, capture).pipe(Layer.provide(HttpServer.layerServices)),
+      apiObservation,
     );
     try {
       const answer = await handler(
@@ -286,8 +288,7 @@ describe("the page-view token never reaches the API's log", () => {
     } finally {
       await dispose();
     }
-    expect(lines.join("\n")).toContain(PAGE_VIEW_PATH);
-    expect(lines.join("\n")).not.toContain("secret-token-value");
+    expect(lines).toEqual([]);
   });
 });
 
@@ -319,9 +320,10 @@ describe("the page-view token never reaches a trace", () => {
     );
     const server = createServer();
     const runtime = ManagedRuntime.make(
-      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+      serveObserved(routes, { ...apiObservation, disableListenLog: true }).pipe(
         Layer.provide(NodeHttpServer.layer(() => server, { port: 0, host: "127.0.0.1" })),
-        Layer.provide(UntracedRequestsLive),
+        Layer.provide(RedactedRequestPartsLive),
+        Layer.provide(Logger.layer([])),
         Layer.provide(Layer.succeed(Tracer.Tracer)(tracer)),
       ),
     );

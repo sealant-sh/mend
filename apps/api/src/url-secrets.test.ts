@@ -1,12 +1,12 @@
 import { createAuthHandler } from "@mend/auth";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
+import { observedWebHandler } from "@mend/network/http-observation";
 import { Effect, Layer, Logger, Tracer } from "effect";
 import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/http";
 import { describe, expect, it } from "vitest";
 
 import { boundedWebRequest } from "./request-budgets.ts";
-import { unloggedRequests } from "./unlogged-requests.ts";
-import { UntracedRequestsLive } from "./untraced-requests.ts";
+import { apiObservation, RedactedRequestPartsLive } from "./request-observation.ts";
 
 const network = makePublicNetwork(PublicOrigin.make("http://localhost:3105"), []);
 
@@ -29,9 +29,9 @@ const betterAuthBoundary = () => {
       }),
     ),
   );
-  const { handler, dispose } = HttpRouter.toWebHandler(
-    Layer.mergeAll(routes, unloggedRequests).pipe(
-      Layer.provideMerge(UntracedRequestsLive),
+  const { handler, dispose } = observedWebHandler(
+    routes.pipe(
+      Layer.provideMerge(RedactedRequestPartsLive),
       // Effect records no header on a span until a filter opts in; this one opts in to every one.
       Layer.provideMerge(Layer.succeed(HttpMiddleware.TracerHeaderFilter)(() => true)),
       Layer.provideMerge(
@@ -50,6 +50,7 @@ const betterAuthBoundary = () => {
         Logger.layer([Logger.make((entry) => logs.push(String(Logger.formatJson.log(entry))))]),
       ),
     ),
+    apiObservation,
   );
   const get = (path: string) => handler(new Request(`${network.appUrl}${path}`));
   const post = (path: string, headers: Record<string, string>, body: unknown) =>

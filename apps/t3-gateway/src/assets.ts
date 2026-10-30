@@ -4,6 +4,7 @@ import { posix } from "node:path";
 
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import { PAGE_FRAME_TTL_MS } from "@mend/domain/workbench";
+import type { ObservationPolicy } from "@mend/network/http-observation";
 import type { AuthSessionId } from "@mend/t3-contracts";
 import {
   Cause,
@@ -17,7 +18,7 @@ import {
   type Scope,
   Stream,
 } from "effect";
-import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { type AdmissionLimits, makeAdmission } from "./admission.ts";
 import { GatewayAuth } from "./auth.ts";
@@ -627,58 +628,46 @@ export const AssetRouteLive: Layer.Layer<never, never, HttpRouter.HttpRouter | A
     Effect.gen(function* () {
       const urls = yield* AssetUrls;
       const stall = Duration.toMillis((yield* AssetLimits).stall);
-      const handler = HttpMiddleware.withLoggerDisabled(
-        Effect.gen(function* () {
-          const request = yield* HttpServerRequest.HttpServerRequest;
-          const asset = yield* urls.open({
-            target: Redacted.make(request.url),
-            method: request.method === "HEAD" ? "HEAD" : "GET",
-            range: request.headers.range,
-            ifRange: request.headers["if-range"],
-          });
-          if (request.method === "HEAD" || asset.status === 416)
-            return HttpServerResponse.empty({ status: asset.status, headers: asset.headers });
-          // The one way to end a body whose headers went out: Node's adapter would end it short,
-          // and a keep-alive client would wait for the rest.
-          const reset = () => {
-            if (request.source instanceof IncomingMessage)
-              NodeHttpServerRequest.toServerResponse(request).destroy();
-          };
-          let taken = yield* Clock.currentTimeMillis;
-          yield* Effect.forkScoped(
-            Effect.gen(function* () {
-              while ((yield* Clock.currentTimeMillis) - taken < stall)
-                yield* Effect.sleep(stall / 4);
-              reset();
-            }),
-          );
-          return HttpServerResponse.stream(
-            asset.body.pipe(
-              Stream.tap(() =>
-                Effect.map(Clock.currentTimeMillis, (now) => {
-                  taken = now;
-                }),
-              ),
-              Stream.onError(() => Effect.sync(reset)),
+      const handler = Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const asset = yield* urls.open({
+          target: Redacted.make(request.url),
+          method: request.method === "HEAD" ? "HEAD" : "GET",
+          range: request.headers.range,
+          ifRange: request.headers["if-range"],
+        });
+        if (request.method === "HEAD" || asset.status === 416)
+          return HttpServerResponse.empty({ status: asset.status, headers: asset.headers });
+        // The one way to end a body whose headers went out: Node's adapter would end it short,
+        // and a keep-alive client would wait for the rest.
+        const reset = () => {
+          if (request.source instanceof IncomingMessage)
+            NodeHttpServerRequest.toServerResponse(request).destroy();
+        };
+        let taken = yield* Clock.currentTimeMillis;
+        yield* Effect.forkScoped(
+          Effect.gen(function* () {
+            while ((yield* Clock.currentTimeMillis) - taken < stall) yield* Effect.sleep(stall / 4);
+            reset();
+          }),
+        );
+        return HttpServerResponse.stream(
+          asset.body.pipe(
+            Stream.tap(() =>
+              Effect.map(Clock.currentTimeMillis, (now) => {
+                taken = now;
+              }),
             ),
-            { status: asset.status, headers: asset.headers },
-          );
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(notFound()),
+            Stream.onError(() => Effect.sync(reset)),
           ),
+          { status: asset.status, headers: asset.headers },
+        );
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause) ? Effect.interrupt : Effect.succeed(notFound()),
         ),
       );
-      return Layer.merge(
-        HttpRouter.middleware(
-          (effect) =>
-            Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-              isAssetRequest(request) ? HttpMiddleware.withLoggerDisabled(effect) : effect,
-            ),
-          { global: true },
-        ),
-        HttpRouter.add("GET", `${ASSET_ROUTE_PREFIX}/*`, handler),
-      );
+      return HttpRouter.add("GET", `${ASSET_ROUTE_PREFIX}/*`, handler);
     }),
   );
 
@@ -698,6 +687,5 @@ export const isAssetRequest = (request: HttpServerRequest.HttpServerRequest): bo
   }
   return /^\/+api\/+assets(\/|$)/i.test(decoded) || path.startsWith(`${ASSET_ROUTE_PREFIX}/`);
 };
-export const AssetTracingDisabledLive: Layer.Layer<never> = Layer.succeed(
-  HttpMiddleware.TracerDisabledWhen,
-)(isAssetRequest);
+/** What the gateway leaves out of its request log and traces: an asset, whose URL is its token. */
+export const gatewayObservation: ObservationPolicy = { unobserved: isAssetRequest };

@@ -153,6 +153,7 @@ import {
   PullRequestWorkspacesLive,
 } from "@mend/landing";
 import { NetworkConfig, NetworkConfigLive, trustedProxyCidrs } from "@mend/network";
+import { serveObserved } from "@mend/network/http-observation";
 import {
   asSealantUser,
   PersonLayoutPlatformLive,
@@ -258,6 +259,7 @@ import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { RemoteCredentialCheckLive } from "./remote-credential-check.ts";
 import { RemovalLive } from "./removal.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
+import { apiObservation, RedactedRequestPartsLive } from "./request-observation.ts";
 import { type ReviewPassJob, runReviewPass } from "./review-pass-worker.ts";
 import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
@@ -273,7 +275,6 @@ import { SlackRunnerLive } from "./slack-runner.ts";
 import { SlackLinkedMentionWorkerLive, SlackSocketsLive } from "./slack-worker.ts";
 import { SshKeyRevocationScheduleLive, SshKeyRevokerLive } from "./ssh-key-revocation.ts";
 import { TenancyConfigLive } from "./tenancy.ts";
-import { UntracedRequestsLive } from "./untraced-requests.ts";
 import { WorkspaceLandingLive } from "./workspace-landing.ts";
 
 /**
@@ -491,7 +492,7 @@ const ServerLive = Layer.unwrap(
     const trustedProxies = yield* trustedProxyCidrs;
     const errorDetail = yield* ErrorDetail;
     const { setup: previews } = yield* PreviewSetupConfig;
-    const router = HttpRouter.serve(
+    const router = serveObserved(
       Layer.mergeAll(
         MendApiLive,
         AuthRoutes,
@@ -508,10 +509,11 @@ const ServerLive = Layer.unwrap(
           sessionCookie: sessionCookiePolicy(network).name,
         }),
       ),
+      apiObservation,
     ).pipe(
       Layer.provide(ProjectCreationLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
-      Layer.provide(UntracedRequestsLive),
+      Layer.provide(RedactedRequestPartsLive),
     );
     const served = servePreviews(router, {
       setup: previews,

@@ -75,6 +75,7 @@ import {
 import { JobRunner } from "@mend/jobs";
 import { Landing, LandingGit } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
+import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
 import {
   CaptureRuntime,
@@ -143,6 +144,7 @@ import { PageViewTokens } from "../../src/page-view-tokens.ts";
 import { type PreviewSetup, PreviewSetupConfig } from "../../src/preview-config.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
 import { RemovalLive } from "../../src/removal.ts";
+import { apiObservation, RedactedRequestPartsLive } from "../../src/request-observation.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
@@ -156,8 +158,6 @@ import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
-import { unloggedRequests } from "../../src/unlogged-requests.ts";
-import { UntracedRequestsLive } from "../../src/untraced-requests.ts";
 import { createTenancyWorld, type HarnessUser, type TenancyWorld } from "./tenancy-harness.ts";
 import { recording } from "./tenancy-harness.ts";
 
@@ -749,11 +749,10 @@ export const createTenancyApi = async (
   );
   const apiLayer = Layer.mergeAll(
     MendApiLive,
-    unloggedRequests,
     options.browserHeaders ? apiResponseHeaders : Layer.empty,
     options.errorDetail === undefined ? Layer.empty : errorBoundary(options.errorDetail),
   ).pipe(
-    Layer.provideMerge(UntracedRequestsLive),
+    Layer.provideMerge(RedactedRequestPartsLive),
     Layer.provide(authorization),
     Layer.provide(HttpServer.layerServices),
   );
@@ -763,7 +762,12 @@ export const createTenancyApi = async (
     options.effectClock === undefined
       ? services
       : Context.add(services, Clock.Clock, options.effectClock);
-  const { handler, dispose } = HttpRouter.toWebHandler(
+  const logs = Logger.layer(
+    options.logs === undefined
+      ? []
+      : [Logger.make((entry) => options.logs?.push(String(Logger.formatJson.log(entry))))],
+  );
+  const { handler, dispose } = observedWebHandler(
     apiLayer.pipe(
       Layer.provideMerge(
         Layer.succeed(
@@ -777,25 +781,17 @@ export const createTenancyApi = async (
           }),
         ),
       ),
-      Layer.provideMerge(
-        options.logs === undefined
-          ? Layer.empty
-          : Logger.layer([
-              Logger.make((entry) => options.logs?.push(String(Logger.formatJson.log(entry)))),
-            ]),
-      ),
+      Layer.provideMerge(logs),
     ),
-    { disableLogger: options.logs === undefined },
+    apiObservation,
   );
   const nodeScope = Effect.runSync(Scope.make());
   const nodeOrigin = options.node
     ? await Effect.runPromise(
         Layer.buildWithScope(
-          HttpRouter.serve(apiLayer, {
-            disableLogger: true,
-            disableListenLog: true,
-          }).pipe(
+          serveObserved(apiLayer, { ...apiObservation, disableListenLog: true }).pipe(
             Layer.provide(Layer.succeedContext(context)),
+            Layer.provide(logs),
             Layer.provideMerge(
               NodeHttpServer.layer(createServer, {
                 host: "127.0.0.1",

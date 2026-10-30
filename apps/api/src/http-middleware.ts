@@ -8,7 +8,6 @@ import { errorBoundary, type ErrorDetail } from "./error-boundary.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { requestBudgets } from "./request-budgets.ts";
 import { apiResponseHeaders } from "./response-headers.ts";
-import { unloggedRequests } from "./unlogged-requests.ts";
 
 /**
  * Every global middleware of the API, in one place, because their order is part of what they
@@ -34,7 +33,6 @@ export const apiMiddleware = (input: {
   readonly now?: () => number;
 }): Layer.Layer<never, never, HttpRouter.HttpRouter> =>
   Layer.mergeAll(
-    unloggedRequests,
     apiResponseHeaders,
     publicNetworkPolicy(input.network),
     errorBoundary(input.errorDetail),
