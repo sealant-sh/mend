@@ -219,7 +219,6 @@ export interface PreviewFacts {
 export const previewStatusesOf = (
   facts: PreviewFacts,
   preparation: PreviewPreparation | null,
-  now: Date,
 ): ReadonlyArray<PreviewStatus> => {
   const service = facts.preview.serviceName;
   const mine =
@@ -249,7 +248,6 @@ export const previewStatusesOf = (
                 reachable: observation.state === "reachable",
                 httpStatus: observation.httpStatus,
                 observedAt: observation.lastObservedAt,
-                now,
               },
             ];
       return [

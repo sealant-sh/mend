@@ -22,6 +22,7 @@ import { describe, expect, it } from "vitest";
 
 import { createTenancyApi } from "../../test/support/tenancy-api.ts";
 import { ids } from "../../test/support/tenancy-harness.ts";
+import { PREVIEW_GATEWAY_DEFAULTS } from "../preview-gateway-settings.ts";
 
 describe("GET /worktrees/:id/previews", () => {
   it("anyone who sees the project reads its previews, including unbound ones", async () => {
@@ -79,10 +80,17 @@ describe("GET /worktrees/:id/previews", () => {
         expect(response.status).toBe(200);
         expect(await response.json()).toEqual({
           previews: [
-            { ...bound, status: [] },
-            { ...unbound, status: [] },
+            {
+              ...bound,
+              status: [],
+              facts: [],
+              open: null,
+              boundTo: { serviceId: target.service, sessionId: target.session },
+            },
+            { ...unbound, status: [], facts: [], open: null, boundTo: null },
           ],
           unprepared: null,
+          starting: false,
         });
       }
       expect(seen).toEqual([target.worktree, target.worktree]);
@@ -165,7 +173,7 @@ describe("GET /worktrees/:id/previews", () => {
         `/api/worktrees/${ids("shared-a").worktree}/previews`,
       );
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ previews: [], unprepared: null });
+      expect(await response.json()).toEqual({ previews: [], unprepared: null, starting: false });
     } finally {
       await api.dispose();
     }
@@ -262,9 +270,21 @@ describe("GET /worktrees/:id/previews", () => {
             status: [
               expect.stringMatching(/^preview · web · answered HTTP 200 · observed [45] s ago$/),
             ],
+            facts: [
+              {
+                _tag: "Observed",
+                service: "web",
+                reachable: true,
+                httpStatus: 200,
+                observedAt: new Date(now - 4_000).toISOString(),
+              },
+            ],
+            open: null,
+            boundTo: { serviceId: target.service, sessionId: target.session },
           },
         ],
         unprepared: "preview not prepared · change not captured",
+        starting: false,
       });
     } finally {
       await api.dispose();
@@ -338,5 +358,176 @@ describe("GET /worktrees/:id/previews", () => {
     expect(await statusWith(notApproved(new Date(Date.now() + 86_400_000)))).toEqual([
       ["preview not prepared · web · recipe not approved · the owner's Start runs it"],
     ]);
+  });
+  it("says that a start is under way until it settles", async () => {
+    const target = ids("shared-a");
+    const web: PreviewView = {
+      preview: {
+        id: PreviewId.make("preview-web"),
+        projectId: ProjectId.make(target.project),
+        worktreeId: WorktreeId.make(target.worktree),
+        serviceName: "web",
+        label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        state: "kept",
+      },
+      binding: { _tag: "Unbound", reason: "no-live-attempt" },
+    };
+    const starting: PreviewGatewaySnapshot = {
+      preview: web.preview,
+      resolution: {
+        _tag: "Starting",
+        revision: 0,
+        attemptId: SessionProcessId.make(target.process),
+        workspaceId: SealantWorkspaceId.make("ws"),
+      },
+    };
+    const preparing = (service: string): PreviewPreparation => ({
+      turnId: AgentTurnId.make("turn-1"),
+      sessionId: SessionId.make(target.session),
+      worktreeId: WorktreeId.make(target.worktree),
+      claimedAt: new Date(),
+      state: { _tag: "Starting", service, previewId: null, phase: "setup", note: null },
+    });
+    const read = async (
+      snapshots: ReadonlyMap<PreviewId, PreviewGatewaySnapshot>,
+      preparation: PreviewPreparation | null,
+    ) => {
+      const api = await createTenancyApi(
+        {},
+        {
+          implement: {
+            previews: {
+              ensureForWorktree: () => Effect.succeed([web]),
+              gatewaySnapshots: () => Effect.succeed(snapshots),
+            },
+            preparations: { latestForWorktree: () => Effect.succeed(preparation) },
+          },
+        },
+      );
+      try {
+        const response = await api.request(
+          "alice",
+          "GET",
+          `/api/worktrees/${target.worktree}/previews`,
+        );
+        const body: {
+          previews: ReadonlyArray<{ status: ReadonlyArray<string> }>;
+          unprepared: string | null;
+          starting: boolean;
+        } = await response.json();
+        return {
+          status: body.previews.map((preview) => preview.status),
+          unprepared: body.unprepared,
+          starting: body.starting,
+        };
+      } finally {
+        await api.dispose();
+      }
+    };
+
+    expect(await read(new Map([[web.preview.id, starting]]), preparing("web"))).toEqual({
+      status: [["preview · web · starting · setup"]],
+      unprepared: null,
+      starting: true,
+    });
+    expect(await read(new Map(), preparing("docs"))).toEqual({
+      status: [[]],
+      unprepared: "preview · docs · starting · setup",
+      starting: true,
+    });
+    expect(await read(new Map(), null)).toEqual({
+      status: [[]],
+      unprepared: null,
+      starting: false,
+    });
+  });
+
+  it("offers an Open only for what the gateway serves, and says whose Service each preview binds", async () => {
+    const target = ids("shared-a");
+    const sibling = ids("shared-b");
+    const kept = (name: string, binding: PreviewView["binding"]): PreviewView => ({
+      preview: {
+        id: PreviewId.make(`preview-${name}`),
+        projectId: ProjectId.make(target.project),
+        worktreeId: WorktreeId.make(target.worktree),
+        serviceName: name,
+        label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        state: "kept",
+      },
+      binding,
+    });
+    const bindingTo = (service: string): PreviewView["binding"] => ({
+      _tag: "Bound",
+      serviceId: ServiceId.make(service),
+      attemptId: SessionProcessId.make(target.process),
+      host: "rewrite",
+      dial: "session-bound",
+    });
+    const views = [
+      kept("web", bindingTo(target.service)),
+      kept("sibling", bindingTo(sibling.service)),
+      kept("ended", { _tag: "Unbound", reason: "no-live-attempt" }),
+      kept("https", { _tag: "Unbound", reason: "https-unsupported" }),
+      kept("adopted", { _tag: "Unbound", reason: "no-recorded-command" }),
+      kept("raw", { _tag: "Unbound", reason: "not-browser-service" }),
+      kept("gone", { _tag: "Unbound", reason: "service-missing" }),
+    ];
+    const read = async (gateway: boolean) => {
+      const api = await createTenancyApi(
+        {},
+        {
+          ...(gateway
+            ? {
+                previews: {
+                  _tag: "On",
+                  routing: { mode: "loopback-http", port: 3200 },
+                  gateway: { bind: "127.0.0.1", port: 3200, ...PREVIEW_GATEWAY_DEFAULTS },
+                },
+              }
+            : {}),
+          implement: {
+            previews: {
+              ensureForWorktree: () => Effect.succeed(views),
+              gatewaySnapshots: () => Effect.succeed(new Map()),
+            },
+            preparations: { latestForWorktree: () => Effect.succeed(null) },
+          },
+        },
+      );
+      try {
+        const response = await api.request(
+          "alice",
+          "GET",
+          `/api/worktrees/${target.worktree}/previews`,
+        );
+        const body: {
+          previews: ReadonlyArray<{
+            preview: { serviceName: string };
+            open: string | null;
+            boundTo: { serviceId: string; sessionId: string } | null;
+          }>;
+        } = await response.json();
+        return body.previews.map(({ preview, open, boundTo }) => [
+          preview.serviceName,
+          open,
+          boundTo?.sessionId ?? null,
+        ]);
+      } finally {
+        await api.dispose();
+      }
+    };
+
+    expect(await read(true)).toEqual([
+      ["web", "/preview-auth?preview=preview-web&path=%2F", target.session],
+      ["sibling", "/preview-auth?preview=preview-sibling&path=%2F", sibling.session],
+      ["ended", "/preview-auth?preview=preview-ended&path=%2F", null],
+      ["https", null, null],
+      ["adopted", null, null],
+      ["raw", null, null],
+      ["gone", null, null],
+    ]);
+    expect((await read(false)).map(([name, open]) => [name, open])).toEqual(
+      views.map(({ preview }) => [preview.serviceName, null]),
+    );
   });
 });

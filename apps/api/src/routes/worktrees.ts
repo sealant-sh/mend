@@ -36,6 +36,7 @@ import {
 import type { CheckpointId, WorktreeId } from "@mend/domain";
 import {
   currentAgentProcess,
+  previewOpenTarget,
   previewStatusesOf,
   previewStatusLine,
   unpreparedStatusOf,
@@ -55,6 +56,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";
 import { LIVE_STATES } from "../live-states.ts";
+import { PreviewSetupConfig } from "../preview-config.ts";
 import { refuseStartWhileRemoving, Removal } from "../removal.ts";
 import { budgetExceeded } from "../session-budgets.ts";
 import { observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
@@ -625,6 +627,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const previews = yield* PreviewsRepo;
         const observations = yield* ServiceObservationsRepo;
         const processes = yield* SessionProcessesRepo;
+        const services = yield* ServicesRepo;
         const views = yield* previews
           .ensureForWorktree(worktree.id)
           .pipe(
@@ -634,6 +637,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           );
         const snapshots = yield* previews.gatewaySnapshots(views.map(({ preview }) => preview.id));
         const preparation = yield* (yield* PreviewPreparationsRepo).latestForWorktree(worktree.id);
+        const { setup } = yield* PreviewSetupConfig;
         const now = new Date(yield* Clock.currentTimeMillis);
         const described = yield* Effect.forEach(views, (view) =>
           Effect.gen(function* () {
@@ -650,7 +654,9 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
                     ? resolution.source.sourceAttemptId
                     : null;
             const attempt = attemptId === null ? null : yield* processes.byId(attemptId);
-            const statuses = previewStatusesOf(
+            const boundService =
+              view.binding._tag === "Bound" ? yield* services.byId(view.binding.serviceId) : null;
+            const facts = previewStatusesOf(
               {
                 preview: view.preview,
                 resolution,
@@ -658,9 +664,17 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
                 attemptStartedAt: attempt?.createdAt ?? null,
               },
               preparation,
-              now,
             );
-            return { ...view, status: statuses.map(previewStatusLine) };
+            return {
+              ...view,
+              status: facts.map((status) => previewStatusLine(status, now)),
+              facts,
+              open: setup._tag === "On" ? previewOpenTarget(view) : null,
+              boundTo:
+                boundService === null
+                  ? null
+                  : { serviceId: boundService.id, sessionId: boundService.sessionId },
+            };
           }),
         );
         const unprepared = unpreparedStatusOf(
@@ -669,7 +683,10 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         );
         return {
           previews: described,
-          unprepared: unprepared === null ? null : previewStatusLine(unprepared),
+          unprepared: unprepared === null ? null : previewStatusLine(unprepared, now),
+          starting: [...described.flatMap(({ facts }) => facts), unprepared].some(
+            (status) => status?._tag === "Starting",
+          ),
         };
       }),
     )

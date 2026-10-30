@@ -1,4 +1,4 @@
-import { CheckpointId, ProjectId, WorktreeId } from "@mend/domain";
+import { CheckpointId, ProjectId, ServiceId, SessionId, WorktreeId } from "@mend/domain";
 import {
   AgentLaunchMode,
   Change as SessionChange,
@@ -6,6 +6,7 @@ import {
   PreReleaseMemory,
   Preview,
   PreviewBinding,
+  PreviewStatus,
   Session,
   Worktree,
   WorktreeName,
@@ -246,7 +247,20 @@ export class WorktreeDetail extends Schema.Class<WorktreeDetail>("WorktreeDetail
 export const WorktreePreview = Schema.Struct({
   preview: Preview,
   binding: PreviewBinding,
+  /** The lines as worded when the server answered. */
   status: Schema.Array(Schema.String),
+  /** The same statuses as facts, for a client that words them with `previewStatusLine`. */
+  facts: Schema.Array(PreviewStatus).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  /**
+   * Where a person opens it (`/preview-auth?preview=…&path=/`) while the gateway serves it: on,
+   * and the preview bound or ended with a run a request starts. Null otherwise; a client then
+   * keeps the Service's own address.
+   */
+  open: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** The Service the gateway binds it to, and that Service's session; null while unbound. */
+  boundTo: Schema.NullOr(Schema.Struct({ serviceId: ServiceId, sessionId: SessionId })).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 });
 export type WorktreePreview = typeof WorktreePreview.Type;
 
@@ -258,6 +272,8 @@ export type WorktreePreview = typeof WorktreePreview.Type;
 export const WorktreePreviews = Schema.Struct({
   previews: Schema.Array(WorktreePreview),
   unprepared: Schema.NullOr(Schema.String),
+  /** Whether a start of one of these previews is under way. */
+  starting: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 });
 export type WorktreePreviews = typeof WorktreePreviews.Type;
 

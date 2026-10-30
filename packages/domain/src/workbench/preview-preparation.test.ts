@@ -84,7 +84,7 @@ const decided = (
 ) => prepared({ _tag: "Decided", decision, decidedAt });
 
 const lines = (facts: PreviewFacts, preparation: PreviewPreparation | null, now = at(64)) =>
-  previewStatusesOf(facts, preparation, now).map(previewStatusLine);
+  previewStatusesOf(facts, preparation).map((status) => previewStatusLine(status, now));
 
 describe("a preview's status lines", () => {
   it("says what the bound Service's ready check answered, and when", () => {
@@ -198,7 +198,7 @@ describe("a preview's status lines", () => {
       [web],
       decided({ _tag: "Refused", service: null, previewId: null, reason: "mend.toml: bad\nmore" }),
     );
-    expect(status === null ? null : previewStatusLine(status)).toBe(
+    expect(status === null ? null : previewStatusLine(status, at(0))).toBe(
       "preview not prepared · mend.toml: bad",
     );
   });
@@ -207,7 +207,7 @@ describe("a preview's status lines", () => {
 describe("the worktree's own line", () => {
   it("states a change that was not captured, which names no preview", () => {
     const status = unpreparedStatusOf([web], decided({ _tag: "NotCaptured" }));
-    expect(status === null ? null : previewStatusLine(status)).toBe(
+    expect(status === null ? null : previewStatusLine(status, at(0))).toBe(
       "preview not prepared · change not captured",
     );
   });
@@ -215,7 +215,7 @@ describe("the worktree's own line", () => {
   it("states a refusal before any preview of the Service exists, and leaves a kept one's to it", () => {
     const refused = decided({ _tag: "NotApproved", service: "web", previewId: null });
     const status = unpreparedStatusOf([], refused);
-    expect(status === null ? null : previewStatusLine(status)).toBe(
+    expect(status === null ? null : previewStatusLine(status, at(0))).toBe(
       "preview not prepared · web · recipe not approved · the owner's Start runs it",
     );
     expect(unpreparedStatusOf([web], refused)).toBeNull();

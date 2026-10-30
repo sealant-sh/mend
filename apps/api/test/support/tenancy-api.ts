@@ -140,6 +140,7 @@ import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { LIVE_STATES } from "../../src/live-states.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { PageViewTokens } from "../../src/page-view-tokens.ts";
+import { type PreviewSetup, PreviewSetupConfig } from "../../src/preview-config.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
 import { RemovalLive } from "../../src/removal.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
@@ -260,6 +261,7 @@ export const createTenancyApi = async (
       readonly gate: ReadonlyArray<ExposureOutcome>;
       readonly t3Gateway?: ExposureConfig["Service"]["t3Gateway"];
     };
+    readonly previews?: PreviewSetup;
     /** Credentials that no longer stand (`session:<account>`): add one to sign that account out. */
     readonly revokedCredentials?: ReadonlySet<string>;
     /** Sessions added to the world, such as a teammate's in someone else's worktree. */
@@ -696,6 +698,7 @@ export const createTenancyApi = async (
         gateWith: () => options.exposure?.gate ?? [],
         t3Gateway: options.exposure?.t3Gateway,
       }),
+      Layer.succeed(PreviewSetupConfig, { setup: options.previews ?? { _tag: "Off" } }),
       // Every remote in the harness is public; the policy's own tests cover the refusals.
       Layer.succeed(
         SourcePolicy,
