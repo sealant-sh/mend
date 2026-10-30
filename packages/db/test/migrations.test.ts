@@ -3085,7 +3085,7 @@ describe.skipIf(postgres.skip)("0148 resources", () => {
             VALUES (${id}, 'rdef_1', ${worktree}, ${revision}, ${digestA}, ${digestB},
                     ${spec}::jsonb, 'alice')`;
         yield* approve("rapr_1", 1, null);
-        const sameDigest = yield* attempt(approve("rapr_2", 2, null));
+        const sameRevision = yield* attempt(approve("rapr_2", 1, null));
         yield* approve("rapr_3", 3, "wt-1");
         const rewritten = yield* refused(
           sql`UPDATE resource_approvals SET approved_by = 'mallory'`,
@@ -3120,7 +3120,7 @@ describe.skipIf(postgres.skip)("0148 resources", () => {
         return {
           misnamed,
           unpreset,
-          sameDigest,
+          sameRevision,
           rewritten,
           deleted,
           ownWithoutTarget,
@@ -3134,7 +3134,7 @@ describe.skipIf(postgres.skip)("0148 resources", () => {
     expect(outcome).toEqual({
       misnamed: { code: "23514", constraint: "resource_definitions_spec_columns" },
       unpreset: { code: "23514", constraint: "resource_definitions_spec_columns" },
-      sameDigest: { code: "23505", constraint: "resource_approvals_definition_digest_key" },
+      sameRevision: { code: "23505", constraint: "resource_approvals_definition_revision_key" },
       rewritten: "refused",
       deleted: "refused",
       ownWithoutTarget: { code: "23514", constraint: "resource_selections_own_target" },

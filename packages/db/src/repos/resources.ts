@@ -647,20 +647,25 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
               if (refusal !== null) return yield* refuse([refusal]);
             }
 
+            // Under the definition's lock: the latest approval of this declared spec, here, is the
+            // one that runs. It is returned when it already pins this image; otherwise a new
+            // revision is, so a spec declared again or a tag that moved back becomes current.
             const pinnedDigest = resourceSpecDigest(pinned);
-            const [existing] = yield* tx
+            const [latestHere] = yield* tx
               .select()
               .from(resourceApprovals)
               .where(
                 and(
                   eq(resourceApprovals.definitionId, definitionId),
-                  eq(resourceApprovals.digest, pinnedDigest),
+                  eq(resourceApprovals.definitionDigest, digest),
                   worktreeId === null
                     ? isNull(resourceApprovals.worktreeId)
                     : eq(resourceApprovals.worktreeId, worktreeId),
                 ),
-              );
-            if (existing !== undefined) return yield* toApproval(existing);
+              )
+              .orderBy(desc(resourceApprovals.revision))
+              .limit(1);
+            if (latestHere?.digest === pinnedDigest) return yield* toApproval(latestHere);
             const [latest] = yield* tx
               .select({ revision: max(resourceApprovals.revision) })
               .from(resourceApprovals)

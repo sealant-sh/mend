@@ -3803,9 +3803,7 @@ const resourcesMigration = Effect.gen(function* () {
     spec jsonb NOT NULL,
     approved_by text NOT NULL,
     approved_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT resource_approvals_definition_revision_key UNIQUE (definition_id, revision),
-    CONSTRAINT resource_approvals_definition_digest_key
-      UNIQUE NULLS NOT DISTINCT (definition_id, digest, worktree_id)
+    CONSTRAINT resource_approvals_definition_revision_key UNIQUE (definition_id, revision)
   )`;
   yield* sql`CREATE INDEX resource_approvals_definition_declared_idx
     ON resource_approvals (definition_id, definition_digest)`;

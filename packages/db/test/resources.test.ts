@@ -442,6 +442,32 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         spec: { image: `postgres:17@${imageDigest("b")}` },
       });
       expect(await withRepo((repo) => repo.currentApproval(definition.id, null))).toEqual(moved);
+
+      // And back: the first image is approved again as the current revision, not as the old row.
+      const back = await withRepo((repo) => repo.approve(approval(definition)));
+      expect(back).toMatchObject({ revision: 3, digest: resourceSpecDigest(pinned) });
+      expect(await withRepo((repo) => repo.currentApproval(definition.id, null))).toEqual(back);
+    });
+
+    it("approves a tag declared again as its pinned reference, as the current approval", async () => {
+      const project = await newProject();
+      const tagged = await withRepo((repo) => repo.declare(project, redisCache(), "alice"));
+      const first = await withRepo((repo) => repo.approve(approval(tagged)));
+      const pinned = await withRepo((repo) =>
+        repo.declare(project, { ...redisCache(), image: `redis:8@${imageDigest("a")}` }, "alice"),
+      );
+      expect(pinned.specDigest).not.toBe(tagged.specDigest);
+      expect(await withRepo((repo) => repo.currentApproval(tagged.id, null))).toBeNull();
+
+      const again = await withRepo((repo) => repo.approve(approval(pinned)));
+      expect(again).toMatchObject({
+        revision: 2,
+        definitionDigest: pinned.specDigest,
+        digest: first.digest,
+      });
+      expect(await withRepo((repo) => repo.currentApproval(tagged.id, null))).toEqual(again);
+      expect(await withRepo((repo) => repo.approve(approval(pinned)))).toEqual(again);
+      expect(await count("resource_approvals", tagged.id)).toBe(2);
     });
 
     it("refuses an image that names another digest than the one it resolved to", async () => {

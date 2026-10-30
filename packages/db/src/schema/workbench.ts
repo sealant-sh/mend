@@ -695,9 +695,6 @@ export const resourceApprovals = pgTable(
   },
   (table) => [
     unique("resource_approvals_definition_revision_key").on(table.definitionId, table.revision),
-    unique("resource_approvals_definition_digest_key")
-      .on(table.definitionId, table.digest, table.worktreeId)
-      .nullsNotDistinct(),
     index("resource_approvals_definition_declared_idx").on(
       table.definitionId,
       table.definitionDigest,
