@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { StoreRefsRepo } from "@mend/db";
-import type { ProjectId } from "@mend/domain";
+import { failureLine, type ProjectId, said } from "@mend/domain";
 import {
   type CaptureManifest,
   digestOfKey,
@@ -25,7 +25,7 @@ import {
   type RestoreTreePath,
   type WorktreeTreeKind,
 } from "@mend/store";
-import { Effect, Layer, Result } from "effect";
+import { Cause, Effect, Layer, Result } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -395,7 +395,7 @@ export const CaptureGitVerifierLive: Layer.Layer<
           case "RunnerCacheError":
             return {
               outcome: "unverified",
-              detail: `the runner cache could not be prepared: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+              detail: said`the runner cache could not be prepared: ${yield* failureLine(Cause.fail(error))}`,
               transient: true,
               ...(error.unexplained === true ? { unexplained: true } : {}),
             } satisfies GitVerification;
