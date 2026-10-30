@@ -1,5 +1,6 @@
 import {
   type ProjectLinkId,
+  type ScreenFrameId,
   type ScreenId,
   BriefDocument,
   DotfilesRepository,
@@ -88,8 +89,10 @@ import {
   RecordLink,
   ResourceDefinitionInput,
   ReviewCommentAnchor,
+  ScreenActor,
   ScreenInput,
   ScreenLife,
+  ScreenLogBody,
   SessionDotfiles,
   PiProfileFile,
   SkillFile,
@@ -98,6 +101,8 @@ import {
   WorktreeHandoff,
 } from "@mend/domain/workbench";
 import type {
+  FrameDigest,
+  ScreenCallOutcome,
   AgentApprovalDecision,
   AgentInputAnswers,
   AgentInputQuestion,
@@ -2058,6 +2063,8 @@ export const screens = pgTable(
       .references(() => sessionProcesses.id, { onDelete: "set null" }),
     life: jsonbOf(ScreenLife).notNull(),
     input: jsonbOf(ScreenInput).notNull(),
+    /** The seq of the screen's latest log entry; the next takes the one after (0152). */
+    lastSeq: integer().notNull().default(0),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     releasedAt: timestamp({ mode: "date", withTimezone: true }),
@@ -2070,6 +2077,57 @@ export const screens = pgTable(
       .on(table.sessionId)
       .where(sql`${table.releasedAt} IS NULL`),
     index("screens_session_created_idx").on(table.sessionId, table.createdAt),
+  ],
+);
+
+/** A screen's log (docs/adr/0020): append-only but for a frame's state, a stream per screen. */
+export const screenLog = pgTable(
+  "screen_log",
+  {
+    screenId: text()
+      .$type<ScreenId>()
+      .notNull()
+      .references(() => screens.id, { onDelete: "cascade" }),
+    seq: integer().notNull(),
+    at: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    actor: jsonbOf(ScreenActor).notNull(),
+    body: jsonbOf(ScreenLogBody).notNull(),
+    frameId: text().$type<ScreenFrameId>(),
+    frameDigest: text().$type<FrameDigest>(),
+    frameState: text().$type<"stored" | "expired" | "missing">(),
+    /** ObservedAfter: the worktree's latest checkpoint when the entry was written. */
+    checkpointId: text()
+      .$type<CheckpointId>()
+      .references(() => checkpoints.id, { onDelete: "set null" }),
+  },
+  (table) => [primaryKey({ columns: [table.screenId, table.seq] })],
+);
+
+/** A screen tool call's durable claim: its arguments' hash, never their typed text. */
+export const screenCalls = pgTable(
+  "screen_calls",
+  {
+    screenId: text()
+      .$type<ScreenId>()
+      .notNull()
+      .references(() => screens.id, { onDelete: "cascade" }),
+    callKey: text().notNull(),
+    argsSha256: text().notNull(),
+    /** Null while the call is open. */
+    outcome: text().$type<ScreenCallOutcome>(),
+    logSeq: integer(),
+    claimedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    settledAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.screenId, table.callKey] }),
+    foreignKey({
+      columns: [table.screenId, table.logSeq],
+      foreignColumns: [screenLog.screenId, screenLog.seq],
+    }),
+    index("screen_calls_open_idx")
+      .on(table.screenId)
+      .where(sql`${table.outcome} IS NULL`),
   ],
 );
 

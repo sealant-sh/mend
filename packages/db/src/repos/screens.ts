@@ -1,23 +1,41 @@
+import { createHash } from "node:crypto";
+
 import {
+  type AgentTurnId,
   ScreenId,
+  type ScreenFrameId,
   type SealantWorkspaceId,
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
 import {
+  type FrameDigest,
   Screen,
+  type ScreenActParams,
+  ScreenActor,
+  type ScreenCallOutcome,
   SCREEN_INPUT_INITIAL,
   ScreenInput,
   type ScreenInputEvent,
   type ScreenInputTransition,
   ScreenLife,
+  ScreenLogBody,
+  ScreenLogEntry,
   transitionInput,
+  withoutTypedText,
 } from "@mend/domain/workbench";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { Context, DateTime, Effect, Layer, Schema } from "effect";
 
 import { type MendDatabase, MendDB } from "../client.ts";
-import { screens } from "../schema/workbench.ts";
+import {
+  agentSessions,
+  checkpoints,
+  screenCalls,
+  screenLog,
+  screens,
+} from "../schema/workbench.ts";
+import { isForeignKeyViolation } from "./unique-violation.ts";
 
 export class ScreenNotFoundError extends Schema.TaggedError<ScreenNotFoundError>()(
   "ScreenNotFoundError",
@@ -37,6 +55,75 @@ export type ScreenLifeChange =
       readonly processId: SessionProcessId;
     }
   | { readonly life: Ended };
+
+export interface ScreenFrameRef {
+  readonly id: ScreenFrameId;
+  readonly digest: FrameDigest;
+}
+
+/** A person's or Mend's entry. An agent's entry is written only as its call settles. */
+export interface NewScreenLogEntry {
+  readonly screenId: ScreenId;
+  readonly actor: Extract<ScreenActor, { readonly _tag: "Person" | "Mend" }>;
+  readonly body: ScreenLogBody;
+  readonly frame: ScreenFrameRef | null;
+}
+
+export interface ScreenAgentAnswer {
+  readonly processId: SessionProcessId;
+  readonly turnId: AgentTurnId | null;
+  readonly body: Extract<ScreenLogBody, { readonly _tag: "Looked" | "Acted" }>;
+  readonly frame: ScreenFrameRef | null;
+}
+
+export type ScreenCallArguments =
+  | { readonly tool: "screen_look" }
+  | { readonly tool: "screen_act"; readonly params: ScreenActParams };
+
+export interface SettledScreenCall {
+  readonly outcome: ScreenCallOutcome;
+  readonly seq: number | null;
+}
+
+export type ScreenCallClaim =
+  | { readonly _tag: "Claimed" }
+  | { readonly _tag: "Open" }
+  | { readonly _tag: "Settled"; readonly call: SettledScreenCall }
+  | { readonly _tag: "CallReused" };
+
+const CLAIMED: ScreenCallClaim = { _tag: "Claimed" };
+const OPEN: ScreenCallClaim = { _tag: "Open" };
+const CALL_REUSED: ScreenCallClaim = { _tag: "CallReused" };
+
+const claimOf = (
+  first: { readonly argsSha256: string; readonly settled: SettledScreenCall | null },
+  argsSha256: string,
+): ScreenCallClaim => {
+  if (first.argsSha256 !== argsSha256) return CALL_REUSED;
+  return first.settled === null ? OPEN : { _tag: "Settled", call: first.settled };
+};
+
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value !== "object" || value === null) return JSON.stringify(value);
+  const fields = Object.keys(value)
+    .toSorted()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(Reflect.get(value, key))}`);
+  return `{${fields.join(",")}}`;
+};
+
+/** SHA-256 of the call's canonical arguments, each `type` text replaced by its length. */
+export const screenCallDigest = (call: ScreenCallArguments): string =>
+  createHash("sha256")
+    .update(
+      canonicalJson(
+        call.tool === "screen_act"
+          ? { tool: call.tool, actions: call.params.actions.map(withoutTypedText) }
+          : { tool: call.tool },
+      ),
+      "utf8",
+    )
+    .digest("hex");
 
 export class ScreensRepo extends Context.Service<
   ScreensRepo,
@@ -64,6 +151,28 @@ export class ScreensRepo extends Context.Service<
       event: ScreenInputEvent,
       owner: string | null,
     ) => Effect.Effect<ScreenInputTransition, ScreenNotFoundError>;
+    readonly append: (
+      entry: NewScreenLogEntry,
+    ) => Effect.Effect<ScreenLogEntry, ScreenNotFoundError>;
+    readonly log: (id: ScreenId) => Effect.Effect<ReadonlyArray<ScreenLogEntry>>;
+    /**
+     * Claims a tool call before any input. A retry with the same key and arguments answers what
+     * the first did; the same key with other arguments answers `CallReused`.
+     */
+    readonly claim: (call: {
+      readonly screenId: ScreenId;
+      readonly callKey: string;
+      readonly args: ScreenCallArguments;
+    }) => Effect.Effect<ScreenCallClaim, ScreenNotFoundError>;
+    /** Records a claimed call's outcome and its agent's entry, once; a repeat answers the first. */
+    readonly settle: (call: {
+      readonly screenId: ScreenId;
+      readonly callKey: string;
+      readonly outcome: ScreenCallOutcome;
+      readonly answer: ScreenAgentAnswer | null;
+    }) => Effect.Effect<SettledScreenCall>;
+    /** Mend booted: no open call can still finish, so each reads `outcome_unknown`. */
+    readonly boot: () => Effect.Effect<number>;
   }
 >()("@mend/db/ScreensRepo") {}
 
@@ -71,6 +180,9 @@ const DISPLAYS = { first: 10, last: 99 } as const;
 const RESERVE_ATTEMPTS = DISPLAYS.last - DISPLAYS.first + 2;
 
 const decodeScreen = Schema.decodeSync(Screen);
+const decodeEntry = Schema.decodeSync(ScreenLogEntry);
+const encodeActor = Schema.encodeSync(ScreenActor);
+const encodeBody = Schema.encodeSync(ScreenLogBody);
 const encodeLife = Schema.encodeSync(ScreenLife);
 const encodeInput = Schema.encodeSync(ScreenInput);
 
@@ -89,9 +201,39 @@ const freeDisplay = (held: ReadonlySet<number>, preferred: number | null): numbe
 };
 
 type Row = typeof screens.$inferSelect;
+interface Written {
+  readonly actor: ScreenActor;
+  readonly body: ScreenLogBody;
+  readonly frame: ScreenFrameRef | null;
+}
 type Tx = Pick<MendDatabase, "select" | "insert" | "update">;
 
 const toScreen = (row: Row): Screen => decodeScreen(row);
+
+const toEntry = (row: typeof screenLog.$inferSelect): ScreenLogEntry =>
+  decodeEntry({
+    ...row,
+    frame:
+      row.frameId === null || row.frameDigest === null || row.frameState === null
+        ? null
+        : { id: row.frameId, digest: row.frameDigest, state: row.frameState },
+    checkpoint:
+      row.checkpointId === null ? null : { _tag: "ObservedAfter", checkpointId: row.checkpointId },
+  });
+
+const agentActor = (callKey: string, answer: ScreenAgentAnswer): ScreenActor => ({
+  _tag: "Agent",
+  processId: answer.processId,
+  turnId: answer.turnId,
+  callKey,
+  toolCall: { _tag: "Pending" },
+});
+
+const settledOf = (row: {
+  readonly outcome: ScreenCallOutcome | null;
+  readonly logSeq: number | null;
+}): SettledScreenCall | null =>
+  row.outcome === null ? null : { outcome: row.outcome, seq: row.logSeq };
 
 const heldRow = (tx: Tx, sessionId: SessionId) =>
   tx
@@ -112,6 +254,41 @@ const releaseRow = Effect.fn("ScreensRepo.releaseRow")(function* (tx: Tx, row: R
       life: encodeLife(endedLife(toScreen(row).life, ended)),
     })
     .where(eq(screens.id, row.id));
+});
+
+const appendIn = Effect.fn("ScreensRepo.appendIn")(function* (
+  tx: Tx,
+  screenId: ScreenId,
+  written: Written,
+) {
+  const [counter] = yield* tx
+    .update(screens)
+    .set({ lastSeq: sql`${screens.lastSeq} + 1` })
+    .where(eq(screens.id, screenId))
+    .returning({ seq: screens.lastSeq, sessionId: screens.sessionId });
+  if (counter === undefined) return null;
+  const [checkpoint] = yield* tx
+    .select({ id: checkpoints.id })
+    .from(checkpoints)
+    .innerJoin(agentSessions, eq(agentSessions.worktreeId, checkpoints.worktreeId))
+    .where(eq(agentSessions.id, counter.sessionId))
+    .orderBy(desc(checkpoints.ordinal))
+    .limit(1);
+  const [row] = yield* tx
+    .insert(screenLog)
+    .values({
+      screenId,
+      seq: counter.seq,
+      at: yield* DateTime.nowAsDate,
+      actor: encodeActor(written.actor),
+      body: encodeBody(written.body),
+      frameId: written.frame?.id ?? null,
+      frameDigest: written.frame?.digest ?? null,
+      frameState: written.frame === null ? null : "stored",
+      checkpointId: checkpoint?.id ?? null,
+    })
+    .returning();
+  return row === undefined ? null : toEntry(row);
 });
 
 export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, MendDB> = Layer.effect(
@@ -240,8 +417,13 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, MendDB> = Layer.ef
             if (transition._tag === "Changed") {
               yield* tx
                 .update(screens)
-                .set({ input: encodeInput(transition.next), updatedAt: yield* DateTime.nowAsDate })
+                .set({
+                  input: encodeInput(transition.next),
+                  updatedAt: yield* DateTime.nowAsDate,
+                })
                 .where(eq(screens.id, id));
+              if (transition.log !== null)
+                yield* appendIn(tx, id, { ...transition.log, frame: null });
             }
             return transition;
           }),
@@ -251,16 +433,142 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, MendDB> = Layer.ef
       return decided;
     });
 
-    return { reserve, byId, ofSession, setLife, release, control };
+    const append = Effect.fn("ScreensRepo.append")(function* ({
+      screenId,
+      ...written
+    }: NewScreenLogEntry) {
+      const entry = yield* db
+        .transaction((tx) => appendIn(tx, screenId, written))
+        .pipe(Effect.orDie);
+      if (entry === null) return yield* new ScreenNotFoundError({ screenId });
+      return entry;
+    });
+
+    const log = Effect.fn("ScreensRepo.log")(function* (id: ScreenId) {
+      const rows = yield* db
+        .select()
+        .from(screenLog)
+        .where(eq(screenLog.screenId, id))
+        .orderBy(asc(screenLog.seq))
+        .pipe(Effect.orDie);
+      return rows.map(toEntry);
+    });
+
+    const claim = Effect.fn("ScreensRepo.claim")(function* (call: {
+      readonly screenId: ScreenId;
+      readonly callKey: string;
+      readonly args: ScreenCallArguments;
+    }) {
+      const argsSha256 = screenCallDigest(call.args);
+      const [inserted] = yield* db
+        .insert(screenCalls)
+        .values({ screenId: call.screenId, callKey: call.callKey, argsSha256 })
+        .onConflictDoNothing()
+        .returning({ callKey: screenCalls.callKey })
+        .pipe(
+          Effect.catch((cause) =>
+            isForeignKeyViolation(cause)
+              ? Effect.fail(new ScreenNotFoundError({ screenId: call.screenId }))
+              : Effect.die(cause),
+          ),
+        );
+      if (inserted !== undefined) return CLAIMED;
+      const [first] = yield* db
+        .select()
+        .from(screenCalls)
+        .where(and(eq(screenCalls.screenId, call.screenId), eq(screenCalls.callKey, call.callKey)))
+        .pipe(Effect.orDie);
+      if (first === undefined)
+        return yield* Effect.die("screen call conflict without a stored row");
+      return claimOf({ argsSha256: first.argsSha256, settled: settledOf(first) }, argsSha256);
+    });
+
+    const settle = Effect.fn("ScreensRepo.settle")(function* (call: {
+      readonly screenId: ScreenId;
+      readonly callKey: string;
+      readonly outcome: ScreenCallOutcome;
+      readonly answer: ScreenAgentAnswer | null;
+    }) {
+      return yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const where = and(
+              eq(screenCalls.screenId, call.screenId),
+              eq(screenCalls.callKey, call.callKey),
+            );
+            const [claimed] = yield* tx.select().from(screenCalls).where(where).for("update");
+            if (claimed === undefined)
+              return yield* Effect.die("settled a screen call never claimed");
+            const before = settledOf(claimed);
+            if (before !== null) return before;
+            const { answer } = call;
+            const entry =
+              answer === null
+                ? null
+                : yield* appendIn(tx, call.screenId, {
+                    actor: agentActor(call.callKey, answer),
+                    body: answer.body,
+                    frame: answer.frame,
+                  });
+            const seq = entry?.seq ?? null;
+            yield* tx
+              .update(screenCalls)
+              .set({ outcome: call.outcome, logSeq: seq, settledAt: yield* DateTime.nowAsDate })
+              .where(where);
+            return { outcome: call.outcome, seq };
+          }),
+        )
+        .pipe(Effect.orDie);
+    });
+
+    const boot = Effect.fn("ScreensRepo.boot")(function* () {
+      const settled = yield* db
+        .update(screenCalls)
+        .set({ outcome: "outcome_unknown", settledAt: yield* DateTime.nowAsDate })
+        .where(isNull(screenCalls.outcome))
+        .returning({ callKey: screenCalls.callKey })
+        .pipe(Effect.orDie);
+      return settled.length;
+    });
+
+    return {
+      reserve,
+      byId,
+      ofSession,
+      setLife,
+      release,
+      control,
+      append,
+      log,
+      claim,
+      settle,
+      boot,
+    };
   }),
 );
 
 interface MemoryRow {
   screen: Screen;
   released: boolean;
+  log: Array<ScreenLogEntry>;
+  calls: Map<string, { argsSha256: string; settled: SettledScreenCall | null }>;
 }
 
-/** For service and route tests: the same rules. */
+const appendTo = (row: MemoryRow, written: Written) => {
+  const entry = decodeEntry({
+    screenId: row.screen.id,
+    seq: row.log.length + 1,
+    at: new Date(),
+    actor: written.actor,
+    body: written.body,
+    frame: written.frame === null ? null : { ...written.frame, state: "stored" },
+    checkpoint: null,
+  });
+  row.log.push(entry);
+  return entry;
+};
+
+/** For service and route tests: the same rules, with no checkpoints. */
 export const makeScreensMemory = (): ScreensRepo["Service"] => {
   const rows: Array<MemoryRow> = [];
   const held = (sessionId: SessionId) =>
@@ -297,7 +605,7 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
           life: { _tag: "NotStarted" },
           input: encodeInput(SCREEN_INPUT_INITIAL),
         });
-        rows.push({ screen, released: false });
+        rows.push({ screen, released: false, log: [], calls: new Map() });
         return Effect.succeed(screen);
       }),
     byId: (id) => Effect.sync(() => rowOf(id)?.screen ?? null),
@@ -323,8 +631,59 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
         const row = rowOf(id);
         if (row === null) return Effect.fail(new ScreenNotFoundError({ screenId: id }));
         const transition = transitionInput(row.screen.input, event, owner);
-        if (transition._tag === "Changed") row.screen = { ...row.screen, input: transition.next };
+        if (transition._tag === "Changed") {
+          row.screen = { ...row.screen, input: transition.next };
+          if (transition.log !== null) appendTo(row, { ...transition.log, frame: null });
+        }
         return Effect.succeed(transition);
+      }),
+    append: ({ screenId, ...written }) =>
+      Effect.suspend(() => {
+        const row = rowOf(screenId);
+        if (row === null) return Effect.fail(new ScreenNotFoundError({ screenId }));
+        return Effect.succeed(appendTo(row, written));
+      }),
+    log: (id) => Effect.sync(() => [...(rowOf(id)?.log ?? [])]),
+    claim: (call) =>
+      Effect.suspend(() => {
+        const row = rowOf(call.screenId);
+        if (row === null) return Effect.fail(new ScreenNotFoundError({ screenId: call.screenId }));
+        const argsSha256 = screenCallDigest(call.args);
+        const first = row.calls.get(call.callKey);
+        if (first !== undefined) return Effect.succeed(claimOf(first, argsSha256));
+        row.calls.set(call.callKey, { argsSha256, settled: null });
+        return Effect.succeed(CLAIMED);
+      }),
+    settle: (call) =>
+      Effect.suspend(() => {
+        const row = rowOf(call.screenId);
+        const claimed = row?.calls.get(call.callKey);
+        if (row === null || claimed === undefined) {
+          return Effect.die("settled a screen call never claimed");
+        }
+        if (claimed.settled !== null) return Effect.succeed(claimed.settled);
+        const entry =
+          call.answer === null
+            ? null
+            : appendTo(row, {
+                actor: agentActor(call.callKey, call.answer),
+                body: call.answer.body,
+                frame: call.answer.frame,
+              });
+        claimed.settled = { outcome: call.outcome, seq: entry?.seq ?? null };
+        return Effect.succeed(claimed.settled);
+      }),
+    boot: () =>
+      Effect.sync(() => {
+        let settled = 0;
+        for (const row of rows) {
+          for (const call of row.calls.values()) {
+            if (call.settled !== null) continue;
+            call.settled = { outcome: "outcome_unknown", seq: null };
+            settled++;
+          }
+        }
+        return settled;
       }),
   };
 };
