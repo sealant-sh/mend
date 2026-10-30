@@ -39,7 +39,13 @@ export const portTarget = (workspaceId: SealantWorkspaceId, port: number): Forwa
 });
 
 /** Which consumer dialled: it labels the trace and sets how long the dial may take. */
-export type ForwardPurpose = "service" | "tunnel" | "readiness" | "preview" | "benchmark";
+export type ForwardPurpose =
+  | "service"
+  | "tunnel"
+  | "readiness"
+  | "preview"
+  | "benchmark"
+  | "screen";
 
 const DIAL_TIMEOUT_MS = {
   service: 30_000,
@@ -47,6 +53,7 @@ const DIAL_TIMEOUT_MS = {
   readiness: 5_000,
   preview: 30_000,
   benchmark: 30_000,
+  screen: 15_000,
 } as const satisfies Record<ForwardPurpose, number>;
 
 export interface ForwardOpenOptions {
