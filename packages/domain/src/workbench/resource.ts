@@ -470,6 +470,16 @@ export const presetDefinition = (input: {
     : { ...fields, scope: input.scope };
 };
 
+/**
+ * A preset definition that names no command runs its preset's engine settings. Every reader of a
+ * declared definition applies this before the definition is shown or digested, so a `mend.toml`
+ * table, a whole definition and `--preset` all propose the same spec.
+ */
+export const withPresetCommand = <D extends ResourceDefinitionInput>(def: D): D =>
+  def.preset === null || def.command !== null
+    ? def
+    : { ...def, command: PRESET_LAYOUT[def.preset].command };
+
 /** Whether `own` is a database on the project instance rather than an instance of its own. */
 export const isDatabasePreset = (def: PolicySubject): boolean =>
   def.preset !== null && RESOURCE_PRESETS[def.preset].database;
@@ -543,6 +553,7 @@ const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRef
       : [];
   }
   const preset = RESOURCE_PRESETS[def.preset];
+  const { command } = PRESET_LAYOUT[def.preset];
   const { repository, tag } = imageReference(def.image);
   return [
     ...(preset.images.includes(repository)
@@ -568,6 +579,16 @@ const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRef
           {
             key: "ready",
             message: `is fixed by the ${def.preset} preset to its own check`,
+          },
+        ]),
+    ...(def.command !== null &&
+    def.command.length === command.length &&
+    def.command.every((arg, at) => arg === command[at])
+      ? []
+      : [
+          {
+            key: "command",
+            message: `is fixed by the ${def.preset} preset to ${command.join(" ")}`,
           },
         ]),
     ...(Object.keys(def.exports).length > 0
