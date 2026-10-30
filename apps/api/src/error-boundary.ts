@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 
 import type { RemovalInProgress } from "@mend/api-contracts";
-import { prettyCause } from "@mend/db";
 import {
   HOST_USER_NAMESPACE_FIXES,
   hostUserNamespacesRefusalParts,
@@ -27,9 +26,9 @@ import { removalInProgressOf } from "./removal-refusal.ts";
  *   discard without its confirmation answered 500).
  * - A start a removal's mark refused in the database is `409 RemovalInProgress`, on any route.
  * - A defect, or any 5xx nobody declared, crosses as `InternalError` and a reference. The detail
- *   goes to the log under that reference, which is what an operator searches for, in either mode;
- *   a failed query's parameters are withheld from it, since they are what a person wrote, and the
- *   request's URL reads as its route's template.
+ *   goes to the log under that reference, which is what an operator searches for, in either mode.
+ *   A failed query's parameters never reach it: the patched Drizzle query error does not hold them
+ *   (`patches/drizzle-orm@*.patch`). The request's URL reads as its route's template.
  *
  * `MEND_ERROR_DETAIL=verbose` turns the scrubbing off for an operator debugging a private
  * instance. It is an open item of the public exposure gate.
@@ -207,7 +206,7 @@ export const errorBoundary = (
           const refusal = removalInProgressOf(cause);
           if (refusal !== null) return Effect.succeed(removalInProgress(refusal));
           const reference = makeReference();
-          return Effect.flatMap(withoutRequestUrl(prettyCause(cause)), (diagnostic) =>
+          return Effect.flatMap(withoutRequestUrl(Cause.pretty(cause)), (diagnostic) =>
             Effect.logError("an unhandled failure reached the error boundary").pipe(
               Effect.annotateLogs({ reference, cause: diagnostic }),
               Effect.as(internalError(reference)),

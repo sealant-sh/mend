@@ -7,16 +7,18 @@ import {
   HexSha,
   type WorktreeHandoff,
 } from "@mend/domain/workbench";
-import { Effect, Exit, Layer, Redacted } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
+import { uniqueViolationConstraint } from "../src/repos/unique-violation.ts";
 import { WorktreesRepo, WorktreesRepoLive } from "../src/repos/worktrees.ts";
+import { postgresTestConfig } from "./postgres.ts";
 
-const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+const postgres = postgresTestConfig();
+const ADMIN_URL = postgres.adminUrl;
 const SCRATCH_DB = `mend_worktree_handoff_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);
@@ -34,17 +36,6 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 const run = <A, E>(effect: Effect.Effect<A, E, WorktreesRepo | SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(repoLayer), Effect.scoped));
-
-const reachable = await withAdmin(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`SELECT 1`;
-    return true;
-  }).pipe(Effect.timeout("2 seconds")),
-).then(
-  () => true,
-  () => false,
-);
 
 const PROJECT_A = ProjectId.make("handoff-project-a");
 const PROJECT_B = ProjectId.make("handoff-project-b");
@@ -76,7 +67,7 @@ const row = (id: string, projectId: ProjectId, handoff: WorktreeHandoff | null) 
   handoff,
 });
 
-describe.skipIf(!reachable)("worktrees.handoff in Postgres", () => {
+describe.skipIf(postgres.skip)("worktrees.handoff in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -125,14 +116,21 @@ describe.skipIf(!reachable)("worktrees.handoff in Postgres", () => {
     expect(seen.other).toBeNull();
   });
 
-  it("refuses a second worktree for the same snapshot in the same project, and allows it in another", async () => {
-    const duplicate = await run(
-      Effect.gen(function* () {
-        const repo = yield* WorktreesRepo;
-        return yield* repo.create(row("fix-login-2", PROJECT_A, provenance)).pipe(Effect.exit);
-      }),
+  it("refuses a second worktree for the same snapshot or name in the same project, naming the key a handoff replay reads, and allows it in another", async () => {
+    const refusedKey = (id: string, name: string, handoff: WorktreeHandoff | null) =>
+      run(
+        Effect.gen(function* () {
+          const repo = yield* WorktreesRepo;
+          return yield* repo.create({ ...row(id, PROJECT_A, handoff), name }).pipe(
+            Effect.as("created"),
+            Effect.catchDefect((defect) => Effect.succeed(uniqueViolationConstraint(defect))),
+          );
+        }),
+      );
+    expect(await refusedKey("fix-login-2", "fix-login-2", provenance)).toBe(
+      "worktrees_project_handoff_checkpoint_key",
     );
-    expect(Exit.isFailure(duplicate)).toBe(true);
+    expect(await refusedKey("fix-login-3", "fix-login", null)).toBe("worktrees_project_name_key");
     const elsewhere = await run(
       Effect.gen(function* () {
         const repo = yield* WorktreesRepo;

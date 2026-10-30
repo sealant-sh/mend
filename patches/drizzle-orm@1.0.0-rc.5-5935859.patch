@@ -1,0 +1,156 @@
+diff --git a/effect-core/errors.cjs b/effect-core/errors.cjs
+index a42efd6fd656b27896d3a745755b04d0a0eb859a..9ad71db27d3ba72cf695264fc7873fd3c5537d4c 100644
+--- a/effect-core/errors.cjs
++++ b/effect-core/errors.cjs
+@@ -4,6 +4,35 @@ let __entity_ts = require("../entity.cjs");
+ let effect_Schema = require("effect/Schema");
+ effect_Schema = require_runtime.__toESM(effect_Schema, 1);
+ //#region src/effect-core/errors.ts
++const parameterKind = (value) => value === null ? "null" : Array.isArray(value) ? "array" : value instanceof Date ? "date" : value instanceof Uint8Array ? "bytes" : typeof value;
++const withheldFields = [
++	"detail",
++	"hint",
++	"where",
++	"internalQuery"
++];
++const withholdDriverValues = (error, depth) => {
++	if (typeof error !== "object" || error === null || depth > 8) return;
++	if (typeof error.code === "string") {
++		for (const field of withheldFields) if (typeof error[field] === "string") error[field] = "withheld";
++		if (error.code.startsWith("22") && typeof error.message === "string") {
++			const message = error.message.replace(/"[\s\S]*"/, "\"withheld\"");
++			if (typeof error.stack === "string") error.stack = error.stack.replace(error.message, () => message);
++			error.message = message;
++		}
++	}
++	for (const key of [
++		"reasons",
++		"reason",
++		"cause",
++		"error",
++		"defect"
++	]) {
++		const next = error[key];
++		if (Array.isArray(next)) for (const each of next) withholdDriverValues(each, depth + 1);
++		else withholdDriverValues(next, depth + 1);
++	}
++};
+ var EffectDrizzleError = class extends effect_Schema.TaggedError()("EffectDrizzleError", {
+ 	message: effect_Schema.String,
+ 	cause: effect_Schema.Unknown
+@@ -17,10 +46,12 @@ var EffectDrizzleQueryError = class EffectDrizzleQueryError extends effect_Schem
+ }) {
+ 	static [__entity_ts.entityKind] = "EffectDrizzleQueryError";
+ 	get message() {
+-		return `Failed query: ${this.query}\nparams: ${this.params}`;
++		const count = `params: ${this.params.length} withheld`;
++		return `Failed query: ${this.query}\n${this.params.length === 0 ? count : `${count} (${this.params.join(", ")})`}`;
+ 	}
+ 	constructor(params) {
+-		super(params);
++		withholdDriverValues(params.cause, 0);
++		super({ ...params, params: params.params.map(parameterKind) });
+ 		Error.captureStackTrace(this, EffectDrizzleQueryError);
+ 	}
+ };
+diff --git a/effect-core/errors.d.cts b/effect-core/errors.d.cts
+index 232d3d9f2b5ee0562fe2ea103ad79695a19d515f..00ffa6ef7a6891563c3be29e0fd9db6c6cb3a37a 100644
+--- a/effect-core/errors.d.cts
++++ b/effect-core/errors.d.cts
+@@ -13,8 +13,10 @@ declare const EffectDrizzleQueryError_base: Schema$1.Class<EffectDrizzleQueryErr
+   readonly params: Schema$1.mutable<Schema$1.$Array<Schema$1.Any>>;
+   readonly cause: Schema$1.Unknown;
+ }>, import("effect/Cause").YieldableError>;
++type EffectDrizzleQueryParameterKind = "string" | "number" | "bigint" | "boolean" | "symbol" | "undefined" | "object" | "function" | "null" | "array" | "date" | "bytes";
+ declare class EffectDrizzleQueryError extends EffectDrizzleQueryError_base {
+   static readonly [entityKind]: string;
++  readonly params: Array<EffectDrizzleQueryParameterKind>;
+   get message(): string;
+   constructor(params: Omit<Schema$1.Struct.MakeIn<typeof EffectDrizzleQueryError.fields>, '_tag'>);
+ }
+@@ -30,5 +32,5 @@ declare class MigratorInitError extends MigratorInitError_base {
+   static readonly [entityKind]: string;
+ }
+ //#endregion
+-export { EffectDrizzleError, EffectDrizzleQueryError, EffectTransactionRollbackError, MigratorInitError };
++export { EffectDrizzleError, EffectDrizzleQueryError, type EffectDrizzleQueryParameterKind, EffectTransactionRollbackError, MigratorInitError };
+ //# sourceMappingURL=errors.d.cts.map
+\ No newline at end of file
+diff --git a/effect-core/errors.d.ts b/effect-core/errors.d.ts
+index 7ec6abaf51806b07a491fbc75c68877f559c4181..fc74108d7f84c125ef150c2d61186e7685411921 100644
+--- a/effect-core/errors.d.ts
++++ b/effect-core/errors.d.ts
+@@ -13,8 +13,10 @@ declare const EffectDrizzleQueryError_base: Schema$1.Class<EffectDrizzleQueryErr
+   readonly params: Schema$1.mutable<Schema$1.$Array<Schema$1.Any>>;
+   readonly cause: Schema$1.Unknown;
+ }>, import("effect/Cause").YieldableError>;
++type EffectDrizzleQueryParameterKind = "string" | "number" | "bigint" | "boolean" | "symbol" | "undefined" | "object" | "function" | "null" | "array" | "date" | "bytes";
+ declare class EffectDrizzleQueryError extends EffectDrizzleQueryError_base {
+   static readonly [entityKind]: string;
++  readonly params: Array<EffectDrizzleQueryParameterKind>;
+   get message(): string;
+   constructor(params: Omit<Schema$1.Struct.MakeIn<typeof EffectDrizzleQueryError.fields>, '_tag'>);
+ }
+@@ -30,5 +32,5 @@ declare class MigratorInitError extends MigratorInitError_base {
+   static readonly [entityKind]: string;
+ }
+ //#endregion
+-export { EffectDrizzleError, EffectDrizzleQueryError, EffectTransactionRollbackError, MigratorInitError };
++export { EffectDrizzleError, EffectDrizzleQueryError, type EffectDrizzleQueryParameterKind, EffectTransactionRollbackError, MigratorInitError };
+ //# sourceMappingURL=errors.d.ts.map
+\ No newline at end of file
+diff --git a/effect-core/errors.js b/effect-core/errors.js
+index 4cc7d497370b42f26748a1e612ed490bc6557db2..1a26fdb57d7b8cf88712cb294360e79a0cc9ba84 100644
+--- a/effect-core/errors.js
++++ b/effect-core/errors.js
+@@ -1,6 +1,35 @@
+ import { entityKind } from "../entity.js";
+ import * as Schema$1 from "effect/Schema";
+ //#region src/effect-core/errors.ts
++const parameterKind = (value) => value === null ? "null" : Array.isArray(value) ? "array" : value instanceof Date ? "date" : value instanceof Uint8Array ? "bytes" : typeof value;
++const withheldFields = [
++	"detail",
++	"hint",
++	"where",
++	"internalQuery"
++];
++const withholdDriverValues = (error, depth) => {
++	if (typeof error !== "object" || error === null || depth > 8) return;
++	if (typeof error.code === "string") {
++		for (const field of withheldFields) if (typeof error[field] === "string") error[field] = "withheld";
++		if (error.code.startsWith("22") && typeof error.message === "string") {
++			const message = error.message.replace(/"[\s\S]*"/, "\"withheld\"");
++			if (typeof error.stack === "string") error.stack = error.stack.replace(error.message, () => message);
++			error.message = message;
++		}
++	}
++	for (const key of [
++		"reasons",
++		"reason",
++		"cause",
++		"error",
++		"defect"
++	]) {
++		const next = error[key];
++		if (Array.isArray(next)) for (const each of next) withholdDriverValues(each, depth + 1);
++		else withholdDriverValues(next, depth + 1);
++	}
++};
+ var EffectDrizzleError = class extends Schema$1.TaggedError()("EffectDrizzleError", {
+ 	message: Schema$1.String,
+ 	cause: Schema$1.Unknown
+@@ -14,10 +43,12 @@ var EffectDrizzleQueryError = class EffectDrizzleQueryError extends Schema$1.Tag
+ }) {
+ 	static [entityKind] = "EffectDrizzleQueryError";
+ 	get message() {
+-		return `Failed query: ${this.query}\nparams: ${this.params}`;
++		const count = `params: ${this.params.length} withheld`;
++		return `Failed query: ${this.query}\n${this.params.length === 0 ? count : `${count} (${this.params.join(", ")})`}`;
+ 	}
+ 	constructor(params) {
+-		super(params);
++		withholdDriverValues(params.cause, 0);
++		super({ ...params, params: params.params.map(parameterKind) });
+ 		Error.captureStackTrace(this, EffectDrizzleQueryError);
+ 	}
+ };

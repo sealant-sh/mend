@@ -95,7 +95,6 @@ import {
   MemberRevocationsRepoLive,
   UsersRepoLive,
   UpgradeTicketsRepoLive,
-  prettyCause,
 } from "@mend/db";
 import type { ChangeId, SessionId } from "@mend/domain";
 import { resolveAutomation } from "@mend/domain/workbench";
@@ -509,7 +508,6 @@ const ServerLive = Layer.unwrap(
           sessionCookie: sessionCookiePolicy(network).name,
         }),
       ),
-      { formatCause: prettyCause },
     ).pipe(
       Layer.provide(ProjectCreationLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
