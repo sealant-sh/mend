@@ -55,6 +55,14 @@ export interface RecheckOptions<A extends Admission, Refusal> {
   readonly timing: RecheckTiming;
   /** Connections in one group stand or fall together, so a pass judges each group once. */
   readonly groupOf: (admitted: A) => string;
+  /**
+   * Refusals a pass can decide before `standing`'s query, one per entry, in order: null where the
+   * entry goes on to `standing`. Each one stops its connections at once, so a slow or failed
+   * `standing` for the rest of the batch never holds back a refusal already known.
+   */
+  readonly known?: (
+    batch: ReadonlyArray<A>,
+  ) => Effect.Effect<ReadonlyArray<Refusal | null>, unknown>;
   /** One verdict per entry, in order: null where it still stands. */
   readonly standing: (
     batch: ReadonlyArray<A>,
@@ -187,22 +195,30 @@ export const makeAccessRecheck = <A extends Admission, Refusal>(
           }
         }
         const unjudged = new Set(groups.values());
+        const decide = (group: Group<A, Refusal>, refusal: Refusal | null) => {
+          unjudged.delete(group);
+          return refusal === null
+            ? Effect.void
+            : stopAll(group.registrations, { _tag: "Refused", refusal });
+        };
         const judgeBatch = (batch: ReadonlyArray<Group<A, Refusal>>) =>
-          options.standing(batch.map((group) => group.judged)).pipe(
-            Effect.flatMap((verdicts) =>
-              Effect.forEach(
-                batch,
-                (group, index) => {
-                  unjudged.delete(group);
-                  const refusal = verdicts[index] ?? null;
-                  return refusal === null
-                    ? Effect.void
-                    : stopAll(group.registrations, { _tag: "Refused", refusal });
-                },
-                { discard: true },
-              ),
-            ),
-          );
+          Effect.gen(function* () {
+            const known =
+              options.known === undefined
+                ? []
+                : yield* options.known(batch.map((group) => group.judged));
+            const open: Array<Group<A, Refusal>> = [];
+            for (const [index, group] of batch.entries()) {
+              const refusal = known[index] ?? null;
+              if (refusal === null) open.push(group);
+              else yield* decide(group, refusal);
+            }
+            if (open.length === 0) return;
+            const verdicts = yield* options.standing(open.map((group) => group.judged));
+            yield* Effect.forEach(open, (group, index) => decide(group, verdicts[index] ?? null), {
+              discard: true,
+            });
+          });
         const judged = yield* withinDeadline(
           scope,
           timing.passDeadline,

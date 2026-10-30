@@ -886,6 +886,53 @@ describe("preview identity: tailnet ports", () => {
     ),
   );
 
+  it.effect(
+    "a stream whose port moved closes at once as access ended, while another grant's read stalls",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const world = makeWorld();
+          const { identity, publish } = yield* identityIn(world, () => ({
+            ...tailnet,
+            ports: [20001, 20002, 20003],
+          }));
+          const held = yield* Effect.forEach([PREVIEW, NEXT.id], (previewId) =>
+            Effect.gen(function* () {
+              const { origin } = yield* identity.issueTicket({ previewId, opener });
+              const grant = yield* world.grantsRepo.create({ subject: opener, previewId, origin });
+              const stream = yield* openStream();
+              const fiber = yield* Effect.forkChild(
+                identity.withViewer({ origin, grant }, stream.write),
+              );
+              yield* Deferred.await(stream.started);
+              return { stream, fiber };
+            }),
+          );
+          const [moved, stalled] = held;
+          if (moved === undefined || stalled === undefined) throw new Error("two streams opened");
+          const release = yield* world.hold();
+          world.pool.set(PREVIEW, 20003);
+          yield* publish(accessEvent("carol"));
+          yield* settle;
+          expect(
+            yield* Deferred.isDone(moved.stream.closed),
+            "the moved port is decided before the grant read answers",
+          ).toBe(true);
+          const ended = failureOf(yield* Fiber.await(moved.fiber));
+          expect(ended?._tag === "PreviewAccessEnded" && ended.reason).toBe("access-ended");
+          expect(yield* Deferred.isDone(stalled.stream.closed), "the other waits on its read").toBe(
+            false,
+          );
+          yield* TestClock.adjust("5 seconds");
+          const undecided = failureOf(yield* Fiber.await(stalled.fiber));
+          expect(undecided?._tag === "PreviewAccessEnded" && undecided.reason).toBe(
+            "admission-unavailable",
+          );
+          yield* release;
+        }),
+      ),
+  );
+
   it.effect("an open connection keeps its port in use, and its close is the port's last use", () =>
     Effect.scoped(
       Effect.gen(function* () {

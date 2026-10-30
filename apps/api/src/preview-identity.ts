@@ -360,11 +360,8 @@ export const makePreviewIdentityLayer = (
         return { origin: request.origin, grant, clearSiteData };
       }, undecidedOnDefect);
 
-      /**
-       * A pass over open streams: a stream whose preview moved to another port is gone, and the
-       * rest stand while their grant does.
-       */
-      const standing = (batch: ReadonlyArray<Admitted>) =>
+      /** A stream whose preview moved to another port is gone, before any grant is read. */
+      const moved = (batch: ReadonlyArray<Admitted>) =>
         Effect.gen(function* () {
           const routed = config.routing;
           if (routed === null) return yield* unavailable();
@@ -372,27 +369,30 @@ export const makePreviewIdentityLayer = (
             routed.mode === "tailnet-https"
               ? yield* previews.tailnetPorts(batch.map(({ viewer }) => viewer.preview.id))
               : new Map<PreviewId, number>();
-          const placed = batch.map(
-            ({ viewer, key }) =>
-              previewOriginOf(routed, {
-                label: viewer.preview.label,
-                tailnetPort: held.get(viewer.preview.id) ?? null,
-              }) === key.origin,
+          return batch.map(({ viewer, key }): PreviewRefusal | null =>
+            previewOriginOf(routed, {
+              label: viewer.preview.label,
+              tailnetPort: held.get(viewer.preview.id) ?? null,
+            }) === key.origin
+              ? null
+              : new PreviewNotFound(),
           );
-          const keys = batch.filter((_, at) => placed[at]).map(({ key }) => key);
-          const answers = keys.length === 0 ? [] : yield* grants.standing(keys);
-          let next = 0;
-          return batch.map(({ key }, at): PreviewRefusal | null => {
-            if (placed[at] !== true) return new PreviewNotFound();
-            const verdict = judge(answers[next++] ?? null, key.previewId);
-            return verdict._tag === "Refused" ? verdict.refusal : null;
-          });
         });
+
+      /** The rest of a pass: each stream stands while its grant does. */
+      const standing = (batch: ReadonlyArray<Admitted>) =>
+        Effect.map(grants.standing(batch.map(({ key }) => key)), (answers) =>
+          batch.map(({ key }, at): PreviewRefusal | null => {
+            const verdict = judge(answers[at] ?? null, key.previewId);
+            return verdict._tag === "Refused" ? verdict.refusal : null;
+          }),
+        );
 
       const recheck = yield* makeAccessRecheck<Admitted, PreviewRefusal>({
         name: "preview",
         timing,
         groupOf: ({ key }) => Redacted.value(key.grant),
+        known: moved,
         standing,
       });
 
