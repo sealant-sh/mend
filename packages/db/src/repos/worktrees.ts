@@ -73,12 +73,21 @@ export class WorktreesRepo extends Context.Service<
 
 const decodeHandoff = Schema.decodeUnknownSync(WorktreeHandoff);
 
-const toWorktree = (row: typeof worktrees.$inferSelect): Worktree =>
+const toWorktree = ({
+  removalPhase: _phase,
+  removalId: _id,
+  removalSince: _since,
+  ...row
+}: typeof worktrees.$inferSelect): Worktree =>
   new Worktree({ ...row, handoff: row.handoff === null ? null : decodeHandoff(row.handoff) });
 
 // Compile-time seam tripwire (same discipline as SessionsRepo): a column added
-// to `worktrees` must land in @mend/domain's Worktree in the same change.
-type WorktreeRowShape = typeof worktrees.$inferSelect;
+// to `worktrees` must land in @mend/domain's Worktree in the same change. A removal's mark is the
+// one exception: only RemovalFencesRepo reads it.
+type WorktreeRowShape = Omit<
+  typeof worktrees.$inferSelect,
+  "removalPhase" | "removalId" | "removalSince"
+>;
 type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] extends [never]
   ? true
   : never;

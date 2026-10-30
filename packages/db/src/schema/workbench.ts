@@ -87,6 +87,7 @@ import type {
   ServiceAddress,
   ServiceHostPolicy,
   ServiceLaunchSource,
+  RemovalPhase,
 } from "@mend/domain/workbench";
 import {
   AuditData,
@@ -529,6 +530,10 @@ export const projects = pgTable(
     installCommand: text(),
     // Whether Mend runs an install command for this project at all (0110, "Automatic install").
     installEnabled: boolean().notNull().default(true),
+    // A removal's mark (0164, RemovalFencesRepo): all three set, or none.
+    removalPhase: text().$type<RemovalPhase>(),
+    removalId: text(),
+    removalSince: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
@@ -563,6 +568,12 @@ export const worktrees = pgTable(
     /** The base as the user named it; null only for rows migrated from pre-column sessions. */
     baseRef: text(),
     handoff: jsonbOf(WorktreeHandoff),
+    /** The owner of the worktree's first session (0164); written by the session insert trigger. */
+    changeOwnerUserId: text(),
+    // A removal's mark (0164, RemovalFencesRepo): all three set, or none.
+    removalPhase: text().$type<RemovalPhase>(),
+    removalId: text(),
+    removalSince: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },

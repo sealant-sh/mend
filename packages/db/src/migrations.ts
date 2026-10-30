@@ -4030,6 +4030,102 @@ const pushDeviceCredentialsMigration = Effect.gen(function* () {
     EXECUTE FUNCTION push_devices_drop_for_user()`;
 });
 
+/**
+ * 0164 (docs/adr/0007-landing.md, "Worktree removal"; decisions Q1-Q4 of 2026-10-25):
+ *
+ * - `worktrees.change_owner_user_id`: the change's owner, the owner of the worktree's first
+ *   session, written when that session is inserted and kept when it is deleted, so deleting a
+ *   thread first cannot hand the change to someone else. Backfilled with the owner of the earliest
+ *   session that still stands, the owner landing has read until now; a worktree with none keeps a
+ *   null owner unless every session it ever had was one person's (`worktree_session_owners`, for a
+ *   worktree created after 0118).
+ * - `removal_phase`, `removal_id`, `removal_since` on worktrees and projects: a removal's mark.
+ *   `checking` while it reads what stands in the way, `deleting` once that passed. While a mark is
+ *   fresh (120 s, `REMOVAL_FENCE_LEASE_SECONDS`) or `deleting`, the triggers refuse a session that
+ *   would become live there, and a new worktree in a marked project, with SQLSTATE MRFEN. The
+ *   project row is locked before the worktree row, as a removal locks only one of them.
+ */
+const worktreeRemovalMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE worktrees ADD COLUMN change_owner_user_id text`;
+  for (const table of ["worktrees", "projects"]) {
+    yield* sql.unsafe(`
+      ALTER TABLE ${table}
+        ADD COLUMN removal_phase text CHECK (removal_phase IN ('checking', 'deleting')),
+        ADD COLUMN removal_id text,
+        ADD COLUMN removal_since timestamptz,
+        ADD CONSTRAINT ${table}_removal_fence_check CHECK (
+          (removal_phase IS NULL AND removal_id IS NULL AND removal_since IS NULL)
+          OR (removal_phase IS NOT NULL AND removal_id IS NOT NULL AND removal_since IS NOT NULL))`);
+  }
+  yield* sql`
+    UPDATE worktrees w SET change_owner_user_id = first.owner_user_id
+    FROM (SELECT DISTINCT ON (worktree_id) worktree_id, owner_user_id
+          FROM agent_sessions ORDER BY worktree_id, created_at, id) first
+    WHERE first.worktree_id = w.id`;
+  yield* sql`
+    UPDATE worktrees w SET change_owner_user_id = sole.user_id
+    FROM (SELECT worktree_id, min(user_id) AS user_id FROM worktree_session_owners
+          GROUP BY worktree_id HAVING count(*) = 1) sole
+    WHERE sole.worktree_id = w.id
+      AND NOT EXISTS (SELECT 1 FROM agent_sessions s WHERE s.worktree_id = w.id)
+      AND NOT EXISTS (SELECT 1 FROM worktree_owner_gaps g WHERE g.worktree_id = w.id)`;
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_marked(phase text, since timestamptz)
+    RETURNS boolean LANGUAGE sql STABLE AS $$
+      SELECT coalesce(phase = 'deleting' OR since > now() - interval '120 seconds', false)
+    $$`);
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit_session() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    DECLARE
+      live text[] := ARRAY['starting', 'running', 'waiting', 'idle'];
+      marked boolean;
+    BEGIN
+      IF NOT (NEW.status = ANY (live)) THEN RETURN NEW; END IF;
+      IF TG_OP = 'UPDATE' AND OLD.status = ANY (live) THEN RETURN NEW; END IF;
+      SELECT removal_fence_marked(removal_phase, removal_since) INTO marked
+        FROM projects WHERE id = NEW.project_id FOR SHARE;
+      IF marked THEN
+        RAISE EXCEPTION 'project % is being removed', NEW.project_id USING ERRCODE = 'MRFEN';
+      END IF;
+      IF TG_OP = 'INSERT' THEN
+        -- The first session's owner owns the change. Inserts into one worktree take turns here,
+        -- so exactly one of two first sessions claims it.
+        SELECT removal_fence_marked(removal_phase, removal_since) INTO marked
+          FROM worktrees WHERE id = NEW.worktree_id FOR NO KEY UPDATE;
+        UPDATE worktrees SET change_owner_user_id = NEW.owner_user_id
+          WHERE id = NEW.worktree_id AND change_owner_user_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM agent_sessions s WHERE s.worktree_id = NEW.worktree_id);
+      ELSE
+        SELECT removal_fence_marked(removal_phase, removal_since) INTO marked
+          FROM worktrees WHERE id = NEW.worktree_id FOR SHARE;
+      END IF;
+      IF marked THEN
+        RAISE EXCEPTION 'worktree % is being removed', NEW.worktree_id USING ERRCODE = 'MRFEN';
+      END IF;
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER agent_sessions_removal_fence
+    BEFORE INSERT OR UPDATE OF status ON agent_sessions
+    FOR EACH ROW EXECUTE FUNCTION removal_fence_admit_session()`;
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit_worktree() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    DECLARE
+      marked boolean;
+    BEGIN
+      SELECT removal_fence_marked(removal_phase, removal_since) INTO marked
+        FROM projects WHERE id = NEW.project_id FOR SHARE;
+      IF marked THEN
+        RAISE EXCEPTION 'project % is being removed', NEW.project_id USING ERRCODE = 'MRFEN';
+      END IF;
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER worktrees_removal_fence
+    BEFORE INSERT ON worktrees
+    FOR EACH ROW EXECUTE FUNCTION removal_fence_admit_worktree()`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4184,4 +4280,5 @@ export const migrations = {
   "0161_resource_proposals": resourceProposalsMigration,
   "0162_scratch_projects": scratchProjectsMigration,
   "0163_push_device_credentials": pushDeviceCredentialsMigration,
+  "0164_worktree_removal": worktreeRemovalMigration,
 };

@@ -34,6 +34,7 @@ export * from "./repos/project-links.ts";
 export * from "./repos/session-repositories.ts";
 export * from "./repos/project-secrets.ts";
 export * from "./repos/project-service-recipes.ts";
+export * from "./repos/removal-fences.ts";
 export * from "./repos/resources.ts";
 export * from "./repos/user-dotfiles.ts";
 export * from "./repos/user-git-access.ts";

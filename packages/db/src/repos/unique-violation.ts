@@ -30,6 +30,10 @@ const uniqueViolationOf = (error: unknown, depth: number): string | null => {
 export const isForeignKeyViolation = (error: unknown): boolean =>
   driverErrorOf(error, FOREIGN_KEY_VIOLATION, 0) !== null;
 
+/** Whether the driver error under `error` carries SQLSTATE `code`. */
+export const isDriverError = (error: unknown, code: string): boolean =>
+  driverErrorOf(error, code, 0) !== null;
+
 const driverErrorOf = (error: unknown, code: string, depth: number): object | null => {
   if (typeof error !== "object" || error === null || depth > 8) return null;
   if ("code" in error && error.code === code) return error;

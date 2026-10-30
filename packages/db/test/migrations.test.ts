@@ -3279,3 +3279,85 @@ describe.skipIf(postgres.skip)("0163 push device credentials", () => {
     });
   });
 });
+
+describe.skipIf(postgres.skip)("0164 worktree removal", () => {
+  const DB = `${SCRATCH_DB}_removal`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("gives each worktree the owner of its earliest session, or of every session it had, and no one else", async () => {
+    const owners = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0159_session_messages");
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-1', 'Acme')`;
+        yield* sql`
+          INSERT INTO projects (id, name, organization_id, store_path, default_branch)
+          VALUES ('p-1', 'api', 'org-1', '/store/api/repo.git', 'main')`;
+        // Before 0118 every worktree has a gap in its owner history; these come after it.
+        yield* sql`DELETE FROM worktree_owner_gaps`;
+        for (const id of [
+          "w-shared",
+          "w-ownerless",
+          "w-deleted-one",
+          "w-deleted-two",
+          "w-gap",
+          "w-empty",
+        ]) {
+          yield* sql`
+            INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+            VALUES (${id}, 'p-1', ${id}, ${id}, ${`mend/${id}`}, 'abc')`;
+        }
+        const session = (id: string, worktree: string, owner: string | null, at: string) => sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id,
+             status, created_at)
+          VALUES (${id}, 'p-1', ${worktree}, 'claude', ${worktree}, 'mend/x', 'abc', ${owner},
+                  'completed', ${at}::timestamptz)`;
+        yield* session("s-1", "w-shared", "kostas", "2026-10-02T00:00:00Z");
+        yield* session("s-2", "w-shared", "anna", "2026-10-01T00:00:00Z");
+        yield* session("s-3", "w-ownerless", null, "2026-10-01T00:00:00Z");
+        yield* session("s-4", "w-ownerless", "anna", "2026-10-02T00:00:00Z");
+        yield* sql`
+          INSERT INTO worktree_session_owners (worktree_id, user_id)
+          VALUES ('w-deleted-one', 'anna'), ('w-deleted-two', 'anna'), ('w-deleted-two', 'kostas'),
+                 ('w-gap', 'anna')`;
+        yield* sql`INSERT INTO worktree_owner_gaps (worktree_id) VALUES ('w-gap')`;
+        yield* migrations["0164_worktree_removal"];
+        const rows = yield* sql<{ readonly id: string; readonly owner: string | null }>`
+          SELECT id, change_owner_user_id AS owner FROM worktrees ORDER BY id`;
+        return Object.fromEntries(rows.map((row) => [row.id, row.owner]));
+      }),
+    );
+    expect(owners).toEqual({
+      "w-deleted-one": "anna",
+      "w-deleted-two": null,
+      "w-empty": null,
+      "w-gap": null,
+      "w-ownerless": null,
+      "w-shared": "anna",
+    });
+  });
+});
