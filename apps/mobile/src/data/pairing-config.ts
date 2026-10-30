@@ -7,7 +7,6 @@ import { NO_ANSWER } from "@/data/failure-words";
 import {
   clearTray,
   forgetDevice,
-  grantedPushToken,
   mintPushToken,
   postDevice,
   pushPermissionGranted,
@@ -24,16 +23,12 @@ export interface Connection {
   readonly pairedAt: string | null;
 }
 
-export interface MendConfig extends Connection {
-  readonly pushToken: string | null;
-}
-
-const EMPTY: MendConfig = { url: "", token: "", deviceName: null, pairedAt: null, pushToken: null };
+const EMPTY: Connection = { url: "", token: "", deviceName: null, pairedAt: null };
 
 const readString = (value: unknown): string | null =>
   typeof value === "string" && value !== "" ? value : null;
 
-const parseConfig = (raw: string): MendConfig | null => {
+const parseConfig = (raw: string): Connection | null => {
   try {
     const value: unknown = JSON.parse(raw);
     if (
@@ -51,7 +46,6 @@ const parseConfig = (raw: string): MendConfig | null => {
       token: value.token,
       deviceName: "deviceName" in value ? readString(value.deviceName) : null,
       pairedAt: "pairedAt" in value ? readString(value.pairedAt) : null,
-      pushToken: "pushToken" in value ? readString(value.pushToken) : null,
     };
   } catch {
     return null;
@@ -61,13 +55,13 @@ const parseConfig = (raw: string): MendConfig | null => {
 // null is a third state, not a missing value: "the store has not answered
 // yet". The boundary renders nothing until it answers, or a phone that is
 // paired flashes the pairing panel on every cold start.
-let current: MendConfig | null = null;
+let current: Connection | null = null;
 const configListeners = new Set<() => void>();
 const notifyConfig = (): void => {
   for (const listener of configListeners) listener();
 };
 
-const settle = (config: MendConfig): void => {
+const settle = (config: Connection): void => {
   current = config;
   notifyConfig();
 };
@@ -115,7 +109,7 @@ const hydrated: Promise<void> = readStoredConfig()
   })
   .catch(() => settle(EMPTY));
 
-export const loadConfig = async (): Promise<MendConfig> => {
+export const loadConfig = async (): Promise<Connection> => {
   await hydrated;
   return current ?? EMPTY;
 };
@@ -153,19 +147,16 @@ const pushRequestInTurn = <T>(step: (deadline: AbortSignal) => Promise<T>, late:
   return done;
 };
 
-const endPairing = (ended: MendConfig): void => {
+const endPairing = (ended: Connection): void => {
   void clearTray().catch(() => undefined);
-  void pushRequestInTurn(async (deadline) => {
-    const pushToken = ended.pushToken ?? (await grantedPushToken());
-    if (pushToken !== null && !deadline.aborted) await forgetDevice(ended, pushToken, deadline);
-  }, undefined);
+  void pushRequestInTurn((deadline) => forgetDevice(ended, deadline), undefined);
 };
 
 let stored: Promise<void> = Promise.resolve();
 
 let pairingGeneration = 0;
 
-const write = async (change: (before: MendConfig) => MendConfig): Promise<void> => {
+const write = async (change: (before: Connection) => Connection): Promise<void> => {
   await hydrated;
   const before = current ?? EMPTY;
   const after = change(before);
@@ -183,19 +174,10 @@ const write = async (change: (before: MendConfig) => MendConfig): Promise<void> 
   await saved;
 };
 
-export const saveConfig = (connection: Connection): Promise<void> =>
-  write((before) => ({
-    ...connection,
-    pushToken: samePairing(before, connection) ? before.pushToken : null,
-  }));
+export const saveConfig = (connection: Connection): Promise<void> => write(() => connection);
 
 /** Forget the machine on this device, and ask it to stop pushing here. It keeps the device. */
 export const clearConfig = (): Promise<void> => write(() => EMPTY);
-
-const keepPushToken = (generation: number, pushToken: string): Promise<void> =>
-  write((before) => (pairingGeneration === generation ? { ...before, pushToken } : before)).catch(
-    () => console.warn("the push token the machine accepted was not stored on this phone"),
-  );
 
 const PAIRING_CHANGED: PushRegistration = {
   state: "unavailable",
@@ -215,14 +197,13 @@ export const registerPush = (connection: Connection): Promise<PushRegistration> 
   const done = (async (): Promise<PushRegistration> => {
     const minted = await mintPushToken();
     if (minted.state !== "minted") return minted;
-    return pushRequestInTurn(async (deadline): Promise<PushRegistration> => {
-      if (pairingGeneration !== generation) return PAIRING_CHANGED;
-      const posted = await postDevice(connection, minted.token, deadline);
-      if (posted.state === "registered" && !deadline.aborted) {
-        await keepPushToken(generation, posted.token);
-      }
-      return posted;
-    }, NOT_ANSWERED);
+    return pushRequestInTurn(
+      (deadline): Promise<PushRegistration> =>
+        pairingGeneration === generation
+          ? postDevice(connection, minted.token, deadline)
+          : Promise.resolve(PAIRING_CHANGED),
+      NOT_ANSWERED,
+    );
   })()
     .catch(
       (cause: unknown): PushRegistration => ({
@@ -242,7 +223,7 @@ const registerPushIfAllowed = async (connection: Connection): Promise<void> => {
 };
 
 /** null until the stored config has been read — see the note on `current`. */
-export const useConfig = (): MendConfig | null =>
+export const useConfig = (): Connection | null =>
   useSyncExternalStore(
     (onChange: () => void) => {
       configListeners.add(onChange);
@@ -251,3 +232,9 @@ export const useConfig = (): MendConfig | null =>
     () => current,
     () => null,
   );
+
+const registerPushOnLaunch = (): void => {
+  if (current !== null && current.token !== "") void registerPushIfAllowed(current);
+};
+
+void hydrated.then(registerPushOnLaunch);
