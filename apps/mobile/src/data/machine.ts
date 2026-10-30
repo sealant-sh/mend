@@ -77,6 +77,9 @@ export const openMachine = (
   const heardWhilePaired = (yes: boolean) => {
     if (!ended.aborted) heard(key, yes);
   };
+  const address = (route: string) => `${connection.url}/api${route}`;
+  const bearer = `Bearer ${connection.token}`;
+  const noAddress = () => new ApiError("Set the server URL in Settings first.", 0);
 
   const send = async (
     method: "GET" | WriteMethod,
@@ -84,13 +87,10 @@ export const openMachine = (
     body: unknown,
     signal: AbortSignal | undefined,
   ): Promise<Response> => {
-    if (connection.url === "") throw new ApiError("Set the server URL in Settings first.", 0);
-    const response = await fetch(`${connection.url}/api${route}`, {
+    if (connection.url === "") throw noAddress();
+    const response = await fetch(address(route), {
       method,
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${connection.token}`,
-      },
+      headers: { "content-type": "application/json", authorization: bearer },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       ...(signal === undefined ? {} : { signal }),
     }).catch((cause: unknown) => {
@@ -131,16 +131,16 @@ export const openMachine = (
     const callOff = () => request.abort();
     const result = new Promise<unknown>((resolve, reject) => {
       if (connection.url === "") {
-        reject(new ApiError("Set the server URL in Settings first.", 0));
+        reject(noAddress());
         return;
       }
       if (ended.aborted) {
         reject(new PairingEnded());
         return;
       }
-      request.open("POST", `${connection.url}/api${route}`);
+      request.open("POST", address(route));
       request.setRequestHeader("content-type", "application/json");
-      request.setRequestHeader("authorization", `Bearer ${connection.token}`);
+      request.setRequestHeader("authorization", bearer);
       request.timeout = 120_000;
       request.upload.addEventListener("progress", (event) => {
         if (event.lengthComputable && event.total > 0) onProgress?.(event.loaded / event.total);
@@ -152,6 +152,7 @@ export const openMachine = (
       request.addEventListener(
         "load",
         settled(() => {
+          heardWhilePaired(true);
           const answer = parsedOrNull(request.responseText);
           if (request.status >= 200 && request.status < 300) resolve(answer);
           else reject(refusal("POST", route, request.status, answer));
@@ -159,7 +160,10 @@ export const openMachine = (
       );
       request.addEventListener(
         "error",
-        settled(() => reject(new ApiError("The upload did not reach the machine.", 0))),
+        settled(() => {
+          heardWhilePaired(false);
+          reject(new ApiError("The upload did not reach the machine.", 0));
+        }),
       );
       request.addEventListener(
         "timeout",
