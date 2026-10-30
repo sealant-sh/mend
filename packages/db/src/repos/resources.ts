@@ -769,11 +769,13 @@ const adoptIn = Effect.fn("ResourcesRepo.adoptIn")(function* (tx: Tx, request: A
       and(eq(resourceDefinitions.projectId, projectId), eq(resourceDefinitions.name, spec.name)),
     )
     .for("update");
+  // A read of a definition holds only for that definition, at the digest read or already at
+  // `spec`'s; a read of none holds while there is none, or `spec` itself on a retry.
   const asRead =
-    held?.specDigest === digest ||
-    (settings === null
-      ? held === undefined
-      : held?.id === settings.id && held.specDigest === settings.digest);
+    settings === null
+      ? held === undefined || held.specDigest === digest
+      : held?.id === settings.id &&
+        (held.specDigest === settings.digest || held.specDigest === digest);
   if (!asRead) return yield* new ResourceSettingsStaleError({ name: spec.name });
   const definition = yield* declareIn(tx, projectId, spec, request.approvedBy);
   const made = yield* exactApprovalIn(tx, definition.id, digest, request.worktreeId);

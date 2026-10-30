@@ -1135,6 +1135,25 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       expect(adopted.definition.spec.image).toBe("postgres:18");
     });
 
+    it("refuses a read of a definition removed and declared again with the same spec", async () => {
+      const project = await newProject();
+      const read = await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
+      await withRepo((repo) =>
+        repo.removeIfCurrent(project, { id: read.id, digest: read.specDigest }),
+      );
+      const again = await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
+      expect(
+        await failureOf((repo) =>
+          repo.adoptAndApprove(
+            adoption(project, postgresDb(), {
+              settings: { id: read.id, digest: read.specDigest },
+            }),
+          ),
+        ),
+      ).toEqual(expect.objectContaining({ _tag: "ResourceSettingsStaleError", name: "db" }));
+      expect(await count("resource_approvals", again.id)).toBe(0);
+    });
+
     it("leaves settings as they were when the approval is refused", async () => {
       const project = await newProject();
       const worktree = await newWorktree(project);
