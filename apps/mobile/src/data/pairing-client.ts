@@ -121,3 +121,38 @@ export class HttpPairingClient implements PairingClient {
     return { state: "paired", config, user: body.user };
   }
 }
+
+export type ConnectionCheck =
+  | { readonly state: "ok"; readonly detail: string }
+  | { readonly state: "bad"; readonly detail: string };
+
+export const checkConnection = async (typed: {
+  readonly url: string;
+  readonly token: string;
+}): Promise<ConnectionCheck> => {
+  const base = typed.url.trim().replace(/\/$/, "");
+  try {
+    const health = await fetch(`${base}/api/health`);
+    if (!health.ok) {
+      console.warn(failureLogLine("GET /api/health", health.status, null));
+      return {
+        state: "bad",
+        detail: "reachable · health check failed — check the URL; the server log has the detail",
+      };
+    }
+    const authed = await fetch(`${base}/api/projects`, {
+      headers: { authorization: `Bearer ${typed.token.trim()}` },
+    });
+    if (authed.status === 401) return { state: "bad", detail: "reachable · token rejected" };
+    if (!authed.ok) {
+      const body: unknown = await authed.json().catch(() => null);
+      console.warn(failureLogLine("GET /api/projects", authed.status, body));
+      return { state: "bad", detail: `reachable · ${failureWords(authed.status, body).words}` };
+    }
+    const projects: unknown = await authed.json();
+    const count = Array.isArray(projects) ? projects.length : 0;
+    return { state: "ok", detail: `connected · ${count} project${count === 1 ? "" : "s"}` };
+  } catch {
+    return { state: "bad", detail: "unreachable — check URL, port, firewall, same network" };
+  }
+};
