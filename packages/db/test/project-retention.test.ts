@@ -207,6 +207,22 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
       }),
     ));
 
+  it("lets an owner take over a departed member's removed project, which then is theirs to Restore", async () =>
+    run(
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const id = yield* seed("departed-removed");
+        yield* keep(id);
+        yield* member("owen", "owner");
+        const taken = yield* projects.setCreatedBy(id, "owen");
+        expect({
+          creator: taken.createdByUserId,
+          kept: (yield* projects.removedById(id))?.project.createdByUserId,
+          restored: yield* (yield* RemovalFencesRepo).restore(id, "owen"),
+        }).toEqual({ creator: "owen", kept: "owen", restored: "restored" });
+      }),
+    ));
+
   it("frees the scratch slot and restores a former scratch as a plain private project", async () =>
     run(
       Effect.gen(function* () {

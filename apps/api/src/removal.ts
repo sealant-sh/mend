@@ -569,8 +569,9 @@ export const RemovalLive: Layer.Layer<
     });
 
     const disk = Effect.fn("Removal.disk")(function* (viewer: Viewer) {
+      // An owner answers for the organization's disk: a departed member's kept project too.
       const kept = (yield* projects.removedForOrganization(viewer.organizationId)).filter(
-        ({ project }) => canSeeProject(project, viewer),
+        ({ project }) => viewer.role === "owner" || canSeeProject(project, viewer),
       );
       const sizes = yield* Effect.forEach(
         kept,

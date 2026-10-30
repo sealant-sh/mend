@@ -56,6 +56,10 @@ const exceptions = new Map([
   ],
   ["packages/db/src/repos/projects.ts:storeClaimed", "Every state reserves its store directory."],
   [
+    "packages/db/src/repos/projects.ts:setCreatedBy",
+    "An owner takes over a departed member's project in every state, removed ones included.",
+  ],
+  [
     "packages/db/src/repos/projects.ts:confirm",
     "An uncertain commit must not delete a registered store in any state.",
   ],

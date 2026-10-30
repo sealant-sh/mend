@@ -477,7 +477,8 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         id: ProjectId,
         userId: string,
       ) {
-        // Recovery transfers the content, not the departed person's scratch identity.
+        // Recovery transfers the content, not the departed person's scratch identity. A removed
+        // project is taken over too: only its new creator can then Restore or purge it.
         const [row] = yield* db
           .update(projects)
           .set({
@@ -485,7 +486,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
             scratchOwnerUserId: null,
             updatedAt: yield* DateTime.nowAsDate,
           })
-          .where(and(eq(projects.id, id), projectListed))
+          .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
