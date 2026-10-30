@@ -71,14 +71,15 @@ nothing is cloned again.
 
 Because the repository is saved only with the main worktree, removing that worktree deletes it. Mend
 cannot see from the server whether it holds commits or edits that are not on origin, so the removal
-is refused while any session in the worktree holds an added repository, naming up to five:
+is refused while the worktree holds a repository added with `mend repo add`, naming up to five. An
+add that failed put nothing there and does not count:
 
 ```text
-This worktree holds 1 repository added with mend repo add, saved only with it · /workspace/repos/core on mend/fix-login · Mend cannot see whether it holds commits or edits that are not on origin, and removal deletes it. Push what you need from a session in this worktree before removal, or pass force=true to remove it anyway.
+This worktree holds 1 repository added with mend repo add, saved only with it · /workspace/repos/core on mend/fix-login · Mend cannot see whether it holds commits or edits that are not on origin, so removal waits for force, pushed or not. Pass force=true to remove it anyway.
 ```
 
-Push what you need first. **Remove anyway** in the web app, or `mend worktrees rm <name> --force`,
-removes it regardless.
+Pushing does not lift the refusal, since Mend cannot see what was pushed. Push what you need first,
+then **Remove anyway** in the web app, or `mend worktrees rm <name> --force`, removes it.
 
 ## States
 

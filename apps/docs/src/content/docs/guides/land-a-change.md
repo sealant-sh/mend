@@ -335,7 +335,7 @@ step, saying `pull request #367 is from anna's fork · Mend pushes to origin onl
 Removing a worktree refuses when its change is not on origin, and names what is unlanded:
 
 ```text
-This worktree holds a change that was never landed · 2 files · +32 −5 · src/login.ts +30 −5, test/login.test.ts +2 −0. Land it or discard it before removal, or pass force=true to remove it anyway.
+This worktree holds a change that was never landed · 2 files · +32 −5 · src/login.ts +30 −5, test/login.test.ts +2 −0. Land it or discard it before removal. Pass force=true to remove it anyway.
 ```
 
 A worktree that changed after its last landing is refused the same way, naming the files changed
@@ -343,14 +343,17 @@ since.
 
 A worktree whose sessions added repositories with `mend repo add` is refused too, naming each one.
 Their files and history are saved only inside this worktree, and Mend cannot see whether they hold
-commits or edits that are not on origin. Push what you need from a session in the worktree first.
+commits or edits that are not on origin. Pushing does not lift that refusal: push what you need from
+a session in the worktree, then remove it with force.
 
 In a project with no origin, nothing can be landed, so any work past the base is refused as work
 that is not on any remote.
 
-Removal lists everything that stands in the way at once: a session that is live, a process or
-Service still running, a workspace still saving, a change not on origin and nested repositories.
-Mend never stops a session for you; stop it, then remove the worktree again.
+Removal lists everything that stands in the way at once: a session that is live or starting, a
+process or Service still running, a Service setup that has not ended, a workspace still saving, a
+change not on origin and nested repositories. A session counts wherever it works in the worktree: in
+it, holding it as a repository, or mounting it as a linked project. Mend never stops a session for
+you; stop it, then remove the worktree again.
 
 The refusal is the first step, never the last. In the web app, the worktree menu's **Remove
 worktree** shows these words with the files and line counts not on origin, and offers **Remove
