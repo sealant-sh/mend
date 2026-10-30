@@ -78,6 +78,18 @@ const shownTo = (engine: SessionEngine["Service"], session: Session, viewer = "u
       ),
     );
 
+const ioTurn = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+
+const slowAgentOpen = Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+
+const pickupCarriedOut = (engine: SessionEngine["Service"], world: World, sessionId: SessionId) =>
+  Effect.gen(function* () {
+    while (world.relaunches.has(sessionId) || engine.launchUnderWay(sessionId)) {
+      yield* TestClock.adjust("100 millis");
+      yield* ioTurn;
+    }
+  });
+
 describe("pre-release executors and the migration of their shared home (docs/adr/0016, Delivery 19)", () => {
   const IMAGE_KEY = "digest:sha256:img\u0000docker";
 
@@ -385,10 +397,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
               });
               seen.holder = (yield* Fiber.join(launching))._tag;
               yield* engine.reapCaptureLeases();
-              for (let step = 0; step < 100 && world.relaunches.has(session.id); step += 1) {
-                yield* TestClock.adjust("100 millis");
-                yield* Effect.yieldNow;
-              }
+              yield* pickupCarriedOut(engine, world, session.id);
               seen.status = world.sessions.get(session.id)?.status ?? "";
               seen.planLeft = world.relaunches.has(session.id);
             }),
@@ -422,7 +431,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
   );
 
   it.effect(
-    "the SLNT-167 pickup poll asserts a resumed agent while the held-off pickup is still opening it (SLNT-340)",
+    "the SLNT-167 pickup wait lasts until a held-off pickup slow to open its agent has resumed it (SLNT-340)",
     () =>
       Effect.gen(function* () {
         const held = yield* Deferred.make<void>();
@@ -455,16 +464,14 @@ describe("pre-release executors and the migration of their shared home (docs/adr
               seen.holder = (yield* Fiber.join(launching))._tag;
               holdPickup = true;
               yield* engine.reapCaptureLeases();
-              // The pickup the reaper took up holds the launch gate at its agent's open, as a
-              // pickup whose real I/O a loaded runner slows does past the poll below.
               yield* Deferred.await(pickupOpening);
-              for (let step = 0; step < 100 && world.relaunches.has(session.id); step += 1) {
-                yield* TestClock.adjust("100 millis");
-                yield* Effect.yieldNow;
-              }
+              yield* slowAgentOpen.pipe(
+                Effect.andThen(Deferred.succeed(pickupOpen, undefined)),
+                Effect.forkChild,
+              );
+              yield* pickupCarriedOut(engine, world, session.id);
               seen.status = world.sessions.get(session.id)?.status ?? "";
               seen.planLeft = world.relaunches.has(session.id);
-              yield* Deferred.succeed(pickupOpen, undefined);
             }),
           {
             aroundOpen: () =>
