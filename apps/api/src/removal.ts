@@ -46,12 +46,10 @@ import {
   canRemoveProject,
   projectRetentionRights,
   projectRefusalWords,
-  type RemovalDecision,
   type Session,
   type SessionActivity,
   type SessionFact,
   type SessionRole,
-  type StoppedRemoval,
   underway,
   underwayWith,
   type Worktree,
@@ -389,79 +387,20 @@ export const RemovalLive: Layer.Layer<
       });
 
     /**
-     * Marks `row`, then reads who may remove it and what stands in the way under that mark, and
-     * either gives the mark back and refuses, or commits it and deletes. `finish` skips the
-     * decision: an earlier removal passed it and stopped while deleting. The deletion runs to its
-     * end even when the request goes away, renewing the mark, and asks before each destructive
+     * Marks the worktree, then reads who may remove it and what stands in the way under that
+     * mark, and either gives the mark back and refuses, or commits it and deletes. `finish` skips
+     * the decision: an earlier removal passed it and stopped while deleting. The deletion runs to
+     * its end even when the request goes away, renewing the mark, and asks before each destructive
      * step whether the mark is still its own. A deletion that fails keeps the mark, open for the
      * next removal to finish at once. A removal that meets another under way reports that with
      * every other blocker, read without a mark.
      */
-    const underFence = <Target, Denied, E, Gone, Report>(
-      row: FencedRow,
-      scope: "worktree" | "project",
-      steps: {
-        readonly authorize: Effect.Effect<Target, Denied>;
-        readonly decide: (target: Target) => Effect.Effect<RemovalDecision, E>;
-        /** `step` answers MarkLost once the mark is another removal's. */
-        readonly remove: (
-          target: Target,
-          step: Effect.Effect<void, MarkLost>,
-        ) => Effect.Effect<Report, MarkLost>;
-        readonly gone: Gone;
-        /** Moves the mark past the checks; fails `gone` once the caller may no longer remove. */
-        readonly commit?: (target: Target, mark: RemovalFenceId) => Effect.Effect<boolean, Gone>;
-      },
-    ): Effect.Effect<Report, Denied | E | Gone | RemovalRefused> =>
-      Effect.gen(function* () {
-        const taken = yield* fences.take(row);
-        if (taken._tag === "gone") return yield* Effect.fail(steps.gone);
-        if (taken._tag === "underway") {
-          const decision = yield* steps.decide(yield* steps.authorize);
-          return yield* refused(scope, underwayWith(taken.stopped, decision), false);
-        }
-        const giveBack =
-          taken._tag === "held" ? fences.release(row, taken.id) : fences.handOver(row, taken.id);
-        const target = yield* steps.authorize.pipe(Effect.onError(() => giveBack));
-        if (taken._tag === "held") {
-          const decision = yield* renewing(row, taken.id, steps.decide(target)).pipe(
-            Effect.onError(() => giveBack),
-          );
-          if (decision._tag === "Refuse") {
-            yield* giveBack;
-            return yield* refused(scope, decision.blockers, decision.forceWouldLift);
-          }
-        }
-        const step = fences
-          .renew(row, taken.id)
-          .pipe(Effect.flatMap((held) => (held ? Effect.void : Effect.fail(new MarkLost()))));
-        const lost = (stopped: StoppedRemoval | null) => refused(scope, underway(stopped), false);
-        return yield* Effect.uninterruptible(
-          Effect.gen(function* () {
-            if (
-              taken._tag === "held" &&
-              !(yield* (
-                steps.commit === undefined
-                  ? fences.commit(row, taken.id)
-                  : steps.commit(target, taken.id)
-              ).pipe(Effect.onError(() => giveBack)))
-            ) {
-              yield* giveBack;
-              return yield* lost(null);
-            }
-            return yield* renewing(row, taken.id, steps.remove(target, step)).pipe(
-              Effect.onError(() => fences.handOver(row, taken.id)),
-              Effect.catchTag("MarkLost", () => Effect.fail(lost(null))),
-            );
-          }),
-        );
-      });
-
     const removeWorktree = Effect.fn("Removal.worktree")(function* (
       target: Worktree,
       caller: RemovalCaller,
       force: boolean,
     ) {
+      const row = { kind: "worktree", id: target.id } as const;
       const notFound = new WorktreeNotFound({ id: target.id });
       const project = yield* projects
         .byId(target.projectId)
@@ -489,89 +428,139 @@ export const RemovalLive: Layer.Layer<
         }
         return current;
       });
+      const decide = (current: Worktree) =>
+        Effect.gen(function* () {
+          const openServices = yield* openServicesNow;
+          return force
+            ? decideRemoval({
+                kind: "worktree",
+                force,
+                worktree: yield* worktreeHolds(current, openServices),
+              })
+            : decideRemoval({
+                kind: "worktree",
+                force,
+                worktree: yield* worktreeFacts(project, current, caller.userId, openServices),
+              });
+        });
       // Refused before any mark is taken; asked again under it, where the answer holds.
       yield* authorize;
-      return yield* underFence({ kind: "worktree", id: target.id }, "worktree", {
-        authorize,
-        decide: (current) =>
-          Effect.gen(function* () {
-            const openServices = yield* openServicesNow;
-            return force
-              ? decideRemoval({
-                  kind: "worktree",
-                  force,
-                  worktree: yield* worktreeHolds(current, openServices),
-                })
-              : decideRemoval({
-                  kind: "worktree",
-                  force,
-                  worktree: yield* worktreeFacts(project, current, caller.userId, openServices),
-                });
-          }),
-        remove: (current, step) =>
-          Effect.gen(function* () {
-            yield* step;
-            const { leftover } = yield* store.removeWorktreeForce(
-              project.storePath,
-              current.directory,
-            );
-            yield* step;
-            // Sessions, change, chain, and review artifacts cascade with the row.
-            yield* worktrees.remove(current.id);
-            return new RemovalReport({ removed: true, leftover });
-          }),
-        gone: notFound,
-      });
+      const taken = yield* fences.take(row);
+      if (taken._tag === "gone") return yield* notFound;
+      if (taken._tag === "underway") {
+        const decision = yield* decide(yield* authorize);
+        return yield* refused("worktree", underwayWith(taken.stopped, decision), false);
+      }
+      const giveBack =
+        taken._tag === "held" ? fences.release(row, taken.id) : fences.handOver(row, taken.id);
+      const current = yield* authorize.pipe(Effect.onError(() => giveBack));
+      if (taken._tag === "held") {
+        const decision = yield* renewing(row, taken.id, decide(current)).pipe(
+          Effect.onError(() => giveBack),
+        );
+        if (decision._tag === "Refuse") {
+          yield* giveBack;
+          return yield* refused("worktree", decision.blockers, decision.forceWouldLift);
+        }
+      }
+      const step = fences
+        .renew(row, taken.id)
+        .pipe(Effect.flatMap((held) => (held ? Effect.void : Effect.fail(new MarkLost()))));
+      const lost = refused("worktree", underway(null), false);
+      return yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          if (
+            taken._tag === "held" &&
+            !(yield* fences.commit(row, taken.id).pipe(Effect.onError(() => giveBack)))
+          ) {
+            yield* giveBack;
+            return yield* lost;
+          }
+          return yield* renewing(
+            row,
+            taken.id,
+            Effect.gen(function* () {
+              yield* step;
+              const { leftover } = yield* store.removeWorktreeForce(
+                project.storePath,
+                current.directory,
+              );
+              yield* step;
+              // Sessions, change, chain, and review artifacts cascade with the row.
+              yield* worktrees.remove(current.id);
+              return new RemovalReport({ removed: true, leftover });
+            }),
+          ).pipe(
+            Effect.onError(() => fences.handOver(row, taken.id)),
+            Effect.catchTag("MarkLost", () => Effect.fail(lost)),
+          );
+        }),
+      );
     });
 
+    /**
+     * Removal deletes nothing: it marks the project, reads what stands in the way under that
+     * mark, and either gives the mark back and refuses, or keeps the project in one transaction,
+     * which leaves it listed or removed and never half.
+     */
     const removeProject = Effect.fn("Removal.project")(function* (
       target: Project,
       caller: RemovalCaller,
     ) {
-      return yield* underFence({ kind: "project", id: target.id }, "project", {
-        authorize: Effect.succeed(target),
-        commit: (_, mark) =>
-          fences
-            .keep(target.id, mark, caller.userId)
-            .pipe(
-              Effect.flatMap((outcome) =>
-                outcome === "forbidden"
-                  ? Effect.fail(new NotFound({ id: target.id }))
-                  : Effect.succeed(outcome === "kept"),
-              ),
-            ),
-        // Resources keep their data only in their volumes (docs/adr/0019, "Durability"): a
-        // declaration made while this removal's mark stands is refused, so the names read here
-        // are every one there will be.
-        decide: () =>
-          Effect.gen(function* () {
-            const openServices = yield* openServicesNow;
-            const facts = yield* Effect.forEach(
-              yield* worktrees.listForProject(target.id),
-              (worktree) => worktreeFacts(target, worktree, caller.userId, openServices),
-              { concurrency: 4 },
-            );
-            return decideRemoval({
-              kind: "project",
-              project: { worktrees: facts, resources: yield* resources.declaredNames(target.id) },
-            });
-          }),
-        remove: (_, step) =>
-          Effect.gen(function* () {
-            yield* step;
-            // Hot workspaces hold nobody's work: the pool drains a removed project's standbys,
-            // and its sweep retries any it could not stop.
-            yield* engine.reconcileHotSessions(target.id);
-            return new ProjectRemovalReport({
-              removed: true,
-              leftover: null,
-              retained: true,
-              message:
-                "Project removed. Its files and history are kept. Restore it from Removed projects.",
-            });
-          }),
-        gone: new NotFound({ id: target.id }),
+      const row = { kind: "project", id: target.id } as const;
+      const notFound = new NotFound({ id: target.id });
+      // Resources keep their data only in their volumes (docs/adr/0019, "Durability"): a
+      // declaration made while this removal's mark stands is refused, so the names read here
+      // are every one there will be.
+      const decide = Effect.gen(function* () {
+        const openServices = yield* openServicesNow;
+        const facts = yield* Effect.forEach(
+          yield* worktrees.listForProject(target.id),
+          (worktree) => worktreeFacts(target, worktree, caller.userId, openServices),
+          { concurrency: 4 },
+        );
+        return decideRemoval({
+          kind: "project",
+          project: { worktrees: facts, resources: yield* resources.declaredNames(target.id) },
+        });
       });
+      const taken = yield* fences.take(row);
+      if (taken._tag === "gone") return yield* notFound;
+      if (taken._tag === "underway")
+        return yield* refused("project", underwayWith(taken.stopped, yield* decide), false);
+      // `deleting` comes only with removed_at (migration 0167), and `take` answers a removed
+      // project `gone`: a listed project has no stopped deletion to finish.
+      if (taken._tag === "finish")
+        return yield* Effect.die("a listed project had a stopped deletion to finish");
+      const release = fences.release(row, taken.id);
+      const decision = yield* renewing(row, taken.id, decide).pipe(Effect.onError(() => release));
+      if (decision._tag === "Refuse") {
+        yield* release;
+        return yield* refused("project", decision.blockers, decision.forceWouldLift);
+      }
+      return yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const kept = yield* fences
+            .keep(target.id, taken.id, caller.userId)
+            .pipe(Effect.onError(() => release));
+          if (kept !== "kept") {
+            yield* release;
+            return yield* kept === "forbidden"
+              ? notFound
+              : refused("project", underway(null), false);
+          }
+          // Hot workspaces hold nobody's work: the pool drains a removed project's standbys,
+          // and its sweep retries any it could not stop.
+          yield* engine.reconcileHotSessions(target.id);
+          return new ProjectRemovalReport({
+            removed: true,
+            leftover: null,
+            retained: true,
+            message:
+              "Project removed. Its files and history are kept. Restore it from Removed projects.",
+          });
+        }),
+      );
     });
 
     const disk = Effect.fn("Removal.disk")(function* (viewer: Viewer) {

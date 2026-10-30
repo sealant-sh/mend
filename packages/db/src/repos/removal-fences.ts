@@ -130,10 +130,14 @@ export class RemovalFencesRepo extends Context.Service<
      */
     readonly renew: (row: FencedRow, id: RemovalFenceId) => Effect.Effect<boolean>;
     /**
-     * `checking` → `deleting`, only while the mark is still `id` and fresh. False: the mark lapsed,
-     * or another removal took it over; nothing may be deleted.
+     * A worktree's `checking` → `deleting`, only while the mark is still `id` and fresh. False:
+     * the mark lapsed, or another removal took it over; nothing may be deleted. A project is never
+     * committed: removal keeps it (`keep`), and a purge marks it `deleting` (`takePurge`).
      */
-    readonly commit: (row: FencedRow, id: RemovalFenceId) => Effect.Effect<boolean>;
+    readonly commit: (
+      row: Extract<FencedRow, { readonly kind: "worktree" }>,
+      id: RemovalFenceId,
+    ) => Effect.Effect<boolean>;
     /** Clears the mark, only while it is still `id`. */
     readonly release: (row: FencedRow, id: RemovalFenceId) => Effect.Effect<void>;
     /**
@@ -456,13 +460,12 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
       });
 
       const commit = Effect.fn("RemovalFencesRepo.commit")(function* (
-        row: FencedRow,
+        row: Extract<FencedRow, { readonly kind: "worktree" }>,
         id: RemovalFenceId,
       ) {
         const updated = yield* sql`
-          UPDATE ${sql(tableOf(row))}
+          UPDATE worktrees
           SET removal_phase = 'deleting', removal_since = now()
-          ${row.kind === "project" ? sql`, removed_at = now()` : sql``}
           WHERE id = ${row.id} AND removal_id = ${id} AND removal_phase = 'checking'
             AND removal_fence_fresh(removal_since)
           RETURNING id`.pipe(Effect.orDie);
