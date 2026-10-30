@@ -1,4 +1,4 @@
-import { CREDENTIAL_QUERY_PARAMETERS } from "@mend/network";
+import { CREDENTIAL_QUERY_PARAMETERS, SECRET_SEGMENT_PREFIXES } from "@mend/network";
 import { Schema, SchemaAST } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { describe, expect, it } from "vitest";
@@ -47,18 +47,14 @@ const queryFieldNames = (query: Schema.Top | undefined): ReadonlyArray<string> =
   return SchemaAST.isObjects(ast) ? ast.propertySignatures.map(({ name }) => String(name)) : [];
 };
 
-const CLI_AUTH_USER_CODE =
-  "the short code a person reads off `mend login` and types into the approve page: it names a " +
-  "request only a signed-in account can approve, and the CLI's secret device code rides a body";
-const RELEASED_APPS_UNREGISTER =
-  "apps released before 0.37 still unpair here; the handler ignores the token, and the API keeps " +
-  "every /api/devices/ URL out of its request log and traces, 404s included";
-const ALLOWED: ReadonlyMap<string, string> = new Map([
-  ["/api/me/cli-auth/:code", CLI_AUTH_USER_CODE],
-  ["/api/me/cli-auth/:code/approve", CLI_AUTH_USER_CODE],
-  ["/api/me/cli-auth/:code/deny", CLI_AUTH_USER_CODE],
-  ["/api/devices/:token", RELEASED_APPS_UNREGISTER],
-]);
+/**
+ * A secret may be a path's segment only right after a path the edge redacts the next segment of.
+ * The API logs and traces a route's template, never the segment itself.
+ */
+const redactedAtTheEdge = (path: string, name: string) =>
+  SECRET_SEGMENT_PREFIXES.some(
+    (prefix) => path === `${prefix}/:${name}` || path.startsWith(`${prefix}/:${name}/`),
+  );
 
 const secretsIn = <Id extends string, Groups extends HttpApiGroup.Constraint>(
   api: HttpApi.HttpApi<Id, Groups>,
@@ -67,12 +63,13 @@ const secretsIn = <Id extends string, Groups extends HttpApiGroup.Constraint>(
   HttpApi.reflect(api, {
     onGroup: () => {},
     onEndpoint: ({ endpoint }) => {
-      const named = [...pathParameterNames(endpoint.path), ...queryFieldNames(endpoint.query)].some(
-        namesSecret,
-      );
-      if (named && !ALLOWED.has(endpoint.path)) {
-        secretPaths.push(`${endpoint.method} ${endpoint.path}`);
-      }
+      const exposed = [
+        ...pathParameterNames(endpoint.path).filter(
+          (name) => namesSecret(name) && !redactedAtTheEdge(endpoint.path, name),
+        ),
+        ...queryFieldNames(endpoint.query).filter(namesSecret),
+      ];
+      if (exposed.length > 0) secretPaths.push(`${endpoint.method} ${endpoint.path}`);
     },
   });
   return secretPaths;
@@ -82,11 +79,11 @@ describe("endpoint URLs", () => {
   it("carry no secret in a path parameter or a query field", () => {
     expect(
       secretsIn(MendApi),
-      "a URL reaches request logs, spans and edge access logs: send the secret in a body",
+      "a URL reaches edge and proxy access logs: send the secret in a body",
     ).toEqual([]);
   });
 
-  it("count a secret however the router spells its parameter, and in a query field", () => {
+  it("count a secret however the router spells its parameter, in a query field, and past the segment the edge redacts", () => {
     const spellings = HttpApi.make("spellings").add(
       HttpApiGroup.make("spellings")
         .add(HttpApiEndpoint.get("optional", "/optional/:token?"))
@@ -97,7 +94,15 @@ describe("endpoint URLs", () => {
         .add(HttpApiEndpoint.get("credential", "/credentials/:credential"))
         .add(HttpApiEndpoint.get("bearer", "/bearers/:bearer"))
         .add(HttpApiEndpoint.get("query", "/query", { query: { token: Schema.String } }))
-        .add(HttpApiEndpoint.get("plain", "/plain/:id", { query: { cursor: Schema.String } })),
+        .add(HttpApiEndpoint.get("plain", "/plain/:id", { query: { cursor: Schema.String } }))
+        .add(HttpApiEndpoint.get("redacted", "/api/devices/:token"))
+        .add(HttpApiEndpoint.post("redactedThen", "/api/me/cli-auth/:code/approve"))
+        .add(HttpApiEndpoint.get("pastTheRedacted", "/api/devices/:id/:token"))
+        .add(
+          HttpApiEndpoint.get("redactedButQuery", "/api/devices/:token", {
+            query: { code: Schema.String },
+          }),
+        ),
     );
     expect(secretsIn(spellings)).toEqual([
       "GET /optional/:token?",
@@ -108,6 +113,8 @@ describe("endpoint URLs", () => {
       "GET /credentials/:credential",
       "GET /bearers/:bearer",
       "GET /query",
+      "GET /api/devices/:id/:token",
+      "GET /api/devices/:token",
     ]);
   });
 });
