@@ -4018,6 +4018,7 @@ const pushDeviceCredentialsMigration = Effect.gen(function* () {
   yield* sql.unsafe(`CREATE FUNCTION push_devices_drop_for_user() RETURNS trigger
     LANGUAGE plpgsql AS $$
     BEGIN
+      PERFORM 1 FROM device_tokens WHERE user_id = NEW.id ORDER BY id FOR NO KEY UPDATE;
       DELETE FROM push_devices p USING device_tokens d
        WHERE d.id = p.device_token_id AND d.user_id = NEW.id;
       RETURN NULL;
