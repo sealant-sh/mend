@@ -28,6 +28,12 @@ export * from "./secret-files.ts";
 export * from "./forward.ts";
 export * from "./screen/screen-host.ts";
 export * from "./screen/screens.ts";
+export {
+  VIEWER_UNSENT_CEILING,
+  type ViewerBytes,
+  type WatchEnd,
+  type Watcher,
+} from "./screen/viewer.ts";
 export { screenWorkersLayer } from "./screen/screen-workers.ts";
 export * from "./forward-node.ts";
 export * from "./service-host.ts";

@@ -28,7 +28,7 @@ import type { Caller } from "../mend-mcp/caller.ts";
 import { readFrame, storeFrame } from "./frames.ts";
 import { planActions, type Step } from "./hand-steps.ts";
 import type { HandEnded } from "./hand.ts";
-import { type Hands, makeHands } from "./hands.ts";
+import { type Hands, dialScreen, makeHands } from "./hands.ts";
 import type { Input } from "./rfb-client.ts";
 import {
   makeScreenControl,
@@ -38,6 +38,7 @@ import {
 } from "./screen-control.ts";
 import { ScreenHost, ScreenStartError } from "./screen-host.ts";
 import { ScreenWorkers, type WorkerStopped } from "./screen-workers.ts";
+import { type ViewerBytes, type WatchEnd, type Watcher, relayViewer } from "./viewer.ts";
 
 export type ScreenCaller = Pick<Caller, "sessionId" | "accountId" | "agentProcess" | "callKey">;
 
@@ -120,9 +121,15 @@ export class Screens extends Context.Service<
       connection: ViewerConnectionId,
       inputs: ReadonlyArray<Input>,
     ) => Effect.Effect<boolean>;
+    /**
+     * Relays the session's live screen to one viewer until either side ends. It starts no screen:
+     * viewers do not keep one running (D7).
+     */
+    readonly watch: (watcher: Watcher, viewer: ViewerBytes) => Effect.Effect<WatchEnd>;
   }
 >()("@mend/sessions/Screens") {}
 
+const NO_SCREEN: WatchEnd = { _tag: "NoScreen" };
 const STARTED_WITHIN_MS = 15_000;
 const STARTED_POLL_MS = 200;
 
@@ -182,6 +189,7 @@ export const ScreensLive: Layer.Layer<
     const host = yield* ScreenHost;
     const scope = yield* Scope.Scope;
     const blobs = yield* Effect.context<BlobStore>();
+    const dialling = yield* Effect.context<ScreenHost | ForwardAdapter>();
     const hands: Hands = yield* makeHands(
       (screen): Effect.Effect<void> => Effect.asVoid(control.ended(screen.id)),
     );
@@ -439,6 +447,28 @@ export const ScreensLive: Layer.Layer<
       lapse: control.lapse,
       heartbeat: control.heartbeat,
       input: control.input,
+      watch: (watcher, viewer) =>
+        Effect.scoped(
+          relayViewer(watcher, viewer, {
+            dial: Effect.gen(function* () {
+              const screen = yield* screens.ofSession(watcher.sessionId);
+              if (screen?.life._tag !== "Live") return yield* Effect.fail(NO_SCREEN);
+              const dialled = yield* dialScreen(screen).pipe(
+                Effect.provideContext(dialling),
+                Effect.mapError(
+                  (failure): WatchEnd => ({
+                    _tag: "Unreachable",
+                    reason: failure.record.issue.reason,
+                  }),
+                ),
+              );
+              if (dialled === null) return yield* Effect.fail(NO_SCREEN);
+              return { bytes: dialled.bytes, password: dialled.passwords.viewOnly };
+            }),
+            input: (inputs) => control.input(watcher.sessionId, watcher.connection, inputs),
+            paste: (text) => control.paste(watcher.sessionId, watcher.connection, text),
+          }),
+        ),
     };
   }),
 );

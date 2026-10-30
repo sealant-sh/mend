@@ -7,6 +7,7 @@ import {
   type Held,
   type Input,
   NOTHING_HELD,
+  clientCutText,
   encodeInput,
   framebufferUpdateRequest,
   hold,
@@ -97,6 +98,8 @@ export interface Hand {
   readonly look: Effect.Effect<Uint8Array, HandEnded | WorkerStopped>;
   /** A holder's input, sent only while `epoch` is current. */
   readonly relay: (inputs: ReadonlyArray<Input>, epoch: number) => Effect.Effect<void, HandEnded>;
+  /** A holder's paste, put on the screen's clipboard only while `epoch` is current; true once sent. */
+  readonly paste: (text: string, epoch: number) => Effect.Effect<boolean, HandEnded>;
   /** A key-up and a button-up for everything held, at each change of holder, ahead of the queue. */
   readonly release: Effect.Effect<void, HandEnded>;
   readonly ended: Effect.Effect<never, HandEnded>;
@@ -311,6 +314,12 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
     look: run(settledFrame()).pipe(Effect.flatMap(workers.encodePng)),
     relay: (inputs, epoch) =>
       run(Effect.flatMap(current(epoch), (now) => (now ? press(inputs) : Effect.void))),
+    paste: (text, epoch) =>
+      run(
+        Effect.flatMap(current(epoch), (now) =>
+          now ? Effect.as(send([clientCutText(text)]), true) : Effect.succeed(false),
+        ),
+      ),
     release: runFirst(Effect.suspend(() => press(releaseAll(held)))),
     ended: Deferred.await(end),
   } satisfies Hand;

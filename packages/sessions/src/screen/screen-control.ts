@@ -315,6 +315,37 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
         },
         false,
       ),
+    /**
+     * The holder's paste, put on the screen's clipboard through the hand while that connection
+     * holds (D13). The log keeps that it happened, never what was pasted.
+     */
+    paste: (sessionId: SessionId, connection: ViewerConnectionId, text: string) =>
+      onSession(
+        sessionId,
+        (screen) => {
+          const { input } = screen;
+          if (input._tag !== "Person" || input.connection !== connection) {
+            return Effect.succeed(false);
+          }
+          return Effect.gen(function* () {
+            const hand = yield* hands.of(screen);
+            if (hand === null || !(yield* hand.paste(text, input.epoch))) return false;
+            yield* screens.append({
+              screenId: screen.id,
+              actor: { _tag: "Person", userId: input.userId },
+              body: { _tag: "PersonInput", clicks: 0, keys: 0, pastes: 1 },
+              frame: null,
+            });
+            return true;
+          }).pipe(
+            Effect.catchTags({
+              HandEnded: () => Effect.succeed(false),
+              ScreenNotFoundError: () => Effect.succeed(false),
+            }),
+          );
+        },
+        false,
+      ),
   };
 });
 

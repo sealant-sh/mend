@@ -223,5 +223,6 @@ export const useXvnc = () => {
     world.signWith = null;
     xvnc?.remove();
   });
-  return { x, keysDown, pointer };
+  const start = (...argv: ReadonlyArray<string>) => xvnc.start(...argv);
+  return { x, keysDown, pointer, start };
 };
