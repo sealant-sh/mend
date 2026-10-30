@@ -12,6 +12,7 @@ import superjson from "superjson";
 
 import type { AppRouter } from "../server/routers/index.ts";
 import { makeLoginWalk } from "./login-walk.ts";
+import { withContinuation } from "./onboarding.ts";
 
 /**
  * The UI's one client of the web tier's tRPC surface. Same origin — the web
@@ -66,15 +67,11 @@ export const makeTrpcProxy = (queryClient: QueryClient) =>
   createTRPCOptionsProxy<AppRouter>({ client: trpcClient, queryClient });
 export type TrpcProxy = ReturnType<typeof makeTrpcProxy>;
 
-/**
- * The login walk, carrying where the user was: `/login?next=<here>` so signing
- * in returns them instead of dumping them at the workbench. The workbench root
- * itself needs no `next`.
- */
-export const loginWalkUrl = (): string => {
-  const here = `${window.location.pathname}${window.location.search}`;
-  return here === "/" ? "/login" : `/login?next=${encodeURIComponent(here)}`;
-};
+export const loginWalkUrl = (): string =>
+  withContinuation(
+    "/login",
+    `${window.location.pathname}${window.location.search}${window.location.hash}`,
+  );
 
 /** The page's one walk to sign-in (`makeLoginWalk`): refused requests and the access event. */
 export const loginWalk = makeLoginWalk({

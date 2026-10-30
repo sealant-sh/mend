@@ -5,15 +5,11 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitAccessPanel } from "#/components/git-access-panel";
 import { SetupFrame } from "#/components/setup-frame";
 import { setGitAccess } from "#/lib/api";
-import { safeNextPath } from "#/lib/onboarding";
+import { continuationOf } from "#/lib/onboarding";
 import { useTRPC } from "#/lib/trpc";
 
 export const Route = createFileRoute("/welcome")({
   ssr: false,
-  validateSearch: (search: Record<string, unknown>): { readonly next?: string } => {
-    const next = safeNextPath(search["next"]);
-    return next === "/" ? {} : { next };
-  },
   // The key is the point of the page. When the account's choice is (or defaults
   // to) the Mend key and none exists yet, create it before first paint, so the
   // visitor sees what to add on the git host — not a button asking permission.
@@ -34,7 +30,7 @@ export const Route = createFileRoute("/welcome")({
  */
 function WelcomePage() {
   const navigate = useNavigate();
-  const next = Route.useSearch().next ?? "/";
+  const next = continuationOf(window.location);
   const trpc = useTRPC();
   const access = useSuspenseQuery(trpc.git.access.queryOptions()).data;
 
