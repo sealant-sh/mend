@@ -360,7 +360,12 @@ export class FakeWorkbench {
     const destination = (this.turns.get(turn.sessionId) ?? []).find(
       (candidate) => candidate.id === steer.queuedTurnId,
     );
-    if (destination !== undefined) this.setTurn(destination, "cancelled");
+    if (destination !== undefined) {
+      destination.status = "cancelled";
+      destination.endedAt = tick();
+      destination.error = "The conversation's process ended before taking this turn.";
+      destination.fromSteer = null;
+    }
     Object.assign(steer, {
       delivery: { _tag: "NotSent", reason: steer.delivery.reason },
       queuedTurnId: null,
