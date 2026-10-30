@@ -72,6 +72,7 @@ import {
   DotfilesCloner,
   FollowUpDelivery,
   ForwardAdapter,
+  ResourceImageResolver,
   ResourcesLive,
   ServiceHost,
   SessionEngine,
@@ -284,6 +285,7 @@ export const createTenancyApi = async (
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
       readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
       readonly users?: Layer.PartialEffectful<UsersRepo["Service"]>;
+      readonly images?: Layer.PartialEffectful<ResourceImageResolver["Service"]>;
       readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
       readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
       readonly hotWorkspaces?: Layer.PartialEffectful<HotWorkspacesRepo["Service"]>;
@@ -467,6 +469,7 @@ export const createTenancyApi = async (
         calls,
       ),
       recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
+      recording(ResourceImageResolver, "images", options.implement?.images ?? {}, calls),
       // Whose identity a call about a workspace runs as: the principal in context here, since the
       // harness's platform has one user.
       recording(

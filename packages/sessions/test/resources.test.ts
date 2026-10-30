@@ -23,6 +23,7 @@ import { Effect, Layer, ManagedRuntime, Redacted, Result, Schema } from "effect"
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { ResourceImageResolver } from "../src/resources/image-resolver.ts";
 import { Resources, ResourcesChannelLive, ResourcesLive } from "../src/resources/resources.ts";
 import {
   handleSessionRequest,
@@ -108,7 +109,8 @@ const repos = Layer.mergeAll(
   SessionsRepoLive,
   UsersRepoLive,
 ).pipe(Layer.provideMerge(dbLayer));
-const resources = ResourcesLive.pipe(Layer.provideMerge(Layer.merge(repos, reads)));
+const images = Layer.mock(ResourceImageResolver, {});
+const resources = ResourcesLive.pipe(Layer.provideMerge(Layer.mergeAll(repos, reads, images)));
 const channel = ResourcesChannelLive.pipe(
   Layer.provideMerge(Layer.merge(resources, SessionChannelRegistryLive)),
 );

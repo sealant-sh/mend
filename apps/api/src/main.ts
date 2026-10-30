@@ -176,6 +176,7 @@ import {
   FollowUpLauncherLive,
   type MendMcp,
   MendMcpLive,
+  ResourceImageResolverLive,
   ResourcesChannelLive,
   ResourcesLive,
   ProtocolHostLive,
@@ -887,7 +888,7 @@ const MainLive = Layer.unwrap(
           SessionSteeringLive,
           landing,
           HandoffStartLive.pipe(Layer.provide(captureStore)),
-          ResourcesLive,
+          ResourcesLive.pipe(Layer.provide(ResourceImageResolverLive)),
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.

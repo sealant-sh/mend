@@ -1,11 +1,16 @@
 import { ProjectId, ResourceDefinitionId, ResourceProposalId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
+  ResourceApprovalRequest,
+  ResourceApproved,
+  ResourceName,
   ResourceProposalEntry,
   ResourceProposalInput,
   ResourceRefusal,
+  ResourceSelectionEntry,
   ResourcesPage,
   ResourceSpecDigest,
+  ResourceUseRequest,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -14,9 +19,10 @@ import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 
 /**
- * A project's resources (ADR 0019): read them, propose one, remove a proposal or a definition. A
- * project the caller cannot see is `NotFound`; one they see but may not change this way is
- * `ResourceDenied`, with the words that say whose act it is.
+ * A project's resources (ADR 0019): read them, propose one, remove a proposal or a definition,
+ * approve one and choose how a worktree uses it. A project the caller cannot see is `NotFound`;
+ * one they see but may not change this way is `ResourceDenied`, with the words that say whose act
+ * it is.
  */
 
 export class ResourceDenied extends Schema.TaggedError<ResourceDenied>()(
@@ -35,6 +41,27 @@ export class ResourceRejected extends Schema.TaggedError<ResourceRejected>()(
 /** The definition changed after the caller read it; nothing was written. */
 export class ResourceStale extends Schema.TaggedError<ResourceStale>()(
   "ResourceStale",
+  { message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+/** The image's registry did not answer in time; nothing was approved, so approving again may. */
+export class ResourceRegistryUnavailable extends Schema.TaggedError<ResourceRegistryUnavailable>()(
+  "ResourceRegistryUnavailable",
+  { message: Schema.String },
+  { httpApiStatus: 503 },
+) {}
+
+/** The registry's manifest could not be verified against its bytes; nothing was approved. */
+export class ResourceManifestUnverifiable extends Schema.TaggedError<ResourceManifestUnverifiable>()(
+  "ResourceManifestUnverifiable",
+  { message: Schema.String },
+  { httpApiStatus: 502 },
+) {}
+
+/** A start, refused in the words `resourceRuntimeRefusal` says; nothing was started. */
+export class ResourceRuntimeUnavailable extends Schema.TaggedError<ResourceRuntimeUnavailable>()(
+  "ResourceRuntimeUnavailable",
   { message: Schema.String },
   { httpApiStatus: 409 },
 ) {}
@@ -74,6 +101,41 @@ export const resourcesGroup = HttpApiGroup.make("resources")
       payload: Schema.Struct({ expectedDigest: ResourceSpecDigest }),
       success: ResourceRemoved,
       error: [NotFound, ResourceDenied, ResourceStale],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("approve", "/projects/:id/resources/approvals", {
+      params: { id: ProjectId },
+      query: { timeZone: ReaderTimeZone },
+      payload: ResourceApprovalRequest,
+      success: ResourceApproved,
+      error: [
+        NotFound,
+        ResourceDenied,
+        ResourceRejected,
+        ResourceStale,
+        ResourceRegistryUnavailable,
+        ResourceManifestUnverifiable,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put(
+      "use",
+      "/projects/:id/worktrees/:worktreeId/resources/:definitionId/selection",
+      {
+        params: { id: ProjectId, worktreeId: WorktreeId, definitionId: ResourceDefinitionId },
+        query: { timeZone: ReaderTimeZone },
+        payload: ResourceUseRequest,
+        success: ResourceSelectionEntry,
+        error: [NotFound, ResourceDenied, ResourceRejected],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post("start", "/projects/:id/resources/:name/start", {
+      params: { id: ProjectId, name: ResourceName },
+      error: [NotFound, ResourceRuntimeUnavailable],
     }),
   )
   .middleware(AuthMiddleware);

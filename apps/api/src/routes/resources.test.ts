@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { PgClient } from "@effect/sql-pg";
 import {
   MendDBLive,
@@ -15,14 +17,19 @@ import {
   PresetVersion,
   ResourceDefinitionInput,
   ResourceName,
+  resourceRuntimeRefusal,
 } from "@mend/domain/workbench";
-import { WORKTREE_STAMP } from "@mend/sessions";
+import { ImageResolutionError, type ResourceImageResolver, WORKTREE_STAMP } from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
-import { type HarnessUser, ids } from "../../test/support/tenancy-harness.ts";
+import {
+  CAROL_WORKTREE_IN_SHARED_A,
+  type HarnessUser,
+  ids,
+} from "../../test/support/tenancy-harness.ts";
 
 const postgres = postgresTestConfig();
 const decodeSpec = Schema.decodeUnknownSync(ResourceDefinitionInput);
@@ -81,6 +88,8 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
           VALUES (${shared.project}, 'shared-a', '/store/shared-a', 'main', 'org-a')`;
         yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
           VALUES (${shared.worktree}, ${shared.project}, 'wt', 'wt', 'mend/wt', 'abc')`;
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES (${CAROL_WORKTREE_IN_SHARED_A}, ${shared.project}, 'carol', 'carol', 'mend/carol', 'abc')`;
       }),
     );
   });
@@ -89,12 +98,15 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     await api?.dispose();
     api = undefined;
     file = { text: MEND_TOML, stamp: WORKTREE_STAMP };
+    resolved.length = 0;
+    resolveImage = pinned;
     await runtime.runPromise(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`DELETE FROM resource_proposals`;
         yield* sql`DELETE FROM resource_definitions`;
         yield* sql`DELETE FROM resource_approvals`;
+        yield* sql`DELETE FROM resource_selections`;
       }),
     );
   });
@@ -108,6 +120,13 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     return yield* ResourcesRepo;
   });
   let file = { text: MEND_TOML, stamp: WORKTREE_STAMP };
+  /** Each image the registry was asked for; every tag pins to the same digest per image. */
+  const resolved: Array<string> = [];
+  const digestFor = (image: string) =>
+    ImageDigest.make(`sha256:${createHash("sha256").update(image).digest("hex")}`);
+  const pinned: ResourceImageResolver["Service"]["resolve"] = (image) =>
+    Effect.succeed({ digest: digestFor(image), resolvedBy: "docker-mirror:5000" });
+  let resolveImage = pinned;
   const harness = () => {
     if (api === undefined) throw new Error("start the API first");
     return api;
@@ -129,6 +148,13 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
                   : [new UserFacts({ id, name: NAMES[id], email: `${id}@example.test` })],
               ),
             ),
+        },
+        images: {
+          resolve: (image) =>
+            Effect.suspend(() => {
+              resolved.push(image);
+              return resolveImage(image);
+            }),
         },
         reads: {
           readFile: () =>
@@ -506,5 +532,244 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       ignored: [{ key: "resource.mail.device" }],
     });
     expect((await list("carol", `&worktreeId=${ids("shared-b").worktree}`)).status).toBe(404);
+  });
+
+  describe("approving and choosing", () => {
+    const approveVia = (as: HarnessUser, body: unknown) =>
+      harness()
+        .request(as, "POST", `/api/projects/${shared.project}/resources/approvals?${zone}`, body)
+        .then(json);
+    const use = (as: HarnessUser, worktree: WorktreeId, definition: string, mode: string) =>
+      harness()
+        .request(
+          as,
+          "PUT",
+          `/api/projects/${shared.project}/worktrees/${worktree}/resources/${definition}/selection?${zone}`,
+          { mode },
+        )
+        .then(json);
+    const approvals = () =>
+      runtime.runPromise(
+        Effect.flatMap(
+          SqlClient.SqlClient,
+          (sql) =>
+            sql<{ readonly worktreeId: string | null; readonly approvedBy: string }>`
+            SELECT worktree_id AS "worktreeId", approved_by AS "approvedBy"
+            FROM resource_approvals ORDER BY revision`,
+        ),
+      );
+    const fileTable = async (as: HarnessUser, worktree: WorktreeId) => {
+      const read = (await list(as, `&worktreeId=${worktree}`)).body.file;
+      return read.proposals[0];
+    };
+
+    it("adopts a member's proposal, pins its image, and approving again asks no registry", async () => {
+      await start();
+      const proposal = (await propose("carol", "17")).body;
+      const first = await approveVia("alice", {
+        source: { kind: "proposal", id: proposal.id, digest: proposal.digest, settings: null },
+        worktreeId: null,
+      });
+      expect(first).toMatchObject({
+        status: 200,
+        body: {
+          image: `postgres:17@${digestFor("postgres:17")}`,
+          resolvedBy: "docker-mirror:5000",
+          definition: {
+            digest: proposal.digest,
+            statusLine: "@db · postgres 17 · project · approved by Alice · not started",
+          },
+        },
+      });
+      const again = await approveVia("alice", {
+        source: { kind: "settings", id: first.body.definition.id, digest: proposal.digest },
+        worktreeId: null,
+      });
+      expect(again.body).toEqual({ ...first.body, resolvedBy: null });
+      expect(resolved).toEqual(["postgres:17"]);
+      expect(await approvals()).toEqual([{ worktreeId: null, approvedBy: "alice" }]);
+    });
+
+    it("refuses a read settings moved on from with 409, and writes nothing", async () => {
+      await start();
+      const read = await declare();
+      const proposal = (await propose("carol", "18")).body;
+      await declareSpec({ ...read.spec, image: "postgres:17.6" });
+      expect(
+        await approveVia("alice", {
+          source: { kind: "settings", id: read.id, digest: read.specDigest },
+          worktreeId: null,
+        }),
+      ).toEqual({
+        status: 409,
+        body: {
+          _tag: "ResourceStale",
+          message: "@db · the definition changed since you read it · nothing was approved",
+        },
+      });
+      expect(
+        await approveVia("alice", {
+          source: {
+            kind: "proposal",
+            id: proposal.id,
+            digest: proposal.digest,
+            settings: { id: read.id, digest: read.specDigest },
+          },
+          worktreeId: null,
+        }),
+      ).toEqual({
+        status: 409,
+        body: {
+          _tag: "ResourceStale",
+          message: "@db · settings changed since you read it · nothing was approved",
+        },
+      });
+      expect(await approvals()).toEqual([]);
+    });
+
+    it("lets a change owner approve a worktree resource only once a manager approved its image", async () => {
+      await start();
+      const table = await fileTable("carol", CAROL_WORKTREE_IN_SHARED_A);
+      const mine = {
+        source: {
+          kind: "file",
+          worktreeId: CAROL_WORKTREE_IN_SHARED_A,
+          name: "mail",
+          digest: table.digest,
+          settings: null,
+        },
+        worktreeId: CAROL_WORKTREE_IN_SHARED_A,
+      };
+      expect(await approveVia("carol", mine)).toMatchObject({
+        status: 422,
+        body: {
+          _tag: "ResourceRejected",
+          message: `@mail · image is ${digestFor("axllent/mailpit:v1.21")}, which no manager approved for this project`,
+        },
+      });
+      expect((await list("carol")).body.settings).toEqual([]);
+
+      // The manager approves the image for the project, adopting the same table.
+      expect((await approveVia("alice", { ...mine, worktreeId: null })).status).toBe(200);
+      const approved = await approveVia("carol", mine);
+      expect(approved).toMatchObject({
+        status: 200,
+        body: {
+          definition: {
+            statusLine:
+              "@mail · mailpit · worktree · approved by Carol for this worktree · not started",
+          },
+        },
+      });
+      expect(await approvals()).toEqual([
+        { worktreeId: null, approvedBy: "alice" },
+        { worktreeId: CAROL_WORKTREE_IN_SHARED_A, approvedBy: "carol" },
+      ]);
+    });
+
+    it("refuses a manager another person's worktree, and a member the project", async () => {
+      await start();
+      const table = await fileTable("alice", CAROL_WORKTREE_IN_SHARED_A);
+      const source = {
+        kind: "file",
+        worktreeId: CAROL_WORKTREE_IN_SHARED_A,
+        name: "mail",
+        digest: table.digest,
+        settings: null,
+      };
+      expect(await approveVia("alice", { source, worktreeId: CAROL_WORKTREE_IN_SHARED_A })).toEqual(
+        {
+          status: 403,
+          body: {
+            _tag: "ResourceDenied",
+            message:
+              "approving a worktree resource for this worktree is its change owner's: the owner of its first session",
+          },
+        },
+      );
+      expect((await approveVia("carol", { source, worktreeId: null })).body).toEqual({
+        _tag: "ResourceDenied",
+        message:
+          "approving a resource for the project is a manager's: the project's creator or an organization owner",
+      });
+      expect(resolved).toEqual([]);
+    });
+
+    it("says a registry that cannot pin the image, and approves nothing", async () => {
+      await start();
+      const db = await declare();
+      const body = {
+        source: { kind: "settings", id: db.id, digest: db.specDigest },
+        worktreeId: null,
+      };
+      resolveImage = (image) =>
+        Effect.fail(new ImageResolutionError({ image, reason: "unavailable" }));
+      expect(await approveVia("alice", body)).toEqual({
+        status: 503,
+        body: {
+          _tag: "ResourceRegistryUnavailable",
+          message:
+            "@db · image postgres:17 · registry did not answer · try approval again · not approved",
+        },
+      });
+      resolveImage = (image) =>
+        Effect.fail(new ImageResolutionError({ image, reason: "not-found" }));
+      expect(await approveVia("alice", body)).toMatchObject({
+        status: 422,
+        body: { message: "@db · image postgres:17 · not found in the registry · not approved" },
+      });
+      expect(await approvals()).toEqual([]);
+    });
+
+    it("stores a change owner's choice and answers the row it wrote", async () => {
+      await start();
+      const db = await declare();
+      expect(await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own")).toEqual({
+        status: 200,
+        body: {
+          definitionId: db.id,
+          worktreeId: CAROL_WORKTREE_IN_SHARED_A,
+          mode: "own",
+          revision: 0,
+          chosenBy: "carol",
+          statusLine: "@db · postgres 17 · project · waiting for approval · its own database",
+        },
+      });
+      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared")).body).toMatchObject({
+        mode: "shared",
+        revision: 1,
+      });
+      expect((await use("alice", CAROL_WORKTREE_IN_SHARED_A, db.id, "off")).body).toEqual({
+        _tag: "ResourceDenied",
+        message:
+          "choosing how this worktree uses a resource is its change owner's: the owner of its first session",
+      });
+    });
+
+    it("refuses every start in the words a recipe's depends says", async () => {
+      await start();
+      const refused = await harness()
+        .request("carol", "POST", `/api/projects/${shared.project}/resources/db/start`)
+        .then(json);
+      expect(refused).toEqual({
+        status: 409,
+        body: {
+          _tag: "ResourceRuntimeUnavailable",
+          message: resourceRuntimeRefusal("db"),
+        },
+      });
+      expect(refused.body.message).toBe(
+        "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+      );
+      expect(
+        (
+          await harness().request(
+            "bob",
+            "POST",
+            `/api/projects/${shared.project}/resources/db/start`,
+          )
+        ).status,
+      ).toBe(404);
+    });
   });
 });

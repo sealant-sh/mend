@@ -965,9 +965,13 @@ describe("SessionChannelNetworkHost", () => {
             stdout: "",
             stderr: `mend: ${WORKSPACE_RESOURCE_REFUSAL}\n`,
           });
-          expect((yield* helper(["resource", "remove", "db"])).stderr).toBe(
-            `mend: ${WORKSPACE_RESOURCE_REFUSAL}\n`,
-          );
+          for (const args of [
+            ["resource", "remove", "db"],
+            ["resource", "approve", "db"],
+            ["resource", "use", "db", "own"],
+          ]) {
+            expect((yield* helper(args)).stderr).toBe(`mend: ${WORKSPACE_RESOURCE_REFUSAL}\n`);
+          }
           const headers = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
           expect(
             yield* Effect.promise(() => call(address, "PUT", "/resources/db", headers, {})),
@@ -976,6 +980,8 @@ describe("SessionChannelNetworkHost", () => {
             { sessionId: SESSION, act: "read", timeZone: "Europe/Athens" },
             { sessionId: SESSION, act: "propose", timeZone: "Europe/Athens" },
             { sessionId: SESSION, act: "remove-definition", timeZone: "Europe/Athens" },
+            { sessionId: SESSION, act: "approve", timeZone: "Europe/Athens" },
+            { sessionId: SESSION, act: "use", timeZone: "Europe/Athens" },
           ]);
 
           registry.serveResources(() => Effect.die(new Error("the database is down")));
