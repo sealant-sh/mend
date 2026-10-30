@@ -209,6 +209,9 @@ const USER_NAMES: Readonly<Record<string, string>> = {
   dave: "Dave",
 };
 
+/** A removal mark's key in the in-memory marks: `worktree:<id>` or `project:<id>`. */
+const keyOf = (row: FencedRow) => `${row.kind}:${row.id}`;
+
 const network = makePublicNetwork(
   Schema.decodeUnknownSync(PublicOrigin)("http://api.internal"),
   [],
@@ -354,7 +357,6 @@ export const createTenancyApi = async (
     { readonly phase: "checking" | "deleting"; readonly id: string }
   >();
   const marked = (key: string) => removalMarks.has(key);
-  const keyOf = (row: FencedRow) => `${row.kind}:${row.id}`;
   const inMemoryFences: RemovalFencesRepo["Service"] = {
     take: (row) =>
       Effect.andThen(

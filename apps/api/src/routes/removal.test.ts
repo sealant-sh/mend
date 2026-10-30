@@ -65,13 +65,11 @@ interface Scene {
 
 let api: TenancyApi | undefined;
 let removedWorktrees: Array<string> = [];
-let removedRows: Array<string> = [];
 let removedStores: Array<string> = [];
 let reads = 0;
 
 const world = async (scene: Scene = {}) => {
   removedWorktrees = [];
-  removedRows = [];
   removedStores = [];
   reads = 0;
   api = await createTenancyApi(
