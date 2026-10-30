@@ -223,6 +223,27 @@ describe.skipIf(postgres.skip)("removal fences (migration 0164)", () => {
     });
   });
 
+  it("hands a deletion that failed partway to the next removal at once, still refusing starts", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const fences = yield* RemovalFencesRepo;
+        const taken = yield* fences.take(worktreeRow);
+        if (taken._tag !== "held") return yield* Effect.die("fence not taken");
+        yield* fences.commit(worktreeRow, taken.id);
+        const beforeHandOver = yield* fences.take(worktreeRow);
+        yield* fences.handOver(worktreeRow, taken.id);
+        const startRefused = yield* refused(insertSession("s-1", "anna"));
+        const next = yield* fences.take(worktreeRow);
+        return {
+          beforeHandOver: beforeHandOver._tag,
+          startRefused,
+          next: next._tag === "finish" && next.id === taken.id,
+        };
+      }),
+    );
+    expect(outcome).toEqual({ beforeHandOver: "underway", startRefused: true, next: true });
+  });
+
   it("makes a removal that comes during a session insert wait for it, then see it", async () => {
     const outcome = await run(
       Effect.gen(function* () {
