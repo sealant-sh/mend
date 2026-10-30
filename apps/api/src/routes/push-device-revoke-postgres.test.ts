@@ -303,6 +303,19 @@ describe.skipIf(postgres.skip)(
       expect.soft(await notifiedTokens(owner.id)).toEqual([keptPush]);
     });
 
+    it("forgets the phone an older app unpairs by naming its push token in the URL", async () => {
+      const owner = await signUp("push-older-app");
+      const phone = await pair(owner, "Older app");
+      const push = "ExponentPushToken[older-app-push]";
+      expect((await registerPush(phone.token, push)).status).toBe(200);
+
+      const unpaired = await send(phone.token, "DELETE", `/devices/${encodeURIComponent(push)}`);
+
+      expect(unpaired.status).toBe(204);
+      expect(await storedOf(push)).toEqual([]);
+      expect(await notifiedTokens(owner.id)).toEqual([]);
+    });
+
     it("takes a push token only from a paired phone, never a browser sign-in or the machine token", async () => {
       const operator = await signUp("push-operator");
       await query(
