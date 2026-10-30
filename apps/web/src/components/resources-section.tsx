@@ -77,6 +77,9 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 const PROPOSE = "form";
 
+/** An act's answer, and whatever else it changes on screen once it is known to be this read's. */
+type Settled = Answer & { readonly apply?: () => void };
+
 /** An act answered with nothing to say: the item's earlier note goes. */
 const none = (key: string): Answer => ({ at: key, note: null });
 
@@ -115,21 +118,25 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
    * One act on one item, never two at once on it: the guard reads a ref, so a second click before
    * the next render is refused too. Its answer lands once, where the act says.
    */
-  const act = (key: string, action: string, run: () => Promise<Answer>) => {
+  const act = (key: string, action: string, run: () => Promise<Settled>) => {
     if (running.current.has(key)) return;
     running.current.set(key, action);
     setBusy(new Map(running.current));
     const startedOn = reading;
     void run()
-      .catch((error: unknown) => ({
-        at: key,
-        note: { refused: true, lines: [message(error)], reload: false },
-      }))
-      .then((answer) =>
-        shown.current === startedOn
-          ? setNotes((current) => answered(current, key, answer))
-          : undefined,
+      .catch(
+        (error: unknown): Settled => ({
+          at: key,
+          note: { refused: true, lines: [message(error)], reload: false },
+        }),
       )
+      .then((answer) => {
+        // Everything an answer changes on screen happens here, for the read it started from only.
+        if (shown.current !== startedOn) return false;
+        setNotes((current) => answered(current, key, answer));
+        answer.apply?.();
+        return true;
+      })
       .finally(() => {
         running.current.delete(key);
         setBusy(new Map(running.current));
@@ -168,12 +175,13 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
     approve: (pending) =>
       act(pending.key, "approve", async () => {
         const outcome = await approveResource(projectId, pending.request);
-        setConfirming(null);
-        if (!outcome.ok) return { at: pending.key, note: refusedNote(outcome) };
+        const close = () => setConfirming((open) => (open?.key === pending.key ? null : open));
+        if (!outcome.ok) return { at: pending.key, note: refusedNote(outcome), apply: close };
         const { definition, image, resolvedBy } = outcome.result;
         await invalidate();
         // A proposal or a file table approved is now the definition settings hold.
         return {
+          apply: close,
           at: `s:${definition.id}`,
           note: {
             refused: false,
@@ -203,16 +211,15 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
     act(PROPOSE, "propose", async () => {
       const outcome = await proposeResource(projectId, checked.proposal);
       if (!outcome.ok) {
-        setFormRefusals(
+        const refusals =
           outcome.kind === "rejected"
             ? outcome.refusals
-            : [{ key: "proposal", message: outcome.message }],
-        );
-        return none(PROPOSE);
+            : [{ key: "proposal", message: outcome.message }];
+        return { ...none(PROPOSE), apply: () => setFormRefusals(refusals) };
       }
-      setDraft(null);
       await invalidate();
       return {
+        apply: () => setDraft(null),
         at: `p:${outcome.result.id}`,
         note: { refused: false, lines: ["Proposed. A manager approves it here."], reload: false },
       };
@@ -236,6 +243,8 @@ export function ResourcesSection({ projectId }: { readonly projectId: string }) 
                 shown.current = `${projectId}\u0000${chosen?.id ?? ""}`;
                 setNotes(new Map());
                 setConfirming(null);
+                // Refusals answered a submit on the read that changed; the draft stays the person's.
+                setFormRefusals([]);
               }}
               className="rounded-lg border border-input bg-background px-2 py-1 font-mono text-[11px] text-foreground"
             >

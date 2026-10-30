@@ -15,7 +15,7 @@ import type { ResourcesPageView } from "#/lib/resources";
 
 const boundary = vi.hoisted(() => {
   const page: { current: unknown } = { current: null };
-  return { propose: vi.fn(), choose: vi.fn(), page };
+  return { propose: vi.fn(), choose: vi.fn(), approve: vi.fn(), page };
 });
 
 vi.mock("#/lib/trpc", () => ({
@@ -48,6 +48,7 @@ vi.mock("#/lib/resources", async (original) => ({
   ...(await original<typeof import("#/lib/resources")>()),
   proposeResource: boundary.propose,
   chooseResource: boundary.choose,
+  approveResource: boundary.approve,
 }));
 
 const { ResourcesSection } = await import("./resources-section.tsx");
@@ -118,9 +119,146 @@ const type = async (field: Element | null, value: string) => {
 afterEach(() => {
   boundary.propose.mockReset();
   boundary.choose.mockReset();
+  boundary.approve.mockReset();
 });
 
+/** The worktree select, and a switch of the read to `id` ("" reads no worktree). */
+const reads = (host: HTMLElement) => {
+  const select = host.querySelector("select");
+  if (select === null) throw new Error("no worktree select");
+  return async (id: string) => {
+    await act(async () => {
+      select.value = id;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+  };
+};
+
 describe("the Resources card's answers", () => {
+  it.each([
+    ["worktree-B", "wt_b"],
+    ["no worktree", ""],
+  ])(
+    "keeps a refusal of a proposal made on worktree-A out of the form once the read is %s",
+    async (_, target) => {
+      boundary.page.current = page();
+      const pending: Array<(value: unknown) => void> = [];
+      boundary.propose.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+      const card = await mount();
+      try {
+        const switchTo = reads(card.host);
+        await switchTo("wt_a");
+        await act(async () => card.buttonNamed("+ propose a resource…")?.click());
+        await type(card.host.querySelector('[aria-label="Name"]'), "db");
+        await type(card.host.querySelector('[aria-label="Version"]'), "17");
+        await act(async () =>
+          card.host
+            .querySelector("form")
+            ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+        );
+        expect(boundary.propose).toHaveBeenCalledOnce();
+        await switchTo(target);
+        await act(async () => {
+          for (const finish of pending) {
+            finish({
+              ok: false,
+              kind: "rejected",
+              refusals: [{ key: "version", message: "refused on the old read" }],
+              message: "@db · version refused on the old read",
+            });
+          }
+        });
+        await settle();
+        expect(card.host.textContent).not.toContain("refused on the old read");
+        // The draft is the person's, whichever read is on screen.
+        expect(card.host.querySelector<HTMLInputElement>('[aria-label="Name"]')?.value).toBe("db");
+      } finally {
+        await card.unmount();
+      }
+    },
+  );
+
+  it("clears a delivered form refusal when the read changes, and keeps the draft", async () => {
+    boundary.page.current = page();
+    boundary.propose.mockResolvedValue({
+      ok: false,
+      kind: "rejected",
+      refusals: [{ key: "version", message: "is not a major version" }],
+      message: "@db · version is not a major version",
+    });
+    const card = await mount();
+    try {
+      const switchTo = reads(card.host);
+      await switchTo("wt_a");
+      await act(async () => card.buttonNamed("+ propose a resource…")?.click());
+      await type(card.host.querySelector('[aria-label="Name"]'), "db");
+      await type(card.host.querySelector('[aria-label="Version"]'), "latest");
+      await act(async () =>
+        card.host
+          .querySelector("form")
+          ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+      );
+      await settle();
+      expect(card.host.textContent).toContain("version is not a major version");
+      await switchTo("wt_b");
+      expect(card.host.textContent).not.toContain("is not a major version");
+      expect(card.host.querySelector<HTMLInputElement>('[aria-label="Version"]')?.value).toBe(
+        "latest",
+      );
+    } finally {
+      await card.unmount();
+    }
+  });
+
+  it("leaves a review opened on worktree-B open when an approval sent on worktree-A answers", async () => {
+    const offered = (id: ResourceDefinitionId) => ({
+      project: { source: { kind: "settings" as const, id, digest: db.digest }, worktreeId: null },
+      worktree: null,
+    });
+    const cache = ResourceDefinitionId.make("rdef_cache");
+    boundary.page.current = page({
+      settings: [
+        { ...db, approvals: { project: null, worktree: null }, approve: offered(db.id) },
+        {
+          ...db,
+          id: cache,
+          spec: { ...db.spec, name: ResourceName.make("cache") },
+          approvals: { project: null, worktree: null },
+          approve: offered(cache),
+          statusLine: "@cache · waiting for approval",
+        },
+      ],
+    });
+    const pending: Array<(value: unknown) => void> = [];
+    boundary.approve.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    const card = await mount();
+    const approveButtons = () =>
+      [...card.host.querySelectorAll("button")].filter(
+        (button) => button.textContent === "approve for the project…",
+      );
+    try {
+      const switchTo = reads(card.host);
+      await switchTo("wt_a");
+      await act(async () => approveButtons()[0]?.click());
+      await act(async () => card.buttonNamed("approve")?.click());
+      expect(boundary.approve).toHaveBeenCalledOnce();
+      await switchTo("wt_b");
+      await act(async () => approveButtons()[1]?.click());
+      expect(card.host.textContent).toContain("Approve exactly this definition");
+      await act(async () => {
+        for (const finish of pending) {
+          finish({ ok: false, kind: "stale", message: "@db · changed (the answer for A)" });
+        }
+      });
+      await settle();
+      expect(card.host.textContent).toContain("Approve exactly this definition");
+      expect(card.host.textContent).not.toContain("the answer for A");
+    } finally {
+      await card.unmount();
+    }
+  });
+
   it("shows a proposal that failed in transit in the form, which keeps the draft for a retry", async () => {
     boundary.page.current = page();
     boundary.propose.mockRejectedValue(new Error("probe: connection interrupted"));
