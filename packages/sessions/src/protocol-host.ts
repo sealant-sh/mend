@@ -1235,31 +1235,6 @@ export const ProtocolHostLive: Layer.Layer<
       return between === undefined ? null : ({ _tag: "Between", processId: between } as const);
     });
 
-    const dispatchPlaced = (
-      sessionId: SessionId,
-      place: { readonly _tag: "Hosted" | "Between"; readonly processId: SessionProcessId },
-      dispatch: (entry: HostedProcess) => Effect.Effect<void>,
-    ): Effect.Effect<boolean> =>
-      Effect.gen(function* () {
-        if (place._tag === "Hosted") {
-          const entry = hosted.get(place.processId);
-          if (entry === undefined) return false;
-          yield* dispatch(entry);
-          return true;
-        }
-        // The next process may have attached meanwhile: the turn moves onto it, never left on
-        // the stopped one.
-        const next = [...hosted.values()].find(
-          (candidate) =>
-            candidate.process.sessionId === sessionId && candidate.process.id !== place.processId,
-        );
-        if (next !== undefined) {
-          yield* takeQueuedTurns(sessionId, next.process.id);
-          yield* dispatch(next);
-        }
-        return true;
-      });
-
     const submitTurn = Effect.fn("ProtocolHost.submitTurn")(function* (
       sessionId: SessionId,
       input: string,
@@ -1278,32 +1253,33 @@ export const ProtocolHostLive: Layer.Layer<
             Effect.fail(new ProtocolHostNotLiveError({ processId: place.processId })),
           ),
         );
-      const dispatched = yield* dispatchPlaced(sessionId, place, dispatchJoined).pipe(Effect.exit);
+      const dispatched = yield* dispatchAdmitted(sessionId, place, dispatchJoined).pipe(
+        Effect.exit,
+      );
+      // From here the answer is read until storage answers: a failure answered for a stored turn
+      // tells its sender to send the words again.
+      const withdraw = retried(
+        Effect.suspend(() => conversations.withdrawMessageTurn(turn.id, place.processId)),
+        "protocol host: a turn was not withdrawn",
+        { turnId: turn.id },
+      );
       if (Exit.isFailure(dispatched)) {
         if (Cause.hasInterruptsOnly(dispatched.cause))
           return yield* Effect.failCause(dispatched.cause);
-        // A turn still queued is withdrawn, so the failure the caller sees is the whole outcome.
-        // One another dispatch took meanwhile is answered as it stands, never as a failure the
-        // caller would send again; so is one whose outcome storage could not tell yet.
+        // A turn still queued here is withdrawn, so the failure the caller sees is the whole
+        // outcome. One a successor or another dispatch took is answered as it stands, never as a
+        // failure the caller would send again.
+        if (yield* withdraw) return yield* Effect.failCause(dispatched.cause);
         const now = yield* retried(
-          conversations
-            .cancelOpenForTurn(turn.id)
-            .pipe(Effect.andThen(Effect.suspend(() => conversations.byTurnId(turn.id)))),
+          Effect.suspend(() => conversations.byTurnId(turn.id)),
           "protocol host: a turn's outcome was not read",
           { turnId: turn.id },
         );
-        if (now === null || now.status === "cancelled")
-          return yield* Effect.failCause(dispatched.cause);
+        if (now === null) return yield* Effect.failCause(dispatched.cause);
         return now;
       }
-      if (!dispatched.value) {
-        yield* retried(
-          conversations.cancelOpenForTurn(turn.id),
-          "protocol host: a turn was not withdrawn",
-          { turnId: turn.id },
-        );
+      if (!dispatched.value && (yield* withdraw))
         return yield* new ProtocolHostNotLiveError({ processId: place.processId });
-      }
       return turn;
     });
 

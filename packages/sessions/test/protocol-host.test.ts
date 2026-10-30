@@ -839,6 +839,94 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
+  it.effect("sends a turn on the successor when its process handed over before dispatch", () => {
+    const world = makeConversationWorld();
+    const successor = new SessionProcess({
+      ...agentProcess,
+      id: SessionProcessId.make("process-2"),
+    });
+    const peer = makePipe([]);
+    const next = makePipe(["on-successor"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.beforeAdmit = Effect.suspend(() => {
+        world.admission.beforeAdmit = Effect.void;
+        return Effect.gen(function* () {
+          yield* host
+            .attach({
+              process: successor,
+              pipe: next.pipe,
+              cwd: "/workspace/repo",
+              permissionMode: "bypass",
+              launchedWithLoginOf: "owner-1",
+              hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+            })
+            .pipe(Effect.orDie);
+          yield* host.detach(processId);
+        });
+      });
+      yield* submit(host, "handed over");
+      expect(turnWith(world, "handed over")).toMatchObject({
+        processId: successor.id,
+        status: "running",
+        providerTurnId: "on-successor",
+      });
+      expect(turnStarts(peer)).toBe(0);
+      yield* host.detach(successor.id);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [agentProcess, successor])));
+  });
+
+  it.effect("leaves a turn to the successor that took it when its dispatch failed", () => {
+    const world = makeConversationWorld();
+    const successor = new SessionProcess({
+      ...agentProcess,
+      id: SessionProcessId.make("process-2"),
+    });
+    const busy = world.seed("the successor's own turn");
+    world.turns.set(
+      busy.id,
+      new AgentTurn({
+        ...busy,
+        processId: successor.id,
+        status: "running",
+        providerTurnId: "busy",
+        startedAt: now(),
+      }),
+    );
+    const peer = makePipe([]);
+    const next = makePipe([]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      // The process the turn was placed on hands over before the turn is stored, and the
+      // successor's own claim fails after it took the turn.
+      world.admission.beforeAdmit = Effect.suspend(() => {
+        world.admission.beforeAdmit = Effect.void;
+        return Effect.gen(function* () {
+          yield* host
+            .attach({
+              process: successor,
+              pipe: next.pipe,
+              cwd: "/workspace/repo",
+              permissionMode: "bypass",
+              launchedWithLoginOf: "owner-1",
+              hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+            })
+            .pipe(Effect.orDie);
+          yield* host.detach(processId);
+          world.admission.beforeClaim = once(Effect.die("the successor's claim failed"));
+        });
+      });
+      yield* submit(host, "handed over").pipe(Effect.exit);
+      expect(turnWith(world, "handed over")).toMatchObject({
+        processId: successor.id,
+        status: "queued",
+      });
+      yield* host.detach(successor.id);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [agentProcess, successor])));
+  });
+
   it.effect("puts back only the turn a failed claim took", () => {
     const world = makeConversationWorld();
     const earlier = world.seed("earlier");
