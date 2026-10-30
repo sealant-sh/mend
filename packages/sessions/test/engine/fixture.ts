@@ -973,6 +973,7 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   setTurnPayer: () => Effect.die("not in test"),
   bindRunningProviderTurn: () => Effect.succeed(null),
   failTurn: () => Effect.die("not in test"),
+  failUnconfirmedTurn: () => Effect.die("not in test"),
   setTurnIntent: () => Effect.die("not in test"),
   claimTurnLanding: () => Effect.die("not in test"),
   decideTurnLanding: () => Effect.die("not in test"),

@@ -1,4 +1,9 @@
-import { AgentConversationRepo, SessionProcessesRepo, SessionsRepo } from "@mend/db";
+import {
+  AgentConversationRepo,
+  AgentTurnNotFoundError,
+  SessionProcessesRepo,
+  SessionsRepo,
+} from "@mend/db";
 import {
   AgentItemId,
   AgentTurnId,
@@ -77,6 +82,8 @@ const conversationWorld = () => {
     return next;
   };
   const ordered = () => [...turns.values()].toSorted((a, b) => a.ordinal - b.ordinal);
+  /** What happens just before a turn is failed: a Stop, say. */
+  const faults: { beforeFail: Effect.Effect<void> } = { beforeFail: Effect.void };
   const layer = Layer.mock(AgentConversationRepo, {
     ...makeSteerStore(turns),
     listTurns: () => Effect.sync(ordered),
@@ -166,7 +173,13 @@ const conversationWorld = () => {
       ),
     bindRunningProviderTurn: () => Effect.succeed(null),
     failTurn: (id, error) =>
-      Effect.sync(() => update(id, { status: "failed", error, endedAt: now() })),
+      Effect.suspend(() => faults.beforeFail).pipe(
+        Effect.flatMap(() =>
+          ["queued", "running", "failed"].includes(turns.get(id)?.status ?? "")
+            ? Effect.succeed(update(id, { status: "failed", error, endedAt: now() }))
+            : Effect.fail(new AgentTurnNotFoundError({ turnId: id })),
+        ),
+      ),
     completeTurn: (providerTurnId, _session, status, _usage, error) =>
       Effect.sync(() => {
         const turn = ordered().find((candidate) => candidate.providerTurnId === providerTurnId);
@@ -226,7 +239,7 @@ const conversationWorld = () => {
     saveProtocolCursor: () => Effect.void,
     resetSendingResponses: () => Effect.void,
   });
-  return { turns, layer, ordered, update };
+  return { turns, layer, ordered, update, faults };
 };
 
 /** A Claude or Codex on the far side of a pipe: says what the test pushes, records what Mend sends. */
@@ -1096,6 +1109,43 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
         expect(steered.world.turns.get(own.id)).toMatchObject({
           processId: steered.processA.id,
           billedUserId: ALICE,
+        });
+        yield* host.detach(steered.processA.id);
+      }).pipe(Effect.scoped, Effect.provide(steered.host));
+    },
+  );
+
+  it.live(
+    "a Stop that cancels B's waiting turn as its hand-over fails leaves the queue moving",
+    () => {
+      const steered = steeredWorld("claude");
+      const alice = claudePipe("pipe-a");
+      steered.preparation.during = Effect.fail(
+        new SealantPlatformError({
+          code: "person_login_not_written",
+          status: 502,
+          message: "bob's logins could not be written into this workspace.",
+          cause: null,
+        }),
+      );
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachAs(steered.processA, alice.pipe, steered.hooksFor(ALICE, Effect.void));
+        const bobs = yield* host.submitTurn(sessionId, "Bob's request", BOB);
+        const behind = yield* host.submitTurn(sessionId, "Bob's second request", BOB);
+        let stopped = false;
+        steered.world.faults.beforeFail = Effect.sync(() => {
+          if (stopped) return;
+          stopped = true;
+          steered.world.update(bobs.id, { status: "cancelled", endedAt: now() });
+        });
+        yield* waitUntil(
+          () => steered.world.turns.get(behind.id)?.status === "failed",
+          "the turn behind it refused",
+        );
+        expect(steered.world.turns.get(bobs.id)).toMatchObject({
+          status: "cancelled",
+          error: null,
         });
         yield* host.detach(steered.processA.id);
       }).pipe(Effect.scoped, Effect.provide(steered.host));

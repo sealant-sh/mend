@@ -21,6 +21,17 @@ export class AgentTurnBusyError extends Schema.TaggedError<AgentTurnBusyError>()
   { providerTurnId: Schema.String },
 ) {}
 
+/** A turn was not taken; `certainty` says whether any byte may have reached the harness. */
+export class AgentTurnDeliveryError extends Schema.TaggedError<AgentTurnDeliveryError>()(
+  "AgentTurnDeliveryError",
+  {
+    adapter: Schema.Literals(["codex", "claude"]),
+    certainty: Schema.Literals(["not-written", "uncertain"]),
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
 export interface AgentSteerInput {
   /** Mend's steer id; Claude puts it on the wire as `uuid`. */
   readonly id: string;
@@ -202,9 +213,10 @@ export interface AgentQuiescence {
 
 /** One live provider conversation over a byte transport. */
 export interface AgentSession {
+  /** `AgentProtocolError`: the harness answered and refused the turn. */
   readonly sendTurn: (
     input: string,
-  ) => Effect.Effect<string, AgentProtocolError | AgentTurnBusyError>;
+  ) => Effect.Effect<string, AgentProtocolError | AgentTurnBusyError | AgentTurnDeliveryError>;
   readonly interrupt: () => Effect.Effect<void, AgentProtocolError>;
   /**
    * Whether `steer` can deliver into a running turn, and whether it asks the harness to cut that

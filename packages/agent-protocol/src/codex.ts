@@ -24,6 +24,7 @@ import { compactMendPageCall } from "./mend-page-call.ts";
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
+  AgentTurnDeliveryError,
   type AgentAdapter,
   type AgentBackgroundWork,
   type AgentQuiescence,
@@ -80,6 +81,23 @@ const requestKey = (id: JsonRpcId): string => `${typeof id === "number" ? "n" : 
 
 const protocolError = (operation: string, message: string, cause: unknown): AgentProtocolError =>
   new AgentProtocolError({ adapter: "codex", operation, message, cause });
+
+const turnUndelivered = (
+  certainty: AgentTurnDeliveryError["certainty"],
+  message: string,
+  cause: unknown,
+) => new AgentTurnDeliveryError({ adapter: "codex", certainty, message, cause });
+
+const turnFailure = (failure: CodexRpcFailure): AgentProtocolError | AgentTurnDeliveryError => {
+  switch (failure._tag) {
+    case "CodexRpcNotSent":
+      return turnUndelivered("not-written", failure.error.message, failure.error);
+    case "CodexRpcMaybeSent":
+      return turnUndelivered("uncertain", failure.error.message, failure.error);
+    case "CodexRpcRejected":
+      return protocolError("response", failure.message, failure.error);
+  }
+};
 
 /**
  * Prefix of a turn Codex opened itself (a goal continuing, a queued prompt, the mailbox): the rest
@@ -696,18 +714,24 @@ export const CodexAdapter: AgentAdapter = {
 
       const sendTurn = Effect.fn("CodexAdapter.sendTurn")(function* (input: string) {
         if (threadId === null) {
-          return yield* protocolError("turn/start", "Codex thread is not ready.", null);
+          return yield* turnUndelivered("not-written", "Codex thread is not ready.", null);
+        }
+        if (closed) {
+          return yield* turnUndelivered("not-written", "The Codex session is closed.", null);
         }
         sendInFlight = true;
-        const result = yield* request("turn/start", {
+        const result = yield* call("turn/start", {
           threadId,
           input: [{ type: "text", text: input }],
           ...(options.model === undefined ? {} : { model: options.model }),
           ...(options.effort === undefined ? {} : { effort: options.effort }),
-        }).pipe(Effect.ensuring(Effect.sync(() => (sendInFlight = false))));
+        }).pipe(
+          Effect.mapError(turnFailure),
+          Effect.ensuring(Effect.sync(() => (sendInFlight = false))),
+        );
         const providerTurnId = stringField(objectField(result, "turn"), "id");
         if (providerTurnId === null) {
-          return yield* protocolError("turn/start", "Codex did not return a turn id.", result);
+          return yield* turnUndelivered("uncertain", "Codex did not return a turn id.", result);
         }
         currentTurnId = providerTurnId;
         return providerTurnId;

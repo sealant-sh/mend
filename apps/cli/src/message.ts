@@ -1,6 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 
-import { SessionMessageResult } from "@mend/domain/workbench";
+import { SessionMessageResult, TURN_DELIVERY_UNCONFIRMED } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import { failureWords } from "./failure-words.ts";
@@ -79,6 +79,7 @@ const exitCodeOf = (result: SessionMessageResult): MessageExitCode => {
     case "completed":
       return 0;
     case "failed":
+      return result.turn.error === TURN_DELIVERY_UNCONFIRMED ? 2 : 1;
     case "cancelled":
     case "interrupted":
       return 1;

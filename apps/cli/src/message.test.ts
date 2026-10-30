@@ -1,6 +1,7 @@
 import { AgentTurnId } from "@mend/domain";
 import {
   AgentTurn,
+  TURN_DELIVERY_UNCONFIRMED,
   TurnSteerQueueReason,
   type AgentTurnSteerDelivery,
 } from "@mend/domain/workbench";
@@ -254,6 +255,25 @@ describe("mend message receipts", () => {
     expect(JSON.parse(json.stdout.join(""))).toEqual({
       version: 1,
       result: encodeReceipt(turnReceipt(status)),
+    });
+  });
+
+  it("prints a turn whose delivery was never confirmed with exit 2 and the request key", async () => {
+    const receipt = turnReceipt("failed", {
+      startedAt: new Date(0),
+      endedAt: new Date(0),
+      error: TURN_DELIVERY_UNCONFIRMED,
+    });
+    const world = command(encodeReceipt(receipt));
+    expect(await world.run(["s", "words"])).toBe(2);
+    expect(world.stdout.join("")).toContain("delivery not confirmed · Mend will not resend");
+    expect(world.stderr.join("")).toContain(messageKey);
+    const json = command(encodeReceipt(receipt));
+    expect(await json.run(["s", "words", "--json"])).toBe(2);
+    expect(JSON.parse(json.stdout.join(""))).toEqual({
+      version: 1,
+      clientMessageId: messageKey,
+      result: encodeReceipt(receipt),
     });
   });
 });

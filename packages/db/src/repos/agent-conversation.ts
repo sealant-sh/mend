@@ -26,6 +26,7 @@ import {
   turnSteerSender,
   type TurnSteerQueueReason,
   OPEN_AGENT_TURN_STATUSES,
+  TURN_DELIVERY_UNCONFIRMED,
   type AgentApprovalDecision,
   type AgentEventItem,
   type AgentEventRequest,
@@ -266,6 +267,7 @@ export class AgentConversationRepo extends Context.Service<
     ) => Effect.Effect<AgentTurn | null>;
     /** Put back a claimed turn the harness would not take yet (it was busy in its own turn). */
     readonly requeueClaimedTurn: (id: AgentTurnId) => Effect.Effect<void>;
+    /** Bind a running turn to the harness's turn; a turn that is not running reads as not found. */
     readonly setProviderTurnId: (
       id: AgentTurnId,
       providerTurnId: string,
@@ -284,10 +286,19 @@ export class AgentConversationRepo extends Context.Service<
       processId: SessionProcessId,
       providerTurnId: string,
     ) => Effect.Effect<AgentTurn | null>;
+    /**
+     * Fail a queued or running turn, or reword a failed one; a turn that ended otherwise (a
+     * Stop's `cancelled`) is never moved, and reads as not found.
+     */
     readonly failTurn: (
       id: AgentTurnId,
       error: string,
     ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
+    /**
+     * Fail a running turn no provider turn is bound to, with `TURN_DELIVERY_UNCONFIRMED`; null when
+     * the harness's turn was bound to it or it ended meanwhile.
+     */
+    readonly failUnconfirmedTurn: (id: AgentTurnId) => Effect.Effect<AgentTurn | null>;
     /**
      * What the turn's request asked for (docs/adr/0007-landing.md), read once per turn and
      * replaced whole when read again.
@@ -593,13 +604,13 @@ export const AgentConversationRepoLive: Layer.Layer<
     const pg = yield* PgClient.PgClient;
 
     const notify = (sessionId: SessionId) => notifyAgentConversation(db, pg, sessionId);
-    /** A message already committed is this request's to deliver, whether or not feeds heard of it. */
-    const notifyAdmitted = (sessionId: SessionId) =>
+    /** A change already committed is its caller's to act on, whether or not feeds heard of it. */
+    const notifyCommitted = (sessionId: SessionId) =>
       notify(sessionId).pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
-            : Effect.logWarning("conversation: a message's change notification failed").pipe(
+            : Effect.logWarning("conversation: a committed change's notification failed").pipe(
                 Effect.annotateLogs({ sessionId }),
               ),
         ),
@@ -740,7 +751,7 @@ export const AgentConversationRepoLive: Layer.Layer<
             recoverCommitted(input, messageId, error, isSteerMessage),
           ),
         );
-      if (admitted._tag === "Created") yield* notifyAdmitted(input.sessionId);
+      if (admitted._tag === "Created") yield* notifyCommitted(input.sessionId);
       return admitted;
     });
 
@@ -775,7 +786,7 @@ export const AgentConversationRepoLive: Layer.Layer<
             recoverCommitted(input, messageId, error, isTurnMessage),
           ),
         );
-      if (admitted._tag === "Created") yield* notifyAdmitted(input.sessionId);
+      if (admitted._tag === "Created") yield* notifyCommitted(input.sessionId);
       return admitted;
     });
 
@@ -1258,7 +1269,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           }),
         )
         .pipe(Effect.orDie);
-      if (claimed !== null) yield* notify(claimed.sessionId);
+      if (claimed !== null) yield* notifyCommitted(claimed.sessionId);
       return claimed;
     });
 
@@ -1377,7 +1388,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       const [row] = yield* db
         .update(agentTurns)
         .set({ providerTurnId })
-        .where(eq(agentTurns.id, id))
+        .where(and(eq(agentTurns.id, id), eq(agentTurns.status, "running")))
         .returning()
         .pipe(Effect.orDie);
       if (row === undefined) return yield* new AgentTurnNotFoundError({ turnId: id });
@@ -1434,10 +1445,36 @@ export const AgentConversationRepoLive: Layer.Layer<
       const [row] = yield* db
         .update(agentTurns)
         .set({ status: "failed", error, endedAt: yield* DateTime.nowAsDate })
-        .where(eq(agentTurns.id, id))
+        .where(
+          and(eq(agentTurns.id, id), inArray(agentTurns.status, ["queued", "running", "failed"])),
+        )
         .returning()
         .pipe(Effect.orDie);
       if (row === undefined) return yield* new AgentTurnNotFoundError({ turnId: id });
+      yield* notify(row.sessionId);
+      return toTurn(row);
+    });
+
+    const failUnconfirmedTurn = Effect.fn("AgentConversationRepo.failUnconfirmedTurn")(function* (
+      id: AgentTurnId,
+    ) {
+      const [row] = yield* db
+        .update(agentTurns)
+        .set({
+          status: "failed",
+          error: TURN_DELIVERY_UNCONFIRMED,
+          endedAt: yield* DateTime.nowAsDate,
+        })
+        .where(
+          and(
+            eq(agentTurns.id, id),
+            eq(agentTurns.status, "running"),
+            isNull(agentTurns.providerTurnId),
+          ),
+        )
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return null;
       yield* notify(row.sessionId);
       return toTurn(row);
     });
@@ -2108,6 +2145,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       setTurnPayer,
       bindRunningProviderTurn,
       failTurn,
+      failUnconfirmedTurn,
       setTurnIntent,
       claimTurnLanding,
       decideTurnLanding,

@@ -21,6 +21,7 @@ import {
   SessionMessageResult,
   messageOutcome,
 } from "./session-message.ts";
+import { TURN_DELIVERY_UNCONFIRMED } from "./steering.ts";
 
 const messageId = SessionMessageId.make("6033c3ad-0831-4536-8c32-3714f11681ec");
 const turn = new AgentTurn({
@@ -171,5 +172,25 @@ describe("message outcomes", () => {
           reason,
         ).explanation,
       ).toBe(explanation);
+  });
+
+  it("reports a turn whose delivery was never confirmed as not resent", () => {
+    for (const reason of MessageTurnReason.literals)
+      expect(
+        messageOutcome(
+          {
+            _tag: "Turn",
+            messageId,
+            turn: new AgentTurn({
+              ...turn,
+              status: "failed",
+              startedAt: new Date(),
+              endedAt: new Date(),
+              error: TURN_DELIVERY_UNCONFIRMED,
+            }),
+          },
+          reason,
+        ).explanation,
+      ).toBe("delivery not confirmed · Mend will not resend");
   });
 });
