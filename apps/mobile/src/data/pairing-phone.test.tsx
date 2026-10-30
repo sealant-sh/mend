@@ -23,6 +23,8 @@ const phone = vi.hoisted(() => ({
   alerts: new Array<OsAlert>(),
   /** Notifications delivered and still in the OS tray. */
   tray: new Array<{ readonly id: string; readonly title: string }>(),
+  permissionPrompts: 0,
+  slowTokenLookups: new Array<Promise<{ readonly data: string }>>(),
 }));
 
 vi.mock("react-native", async (importActual) => {
@@ -43,9 +45,13 @@ vi.mock("react-native", async (importActual) => {
   };
 });
 vi.mock("expo-notifications", () => ({
-  requestPermissionsAsync: async () => ({ granted: phone.notificationsAllowed }),
+  requestPermissionsAsync: async () => {
+    if (!phone.notificationsAllowed) phone.permissionPrompts += 1;
+    return { granted: phone.notificationsAllowed };
+  },
   getPermissionsAsync: async () => ({ granted: phone.notificationsAllowed }),
-  getExpoPushTokenAsync: async () => ({ data: "ExponentPushToken[this-phone]" }),
+  getExpoPushTokenAsync: () =>
+    phone.slowTokenLookups.shift() ?? Promise.resolve({ data: "ExponentPushToken[this-phone]" }),
   dismissAllNotificationsAsync: async () => {
     phone.tray = [];
   },
@@ -93,10 +99,23 @@ const pushDevicesOf = (machine: string): ReadonlyArray<string> => [
 let requests = new Array<{ readonly machine: string; readonly call: string }>();
 const callsTo = (machine: string): ReadonlyArray<string> =>
   requests.filter((entry) => entry.machine === machine).map(({ call }) => call);
+const deviceCallsTo = (machine: string) =>
+  callsTo(machine).filter((call) => call.includes(" /api/devices"));
 const unregistersOf = (machine: string) =>
   callsTo(machine).filter((call) => call.startsWith("DELETE /api/devices/"));
 const unregisterFailures = new Map<string, "unreachable" | "silent">();
-let registrationGate: Promise<void> | null = null;
+const registrationAnswers = new Array<
+  { readonly after: Promise<void>; readonly answer: "accepted" | "lost" } | "never"
+>();
+const holdNextRegistration = (answer: "accepted" | "lost" = "accepted") => {
+  const release = Promise.withResolvers<void>();
+  registrationAnswers.push({ after: release.promise, answer });
+  return release;
+};
+const silence = (init: RequestInit | undefined): Promise<Response> =>
+  new Promise((_, reject) =>
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+  );
 
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(String(input));
@@ -120,22 +139,21 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
   const devices = pushDevices.get(url.host) ?? new Set<string>();
   pushDevices.set(url.host, devices);
   if (method === "POST" && url.pathname === "/api/devices") {
-    if (registrationGate !== null) await registrationGate;
+    const held = registrationAnswers.shift();
+    if (held === "never") return silence(init);
+    if (held !== undefined) await held.after;
     const body: unknown = JSON.parse(String(init?.body));
     const token =
       typeof body === "object" && body !== null && "token" in body ? String(body.token) : "";
     devices.add(token);
+    if (held?.answer === "lost") throw new TypeError("Network request failed");
     return json({ token, platform: phone.os });
   }
   const unregister = /^\/api\/devices\/(.+)$/.exec(url.pathname);
   if (method === "DELETE" && unregister?.[1] !== undefined) {
     if (unregisterFailures.get(url.host) === "unreachable")
       throw new TypeError("Network request failed");
-    if (unregisterFailures.get(url.host) === "silent") {
-      return new Promise((_, reject) =>
-        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
-      );
-    }
+    if (unregisterFailures.get(url.host) === "silent") return silence(init);
     devices.delete(decodeURIComponent(unregister[1]));
     return new Response(null, { status: 204 });
   }
@@ -188,10 +206,12 @@ beforeEach(async () => {
   phone.notificationsAllowed = true;
   phone.alerts = [];
   phone.tray = [];
+  phone.permissionPrompts = 0;
+  phone.slowTokenLookups = [];
   pushDevices.clear();
   requests = [];
   unregisterFailures.clear();
-  registrationGate = null;
+  registrationAnswers.length = 0;
   route.params = {};
   await clearConfig();
   host = document.createElement("div");
@@ -247,6 +267,43 @@ describe("push on a phone whose pairing ends", () => {
 
     expect(pushDevicesOf("a.example")).toEqual([]);
     expect(phone.tray).toEqual([]);
+  });
+
+  it("moves to a new token Settings saves for the same machine, without asking to notify", async () => {
+    await pairedToAWithItsPushInTheTray();
+
+    act(() => root.render(null));
+    show(<SettingsScreen />);
+    press("Advanced");
+    type("token", "token-a.example-rotated");
+    press("Save");
+    await settle();
+
+    expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
+    expect(deviceCallsTo("a.example").slice(-2)).toEqual([
+      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
+      "POST /api/devices",
+    ]);
+    expect((await loadConfig()).pushToken).toBe(PHONE_TOKEN);
+    expect(phone.permissionPrompts).toBe(0);
+  });
+
+  it("never asks to notify when Settings saves a new token on a phone that has not allowed it", async () => {
+    await pairedToAWithItsPushInTheTray();
+    phone.notificationsAllowed = false;
+
+    act(() => root.render(null));
+    show(<SettingsScreen />);
+    press("Advanced");
+    type("token", "token-a.example-rotated");
+    press("Save");
+    await settle();
+
+    expect(pushDevicesOf("a.example")).toEqual([]);
+    expect(deviceCallsTo("a.example").at(-1)).toBe(
+      `DELETE /api/devices/${encodeURIComponent(PHONE_TOKEN)}`,
+    );
+    expect(phone.permissionPrompts).toBe(0);
   });
 
   it("keeps the phone and the token the machine accepted through a Save of the same pairing", async () => {
@@ -311,8 +368,7 @@ describe("push on a phone whose pairing ends", () => {
   });
 
   it("unregisters a registration the machine accepts after Unpair, and keeps nothing of it", async () => {
-    const registration = Promise.withResolvers<void>();
-    registrationGate = registration.promise;
+    const registration = holdNextRegistration();
     await pairByLink("a.example");
     show(null);
 
@@ -323,6 +379,71 @@ describe("push on a phone whose pairing ends", () => {
 
     expect(pushDevicesOf("a.example")).toEqual([]);
     expect(await loadConfig()).toMatchObject({ url: "", token: "", pushToken: null });
+  });
+
+  it("unregisters a registration whose answer was lost, once Unpair runs", async () => {
+    const registration = holdNextRegistration("lost");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await pairByLink("a.example");
+    show(null);
+
+    await act(() => clearConfig());
+    await settle();
+    registration.resolve();
+    await settle();
+
+    expect(pushDevicesOf("a.example")).toEqual([]);
+    expect(await loadConfig()).toMatchObject({ url: "", token: "", pushToken: null });
+  });
+
+  it("keeps the next pairing's registration when the last one's lands after a re-pair on the same machine", async () => {
+    const registration = holdNextRegistration();
+    await pairByLink("a.example");
+
+    await pairByLink("a.example", "EFGH6789");
+    registration.resolve();
+    await settle();
+    await settle();
+
+    expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
+    expect((await loadConfig()).pushToken).toBe(PHONE_TOKEN);
+  });
+
+  it("gives up on a token lookup after Unpair that never ends, and sends nothing for it once it does", async () => {
+    phone.notificationsAllowed = false;
+    await act(() =>
+      saveConfig({
+        url: "https://a.example",
+        token: "token-a.example-typed",
+        deviceName: null,
+        pairedAt: null,
+      }),
+    );
+    phone.notificationsAllowed = true;
+    const lookup = Promise.withResolvers<{ readonly data: string }>();
+    phone.slowTokenLookups.push(lookup.promise);
+    await act(() => clearConfig());
+    await settle();
+
+    await pairByLink("b.example");
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(pushDevicesOf("b.example")).toEqual([PHONE_TOKEN]);
+
+    lookup.resolve({ data: PHONE_TOKEN });
+    await settle();
+    expect(unregistersOf("a.example")).toEqual([]);
+  });
+
+  it("gives up on a registration the machine never answers, and the next machine still gets the phone", async () => {
+    registrationAnswers.push("never");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await pairByLink("a.example");
+
+    await pairByLink("b.example");
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+
+    expect(pushDevicesOf("b.example")).toEqual([PHONE_TOKEN]);
+    expect(pushDevicesOf("a.example")).toEqual([]);
   });
 
   it("re-pairing on the same machine unregisters the last pairing before registering the next", async () => {
@@ -342,8 +463,7 @@ describe("push on a phone whose pairing ends", () => {
 
   it("registers once when Enable notifications is pressed again while it runs", async () => {
     await pairedToAWithItsPushInTheTray();
-    const registration = Promise.withResolvers<void>();
-    registrationGate = registration.promise;
+    const registration = holdNextRegistration();
 
     act(() => root.render(null));
     show(<SettingsScreen />);
