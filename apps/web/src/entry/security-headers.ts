@@ -1,4 +1,5 @@
 import {
+  isHandedLinkPage,
   isPageViewTarget,
   PAGE_VIEW_HEADERS,
   PAGE_VIEW_PATH,
@@ -74,6 +75,9 @@ const isCredentialedPage = (pathname: string): boolean =>
   pathname === "/preview-auth" ||
   pathname === "/api/preview-auth";
 
+const handedLinkHeaders = (target: string): Readonly<Record<string, string>> =>
+  isHandedLinkPage(target) ? { "referrer-policy": "no-referrer", "cache-control": "no-store" } : {};
+
 /**
  * Only over https: on plain http the header is ignored by browsers and would be a false claim. For
  * this host only: `includeSubDomains` on an apex `APP_URL` would pin every sibling host the
@@ -94,6 +98,7 @@ const appHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>
   "cross-origin-opener-policy": "same-origin",
   "cross-origin-resource-policy": "same-origin",
   ...transportHeaders(input.network.appUrl),
+  ...handedLinkHeaders(input.target),
 });
 
 export const securityHeaders = (input: SecurityHeaderInput): Readonly<Record<string, string>> =>
