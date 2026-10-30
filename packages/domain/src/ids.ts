@@ -142,6 +142,13 @@ export type SessionProcessId = typeof SessionProcessId.Type;
 export const AgentTurnId = Schema.String.pipe(Schema.brand("AgentTurnId"));
 export type AgentTurnId = typeof AgentTurnId.Type;
 
+/**
+ * One dispatch's claim of a turn: while the turn is unsent, only the dispatch that stamped it moves
+ * it (binds, puts back or fails it).
+ */
+export const DispatchAttemptId = Schema.String.pipe(Schema.brand("DispatchAttemptId"));
+export type DispatchAttemptId = typeof DispatchAttemptId.Type;
+
 /** One item within a turn — assistant text, a tool call, a file change, a plan. */
 export const AgentItemId = Schema.String.pipe(Schema.brand("AgentItemId"));
 export type AgentItemId = typeof AgentItemId.Type;

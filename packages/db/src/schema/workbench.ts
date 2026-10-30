@@ -31,6 +31,7 @@ import type {
   CheckpointId,
   CommentAuthorKind,
   ContextSnapshotId,
+  DispatchAttemptId,
   Disposition,
   Freshness,
   InferenceContext,
@@ -1939,6 +1940,8 @@ export const agentTurns = pgTable(
     billedUserId: text(),
     billedAccountId: text(),
     billedAccountName: text(),
+    // The dispatch that claimed the turn (0168): only it moves the turn while it is unsent.
+    dispatchAttemptId: uuid().$type<DispatchAttemptId>(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp({ mode: "date", withTimezone: true }),
     endedAt: timestamp({ mode: "date", withTimezone: true }),

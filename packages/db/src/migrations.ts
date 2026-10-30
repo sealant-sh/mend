@@ -4674,6 +4674,15 @@ const projectRetentionMigration = Effect.gen(function* () {
     $$`);
 });
 
+/**
+ * 0168: the dispatch that claimed a turn. While the turn is unsent, only that dispatch binds it,
+ * puts it back or fails it; a turn claimed before this migration has none.
+ */
+const turnDispatchAttemptMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS dispatch_attempt_id uuid`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4831,4 +4840,5 @@ export const migrations = {
   "0165_preview_preparations": previewPreparationsMigration,
   "0166_worktree_removal": worktreeRemovalMigration,
   "0167_project_retention": projectRetentionMigration,
+  "0168_turn_dispatch_attempt": turnDispatchAttemptMigration,
 };
