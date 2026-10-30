@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { PgClient } from "@effect/sql-pg";
 import {
   type AgentTurnId,
   ScreenId,
@@ -35,6 +36,8 @@ import {
   screenLog,
   screens,
 } from "../schema/workbench.ts";
+import { notifyAgentConversation } from "./agent-conversation.ts";
+import { ensureScreenEpisode } from "./screen-episodes.ts";
 import { isForeignKeyViolation } from "./unique-violation.ts";
 
 export class ScreenNotFoundError extends Schema.TaggedError<ScreenNotFoundError>()(
@@ -206,7 +209,7 @@ interface Written {
   readonly body: ScreenLogBody;
   readonly frame: ScreenFrameRef | null;
 }
-type Tx = Pick<MendDatabase, "select" | "insert" | "update">;
+type Tx = Pick<MendDatabase, "select" | "insert" | "update" | "execute">;
 
 const toScreen = (row: Row): Screen => decodeScreen(row);
 
@@ -288,13 +291,16 @@ const appendIn = Effect.fn("ScreensRepo.appendIn")(function* (
       checkpointId: checkpoint?.id ?? null,
     })
     .returning();
-  return row === undefined ? null : toEntry(row);
+  return row === undefined ? null : { entry: toEntry(row), sessionId: counter.sessionId };
 });
 
-export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, MendDB> = Layer.effect(
+type Database = MendDB | PgClient.PgClient;
+
+export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.effect(
   ScreensRepo,
   Effect.gen(function* () {
     const db = yield* MendDB;
+    const pg = yield* PgClient.PgClient;
 
     const reserve = Effect.fn("ScreensRepo.reserve")(function* (at: {
       readonly sessionId: SessionId;
@@ -437,11 +443,11 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, MendDB> = Layer.ef
       screenId,
       ...written
     }: NewScreenLogEntry) {
-      const entry = yield* db
+      const appended = yield* db
         .transaction((tx) => appendIn(tx, screenId, written))
         .pipe(Effect.orDie);
-      if (entry === null) return yield* new ScreenNotFoundError({ screenId });
-      return entry;
+      if (appended === null) return yield* new ScreenNotFoundError({ screenId });
+      return appended.entry;
     });
 
     const log = Effect.fn("ScreensRepo.log")(function* (id: ScreenId) {
@@ -489,7 +495,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, MendDB> = Layer.ef
       readonly outcome: ScreenCallOutcome;
       readonly answer: ScreenAgentAnswer | null;
     }) {
-      return yield* db
+      const settled = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
             const where = and(
@@ -500,9 +506,9 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, MendDB> = Layer.ef
             if (claimed === undefined)
               return yield* Effect.die("settled a screen call never claimed");
             const before = settledOf(claimed);
-            if (before !== null) return before;
+            if (before !== null) return { call: before, episodeOf: null };
             const { answer } = call;
-            const entry =
+            const appended =
               answer === null
                 ? null
                 : yield* appendIn(tx, call.screenId, {
@@ -510,15 +516,25 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, MendDB> = Layer.ef
                     body: answer.body,
                     frame: answer.frame,
                   });
-            const seq = entry?.seq ?? null;
+            const seq = appended?.entry.seq ?? null;
             yield* tx
               .update(screenCalls)
               .set({ outcome: call.outcome, logSeq: seq, settledAt: yield* DateTime.nowAsDate })
               .where(where);
-            return { outcome: call.outcome, seq };
+            const episode =
+              appended !== null &&
+              (yield* ensureScreenEpisode(tx, appended.sessionId, appended.entry));
+            return {
+              call: { outcome: call.outcome, seq },
+              episodeOf: episode ? appended.sessionId : null,
+            };
           }),
         )
         .pipe(Effect.orDie);
+      if (settled.episodeOf !== null) {
+        yield* notifyAgentConversation(db, pg, settled.episodeOf);
+      }
+      return settled.call;
     });
 
     const boot = Effect.fn("ScreensRepo.boot")(function* () {
@@ -568,7 +584,7 @@ const appendTo = (row: MemoryRow, written: Written) => {
   return entry;
 };
 
-/** For service and route tests: the same rules, with no checkpoints. */
+/** For service and route tests: the same rules, with no record items and no checkpoints. */
 export const makeScreensMemory = (): ScreensRepo["Service"] => {
   const rows: Array<MemoryRow> = [];
   const held = (sessionId: SessionId) =>
