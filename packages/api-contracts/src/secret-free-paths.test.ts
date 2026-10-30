@@ -1,10 +1,51 @@
-import { Schema } from "effect";
+import { CREDENTIAL_QUERY_PARAMETERS } from "@mend/network";
+import { Schema, SchemaAST } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import { MendApi } from "./index.ts";
 
-const SECRET_PARAM = /^:\w*(token|ticket|password|code)$/i;
+const SECRET_NAMES = [
+  ...CREDENTIAL_QUERY_PARAMETERS,
+  "password",
+  "secret",
+  "key",
+  "credential",
+  "bearer",
+];
+const namesSecret = (name: string) =>
+  SECRET_NAMES.some((secret) => name.toLowerCase().endsWith(secret));
+
+/**
+ * Parameter names as Effect's router reads a path: `::` is a literal colon, a name ends at `/`,
+ * `-`, `.`, `(` or an optional's `?`, and a `(…)` pattern after it is not a name.
+ */
+const pathParameterNames = (path: string): ReadonlyArray<string> => {
+  const names: Array<string> = [];
+  for (let at = 0; at < path.length; at++) {
+    if (path[at] === "(") {
+      for (let depth = 1; depth > 0 && at < path.length - 1; ) {
+        at++;
+        if (path[at] === "\\") at++;
+        else if (path[at] === "(") depth++;
+        else if (path[at] === ")") depth--;
+      }
+    } else if (path[at] === ":" && path[at + 1] === ":") {
+      at++;
+    } else if (path[at] === ":") {
+      const name = /^[^/\-.(?]*/.exec(path.slice(at + 1))?.[0] ?? "";
+      names.push(name);
+      at += name.length;
+    }
+  }
+  return names;
+};
+
+const queryFieldNames = (query: Schema.Top | undefined): ReadonlyArray<string> => {
+  if (query === undefined) return [];
+  const ast = SchemaAST.toEncoded(query.ast);
+  return SchemaAST.isObjects(ast) ? ast.propertySignatures.map(({ name }) => String(name)) : [];
+};
 
 const CLI_AUTH_USER_CODE =
   "the short code a person reads off `mend login` and types into the approve page: it names a " +
@@ -26,7 +67,9 @@ const secretsIn = <Id extends string, Groups extends HttpApiGroup.Constraint>(
   HttpApi.reflect(api, {
     onGroup: () => {},
     onEndpoint: ({ endpoint }) => {
-      const named = endpoint.path.split("/").some((segment) => SECRET_PARAM.test(segment));
+      const named = [...pathParameterNames(endpoint.path), ...queryFieldNames(endpoint.query)].some(
+        namesSecret,
+      );
       if (named && !ALLOWED.has(endpoint.path)) {
         secretPaths.push(`${endpoint.method} ${endpoint.path}`);
       }
