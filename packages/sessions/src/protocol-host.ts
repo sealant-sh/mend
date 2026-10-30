@@ -500,15 +500,19 @@ export const ProtocolHostLive: Layer.Layer<
             live,
           );
         case "Writing":
+          // The next turn is dispatched however the settling went: one whose answer was lost may
+          // have landed, and a turn still running holds the queue by itself.
           return untilItLands(
-            settleUnconfirmed(entry, phase.turn.id).pipe(
-              Effect.flatMap((failed) =>
-                failed ? Effect.asVoid(Effect.forkIn(dispatchNext(entry), scope)) : Effect.void,
-              ),
-            ),
+            Effect.asVoid(settleUnconfirmed(entry, phase.turn.id)),
             "protocol host: an unconfirmed turn was not settled",
             { turnId: phase.turn.id },
             live,
+          ).pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                live() ? Effect.asVoid(Effect.forkIn(dispatchNext(entry), scope)) : Effect.void,
+              ),
+            ),
           );
       }
     };
@@ -1261,10 +1265,16 @@ export const ProtocolHostLive: Layer.Layer<
         );
       const dispatched = yield* dispatchPlaced(sessionId, place, dispatchJoined).pipe(Effect.exit);
       if (Exit.isFailure(dispatched)) {
+        if (Cause.hasInterruptsOnly(dispatched.cause))
+          return yield* Effect.failCause(dispatched.cause);
         // A turn still queued is withdrawn, so the failure the caller sees is the whole outcome.
-        if (!Cause.hasInterruptsOnly(dispatched.cause))
-          yield* conversations.cancelOpenForTurn(turn.id);
-        return yield* Effect.failCause(dispatched.cause);
+        // One another dispatch took meanwhile is answered as it stands, never as a failure the
+        // caller would send again.
+        yield* conversations.cancelOpenForTurn(turn.id);
+        const now = yield* conversations.byTurnId(turn.id);
+        if (now === null || now.status === "cancelled")
+          return yield* Effect.failCause(dispatched.cause);
+        return now;
       }
       if (!dispatched.value) {
         yield* conversations.cancelOpenForTurn(turn.id);
@@ -1351,9 +1361,9 @@ export const ProtocolHostLive: Layer.Layer<
       yield* Effect.logError("protocol host: a message's turn was not dispatched").pipe(
         Effect.annotateLogs({ turnId: turn.id, failure: failureName(dispatched.cause) }),
       );
-      // A claimed turn may already have reached the harness, so the failure stands.
-      if (!(yield* conversations.withdrawMessageTurn(turn.id, place.processId)))
-        return yield* Effect.failCause(dispatched.cause);
+      // Withdrawn, the receipt says not sent. Otherwise another dispatch took the turn, and the
+      // receipt says what became of it: never a failure the sender would send again.
+      yield* conversations.withdrawMessageTurn(turn.id, place.processId);
       return yield* conversations.messageById(messageId);
     });
 
