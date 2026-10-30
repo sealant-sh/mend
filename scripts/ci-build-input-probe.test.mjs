@@ -162,8 +162,9 @@ test("each known volatile field normalizes alone, and nothing else does", () => 
   );
   const server = rule("apps/web/.output/server/index.mjs");
   const entry = (name, mtime, size) =>
-    `  "/assets/${name}": {\n    "type": "text/javascript",\n    "mtime": "${mtime}",\n    "size": ${size}\n  }`;
-  const assets = (...entries) => `x();\nconst assets = {\n${entries.join(",\n")}\n};\ny();`;
+    `\t"/assets/${name}": {\n\t\t"type": "text/javascript",\n\t\t"mtime": "${mtime}",\n\t\t"size": ${size}\n\t}`;
+  const assets = (...entries) =>
+    `x();\nvar public_assets_data_default = {\n${entries.join(",\n")}\n};\ny();`;
   assert.equal(
     server(
       assets(
