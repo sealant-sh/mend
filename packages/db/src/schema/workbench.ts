@@ -635,8 +635,9 @@ export const previewControls = pgTable("preview_controls", {
 
 /**
  * A resource a project declared (ADR 0019). `spec` is the definition; name, scope and preset are
- * copied out of it, and a CHECK in the migration holds them equal. The project is not deleted
- * while one exists.
+ * copied out of it, and a CHECK in the migration holds them equal. `specDigest` is the spec's digest
+ * when it was declared, so a later Mend that reads the spec differently does not unapprove it. The
+ * project is not deleted while one exists.
  */
 export const resourceDefinitions = pgTable(
   "resource_definitions",
@@ -650,6 +651,7 @@ export const resourceDefinitions = pgTable(
     scope: text().$type<ResourceScope>().notNull(),
     preset: text().$type<ResourcePreset>(),
     spec: jsonbOf(ResourceDefinitionInput).notNull(),
+    specDigest: text().$type<ResourceSpecDigest>().notNull(),
     declaredBy: text().notNull(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
@@ -657,7 +659,22 @@ export const resourceDefinitions = pgTable(
   (table) => [unique("resource_definitions_project_name_key").on(table.projectId, table.name)],
 );
 
-/** One approved spec of a definition, never updated (a trigger in the migration), one per digest. */
+/** A project being removed: no resource is declared in it until the row goes or the fence lifts. */
+export const projectRemovalFences = pgTable("project_removal_fences", {
+  projectId: text()
+    .$type<ProjectId>()
+    .primaryKey()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  fencedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * One approved spec of a definition, its image pinned to a digest. `definitionDigest` is the
+ * declared spec the approver read; `digest` is the pinned spec's. A null `worktreeId` is a
+ * manager's approval for the project, a set one a change owner's for that worktree (decision G4).
+ * Triggers in the migration refuse an update, and a delete other than the cascade from its
+ * definition or worktree.
+ */
 export const resourceApprovals = pgTable(
   "resource_approvals",
   {
@@ -666,7 +683,11 @@ export const resourceApprovals = pgTable(
       .$type<ResourceDefinitionId>()
       .notNull()
       .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
     revision: integer().notNull(),
+    definitionDigest: text().$type<ResourceSpecDigest>().notNull(),
     digest: text().$type<ResourceSpecDigest>().notNull(),
     spec: jsonbOf(ResourceDefinitionInput).notNull(),
     approvedBy: text().notNull(),
@@ -674,13 +695,20 @@ export const resourceApprovals = pgTable(
   },
   (table) => [
     unique("resource_approvals_definition_revision_key").on(table.definitionId, table.revision),
-    unique("resource_approvals_definition_digest_key").on(table.definitionId, table.digest),
+    unique("resource_approvals_definition_digest_key")
+      .on(table.definitionId, table.digest, table.worktreeId)
+      .nullsNotDistinct(),
+    index("resource_approvals_definition_declared_idx").on(
+      table.definitionId,
+      table.definitionDigest,
+    ),
   ],
 );
 
 /**
  * A worktree's choice for a project resource. `ownTarget` is set exactly when the mode is `own`
- * (a CHECK in the migration); a null `chosenBy` is the policy's default, which nobody chose.
+ * (a CHECK in the migration), and no two selections of a definition own one target. A null
+ * `chosenBy` is the policy's default, which nobody chose.
  */
 export const resourceSelections = pgTable(
   "resource_selections",
@@ -702,6 +730,9 @@ export const resourceSelections = pgTable(
   (table) => [
     primaryKey({ columns: [table.worktreeId, table.definitionId] }),
     index("resource_selections_definition_idx").on(table.definitionId),
+    uniqueIndex("resource_selections_own_target_key")
+      .on(table.definitionId, table.ownTarget)
+      .where(sql`mode = 'own'`),
   ],
 );
 

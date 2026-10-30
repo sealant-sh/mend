@@ -3016,6 +3016,12 @@ describe.skipIf(postgres.skip)("0140 session pages", () => {
   });
 });
 
+const refused = (statement: Effect.Effect<unknown, SqlError>) =>
+  statement.pipe(
+    Effect.as("done"),
+    Effect.catch(() => Effect.succeed("refused")),
+  );
+
 describe("migration ids", () => {
   // Shipped before the rule; a migration below the latest applied id never runs, so a new gap
   // would hide whichever migration later took that number.
@@ -3057,7 +3063,9 @@ describe.skipIf(postgres.skip)("0144 resources", () => {
     );
   });
 
-  it("holds a definition's columns to its spec, keeps approvals immutable, and keeps its project", async () => {
+  it("holds a definition to its spec, keeps approvals and own targets apart, and keeps its project", async () => {
+    const digestA = "a".repeat(64);
+    const digestB = "b".repeat(64);
     const outcome = await withDb(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -3069,45 +3077,70 @@ describe.skipIf(postgres.skip)("0144 resources", () => {
           VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
         yield* sql`
           INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
-          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc'),
+                 ('wt-2', 'p-1', 'two', 'two', 'mend/two', 'abc')`;
         const spec = JSON.stringify({ name: "db", scope: "project", preset: "postgres" });
         const misnamed = yield* attempt(sql`
-          INSERT INTO resource_definitions (id, project_id, name, scope, preset, spec, declared_by)
-          VALUES ('rdef_2', 'p-1', 'cache', 'project', 'postgres', ${spec}::jsonb, 'alice')`);
+          INSERT INTO resource_definitions
+            (id, project_id, name, scope, preset, spec, spec_digest, declared_by)
+          VALUES ('rdef_2', 'p-1', 'cache', 'project', 'postgres', ${spec}::jsonb, ${digestA}, 'alice')`);
         const unpreset = yield* attempt(sql`
-          INSERT INTO resource_definitions (id, project_id, name, scope, preset, spec, declared_by)
-          VALUES ('rdef_2', 'p-1', 'db', 'project', NULL, ${spec}::jsonb, 'alice')`);
+          INSERT INTO resource_definitions
+            (id, project_id, name, scope, preset, spec, spec_digest, declared_by)
+          VALUES ('rdef_2', 'p-1', 'db', 'project', NULL, ${spec}::jsonb, ${digestA}, 'alice')`);
         yield* sql`
-          INSERT INTO resource_definitions (id, project_id, name, scope, preset, spec, declared_by)
-          VALUES ('rdef_1', 'p-1', 'db', 'project', 'postgres', ${spec}::jsonb, 'alice')`;
-        yield* sql`
-          INSERT INTO resource_approvals (id, definition_id, revision, digest, spec, approved_by)
-          VALUES ('rapr_1', 'rdef_1', 1, ${"a".repeat(64)}, ${spec}::jsonb, 'alice')`;
-        const sameDigest = yield* attempt(sql`
-          INSERT INTO resource_approvals (id, definition_id, revision, digest, spec, approved_by)
-          VALUES ('rapr_2', 'rdef_1', 2, ${"a".repeat(64)}, ${spec}::jsonb, 'alice')`);
-        const rewritten = yield* sql`UPDATE resource_approvals SET approved_by = 'mallory'`.pipe(
-          Effect.as("updated"),
-          Effect.catch(() => Effect.succeed("refused")),
+          INSERT INTO resource_definitions
+            (id, project_id, name, scope, preset, spec, spec_digest, declared_by)
+          VALUES ('rdef_1', 'p-1', 'db', 'project', 'postgres', ${spec}::jsonb, ${digestA}, 'alice')`;
+        const approve = (id: string, revision: number, worktree: string | null) =>
+          sql`
+            INSERT INTO resource_approvals
+              (id, definition_id, worktree_id, revision, definition_digest, digest, spec, approved_by)
+            VALUES (${id}, 'rdef_1', ${worktree}, ${revision}, ${digestA}, ${digestB},
+                    ${spec}::jsonb, 'alice')`;
+        yield* approve("rapr_1", 1, null);
+        const sameDigest = yield* attempt(approve("rapr_2", 2, null));
+        yield* approve("rapr_3", 3, "wt-1");
+        const rewritten = yield* refused(
+          sql`UPDATE resource_approvals SET approved_by = 'mallory'`,
         );
+        const deleted = yield* refused(sql`DELETE FROM resource_approvals WHERE id = 'rapr_1'`);
         const ownWithoutTarget = yield* attempt(sql`
           INSERT INTO resource_selections (worktree_id, definition_id, mode, revision)
           VALUES ('wt-1', 'rdef_1', 'own', 0)`);
+        const target = JSON.stringify({ kind: "database", database: "rdb_1" });
         yield* sql`
-          INSERT INTO resource_selections (worktree_id, definition_id, mode, revision)
-          VALUES ('wt-1', 'rdef_1', 'shared', 0)`;
+          INSERT INTO resource_selections (worktree_id, definition_id, mode, revision, own_target)
+          VALUES ('wt-1', 'rdef_1', 'own', 0, ${target}::jsonb)`;
+        const sharedTarget = yield* attempt(sql`
+          INSERT INTO resource_selections (worktree_id, definition_id, mode, revision, own_target)
+          VALUES ('wt-2', 'rdef_1', 'own', 0, ${target}::jsonb)`);
+        yield* sql`INSERT INTO project_removal_fences (project_id) VALUES ('p-1')`;
         const projectDeleted = yield* attempt(sql`DELETE FROM projects WHERE id = 'p-1'`);
+        // A worktree's approvals go with it, and the rest with their definition.
         yield* sql`DELETE FROM worktrees WHERE id = 'wt-1'`;
-        const [left] = yield* sql<{ readonly selections: number; readonly approvals: number }>`
+        const [afterWorktree] = yield* sql<{ readonly approvals: number }>`
+          SELECT count(*)::int AS approvals FROM resource_approvals`;
+        yield* sql`DELETE FROM resource_definitions WHERE id = 'rdef_1'`;
+        yield* sql`DELETE FROM projects WHERE id = 'p-1'`;
+        const [left] = yield* sql<{
+          readonly selections: number;
+          readonly approvals: number;
+          readonly fences: number;
+        }>`
           SELECT (SELECT count(*)::int FROM resource_selections) AS selections,
-                 (SELECT count(*)::int FROM resource_approvals) AS approvals`;
+                 (SELECT count(*)::int FROM resource_approvals) AS approvals,
+                 (SELECT count(*)::int FROM project_removal_fences) AS fences`;
         return {
           misnamed,
           unpreset,
           sameDigest,
           rewritten,
+          deleted,
           ownWithoutTarget,
+          sharedTarget,
           projectDeleted,
+          afterWorktree,
           left,
         };
       }),
@@ -3117,9 +3150,12 @@ describe.skipIf(postgres.skip)("0144 resources", () => {
       unpreset: { code: "23514", constraint: "resource_definitions_spec_columns" },
       sameDigest: { code: "23505", constraint: "resource_approvals_definition_digest_key" },
       rewritten: "refused",
+      deleted: "refused",
       ownWithoutTarget: { code: "23514", constraint: "resource_selections_own_target" },
+      sharedTarget: { code: "23505", constraint: "resource_selections_own_target_key" },
       projectDeleted: { code: "23503", constraint: "resource_definitions_project_id_fkey" },
-      left: { selections: 0, approvals: 1 },
+      afterWorktree: { approvals: 1 },
+      left: { selections: 0, approvals: 0, fences: 0 },
     });
   }, 60_000);
 });

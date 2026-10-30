@@ -1,6 +1,6 @@
 import type { StoredResourceDefinition } from "@mend/db";
 import { ResourceDefinitionId } from "@mend/domain";
-import { ResourceDefinitionInput } from "@mend/domain/workbench";
+import { ResourceDefinitionInput, resourceSpecDigest } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -9,10 +9,8 @@ import { ids } from "../../test/support/tenancy-harness.ts";
 
 const project = ids("private-alice").project;
 
-const definition = (name: string): StoredResourceDefinition => ({
-  id: ResourceDefinitionId.make(`rdef_${name}`),
-  projectId: project,
-  spec: Schema.decodeUnknownSync(ResourceDefinitionInput)({
+const definition = (name: string): StoredResourceDefinition => {
+  const spec = Schema.decodeUnknownSync(ResourceDefinitionInput)({
     name,
     scope: "project",
     preset: null,
@@ -23,11 +21,17 @@ const definition = (name: string): StoredResourceDefinition => ({
     volumes: [],
     ready: { kind: "tcp" },
     exports: {},
-  }),
-  declaredBy: "alice",
-  createdAt: new Date(0),
-  updatedAt: new Date(0),
-});
+  });
+  return {
+    id: ResourceDefinitionId.make(`rdef_${name}`),
+    projectId: project,
+    spec,
+    specDigest: resourceSpecDigest(spec),
+    declaredBy: "alice",
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  };
+};
 
 describe("removing a project that has resources", () => {
   let api: TenancyApi | undefined;
