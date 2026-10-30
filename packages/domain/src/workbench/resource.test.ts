@@ -6,8 +6,13 @@ import { describe, expect, it } from "vitest";
 import {
   choicesFor,
   defaultChoiceFor,
+  envCollisionRefusals,
   envNameCollisions,
+  ImageDigest,
+  imageDigestOf,
+  imageReference,
   onlyOfItsEngine,
+  pinImage,
   type ResourceBinding,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
@@ -575,6 +580,45 @@ describe("env name collisions", () => {
 
   it("leaves the conventional names out when two of one engine are in use", () => {
     expect(envNameCollisions([postgres(), postgres({ name: "analytics" })])).toEqual([]);
+  });
+
+  it("refuses each resource in a collision, keyed by the export that sets the name", () => {
+    const db = define({ name: "db", exports: { MAIN_URL: "{host}" } });
+    expect(envCollisionRefusals([db, postgres({ name: "db-main" })])).toEqual([
+      {
+        resource: "db",
+        refusal: {
+          key: "exports.MAIN_URL",
+          message: "sets MEND_RESOURCE_DB_MAIN_URL, as db-main does too",
+        },
+      },
+      {
+        resource: "db-main",
+        refusal: { key: "", message: "sets MEND_RESOURCE_DB_MAIN_URL, as db does too" },
+      },
+    ]);
+  });
+});
+
+describe("an image pinned to its digest", () => {
+  const digest = ImageDigest.make(`sha256:${"a".repeat(64)}`);
+  const other = ImageDigest.make(`sha256:${"b".repeat(64)}`);
+
+  it("keeps the tag it was resolved from", () => {
+    expect(pinImage("postgres:17", digest)).toBe(`postgres:17@${digest}`);
+    expect(pinImage("ghcr.io/acme/db", digest)).toBe(`ghcr.io/acme/db@${digest}`);
+  });
+
+  it("is the image itself when it already names that digest, and null when it names another", () => {
+    expect(pinImage(`postgres:17@${digest}`, digest)).toBe(`postgres:17@${digest}`);
+    expect(pinImage(`postgres:17@${other}`, digest)).toBeNull();
+  });
+
+  it("reads the digest back, and none from a bare tag or a malformed one", () => {
+    expect(imageDigestOf(`postgres:17@${digest}`)).toBe(digest);
+    expect(imageDigestOf("postgres:17")).toBeNull();
+    expect(imageDigestOf("postgres@sha256:ABC")).toBeNull();
+    expect(imageReference(`postgres:17@${digest}`)).toEqual({ repository: "postgres", tag: "17" });
   });
 });
 
