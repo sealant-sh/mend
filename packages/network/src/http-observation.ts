@@ -98,15 +98,16 @@ export const withoutRequestUrl = (
     return withoutUrlOf(text, request, route);
   });
 
-/** What Effect answers for a request whose client went away (`HttpServerError.causeResponse`). */
-const CLIENT_ABORT_STATUS = 499;
+const clientWentAway = (cause: Cause.Cause<unknown>): boolean =>
+  cause.reasons.some(
+    (reason) =>
+      Cause.isInterruptReason(reason) && reason.annotations.has(HttpServerError.ClientAbort.key),
+  );
 
 const outcomeOf = (exit: Exit.Exit<HttpServerResponse.HttpServerResponse, unknown>): Outcome => {
-  if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) return { kind: "aborted" };
-  const status = Exit.isSuccess(exit)
-    ? exit.value.status
-    : HttpServerError.causeResponseStripped(exit.cause)[0].status;
-  return status === CLIENT_ABORT_STATUS ? { kind: "aborted" } : { kind: "response", status };
+  if (Exit.isSuccess(exit)) return { kind: "response", status: exit.value.status };
+  if (clientWentAway(exit.cause)) return { kind: "aborted" };
+  return { kind: "response", status: HttpServerError.causeResponseStripped(exit.cause)[0].status };
 };
 
 const failureOf = (outcome: Outcome): string | null => {
