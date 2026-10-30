@@ -1,11 +1,13 @@
 import type { WorktreeId } from "@mend/domain";
 import {
   choicesFor,
+  type ResourceApprovalOffer,
   type ResourceApprovalOffers,
   type ResourceApprovalRequest,
   type ResourceDefinitionInput,
-  type ResourceRefusal,
   resourceProposalNotices,
+  type ResourceRefusal,
+  resourceRefusalWords,
   resourceReviewRows,
   resourceRuntimeRefusal,
   type WorktreeChoice,
@@ -385,18 +387,18 @@ export function ResourcesView(props: ResourcesViewProps) {
   const { page, worktreeId, worktreeName, busy, handlers } = props;
   const label = (key: string, action: string, idle: string, running: string) =>
     busy.get(key) === action ? running : idle;
+  const targets = (offers: ResourceApprovalOffers) =>
+    [
+      ["for the project", offers.project, "project"],
+      [`for worktree ${worktreeName ?? ""}`, offers.worktree, "worktree"],
+    ] as const;
   /** One button per target the server built a request for. */
   const approveActions = (
     key: string,
     item: { readonly spec: ResourceDefinitionInput; readonly digest: string },
     offers: ResourceApprovalOffers,
   ) =>
-    (
-      [
-        ["for the project", offers.project],
-        [`for worktree ${worktreeName ?? ""}`, offers.worktree],
-      ] as const
-    ).map(([target, offer]) =>
+    targets(offers).map(([target, offer]) =>
       offer?.kind !== "ready" ? null : (
         <button
           key={target}
@@ -417,6 +419,18 @@ export function ResourcesView(props: ResourcesViewProps) {
           approve {target}…
         </button>
       ),
+    );
+  /** Why a target has no button, one line per reason. */
+  const approveReasons = (offers: ResourceApprovalOffers) =>
+    targets(offers).flatMap(([target, offer, kind]) =>
+      withheldReasons(offer, kind).map((reason) => (
+        <p
+          key={`${kind}:${reason}`}
+          className="mt-1.5 font-mono text-[11px] break-words text-muted-foreground"
+        >
+          <span className="text-label">approve {target} ·</span> {reason}
+        </p>
+      )),
     );
   const review = (key: string) => {
     const { confirming } = props;
@@ -483,6 +497,7 @@ export function ResourcesView(props: ResourcesViewProps) {
                 ) : null}
               </>,
               <>
+                {approveReasons(entry.approve)}
                 {worktreeId === null ? null : (
                   <ChoiceLine
                     entry={entry}
@@ -525,6 +540,7 @@ export function ResourcesView(props: ResourcesViewProps) {
                   </button>
                 ) : null}
               </>,
+              approveReasons(entry.approve),
             );
           })}
         </Group>
@@ -542,6 +558,7 @@ export function ResourcesView(props: ResourcesViewProps) {
                   entry.spec,
                   null,
                   approveActions(key, entry, entry.approve),
+                  approveReasons(entry.approve),
                 );
               })}
               {notices.map((notice) => (
@@ -567,6 +584,27 @@ export function ResourcesView(props: ResourcesViewProps) {
     </div>
   );
 }
+
+/**
+ * Why an offer holds no request, in the route's words: each refusal by its key, and a denial of
+ * the read worktree's approval, which turns on that worktree. Denying the project's approval is the
+ * same words for every member on every item, which the introduction says once.
+ */
+const withheldReasons = (
+  offer: ResourceApprovalOffer | null,
+  target: "project" | "worktree",
+): ReadonlyArray<string> => {
+  switch (offer?.kind) {
+    case "rejected":
+      return offer.refusals.map(resourceRefusalWords);
+    case "denied":
+      return target === "worktree" ? [offer.message] : [];
+    case "ready":
+    case "approved":
+    case undefined:
+      return [];
+  }
+};
 
 function Group({ label, children }: { readonly label: string; readonly children: ReactNode }) {
   return (
@@ -729,7 +767,7 @@ export function ProposalForm(props: {
             key={`${refusal.key}:${refusal.message}`}
             className="font-mono text-[11px] text-danger"
           >
-            {refusal.key} {refusal.message}
+            {resourceRefusalWords(refusal)}
           </p>
         ))}
       </div>

@@ -7,6 +7,7 @@ import {
   choicesFor,
   defaultChoiceFor,
   envCollisionRefusals,
+  resourceRefusalWords,
   envNameCollisions,
   ImageDigest,
   imageDigestOf,
@@ -590,6 +591,15 @@ describe("env name collisions", () => {
 
   it("leaves the conventional names out when two of one engine are in use", () => {
     expect(envNameCollisions([postgres(), postgres({ name: "analytics" })])).toEqual([]);
+  });
+
+  it("words a refusal by its key, and one of the resource itself by its reason alone", () => {
+    expect(resourceRefusalWords({ key: "exports.MAIN_URL", message: "sets X" })).toBe(
+      "exports.MAIN_URL sets X",
+    );
+    expect(resourceRefusalWords({ key: "", message: "sets MEND_RESOURCE_DB_MAIN_URL" })).toBe(
+      "sets MEND_RESOURCE_DB_MAIN_URL",
+    );
   });
 
   it("refuses each resource in a collision, keyed by the export that sets the name", () => {
