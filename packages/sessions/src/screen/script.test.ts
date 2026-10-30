@@ -10,7 +10,7 @@ import { connectInside, dockerReady } from "../../test/xvnc.ts";
 import { planActions } from "./hand-steps.ts";
 import { openHand } from "./hand.ts";
 import { SCREEN_WORKER, screenWorkersLayer } from "./screen-workers.ts";
-import { screenArgv, screenPort, screenReportOf } from "./script.ts";
+import { screenArgv, screenPort, screenReapArgv, screenReportOf } from "./script.ts";
 
 const IMAGE = "mend-screen-script:local";
 const CONTEXT = fileURLToPath(new URL("../../test/fixtures/rfb", import.meta.url));
@@ -233,6 +233,20 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         inside(`kill -HUP -${xvncPid(11)}`);
         yield* Effect.promise(() => screen.exited);
         expect(processes()).toEqual(["docker-init", "ps", "sleep"]);
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "a lost start's reap, as the person, ends the screen on its display and nothing else",
+    () =>
+      Effect.gen(function* () {
+        const screen = start(13);
+        yield* Effect.promise(() => screen.said("mend-screen ready"));
+        docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
+        yield* Effect.promise(() => screen.exited);
+        expect(processes()).toEqual(["docker-init", "ps", "sleep"]);
+        docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
       }),
     { timeout: 60_000 },
   );

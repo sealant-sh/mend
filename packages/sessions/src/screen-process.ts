@@ -6,13 +6,18 @@ import type {
 } from "@mend/db";
 import { SealantRunId, SealantWorkspaceId, type SessionId } from "@mend/domain";
 import type { Screen, ScreenEndReason, Session, SessionProcess } from "@mend/domain/workbench";
-import type { PersonSessionOptions, ProcessUser, SealantPlatformError } from "@mend/sealant";
-import type { InteractiveSession, Workspace } from "@sealant/sdk";
+import type {
+  PersonExecOptions,
+  PersonSessionOptions,
+  ProcessUser,
+  SealantPlatformError,
+} from "@mend/sealant";
+import type { InteractiveSession, Workspace, WorkspaceExecResult } from "@sealant/sdk";
 import { Effect, Schema, Stream } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import type { ScreenPasswordsHeld } from "./screen/passwords.ts";
-import { type ScreenReport, screenArgv, screenReportOf } from "./screen/script.ts";
+import { type ScreenReport, screenArgv, screenReapArgv, screenReportOf } from "./screen/script.ts";
 
 /** What the screen process needs of the engine (ADR 0020): its process primitives, no more. */
 export interface ScreenProcessDeps<E> {
@@ -39,6 +44,11 @@ export interface ScreenProcessDeps<E> {
     argv: ReadonlyArray<string>,
     options?: PersonSessionOptions,
   ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
+  readonly exec: (
+    workspace: Workspace,
+    argv: ReadonlyArray<string>,
+    options?: PersonExecOptions,
+  ) => Effect.Effect<WorkspaceExecResult, SealantPlatformError>;
   /** Closes a process's terminal; false when the platform would not. */
   readonly close: (workspaceId: SealantWorkspaceId, ptyId: string) => Effect.Effect<boolean>;
   readonly markExited: (process: SessionProcess, how: "exited" | "stopped") => Effect.Effect<void>;
@@ -69,6 +79,9 @@ export interface ScreenProcess<E> {
     reason: ScreenEndReason,
   ) => Effect.Effect<void>;
 }
+
+/** No answer, or the platform's own failure: Xvnc may have started anyway. */
+const lostAnswer = (error: SealantPlatformError) => error.status === null || error.status >= 500;
 
 const STARTED = new Set<Screen["life"]["_tag"]>(["Starting", "Live"]);
 
@@ -168,21 +181,32 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
           status: "starting",
           runsAs,
         });
-        passwords.issue(sessionId, runsAs);
         const starting = yield* screens
           .setLife(screen.id, { life: { _tag: "Starting" }, processId: row.id })
           .pipe(Effect.orDie);
-        const pty = yield* deps
-          .open(workspace, argv, { user: startAs.user, env: startAs.env })
-          .pipe(
-            Effect.tapError(() =>
-              Effect.gen(function* () {
-                passwords.forget(sessionId);
-                yield* deps.markExited(row, "exited");
-                yield* setLife(starting, { life: { _tag: "Ended", reason: "process-exited" } });
-              }),
-            ),
-          );
+        const openWithFreshPasswords = Effect.suspend(() => {
+          passwords.issue(sessionId, runsAs);
+          return deps.open(workspace, argv, { user: startAs.user, env: startAs.env });
+        });
+        const reapThenReopen = Effect.logWarning(
+          "screen: a start's answer was lost · reaping",
+        ).pipe(
+          Effect.annotateLogs({ sessionId, display: screen.display }),
+          Effect.andThen(
+            deps.exec(workspace, screenReapArgv(screen.display), { user: startAs.user }),
+          ),
+          Effect.andThen(openWithFreshPasswords),
+        );
+        const pty = yield* openWithFreshPasswords.pipe(
+          Effect.catchIf(lostAnswer, () => reapThenReopen),
+          Effect.tapError(() =>
+            Effect.gen(function* () {
+              passwords.forget(sessionId);
+              yield* deps.markExited(row, "exited");
+              yield* setLife(starting, { life: { _tag: "Ended", reason: "process-exited" } });
+            }),
+          ),
+        );
         yield* processes.setSealantSessionId(row.id, pty.id, SealantRunId.make(pty.runId));
         yield* processes.setStatus(row.id, "running");
         yield* deps.watch({ ...row, sealantSessionId: pty.id, status: "running" });

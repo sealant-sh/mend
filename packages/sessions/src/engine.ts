@@ -23141,6 +23141,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         startAs: (session, workspace) =>
           startAsPerson(session, workspace, Effect.succeed(session.ownerUserId), "shell"),
         open: sealant.openSession,
+        exec: sealant.exec,
         close: closeProcessPty,
         markExited: (row, how) => markProcessExited(row.id, how, null),
         notStopped,

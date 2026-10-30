@@ -19,7 +19,7 @@ import type { CreateOptions } from "@sealant/sdk";
 import { Effect, Layer, Redacted } from "effect";
 import { describe, expect } from "vitest";
 
-import { screenArgv } from "../src/screen/script.ts";
+import { screenArgv, screenReapArgv } from "../src/screen/script.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import {
   sealantLaunchLayer,
@@ -107,6 +107,16 @@ const withScreens = <A, E>(
       }),
     },
   );
+};
+
+const lostStart = (failures: number) => {
+  let failing = 0;
+  return {
+    arm: () => {
+      failing = failures;
+    },
+    openFails: () => failing-- > 0,
+  };
 };
 
 describe("the session's screen (ADR 0020)", () => {
@@ -240,6 +250,72 @@ describe("the session's screen (ADR 0020)", () => {
       ),
   );
 
+  it.effect("reaps a lost start's display as the person and opens it again, once", () => {
+    const lost = lostStart(1);
+    return withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const [project] = [...world.projects.values()];
+          if (project === undefined) throw new Error("no project");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "screen",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          lost.arm();
+          const screen = yield* engine.startScreen(session.id);
+          const reap = screenReapArgv(DisplayNumber.make(10));
+          const reaps = platform.execs.flatMap((argv, at) =>
+            argv.join("\n") === reap.join("\n") ? [platform.execUsers[at]] : [],
+          );
+          expect(reaps).toEqual([LAUNCHER]);
+          expect(screen.display).toBe(10);
+          expect(platform.spawned.filter((argv) => argv[3] === "mend-screen")).toHaveLength(1);
+          expect(screenRows(world)).toMatchObject([
+            { exitedAt: null, sealantSessionId: expect.any(String) },
+          ]);
+        }),
+      { openFails: lost.openFails },
+    );
+  });
+
+  it.effect("gives up after one reap, and the screen reads ended", () => {
+    const lost = lostStart(2);
+    return withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const [project] = [...world.projects.values()];
+          if (project === undefined) throw new Error("no project");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "screen",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          lost.arm();
+          const failed = yield* engine.startScreen(session.id).pipe(Effect.flip);
+          expect(failed).toMatchObject({ _tag: "SealantPlatformError" });
+          const reap = screenReapArgv(DisplayNumber.make(10)).join("\n");
+          expect(platform.execs.filter((argv) => argv.join("\n") === reap)).toHaveLength(1);
+          expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
+          expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
+            _tag: "Ended",
+            reason: "process-exited",
+          });
+          expect(yield* engine.screenPasswords(session.id)).toBeNull();
+        }),
+      { openFails: lost.openFails },
+    );
+  });
   it.effect("refuses a screen in a workspace that cannot give it its own person", () =>
     withScreens(
       (world, platform) =>
