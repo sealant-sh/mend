@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
+import { OWNERLESS_OUTSIDE_MEND } from "@mend/domain/workbench";
 import {
   EventId,
   OrchestrationProjectShell,
@@ -22,6 +23,7 @@ import {
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
   type OrchestrationV2ThreadProjection,
+  type Project,
   type ProjectScript,
   type ServerSettings,
 } from "@mend/t3-contracts";
@@ -109,6 +111,16 @@ import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
 import * as Queueing from "./queue.ts";
 import {
+  AMBIGUOUS_WORKTREE,
+  NOT_A_PROJECT,
+  NOT_A_WORKTREE,
+  PROJECT_NOT_LISTED,
+  projectRemovalWords,
+  RemovalKept,
+  worktreeDirectoryAt,
+  worktreeRemovalWords,
+} from "./removal.ts";
+import {
   makeReplayLog,
   makeSequencer,
   SHELL_REPLAY_LIMITS,
@@ -195,6 +207,12 @@ export type HubReadError = MendDeviceRefused | MendUnavailable;
 
 /** How much of a branch's name a new worktree's name keeps, before its suffix. */
 const WORKTREE_NAME_STEM = 53;
+/**
+ * How long a worktree removal waits for the worktree's deleted threads to finish their removal in
+ * Mend (a stop drains and saves first), and how often it looks. Then Mend is asked anyway.
+ */
+const REMOVAL_SETTLE_WAIT = "45 seconds";
+const REMOVAL_SETTLE_LOOK = "1 second";
 const SUFFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 /** Six random characters of `[a-z0-9]`: what makes a new worktree's name its own. */
 const worktreeSuffix = (): string =>
@@ -386,6 +404,24 @@ export interface PersonHub {
     path: string,
     threadId?: string,
   ) => Effect.Effect<WorktreeFile | null, HubReadError>;
+  /**
+   * Removes the worktree at `path` of the project at `cwd` in Mend (`vcs.removeWorktree`, sent once
+   * t3code deleted its last thread), never with force: Mend's refusals stand. A worktree Mend no
+   * longer has is removed already.
+   */
+  readonly removeWorktree: (input: {
+    readonly session: BearerSession;
+    readonly cwd: string;
+    readonly path: string;
+  }) => Effect.Effect<void, RemovalKept | HubReadError>;
+  /**
+   * Removes the project in Mend (`project.delete`), which has no force. Answers the project as
+   * t3code's own server does, deleted, once the shell no longer holds it.
+   */
+  readonly removeProject: (input: {
+    readonly session: BearerSession;
+    readonly projectId: string;
+  }) => Effect.Effect<Project, RemovalKept | HubReadError>;
 }
 
 export interface WorktreeFile {
@@ -3373,9 +3409,9 @@ export const makePersonHub = (input: {
      * saw free (review 590-R2-1). The suffix makes the name its own whoever creates at once.
      */
     const freeWorktreeName = (token: string, projectId: string, wanted: string) =>
-      mend.worktreeNames(token, projectId).pipe(
-        Effect.map((names) => {
-          const taken = new Set(names);
+      mend.listWorktrees(token, projectId).pipe(
+        Effect.map((worktrees) => {
+          const taken = new Set(worktrees.map((worktree) => worktree.name));
           for (let attempt = 0; attempt < 5; attempt++) {
             const candidate = `${wanted.slice(0, WORKTREE_NAME_STEM)}-${worktreeSuffix()}`;
             if (!taken.has(candidate)) return candidate;
@@ -4533,6 +4569,87 @@ export const makePersonHub = (input: {
         );
       });
 
+    // ─── Removing a worktree or a project (decision 11) ────────────────────
+
+    /** Sessions of the worktree whose removal Mend has not finished: deleted, still saving. */
+    const removalsUnderWay = (worktreeId: string) =>
+      locked(
+        Effect.sync(() =>
+          Array.from(projects.values()).some((entry) =>
+            entry.sessions.some(
+              (session) => session.worktreeId === worktreeId && removing.has(session.id),
+            ),
+          ),
+        ),
+      );
+
+    /**
+     * Waits, at most `REMOVAL_SETTLE_WAIT`, for the worktree's deleted sessions to finish their
+     * removal. t3code asks to remove the worktree right after deleting its last thread, whose stop
+     * may still be saving; asked now, Mend would refuse every such yes as saving.
+     */
+    const settledRemovals = (worktreeId: string) =>
+      Effect.gen(function* () {
+        while (yield* removalsUnderWay(worktreeId)) yield* Effect.sleep(REMOVAL_SETTLE_LOOK);
+      }).pipe(Effect.timeoutOrElse({ duration: REMOVAL_SETTLE_WAIT, orElse: () => Effect.void }));
+
+    const removeWorktree: PersonHub["removeWorktree"] = (request) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const token = request.session.deviceToken;
+        const project = yield* locked(
+          Effect.sync(
+            () =>
+              Array.from(projects.values()).find((entry) => entry.project.storePath === request.cwd)
+                ?.project ?? null,
+          ),
+        );
+        if (project === null) return yield* new RemovalKept({ reason: NOT_A_PROJECT });
+        const directory = worktreeDirectoryAt(project, request.path);
+        if (directory === null) return yield* new RemovalKept({ reason: NOT_A_WORKTREE });
+        const listed = yield* mend
+          .listWorktrees(token, project.id)
+          .pipe(
+            Effect.catchTag("MendNotFound", () =>
+              Effect.fail(new RemovalKept({ reason: PROJECT_NOT_LISTED })),
+            ),
+          );
+        const [worktree, ...others] = listed.filter(
+          (candidate) => candidate.directory === directory,
+        );
+        // Gone already: removed, as t3code's own server answers for a path that is not there.
+        if (worktree === undefined) return;
+        if (others.length > 0) return yield* new RemovalKept({ reason: AMBIGUOUS_WORKTREE });
+        if (worktree.changeOwnerUserId === null) {
+          return yield* new RemovalKept({ reason: OWNERLESS_OUTSIDE_MEND });
+        }
+        yield* settledRemovals(worktree.id);
+        const refusal = worktreeRemovalWords(yield* mend.removeWorktree(token, worktree.id));
+        if (refusal !== null) return yield* new RemovalKept({ reason: refusal });
+        yield* requestRefresh(`project:${project.id}`);
+      });
+
+    const removeProject: PersonHub["removeProject"] = (request) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const shown = yield* locked(
+          Effect.sync(() => {
+            const entry = projects.get(request.projectId);
+            return entry === undefined
+              ? null
+              : projectShellOf(entry.project, projectScripts.get(entry.project.id) ?? []);
+          }),
+        );
+        if (shown === null) return yield* new RemovalKept({ reason: PROJECT_NOT_LISTED });
+        const refusal = projectRemovalWords(
+          yield* mend.removeProject(request.session.deviceToken, request.projectId),
+        );
+        if (refusal !== null) return yield* new RemovalKept({ reason: refusal });
+        // Read now, so the project and its threads leave the shell before t3code stops waiting.
+        yield* refreshProject(request.projectId).pipe(Effect.catch(() => requestRefresh("all")));
+        return { ...shown, deletedAt: DateTime.formatIso(yield* DateTime.now) };
+      });
+
     const terminals = makeTerminals({
       mend,
       mendUrl: input.mendUrl ?? new URL("http://127.0.0.1:0"),
@@ -4647,6 +4764,8 @@ export const makePersonHub = (input: {
       commands,
       createProject,
       changeOfWorktree,
+      removeWorktree,
+      removeProject,
     };
   });
 

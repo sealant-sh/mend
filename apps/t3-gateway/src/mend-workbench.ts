@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 /**
@@ -248,10 +249,20 @@ export const MendWorkspaceRetirement = Schema.Struct({
 });
 export type MendWorkspaceRetirement = typeof MendWorkspaceRetirement.Type;
 
-/** What the gateway reads of `WorktreeListing` (`GET /api/projects/:id/worktrees`): the names. */
-export const MendWorktreeListing = Schema.Struct({
-  worktrees: Schema.Array(Schema.Struct({ name: Schema.String })),
+/** `Worktree` in @mend/domain/workbench, from `GET /api/projects/:id/worktrees`. */
+export const MendWorktree = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  /** Its directory under the store's `worktrees/`: never renamed, unlike `name`. */
+  directory: Schema.String,
+  /** Who started its change; null when Mend cannot prove it, and from a Mend before 0.37. */
+  changeOwnerUserId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 });
+export type MendWorktree = typeof MendWorktree.Type;
+
+export const MendWorktreeListing = Schema.Struct({ worktrees: Schema.Array(MendWorktree) });
 
 /**
  * `ProjectFileListing` in @mend/api-contracts, from `GET /api/projects/:id/files`: every file of a

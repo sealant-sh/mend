@@ -35,21 +35,21 @@ allows. Each socket gets its own RPC server, holding the handlers of the person 
 Every call is checked against the bearer's scopes before its handler runs, as t3code's
 `RpcScopeAuthorization` does, from a copy of t3code's own scope map at the pin (`rpc-scopes.ts`). A
 pairing grants the overlap of what the client asks and the scopes of t3code's standard grant the
-gateway backs: `orchestration:read` and `:operate`, `terminal:read` and `:operate`, and
-`filesystem:read` (`GRANTED_SCOPES` in `auth.ts`). t3code renders a control whose scope a grant
-leaves out as inert, with its own wording, so the gateway withholds `settings:write`,
-`providers:manage`, `environment:maintain`, `diagnostics:read`, `preview:operate`,
-`source-control:write`, `filesystem:write` and `relay:read`: everything behind them is refused, and
-a control that looked live failed (a Files-tab edit was dropped with a console warning). A stored
-grant is narrowed to these when it is read, so a pairing made before loses the rest on its next
-request. A grant from before t3code's granular permissions (it holds `review:write`) has each old
-scope it holds read as the scopes t3code split it into, so clients of the previous pin keep files
-and the terminal; `review:write` alone grants nothing and is refused. A grant without that mark is
-read as stored: an old one of `orchestration:read` alone no longer reads files, which now need
-`filesystem:read`. Two methods need scopes by their input, as in t3code: `assets.createUrl` for a
-workspace or media file needs `filesystem:read`, and `server.updateSettings` the scopes its patch
-touches. Refusals name the scope as t3code does: the granular permission, and its legacy parent for
-older clients.
+gateway backs: `orchestration:read` and `:operate`, `terminal:read` and `:operate`,
+`source-control:write` (landing, and removing a worktree, through Mend) and `filesystem:read`
+(`GRANTED_SCOPES` in `auth.ts`). t3code renders a control whose scope a grant leaves out as inert,
+with its own wording, so the gateway withholds `settings:write`, `providers:manage`,
+`environment:maintain`, `diagnostics:read`, `preview:operate`, `filesystem:write` and `relay:read`:
+everything behind them is refused, and a control that looked live failed (a Files-tab edit was
+dropped with a console warning). A stored grant is narrowed to these when it is read, so a pairing
+made before loses the rest on its next request. A grant from before t3code's granular permissions
+(it holds `review:write`) has each old scope it holds read as the scopes t3code split it into, so
+clients of the previous pin keep files and the terminal; `review:write` alone grants nothing and is
+refused. A grant without that mark is read as stored: an old one of `orchestration:read` alone no
+longer reads files, which now need `filesystem:read`. Two methods need scopes by their input, as in
+t3code: `assets.createUrl` for a workspace or media file needs `filesystem:read`, and
+`server.updateSettings` the scopes its patch touches. Refusals name the scope as t3code does: the
+granular permission, and its legacy parent for older clients.
 
 | Method                                                       | What the gateway does                                                                                                                                                                                                        |
 | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -357,6 +357,33 @@ at once: the client has already let it go. The state file keeps it hidden across
 Mend lets a person with shared control stop the owner's session but not delete it. Their delete in
 t3code stops the owner's live session first (the client's `provider-session.detach`), and then
 answers t3code's authorization error.
+
+### Removing a worktree or a project
+
+t3code's own confirm dialogs ask, and Mend's removal decides (`src/removal.ts`). t3code sends
+`force: true` with both; the gateway never passes it to Mend in any form.
+
+| t3code                               | Mend                                                                                                                                                                                                                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vcs.removeWorktree`                 | `DELETE /api/worktrees/:id`. `cwd` names the project by its store path, and `path` one directory under its `worktrees/`, matched to Mend's listing (`GET /api/projects/:id/worktrees`) by the worktree's directory, never its name. Any other path is refused, Mend unasked |
+| `projects.mutate` (`project.delete`) | `DELETE /api/projects/:id`; answers the project with `deletedAt`, as t3code's contract requires, once the project and its threads have left the shell. Creating or editing a project is still refused: projects are adopted and edited in Mend                              |
+
+- A worktree Mend no longer lists is answered as removed, as t3code's own server answers for a path
+  that is gone.
+- A worktree whose change has no provable owner is refused without asking Mend: "Mend cannot tell
+  who started this worktree's change, so it keeps it. Remove it from Mend."
+- Before asking Mend, the gateway waits up to 45 seconds for the worktree's deleted threads to
+  finish their removal in Mend (a stop drains and saves first). Then it asks anyway and shows what
+  Mend says.
+- A refusal shows Mend's words for a client outside Mend (`@mend/domain/workbench`): every blocker,
+  whose work it is, and that the person removes or lands it from Mend. A change in a project with no
+  origin reads "This worktree has work that is not on any remote. Remove it from Mend if you mean to
+  discard it." A teammate's worktree names who started its change. None offers force.
+- A worktree refusal is t3code's `EnvironmentAuthorizationError`, whose message the toast shows as
+  it is ("Could not remove <path>. …"); a project refusal is `ProjectMutationError`. A project Mend
+  answers 404 for says that only an organization owner, or the creator of a private project, can
+  remove it. Any other answer, or a refusal whose body does not decode, says what Mend answered and
+  sends the person to Mend; one that never comes says Mend could not be reached.
 
 ### Project files and `@`-mentions
 
