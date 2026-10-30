@@ -16,7 +16,16 @@ import {
   SessionProcessesRepo,
   SessionsRepo,
 } from "@mend/db";
-import type { AgentTurnId, SessionId, SessionProcessId } from "@mend/domain";
+import {
+  type AgentTurnId,
+  failureLine,
+  failureName,
+  mendWords,
+  type ReaderLine,
+  said,
+  type SessionId,
+  type SessionProcessId,
+} from "@mend/domain";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -39,7 +48,7 @@ import {
   type AgentTurnSteer,
   type TurnSteerQueueReason,
 } from "@mend/domain/workbench";
-import { SealantPlatformError } from "@mend/sealant";
+import { ledBy, type SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Cause, Clock, Deferred, Effect, Exit, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
@@ -47,7 +56,6 @@ import * as Semaphore from "effect/Semaphore";
 
 import { HAND_OVER_NOT_NOW } from "./conversation-steps.ts";
 import {
-  failureName,
   makeTurnSteering,
   openSteerGate,
   type InvalidTurnSteerError,
@@ -88,7 +96,7 @@ export type SharedControlDecision =
   /** Another person's turn, or this person's in the neutral context: a new process runs it. */
   | { readonly kind: "hand-over"; readonly sender: string }
   /** Not sent: the turn fails with these words (shared control was turned off, say). */
-  | { readonly kind: "refuse"; readonly words: string };
+  | { readonly kind: "refuse"; readonly words: ReaderLine };
 
 /**
  * What holds the next sender's turn while the conversation's process finishes its own work
@@ -340,11 +348,9 @@ const adapterFor = (harness: string | null) =>
   harness === "claude" ? ClaudeAdapter : CodexAdapter;
 
 const toPlatformError = (operation: string, cause: unknown): SealantPlatformError =>
-  new SealantPlatformError({
+  ledBy(said`Agent protocol ${mendWords(operation)} failed`, cause, {
     code: "agent_protocol_failed",
     status: null,
-    message: `Agent protocol ${operation} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-    cause,
   });
 
 export const ProtocolHostLive: Layer.Layer<
@@ -437,7 +443,8 @@ export const ProtocolHostLive: Layer.Layer<
               return;
             }
             if (sent._tag === "Failure") {
-              yield* conversations.failTurn(turn.id, String(sent.failure)).pipe(Effect.orDie);
+              const words = yield* failureLine(Cause.fail(sent.failure));
+              yield* conversations.failTurn(turn.id, words).pipe(Effect.orDie);
               const failed = yield* conversations.byTurnId(turn.id);
               if (failed === null) return yield* Effect.die(`Turn ${turn.id} disappeared`);
               yield* entry.hooks.onTurnCompleted(failed);
@@ -566,7 +573,7 @@ export const ProtocolHostLive: Layer.Layer<
           if (hosted.get(entry.process.id) === entry) yield* dispatchNext(entry);
         });
         /** The waiting turn fails with these words, and the queue goes on here. */
-        const failWaiting = (words: string) =>
+        const failWaiting = (words: ReaderLine) =>
           Effect.gen(function* () {
             entry.handingOverTo = null;
             entry.stopping = false;
@@ -649,7 +656,7 @@ export const ProtocolHostLive: Layer.Layer<
                   message: handed.failure.message,
                 }),
               );
-              return yield* failWaiting(handed.failure.message);
+              return yield* failWaiting(yield* failureLine(Cause.fail(handed.failure)));
             }
           }).pipe(
             Effect.catchCause((cause) =>
@@ -1014,7 +1021,7 @@ export const ProtocolHostLive: Layer.Layer<
       for (const orphan of processTurns) {
         if (orphan.status !== "running" || orphan.providerTurnId !== null) continue;
         yield* conversations
-          .failTurn(orphan.id, "Mend restarted before the turn was acknowledged.")
+          .failTurn(orphan.id, said`Mend restarted before the turn was acknowledged.`)
           .pipe(Effect.orDie);
         const failed = yield* conversations.byTurnId(orphan.id);
         if (failed !== null) yield* input.hooks.onTurnCompleted(failed);

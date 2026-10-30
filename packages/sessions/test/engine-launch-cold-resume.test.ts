@@ -8,12 +8,17 @@ import * as path from "node:path";
 
 import { SessionId } from "@mend/domain";
 import { Project, Session, SkillWithFiles } from "@mend/domain/workbench";
-import { SealantPlatformError } from "@mend/sealant";
+import { SealantPlatformError, toPlatformError } from "@mend/sealant";
 import { SessionEngine, secretFilesDeliveredExec } from "@mend/sessions";
 import { BlobStore, BlobStoreError, BlobStoreFsLive, captureKeys } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { it } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, Workspace, WorkspaceCaptureReplanned } from "@sealant/sdk";
+import {
+  type CreateOptions,
+  SealantApiError,
+  type Workspace,
+  type WorkspaceCaptureReplanned,
+} from "@sealant/sdk";
 import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 
@@ -982,5 +987,50 @@ describe("secret files under a directory sessions now save (review 2026-10-04)",
         },
       );
     }
+  });
+
+  it("keeps the platform's words off the line of a join whose home's record it could not read (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    let reads = 0;
+    const summary = await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "holder",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(holder.id, ["codex"]);
+          const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          yield* engine.launch(joined.id, ["codex"]).pipe(Effect.exit);
+          return world.sessions.get(joined.id)?.summary ?? null;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: lifecycleLayer([], {
+          execCalls: [],
+          captureOps: {
+            execEffect: (argv) =>
+              argv.join(" ") === secretFilesDeliveredExec.join(" ") && reads++ > 0
+                ? Effect.fail(toPlatformError(new SealantApiError(words, { status: 500 })))
+                : undefined,
+          },
+        }),
+      },
+    );
+    expect(reads).toBeGreaterThan(1);
+    expect(summary).not.toContain(words);
+    expect(summary).toMatch(
+      /^resume failed: a secret file under a directory sessions now save could not be taken out of it.* · reference [0-9a-f]{16}$/,
+    );
   });
 });

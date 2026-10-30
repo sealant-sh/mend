@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { ChangesRepo, InstanceRolesRepo, IssuesRepo, notifyEvent, RunsRepo } from "@mend/db";
 import {
+  failureLine,
   Sha,
   SealantRunId,
   SealantWorkspaceId,
@@ -12,7 +13,7 @@ import {
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import type { Run as SdkRun } from "@sealant/sdk";
 import { opencode } from "@sealant/sdk";
-import { Effect, Layer, Option, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Stream } from "effect";
 
 import { RunStarter, RunStartError } from "./dispatcher.ts";
 import { JobRunner } from "./job-runner.ts";
@@ -283,6 +284,9 @@ export const runStarterLayer = Layer.effect(
       });
     });
 
+    const failRunWith = (run: Run, issueId: IssueId, cause: Cause.Cause<unknown>, lead: string) =>
+      failureLine(cause).pipe(Effect.flatMap((words) => failRun(run, issueId, `${lead}${words}`)));
+
     const supervise = Effect.fn("RunStarter.supervise")(function* (
       run: Run,
       issue: Issue,
@@ -358,9 +362,11 @@ export const runStarterLayer = Layer.effect(
         yield* runs.setStatus(run.id, "running");
         yield* supervise(run, issue, sdkRun, 0n);
       }).pipe(
-        Effect.catchTag("SealantPlatformError", (error) => failRun(run, issue.id, error.message)),
+        Effect.catchTag("SealantPlatformError", (error) =>
+          failRunWith(run, issue.id, Cause.fail(error), ""),
+        ),
         Effect.catchDefect((defect) =>
-          failRun(run, issue.id, `run supervision died: ${String(defect)}`),
+          failRunWith(run, issue.id, Cause.die(defect), "run supervision died: "),
         ),
       );
       yield* Effect.forkIn(work, scope);
@@ -384,9 +390,11 @@ export const runStarterLayer = Layer.effect(
         yield* runs.setStatus(run.id, "running");
         yield* supervise(run, issue, sdkRun, 0n);
       }).pipe(
-        Effect.catchTag("SealantPlatformError", (error) => failRun(run, issue.id, error.message)),
+        Effect.catchTag("SealantPlatformError", (error) =>
+          failRunWith(run, issue.id, Cause.fail(error), ""),
+        ),
         Effect.catchDefect((defect) =>
-          failRun(run, issue.id, `run supervision died: ${String(defect)}`),
+          failRunWith(run, issue.id, Cause.die(defect), "run supervision died: "),
         ),
       );
       yield* Effect.forkIn(work, scope);
@@ -409,10 +417,10 @@ export const runStarterLayer = Layer.effect(
           yield* supervise(run, issue.value, sdkRun, run.lastSeenSequence);
         }).pipe(
           Effect.catchTag("SealantPlatformError", (error) =>
-            failRun(run, run.issueId, error.message),
+            failRunWith(run, run.issueId, Cause.fail(error), ""),
           ),
           Effect.catchDefect((defect) =>
-            failRun(run, run.issueId, `run supervision died: ${String(defect)}`),
+            failRunWith(run, run.issueId, Cause.die(defect), "run supervision died: "),
           ),
         );
         yield* Effect.forkIn(work, scope);
@@ -472,9 +480,11 @@ export const runStarterLayer = Layer.effect(
         yield* runs.setStatus(run.id, "running");
         yield* supervise(run, issue, sdkRun, 0n);
       }).pipe(
-        Effect.catchTag("SealantPlatformError", (error) => failRun(run, issue.id, error.message)),
+        Effect.catchTag("SealantPlatformError", (error) =>
+          failRunWith(run, issue.id, Cause.fail(error), ""),
+        ),
         Effect.catchDefect((defect) =>
-          failRun(run, issue.id, `run supervision died: ${String(defect)}`),
+          failRunWith(run, issue.id, Cause.die(defect), "run supervision died: "),
         ),
       );
       yield* Effect.forkIn(work, scope);

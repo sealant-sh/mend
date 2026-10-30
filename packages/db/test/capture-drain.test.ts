@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectId, said, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { executorEndOf } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
@@ -285,7 +285,7 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
         // Settled first (the agent's own exit), then the sweep's stop drain begins: unsettled.
-        yield* sessions.settle(STOPPING, "completed", "exited with code 0");
+        yield* sessions.settle(STOPPING, "completed", said`exited with code 0`);
         const settledFirst = yield* sessions.byId(STOPPING);
         yield* sessions.beginCaptureDrain(STOPPING, "stop", t0);
         const draining = yield* sessions.byId(STOPPING);
@@ -294,12 +294,12 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
         const held = yield* sessions.byId(STOPPING);
         // The drain ends once the termination is observed: now it settles.
         yield* sessions.endCaptureDrain(STOPPING);
-        yield* sessions.settle(STOPPING, "completed", "exited with code 0");
+        yield* sessions.settle(STOPPING, "completed", said`exited with code 0`);
         const settled = yield* sessions.byId(STOPPING);
         // A relaunch drain is not a stop: a settle while it runs settles.
         yield* sessions.reopen(STOPPING, "running");
         yield* sessions.planRelaunch(STOPPING, null, "claude", t0);
-        yield* sessions.settle(STOPPING, "failed", "resume failed");
+        yield* sessions.settle(STOPPING, "failed", said`resume failed`);
         const relaunching = yield* sessions.byId(STOPPING);
         // The owner's stop turns it into a stop drain: unsettled again.
         yield* sessions.stopCaptureDrain(STOPPING);

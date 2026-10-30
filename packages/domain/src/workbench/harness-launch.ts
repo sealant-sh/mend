@@ -8,6 +8,14 @@
  * strings through, validated by the API contract.
  */
 
+import {
+  mendWords,
+  type ReaderLine,
+  ReaderWords,
+  said,
+  type SaysReaderWords,
+} from "../failure-line.ts";
+
 /**
  * Thinking depth, one shared scale; each harness maps it to its own flag (claude `--effort`, codex
  * `model_reasoning_effort`). `ultra` is codex's own top tier ("maximum reasoning with automatic
@@ -458,13 +466,17 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
 };
 
 /** A harness has no supported structured byte protocol in Mend. */
-export class ProtocolHarnessUnsupportedError extends Error {
+export class ProtocolHarnessUnsupportedError extends Error implements SaysReaderWords {
   readonly _tag = "ProtocolHarnessUnsupportedError" as const;
   readonly harness: string;
 
   constructor(harness: string) {
     super(`Harness "${harness}" does not support protocol mode.`);
     this.harness = harness;
+  }
+
+  get [ReaderWords](): ReaderLine {
+    return said`Harness "${mendWords(this.harness)}" does not support protocol mode.`;
   }
 }
 

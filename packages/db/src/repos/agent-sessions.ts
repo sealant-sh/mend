@@ -3,6 +3,7 @@ import {
   type ContextSnapshotId,
   type OrganizationId,
   type ProjectId,
+  type ReaderLine,
   type SealantRunId,
   type SealantWorkspaceId,
   SessionId,
@@ -343,7 +344,7 @@ export class SessionsRepo extends Context.Service<
     readonly recordWorkspaceTtlRenewalFailure: (
       id: SessionId,
       workspaceId: SealantWorkspaceId,
-      error: string,
+      error: ReaderLine,
       failedAt: Date,
     ) => Effect.Effect<void>;
     /** The PTY session id — how a client reattaches to the live terminal. */
@@ -385,7 +386,7 @@ export class SessionsRepo extends Context.Service<
     readonly settle: (
       id: SessionId,
       outcome: SessionOutcome,
-      summary: string | null,
+      summary: ReaderLine | null,
     ) => Effect.Effect<void>;
     /**
      * Clear `settledAt` and write a live status: `running` when an agent process starts (a
@@ -407,7 +408,7 @@ export class SessionsRepo extends Context.Service<
      * last settle (a replacement executor answering after "executor lost"). `reopen` touches
      * status alone, so a picked-up session would otherwise keep reading the loss.
      */
-    readonly setSummary: (id: SessionId, summary: string | null) => Effect.Effect<void>;
+    readonly setSummary: (id: SessionId, summary: ReaderLine | null) => Effect.Effect<void>;
     /**
      * A settled session's outcome and summary, rewritten from what was observed since it settled
      * (its executor saved after all, ended later, or was never made): the latest observation is

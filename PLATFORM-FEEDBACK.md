@@ -7,6 +7,24 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-30 · 0.40.0-next.768 · A refusal's reason, apart from its words
+
+Mend shows a person's session line, its push and some API bodies to other members of the project.
+Since SLNT-385 a platform failure reaches such a line only in words Mend curated, because an error
+message can quote what a person sent.
+
+- **Today:** `SealantError.code` names a family, not a reason. `invalid_create_options` carries the
+  fixed source-selection sentence, the dotfiles and `baseImage` refusals, and
+  ``workspaces.create `source.ownerMap` was rejected: …``, which lists the problems found in what
+  was sent. `SealantApiError` carries Core's own message, and `reason` only for some refusals.
+- **Mend today:** `toPlatformError` says a message only for a short list of codes whose messages the
+  SDK or Core builds from fixed words (`workspace_image_build_stalled`,
+  `workspace_image_build_timeout`, `workspace_ready_timeout`, `workspace-docker-unsupported`). For
+  `invalid_create_options` it says only the exact source-selection sentence, from Mend's own copy.
+  Every other message is kept for the log and withheld from the line, which names a reference.
+- **Needed:** a stable `reason` on every refusal the SDK throws or Core answers (for this one,
+  `create-source-count`), and a note on each reason saying whether its message quotes caller input.
+
 ## 2026-10-30 · 0.40.0-next.768 · A session's env cannot put a directory in front of PATH
 
 ADR 0020 puts a `chromium` wrapper, staged in `/run/mend/bin`, first on the PATH of a session with a

@@ -13,11 +13,12 @@ import {
   SealantClient,
   SealantPlatformError,
   SealantPrincipal,
+  toPlatformError,
   type WorkspaceStopOptions,
 } from "@mend/sealant";
 import { type CaptureCompletionSeal, SessionEngine } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions } from "@sealant/sdk";
+import { type CreateOptions, SealantError } from "@sealant/sdk";
 import { Clock, Duration, Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
 
@@ -62,13 +63,12 @@ const lostAnswer = () =>
  */
 const buildFailed = () =>
   Effect.fail(
-    new SealantPlatformError({
-      code: "workspace_image_build_stalled",
-      status: null,
-      message:
+    toPlatformError(
+      new SealantError(
         "The image build for workspace workspace-1 reported no progress for 12 min; it was at step 4/4.",
-      cause: null,
-    }),
+        { code: "workspace_image_build_stalled" },
+      ),
+    ),
   );
 
 /** The store, with every lease release waking `untilChanged` (the lease is mutated in place). */

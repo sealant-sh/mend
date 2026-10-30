@@ -1,5 +1,7 @@
 import { linuxLoginNameOf } from "@mend/db";
+import { said } from "@mend/domain";
 import {
+  curatedError,
   PersonLayoutPlatform,
   type PersonLogin,
   SealantClient,
@@ -43,8 +45,7 @@ export const personPlatform = (
   },
   /** Each person's own login for a provider, as Core says it stands; `active` unless said. */
   logins?: (accountId: string) => PersonLogin,
-  /** A login write Core does not complete (it did not answer). */
-  postFails?: (onBehalfOf: string, home: string) => boolean,
+  postFails?: (onBehalfOf: string, home: string) => boolean | SealantPlatformError,
   /** What the control plane says of itself, asked each time; it can run per person unless said. */
   controlPlane?: () => string | null,
   /** Core runs a workspace's SSH sessions as a user (`features.workspaceSshUser`); yes unless said. */
@@ -87,13 +88,15 @@ export const personPlatform = (
     postCredentials: (_workspace, input) =>
       Effect.suspend(() => {
         calls.push(`post:${input.onBehalfOf}:${input.home}`);
-        return postFails?.(input.onBehalfOf, input.home) === true
+        const failed = postFails?.(input.onBehalfOf, input.home) ?? false;
+        if (failed instanceof SealantPlatformError) return Effect.fail(failed);
+        return failed
           ? Effect.fail(
-              new SealantPlatformError({
+              curatedError({
                 code: "control_plane_unavailable",
                 status: 503,
                 // A sentence, as Codex's own refusals are: the session line must not double its stop.
-                message: "Core did not answer.",
+                words: said`Core did not answer.`,
                 cause: null,
               }),
             )

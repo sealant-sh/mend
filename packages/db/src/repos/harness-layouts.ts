@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
-import { WorktreeId } from "@mend/domain";
+import { mendWords, type ReaderLine, ReaderWords, WorktreeId } from "@mend/domain";
 import {
   HarnessLayout,
   HarnessLayoutSource,
@@ -264,7 +264,11 @@ const decodeRetirementRow = Schema.decodeUnknownSync(RetirementRow);
 export class LinuxIdentityExhaustedError extends Schema.TaggedError<LinuxIdentityExhaustedError>()(
   "LinuxIdentityExhaustedError",
   { accountId: Schema.String, message: Schema.String },
-) {}
+) {
+  get [ReaderWords](): ReaderLine {
+    return mendWords(this.message);
+  }
+}
 
 /**
  * Per-person harness homes (docs/adr/0016), in Postgres: Linux identities, the layout of each

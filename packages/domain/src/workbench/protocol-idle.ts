@@ -1,3 +1,4 @@
+import { type ReaderLine, said } from "../failure-line.ts";
 import { OPEN_AGENT_TURN_STATUSES, type AgentRequest, type AgentTurn } from "./agent-protocol.ts";
 import { currentAgentProcess, isLiveProcess } from "./session-fold.ts";
 import type { SessionProcess } from "./session-process.ts";
@@ -123,5 +124,5 @@ export const protocolIdleStopDue = (
   minutes > 0 && reading.kind === "idle" && nowMs - reading.since.getTime() >= minutes * 60_000;
 
 /** The summary an idle-stopped session reads, and its Slack thread's status: what happened, and how to go on. */
-export const idleStopSummary = (minutes: number): string =>
-  `idle · stopped after ${minutes} min · reply to resume`;
+export const idleStopSummary = (minutes: number): ReaderLine =>
+  said`idle · stopped after ${minutes} min · reply to resume`;

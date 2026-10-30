@@ -6,6 +6,7 @@ import {
   AgentTurnSteerId,
   SessionMessageId,
   type ChangeLandingId,
+  type ReaderLine,
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
@@ -286,7 +287,7 @@ export class AgentConversationRepo extends Context.Service<
     ) => Effect.Effect<AgentTurn | null>;
     readonly failTurn: (
       id: AgentTurnId,
-      error: string,
+      error: ReaderLine,
     ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
     /**
      * What the turn's request asked for (docs/adr/0007-landing.md), read once per turn and

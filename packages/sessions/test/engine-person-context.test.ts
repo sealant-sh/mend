@@ -27,6 +27,7 @@ import {
   SealantClient,
   SealantPlatformError,
   SealantPrincipal,
+  toPlatformError,
 } from "@mend/sealant";
 import {
   SessionEngine,
@@ -36,13 +37,15 @@ import {
 } from "@mend/sessions";
 import { AgentBridge, processStatePathOf } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type {
-  CreateOptions,
-  Workspace,
-  WorkspaceCaptureOwnerMap,
-  WorkspaceCaptureReplanned,
+import {
+  type CreateOptions,
+  SealantApiError,
+  SealantError,
+  type Workspace,
+  type WorkspaceCaptureOwnerMap,
+  type WorkspaceCaptureReplanned,
 } from "@sealant/sdk";
-import { Clock, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
+import { Cause, Clock, Duration, Effect, Exit, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
 import { LEASE_REAPER_INTERVAL_SECONDS } from "../src/capture-runtime.ts";
@@ -309,6 +312,67 @@ const coldJoinResume = (options: {
     if (result === null) throw new Error("the scenario did not run");
     return result;
   });
+
+const launchWhoseLayoutDecisionDies = async (defect: unknown, settleDiesWith?: unknown) => {
+  const throwing = Layer.effect(
+    PersonLayoutPlatform,
+    Effect.map(PersonLayoutPlatform, (inner) => ({
+      ...inner,
+      imageReport: () => Effect.die(defect),
+    })),
+  ).pipe(Layer.provide(personPlatform([], { person: true })));
+  const created: Array<CreateOptions> = [];
+  const execCalls: Array<ReadonlyArray<string>> = [];
+  const outcome = await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const session = yield* engine.provision({
+          projectId: project.id,
+          harness: "claude",
+          label: null,
+          name: "pph",
+          ownerUserId: "user-fixture",
+          start: { kind: "base", base: null },
+          harnessLayout: "person",
+        });
+        if (settleDiesWith !== undefined) world.settleDiesWith = () => settleDiesWith;
+        const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
+        const row = world.sessions.get(session.id);
+        return {
+          status: row?.status,
+          summary: row?.summary ?? null,
+          defects: Exit.isFailure(launched)
+            ? launched.cause.reasons.filter(Cause.isDieReason).map((each) => each.defect)
+            : null,
+        };
+      }),
+    {
+      captured: makeMemoryCaptureStore(),
+      sealantLayer: sealantLaunchLayer(
+        created,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        execCalls,
+      ),
+      harnessLayout: {
+        flag: "shared",
+        state: makeHarnessLayoutsMemoryState(),
+        platform: throwing,
+      },
+    },
+  );
+  expect(created).toHaveLength(0);
+  expect(execCalls).toHaveLength(0);
+  return outcome;
+};
 
 describe("per-person harness homes (docs/adr/0016)", () => {
   // The shared layout's counts (main at 4ccbaa2cd, measured with this same scenario): what the
@@ -1462,21 +1526,55 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(refused._tag).toBe("HarnessLayoutNotAppliedError");
   });
 
-  it("settles a launch whose layout decision throws: failed, its words on the session line, nothing created (box, 0.36.0-next.645)", async () => {
-    // The box's 500: the operator's person launch with the flag unset, and the SDK refusing the
-    // image question's options by throwing, so the decision died rather than failed.
+  it("settles a launch whose layout decision throws the SDK's options refusal: failed, the refusal on the session line, nothing created (box, 0.36.0-next.645)", async () => {
     const words =
       "workspaces.create requires exactly one of `repository` (a git remote to clone) or `source` (a caller-owned mount).";
-    const throwing = Layer.effect(
+    const refusal = new SealantError(words, { code: "invalid_create_options" });
+    const launched = await launchWhoseLayoutDecisionDies(toPlatformError(refusal));
+    expect(launched.status).toBe("failed");
+    expect(launched.summary).toBe(`launch failed: ${words}`);
+  });
+
+  it("settles a launch whose layout decision dies with an error of its own: failed, its words withheld from the session line (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    const { status, summary } = await launchWhoseLayoutDecisionDies(new Error(words));
+    expect(status).toBe("failed");
+    expect(summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
+    expect(summary).not.toContain(words);
+  });
+
+  it("keeps a launch's own failure when the store refuses its settlement too, for the leftover sweep to settle (SLNT-385)", async () => {
+    const decision = new Error("the layout decision broke");
+    const { status, defects } = await launchWhoseLayoutDecisionDies(
+      decision,
+      new Error("could not extend file: No space left on device"),
+    );
+    expect(status).not.toBe("failed");
+    expect(defects).toEqual([decision]);
+  });
+
+  it("withholds an SDK error whose words Mend never curated from the session line (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    const { summary } = await launchWhoseLayoutDecisionDies(
+      toPlatformError(new SealantApiError(`request refused: ${words}`, { status: 500 })),
+    );
+    expect(summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
+    expect(summary).not.toContain(words);
+  });
+
+  it("withholds the platform's own words when the layout's fallback after the create fails (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    const platform = Layer.effect(
       PersonLayoutPlatform,
       Effect.map(PersonLayoutPlatform, (inner) => ({
         ...inner,
-        imageReport: () => Effect.die(new Error(words)),
+        workspaceProcessUser: () => Effect.succeed("unsupported" as const),
+        deleteCredentials: () =>
+          Effect.fail(toPlatformError(new SealantApiError(`release: ${words}`, { status: 500 }))),
       })),
     ).pipe(Layer.provide(personPlatform([], { person: true })));
     const created: Array<CreateOptions> = [];
-    const execCalls: Array<ReadonlyArray<string>> = [];
-    await withEngine(
+    const result = await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
           const project = yield* setup(tmp, world);
@@ -1485,18 +1583,13 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             projectId: project.id,
             harness: "claude",
             label: null,
-            name: "pph",
+            name: "layout",
             ownerUserId: "user-fixture",
             start: { kind: "base", base: null },
-            harnessLayout: "person",
           });
           const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
-          expect(launched._tag).toBe("Failure");
           const row = world.sessions.get(session.id);
-          expect(row?.status).toBe("failed");
-          expect(row?.summary).toBe(`launch failed: ${words}`);
-          expect(created).toHaveLength(0);
-          expect(execCalls).toHaveLength(0);
+          return { launched, status: row?.status, summary: row?.summary ?? null };
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -1510,14 +1603,80 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           undefined,
           undefined,
           undefined,
-          execCalls,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
         ),
-        harnessLayout: {
-          flag: "shared",
-          state: makeHarnessLayoutsMemoryState(),
-          platform: throwing,
-        },
+        harnessLayout: { flag: "person", platform },
       },
+    );
+    expect(created).toHaveLength(1);
+    expect(Exit.isFailure(result.launched)).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
+    expect(result.summary).not.toContain(words);
+  });
+
+  it("withholds Core's words from the line of a join whose login write it refused, and keeps Mend's (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    const platform = Layer.effect(
+      PersonLayoutPlatform,
+      Effect.map(PersonLayoutPlatform, (inner) => ({
+        ...inner,
+        postCredentials: (
+          workspace: Workspace,
+          input: Parameters<typeof inner.postCredentials>[1],
+        ) =>
+          input.onBehalfOf === MARIA
+            ? Effect.fail(toPlatformError(new SealantApiError(`write: ${words}`, { status: 500 })))
+            : inner.postCredentials(workspace, input),
+      })),
+    ).pipe(Layer.provide(personPlatform([], { person: true })));
+    const summary = await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(holder.id, ["claude"]);
+          const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          yield* engine.launch(joined.id, ["claude"]).pipe(Effect.exit);
+          return world.sessions.get(joined.id)?.summary ?? null;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        harnessLayout: { flag: "person", platform },
+      },
+    );
+    expect(summary).not.toContain(words);
+    expect(summary).toMatch(
+      /^resume failed: .*'s logins could not be written into this workspace.* · reference [0-9a-f]{16}$/,
     );
   });
 

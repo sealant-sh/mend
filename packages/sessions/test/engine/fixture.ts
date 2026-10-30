@@ -1510,6 +1510,7 @@ export interface World {
   setupFinishing: (() => Effect.Effect<void>) | undefined;
   /** Runs after a setup stamp is written, before its answer, so a test can hold the reply. */
   setupFinished: (() => Effect.Effect<void>) | undefined;
+  settleDiesWith: ((id: string) => unknown) | undefined;
   readonly recipeApprovals: Map<WorktreeId, Map<string, Map<string, RecipeApproval>>>;
   /** Screens and their displays (ADR 0020), as the store keeps them. */
   readonly screens: ScreensRepo["Service"];
@@ -1617,6 +1618,7 @@ export const makeWorld = (): World => ({
   launches: new Map(),
   setupRuns: [],
   setupFinishing: undefined,
+  settleDiesWith: undefined,
   setupFinished: undefined,
   recipeApprovals: new Map(),
   screens: makeScreensMemory(),
@@ -2859,14 +2861,17 @@ export const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { lastSeenSequence: sequence })),
     notifyProgress: () => Effect.void,
     settle: (id, outcome, summary) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        const refused = world.settleDiesWith?.(id);
+        if (refused !== undefined) return Effect.die(refused);
         const current = world.sessions.get(id);
         // As SessionsRepo.settle: the first settle wins, until `reopen` clears it.
-        if (current?.settledAt != null) return;
+        if (current?.settledAt != null) return Effect.void;
         // A stop drain holds the workspace: `stopping`, not settled (SessionsRepo.settle).
         if (current?.captureDrain === "stop") {
           update(id, { status: "stopping", summary, settledAt: null });
         } else update(id, { status: outcome, summary, settledAt: world.clock.now() });
+        return Effect.void;
       }),
     reopen: (id, status) =>
       Effect.sync(() =>

@@ -1,5 +1,5 @@
 import { it as effectIt } from "@effect/vitest";
-import { defaultWorkspaceImage } from "@mend/domain";
+import { defaultWorkspaceImage, lineFailureOf } from "@mend/domain";
 import {
   claudeCode,
   type CreateOptions,
@@ -11,11 +11,11 @@ import {
   type WorkspaceDotfilesApplyOptions,
   type WorkspaceImageInspection,
 } from "@sealant/sdk";
-import { Effect, Exit, Fiber, Layer } from "effect";
+import { Cause, Effect, Exit, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
-import { SealantClients } from "./client.ts";
+import { SealantClients, toPlatformError } from "./client.ts";
 import { SealantPlatformError } from "./errors.ts";
 import {
   CONTROL_PLANE_UNREADABLE,
@@ -610,6 +610,23 @@ describe("the features the person layout needs, and the workspace's own answer (
       cause: null,
     });
     expect(personProcessRefusal(other)).toBe(other);
+  });
+});
+
+describe("a refusal to run as a person, on a line (SLNT-385)", () => {
+  const WORDS = "Anna is interviewing at Northwind on Friday, keep it quiet";
+
+  it("says Mend's lead and withholds Core's own words when Mend does not know its reason", () => {
+    const refusal = personProcessRefusal(
+      toPlatformError(
+        new SealantApiError(`User 'm1': ${WORDS}`, { status: 409, reason: "user-unsupported" }),
+      ),
+    );
+    expect(refusal.code).toBe("user-unsupported");
+    expect(lineFailureOf(Cause.fail(refusal))).toMatchObject({
+      _tag: "Led",
+      lead: "Nothing was started as this person",
+    });
   });
 });
 

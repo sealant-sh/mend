@@ -11,6 +11,7 @@ import {
   SessionProcessId,
   Sha,
   WorktreeId,
+  WITHHELD,
 } from "@mend/domain";
 import {
   currentAgentProcess,
@@ -20,7 +21,7 @@ import {
   SessionRun,
   serviceStartCorrelation,
 } from "@mend/domain/workbench";
-import { SealantClient, SealantPlatformError } from "@mend/sealant";
+import { SealantClient, SealantPlatformError, toPlatformError } from "@mend/sealant";
 import {
   HarnessStateNotFoundError,
   LegacyBenchReadOnlyError,
@@ -29,7 +30,7 @@ import {
   SessionNotLiveError,
 } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions } from "@sealant/sdk";
+import { type CreateOptions, SealantApiError } from "@sealant/sdk";
 import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { describe, expect } from "vitest";
 
@@ -943,7 +944,7 @@ describe("SessionEngine", () => {
           expect(afterFailure?.workspaceExpiresAt).toEqual(firstExpiry);
           expect(afterFailure?.workspaceTtlRenewedAt).toEqual(firstRenewedAt);
           expect(afterFailure?.workspaceTtlRenewalFailedAt).not.toBeNull();
-          expect(afterFailure?.workspaceTtlRenewalError).toBe("renewal unavailable");
+          expect(afterFailure?.workspaceTtlRenewalError).toMatch(WITHHELD);
 
           yield* engine.openShell(session.id);
           const afterRecovery = world.sessions.get(session.id);
@@ -973,6 +974,42 @@ describe("SessionEngine", () => {
             return Effect.succeed(renewalAttempt === 1 ? firstExpiry : recoveredExpiry);
           },
         ),
+      },
+    );
+  });
+
+  it("records a renewal the platform refused in its own words as a reference, for every member who reads the Services card (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    let renewalAttempt = 0;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.openShell(session.id);
+          const afterFailure = world.sessions.get(session.id);
+          expect(afterFailure?.workspaceTtlRenewalFailedAt).not.toBeNull();
+          expect(afterFailure?.workspaceTtlRenewalError ?? "").not.toContain(words);
+          expect(afterFailure?.workspaceTtlRenewalError).toMatch(
+            /^internal error · reference [0-9a-f]{16}$/,
+          );
+        }),
+      {
+        sealantLayer: sealantLaunchLayer([], undefined, undefined, undefined, undefined, () => {
+          renewalAttempt += 1;
+          return renewalAttempt === 2
+            ? Effect.fail(toPlatformError(new SealantApiError(words, { status: 503 })))
+            : Effect.succeed(new Date("2031-02-03T04:05:06.000Z"));
+        }),
       },
     );
   });
@@ -1886,7 +1923,7 @@ describe("SessionEngine", () => {
           expect(created).toHaveLength(1);
           const row = world.sessions.get(session.id);
           expect(row?.status).toBe("failed");
-          expect(row?.summary).toMatch(/the platform did not open the session/);
+          expect(row?.summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
           expect(
             [...world.processes.values()].filter((process) => process.sessionId === session.id),
           ).toEqual([]);

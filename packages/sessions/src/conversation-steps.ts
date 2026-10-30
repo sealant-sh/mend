@@ -1,3 +1,4 @@
+import { mendWords, type ReaderLine, said } from "@mend/domain";
 /**
  * The restart path of a shared conversation (docs/adr/0016-per-person-harness-homes.md, decision 6,
  * Delivery 17), against the platform: the conversation home `H` handed from one agent process to
@@ -9,9 +10,11 @@
  */
 import { MEND_GROUP, type LinuxIdentity } from "@mend/domain/workbench";
 import {
+  curatedError,
+  ledBy,
   type LoginProvider,
   type PersonLayoutPlatform,
-  SealantPlatformError,
+  type SealantPlatformError,
   type SealantClientShape,
 } from "@mend/sealant";
 import type { Workspace } from "@sealant/sdk";
@@ -35,17 +38,17 @@ export const conversationProviderOf = (harness: ConversationHarness): LoginProvi
   harness === "claude" ? "claude" : "codex";
 
 /** What a resume that cannot find its conversation says: the turn fails, and nothing was sent. */
-export const conversationMissingWords = (harness: ConversationHarness): string =>
+export const conversationMissingWords = (harness: ConversationHarness): ReaderLine =>
   harness === "codex"
-    ? "Codex could not find this conversation's thread. Nothing was sent."
-    : "Claude could not find this conversation's transcript. Nothing was sent.";
+    ? said`Codex could not find this conversation's thread. Nothing was sent.`
+    : said`Claude could not find this conversation's transcript. Nothing was sent.`;
 
 /** A hand-over that could not finish: nothing started, and the conversation is untouched. */
 /** A hand-over that found, at the stop, that it should not happen yet: the turn keeps waiting. */
 export const HAND_OVER_NOT_NOW = "hand_over_not_now";
 
-export const handOverFailed = (code: string, message: string, cause: unknown = null) =>
-  new SealantPlatformError({ code, status: null, message, cause });
+export const handOverFailed = (code: string, words: ReaderLine) =>
+  curatedError({ code, status: null, words, cause: null });
 
 export interface HandOverInput {
   readonly workspace: Workspace;
@@ -190,7 +193,7 @@ export const makeConversationSteps = (deps: {
             }
             return yield* handOverFailed(
               HAND_OVER_NOT_NOW,
-              "The conversation's agent is busy again, or the turn no longer waits; nothing was stopped.",
+              said`The conversation's agent is busy again, or the turn no longer waits; nothing was stopped.`,
             );
           }
           // From here the old process no longer owns `H`: its exit releases nothing.
@@ -220,9 +223,10 @@ export const makeConversationSteps = (deps: {
               ? yield* Effect.all([input.stop ?? Effect.void, stage], { concurrency: 1 })
               : yield* Effect.all([input.stop ?? Effect.void, stage], { concurrency: 2 });
             if (staged.exitCode !== 0) {
-              return yield* handOverFailed(
-                "conversation_not_staged",
-                `This conversation's next process could not be prepared: ${staged.stderr.trim() || `exit ${staged.exitCode}`}`,
+              return yield* ledBy(
+                said`This conversation's next process could not be prepared`,
+                staged.stderr.trim() || `exit ${staged.exitCode}`,
+                { code: "conversation_not_staged", status: null },
               );
             }
             const report = parseConversationReport(staged.stdout);
@@ -235,7 +239,7 @@ export const makeConversationSteps = (deps: {
             if (!report.empty) {
               return yield* handOverFailed(
                 "conversation_busy",
-                "This conversation's previous process did not end, so nothing was started. Try again.",
+                said`This conversation's previous process did not end, so nothing was started. Try again.`,
               );
             }
             return yield* handTo(input, state, report, fence);
@@ -257,10 +261,10 @@ export const makeConversationSteps = (deps: {
       if (state.holder !== null) {
         yield* releaseHome(input.workspace, input.sessionId).pipe(
           Effect.mapError((error) =>
-            handOverFailed(
-              "conversation_login_not_released",
-              `The previous sender's login could not be taken out of this conversation's home, so nothing was started: ${error.message}`,
+            ledBy(
+              said`The previous sender's login could not be taken out of this conversation's home, so nothing was started`,
               error,
+              { code: "conversation_login_not_released", status: null },
             ),
           ),
         );
@@ -276,9 +280,10 @@ export const makeConversationSteps = (deps: {
         }),
       ]);
       if (exchanged.exitCode !== 0) {
-        return yield* handOverFailed(
-          "conversation_not_exchanged",
-          `This conversation's home could not be handed over: ${exchanged.stderr.trim() || `exit ${exchanged.exitCode}`}`,
+        return yield* ledBy(
+          said`This conversation's home could not be handed over`,
+          exchanged.stderr.trim() || `exit ${exchanged.exitCode}`,
+          { code: "conversation_not_exchanged", status: null },
         );
       }
       // The sender's own login, written by Core into `H` as them (`H` is theirs now). Nobody
@@ -301,7 +306,7 @@ export const makeConversationSteps = (deps: {
           Effect.catch((error) => {
             const refused = refusedAccountOf(error);
             return refused !== null && refused.provider === provider
-              ? Effect.fail(loginRefused(loginRefusal(provider, refused.reason)))
+              ? Effect.fail(loginRefused(mendWords(loginRefusal(provider, refused.reason))))
               : Effect.fail(error);
           }),
         );

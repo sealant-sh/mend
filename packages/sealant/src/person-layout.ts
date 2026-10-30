@@ -1,4 +1,4 @@
-import type { WorkspaceImage } from "@mend/domain";
+import { mendWords, said, type WorkspaceImage } from "@mend/domain";
 import type {
   CreateOptions,
   Harness,
@@ -13,7 +13,7 @@ import type {
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
-import { SealantPlatformError } from "./errors.ts";
+import { curatedError, ledBy, SealantPlatformError } from "./errors.ts";
 
 /**
  * The user a process starts as (docs/adr/0016, decision 1): what Mend allocated for a person. The
@@ -284,10 +284,10 @@ export class PersonLayoutPlatform extends Context.Service<
 
 /** A piece of the person layout this platform cannot do. */
 export const personLayoutUnsupported = (what: string, delivery: string) =>
-  new SealantPlatformError({
+  curatedError({
     code: "person_layout_unsupported",
     status: null,
-    message: `this platform cannot ${what} yet (docs/adr/0016, ${delivery})`,
+    words: said`this platform cannot ${mendWords(what)} yet (docs/adr/0016, ${mendWords(delivery)})`,
     cause: null,
   });
 
@@ -338,22 +338,19 @@ export const personProcessRefusal = (error: SealantPlatformError): SealantPlatfo
   if (error.code !== "user-unsupported") return error;
   const words = error.message;
   const line = /doesn't run processes as another user|never starts a process as a user/.test(words)
-    ? "This workspace cannot start processes as each person (its sealantd or runtime does not), so nothing was started."
+    ? said`This workspace cannot start processes as each person (its sealantd or runtime does not), so nothing was started.`
     : /is not in range/.test(words)
-      ? "This person's user in the workspace is outside the range Sealant runs processes as, so nothing was started."
+      ? said`This person's user in the workspace is outside the range Sealant runs processes as, so nothing was started.`
       : /is not in workspace/.test(words)
-        ? "This person's user does not exist in the workspace yet, so nothing was started. Start the session again."
+        ? said`This person's user does not exist in the workspace yet, so nothing was started. Start the session again.`
         : /cannot be checked|did not answer|did not confirm|no way to reach/.test(words)
-          ? "The workspace did not answer whether this person may run a process, so nothing was started. Start the session again."
+          ? said`The workspace did not answer whether this person may run a process, so nothing was started. Start the session again.`
           : /does not report the feature|could not be asked|answers 404/.test(words)
-            ? "This Sealant control plane cannot start processes as each person, so nothing was started."
-            : `Nothing was started as this person: ${words}`;
-  return new SealantPlatformError({
-    code: error.code,
-    status: error.status,
-    message: line,
-    cause: error,
-  });
+            ? said`This Sealant control plane cannot start processes as each person, so nothing was started.`
+            : null;
+  return line === null
+    ? ledBy(said`Nothing was started as this person`, error, { code: error.code })
+    : curatedError({ code: error.code, status: error.status, words: line, cause: error });
 };
 
 /**

@@ -1,5 +1,6 @@
-import { type RunChanges, SealantApiError } from "@sealant/sdk";
-import { Effect } from "effect";
+import { lineFailureOf, said } from "@mend/domain";
+import { claudeCode, type RunChanges, Sealant, SealantApiError, SealantError } from "@sealant/sdk";
+import { Cause, Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -19,7 +20,7 @@ import {
   workspaceStopAnswerOf,
   workspaceStopStateOf,
 } from "./client.ts";
-import { SealantPlatformError } from "./errors.ts";
+import { curatedError, ledBy, SealantPlatformError } from "./errors.ts";
 
 /**
  * The engine branches on the platform's STABLE codes (`workspace-docker-unsupported`,
@@ -70,6 +71,127 @@ describe("platformErrorCode", () => {
     expect(error.status).toBe(404);
     // Anything without a provider carries none.
     expect(toPlatformError(new Error("plain")).provider).toBeUndefined();
+  });
+});
+
+const lineOf = (error: SealantPlatformError) => lineFailureOf(Cause.fail(error));
+
+describe("toPlatformError's words on a line", () => {
+  const WORDS = "Anna is interviewing at Northwind on Friday, keep it quiet";
+
+  it("says the SDK's fixed source-selection refusal, as its own validator throws it", () => {
+    const thrown = (() => {
+      try {
+        new Sealant({ baseUrl: "http://127.0.0.1:9" }).workspaces.imageKey({
+          harness: claudeCode(),
+        });
+        return null;
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(thrown).toBeInstanceOf(SealantError);
+    const words = thrown instanceof Error ? thrown.message : "";
+    expect(lineOf(toPlatformError(thrown))).toMatchObject({ _tag: "Said", words });
+  });
+
+  it("withholds every other message, the same code's included", () => {
+    for (const cause of [
+      new SealantError(`workspaces.create \`source.ownerMap\` was rejected: ${WORDS}`, {
+        code: "invalid_create_options",
+      }),
+      new SealantApiError(WORDS, { code: "WorkspaceConflictError", status: 409 }),
+      new SealantApiError(WORDS, { status: 500, reason: "home-held" }),
+      new Error(WORDS),
+      WORDS,
+    ]) {
+      const error = toPlatformError(cause);
+      expect(lineOf(error)).toEqual({ _tag: "Withheld", name: "SealantPlatformError" });
+      expect(error.message).toContain(WORDS);
+    }
+  });
+
+  it("says the SDK's and Core's curated refusals: an image build given up on, a readiness bound, no Docker", () => {
+    for (const [code, message] of [
+      [
+        "workspace_image_build_timeout",
+        "The image build for workspace w-1 took longer than 20 min (imageBuildTimeoutMs); it was at step 3/7 (apt-get install).",
+      ],
+      [
+        "workspace_image_build_stalled",
+        "The image build for workspace w-1 reported no progress for 5 min; it was before its first step.",
+      ],
+      ["workspace_ready_timeout", "Timed out waiting for workspace w-1 to become ready."],
+    ] as const) {
+      expect(lineOf(toPlatformError(new SealantError(message, { code })))).toMatchObject({
+        _tag: "Said",
+        words: message,
+      });
+    }
+    const docker = new SealantApiError("this runtime cannot run Docker services", {
+      status: 422,
+      reason: "workspace-docker-unsupported",
+    });
+    expect(lineOf(toPlatformError(docker))).toMatchObject({ _tag: "Said" });
+  });
+
+  it("keeps a build given up on said once Mend leads it, and an uncurated message withheld", () => {
+    const stalled = toPlatformError(
+      new SealantError("The image build for workspace w-1 reported no progress for 5 min.", {
+        code: "workspace_image_build_stalled",
+      }),
+    );
+    expect(lineOf(imageBuildFailure(stalled))).toMatchObject({
+      _tag: "Said",
+      words: expect.stringMatching(/^the workspace image build stopped making progress/),
+    });
+    const withheld = toPlatformError(new SealantApiError(WORDS, { status: 500 }));
+    expect(lineOf(imageBuildFailure(withheld))._tag).toBe("Withheld");
+  });
+
+  it("withholds a platform error built without reader words, whatever its message holds (SLNT-385)", () => {
+    const error = new SealantPlatformError({
+      code: "secret_files_not_set_aside",
+      status: null,
+      message: `a secret file could not be taken out of it (the home's record: ${WORDS})`,
+      cause: null,
+    });
+    expect(lineOf(error)._tag).toBe("Withheld");
+  });
+
+  it("says Mend's lead over another failure only as far as that failure's words were said", () => {
+    const refused = curatedError({
+      code: "login_refused",
+      status: 409,
+      words: said`Connect Claude first.`,
+      cause: null,
+    });
+    expect(
+      lineOf(ledBy(said`Anna's logins could not be written`, refused, { code: "x" })),
+    ).toMatchObject({
+      _tag: "Said",
+      words: "Anna's logins could not be written: Connect Claude first.",
+    });
+    const core = toPlatformError(new SealantApiError(WORDS, { status: 500 }));
+    const led = ledBy(said`Anna's logins could not be written`, core, { code: "x" });
+    expect(led.message).toContain(WORDS);
+    expect(lineOf(led)).toMatchObject({ _tag: "Led", lead: "Anna's logins could not be written" });
+    expect(
+      lineOf(ledBy(said`Asked twice`, led, { code: "x", separator: said` · ` })),
+    ).toMatchObject({
+      _tag: "Led",
+      lead: "Asked twice · Anna's logins could not be written",
+    });
+  });
+
+  it("says Mend's own words", () => {
+    const error = curatedError({
+      code: "credentials_timeout",
+      status: null,
+      words: said`Sealant did not answer within 30 s`,
+      cause: null,
+    });
+    expect(lineOf(error)).toMatchObject({ _tag: "Said", words: error.message });
   });
 });
 
