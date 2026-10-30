@@ -43,6 +43,7 @@ export const makePipe = (
   };
   const push = (value: unknown) => pushRaw(`${JSON.stringify(value)}\n`);
   let turnIndex = 0;
+  let ended = false;
   const pipe: InteractiveSession = {
     id: "sealant-session-1",
     workspaceId: "ws-1",
@@ -89,6 +90,7 @@ export const makePipe = (
         for (;;) {
           if (signal?.aborted === true) return;
           const next = pending.shift();
+          if (next === undefined && ended) return;
           if (next !== undefined) {
             yield next;
             continue;
@@ -111,5 +113,10 @@ export const makePipe = (
     close: () => Promise.resolve(),
     attach: () => Promise.reject(new Error("not in test")),
   };
-  return { pipe, interrupted, written, push, pushRaw };
+  /** The app-server's output ends once what was pushed is read. */
+  const end = () => {
+    ended = true;
+    notify?.();
+  };
+  return { pipe, interrupted, written, push, pushRaw, end };
 };

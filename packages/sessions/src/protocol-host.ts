@@ -41,7 +41,19 @@ import {
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
-import { Cause, Clock, Deferred, Effect, Exit, Layer, Schema, Scope, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  DateTime,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -222,6 +234,18 @@ interface ProviderEventPosition {
   readonly eventIndex: number;
 }
 
+/** Where a process's dispatch is with the turn it took; `Claiming` began at `since`. */
+type DispatchPhase =
+  | { readonly _tag: "Idle" }
+  | { readonly _tag: "Claiming"; readonly since: Date }
+  | { readonly _tag: "Claimed"; readonly turn: AgentTurn }
+  | { readonly _tag: "Writing"; readonly turn: AgentTurn }
+  | { readonly _tag: "Written"; readonly turn: AgentTurn };
+
+/** Dispatch holds a turn it has not written: the process's running unbound turn is no harness's. */
+const claimedUnsent = (entry: HostedProcess): boolean =>
+  entry.dispatch._tag === "Claiming" || entry.dispatch._tag === "Claimed";
+
 interface HostedProcess {
   readonly process: SessionProcess;
   readonly adapter: AgentSession;
@@ -244,6 +268,8 @@ interface HostedProcess {
   /** The process was told to stop: a turn its harness opens now ends with it. */
   stopping: boolean;
   steerHolds: number;
+  /** A turn `Writing` or `Written` may have reached the harness: nothing puts it back. */
+  dispatch: DispatchPhase;
 }
 
 /**
@@ -347,6 +373,44 @@ const toPlatformError = (operation: string, cause: unknown): SealantPlatformErro
     cause,
   });
 
+/**
+ * Runs `attempt` again, a second apart, until it succeeds or the host stops it. For reads and
+ * writes that must land once storage answers again.
+ */
+const retried = <A>(
+  attempt: Effect.Effect<A>,
+  warning: string,
+  about: Readonly<Record<string, string>>,
+): Effect.Effect<A> =>
+  Effect.gen(function* () {
+    for (;;) {
+      const done = yield* Effect.exit(attempt);
+      if (Exit.isSuccess(done)) return done.value;
+      if (Cause.hasInterruptsOnly(done.cause)) return yield* Effect.failCause(done.cause);
+      yield* Effect.logWarning(warning).pipe(
+        Effect.annotateLogs({ ...about, failure: failureName(done.cause) }),
+      );
+      yield* Effect.sleep("1 second");
+    }
+  });
+
+/** `retried`, given up once `live` says the process it is for is gone. */
+const untilItLands = (
+  attempt: Effect.Effect<void>,
+  warning: string,
+  about: Readonly<Record<string, string>>,
+  live: () => boolean = () => true,
+): Effect.Effect<void> =>
+  retried(
+    attempt.pipe(
+      Effect.catchCause((cause) =>
+        live() || Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.void,
+      ),
+    ),
+    warning,
+    about,
+  );
+
 export const ProtocolHostLive: Layer.Layer<
   ProtocolHost,
   never,
@@ -377,6 +441,163 @@ export const ProtocolHostLive: Layer.Layer<
       return null;
     });
 
+    /** Fails a turn and says so; a turn that ended otherwise meanwhile (a Stop) is left alone. */
+    const failTurnAndReport = (entry: HostedProcess, turnId: AgentTurnId, words: string) =>
+      conversations.failTurn(turnId, words).pipe(
+        Effect.flatMap(entry.hooks.onTurnCompleted),
+        Effect.catchTag("AgentTurnNotFoundError", () => Effect.void),
+      );
+
+    /**
+     * A turn whose words may have reached the harness, never sent again: failed with fixed words
+     * unless the harness's turn was bound to it meanwhile. True when it was failed.
+     */
+    const settleUnconfirmed = (entry: HostedProcess, turnId: AgentTurnId) =>
+      conversations
+        .failUnconfirmedTurn(turnId)
+        .pipe(
+          Effect.flatMap((failed) =>
+            failed === null
+              ? Effect.succeed(false)
+              : entry.hooks.onTurnCompleted(failed).pipe(Effect.as(true)),
+          ),
+        );
+
+    /** A claim whose answer was lost may have committed: the turn it took goes back, unsent. */
+    const requeueUnsent = (entry: HostedProcess, since: Date) =>
+      Effect.gen(function* () {
+        for (const turn of yield* conversations.openTurns(entry.process.sessionId)) {
+          if (
+            turn.processId === entry.process.id &&
+            turn.status === "running" &&
+            turn.providerTurnId === null &&
+            turn.startedAt !== null &&
+            turn.startedAt >= since
+          )
+            yield* conversations.requeueClaimedTurn(turn.id);
+        }
+      });
+
+    /** Records the turn the harness took, again until it lands or the turn ended. */
+    const recordSent = (turnId: AgentTurnId, payer: TurnPayer, providerTurnId: string) =>
+      untilItLands(
+        Effect.gen(function* () {
+          yield* conversations.setTurnPayer(turnId, payer);
+          yield* conversations.setProviderTurnId(turnId, providerTurnId);
+        }).pipe(Effect.catchTag("AgentTurnNotFoundError", () => Effect.void)),
+        "protocol host: a sent turn was not recorded",
+        { turnId },
+      );
+
+    /**
+     * After a failure mid-dispatch, the turn this pass took goes back or is settled, again until
+     * that lands: a turn left running and unbound would block the process's queue for good.
+     */
+    const leaveNothingStuck = (entry: HostedProcess): Effect.Effect<void> => {
+      const phase = entry.dispatch;
+      const live = () => hosted.get(entry.process.id) === entry;
+      switch (phase._tag) {
+        case "Idle":
+        case "Written":
+          return Effect.void;
+        case "Claiming":
+          return untilItLands(
+            requeueUnsent(entry, phase.since),
+            "protocol host: a claimed turn was not put back",
+            { processId: entry.process.id },
+            live,
+          );
+        case "Claimed":
+          return untilItLands(
+            conversations.requeueClaimedTurn(phase.turn.id),
+            "protocol host: a claimed turn was not put back",
+            { turnId: phase.turn.id },
+            live,
+          );
+        case "Writing":
+          // The next turn is dispatched however the settling went: one whose answer was lost may
+          // have landed, and a turn still running holds the queue by itself.
+          return untilItLands(
+            Effect.asVoid(settleUnconfirmed(entry, phase.turn.id)),
+            "protocol host: an unconfirmed turn was not settled",
+            { turnId: phase.turn.id },
+            live,
+          ).pipe(
+            Effect.andThen(
+              Effect.suspend(() =>
+                live() ? Effect.asVoid(Effect.forkIn(dispatchNext(entry), scope)) : Effect.void,
+              ),
+            ),
+          );
+      }
+    };
+
+    const dispatchOne = (entry: HostedProcess): Effect.Effect<"next" | "done"> =>
+      Effect.gen(function* () {
+        entry.dispatch = { _tag: "Claiming", since: yield* DateTime.nowAsDate };
+        const turn = yield* conversations.claimNextTurn(entry.process.id);
+        if (turn === null) return "done";
+        entry.dispatch = { _tag: "Claimed", turn };
+        const steering = entry.hooks.sharedControl;
+        if (steering !== undefined) {
+          const decision = yield* steering.decide(turn);
+          if (decision.kind === "refuse") {
+            yield* failTurnAndReport(entry, turn.id, decision.words);
+            return "next";
+          }
+          if (decision.kind === "hand-over") {
+            // An agent that cannot say what it runs (a Codex started before shared steering)
+            // is never stopped on a guess: it takes its own person's turns as before, and
+            // nobody else's until it ends or restarts (review 2 of mend#572, P2-1).
+            if (!(yield* entry.adapter.reportsBackgroundWork())) {
+              if (decision.sender !== entry.runsAs) {
+                yield* failTurnAndReport(entry, turn.id, STARTED_BEFORE_STEERING);
+                return "next";
+              }
+            } else {
+              yield* conversations.requeueClaimedTurn(turn.id);
+              yield* beginHandOver(entry, turn, decision.sender, steering);
+              return "done";
+            }
+          }
+        }
+        const payer = yield* loginForTurn(entry);
+        // A stop that began meanwhile puts back what was claimed: nothing may be written now.
+        if (hosted.get(entry.process.id) !== entry || entry.stopping) {
+          yield* conversations.requeueClaimedTurn(turn.id);
+          return "done";
+        }
+        entry.dispatch = { _tag: "Writing", turn };
+        const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
+        if (sent._tag === "Success") {
+          entry.dispatch = { _tag: "Written", turn };
+          yield* recordSent(turn.id, payer, sent.success);
+          return "done";
+        }
+        const failure = sent.failure;
+        // Busy: the harness is in a turn of its own, and that turn's end dispatches this one.
+        // Not written: the next trigger dispatches it, never a loop here.
+        if (
+          failure._tag === "AgentTurnBusyError" ||
+          (failure._tag === "AgentTurnDeliveryError" && failure.certainty === "not-written")
+        ) {
+          entry.dispatch = { _tag: "Claimed", turn };
+          yield* conversations.requeueClaimedTurn(turn.id);
+          return "done";
+        }
+        if (failure._tag === "AgentTurnDeliveryError")
+          return (yield* settleUnconfirmed(entry, turn.id)) ? "next" : "done";
+        yield* failTurnAndReport(entry, turn.id, String(failure));
+        return "next";
+      }).pipe(
+        Effect.onError(() => leaveNothingStuck(entry)),
+        Effect.ensuring(
+          Effect.sync(() => {
+            entry.dispatch = { _tag: "Idle" };
+          }),
+        ),
+      );
+
     const dispatchNext = (entry: HostedProcess): Effect.Effect<void> =>
       entry.dispatchPermit.withPermit(
         Effect.gen(function* () {
@@ -398,58 +619,14 @@ export const ProtocolHostLive: Layer.Layer<
               entry.handingOverTo !== null
             )
               return;
-            const turn = yield* conversations.claimNextTurn(entry.process.id);
-            if (turn === null) return;
-            const steering = entry.hooks.sharedControl;
-            if (steering !== undefined) {
-              const decision = yield* steering.decide(turn);
-              if (decision.kind === "refuse") {
-                yield* conversations.failTurn(turn.id, decision.words).pipe(Effect.orDie);
-                const failed = yield* conversations.byTurnId(turn.id);
-                if (failed !== null) yield* entry.hooks.onTurnCompleted(failed);
-                continue;
-              }
-              if (decision.kind === "hand-over") {
-                // An agent that cannot say what it runs (a Codex started before shared steering)
-                // is never stopped on a guess: it takes its own person's turns as before, and
-                // nobody else's until it ends or restarts (review 2 of mend#572, P2-1).
-                if (!(yield* entry.adapter.reportsBackgroundWork())) {
-                  if (decision.sender !== entry.runsAs) {
-                    yield* conversations
-                      .failTurn(turn.id, STARTED_BEFORE_STEERING)
-                      .pipe(Effect.orDie);
-                    const failed = yield* conversations.byTurnId(turn.id);
-                    if (failed !== null) yield* entry.hooks.onTurnCompleted(failed);
-                    continue;
-                  }
-                } else {
-                  yield* conversations.requeueClaimedTurn(turn.id);
-                  yield* beginHandOver(entry, turn, decision.sender, steering);
-                  return;
-                }
-              }
-            }
-            const payer = yield* loginForTurn(entry);
-            const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
-            if (sent._tag === "Failure" && sent.failure._tag === "AgentTurnBusyError") {
-              // The harness is in a turn of its own; that turn's end dispatches this one.
-              yield* conversations.requeueClaimedTurn(turn.id);
-              return;
-            }
-            if (sent._tag === "Failure") {
-              yield* conversations.failTurn(turn.id, String(sent.failure)).pipe(Effect.orDie);
-              const failed = yield* conversations.byTurnId(turn.id);
-              if (failed === null) return yield* Effect.die(`Turn ${turn.id} disappeared`);
-              yield* entry.hooks.onTurnCompleted(failed);
-              if (!hosted.has(entry.process.id)) return;
-              continue;
-            }
-            yield* conversations.setTurnPayer(turn.id, payer).pipe(Effect.orDie);
-            yield* conversations.setProviderTurnId(turn.id, sent.success).pipe(Effect.orDie);
-            return;
+            if ((yield* dispatchOne(entry)) === "done") return;
           }
         }),
       );
+
+    /** A caller's dispatch runs in the host's scope: a caller that goes away stops none of it. */
+    const dispatchJoined = (entry: HostedProcess): Effect.Effect<void> =>
+      Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.flatMap(Fiber.join));
 
     /**
      * Wait for a hosted process to be quiescent (decision 6): decided, then re-checked once the
@@ -575,10 +752,8 @@ export const ProtocolHostLive: Layer.Layer<
             }
             yield* steering.waiting(null);
             const waiting = yield* conversations.byTurnId(turn.id);
-            if (waiting !== null && waiting.status === "queued") {
-              const failed = yield* conversations.failTurn(turn.id, words).pipe(Effect.orDie);
-              yield* entry.hooks.onTurnCompleted(failed);
-            }
+            if (waiting !== null && waiting.status === "queued")
+              yield* failTurnAndReport(entry, turn.id, words);
             if (hosted.get(entry.process.id) === entry) yield* dispatchNext(entry);
           });
         yield* Effect.forkIn(
@@ -675,11 +850,12 @@ export const ProtocolHostLive: Layer.Layer<
           }
           return;
         case "turn.started":
-          yield* conversations.bindRunningProviderTurn(
-            entry.process.sessionId,
-            entry.process.id,
-            event.providerTurnId,
-          );
+          if (!claimedUnsent(entry))
+            yield* conversations.bindRunningProviderTurn(
+              entry.process.sessionId,
+              entry.process.id,
+              event.providerTurnId,
+            );
           return;
         case "harness-turn.started": {
           const opened = yield* conversations.openHarnessTurn(
@@ -715,11 +891,12 @@ export const ProtocolHostLive: Layer.Layer<
           return;
         }
         case "turn.completed": {
-          yield* conversations.bindRunningProviderTurn(
-            entry.process.sessionId,
-            entry.process.id,
-            event.providerTurnId,
-          );
+          if (!claimedUnsent(entry))
+            yield* conversations.bindRunningProviderTurn(
+              entry.process.sessionId,
+              entry.process.id,
+              event.providerTurnId,
+            );
           const turn = yield* conversations.completeTurn(
             event.providerTurnId,
             entry.process.sessionId,
@@ -727,10 +904,12 @@ export const ProtocolHostLive: Layer.Layer<
             event.usage,
             event.error,
           );
-          if (turn === null) return;
-          yield* conversations.cancelOpenForTurn(turn.id);
-          yield* entry.hooks.onRequestChanged(entry.process.sessionId);
-          yield* entry.hooks.onTurnCompleted(turn);
+          // A turn Mend failed as unconfirmed matches nothing; its end still frees the harness.
+          if (turn !== null) {
+            yield* conversations.cancelOpenForTurn(turn.id);
+            yield* entry.hooks.onRequestChanged(entry.process.sessionId);
+            yield* entry.hooks.onTurnCompleted(turn);
+          }
           yield* Effect.forkIn(dispatchNext(entry), scope);
           return;
         }
@@ -944,6 +1123,7 @@ export const ProtocolHostLive: Layer.Layer<
         handingOverTo: null,
         stopping: false,
         steerHolds: 0,
+        dispatch: { _tag: "Idle" },
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
@@ -966,7 +1146,7 @@ export const ProtocolHostLive: Layer.Layer<
       // Synchronous with the emptiness check above: nothing can enqueue between it and this.
       flushed = true;
       if (rehydrateInput === null || gate === null || steerGate === null) {
-        yield* dispatchNext(entry);
+        yield* dispatchJoined(entry);
         return;
       }
       // Rehydrate returns immediately; a watcher opens the gate once replay
@@ -1013,10 +1193,7 @@ export const ProtocolHostLive: Layer.Layer<
       // replay — fail it honestly rather than guess.
       for (const orphan of processTurns) {
         if (orphan.status !== "running" || orphan.providerTurnId !== null) continue;
-        yield* conversations
-          .failTurn(orphan.id, "Mend restarted before the turn was acknowledged.")
-          .pipe(Effect.orDie);
-        const failed = yield* conversations.byTurnId(orphan.id);
+        const failed = yield* conversations.failUnconfirmedTurn(orphan.id);
         if (failed !== null) yield* input.hooks.onTurnCompleted(failed);
       }
       // In the order they started, not their ordinals: a turn the harness opened on its own
@@ -1101,8 +1278,30 @@ export const ProtocolHostLive: Layer.Layer<
             Effect.fail(new ProtocolHostNotLiveError({ processId: place.processId })),
           ),
         );
-      if (!(yield* dispatchPlaced(sessionId, place, dispatchNext))) {
-        yield* conversations.cancelOpenForTurn(turn.id);
+      const dispatched = yield* dispatchPlaced(sessionId, place, dispatchJoined).pipe(Effect.exit);
+      if (Exit.isFailure(dispatched)) {
+        if (Cause.hasInterruptsOnly(dispatched.cause))
+          return yield* Effect.failCause(dispatched.cause);
+        // A turn still queued is withdrawn, so the failure the caller sees is the whole outcome.
+        // One another dispatch took meanwhile is answered as it stands, never as a failure the
+        // caller would send again; so is one whose outcome storage could not tell yet.
+        const now = yield* retried(
+          conversations
+            .cancelOpenForTurn(turn.id)
+            .pipe(Effect.andThen(Effect.suspend(() => conversations.byTurnId(turn.id)))),
+          "protocol host: a turn's outcome was not read",
+          { turnId: turn.id },
+        );
+        if (now === null || now.status === "cancelled")
+          return yield* Effect.failCause(dispatched.cause);
+        return now;
+      }
+      if (!dispatched.value) {
+        yield* retried(
+          conversations.cancelOpenForTurn(turn.id),
+          "protocol host: a turn was not withdrawn",
+          { turnId: turn.id },
+        );
         return yield* new ProtocolHostNotLiveError({ processId: place.processId });
       }
       return turn;
@@ -1174,22 +1373,34 @@ export const ProtocolHostLive: Layer.Layer<
       const admitted = yield* conversations.admitTurnMessage(input, place.processId, reason);
       if (admitted._tag === "Replay") return admitted.result;
       const { turn, messageId } = admitted.result;
-      const dispatched = yield* dispatchAdmitted(input.sessionId, place, dispatchNext).pipe(
+      const dispatched = yield* dispatchAdmitted(input.sessionId, place, dispatchJoined).pipe(
         Effect.exit,
       );
+      // From here the receipt is read until storage answers: a failure answered for a stored
+      // message tells its sender to send the words again.
+      const withdraw = retried(
+        Effect.suspend(() => conversations.withdrawMessageTurn(turn.id, place.processId)),
+        "protocol host: a message's turn was not withdrawn",
+        { turnId: turn.id },
+      );
+      const receipt = retried(
+        Effect.suspend(() => conversations.messageById(messageId)),
+        "protocol host: a message's receipt was not read",
+        { turnId: turn.id },
+      );
       if (Exit.isSuccess(dispatched)) {
-        if (!dispatched.value) yield* conversations.withdrawMessageTurn(turn.id, place.processId);
-        return yield* conversations.messageById(messageId);
+        if (!dispatched.value) yield* withdraw;
+        return yield* receipt;
       }
       if (Cause.hasInterruptsOnly(dispatched.cause))
         return yield* Effect.failCause(dispatched.cause);
       yield* Effect.logError("protocol host: a message's turn was not dispatched").pipe(
         Effect.annotateLogs({ turnId: turn.id, failure: failureName(dispatched.cause) }),
       );
-      // A claimed turn may already have reached the harness, so the failure stands.
-      if (!(yield* conversations.withdrawMessageTurn(turn.id, place.processId)))
-        return yield* Effect.failCause(dispatched.cause);
-      return yield* conversations.messageById(messageId);
+      // Withdrawn, the receipt says not sent. Otherwise another dispatch took the turn, and the
+      // receipt says what became of it: never a failure the sender would send again.
+      yield* withdraw;
+      return yield* receipt;
     });
 
     const sendMessage = Effect.fn("ProtocolHost.sendMessage")(function* (
@@ -1317,7 +1528,10 @@ export const ProtocolHostLive: Layer.Layer<
       for (const turn of yield* conversations.openTurns(entry.process.sessionId)) {
         if (turn.processId !== processId || turn.status !== "running") continue;
         if (turn.providerTurnId === null) {
-          yield* conversations.requeueClaimedTurn(turn.id);
+          const phase = entry.dispatch;
+          const mayBeWritten =
+            (phase._tag === "Writing" || phase._tag === "Written") && phase.turn.id === turn.id;
+          if (!mayBeWritten) yield* conversations.requeueClaimedTurn(turn.id);
           continue;
         }
         const ended = yield* conversations.completeTurn(

@@ -35,6 +35,7 @@ import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
   AgentTurnBusyError,
+  AgentTurnDeliveryError,
   type AgentAdapter,
   type AgentBackgroundWork,
   type AgentQuiescence,
@@ -768,6 +769,14 @@ export const ClaudeAdapter: AgentAdapter = {
       });
 
       const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (input: string) {
+        if (closed) {
+          return yield* new AgentTurnDeliveryError({
+            adapter: "claude",
+            certainty: "not-written",
+            message: "The Claude session is closed.",
+            cause: null,
+          });
+        }
         if (turns.turn._tag === "Draining") {
           return yield* new AgentTurnBusyError({ providerTurnId: turns.turn.stoppedTurnId });
         }
@@ -776,11 +785,12 @@ export const ClaudeAdapter: AgentAdapter = {
           return yield* new AgentTurnBusyError({ providerTurnId: currentTurnId });
         }
         if (currentTurnId !== null) {
-          return yield* protocolError(
-            "sendTurn",
-            "Claude already has a turn in progress.",
-            currentTurnId,
-          );
+          return yield* new AgentTurnDeliveryError({
+            adapter: "claude",
+            certainty: "not-written",
+            message: "Claude already has a turn in progress.",
+            cause: currentTurnId,
+          });
         }
         const providerTurnId = crypto.randomUUID();
         yield* fold({ _tag: "TurnSent", turnId: providerTurnId });
@@ -788,6 +798,15 @@ export const ClaudeAdapter: AgentAdapter = {
         idleSinceTurn = false;
         yield* send(userMessage(input)).pipe(
           Effect.tapError(() => fold({ _tag: "TurnNotSent", turnId: providerTurnId })),
+          Effect.mapError(
+            (error) =>
+              new AgentTurnDeliveryError({
+                adapter: "claude",
+                certainty: "uncertain",
+                message: error.message,
+                cause: error,
+              }),
+          ),
         );
         yield* publish({ _tag: "turn.started", providerTurnId });
         return providerTurnId;

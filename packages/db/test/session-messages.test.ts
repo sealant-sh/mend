@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ClientMessageId, SessionId, SessionProcessId } from "@mend/domain";
+import { TURN_DELIVERY_UNCONFIRMED } from "@mend/domain/workbench";
 import {
   DEFAULT_MESSAGE_SETTINGS,
   MessageInput,
@@ -341,6 +342,42 @@ describe.skipIf(postgres.skip)("message admission and settings against current m
             ),
           ),
         ).toMatchObject({ _tag: "Created", result: { _tag: "Turn" } });
+      }),
+    );
+  });
+
+  it("settles an unconfirmed turn when its notification fails after the update", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const session = SessionId.make("sess-codex");
+        const process = SessionProcessId.make("p-codex-1");
+        const turn = yield* repo.submitTurn(session, process, "start", "user-1");
+        yield* repo.claimNextTurn(process);
+        const pg = yield* PgClient.PgClient;
+        const noNotify = new Proxy(pg, {
+          apply(target, thisArg, args: Parameters<typeof pg>) {
+            const [strings] = args;
+            if (Array.isArray(strings) && strings.join("").includes("pg_notify"))
+              return Effect.fail(
+                new SqlError({
+                  reason: new ConnectionError({
+                    cause: new Error("connection dropped"),
+                    message: "notify failed",
+                  }),
+                }),
+              );
+            return Reflect.apply(target, thisArg, args);
+          },
+        });
+        const settled = yield* Effect.flatMap(AgentConversationRepo, (conversations) =>
+          conversations.failUnconfirmedTurn(turn.id),
+        ).pipe(
+          Effect.provide(AgentConversationRepoLive, { local: true }),
+          Effect.provideService(PgClient.PgClient, noNotify),
+        );
+        expect(settled).toMatchObject({ status: "failed", error: TURN_DELIVERY_UNCONFIRMED });
+        expect(yield* repo.byTurnId(turn.id)).toMatchObject({ status: "failed" });
       }),
     );
   });

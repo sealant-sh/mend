@@ -96,6 +96,13 @@ export const UNREPORTED_WORK_REFUSAL =
 export const STARTED_BEFORE_STEERING =
   "This agent was started before shared steering, so it takes only its owner's turns until it ends or restarts.";
 
+/**
+ * The words of a turn whose delivery the agent never confirmed: it is failed rather than left
+ * running, and Mend never sends it again.
+ */
+export const TURN_DELIVERY_UNCONFIRMED =
+  "The agent did not confirm it received this turn, and Mend will not send it again.";
+
 const boundWords = (ms: number): string =>
   ms % 60_000 === 0
     ? `${ms / 60_000} minute${ms === 60_000 ? "" : "s"}`

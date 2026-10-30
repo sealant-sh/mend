@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, SessionProcessId } from "@mend/domain";
+import { TURN_DELIVERY_UNCONFIRMED } from "@mend/domain/workbench";
 import { Deferred, Effect, Fiber, Layer, Queue, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
@@ -442,6 +443,82 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
       constraint: "agent_turns_billed_user_id_fkey",
     });
   });
+  it("never fails a turn a Stop cancelled while it was being sent", async () => {
+    const result = await withConversation(
+      Effect.gen(function* () {
+        const conversation = yield* AgentConversationRepo;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        const sending = yield* conversation.submitTurn(sessionId, processId, "sending", "user-1");
+        yield* conversation.claimNextTurn(processId);
+        yield* conversation.cancelOpenForProcess(processId);
+        const refused = yield* conversation.failTurn(sending.id, "late").pipe(Effect.flip);
+        const queued = yield* conversation.submitTurn(sessionId, processId, "queued", "user-1");
+        yield* conversation.failTurn(queued.id, "first words");
+        const reworded = yield* conversation.failTurn(queued.id, "second words");
+        return { refused, cancelled: yield* conversation.byTurnId(sending.id), reworded };
+      }),
+    );
+    expect(result.refused._tag).toBe("AgentTurnNotFoundError");
+    expect(result.cancelled).toMatchObject({ status: "cancelled", error: null });
+    expect(result.reworded).toMatchObject({ status: "failed", error: "second words" });
+  });
+
+  it("fails an unconfirmed turn only while it runs and no provider turn is bound to it", async () => {
+    const result = await withConversation(
+      Effect.gen(function* () {
+        const conversation = yield* AgentConversationRepo;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        const bound = yield* conversation.submitTurn(sessionId, processId, "bound", "user-1");
+        yield* conversation.claimNextTurn(processId);
+        yield* conversation.bindRunningProviderTurn(sessionId, processId, "provider-bound");
+        const keptBound = yield* conversation.failUnconfirmedTurn(bound.id);
+        yield* conversation.completeTurn("provider-bound", sessionId, "completed", null, null);
+        const unbound = yield* conversation.submitTurn(sessionId, processId, "unbound", "user-1");
+        yield* conversation.claimNextTurn(processId);
+        const settled = yield* conversation.failUnconfirmedTurn(unbound.id);
+        const queued = yield* conversation.submitTurn(sessionId, processId, "queued", "user-1");
+        const keptQueued = yield* conversation.failUnconfirmedTurn(queued.id);
+        return {
+          keptBound,
+          bound: yield* conversation.byTurnId(bound.id),
+          settled,
+          keptQueued,
+          queued: yield* conversation.byTurnId(queued.id),
+        };
+      }),
+    );
+    expect(result.keptBound).toBeNull();
+    expect(result.bound).toMatchObject({ status: "completed", providerTurnId: "provider-bound" });
+    expect(result.settled).toMatchObject({
+      status: "failed",
+      providerTurnId: null,
+      error: TURN_DELIVERY_UNCONFIRMED,
+    });
+    expect(result.keptQueued).toBeNull();
+    expect(result.queued).toMatchObject({ status: "queued", error: null });
+  });
+
+  it("binds a provider turn only to a running turn", async () => {
+    const result = await withConversation(
+      Effect.gen(function* () {
+        const conversation = yield* AgentConversationRepo;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        const turn = yield* conversation.submitTurn(sessionId, processId, "words", "user-1");
+        yield* conversation.claimNextTurn(processId);
+        yield* conversation.requeueClaimedTurn(turn.id);
+        const refused = yield* conversation
+          .setProviderTurnId(turn.id, "provider-late")
+          .pipe(Effect.flip);
+        return { refused, turn: yield* conversation.byTurnId(turn.id) };
+      }),
+    );
+    expect(result.refused._tag).toBe("AgentTurnNotFoundError");
+    expect(result.turn).toMatchObject({ status: "queued", providerTurnId: null });
+  });
+
   it("keeps every admitted steer through completion and allocates ordinals once", async () => {
     await withConversation(
       Effect.gen(function* () {

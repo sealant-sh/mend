@@ -2,6 +2,7 @@ import { CodexAdapter } from "@mend/agent-protocol";
 import {
   AgentConversationRepo,
   AgentControlJournalError,
+  AgentTurnNotFoundError,
   SessionProcessesRepo,
   SessionsRepo,
   SessionStoppingError,
@@ -14,7 +15,11 @@ import {
   SessionId,
   SessionProcessId,
 } from "@mend/domain";
-import { MessageInput, type AgentTurnSteer } from "@mend/domain/workbench";
+import {
+  MessageInput,
+  TURN_DELIVERY_UNCONFIRMED,
+  type AgentTurnSteer,
+} from "@mend/domain/workbench";
 import { AgentItem, AgentTurn, SessionProcess } from "@mend/domain/workbench";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSession } from "@sealant/sdk";
@@ -106,6 +111,13 @@ const makeConversationWorld = () => {
     afterSteerQueue: Effect.Effect<void>;
     beforeClaim: Effect.Effect<void>;
     afterClaim: Effect.Effect<void>;
+    beforeBind: Effect.Effect<void>;
+    beforePayer: Effect.Effect<void>;
+    beforeRequeue: Effect.Effect<void>;
+    beforeFail: Effect.Effect<void>;
+    afterUnconfirmed: Effect.Effect<void>;
+    beforeCancel: Effect.Effect<void>;
+    beforeWithdraw: Effect.Effect<void>;
   } = {
     stopping: false,
     journalFailure: false,
@@ -118,6 +130,13 @@ const makeConversationWorld = () => {
     afterSteerQueue: Effect.void,
     beforeClaim: Effect.void,
     afterClaim: Effect.void,
+    beforeBind: Effect.void,
+    beforePayer: Effect.void,
+    beforeRequeue: Effect.void,
+    beforeFail: Effect.void,
+    afterUnconfirmed: Effect.void,
+    beforeCancel: Effect.void,
+    beforeWithdraw: Effect.void,
   };
   const requeued = Effect.runSync(Deferred.make<void>());
   const items = new Map<string, AgentItem>();
@@ -125,6 +144,10 @@ const makeConversationWorld = () => {
   const steerStore = makeSteerStore(turns, () => admission.stopping);
   const layer = Layer.succeed(AgentConversationRepo, {
     ...steerStore,
+    withdrawMessageTurn: (id, onProcess) =>
+      Effect.suspend(() => admission.beforeWithdraw).pipe(
+        Effect.andThen(steerStore.withdrawMessageTurn(id, onProcess)),
+      ),
     admitSteerMessage: (input, turnId) =>
       admission.beforeAdmit.pipe(
         Effect.andThen(steerStore.admitSteerMessage(input, turnId)),
@@ -222,24 +245,65 @@ const makeConversationWorld = () => {
         ),
       ),
     requeueClaimedTurn: (id) =>
-      Effect.sync(() => {
-        const turn = turns.get(id);
-        if (turn?.status === "running" && turn.providerTurnId === null) {
-          update(id, { status: "queued", startedAt: null });
-        }
-      }).pipe(Effect.andThen(Deferred.succeed(requeued, undefined)), Effect.asVoid),
-    setProviderTurnId: (id, providerTurnId) => Effect.sync(() => update(id, { providerTurnId })),
+      Effect.suspend(() => admission.beforeRequeue).pipe(
+        Effect.map(() => {
+          const turn = turns.get(id);
+          if (turn?.status === "running" && turn.providerTurnId === null) {
+            update(id, { status: "queued", startedAt: null });
+          }
+        }),
+        Effect.andThen(Deferred.succeed(requeued, undefined)),
+        Effect.asVoid,
+      ),
+    setProviderTurnId: (id, providerTurnId) =>
+      Effect.suspend(() =>
+        turns.get(id)?.status === "running"
+          ? Effect.succeed(update(id, { providerTurnId }))
+          : Effect.fail(new AgentTurnNotFoundError({ turnId: id })),
+      ),
     setTurnPayer: (id, payer) =>
-      Effect.sync(() =>
-        update(id, {
-          billedUserId: payer.userId,
-          billedAccountId: payer.accountId,
-          billedAccountName: payer.accountName,
+      Effect.suspend(() => admission.beforePayer).pipe(
+        Effect.map(() =>
+          update(id, {
+            billedUserId: payer.userId,
+            billedAccountId: payer.accountId,
+            billedAccountName: payer.accountName,
+          }),
+        ),
+      ),
+    bindRunningProviderTurn: (_session, onProcess, providerTurnId) =>
+      Effect.suspend(() => admission.beforeBind).pipe(
+        Effect.map(() => {
+          const all = [...turns.values()];
+          const bound = all.find((turn) => turn.providerTurnId === providerTurnId);
+          if (bound !== undefined) return bound;
+          const running = all.find(
+            (turn) =>
+              turn.processId === onProcess &&
+              turn.status === "running" &&
+              turn.providerTurnId === null,
+          );
+          return running === undefined ? null : update(running.id, { providerTurnId });
         }),
       ),
-    bindRunningProviderTurn: () => Effect.succeed(null),
     failTurn: (id, error) =>
-      Effect.sync(() => update(id, { status: "failed", error, endedAt: now() })),
+      Effect.suspend(() => admission.beforeFail).pipe(
+        Effect.flatMap(() =>
+          ["queued", "running", "failed"].includes(turns.get(id)?.status ?? "")
+            ? Effect.succeed(update(id, { status: "failed", error, endedAt: now() }))
+            : Effect.fail(new AgentTurnNotFoundError({ turnId: id })),
+        ),
+      ),
+    failUnconfirmedTurn: (id) =>
+      Effect.suspend(() => admission.beforeFail).pipe(
+        Effect.map(() => {
+          const turn = turns.get(id);
+          return turn?.status === "running" && turn.providerTurnId === null
+            ? update(id, { status: "failed", error: TURN_DELIVERY_UNCONFIRMED, endedAt: now() })
+            : null;
+        }),
+        Effect.tap(() => Effect.suspend(() => admission.afterUnconfirmed)),
+      ),
     setTurnIntent: () => Effect.die("not in test"),
     claimTurnLanding: () => Effect.die("not in test"),
     decideTurnLanding: () => Effect.die("not in test"),
@@ -290,13 +354,17 @@ const makeConversationWorld = () => {
     resolveRequest: () => Effect.die("not in test"),
     resolveProviderRequest: () => Effect.void,
     cancelOpenForTurn: (turnId) =>
-      Effect.sync(() => {
-        cancelSweeps.push(turnId);
-        const turn = turns.get(turnId);
-        if (turn !== undefined && turn.status === "queued") {
-          update(turnId, { status: "cancelled", endedAt: now() });
-        }
-      }),
+      Effect.suspend(() => admission.beforeCancel).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            cancelSweeps.push(turnId);
+            const turn = turns.get(turnId);
+            if (turn !== undefined && turn.status === "queued") {
+              update(turnId, { status: "cancelled", endedAt: now() });
+            }
+          }),
+        ),
+      ),
     cancelOpenForProcess: () => Effect.void,
     protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
     backfillConversation: () => Effect.succeed(0),
@@ -429,6 +497,7 @@ const makeClaudePipe = () => {
   let notify: (() => void) | null = null;
   let sequence = 0n;
   const sent: Array<string> = [];
+  let refuseNextTurn = false;
   const pushRaw = (text: string) => {
     pending.push({ sequence: sequence++, data: new TextEncoder().encode(text) });
     notify?.();
@@ -440,7 +509,12 @@ const makeClaudePipe = () => {
     runId: "run-1",
     mode: "pipe",
     send: (input) => {
-      sent.push(typeof input === "string" ? input : new TextDecoder().decode(input));
+      const text = typeof input === "string" ? input : new TextDecoder().decode(input);
+      if (refuseNextTurn && text.includes('"type":"user"')) {
+        refuseNextTurn = false;
+        return Promise.reject(new Error("pipe write failed"));
+      }
+      sent.push(text);
       return Promise.resolve();
     },
     output: (options) => {
@@ -468,7 +542,15 @@ const makeClaudePipe = () => {
     close: () => Promise.resolve(),
     attach: () => Promise.reject(new Error("not in test")),
   };
-  return { pipe, push, pushRaw, sent };
+  return {
+    pipe,
+    push,
+    pushRaw,
+    sent,
+    refuseNextTurn: () => {
+      refuseNextTurn = true;
+    },
+  };
 };
 
 const hostLayer = (
@@ -494,6 +576,26 @@ const waitUntil = (predicate: () => boolean) =>
     }
     expect.fail("condition never became true");
   });
+
+const turnWith = (world: ReturnType<typeof makeConversationWorld>, words: string) =>
+  [...world.turns.values()].find((turn) => turn.input === words);
+const turnStarts = (peer: ReturnType<typeof makePipe>) =>
+  peer.written.filter((frame) => frame.method === "turn/start").length;
+const startsWith = (peer: ReturnType<typeof makePipe>, words: string) =>
+  peer.written.filter(
+    (frame) => frame.method === "turn/start" && frame.params?.input?.[0]?.text === words,
+  ).length;
+const userFrames = (peer: ReturnType<typeof makeClaudePipe>) =>
+  peer.sent.filter((line) => line.includes('"type":"user"'));
+/** `effect` the first time it runs, nothing after: one failed database call. */
+const once = (effect: Effect.Effect<void>): Effect.Effect<void> => {
+  let ran = false;
+  return Effect.suspend(() => {
+    if (ran) return Effect.void;
+    ran = true;
+    return effect;
+  });
+};
 
 const attachCodex = (host: ProtocolHost["Service"], pipe: InteractiveSession) =>
   host.attach({
@@ -564,6 +666,429 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
+  /** A new turn with these words, through a turn or a message: a message's explanation. */
+  const submit = (host: ProtocolHost["Service"], words: string) =>
+    via === "turn"
+      ? host.submitTurn(sessionId, words, "user-1").pipe(Effect.as(null))
+      : host
+          .sendMessage(
+            {
+              sessionId,
+              sender: "user-1",
+              input: MessageInput.make(words),
+              clientMessageId: null,
+              intent: "queue",
+            },
+            { _tag: "Turn", reason: "queue-requested" },
+          )
+          .pipe(Effect.map((receipt) => receipt.explanation));
+
+  it.effect("withdraws a turn whose claim failed before writing it, and sends the next", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a", "turn-b"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterClaim = once(Effect.die("the claim's notification failed"));
+      const first = yield* submit(host, "first").pipe(Effect.exit);
+      expect(turnStarts(peer)).toBe(0);
+      expect(turnWith(world, "first")).toMatchObject({ status: "cancelled", providerTurnId: null });
+      if (via === "turn") expect(Exit.isFailure(first) && Cause.hasDies(first.cause)).toBe(true);
+      else
+        expect(first).toEqual(Exit.succeed("not sent · the turn was cancelled before it started"));
+      yield* submit(host, "second");
+      expect(turnWith(world, "second")).toMatchObject({
+        status: "running",
+        providerTurnId: "turn-a",
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("puts back a lost claim once storage answers again, and sends what follows", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a", "turn-b"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterClaim = once(Effect.die("lost commit acknowledgement"));
+      world.admission.beforeRequeue = once(Effect.die("storage still down during recovery"));
+      const first = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+      for (let attempt = 0; attempt < 200 && first.pollUnsafe() === undefined; attempt += 1) {
+        yield* TestClock.adjust("1 second");
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+      }
+      yield* Fiber.join(first);
+      // The caller heard its turn was not sent, so the turn put back is withdrawn, never sent later.
+      expect(turnWith(world, "first")).toMatchObject({ status: "cancelled", providerTurnId: null });
+      yield* submit(host, "second");
+      expect(startsWith(peer, "first")).toBe(0);
+      expect(turnWith(world, "second")).toMatchObject({
+        status: "running",
+        providerTurnId: "turn-a",
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("answers with the turn another dispatch sent, so a resend never sends it twice", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a", "turn-b", "turn-c"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const slowWithdrawal = once(
+        Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50))),
+      );
+      world.admission.beforeCancel = slowWithdrawal;
+      world.admission.beforeWithdraw = slowWithdrawal;
+      const release = yield* Deferred.make<void>();
+      world.admission.afterClaim = once(
+        Deferred.await(release).pipe(Effect.andThen(Effect.die("lost claim acknowledgement"))),
+      );
+      const first = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "first")?.status === "running");
+      const second = yield* submit(host, "second").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "second") !== undefined);
+      yield* Deferred.succeed(release, undefined);
+      const answered = yield* Fiber.join(first);
+      yield* Fiber.join(second);
+      // The waiting dispatch sent the turn put back: the caller hears so, and has no reason to
+      // send these words again.
+      expect(startsWith(peer, "first")).toBe(1);
+      expect(Exit.isSuccess(answered)).toBe(true);
+      if (via === "message")
+        expect(answered).toEqual(
+          Exit.succeed(
+            "sent as your next turn · you asked for a new turn · turn running · observed",
+          ),
+        );
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("answers with the turn another dispatch sent when its withdrawal also failed", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a", "turn-b", "turn-c"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const failingWithdrawal = once(
+        Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50))).pipe(
+          Effect.andThen(Effect.die("withdrawal query connection dropped")),
+        ),
+      );
+      world.admission.beforeCancel = failingWithdrawal;
+      world.admission.beforeWithdraw = failingWithdrawal;
+      const release = yield* Deferred.make<void>();
+      world.admission.afterClaim = once(
+        Deferred.await(release).pipe(Effect.andThen(Effect.die("lost claim acknowledgement"))),
+      );
+      const first = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "first")?.status === "running");
+      const second = yield* submit(host, "second").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "second") !== undefined);
+      yield* Deferred.succeed(release, undefined);
+      for (let attempt = 0; attempt < 200 && first.pollUnsafe() === undefined; attempt += 1) {
+        yield* TestClock.adjust("1 second");
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+      }
+      const answered = yield* Fiber.join(first);
+      yield* Fiber.join(second);
+      expect(startsWith(peer, "first")).toBe(1);
+      expect(Exit.isSuccess(answered)).toBe(true);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("sends the next turn when settling an unconfirmed one lost its answer", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], {
+      start: (request, push) => {
+        if (turnStarts(peer) > 1) push({ id: request.id, result: { turn: { id: "turn-b" } } });
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const first = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => turnStarts(peer) === 1);
+      world.seed("second");
+      world.admission.afterUnconfirmed = once(Effect.die("lost settlement acknowledgement"));
+      yield* TestClock.adjust("60 seconds");
+      yield* Fiber.join(first);
+      for (
+        let attempt = 0;
+        attempt < 50 && turnWith(world, "second")?.status !== "running";
+        attempt += 1
+      ) {
+        yield* TestClock.adjust("1 second");
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+      }
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "failed",
+        error: TURN_DELIVERY_UNCONFIRMED,
+      });
+      expect(startsWith(peer, "first")).toBe(1);
+      expect(turnWith(world, "second")).toMatchObject({
+        status: "running",
+        providerTurnId: "turn-b",
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("puts back only the turn a failed claim took", () => {
+    const world = makeConversationWorld();
+    const earlier = world.seed("earlier");
+    world.turns.set(
+      earlier.id,
+      new AgentTurn({ ...earlier, status: "running", startedAt: new Date(0) }),
+    );
+    const peer = makePipe(["turn-a"]);
+    return Effect.gen(function* () {
+      yield* TestClock.adjust("1 second");
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterClaim = once(Effect.die("the claim's notification failed"));
+      yield* submit(host, "first").pipe(Effect.exit);
+      expect(turnWith(world, "earlier")).toMatchObject({ status: "running", providerTurnId: null });
+      expect(turnStarts(peer)).toBe(0);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect(
+    "never sends a written turn again when recording it failed and a later claim failed",
+    () => {
+      const world = makeConversationWorld();
+      const peer = makePipe(["turn-a", "turn-b"]);
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachCodex(host, peer.pipe);
+        world.admission.beforePayer = once(Effect.die("the payer's save failed"));
+        const first = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+        for (let attempt = 0; attempt < 200 && first.pollUnsafe() === undefined; attempt += 1) {
+          yield* TestClock.adjust("1 second");
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+        }
+        yield* Fiber.join(first);
+        world.admission.afterClaim = once(Effect.die("the claim's notification failed"));
+        yield* submit(host, "second").pipe(Effect.exit);
+        yield* submit(host, "third").pipe(Effect.exit);
+        expect(startsWith(peer, "first")).toBe(1);
+        expect(turnWith(world, "first")).toMatchObject({
+          status: "running",
+          providerTurnId: "turn-a",
+          billedUserId: "owner-1",
+        });
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    },
+  );
+
+  it.effect("keeps a turn Codex said it started while Mend was failing it, and its replies", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], { start: () => Promise.resolve() });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const bind = yield* Deferred.make<void>();
+      let binding = false;
+      world.admission.beforeBind = once(
+        Effect.sync(() => {
+          binding = true;
+        }).pipe(Effect.andThen(Deferred.await(bind))),
+      );
+      world.admission.beforeFail = once(
+        Deferred.succeed(bind, undefined).pipe(
+          Effect.andThen(waitUntil(() => turnWith(world, "first")?.providerTurnId === "turn-a")),
+        ),
+      );
+      const first = yield* submit(host, "first").pipe(Effect.forkChild);
+      yield* waitUntil(() => turnStarts(peer) === 1);
+      peer.push({
+        method: "turn/started",
+        params: { threadId: "thread-1", turn: { id: "turn-a" } },
+      });
+      yield* waitUntil(() => binding);
+      yield* TestClock.adjust("60 seconds");
+      yield* Fiber.join(first);
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "running",
+        providerTurnId: "turn-a",
+        error: null,
+      });
+      peer.push({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-a",
+          item: { id: "msg-1", type: "agentMessage", text: "the reply" },
+        },
+      });
+      yield* waitUntil(() => world.items.get("msg-1")?.text === "the reply");
+      peer.push({
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "turn-a", status: "completed" } },
+      });
+      yield* waitUntil(() => turnWith(world, "first")?.status === "completed");
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("fails, and never queues again, a turn being sent when its process stops", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], { start: () => Promise.resolve() });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const caller = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => turnStarts(peer) === 1);
+      yield* host.detachForHandOver(processId);
+      yield* Fiber.join(caller);
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "failed",
+        error: TURN_DELIVERY_UNCONFIRMED,
+      });
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect(
+    "puts a claimed turn back in the queue, once, when Codex's output already ended",
+    () => {
+      const world = makeConversationWorld();
+      const peer = makePipe(["turn-a"]);
+      let claims = 0;
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachCodex(host, peer.pipe);
+        world.admission.afterClaim = Effect.gen(function* () {
+          claims += 1;
+          if (claims > 1) return;
+          peer.end();
+          while (yield* host.has(processId))
+            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+        });
+        yield* submit(host, "first");
+        expect(turnWith(world, "first")).toMatchObject({
+          status: "queued",
+          startedAt: null,
+          error: null,
+        });
+        expect(claims).toBe(1);
+        expect(turnStarts(peer)).toBe(0);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    },
+  );
+
+  it.effect("fails a turn Codex never confirmed with fixed words, and sends the next once", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], {
+      start: (request, push) => {
+        if (turnStarts(peer) > 1) push({ id: request.id, result: { turn: { id: "turn-b" } } });
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const first = yield* submit(host, "first").pipe(Effect.forkChild);
+      yield* waitUntil(() => turnStarts(peer) === 1);
+      const second = yield* submit(host, "second").pipe(Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "second") !== undefined);
+      yield* TestClock.adjust("60 seconds");
+      expect(yield* Fiber.join(first)).toBe(
+        via === "turn" ? null : "delivery not confirmed · Mend will not resend",
+      );
+      yield* Fiber.join(second);
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "failed",
+        providerTurnId: null,
+        error: TURN_DELIVERY_UNCONFIRMED,
+      });
+      expect(turnWith(world, "second")).toMatchObject({
+        status: "running",
+        providerTurnId: "turn-b",
+      });
+      expect(turnStarts(peer)).toBe(2);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("leaves an unconfirmed turn running once Codex said it started", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], {
+      start: (_request, push) => {
+        push({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-a" } } });
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const first = yield* submit(host, "first").pipe(Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "first")?.providerTurnId === "turn-a");
+      yield* TestClock.adjust("60 seconds");
+      expect(yield* Fiber.join(first)).toBe(
+        via === "turn"
+          ? null
+          : "sent as your next turn · you asked for a new turn · turn running · observed",
+      );
+      expect(turnWith(world, "first")).toMatchObject({ status: "running", error: null });
+      peer.push({
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "turn-a", status: "completed" } },
+      });
+      yield* waitUntil(() => turnWith(world, "first")?.status === "completed");
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("finishes sending a turn whose caller went away mid-send", () => {
+    const world = makeConversationWorld();
+    const held: Array<() => void> = [];
+    const peer = makePipe([], {
+      start: (request, push) => {
+        held.push(() => push({ id: request.id, result: { turn: { id: "turn-a" } } }));
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const caller = yield* submit(host, "first").pipe(Effect.forkChild);
+      yield* waitUntil(() => turnStarts(peer) === 1);
+      yield* Fiber.interrupt(caller);
+      for (const answer of held) answer();
+      yield* waitUntil(() => turnWith(world, "first")?.providerTurnId === "turn-a");
+      expect(turnWith(world, "first")?.status).toBe("running");
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("keeps a turn a Stop cancelled while Codex had not answered", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], { start: () => Promise.resolve() });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const caller = yield* submit(host, "first").pipe(Effect.forkChild);
+      yield* waitUntil(() => turnStarts(peer) === 1);
+      const sending = turnWith(world, "first");
+      if (sending === undefined) return expect.fail("the turn was not admitted");
+      world.turns.set(
+        sending.id,
+        new AgentTurn({ ...sending, status: "cancelled", endedAt: now() }),
+      );
+      yield* TestClock.adjust("60 seconds");
+      yield* Fiber.join(caller);
+      expect(turnWith(world, "first")).toMatchObject({ status: "cancelled", error: null });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
   // Live clock: the rehydrate gate watcher sleeps between catch-up polls.
   it.live(
     "rehydrates a surviving pipe: orphans fail, the gate opens, queued turns dispatch",
@@ -598,10 +1123,10 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
         yield* host.rehydrate(input);
         // A turn dispatched but never acknowledged cannot be correlated with the
         // replay — failed honestly, and the completion hook heard about it.
-        expect(world.turns.get(orphan.id)?.status).toBe("failed");
-        expect(world.turns.get(orphan.id)?.error).toContain(
-          "restarted before the turn was acknowledged",
-        );
+        expect(world.turns.get(orphan.id)).toMatchObject({
+          status: "failed",
+          error: TURN_DELIVERY_UNCONFIRMED,
+        });
         expect(completed).toEqual([orphan.id]);
         // Replay is already at the high water (nothing recorded): the gate opens
         // and the queued turn reaches the surviving harness.
@@ -620,6 +1145,43 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
     },
   );
+
+  it.live("rehydrates past an orphan a Stop cancelled while Mend failed it", () => {
+    const world = makeConversationWorld();
+    const seeded = world.seed("orphan");
+    const orphan = new AgentTurn({ ...seeded, status: "running", startedAt: now() });
+    world.turns.set(orphan.id, orphan);
+    world.admission.beforeFail = once(
+      Effect.sync(() =>
+        world.turns.set(
+          orphan.id,
+          new AgentTurn({ ...orphan, status: "cancelled", endedAt: now() }),
+        ),
+      ),
+    );
+    const queued = world.seed("queued");
+    const { pipe } = makePipe(["turn-b"]);
+    const completed: string[] = [];
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* host.rehydrate({
+        process: new SessionProcess({ ...agentProcess, providerSessionId: "thread-1" }),
+        pipe,
+        cwd: "/workspace/repo",
+        permissionMode: "bypass",
+        launchedWithLoginOf: null,
+        hooks: {
+          onRequestChanged: () => Effect.void,
+          onTurnCompleted: (turn) => Effect.sync(() => void completed.push(turn.id)),
+        },
+        highWater: 0n,
+      });
+      expect(world.turns.get(orphan.id)).toMatchObject({ status: "cancelled", error: null });
+      expect(completed).toEqual([]);
+      yield* waitUntil(() => world.turns.get(queued.id)?.providerTurnId === "turn-b");
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 
   it.effect(
     "never acknowledges a turn once stopping began: a claimed idle stop refuses it, and a host detached meanwhile cancels it",
@@ -1678,6 +2240,99 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     description: "marker task",
   };
 
+  it.effect("sends the next Claude turn after one whose start could not be recorded", () => {
+    const world = makeConversationWorld();
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      world.admission.beforeBind = once(
+        Effect.sync(() => void world.seed("second")).pipe(
+          Effect.andThen(Effect.die("the bind failed")),
+        ),
+      );
+      yield* submit(host, "first").pipe(Effect.exit);
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "failed",
+        error: TURN_DELIVERY_UNCONFIRMED,
+      });
+      yield* waitUntil(() => Deferred.isDoneUnsafe(world.requeued));
+      peer.push(finished);
+      yield* waitUntil(() => (turnWith(world, "second")?.providerTurnId ?? null) !== null);
+      expect(turnWith(world, "second")?.status).toBe("running");
+      expect(userFrames(peer)).toHaveLength(2);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("never ends a turn it has not sent when Claude ends one Mend failed", () => {
+    const world = makeConversationWorld();
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      world.admission.beforeBind = once(Effect.die("the bind failed"));
+      yield* submit(host, "first").pipe(Effect.exit);
+      world.admission.afterClaim = once(
+        Effect.sync(() => peer.push(finished)).pipe(
+          Effect.andThen(
+            Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50))),
+          ),
+        ),
+      );
+      yield* submit(host, "second");
+      expect(turnWith(world, "second")?.status).toBe("running");
+      expect(turnWith(world, "second")?.providerTurnId).not.toBeNull();
+      expect(userFrames(peer)).toHaveLength(2);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.live("never fails a turn Claude refused when putting it back failed once", () => {
+    const world = makeConversationWorld();
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      const gate = yield* Deferred.make<void>();
+      world.admission.beforeHarnessTurn = Deferred.await(gate);
+      peer.push({ type: "system", subtype: "init", uuid: "init-1" });
+      yield* Effect.sleep("30 millis");
+      world.admission.beforeRequeue = once(Effect.die("the requeue failed"));
+      const second = yield* submit(host, "second").pipe(Effect.exit);
+      expect(turnWith(world, "second")).toMatchObject({ status: "cancelled", error: null });
+      if (via === "turn") expect(Exit.isFailure(second)).toBe(true);
+      else
+        expect(second).toEqual(Exit.succeed("not sent · the turn was cancelled before it started"));
+      expect(userFrames(peer)).toEqual([]);
+      yield* Deferred.succeed(gate, undefined);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("fails a Claude turn whose write failed with fixed words, and sends the next", () => {
+    const world = makeConversationWorld();
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      peer.refuseNextTurn();
+      expect(yield* submit(host, "first")).toBe(
+        via === "turn" ? null : "delivery not confirmed · Mend will not resend",
+      );
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "failed",
+        providerTurnId: null,
+        error: TURN_DELIVERY_UNCONFIRMED,
+      });
+      yield* submit(host, "second");
+      expect(turnWith(world, "second")?.status).toBe("running");
+      expect(turnWith(world, "second")?.providerTurnId).not.toBeNull();
+      expect(peer.sent.filter((line) => line.includes('"type":"user"'))).toHaveLength(1);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
   it.effect(
     "journals Claude steering, folds its continuation and queues a second steer in the gap",
     () => {
@@ -2009,16 +2664,20 @@ describe("ProtocolHost message turn admission", () => {
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* attachCodex(host, peer.pipe);
-      world.admission.afterClaim = Effect.die("the claim's notification failed");
+      world.admission.afterClaim = Effect.suspend(() => {
+        world.admission.afterClaim = Effect.void;
+        return Effect.die("the claim's notification failed");
+      });
       const input = message();
-      const exit = yield* host
-        .sendMessage(input, { _tag: "Turn", reason: "queue-requested" })
-        .pipe(Effect.exit);
-      expect(Exit.isFailure(exit) && Cause.hasDies(exit.cause)).toBe(true);
-      expect([...world.turns.values()]).toMatchObject([
-        { input: input.input, status: "running", providerTurnId: null },
-      ]);
+      const receipt = yield* host.sendMessage(input, { _tag: "Turn", reason: "queue-requested" });
+      expect(receipt).toMatchObject({
+        _tag: "Turn",
+        explanation: "not sent · the turn was cancelled before it started",
+        turn: { input: input.input, status: "cancelled", providerTurnId: null },
+      });
       expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(0);
+      const next = yield* host.sendMessage(message(), { _tag: "Turn", reason: "queue-requested" });
+      expect(next).toMatchObject({ turn: { status: "running", providerTurnId: "native" } });
       yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });

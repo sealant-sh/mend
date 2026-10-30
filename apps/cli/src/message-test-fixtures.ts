@@ -33,9 +33,12 @@ export const messageTurn = new AgentTurn({
 });
 const messageId = SessionMessageId.make("c9dab604-c239-4827-a6b3-8da108d00828");
 
-export const turnReceipt = (status: AgentTurn["status"] = "queued"): SessionMessageResult =>
+export const turnReceipt = (
+  status: AgentTurn["status"] = "queued",
+  observed: Partial<AgentTurn> = {},
+): SessionMessageResult =>
   messageOutcome(
-    { _tag: "Turn", messageId, turn: new AgentTurn({ ...messageTurn, status }) },
+    { _tag: "Turn", messageId, turn: new AgentTurn({ ...messageTurn, status, ...observed }) },
     "queue-requested",
   );
 
