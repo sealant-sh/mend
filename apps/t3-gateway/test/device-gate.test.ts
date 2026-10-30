@@ -17,6 +17,8 @@ const refused = (operation: string) => Effect.fail(new MendDeviceRefused({ opera
 
 /** A Mend whose every token-carrying call answers 401. */
 const revokedMend: DeviceCalls = {
+  createProject: () => refused("createProject"),
+  ensureScratchProject: () => refused("ensureScratchProject"),
   checkDevice: () => Effect.succeed("refused"),
   connectedAccounts: () => refused("accounts"),
   listHarnessModels: () => refused("models"),
@@ -88,6 +90,8 @@ describe("the device gate", () => {
       );
       // Every call of Mend's client that carries a token, by name: a new one must be gated too.
       const calls: Record<keyof DeviceCalls, Effect.Effect<unknown, unknown>> = {
+        createProject: gated.createProject("t-createProject", "notes"),
+        ensureScratchProject: gated.ensureScratchProject("t-ensureScratchProject"),
         checkDevice: gated.checkDevice("t-checkDevice"),
         connectedAccounts: gated.connectedAccounts("t-connectedAccounts"),
         listHarnessModels: gated.listHarnessModels("t-listHarnessModels"),

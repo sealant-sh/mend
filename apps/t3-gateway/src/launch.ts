@@ -83,11 +83,6 @@ export const labelOf = (text: string): string | null => {
 /** What a launch input asks of Mend, or why Mend cannot do it. */
 export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan => {
   const strategy = input.workspaceStrategy;
-  if (strategy.type === "root") {
-    return refusedPlan(
-      "Every Mend session works in a worktree of its own. Start the thread in a new worktree, or in one a session of this project already uses.",
-    );
-  }
   const provider = harnessOfInstance(input.modelSelection.instanceId);
   if (provider === null) {
     return refusedPlan(
@@ -136,9 +131,11 @@ export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan 
         labelOf(text) ??
         UNNAMED_LABEL,
       workspace:
-        strategy.type === "worktree"
-          ? { kind: "new", strategy, name: worktreeNameOf(strategy.branch) }
-          : { kind: "join", worktreePath: strategy.worktreePath },
+        strategy.type === "root"
+          ? { kind: "root" }
+          : strategy.type === "worktree"
+            ? { kind: "new", strategy, name: worktreeNameOf(strategy.branch) }
+            : { kind: "join", worktreePath: strategy.worktreePath },
       options,
       message:
         message === undefined || (text.trim().length === 0 && attachments.length === 0)

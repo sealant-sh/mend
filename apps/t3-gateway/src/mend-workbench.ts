@@ -10,9 +10,10 @@ import * as Schema from "effect/Schema";
 export const MendProject = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  scratchOwnerUserId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   /** The bare repository in Mend's store; its worktrees sit beside it in `worktrees/`. */
   storePath: Schema.String,
-  /** Where the project was adopted from; null for one adopted from a local path. */
+  /** Where the project was adopted from; null for a project created in Mend. */
   originUrl: Schema.optional(Schema.NullOr(Schema.String)),
   defaultBranch: Schema.String,
   /** Whether its sessions receive their launcher's own skills beside the project's. */

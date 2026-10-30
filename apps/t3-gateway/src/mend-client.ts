@@ -303,6 +303,10 @@ export class MendClient extends Context.Service<
     readonly listHarnessModels: (
       deviceToken: string,
     ) => Effect.Effect<ReadonlyArray<MendHarnessCatalog>, MendDeviceRefused | MendUnavailable>;
+    /** `POST /api/projects/new`: a private project named `name`, or `name-2` on, with a README. */
+    readonly createProject: (deviceToken: string, name: string) => MendCommand<MendProject>;
+    /** `POST /api/projects/scratch`: the person's scratch project, created on first use. */
+    readonly ensureScratchProject: (deviceToken: string) => MendCommand<MendProject>;
     /** `GET /api/projects`: the projects the person can see. */
     readonly listProjects: (deviceToken: string) => MendRead<ReadonlyArray<MendProject>>;
     /** `GET /api/projects/:id`: the project, its sessions and their list facts. */
@@ -1236,6 +1240,29 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/sessions/:id/launch",
         );
 
+      const createProject = (deviceToken: string, name: string) =>
+        answered(
+          command(
+            "POST /api/projects/new",
+            "/api/projects/new",
+            deviceToken,
+            { name },
+            Schema.decodeUnknownEffect(MendProject),
+          ),
+          "POST /api/projects/new",
+        );
+      const ensureScratchProject = (deviceToken: string) =>
+        answered(
+          command(
+            "POST /api/projects/scratch",
+            "/api/projects/scratch",
+            deviceToken,
+            {},
+            Schema.decodeUnknownEffect(MendProject),
+          ),
+          "POST /api/projects/scratch",
+        );
+
       const createSession = (deviceToken: string, projectId: string, input: MendNewSession) =>
         answered(
           command(
@@ -1444,6 +1471,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         connectedAccounts,
         listHarnessModels,
         listProjects,
+        createProject,
+        ensureScratchProject,
         projectDetail,
         listTurns,
         listItems,

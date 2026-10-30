@@ -106,6 +106,7 @@ import {
   type ModelPreferencesTooLarge,
 } from "./model-preferences.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
+import { projectWorkspaceRootOf } from "./project-paths.ts";
 import * as Queueing from "./queue.ts";
 import {
   makeReplayLog,
@@ -315,6 +316,14 @@ export interface PersonHub {
     threadId: string,
     afterSequence?: number,
   ) => Effect.Effect<ThreadSubscription | null, HubReadError, Scope.Scope>;
+  /** Publishes the created project into this person's shell before returning. */
+  readonly createProject: (
+    session: BearerSession,
+    name: string,
+  ) => Effect.Effect<MendProject, ThreadCommandFailure>;
+  readonly ensureScratchProject: (
+    session: BearerSession,
+  ) => Effect.Effect<MendProject, ThreadCommandFailure>;
   /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
   readonly commands: ThreadCommands;
   /**
@@ -608,7 +617,8 @@ export type ThreadWorkspace =
       readonly strategy: Queueing.WorkspacePreparation;
       readonly name: string | null;
     }
-  | { readonly kind: "join"; readonly worktreePath: string };
+  | { readonly kind: "join"; readonly worktreePath: string }
+  | { readonly kind: "root" };
 
 export interface ThreadLaunch {
   readonly session: BearerSession;
@@ -1662,7 +1672,11 @@ export const makePersonHub = (input: {
       const sizes: Array<number> = [];
       const nextProjects = new Map<string, Printed<OrchestrationProjectShell>>();
       for (const entry of projects.values()) {
-        const value = projectShellOf(entry.project, projectScripts.get(entry.project.id) ?? []);
+        const value = projectShellOf(
+          entry.project,
+          projectScripts.get(entry.project.id) ?? [],
+          keeper?.id ?? "",
+        );
         const print = printProject(value);
         if (print instanceof Error) {
           yield* Effect.logError("t3 gateway could not encode a project", {
@@ -3301,6 +3315,39 @@ export const makePersonHub = (input: {
         }),
       );
 
+    const createdProject = Effect.fn("PersonHub.createdProject")(function* (
+      session: BearerSession,
+      name: string | null,
+    ) {
+      if (tokens.isRefused(session.deviceToken))
+        return yield* new MendDeviceRefused({ operation: "project creation" });
+      if (session.mendUser.id !== keeper?.id || !session.scopes.includes("orchestration:operate"))
+        return yield* refused("Project creation requires the paired person's operate scope.", true);
+      yield* ensureLoaded;
+      const created = yield* asCommandRefusal(
+        name === null
+          ? mend.ensureScratchProject(session.deviceToken)
+          : mend.createProject(session.deviceToken, name),
+      );
+      return yield* loadLock.withPermits(1)(
+        Effect.gen(function* () {
+          yield* refreshProject(created.id);
+          const ready = projects.get(created.id)?.project;
+          if (ready === undefined)
+            return yield* refused(
+              "Mend created the project, but it could not be loaded into this environment. Refresh projects before trying again.",
+            );
+          if (name === null && ready.scratchOwnerUserId !== session.mendUser.id)
+            return yield* refused("Mend did not return this person's scratch project.");
+          return ready;
+        }),
+      );
+    });
+    const createProject: PersonHub["createProject"] = (session, name) =>
+      createdProject(session, name);
+    const ensureScratchProject: PersonHub["ensureScratchProject"] = (session) =>
+      createdProject(session, null);
+
     /**
      * `wanted` with a random suffix (`health-check-k3x9qa`) no worktree of the project has; null
      * when unsure, and Mend names it. Mend joins an existing worktree of the same name, and a
@@ -3411,12 +3458,23 @@ export const makePersonHub = (input: {
             }
             const entry = projects.get(request.projectId);
             if (entry === undefined) return { kind: "no-project" as const };
-            const { workspace } = request;
+            const scratch = entry.project.scratchOwnerUserId === request.session.mendUser.id;
+            if (scratch && request.workspace.kind === "join")
+              return { kind: "scratch-join" as const };
+            const workspace: ThreadWorkspace = scratch
+              ? {
+                  kind: "new",
+                  name: null,
+                  strategy: { type: "worktree", baseRef: "main", startFromOrigin: false },
+                }
+              : request.workspace;
+            if (workspace.kind === "root") return { kind: "root" as const };
             if (workspace.kind === "new") {
               return {
                 kind: "new" as const,
                 name: workspace.name,
                 base: workspace.strategy.baseRef,
+                strategy: workspace.strategy,
                 hasOrigin: (entry.project.originUrl ?? null) !== null,
               };
             }
@@ -3435,6 +3493,12 @@ export const makePersonHub = (input: {
         if (target.kind === "no-project") {
           return yield* refused(`Project ${request.projectId} is not in this environment.`);
         }
+        if (target.kind === "root")
+          return yield* refused(
+            "Every Mend session works in a worktree of its own. Start the thread in a new worktree, or in one a session of this project already uses.",
+          );
+        if (target.kind === "scratch-join")
+          return yield* refused("A new scratch thread starts in a new worktree of its own.");
         if (target.kind === "no-worktree") {
           return yield* refused(
             request.workspace.kind === "join"
@@ -3442,7 +3506,7 @@ export const makePersonHub = (input: {
               : "No such worktree.",
           );
         }
-        const strategy = request.workspace.kind === "new" ? request.workspace.strategy : null;
+        const strategy = target.kind === "new" ? target.strategy : null;
         // The setup card is the client's, keyed by the thread id it subscribes with from the moment
         // it sends; a launch that names no thread has none, and its worktree is prepared all the same.
         const card = strategy === null ? null : request.threadId;
@@ -4441,7 +4505,7 @@ export const makePersonHub = (input: {
               };
             }
             const project = Array.from(projects.values()).find(
-              (entry) => entry.project.storePath === cwd,
+              (entry) => projectWorkspaceRootOf(entry.project, keeper?.id ?? "") === cwd,
             )?.project;
             return project === undefined
               ? null
@@ -4572,6 +4636,8 @@ export const makePersonHub = (input: {
       refusal: tokens.refusal,
       mend,
       commands,
+      createProject,
+      ensureScratchProject,
       changeOfWorktree,
     };
   });

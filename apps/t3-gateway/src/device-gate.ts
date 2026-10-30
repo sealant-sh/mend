@@ -23,6 +23,8 @@ class GatedMendClient {
   readonly checkDevice: DeviceCalls["checkDevice"];
   readonly connectedAccounts: DeviceCalls["connectedAccounts"];
   readonly listHarnessModels: DeviceCalls["listHarnessModels"];
+  readonly createProject: DeviceCalls["createProject"];
+  readonly ensureScratchProject: DeviceCalls["ensureScratchProject"];
   readonly listProjects: DeviceCalls["listProjects"];
   readonly projectDetail: DeviceCalls["projectDetail"];
   readonly listTurns: DeviceCalls["listTurns"];
@@ -68,6 +70,8 @@ class GatedMendClient {
     this.checkDevice = calls.checkDevice;
     this.connectedAccounts = calls.connectedAccounts;
     this.listHarnessModels = calls.listHarnessModels;
+    this.createProject = calls.createProject;
+    this.ensureScratchProject = calls.ensureScratchProject;
     this.listProjects = calls.listProjects;
     this.projectDetail = calls.projectDetail;
     this.listTurns = calls.listTurns;
@@ -137,6 +141,8 @@ export const gateDeviceCalls = (
         .pipe(Effect.tap((verdict) => (verdict === "refused" ? onRefused(token) : Effect.void))),
     connectedAccounts: (token) => guard(token, mend.connectedAccounts(token)),
     listHarnessModels: (token) => guard(token, mend.listHarnessModels(token)),
+    createProject: (token, name) => guard(token, mend.createProject(token, name)),
+    ensureScratchProject: (token) => guard(token, mend.ensureScratchProject(token)),
     listProjects: (token) => guard(token, mend.listProjects(token)),
     projectDetail: (token, projectId) => guard(token, mend.projectDetail(token, projectId)),
     listTurns: (token, sessionId) => guard(token, mend.listTurns(token, sessionId)),
