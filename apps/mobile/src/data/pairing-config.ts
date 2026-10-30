@@ -13,7 +13,7 @@ import {
   pushPermissionGranted,
   type PushRegistration,
 } from "@/data/notifications";
-import { pairingKeyOf, type PairingKey } from "@/data/pairing-key";
+import { pairingKeyOf } from "@/data/pairing-key";
 
 export interface Connection {
   readonly url: string;
@@ -168,6 +168,8 @@ const endPairing = (ended: MendConfig): void => {
 
 let stored: Promise<void> = Promise.resolve();
 
+let pairingGeneration = 0;
+
 const write = async (change: (before: MendConfig) => MendConfig): Promise<void> => {
   await hydrated;
   const before = current ?? EMPTY;
@@ -175,6 +177,7 @@ const write = async (change: (before: MendConfig) => MendConfig): Promise<void> 
   if (after === before) return;
   settle(after);
   if (!samePairing(before, after)) {
+    pairingGeneration += 1;
     if (before.token !== "") endPairing(before);
     if (after.token !== "") void registerPushIfAllowed(after);
   }
@@ -194,31 +197,34 @@ export const saveConfig = (connection: Connection): Promise<void> =>
 /** Forget the machine on this device, and ask it to stop pushing here. It keeps the device. */
 export const clearConfig = (): Promise<void> => write(() => EMPTY);
 
-const keepPushToken = (connection: Connection, pushToken: string): Promise<void> =>
-  write((before) => (samePairing(before, connection) ? { ...before, pushToken } : before)).catch(
+const keepPushToken = (generation: number, pushToken: string): Promise<void> =>
+  write((before) => (pairingGeneration === generation ? { ...before, pushToken } : before)).catch(
     () => console.warn("the push token the machine accepted was not stored on this phone"),
   );
 
-let registering: { readonly key: PairingKey; readonly done: Promise<PushRegistration> } | null =
+const PAIRING_CHANGED: PushRegistration = {
+  state: "unavailable",
+  reason: "the pairing changed meanwhile — enable notifications again",
+};
+
+let registering: { readonly generation: number; readonly done: Promise<PushRegistration> } | null =
   null;
 
 export const registerPush = (connection: Connection): Promise<PushRegistration> => {
-  const key = pairingKeyOf(connection);
-  if (registering?.key === key) return registering.done;
+  if (connection.url === "") {
+    return Promise.resolve({ state: "unavailable", reason: "set the server URL first" });
+  }
+  if (!isCurrentPairing(connection)) return Promise.resolve(PAIRING_CHANGED);
+  const generation = pairingGeneration;
+  if (registering?.generation === generation) return registering.done;
   const done = (async (): Promise<PushRegistration> => {
-    if (connection.url === "") return { state: "unavailable", reason: "set the server URL first" };
     const minted = await mintPushToken();
     if (minted.state !== "minted") return minted;
     return pushRequestInTurn(async (deadline): Promise<PushRegistration> => {
-      if (!isCurrentPairing(connection)) {
-        return {
-          state: "unavailable",
-          reason: "the pairing changed meanwhile — enable notifications again",
-        };
-      }
+      if (pairingGeneration !== generation) return PAIRING_CHANGED;
       const posted = await postDevice(connection, minted.token, deadline);
       if (posted.state === "registered" && !deadline.aborted) {
-        await keepPushToken(connection, posted.token);
+        await keepPushToken(generation, posted.token);
       }
       return posted;
     }, NOT_ANSWERED);
@@ -232,7 +238,7 @@ export const registerPush = (connection: Connection): Promise<PushRegistration> 
     .finally(() => {
       if (registering?.done === done) registering = null;
     });
-  registering = { key, done };
+  registering = { generation, done };
   return done;
 };
 
