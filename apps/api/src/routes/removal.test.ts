@@ -2,6 +2,7 @@ import { ProjectNotFoundError } from "@mend/db";
 import { ProjectId, SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
 import {
   Project,
+  PURGING_PROJECT_WORK_REFUSED,
   Session,
   SessionProcess,
   SessionRepository,
@@ -736,7 +737,7 @@ describe.skipIf(postgres.skip)("a removal against Postgres's marks", () => {
     expect(instance.world.calls.filter((call) => call === "worktrees.remove")).toHaveLength(1);
   }, 60_000);
 
-  it("answers a worktree of a project whose purge stopped partway as not found, deleting nothing", async () => {
+  it("refuses a worktree of a project whose purge stopped partway, saying so, deleting nothing", async () => {
     const instance = await marked();
     await database?.sql(
       (sql) => sql`
@@ -759,7 +760,10 @@ describe.skipIf(postgres.skip)("a removal against Postgres's marks", () => {
       "DELETE",
       `/api/worktrees/${privateAlice.worktree}`,
     );
-    expect(response.status).toBe(404);
+    expect({ status: response.status, body: await bodyOf(response) }).toEqual({
+      status: 409,
+      body: { _tag: "RemovalInProgress", message: PURGING_PROJECT_WORK_REFUSED },
+    });
     expect(removedWorktrees).toEqual([]);
   }, 60_000);
 

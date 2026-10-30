@@ -31,3 +31,11 @@ export const projectRetentionRights = (
 
 export const REMOVED_PROJECT_START_REFUSED =
   "Not started. This project was removed. Restore it from Removed projects to work in it.";
+
+/** What a write into a removed project reads, for anyone who can see it in Removed projects. */
+export const REMOVED_PROJECT_WORK_REFUSED =
+  "This project was removed. Restore it from Removed projects to work in it.";
+
+/** The same, while a purge deletes the project for good. */
+export const PURGING_PROJECT_WORK_REFUSED =
+  "This project is being purged. Purge it again if the purge stopped partway.";

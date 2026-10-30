@@ -142,7 +142,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.delete("remove", "/projects/:id", {
       params: { id: ProjectId },
       success: ProjectRemovalReport,
-      error: [NotFound, RemovalRefused],
+      error: [NotFound, RemovalRefused, RemovalInProgress],
     }),
   )
   .add(
@@ -151,7 +151,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectVisibilityRequest,
       success: Project,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -159,7 +159,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectAutomationRequest,
       success: Project,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -169,7 +169,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectGitAuthRequest,
       success: Project,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -177,7 +177,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectWorkspaceImageRequest,
       success: ProjectWorkspaceImageSaveResult,
-      error: [NotFound, SettingsFailure],
+      error: [NotFound, SettingsFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -185,7 +185,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectApplyDotfilesRequest,
       success: Project,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -193,7 +193,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectDefaultShellProfileRequest,
       success: Project,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -201,7 +201,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectInheritUserSkillsRequest,
       success: Project,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -217,7 +217,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectInstallCommandRequest,
       success: Project,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -233,7 +233,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectInstallEnabledRequest,
       success: Project,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -257,7 +257,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.post("refresh", "/projects/:id/refresh", {
       params: { id: ProjectId },
       success: Schema.Array(ProjectBranch),
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -367,7 +367,7 @@ export const referencesGroup = HttpApiGroup.make("references")
       params: { id: ProjectId },
       payload: ProjectReferenceSelection,
       success: Schema.Array(Reference),
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);
@@ -396,13 +396,13 @@ export const projectLinksGroup = HttpApiGroup.make("projectLinks")
       params: { id: ProjectId },
       payload: AddProjectLink,
       success: ProjectLink,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/projects/:id/links/:linkId", {
       params: { id: ProjectId, linkId: ProjectLinkId },
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);
@@ -433,13 +433,13 @@ export const projectMountsGroup = HttpApiGroup.make("projectMounts")
       params: { id: ProjectId },
       payload: AddProjectMount,
       success: ProjectMount,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/projects/:id/mounts/:mountId", {
       params: { id: ProjectId, mountId: ProjectMountId },
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

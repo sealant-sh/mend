@@ -9,7 +9,7 @@ import {
   StoreFailure,
 } from "@mend/api-contracts";
 import { ServiceId, SessionId } from "@mend/domain";
-import { REMOVAL_START_REFUSED } from "@mend/domain/workbench";
+import { REMOVAL_START_REFUSED, REMOVED_PROJECT_WORK_REFUSED } from "@mend/domain/workbench";
 import { TRPCError } from "@trpc/server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -25,14 +25,26 @@ import { run } from "./run.ts";
 
 let server: Server;
 let port = 0;
-let mode: "unreachable" | "http-503" | "http-401" | "removal-in-progress" | "drift-404" =
-  "http-503";
+let mode:
+  | "unreachable"
+  | "http-503"
+  | "http-401"
+  | "removal-in-progress"
+  | "removed-project"
+  | "drift-404" = "http-503";
 
 beforeAll(async () => {
   server = createServer((_request, response) => {
     if (mode === "removal-in-progress") {
       response.writeHead(409, { "content-type": "application/json" });
       response.end(JSON.stringify({ _tag: "RemovalInProgress", message: REMOVAL_START_REFUSED }));
+      return;
+    }
+    if (mode === "removed-project") {
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({ _tag: "RemovalInProgress", message: REMOVED_PROJECT_WORK_REFUSED }),
+      );
       return;
     }
     if (mode === "drift-404") {
@@ -189,4 +201,23 @@ describe("a refusal the API declared", () => {
       "Mend could not do that. Try again; the server log has the detail.",
     );
   });
+});
+
+describe("a change asked of a removed project, through the real client", () => {
+  const session = SessionId.make("s-1");
+  const changes: ReadonlyArray<readonly [string, Parameters<typeof run>[1]]> = [
+    ["remove", (api) => api.sessions.remove({ params: { id: session } })],
+    ["label", (api) => api.sessions.label({ params: { id: session }, payload: { label: "x" } })],
+  ];
+
+  for (const [name, call] of changes) {
+    it(`reads ${name}'s refusal in the server's words, which say to restore the project`, async () => {
+      mode = "removed-project";
+      const error = await failure(`http://127.0.0.1:${port}`, call);
+      expect({ code: error.code, message: error.message }).toEqual({
+        code: "CONFLICT",
+        message: REMOVED_PROJECT_WORK_REFUSED,
+      });
+    });
+  }
 });

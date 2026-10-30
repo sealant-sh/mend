@@ -4,11 +4,12 @@ import { defaultSettings, defaultWorkspaceImage, MendSettings, WorkspaceImage } 
 import {
   ConversationTurn,
   PageRef,
+  REMOVED_PROJECT_WORK_REFUSED,
   Session,
   SessionProcess,
   turnSteerSender,
 } from "@mend/domain/workbench";
-import { Effect, Schema } from "effect";
+import { Effect, Schema, SchemaAST } from "effect";
 import { HttpApi } from "effect/http-api";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -1292,6 +1293,95 @@ describe.each(CASES)("$endpoint", (entry) => {
       } else if (expected.status !== 500) {
         expect(body).toEqual(expectedBody);
       }
+    }
+  });
+});
+
+const sentinels = SchemaAST.resolveAt("~sentinels");
+const tagOf = (ast: SchemaAST.AST): unknown => {
+  const found = sentinels(ast);
+  return Array.isArray(found)
+    ? found.find((sentinel) => sentinel.key === "_tag")?.literal
+    : undefined;
+};
+
+/** The tags each endpoint declares at 409, by `group.endpoint`. */
+const conflicts = new Map<string, ReadonlyArray<unknown>>();
+HttpApi.reflect(MendApi, {
+  onGroup: () => {},
+  onEndpoint: ({ group, endpoint, errors }) => {
+    conflicts.set(
+      `${group.identifier}.${endpoint.identifier}`,
+      [...(errors.get(409) ?? [])].map((schema) => tagOf(schema.ast)),
+    );
+  },
+});
+
+/** Every write whose target is a project, or something in one: its path names the project's rows. */
+const PROJECT_WRITES = CASES.filter((entry) => {
+  const call = entry.call("private-alice");
+  return (
+    call.method !== "GET" && call.method !== "HEAD" && call.path !== entry.call("shared-b").path
+  );
+});
+
+describe("a change asked of a removed project", () => {
+  let removedWorld: TenancyApi;
+  beforeAll(async () => {
+    removedWorld = await createTenancyApi({}, { errorDetail: { mode: "redacted" } });
+    const removed = ids("private-alice").project;
+    const project = removedWorld.world.projects.get(removed);
+    if (project === undefined) throw new Error("missing private-alice fixture");
+    removedWorld.world.retainedProjects.set(removed, {
+      project,
+      removedAt: new Date("2026-10-30T12:00:00.000Z"),
+      removedByUserId: "alice",
+      state: "removed",
+    });
+  });
+  afterAll(async () => {
+    await removedWorld.dispose();
+  });
+  beforeEach(() => {
+    removedWorld.world.calls.splice(0, removedWorld.world.calls.length);
+  });
+
+  const sendTo = async (user: HarnessUser, call: Call) => {
+    const response = await removedWorld.request(user, call.method, call.path, call.body);
+    return { status: response.status, body: await response.json() };
+  };
+
+  it.each(PROJECT_WRITES)(
+    "$endpoint says to restore it to whoever can see it, declares that refusal, and is a 404 to anyone else",
+    async (entry) => {
+      const call = entry.call("private-alice");
+      const byCreator = await sendTo("alice", call);
+      const byOther = await sendTo("carol", call);
+      expect({
+        creator: byCreator,
+        other: { status: byOther.status, id: idOf(byOther.body) },
+        declared: conflicts.get(entry.endpoint)?.includes("RemovalInProgress"),
+        calls: removedWorld.world.calls,
+      }).toEqual({
+        creator: {
+          status: 409,
+          body: { _tag: "RemovalInProgress", message: REMOVED_PROJECT_WORK_REFUSED },
+        },
+        other: { status: 404, id: call.id },
+        declared: true,
+        calls: [],
+      });
+    },
+  );
+
+  it("still reads as missing to the person who removed it", async () => {
+    for (const entry of CASES) {
+      const call = entry.call("private-alice");
+      if (call.method !== "GET" || call.path === entry.call("shared-b").path) continue;
+      expect({ endpoint: entry.endpoint, ...(await sendTo("alice", call)) }).toMatchObject({
+        endpoint: entry.endpoint,
+        status: 404,
+      });
     }
   });
 });

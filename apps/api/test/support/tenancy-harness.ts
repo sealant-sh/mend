@@ -162,6 +162,8 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   "organizations.membershipOf",
   "instanceRoles.isOperator",
   "projects.byId",
+  // Whether a project missing from the lists was removed decides how a change asked of it is refused.
+  "projects.removedById",
   "projects.listForOrganization",
   "sessions.byId",
   // Whether the per-person columns are read: from memory, before the access check.

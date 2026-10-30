@@ -5,6 +5,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
+import { RemovalInProgress } from "./workbench-views.ts";
 
 /** The bundle failed validation or collided with the library's caps; the message says how. */
 export class SkillRejected extends Schema.TaggedError<SkillRejected>()(
@@ -93,7 +94,7 @@ export const skillsGroup = HttpApiGroup.make("skills")
     HttpApiEndpoint.post("create", "/skills", {
       payload: SkillCreateRequest,
       success: SkillWithFiles,
-      error: [NotFound, SkillRejected],
+      error: [NotFound, SkillRejected, RemovalInProgress],
     }),
   )
   .add(
@@ -101,20 +102,20 @@ export const skillsGroup = HttpApiGroup.make("skills")
       params: { skillId: SkillId },
       payload: SkillUpdateRequest,
       success: SkillWithFiles,
-      error: [NotFound, SkillRejected, SkillStaleWrite],
+      error: [NotFound, SkillRejected, SkillStaleWrite, RemovalInProgress],
     }),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/skills/:skillId", {
       params: { skillId: SkillId },
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
     HttpApiEndpoint.post("sync", "/skills/sync", {
       payload: SkillsSyncRequest,
       success: SkillsSyncReport,
-      error: [NotFound, SkillRejected],
+      error: [NotFound, SkillRejected, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

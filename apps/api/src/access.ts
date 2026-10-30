@@ -29,8 +29,11 @@ import {
   type Viewer,
   type Worktree,
 } from "@mend/domain/workbench";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import * as Context from "effect/Context";
+import { HttpServerRequest } from "effect/http";
+
+import { RemovedProjectWork } from "./removal-refusal.ts";
 
 /**
  * Who may see what (docs/adr/0003-organizations-and-tenancy.md). Every project-scoped route
@@ -40,6 +43,11 @@ import * as Context from "effect/Context";
  * `NotFound` is always the id the caller supplied, never a parent's.
  *
  * Every check happens before any effect: resolve here first, then act.
+ *
+ * A removed project reads as missing, except to an HTTP request that would change something in
+ * it (any method but GET and HEAD) from a person who can see it in Removed projects: that request
+ * is refused, as the database's removal fence refuses a start, with a defect the error boundary
+ * answers `409 RemovalInProgress` saying to restore it (`RemovedProjectWork`).
  */
 export class ProjectAccess extends Context.Service<
   ProjectAccess,
@@ -93,6 +101,8 @@ export class ProjectAccess extends Context.Service<
   }
 >()("@mend/api/ProjectAccess") {}
 
+const READS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
+
 export const ProjectAccessLive: Layer.Layer<
   ProjectAccess,
   never,
@@ -132,6 +142,16 @@ export const ProjectAccessLive: Layer.Layer<
       return yield* viewerOf(caller.user.id);
     });
 
+    /** Dies with `RemovedProjectWork` when the request would change a removed project `viewer` sees. */
+    const refuseRemovedWork = (projectId: ProjectId, viewer: Viewer) =>
+      Effect.gen(function* () {
+        const request = yield* Effect.serviceOption(HttpServerRequest.HttpServerRequest);
+        if (Option.isNone(request) || READS.has(request.value.method)) return;
+        const kept = yield* projects.removedById(projectId);
+        if (kept !== null && canSeeProject(kept.project, viewer))
+          return yield* Effect.die(new RemovedProjectWork({ state: kept.state }));
+      });
+
     /** The project row when `allowed` holds for the viewer; `NotFound` for `requested` otherwise. */
     const guarded = (
       userId: string,
@@ -144,7 +164,13 @@ export const ProjectAccessLive: Layer.Layer<
         if (found === null) return yield* new NotFound({ id: requested });
         const row = yield* projects
           .byId(projectId)
-          .pipe(Effect.mapError(() => new NotFound({ id: requested })));
+          .pipe(
+            Effect.catchTag("ProjectNotFoundError", () =>
+              Effect.flatMap(refuseRemovedWork(projectId, found), () =>
+                Effect.fail(new NotFound({ id: requested })),
+              ),
+            ),
+          );
         if (!allowed(row, found)) return yield* new NotFound({ id: requested });
         return row;
       });
