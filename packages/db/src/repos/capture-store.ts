@@ -447,15 +447,15 @@ export class CaptureStoreRepo extends Context.Service<
       holder?: LeaseHolder,
     ) => Effect.Effect<PutAuthorityRecord>;
     /**
-     * Records until when URLs bound to their bytes, handed out under the epoch, could still land
-     * them: no authority to replace an object, so no seal waits on it, but purge does. False,
-     * and nothing handed out: the lease is not `holder`'s under `epoch`, or the project was removed.
+     * Records until when a write Mend lets out could still land bytes under the worktree's
+     * prefixes: URLs bound to their bytes, or Mend's own put. Neither may replace an object, so no
+     * seal waits on it, but purge does. False, and nothing may be written: `lease` is given and no
+     * longer holds, or the project was removed.
      */
     readonly recordUploadWindow: (
       worktreeId: WorktreeId,
-      epoch: number,
       until: Date,
-      holder?: LeaseHolder,
+      lease?: { readonly epoch: number; readonly holder: LeaseHolder },
     ) => Effect.Effect<boolean>;
     /**
      * The latest expiry of an upload URL handed out under any epoch of these worktrees, write
@@ -939,6 +939,13 @@ export const CaptureStoreRepoLive: Layer.Layer<
             Effect.gen(function* () {
               // Subsequent statements must see changes committed while a row lock was waiting.
               yield* sql`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`;
+              // A removed project's summary waits for its Restore: its row is held so a removal
+              // waits for this publication or refuses it.
+              const [parent] = yield* sql<{ readonly removed: boolean }>`
+                SELECT p.removed_at IS NOT NULL AS removed
+                  FROM projects p JOIN worktrees w ON w.project_id = p.id
+                 WHERE w.id = ${input.worktreeId} FOR SHARE OF p`;
+              if (parent?.removed !== false) return false;
               // Parent first, without blocking the FK key-share locks register/accept need. Then
               // chain before capture, matching register and preventing a head change at publication.
               const lockedWorktrees =
@@ -1195,14 +1202,14 @@ export const CaptureStoreRepoLive: Layer.Layer<
 
     const recordUploadWindow = Effect.fn("CaptureStoreRepo.recordUploadWindow")(function* (
       worktreeId: WorktreeId,
-      epoch: number,
       until: Date,
-      holder?: LeaseHolder,
+      lease?: { readonly epoch: number; readonly holder: LeaseHolder },
     ) {
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            if (!(yield* uploadAdmitted(worktreeId, epoch, holder))) return false;
+            if (!(yield* uploadAdmitted(worktreeId, lease?.epoch ?? 0, lease?.holder)))
+              return false;
             yield* sql`
               INSERT INTO capture_upload_windows (worktree_id, until) VALUES (${worktreeId}, ${until})
               ON CONFLICT (worktree_id) DO UPDATE

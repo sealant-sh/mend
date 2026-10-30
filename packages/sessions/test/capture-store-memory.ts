@@ -35,6 +35,8 @@ export interface MemoryCaptureStore {
   readonly putAuthority: Map<string, Date>;
   /** `capture_upload_windows`: worktree → until when its byte-bound URLs could land (0167). */
   readonly uploadWindows: Map<string, Date>;
+  /** Worktrees of a removed project: issued no write, published no summary (0167). */
+  readonly removedWorktrees: Set<string>;
   /** `capture_bound_indexes`: key → the digest its bound URLs name, and until when (0099). */
   readonly boundIndexes: Map<string, { sha256: string; until: Date }>;
   /** Worktrees that are gone: Mend no longer speaks for their scopes (`sealAuthorityOver`). */
@@ -96,6 +98,7 @@ export const makeMemoryCaptureStore = (
   /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry. */
   const putAuthority = new Map<string, Date>();
   const uploadWindows = new Map<string, Date>();
+  const removedWorktrees = new Set<string>();
   const boundIndexes = new Map<string, { sha256: string; until: Date }>();
   const goneWorktrees = new Set<string>();
   const boundIndexCutover = { until: 0 };
@@ -111,8 +114,12 @@ export const makeMemoryCaptureStore = (
   const summaries = new Map<string, CaptureSummaryRow>();
   const live = (lease: { expiresAt: number | null }) =>
     lease.expiresAt !== null && lease.expiresAt > clock.now();
-  /** The lease as it is now (cross-repo decision 31): live, under `epoch`, the holder's. */
+  /**
+   * The lease as it is now (cross-repo decision 31): live, under `epoch`, the holder's; and the
+   * project not removed.
+   */
   const leaseAdmits = (worktreeId: WorktreeId, epoch: number, holder?: LeaseHolder) => {
+    if (removedWorktrees.has(worktreeId)) return false;
     if (holder === undefined) return true;
     const lease = leases.get(worktreeId);
     return (
@@ -302,6 +309,7 @@ export const makeMemoryCaptureStore = (
       }),
     publishObservedSummary: ({ worktreeId, captureId, baseSha, key }) =>
       Effect.sync(() => {
+        if (removedWorktrees.has(worktreeId)) return false;
         const row = summaries.get(captureId);
         const capture = captures.get(captureId);
         if (
@@ -417,9 +425,9 @@ export const makeMemoryCaptureStore = (
           }),
         ),
       ),
-    recordUploadWindow: (worktreeId, epoch, until, holder) =>
+    recordUploadWindow: (worktreeId, until, lease) =>
       Effect.sync(() => {
-        if (!leaseAdmits(worktreeId, epoch, holder)) return false;
+        if (!leaseAdmits(worktreeId, lease?.epoch ?? 0, lease?.holder)) return false;
         const kept = uploadWindows.get(worktreeId);
         if (kept === undefined || kept.getTime() < until.getTime())
           uploadWindows.set(worktreeId, until);
@@ -709,6 +717,7 @@ export const makeMemoryCaptureStore = (
     seals,
     putAuthority,
     uploadWindows,
+    removedWorktrees,
     boundIndexes,
     goneWorktrees,
     boundIndexCutover,

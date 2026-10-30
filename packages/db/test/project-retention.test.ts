@@ -643,18 +643,14 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES (${tree}, ${id}, ${tree}, ${tree}, ${tree}, ${"a".repeat(40)})`;
         yield* capture.init(tree);
         const boundUntil = new Date(Date.now() + 300_000);
-        const boundBefore = yield* capture.recordUploadWindow(tree, 1, boundUntil);
+        const boundBefore = yield* capture.recordUploadWindow(tree, boundUntil);
         yield* keep(id);
         const authority = yield* capture.recordPutAuthority(
           tree,
           1,
           new Date(Date.now() + 600_000),
         );
-        const boundAfter = yield* capture.recordUploadWindow(
-          tree,
-          1,
-          new Date(Date.now() + 600_000),
-        );
+        const boundAfter = yield* capture.recordUploadWindow(tree, new Date(Date.now() + 600_000));
         const purge = yield* takePurgeAs(id, "anna");
         if (purge._tag !== "finish") return yield* Effect.die("expected purge mark");
         const guardOf = Effect.map(

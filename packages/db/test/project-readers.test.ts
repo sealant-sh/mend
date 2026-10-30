@@ -18,6 +18,10 @@ const exceptions = new Map([
     "A removed project is read to refuse it new upload URLs.",
   ],
   [
+    "packages/db/src/repos/capture-store.ts:publishObservedSummary",
+    "A removed project is read to refuse it a published summary.",
+  ],
+  [
     "packages/db/src/repos/capture-store.ts:condemnForPurge",
     "Only a removed project's purge mark authorizes the condemnation.",
   ],

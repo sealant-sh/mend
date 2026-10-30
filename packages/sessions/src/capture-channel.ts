@@ -2256,9 +2256,8 @@ export const CaptureChannelLive: Layer.Layer<
               recordedAt = epochMillis();
               const admitted = yield* repo.recordUploadWindow(
                 worktreeId,
-                input.epoch,
                 new Date(recordedAt + (ttlSeconds + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
-                holder,
+                { epoch: input.epoch, holder },
               );
               if (!admitted) {
                 yield* requireLease(input.epoch);

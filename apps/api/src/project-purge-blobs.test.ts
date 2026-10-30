@@ -107,7 +107,7 @@ describe("purging a removed project's stored objects", () => {
     const { repo, keys, purge } = await world();
     const before = await keys();
     expect(
-      await Effect.runPromise(repo.recordUploadWindow(own, 1, new Date(Date.now() + 10 * 60_000))),
+      await Effect.runPromise(repo.recordUploadWindow(own, new Date(Date.now() + 10 * 60_000))),
     ).toBe(true);
     const exit = await purge();
     expect(Exit.isFailure(exit) && String(exit.cause)).toContain("UploadAuthorityOpen");

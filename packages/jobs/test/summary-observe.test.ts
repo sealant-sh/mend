@@ -578,6 +578,31 @@ describe("summary observation provenance and publication", () => {
     expect(h.bucket.get(h.key)).toEqual(h.bytes);
   });
 
+  it("writes and publishes nothing once the project is removed after the reads", async () => {
+    const h = observationHarness();
+    h.state.afterFiles = () => h.memory.removedWorktrees.add(h.worktree.id);
+    expect(await h.observe()).toEqual({ outcome: "skipped", reason: "the project was removed" });
+    expect(h.writes).toEqual([]);
+    expect(h.memory.summaries.get(h.row.id)).toMatchObject({ key: h.canonical, state: "claimed" });
+  });
+
+  it("keeps a purge waiting for a write that began before the removal, and publishes none of it", async () => {
+    const h = observationHarness();
+    h.state.beforePut = () => h.memory.removedWorktrees.add(h.worktree.id);
+    const before = Date.now();
+    expect(await h.observe()).toEqual({
+      outcome: "skipped",
+      reason: "the summary changed before publication",
+    });
+    expect(h.memory.summaries.get(h.row.id)).toMatchObject({ key: h.canonical, state: "claimed" });
+    const landsUntil = await Effect.runPromise(
+      Effect.flatMap(CaptureStoreRepo, (repo) => repo.putAuthorityUntilFor([h.worktree.id])).pipe(
+        Effect.provide(h.memory.layer),
+      ),
+    );
+    expect(landsUntil?.getTime() ?? 0).toBeGreaterThan(before);
+  });
+
   it("never publishes observed state when persisting immutable bytes fails", async () => {
     const h = observationHarness();
     h.state.failPut = true;
