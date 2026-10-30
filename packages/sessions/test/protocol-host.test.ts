@@ -767,6 +767,40 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
+  it.effect("answers with the turn another dispatch sent when its withdrawal also failed", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a", "turn-b", "turn-c"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const failingWithdrawal = once(
+        Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50))).pipe(
+          Effect.andThen(Effect.die("withdrawal query connection dropped")),
+        ),
+      );
+      world.admission.beforeCancel = failingWithdrawal;
+      world.admission.beforeWithdraw = failingWithdrawal;
+      const release = yield* Deferred.make<void>();
+      world.admission.afterClaim = once(
+        Deferred.await(release).pipe(Effect.andThen(Effect.die("lost claim acknowledgement"))),
+      );
+      const first = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "first")?.status === "running");
+      const second = yield* submit(host, "second").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "second") !== undefined);
+      yield* Deferred.succeed(release, undefined);
+      for (let attempt = 0; attempt < 200 && first.pollUnsafe() === undefined; attempt += 1) {
+        yield* TestClock.adjust("1 second");
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+      }
+      const answered = yield* Fiber.join(first);
+      yield* Fiber.join(second);
+      expect(startsWith(peer, "first")).toBe(1);
+      expect(Exit.isSuccess(answered)).toBe(true);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
   it.effect("sends the next turn when settling an unconfirmed one lost its answer", () => {
     const world = makeConversationWorld();
     const peer = makePipe([], {

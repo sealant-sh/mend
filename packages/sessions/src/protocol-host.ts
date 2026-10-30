@@ -374,27 +374,42 @@ const toPlatformError = (operation: string, cause: unknown): SealantPlatformErro
   });
 
 /**
- * Runs `attempt` again, a second apart, until it succeeds, the host stops it, or `live` says
- * the process it is for is gone. For writes that must land once storage answers again.
+ * Runs `attempt` again, a second apart, until it succeeds or the host stops it. For reads and
+ * writes that must land once storage answers again.
  */
+const retried = <A>(
+  attempt: Effect.Effect<A>,
+  warning: string,
+  about: Readonly<Record<string, string>>,
+): Effect.Effect<A> =>
+  Effect.gen(function* () {
+    for (;;) {
+      const done = yield* Effect.exit(attempt);
+      if (Exit.isSuccess(done)) return done.value;
+      if (Cause.hasInterruptsOnly(done.cause)) return yield* Effect.failCause(done.cause);
+      yield* Effect.logWarning(warning).pipe(
+        Effect.annotateLogs({ ...about, failure: failureName(done.cause) }),
+      );
+      yield* Effect.sleep("1 second");
+    }
+  });
+
+/** `retried`, given up once `live` says the process it is for is gone. */
 const untilItLands = (
   attempt: Effect.Effect<void>,
   warning: string,
   about: Readonly<Record<string, string>>,
   live: () => boolean = () => true,
 ): Effect.Effect<void> =>
-  Effect.gen(function* () {
-    for (;;) {
-      const done = yield* Effect.exit(attempt);
-      if (Exit.isSuccess(done)) return;
-      if (Cause.hasInterruptsOnly(done.cause)) return yield* Effect.failCause(done.cause);
-      yield* Effect.logWarning(warning).pipe(
-        Effect.annotateLogs({ ...about, failure: failureName(done.cause) }),
-      );
-      if (!live()) return;
-      yield* Effect.sleep("1 second");
-    }
-  });
+  retried(
+    attempt.pipe(
+      Effect.catchCause((cause) =>
+        live() || Cause.hasInterruptsOnly(cause) ? Effect.failCause(cause) : Effect.void,
+      ),
+    ),
+    warning,
+    about,
+  );
 
 export const ProtocolHostLive: Layer.Layer<
   ProtocolHost,
@@ -1269,15 +1284,24 @@ export const ProtocolHostLive: Layer.Layer<
           return yield* Effect.failCause(dispatched.cause);
         // A turn still queued is withdrawn, so the failure the caller sees is the whole outcome.
         // One another dispatch took meanwhile is answered as it stands, never as a failure the
-        // caller would send again.
-        yield* conversations.cancelOpenForTurn(turn.id);
-        const now = yield* conversations.byTurnId(turn.id);
+        // caller would send again; so is one whose outcome storage could not tell yet.
+        const now = yield* retried(
+          conversations
+            .cancelOpenForTurn(turn.id)
+            .pipe(Effect.andThen(Effect.suspend(() => conversations.byTurnId(turn.id)))),
+          "protocol host: a turn's outcome was not read",
+          { turnId: turn.id },
+        );
         if (now === null || now.status === "cancelled")
           return yield* Effect.failCause(dispatched.cause);
         return now;
       }
       if (!dispatched.value) {
-        yield* conversations.cancelOpenForTurn(turn.id);
+        yield* retried(
+          conversations.cancelOpenForTurn(turn.id),
+          "protocol host: a turn was not withdrawn",
+          { turnId: turn.id },
+        );
         return yield* new ProtocolHostNotLiveError({ processId: place.processId });
       }
       return turn;
@@ -1352,9 +1376,21 @@ export const ProtocolHostLive: Layer.Layer<
       const dispatched = yield* dispatchAdmitted(input.sessionId, place, dispatchJoined).pipe(
         Effect.exit,
       );
+      // From here the receipt is read until storage answers: a failure answered for a stored
+      // message tells its sender to send the words again.
+      const withdraw = retried(
+        Effect.suspend(() => conversations.withdrawMessageTurn(turn.id, place.processId)),
+        "protocol host: a message's turn was not withdrawn",
+        { turnId: turn.id },
+      );
+      const receipt = retried(
+        Effect.suspend(() => conversations.messageById(messageId)),
+        "protocol host: a message's receipt was not read",
+        { turnId: turn.id },
+      );
       if (Exit.isSuccess(dispatched)) {
-        if (!dispatched.value) yield* conversations.withdrawMessageTurn(turn.id, place.processId);
-        return yield* conversations.messageById(messageId);
+        if (!dispatched.value) yield* withdraw;
+        return yield* receipt;
       }
       if (Cause.hasInterruptsOnly(dispatched.cause))
         return yield* Effect.failCause(dispatched.cause);
@@ -1363,8 +1399,8 @@ export const ProtocolHostLive: Layer.Layer<
       );
       // Withdrawn, the receipt says not sent. Otherwise another dispatch took the turn, and the
       // receipt says what became of it: never a failure the sender would send again.
-      yield* conversations.withdrawMessageTurn(turn.id, place.processId);
-      return yield* conversations.messageById(messageId);
+      yield* withdraw;
+      return yield* receipt;
     });
 
     const sendMessage = Effect.fn("ProtocolHost.sendMessage")(function* (
