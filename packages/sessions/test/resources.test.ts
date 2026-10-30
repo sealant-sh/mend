@@ -11,6 +11,7 @@ import {
   SessionsRepo,
   SessionsRepoLive,
   UsersRepoLive,
+  WorktreesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
@@ -108,6 +109,7 @@ const repos = Layer.mergeAll(
   ProjectsRepoLive,
   SessionsRepoLive,
   UsersRepoLive,
+  WorktreesRepoLive,
 ).pipe(Layer.provideMerge(dbLayer));
 const images = Layer.mock(ResourceImageResolver, {});
 const resources = ResourcesLive.pipe(Layer.provideMerge(Layer.mergeAll(repos, reads, images)));

@@ -2,15 +2,16 @@ import { PgClient } from "@effect/sql-pg";
 import {
   MendDBLive,
   migrations,
-  ProjectHasResourcesError,
   ProjectsRepo,
   ProjectsRepoLive,
+  RemovalFencesRepo,
+  RemovalFencesRepoLive,
   ResourcesRepo,
   ResourcesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { ProjectRemovalFenceId } from "@mend/domain";
 import { ResourceDefinitionInput, withPresetCommand } from "@mend/domain/workbench";
+import { WORKTREE_STAMP } from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,7 +20,24 @@ import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-ap
 import { ids } from "../../test/support/tenancy-harness.ts";
 
 const project = ids("private-alice").project;
+const worktree = ids("private-alice").worktree;
 const postgres = postgresTestConfig();
+
+/** What a project removal reads about its one worktree: nothing runs, saves or is past its base. */
+const quietWorktree = (changed: ReadonlyArray<string> = []) =>
+  ({
+    engine: { launchUnderWay: () => false, captureHolds: () => Effect.succeed([]) },
+    forwards: { listOpen: () => Effect.succeed([]) },
+    reads: {
+      changedFiles: () =>
+        Effect.succeed({
+          value: changed.map((path) => ({ path, additions: 1, deletions: 0 })),
+          stamp: WORKTREE_STAMP,
+        }),
+    },
+    landings: { listForChange: () => Effect.succeed([]) },
+    hotWorkspaces: { listForProject: () => Effect.succeed([]) },
+  }) as const;
 
 describe("removing a project that has resources", () => {
   let api: TenancyApi | undefined;
@@ -28,47 +46,30 @@ describe("removing a project that has resources", () => {
     api = undefined;
   });
 
-  const removeWith = async (names: ReadonlyArray<string>) => {
-    const lifted: Array<ProjectRemovalFenceId> = [];
+  const removeWith = async (names: ReadonlyArray<string>, changed: ReadonlyArray<string> = []) => {
     api = await createTenancyApi(undefined, {
       implement: {
-        resources: {
-          fenceProjectRemoval: (projectId) =>
-            names.length === 0
-              ? Effect.succeed(ProjectRemovalFenceId.make("rfen_this-removal"))
-              : Effect.fail(new ProjectHasResourcesError({ projectId, names })),
-          liftProjectRemovalFence: (fence) =>
-            Effect.sync(() => {
-              lifted.push(fence);
-            }),
-        },
+        ...quietWorktree(changed),
+        resources: { declaredNames: () => Effect.succeed(names) },
         store: { removeProjectStore: () => Effect.succeed({ leftover: null }) },
       },
     });
     const response = await api.request("alice", "DELETE", `/api/projects/${project}`);
-    return { response, calls: [...api.world.calls], lifted };
+    return { response, calls: [...api.world.calls] };
   };
 
-  it("is refused with the resources named, before any session stops or the store goes", async () => {
-    const { response, calls, lifted } = await removeWith(["db", "queue"]);
-    expect(response.status).toBe(422);
+  it("is refused with the resources named beside every other blocker, and the store stays", async () => {
+    const { response, calls } = await removeWith(["db", "queue"], ["src/a.ts"]);
+    expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
-      _tag: "StoreFailure",
-      message: "project has resources (@db, @queue) · remove them first",
+      _tag: "RemovalRefused",
+      scope: "project",
+      blockers: [
+        { _tag: "Unlanded", worktreeId: worktree },
+        { _tag: "ResourcesDeclared", names: ["db", "queue"] },
+      ],
     });
-    expect(calls).toEqual(["resources.fenceProjectRemoval"]);
-    expect(lifted).toEqual([]);
-  });
-
-  it("lifts its own fence when the removal stops before the project's row goes", async () => {
-    const { calls, lifted } = await removeWith([]);
-    // The harness leaves session listing unimplemented, so the removal stops there.
-    expect(calls).toEqual([
-      "resources.fenceProjectRemoval",
-      "sessions.listForProject",
-      "resources.liftProjectRemovalFence",
-    ]);
-    expect(lifted).toEqual(["rfen_this-removal"]);
+    expect(calls.filter((call) => call.startsWith("store."))).toEqual([]);
   });
 });
 
@@ -88,7 +89,7 @@ const scratchDatabase = async () => {
     );
   await admin(`CREATE DATABASE ${name}`);
   const runtime = ManagedRuntime.make(
-    Layer.mergeAll(ResourcesRepoLive, ProjectsRepoLive).pipe(
+    Layer.mergeAll(ResourcesRepoLive, ProjectsRepoLive, RemovalFencesRepoLive).pipe(
       Layer.provideMerge(MendDBLive),
       Layer.provideMerge(pgLayer(url.toString())),
     ),
@@ -155,20 +156,23 @@ describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () =>
     database = undefined;
   });
 
-  it("one that fails leaves the other fenced: a declaration is refused, and the other removes the project", async () => {
+  it("refuses a second removal while one deletes; a failed deletion stays fenced, and the next removal finishes it", async () => {
     database = await scratchDatabase();
     const { runtime } = database;
-    const { resources, projects } = await runtime.runPromise(
-      Effect.all({ resources: ResourcesRepo, projects: ProjectsRepo }),
+    const { resources, projects, removalFences } = await runtime.runPromise(
+      Effect.all({
+        resources: ResourcesRepo,
+        projects: ProjectsRepo,
+        removalFences: RemovalFencesRepo,
+      }),
     );
     const store = heldStore();
     api = await createTenancyApi(undefined, {
       implement: {
+        ...quietWorktree(),
         resources,
+        removalFences,
         projects: { remove: projects.remove },
-        sessions: { listForProject: () => Effect.succeed([]) },
-        forwards: { listOpen: () => Effect.succeed([]) },
-        hotWorkspaces: { listForProject: () => Effect.succeed([]) },
         store: { removeProjectStore: store.removeProjectStore },
       },
     });
@@ -176,8 +180,9 @@ describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () =>
 
     const first = remove();
     const firstAtStore = await store.removal(1);
-    const second = remove();
-    const secondAtStore = await store.removal(2);
+    const second = await remove();
+    expect(second?.status).toBe(409);
+    expect(await second?.json()).toMatchObject({ blockers: [{ _tag: "RemovalUnderway" }] });
 
     firstAtStore.end("fails");
     expect((await first)?.status).toBe(500);
@@ -204,16 +209,17 @@ describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () =>
       refusals: [{ key: "project" }],
     });
 
-    secondAtStore.end("succeeds");
-    expect((await second)?.status).toBe(200);
+    const third = remove();
+    const thirdAtStore = await store.removal(2);
+    thirdAtStore.end("succeeds");
+    expect((await third)?.status).toBe(200);
     const left = await runtime.runPromise(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        return yield* sql<{ readonly projects: number; readonly fences: number }>`
-          SELECT (SELECT count(*)::int FROM projects WHERE id = ${project}) AS projects,
-                 (SELECT count(*)::int FROM project_removal_fences) AS fences`;
+        return yield* sql<{ readonly projects: number }>`
+          SELECT count(*)::int AS projects FROM projects WHERE id = ${project}`;
       }),
     );
-    expect(left).toEqual([{ projects: 0, fences: 0 }]);
+    expect(left).toEqual([{ projects: 0 }]);
   }, 60_000);
 });

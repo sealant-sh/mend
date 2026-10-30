@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 
+import type { RemovalInProgress } from "@mend/api-contracts";
 import { prettyCause } from "@mend/db";
 import {
   HOST_USER_NAMESPACE_FIXES,
@@ -11,6 +12,8 @@ import * as Context from "effect/Context";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import { HttpApiSchemaError } from "effect/http-api/HttpApiError";
 
+import { removalInProgressOf } from "./removal-refusal.ts";
+
 /**
  * The one place error text leaves the API (docs/adr/0004, "Errors and browser headers"; MEND-11).
  *
@@ -21,6 +24,7 @@ import { HttpApiSchemaError } from "effect/http-api/HttpApiError";
  * - A request that does not decode (its params, headers, query or payload; the HttpApi builder
  *   raises it as a defect) is the client's: `400 BadRequest`, naming which part (e2e run 6: a
  *   discard without its confirmation answered 500).
+ * - A start a removal's mark refused in the database is `409 RemovalInProgress`, on any route.
  * - A defect, or any 5xx nobody declared, crosses as `InternalError` and a reference. The detail
  *   goes to the log under that reference, which is what an operator searches for, in either mode;
  *   a failed query's parameters are withheld from it, since they are what a person wrote.
@@ -118,6 +122,14 @@ const undecodedRequestPart = (cause: Cause.Cause<unknown>): string | null => {
   return null;
 };
 
+/**
+ * New work a removal's mark refused (migration 0166's triggers): a session that would become
+ * live, a shell, a Service, a forward. Every route that can start something declares it, and
+ * answers it as the conflict it is, whichever query met the mark.
+ */
+const removalInProgress = (refusal: RemovalInProgress) =>
+  HttpServerResponse.jsonUnsafe({ _tag: refusal._tag, message: refusal.message }, { status: 409 });
+
 const badRequest = (part: string) =>
   HttpServerResponse.jsonUnsafe(
     {
@@ -190,6 +202,8 @@ export const errorBoundary = (
           if (!Cause.hasDies(cause)) return Effect.failCause(cause);
           const part = undecodedRequestPart(cause);
           if (part !== null) return Effect.succeed(badRequest(part));
+          const refusal = removalInProgressOf(cause);
+          if (refusal !== null) return Effect.succeed(removalInProgress(refusal));
           const reference = makeReference();
           return Effect.logError("an unhandled failure reached the error boundary").pipe(
             Effect.annotateLogs({ reference, cause: prettyCause(cause) }),

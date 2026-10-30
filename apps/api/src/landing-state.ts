@@ -5,6 +5,7 @@ import {
   SessionGitOpsRepo,
   SessionsRepo,
   type SessionGitOpRow,
+  WorktreesRepo,
 } from "@mend/db";
 import type { OrganizationId, WorktreeId } from "@mend/domain";
 import {
@@ -12,14 +13,12 @@ import {
   type AgentTurn,
   type Change,
   type ChangeLanding,
-  changeOwnerOf,
-  describeUnlanded,
+  type ChangeStanding,
   type LandingFact,
   landingFacts,
   latestDecidedTurn as latestDecidedTurnOf,
   nextLandingBranch,
   type Project,
-  WORKTREE_REMOVAL_FORCE_HINT,
   type Worktree,
 } from "@mend/domain/workbench";
 import { LandingGit, LandingStepError, pullRequestBase } from "@mend/landing";
@@ -37,11 +36,11 @@ import { ProjectAccess } from "./access.ts";
 
 /**
  * The change's owner (docs/adr/0007-landing.md, "Who lands"): the owner of the worktree's first
- * session. Null when there is none, and then nobody lands the change.
+ * session, as the worktree stores it. Null when there is none, and then nobody lands the change.
  */
 export const changeOwnerOfWorktree = (worktreeId: WorktreeId) =>
   Effect.gen(function* () {
-    return changeOwnerOf(yield* (yield* SessionsRepo).listForWorktree(worktreeId));
+    return yield* (yield* WorktreesRepo).changeOwnerOf(worktreeId);
   });
 
 /**
@@ -216,18 +215,14 @@ export const observeLandings = Effect.fn("observeLandings")(function* (input: {
 
 // ─── Worktree removal ───────────────────────────────────────────────────────
 
-// The words are shaped in @mend/domain/workbench (worktree-removal.ts), where the clients that
-// show them and offer "Remove anyway" read them back.
-const OVERRIDE = WORKTREE_REMOVAL_FORCE_HINT;
-
 /**
- * Why a worktree may not be removed without `force`, or null when it may
- * (docs/adr/0007-landing.md, "Worktree removal"): it holds nothing past its base, or what it
- * holds is the last landing's checkpoint and either its pull request was last reported merged or
- * origin's branch still has that landing's commit. Anything else is refused, naming the files
- * and line counts not on origin.
+ * Where a worktree's change stands for removal (docs/adr/0007-landing.md, "Worktree removal"):
+ * kept when it holds nothing past its base, or when what it holds is the last landing's checkpoint
+ * and either its pull request was last reported merged or origin's branch still has that landing's
+ * commit. Anything else is not on origin, with the files and line counts that are not; in a project
+ * with no origin, work that was never landed is on no remote at all (decision Q3).
  */
-export const unlandedWork = Effect.fn("unlandedWork")(function* (input: {
+export const changeStandingOf = Effect.fn("changeStandingOf")(function* (input: {
   readonly change: Change | null;
   readonly project: Project;
   readonly worktree: Worktree;
@@ -237,29 +232,32 @@ export const unlandedWork = Effect.fn("unlandedWork")(function* (input: {
   const { project, worktree } = input;
   const reads = yield* WorktreeReads;
   const sinceBase = (yield* reads.changedFiles(project.id, worktree.id, worktree.baseSha)).value;
-  if (sinceBase.length === 0) return null;
+  if (sinceBase.length === 0) return { _tag: "at-base" } satisfies ChangeStanding;
   const landings =
     input.change === null ? [] : yield* (yield* ChangeLandingsRepo).listForChange(input.change.id);
   const lastPush = landings.find((landing) => landing.pushedSha !== null);
   if (lastPush === undefined || lastPush.pushedSha === null) {
-    return `This worktree holds a change that was never landed · ${describeUnlanded(sinceBase)}. Land it or discard it before removal, ${OVERRIDE}.`;
+    return {
+      _tag: project.originUrl === null ? "no-remote" : "never-landed",
+      files: sinceBase,
+    } satisfies ChangeStanding;
   }
   const sha = lastPush.pushedSha;
-  const landed = `${lastPush.remoteBranch} · ${sha.slice(0, 7)}`;
+  const landed = { remoteBranch: lastPush.remoteBranch, sha };
   const sinceLanding = (yield* reads.changedFiles(
     project.id,
     worktree.id,
     lastPush.checkpointSha ?? sha,
   )).value;
   if (sinceLanding.length > 0) {
-    return `This worktree changed since its last landing (${landed}) · ${describeUnlanded(sinceLanding)}. Land it again or discard it before removal, ${OVERRIDE}.`;
+    return { _tag: "changed-since-landing", landed, files: sinceLanding } satisfies ChangeStanding;
   }
   // A pull request GitHub last reported merged, with the last push in it, holds the change even
   // once origin's branch is deleted: a squash merge leaves no ancestry for a fetch to find.
   if (
     landings.some((landing) => landing.pushedSha === sha && landing.pullRequest?.state === "merged")
   ) {
-    return null;
+    return { _tag: "on-origin", landed, via: "merged-pull-request" } satisfies ChangeStanding;
   }
   const git = yield* LandingGit;
   const env = yield* remoteEnvFor(project, input.userId, "probe");
@@ -270,15 +268,17 @@ export const unlandedWork = Effect.fn("unlandedWork")(function* (input: {
     Effect.result,
   );
   if (Result.isFailure(probed)) {
-    const words = probed.failure.message.trim().replace(/\.+$/, "");
-    return `origin could not be checked for the last landing (${landed}) · ${words}. Try again, ${OVERRIDE}.`;
+    return {
+      _tag: "origin-unchecked",
+      landed,
+      reason: probed.failure.message,
+    } satisfies ChangeStanding;
   }
-  if (!probed.success.holds) {
-    const where =
-      probed.success.remoteSha === null
-        ? "the branch is gone"
-        : `it is at ${probed.success.remoteSha.slice(0, 7)}`;
-    return `origin's ${lastPush.remoteBranch} no longer holds the landed commit ${sha.slice(0, 7)} · ${where}. Land it again before removal, ${OVERRIDE}.`;
-  }
-  return null;
+  return probed.success.holds
+    ? ({ _tag: "on-origin", landed, via: "branch" } satisfies ChangeStanding)
+    : ({
+        _tag: "origin-moved",
+        landed,
+        remoteSha: probed.success.remoteSha,
+      } satisfies ChangeStanding);
 });

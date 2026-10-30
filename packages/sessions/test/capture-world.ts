@@ -274,6 +274,8 @@ export const worktreesFor = (rows: Map<string, Worktree>): Layer.Layer<Worktrees
       Effect.sync(() => {
         rows.delete(id);
       }),
+    changeOwnerOf: (id) => Effect.succeed(rows.get(id)?.changeOwnerUserId ?? null),
+    nestedRepositories: () => Effect.succeed([]),
     newestLiveSessionId: () => Effect.succeed(null),
   });
 

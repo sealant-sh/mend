@@ -89,7 +89,6 @@ import {
   ProjectNotFoundError,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
-  ResourcesRepo,
   ProjectsRepo,
   ProjectEnvironmentDuplicateNameError,
   ProjectEnvironmentInvalidInputError,
@@ -165,7 +164,6 @@ import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import {
   CaptureRuntime,
-  captureHoldWords,
   detectInstall,
   DotfilesCloner,
   DotfilesResolveError,
@@ -197,13 +195,15 @@ import {
   pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
-import { Clock, Context, Duration, Effect, Exit, Option, Result, Schema } from "effect";
+import { Clock, Context, Duration, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
+import { LIVE_STATES } from "../live-states.ts";
 import { ProjectCreation } from "../project-creation.ts";
+import { Removal } from "../removal.ts";
 import { HostEnvironment } from "../services/host-environment.ts";
 import {
   resolveWorkspaceEnvironmentWithSealant,
@@ -344,13 +344,6 @@ const reachableSource = <E>(source: string, toError: (message: string) => E) =>
         Effect.mapError((refused) => new DotfilesResolveError({ message: refused.message })),
       );
   });
-
-export const LIVE_STATES: ReadonlySet<SessionStatus> = new Set([
-  "starting",
-  "running",
-  "waiting",
-  "idle",
-]);
 
 /** The session rows returned by project detail and the number omitted from that response. */
 interface ProjectSessionVisibility<SessionRow> {
@@ -714,120 +707,17 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
-        const sessions = yield* SessionsRepo;
-        const services = yield* ServicesRepo;
-        const forwards = yield* ServiceForwardsRepo;
-        const engine = yield* SessionEngine;
-        const store = yield* Store;
-        // Removal stops every session in the project, so it is narrower than managing it.
+        // Removal deletes everyone's worktrees, so it is narrower than managing the project.
         const access = yield* ProjectAccess;
         const project = yield* access.manageProject(params.id);
         const viewer = yield* access.viewer();
         if (viewer === null || !canRemoveProject(project, viewer)) {
           return yield* new NotFound({ id: params.id });
         }
-        // A resource's data lives only in its volumes (docs/adr/0019, "Durability"), and nothing
-        // archives them yet: refuse before anything is stopped or the store is removed. The fence
-        // refuses a declaration from here on, so none lands between this check and the row delete.
-        const resources = yield* ResourcesRepo;
-        const fence = yield* resources.fenceProjectRemoval(params.id).pipe(
-          Effect.catchTag(
-            "ProjectHasResourcesError",
-            ({ names }) =>
-              new StoreFailure({
-                message: `project has resources (${names.map((name) => `@${name}`).join(", ")}) · remove them first`,
-              }),
-          ),
-        );
-        const removal = Effect.gen(function* () {
-          // Stop every Service first. A forward-only adopted Service can retain a settled session's
-          // workspace even though no session_process row is live.
-          const projectSessions = yield* sessions.listForProject(params.id);
-          for (const session of projectSessions) {
-            for (const service of yield* services.listForSession(session.id)) {
-              yield* engine
-                .stopService(service.id, { kind: "system", reason: "removal" })
-                .pipe(Effect.ignore);
-            }
-          }
-          const projectSessionIds = new Set(projectSessions.map((session) => session.id));
-          let remainingForwardLease = false;
-          for (const forward of yield* forwards.listOpen()) {
-            const service = yield* services.byId(forward.serviceId);
-            if (service !== null && projectSessionIds.has(service.sessionId)) {
-              remainingForwardLease = true;
-              break;
-            }
-          }
-          if (remainingForwardLease) {
-            return yield* new StoreFailure({
-              message: "The project still has live Service forwards. Stop them before removal.",
-            });
-          }
-          // A session of another project may hold one of this project's worktrees as a repository
-          // (docs/adr/0010): while it runs or saves, the project stays.
-          for (const row of yield* (yield* SessionRepositoriesRepo).listForProject(params.id)) {
-            const holder = yield* sessions
-              .byId(row.sessionId)
-              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-            if (
-              holder !== null &&
-              holder.projectId !== params.id &&
-              (LIVE_STATES.has(holder.status) || holder.status === "stopping")
-            ) {
-              return yield* new StoreFailure({
-                message: `not removed · a session of another project holds ${project.name} as a repository at ${row.path} and is ${holder.status} · stop it first`,
-              });
-            }
-          }
-          yield* Effect.forEach(
-            projectSessions.filter((session) => LIVE_STATES.has(session.status)),
-            (session) => engine.stop(session.id).pipe(Effect.ignore),
-            { concurrency: 4 },
-          );
-          // Capture mode: a stop drains before its workspace goes, and the rows deleted below are
-          // what that drain registers under. Nothing is deleted while a drain runs, a drain kept its
-          // workspace, or an executor was not observed to end: the stops stand, and removal is asked
-          // again once they have saved (docs/adr/0002, "Stop drains, then terminates").
-          const holds = (yield* Effect.forEach(
-            [...new Set(projectSessions.map((session) => session.worktreeId))],
-            (worktreeId) => engine.captureHolds(worktreeId),
-            { concurrency: 4 },
-          )).flat();
-          if (holds.length > 0) {
-            return yield* new StoreFailure({
-              message: `not removed · ${captureHoldWords(holds)} · stops asked · remove the project again once its workspaces have saved and ended, or their owners discard what is unsaved`,
-            });
-          }
-          // Hot workspaces too: their rows cascade with the project, but the containers would
-          // otherwise burn until the platform TTL. Worktrees go with the store directory below.
-          const hotWorkspaces = yield* HotWorkspacesRepo;
-          const sealant = yield* SealantClient;
-          const hotEntries = yield* hotWorkspaces.listForProject(params.id);
-          yield* Effect.forEach(
-            hotEntries,
-            (entry) =>
-              entry.sealantWorkspaceId === null
-                ? Effect.void
-                : sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
-                    Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
-                    Effect.ignore,
-                    asSealantUser(entry.ownerUserId),
-                  ),
-            { concurrency: 4 },
-          );
-          const { leftover } = yield* store.removeProjectStore(project.storePath);
-          yield* projects.remove(params.id);
-          return new RemovalReport({ removed: true, leftover });
+        return yield* (yield* Removal).project(project, {
+          userId: viewer.userId,
+          managesProject: true,
         });
-        // A removal that stops early, a refusal among them, lifts its own fence and no other
-        // removal's; a finished one took them all with the project's row.
-        return yield* removal.pipe(
-          Effect.onExit((exit) =>
-            Exit.isSuccess(exit) ? Effect.void : resources.liftProjectRemovalFence(fence),
-          ),
-        );
       }),
     )
     .handle("visibility", ({ params, payload }) =>

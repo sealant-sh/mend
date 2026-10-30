@@ -227,6 +227,8 @@ const makeWorld = Effect.fn(function* (events: Events, startup: boolean) {
           if (slot === undefined) return unused();
           return slot.worktree;
         }),
+      changeOwnerOf: (id) =>
+        Effect.succeed(slots.find((slot) => slot.worktree.id === id)?.session.ownerUserId ?? null),
     }),
     Layer.mock(WorktreeChangesRepo, {
       byWorktree: (id) =>

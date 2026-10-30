@@ -22,6 +22,7 @@ import {
   UserGitAccessRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
+  RemovalFencesRepo,
 } from "@mend/db";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import {
@@ -58,6 +59,7 @@ import { ProjectAccess, ProjectAccessLive } from "../access.ts";
 import { errorBoundary } from "../error-boundary.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { ProjectCreation } from "../project-creation.ts";
+import { Removal } from "../removal.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { Gh } from "./github.ts";
@@ -310,6 +312,8 @@ type ProjectRouteServices =
   | DeploymentConfig
   | SessionRepositoriesRepo
   | ResourcesRepo
+  | RemovalFencesRepo
+  | Removal
   | TenancyConfig;
 
 type UnusedProjectRouteServices = Exclude<
@@ -326,6 +330,8 @@ type UnusedProjectRouteServices = Exclude<
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
   Layer.mock(ProjectCreation, {}),
   Layer.mock(AuditEventsRepo, {}),
+  Layer.mock(RemovalFencesRepo, {}),
+  Layer.mock(Removal, {}),
   Layer.succeed(
     SourcePolicy,
     makeSourcePolicy({

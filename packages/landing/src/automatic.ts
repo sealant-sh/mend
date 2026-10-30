@@ -34,7 +34,7 @@ import type {
 export interface EndedTurnFacts {
   readonly turn: Pick<AgentTurn, "status" | "author" | "ordinal" | "intent" | "intentSource">;
   /**
-   * The change's owner (`changeOwnerOf`), whose key pushes and who speaks on GitHub; a change
+   * The change's owner (`Worktree.changeOwnerUserId`), whose key pushes and who speaks on GitHub; a change
    * with none has nobody to land as.
    */
   readonly changeOwnerUserId: string | null;

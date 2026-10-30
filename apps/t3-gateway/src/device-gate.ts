@@ -37,7 +37,9 @@ class GatedMendClient {
   readonly changeDiff: DeviceCalls["changeDiff"];
   readonly projectBranches: DeviceCalls["projectBranches"];
   readonly refreshProject: DeviceCalls["refreshProject"];
-  readonly worktreeNames: DeviceCalls["worktreeNames"];
+  readonly listWorktrees: DeviceCalls["listWorktrees"];
+  readonly removeWorktree: DeviceCalls["removeWorktree"];
+  readonly removeProject: DeviceCalls["removeProject"];
   readonly projectFiles: DeviceCalls["projectFiles"];
   readonly listSkills: DeviceCalls["listSkills"];
   readonly projectSkills: DeviceCalls["projectSkills"];
@@ -84,7 +86,9 @@ class GatedMendClient {
     this.changeDiff = calls.changeDiff;
     this.projectBranches = calls.projectBranches;
     this.refreshProject = calls.refreshProject;
-    this.worktreeNames = calls.worktreeNames;
+    this.listWorktrees = calls.listWorktrees;
+    this.removeWorktree = calls.removeWorktree;
+    this.removeProject = calls.removeProject;
     this.projectFiles = calls.projectFiles;
     this.listSkills = calls.listSkills;
     this.projectSkills = calls.projectSkills;
@@ -157,7 +161,9 @@ export const gateDeviceCalls = (
     changeDiff: (token, changeId) => guard(token, mend.changeDiff(token, changeId)),
     projectBranches: (token, projectId) => guard(token, mend.projectBranches(token, projectId)),
     refreshProject: (token, projectId) => guard(token, mend.refreshProject(token, projectId)),
-    worktreeNames: (token, projectId) => guard(token, mend.worktreeNames(token, projectId)),
+    listWorktrees: (token, projectId) => guard(token, mend.listWorktrees(token, projectId)),
+    removeWorktree: (token, worktreeId) => guard(token, mend.removeWorktree(token, worktreeId)),
+    removeProject: (token, projectId) => guard(token, mend.removeProject(token, projectId)),
     changeStats: (token, changeId) => guard(token, mend.changeStats(token, changeId)),
     changeLandings: (token, changeId) => guard(token, mend.changeLandings(token, changeId)),
     land: (token, sessionId, input) => guard(token, mend.land(token, sessionId, input)),

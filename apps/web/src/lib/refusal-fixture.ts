@@ -11,3 +11,15 @@ export const refusedWith = (tag: string | null, message: string) =>
       },
     },
   });
+
+/** For tests: a refused removal as the web tier sends it, with its blockers beside the words. */
+export const refusedRemoval = (message: string, removal: unknown) =>
+  new TRPCClientError(message, {
+    result: {
+      error: {
+        message,
+        code: -32009,
+        data: { code: "CONFLICT", httpStatus: 409, path: "x", tag: "RemovalRefused", removal },
+      },
+    },
+  });

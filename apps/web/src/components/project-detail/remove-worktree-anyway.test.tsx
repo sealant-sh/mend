@@ -1,9 +1,10 @@
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
-import { worktreeRemovalRefusalOf } from "@mend/domain/workbench";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { WorktreeDto } from "#/lib/api";
+import { refusedRemoval } from "#/lib/refusal-fixture";
+import { removalRefusalOf } from "#/lib/worktree-removal";
 
 import { type RefusedRemoval, RemoveWorktreeAnywayBody } from "./remove-worktree-anyway.tsx";
 
@@ -15,6 +16,8 @@ const worktree: WorktreeDto = {
   branch: "mend/fix-login",
   baseRef: "main",
   handoff: null,
+  changeOwnerUserId: "ada",
+  changeOwnerProven: true,
   baseSha: Sha.make("0123456789abcdef0123456789abcdef01234567"),
   createdAt: new Date("2026-09-01T00:00:00Z"),
   updatedAt: new Date("2026-09-01T00:00:00Z"),
@@ -26,11 +29,34 @@ const NEVER_LANDED =
 const SAVING =
   "not removed · 1 capture saving · the worktree stays until its workspaces have saved and ended, or their owner discards what is unsaved";
 
-const refused = (words: string): RefusedRemoval => ({
-  worktree,
-  name: "fix-login",
-  refusal: worktreeRemovalRefusalOf(words),
-});
+const ref = { worktreeId: worktree.id, worktreeName: "fix-login" };
+const files = ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts", "g.ts", "h.ts", "i.ts", "j.ts"].map(
+  (path) => ({ path, additions: 0, deletions: 0 }),
+);
+const BLOCKERS: Readonly<
+  Record<string, { readonly forceWouldLift: boolean; readonly blockers: unknown }>
+> = {
+  [NEVER_LANDED]: {
+    forceWouldLift: true,
+    blockers: [
+      { _tag: "Unlanded", ...ref, owner: null, standing: { _tag: "never-landed", files } },
+    ],
+  },
+  [SAVING]: {
+    forceWouldLift: false,
+    blockers: [
+      { _tag: "Saving", ...ref, holds: [{ sessionId: null, kind: "saving", via: "own" }] },
+    ],
+  },
+};
+
+const refused = (words: string): RefusedRemoval => {
+  const refusal = removalRefusalOf(
+    refusedRemoval(words, { scope: "worktree", ...BLOCKERS[words] }),
+  );
+  if (refusal === null) throw new Error("fixture refusal did not decode");
+  return { worktree, name: "fix-login", refusal };
+};
 
 const render = (words: string, pending = false) =>
   renderToStaticMarkup(

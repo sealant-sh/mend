@@ -1,4 +1,5 @@
 import { isChosenDefault } from "@mend/domain/default-login";
+import { Person, RemovalBlocker } from "@mend/domain/workbench";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -43,6 +44,7 @@ import {
   MendSessionDetail,
   MendTurn,
   MendWorkspaceRetirement,
+  type MendWorktree,
   MendWorktreeListing,
 } from "./mend-workbench.ts";
 
@@ -273,6 +275,22 @@ export interface MendNewSession {
 /** A read of the person's workbench: Mend's answer, or why there is none. */
 export type MendRead<A> = Effect.Effect<A, MendDeviceRefused | MendNotFound | MendUnavailable>;
 
+/**
+ * What Mend answered a worktree or project removal (docs/adr/0007-landing.md, "Worktree
+ * removal"). `Refused` carries Mend's blockers, never its words, which may offer a force no client
+ * outside Mend has. `Unreadable` is any other refusal, or one whose body did not decode.
+ */
+export type MendRemoval =
+  | { readonly _tag: "Removed" }
+  | {
+      readonly _tag: "Refused";
+      readonly blockers: readonly [RemovalBlocker, ...Array<RemovalBlocker>];
+      readonly forceWouldLift: boolean;
+    }
+  | { readonly _tag: "NotChangeOwner"; readonly owner: Person }
+  | { readonly _tag: "NotFound" }
+  | { readonly _tag: "Unreadable"; readonly status: number; readonly tag: string | null };
+
 export class MendClient extends Context.Service<
   MendClient,
   {
@@ -369,11 +387,24 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       projectId: string,
     ) => MendCommand<ReadonlyArray<MendBranch>>;
-    /** `GET /api/projects/:id/worktrees`: the names of the project's worktrees. */
-    readonly worktreeNames: (
+    /** `GET /api/projects/:id/worktrees`: the project's worktrees. */
+    readonly listWorktrees: (
       deviceToken: string,
       projectId: string,
-    ) => MendRead<ReadonlyArray<string>>;
+    ) => MendRead<ReadonlyArray<MendWorktree>>;
+    /**
+     * `DELETE /api/worktrees/:id`, never with `force`: only Mend, asked by the change's owner,
+     * removes a change that is not on origin.
+     */
+    readonly removeWorktree: (
+      deviceToken: string,
+      worktreeId: string,
+    ) => Effect.Effect<MendRemoval, MendDeviceRefused | MendUnavailable>;
+    /** `DELETE /api/projects/:id`, which has no force. */
+    readonly removeProject: (
+      deviceToken: string,
+      projectId: string,
+    ) => Effect.Effect<MendRemoval, MendDeviceRefused | MendUnavailable>;
 
     /**
      * `GET /api/projects/:id/files?session=`: every file of the session's worktree, or, with no
@@ -604,6 +635,17 @@ const MendNotFoundBody = Schema.Struct({
   id: Schema.String,
 });
 const decodeNotFoundBody = Schema.decodeUnknownOption(MendNotFoundBody);
+/** `RemovalRefused` (409) and `RemovalForbidden` (403) in @mend/api-contracts. */
+const decodeRemovalRefusal = Schema.decodeUnknownOption(
+  Schema.Union([
+    Schema.Struct({
+      _tag: Schema.Literal("RemovalRefused"),
+      blockers: Schema.NonEmptyArray(RemovalBlocker),
+      forceWouldLift: Schema.Boolean,
+    }),
+    Schema.Struct({ _tag: Schema.Literal("RemovalForbidden"), owner: Person }),
+  ]),
+);
 const decodePointer = Schema.decodeUnknownOption(Schema.fromJsonString(MendEventPointer));
 
 /** The pointer an SSE `data:` line carries, or null for a heartbeat, a blank or a stray line. */
@@ -966,13 +1008,69 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/projects/:id/refresh",
         );
 
-      const worktreeNames = (deviceToken: string, projectId: string) =>
+      const listWorktrees = (deviceToken: string, projectId: string) =>
         read(
           "GET /api/projects/:id/worktrees",
           `/api/projects/${encodeURIComponent(projectId)}/worktrees`,
           deviceToken,
           decodeWorktreeListing,
-        ).pipe(Effect.map((listing) => listing.worktrees.map((worktree) => worktree.name)));
+        ).pipe(Effect.map((listing) => listing.worktrees));
+
+      const removal = (operation: string, path: string, deviceToken: string) =>
+        Effect.gen(function* () {
+          const response = yield* send(
+            operation,
+            HttpClientRequest.delete(url(path)).pipe(
+              HttpClientRequest.acceptJson,
+              HttpClientRequest.bearerToken(deviceToken),
+            ),
+          );
+          if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+          if (response.status === 200) {
+            yield* decodeRemovalReport(yield* readJson(operation, response)).pipe(
+              Effect.mapError(
+                (cause) => new MendUnavailable({ operation, status: response.status, cause }),
+              ),
+            );
+            return { _tag: "Removed" } as const;
+          }
+          if (response.status === 404) return { _tag: "NotFound" } as const;
+          if (response.status < 400 || response.status >= 500) {
+            return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+          }
+          const body = yield* response.json.pipe(Effect.orElseSucceed((): unknown => null));
+          const refusal = Option.getOrNull(decodeRemovalRefusal(body));
+          if (refusal?._tag === "RemovalRefused" && response.status === 409) {
+            return {
+              _tag: "Refused",
+              blockers: refusal.blockers,
+              forceWouldLift: refusal.forceWouldLift,
+            } as const;
+          }
+          if (refusal?._tag === "RemovalForbidden" && response.status === 403) {
+            return { _tag: "NotChangeOwner", owner: refusal.owner } as const;
+          }
+          const words = decodeErrorBody(body);
+          return {
+            _tag: "Unreadable",
+            status: response.status,
+            tag: words._tag === "Some" ? (words.value._tag ?? null) : null,
+          } as const;
+        }).pipe(Effect.withSpan(`MendClient ${operation}`));
+
+      const removeWorktree = (deviceToken: string, worktreeId: string) =>
+        removal(
+          "DELETE /api/worktrees/:id",
+          `/api/worktrees/${encodeURIComponent(worktreeId)}`,
+          deviceToken,
+        );
+
+      const removeProject = (deviceToken: string, projectId: string) =>
+        removal(
+          "DELETE /api/projects/:id",
+          `/api/projects/${encodeURIComponent(projectId)}`,
+          deviceToken,
+        );
 
       const projectFiles = (deviceToken: string, projectId: string, sessionId: string | null) =>
         read(
@@ -1484,7 +1582,9 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         changeDiff,
         projectBranches,
         refreshProject,
-        worktreeNames,
+        listWorktrees,
+        removeWorktree,
+        removeProject,
         changeStats,
         changeLandings,
         land,

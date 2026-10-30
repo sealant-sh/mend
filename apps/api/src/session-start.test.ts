@@ -3,6 +3,7 @@ import {
   AgentConversationRepo,
   HarnessModelsRepo,
   ProjectsRepo,
+  RemovalFencesRepo,
   SessionsRepo,
   SessionNotFoundError,
   SettingsRepo,
@@ -295,6 +296,8 @@ const startWorld = (
               ),
             ),
         }),
+        // No removal is under way in this world.
+        Layer.mock(RemovalFencesRepo, { admitsStart: () => Effect.succeed(true) }),
         Layer.mock(HarnessModelsRepo, {
           forHarness: (harness) =>
             note(`harnessModels.forHarness:${harness}`).pipe(Effect.as(catalogFor(harness))),

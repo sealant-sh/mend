@@ -832,8 +832,13 @@ const ADMITTED: Readonly<
   "folders.selectForProject": { status: 500, calls: ["mounts.listForProject"] },
   // Unimplemented sessions.listForProject stops detail assembly.
   "projects.detail": { status: 500, calls: ["sessions.listForProject"] },
-  // The unimplemented resource fence stops removal before any stop/delete.
-  "projects.remove": { status: 500, calls: ["resources.fenceProjectRemoval"] },
+  // The removal marks the project, then its first unimplemented read fails and the mark is lifted
+  // before any stop or delete (an unimplemented method records as it fails, after the release its
+  // failure ran).
+  "projects.remove": {
+    status: 500,
+    calls: ["removalFences.take", "removalFences.release", "forwards.listOpen"],
+  },
   "projects.visibility": { status: 500, calls: ["projects.setVisibility"] },
   "projects.automation": { status: 500, calls: ["projects.setAutomation"] },
   "projects.gitAuth": { status: 500, calls: ["projects.setGitAuthMode"] },
@@ -918,7 +923,7 @@ const ADMITTED: Readonly<
         "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
     },
   },
-  "sessions.create": { status: 500, calls: ["engine.provision"] },
+  "sessions.create": { status: 500, calls: ["removalFences.admitsStart", "engine.provision"] },
   // Refresh-capture helper defects before detail reads.
   "sessions.detail": {
     status: 500,
@@ -989,8 +994,14 @@ const ADMITTED: Readonly<
   "worktrees.detail": { status: 500, calls: ["changes.byWorktree", "checkpoints.listForWorktree"] },
   "worktrees.previews": { status: 500, calls: ["previews.ensureForWorktree"] },
   // Open-forward check masks capture/unlanded/disk/row removal.
-  "worktrees.remove": { status: 500, calls: ["forwards.listOpen"] },
-  "worktrees.createSession": { status: 500, calls: ["engine.provisionSessionIn"] },
+  "worktrees.remove": {
+    status: 500,
+    calls: ["removalFences.take", "removalFences.release", "forwards.listOpen"],
+  },
+  "worktrees.createSession": {
+    status: 500,
+    calls: ["removalFences.admitsStart", "engine.provisionSessionIn"],
+  },
   // Chain listing masks diff generation.
   "worktrees.diff": { status: 500, calls: ["checkpoints.listForWorktree"] },
   "worktrees.contents": { status: 500, calls: ["reads.readFile"] },
@@ -1107,7 +1118,8 @@ const MATRIX: Readonly<Record<Rule, ReadonlyArray<readonly [HarnessUser, Target,
   ],
   "worktree-remove": [
     ["bob", "shared-a", "refused"],
-    ["carol", "shared-a", "refused"],
+    // Carol sees alice's worktree; only alice, whose change it is, removes it (decision Q4).
+    ["carol", "shared-a", "forbidden"],
     ["carol", "private-alice", "refused"],
     ["alice", "shared-a", "admitted"],
     ["carol", "private-carol", "admitted"],
@@ -1391,12 +1403,13 @@ describe("worktree removal by a member", () => {
         `/api/worktrees/${ids("shared-a").worktree}?force=true`,
       );
       expect({ status: shared.status, calls: instance.world.calls }).toEqual({
-        status: 404,
+        status: 403,
         calls: [],
       });
       expect(await shared.json()).toEqual({
-        _tag: "WorktreeNotFound",
-        id: ids("shared-a").worktree,
+        _tag: "RemovalForbidden",
+        owner: { userId: "alice", name: "Alice" },
+        message: "not removed · only Alice, who started this worktree's change, removes it.",
       });
       expect(removed).toHaveLength(1);
       expect(instance.world.worktrees.has(ids("shared-a").worktree)).toBe(true);

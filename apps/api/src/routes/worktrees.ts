@@ -9,10 +9,8 @@ import {
   RawFileTooLarge,
   MendApi,
   NotFound,
-  RemovalReport,
   SessionAnnotation,
   StoreFailure,
-  WorktreeActive,
   WorktreeAnnotation,
   WorktreeDetail,
   WorktreeListing,
@@ -25,15 +23,12 @@ import {
   WorktreeRangeFile,
 } from "@mend/api-contracts";
 import {
-  ProjectsRepo,
   PreviewPreparationsRepo,
   PreviewsRepo,
   ServiceObservationsRepo,
   SessionsRepo,
-  ServiceForwardsRepo,
   ServicesRepo,
   SessionProcessesRepo,
-  SessionRepositoriesRepo,
   CheckpointsRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
@@ -41,29 +36,28 @@ import {
 import type { CheckpointId, WorktreeId } from "@mend/domain";
 import {
   currentAgentProcess,
-  heldRepositoriesRefusal,
   previewStatusesOf,
   previewStatusLine,
   unpreparedStatusOf,
 } from "@mend/domain/workbench";
 import {
-  captureHoldWords,
   SessionEngine,
   startFromBase,
   WorktreeReads,
   stampLabel,
   type RawView,
 } from "@mend/sessions";
-import { type DiffFileFact, isWorktreeRelativePath, Store } from "@mend/store";
+import { type DiffFileFact, isWorktreeRelativePath } from "@mend/store";
 import { Clock, Context, Duration, Effect, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";
-import { unlandedWork } from "../landing-state.ts";
+import { LIVE_STATES } from "../live-states.ts";
+import { refuseStartWhileRemoving, Removal } from "../removal.ts";
 import { budgetExceeded } from "../session-budgets.ts";
-import { LIVE_STATES, observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
+import { observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
 
 const rawFile = (
   id: WorktreeId,
@@ -681,127 +675,24 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
     )
     .handle("remove", ({ params, query }) =>
       Effect.gen(function* () {
-        const worktrees = yield* WorktreesRepo;
-        const sessions = yield* SessionsRepo;
-        const projects = yield* ProjectsRepo;
-        const processes = yield* SessionProcessesRepo;
-        const services = yield* ServicesRepo;
-        const forwards = yield* ServiceForwardsRepo;
-        const store = yield* Store;
-        const worktree = yield* (yield* ProjectAccess)
+        const access = yield* ProjectAccess;
+        const worktree = yield* access
           .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
-        // Removal discards every conversation's record here: whoever manages the project, or a
-        // caller who owns every session in the worktree.
-        const caller = yield* CurrentUser;
-        const manages = yield* (yield* ProjectAccess).manageProject(worktree.projectId).pipe(
+        const managesProject = yield* access.manageProject(worktree.projectId).pipe(
           Effect.as(true),
           Effect.catchTag("NotFound", () => Effect.succeed(false)),
         );
-        // The conversations here, plus the sessions that hold this worktree as a repository
-        // beside their own (docs/adr/0010): their owners have a say, and their liveness holds.
-        const inhabitants = yield* sessions.listForWorktree(worktree.id);
-        const holders = yield* Effect.forEach(
-          yield* (yield* SessionRepositoriesRepo).listForWorktree(worktree.id),
-          (row) =>
-            sessions
-              .byId(row.sessionId)
-              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))),
-        );
-        const holdingSessions = holders.flatMap((holder) =>
-          holder === null || inhabitants.some((member) => member.id === holder.id) ? [] : [holder],
-        );
-        const members = [...inhabitants, ...holdingSessions];
-        if (!manages && members.some((member) => member.ownerUserId !== caller.user.id)) {
-          return yield* new WorktreeNotFound({ id: params.id });
-        }
-        // Refuse while anything lives here — a live conversation, a process
-        // holding the workspace, or an open Service forward. Never silently stop. A holding
-        // session that is `stopping` still holds: its drain is saving the repository's files.
-        const liveSessions = members.filter(
-          (session) =>
-            LIVE_STATES.has(session.status) ||
-            (session.status === "stopping" &&
-              holdingSessions.some((holder) => holder.id === session.id)),
-        );
-        const openForwards = yield* forwards.listOpen();
-        let liveHolds = liveSessions.length;
-        for (const member of members) {
-          if (LIVE_STATES.has(member.status)) continue;
-          const memberProcesses = (yield* processes.listForSession(member.id)).filter(
-            (process) => process.exitedAt === null,
-          );
-          const serviceIds = new Set(
-            (yield* services.listForSession(member.id)).map((service) => service.id),
-          );
-          const memberForwards = openForwards.filter((forward) =>
-            serviceIds.has(forward.serviceId),
-          );
-          if (memberProcesses.length > 0 || memberForwards.length > 0) liveHolds += 1;
-        }
-        if (liveHolds > 0) {
-          return yield* new WorktreeActive({ id: params.id, liveSessions: liveHolds });
-        }
-        // Capture mode: the rows are an executor's identity and the chain its saved work. While a
-        // drain runs, a drain kept its workspace, or an executor was not observed to end, they
-        // stay — `force` overrides unlanded work, never unsaved work; the owner's "discard unsaved
-        // and stop" is how that goes (docs/adr/0002, "Stop drains, then terminates").
-        const holds = yield* (yield* SessionEngine).captureHolds(worktree.id);
-        if (holds.length > 0) {
-          return yield* new StoreFailure({
-            message: `not removed · ${captureHoldWords(holds)} · the worktree stays until its workspaces have saved and ended, or their owner discards what is unsaved`,
-          });
-        }
-        // A holding session's files for this repository travel with ITS worktree's captures
-        // (docs/adr/0010, today): while that worktree's executor saves, this one stays too.
-        for (const holder of holdingSessions) {
-          const holderHolds = yield* (yield* SessionEngine).captureHolds(holder.worktreeId);
-          if (holderHolds.length > 0) {
-            return yield* new StoreFailure({
-              message: `not removed · a session holding this worktree as a repository is ${captureHoldWords(holderHolds)} · the worktree stays until that session's workspace has saved and ended`,
-            });
-          }
-        }
-        const project = yield* projects
-          .byId(worktree.projectId)
-          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: worktree.projectId })));
-        // A change not on origin refuses (docs/adr/0007-landing.md, "Worktree removal"): the
-        // refusal names the files and line counts that are not landed, and `force=true` is the
-        // human's explicit override. A change whose last landing holds it, and whose commit
-        // origin's branch still has, goes without one.
-        if (query.force !== "true") {
-          const change = yield* (yield* WorktreeChangesRepo).byWorktree(worktree.id);
-          const unlanded = yield* unlandedWork({
-            change,
-            project,
-            worktree,
-            userId: caller.user.id,
-          }).pipe(Effect.mapError(readFailure));
-          // The repositories this worktree's sessions added live nested inside it, outside its
-          // change (`.mend/` is excluded), and go with it (docs/adr/0011): they refuse too.
-          const held = yield* SessionRepositoriesRepo;
-          const repositories = (yield* Effect.forEach(inhabitants, (session) =>
-            held.listForSession(session.id),
-          )).flat();
-          const refusal = [unlanded, heldRepositoriesRefusal(repositories)]
-            .filter((words) => words !== null)
-            .join(" ");
-          if (refusal !== "") return yield* new StoreFailure({ message: refusal });
-        }
-        const { leftover } = yield* store.removeWorktreeForce(
-          project.storePath,
-          worktree.directory,
-        );
-        // Sessions, change, chain, and review artifacts cascade with the row.
-        yield* worktrees.remove(worktree.id);
-        return new RemovalReport({ removed: true, leftover });
+        const caller = { userId: (yield* CurrentUser).user.id, managesProject };
+        return yield* (yield* Removal).worktree(worktree, caller, query.force === "true");
       }),
     )
     .handle("createSession", ({ params, payload }) =>
       Effect.gen(function* () {
-        yield* (yield* ProjectAccess)
+        const worktree = yield* (yield* ProjectAccess)
           .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        yield* refuseStartWhileRemoving({ projectId: worktree.projectId, worktreeId: worktree.id });
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
         return yield* engine

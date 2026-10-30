@@ -1,5 +1,5 @@
 import { ProjectId, SessionRepositoryId, Sha, type SessionId } from "@mend/domain";
-import { SessionRepository, worktreeRemovalRefusalOf } from "@mend/domain/workbench";
+import { SessionRepository } from "@mend/domain/workbench";
 import { WORKTREE_STAMP } from "@mend/sessions";
 import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -14,6 +14,11 @@ import { ids } from "../../test/support/tenancy-harness.ts";
  * and `force=true` is the override.
  */
 
+/** What migration 0166 keeps of a repository nested in the worktree. */
+const nestedOf = (row: { readonly path: string; readonly branch: string }) => ({
+  path: row.path,
+  branch: row.branch,
+});
 const privateAlice = ids("private-alice");
 const NOW = new Date("2026-10-05T09:00:00.000Z");
 
@@ -90,17 +95,27 @@ describe("DELETE /worktrees/:id with repositories added by its sessions", () => 
 
   it("refuses while a session here holds a repository nested inside the worktree, and offers the override", async () => {
     held = [repository("core"), repository("sealantd", { state: "failed" })];
+    api.world.nestedRepositories.set(privateAlice.worktree, held.map(nestedOf));
     const response = await remove();
-    expect(response.status).toBe(422);
-    const body: unknown = await response.json();
-    expect(body).toEqual({
-      _tag: "StoreFailure",
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      _tag: "RemovalRefused",
+      scope: "worktree",
+      forceWouldLift: true,
+      blockers: [
+        {
+          _tag: "NestedRepositories",
+          worktreeId: privateAlice.worktree,
+          worktreeName: "private-alice",
+          repositories: [
+            { path: "/workspace/repos/core", branch: "mend/private-alice" },
+            { path: "/workspace/repos/sealantd", branch: "mend/private-alice" },
+          ],
+        },
+      ],
       message:
-        "This worktree holds 2 repositories added with mend repo add, saved only with it · /workspace/repos/core on mend/private-alice, /workspace/repos/sealantd on mend/private-alice · Mend cannot see whether they hold commits or edits that are not on origin, and removal deletes them. Push what you need from a session in this worktree before removal, or pass force=true to remove it anyway.",
+        "This worktree holds 2 repositories added with mend repo add, saved only with it · /workspace/repos/core on mend/private-alice, /workspace/repos/sealantd on mend/private-alice · Mend cannot see whether they hold commits or edits that are not on origin, so removal waits for force, pushed or not. Pass force=true to remove it anyway.",
     });
-    const words =
-      typeof body === "object" && body !== null && "message" in body ? String(body.message) : "";
-    expect(worktreeRemovalRefusalOf(words).forceable).toBe(true);
     expect(removed).toEqual([]);
     expect(api.world.worktrees.has(privateAlice.worktree)).toBe(true);
   });
@@ -130,20 +145,31 @@ describe("DELETE /worktrees/:id with repositories added by its sessions", () => 
       },
     );
     try {
+      unlanded.world.nestedRepositories.set(privateAlice.worktree, held.map(nestedOf));
       const response = await unlanded.request(
         "alice",
         "DELETE",
         `/api/worktrees/${privateAlice.worktree}`,
       );
-      expect(response.status).toBe(422);
+      expect(response.status).toBe(409);
       const body: unknown = await response.json();
-      const words =
-        typeof body === "object" && body !== null && "message" in body ? String(body.message) : "";
-      expect(words).toBe(
-        "This worktree holds a change that was never landed · 1 file · +2 −1 · src/a.ts +2 −1. Land it or discard it before removal, or pass force=true to remove it anyway. This worktree holds 1 repository added with mend repo add, saved only with it · /workspace/repos/core on mend/private-alice · Mend cannot see whether it holds commits or edits that are not on origin, and removal deletes it. Push what you need from a session in this worktree before removal, or pass force=true to remove it anyway.",
-      );
-      // The client still reads the change's own facts out of the words.
-      expect(worktreeRemovalRefusalOf(words).unlanded?.files).toBe(1);
+      expect(body).toMatchObject({
+        _tag: "RemovalRefused",
+        forceWouldLift: true,
+        blockers: [
+          {
+            _tag: "Unlanded",
+            owner: { userId: "alice", name: "Alice" },
+            standing: {
+              _tag: "never-landed",
+              files: [{ path: "src/a.ts", additions: 2, deletions: 1 }],
+            },
+          },
+          { _tag: "NestedRepositories" },
+        ],
+        message:
+          "This worktree holds a change that was never landed · 1 file · +2 −1 · src/a.ts +2 −1. Land it or discard it before removal. This worktree holds 1 repository added with mend repo add, saved only with it · /workspace/repos/core on mend/private-alice · Mend cannot see whether it holds commits or edits that are not on origin, so removal waits for force, pushed or not. Pass force=true to remove it anyway.",
+      });
     } finally {
       await unlanded.dispose();
     }

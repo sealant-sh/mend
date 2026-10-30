@@ -632,34 +632,51 @@ export const CaptureStoreRepoLive: Layer.Layer<
       launchId?: string,
     ) {
       const launch = launchId ?? null;
-      // A concurrent claimer re-evaluates WHERE after the row lock; the chain learns the new
-      // epoch in the same statement, so a stale register cannot land between this claim and
-      // the new executor's first register.
-      const rows = yield* sql<{ readonly epoch: number }>`
-        WITH l AS (
-          UPDATE worktree_leases
-             SET executor_id = ${executorId},
-                 launch_id = ${launch}::text,
-                 epoch = epoch + 1,
-                 expires_at = now() + make_interval(secs => ${ttlSeconds})
-           WHERE worktree_id = ${worktreeId}
-             AND (expires_at IS NULL OR expires_at < now())
-             AND (executor_id IS NULL
-                  OR (executor_id = ${executorId}
-                      AND (launch_id IS NULL
-                           OR ${launch}::text IS NULL
-                           OR launch_id = ${launch}::text))
-                  OR executor_id LIKE 'mend:%')
-           RETURNING epoch
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            // No executor takes a worktree a removal is checking or deleting (0166), unless its
+            // launch was admitted before the mark: the removal reads that admission. The project
+            // and worktree rows are locked as the removal locks them, so each sees the other.
+            const [fenced] = yield* sql<{ readonly marked: boolean }>`
+              SELECT (removal_fence_marked(p.removal_phase, p.removal_since)
+                      OR removal_fence_marked(w.removal_phase, w.removal_since))
+                     AND NOT removal_fence_admitted(${executorId}) AS marked
+                FROM worktrees w JOIN projects p ON p.id = w.project_id
+               WHERE w.id = ${worktreeId}
+               FOR SHARE OF p, w`;
+            if (fenced?.marked === true) return yield* new WorktreeLeasedError({ worktreeId });
+            // A concurrent claimer re-evaluates WHERE after the row lock; the chain learns the
+            // new epoch in the same statement, so a stale register cannot land between this
+            // claim and the new executor's first register.
+            const rows = yield* sql<{ readonly epoch: number }>`
+              WITH l AS (
+                UPDATE worktree_leases
+                   SET executor_id = ${executorId},
+                       launch_id = ${launch}::text,
+                       epoch = epoch + 1,
+                       expires_at = now() + make_interval(secs => ${ttlSeconds})
+                 WHERE worktree_id = ${worktreeId}
+                   AND (expires_at IS NULL OR expires_at < now())
+                   AND (executor_id IS NULL
+                        OR (executor_id = ${executorId}
+                            AND (launch_id IS NULL
+                                 OR ${launch}::text IS NULL
+                                 OR launch_id = ${launch}::text))
+                        OR executor_id LIKE 'mend:%')
+                 RETURNING epoch
+              )
+              UPDATE worktree_chain ch
+                 SET head_epoch = l.epoch
+                FROM l
+               WHERE ch.worktree_id = ${worktreeId}
+               RETURNING l.epoch::int AS epoch`;
+            const row = rows[0];
+            if (row === undefined) return yield* new WorktreeLeasedError({ worktreeId });
+            return { epoch: Number(row.epoch) };
+          }),
         )
-        UPDATE worktree_chain ch
-           SET head_epoch = l.epoch
-          FROM l
-         WHERE ch.worktree_id = ${worktreeId}
-         RETURNING l.epoch::int AS epoch`.pipe(Effect.orDie);
-      const row = rows[0];
-      if (row === undefined) return yield* new WorktreeLeasedError({ worktreeId });
-      return { epoch: Number(row.epoch) };
+        .pipe(Effect.catchTag("SqlError", Effect.die));
     });
 
     const withCurrentLease: CaptureStoreRepo["Service"]["withCurrentLease"] = (

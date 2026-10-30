@@ -7,6 +7,7 @@ import {
   SlackInstallsRepo,
   SlackThreadsRepo,
   type NewAuditEvent,
+  WorktreesRepo,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -123,6 +124,10 @@ const layer = Layer.mergeAll(
       Effect.sync(() => (world.first === null ? [session()] : [world.first, session()])),
   }),
   Layer.mock(ProjectsRepo, { byId: () => Effect.sync(project) }),
+  // The change's owner, as the first session's insert stored it.
+  Layer.mock(WorktreesRepo, {
+    changeOwnerOf: () => Effect.sync(() => (world.first ?? session()).ownerUserId),
+  }),
   Layer.mock(AgentConversationRepo, { listTurns: () => Effect.sync(() => [...world.turns]) }),
   Layer.mock(SlackThreadsRepo, { forSession: () => Effect.succeed(null) }),
   Layer.mock(SlackInstallsRepo, {}),

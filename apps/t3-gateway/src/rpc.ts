@@ -66,6 +66,7 @@ import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } fr
 import { launchThread } from "./launch.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
+import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { projectActionsPatchOf, refusalOf } from "./rpc-scopes.ts";
 import {
@@ -141,6 +142,9 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.subscribeVcsStatus,
   WS_METHODS.vcsRefreshStatus,
   WS_METHODS.vcsListRefs,
+  WS_METHODS.vcsRemoveWorktree,
+  // `project.delete` only; creating or editing a project is refused.
+  WS_METHODS.projectsMutate,
   WS_METHODS.gitRunStackedAction,
   WS_METHODS.subscribeWorktreeSetup,
   WS_METHODS.worktreeSetupCancel,
@@ -202,15 +206,6 @@ const providerSetup = (method: WsRpcMethod, instanceId: ProviderInstanceId) =>
   );
 
 const SELF_UPDATE_REASON = "The gateway updates with Mend, never from a t3code client.";
-
-/**
- * Why deleting a thread's worktree from t3code is refused, as its toast shows it ("Could not
- * remove <path>. …"). t3code asks to delete the worktree too when the thread being deleted is the
- * only one on it. The thread delete goes through, and the worktree and its change stay Mend's,
- * removed only in Mend.
- */
-export const WORKTREE_KEPT =
-  "Mend keeps the worktree and its change. Remove it in Mend, with mend worktrees rm or from the project's page.";
 
 /** Why t3code's branch picker cannot switch a thread's branch or make a new one. */
 export const BRANCH_KEPT =
@@ -1084,13 +1079,33 @@ export const makeGatewayRpcHandlers = ({
           workspaceRoot: projectWorkspaceRootOf(project, session.mendUser.id),
         })),
       ),
+    // Removing a project is Mend's removal, without the force t3code asks for: Mend has none
+    // for a project.
     [WS_METHODS.projectsMutate]: (mutation) =>
-      Effect.fail(
-        new ProjectMutationError({
-          commandId: mutation.commandId,
-          message: "Projects are adopted and edited in Mend.",
-        }),
-      ),
+      mutation.type === "project.delete"
+        ? authorize(session).pipe(
+            Effect.andThen(hub.removeProject({ session, projectId: mutation.projectId })),
+            Effect.catchTags({
+              RemovalKept: (kept) =>
+                Effect.fail(
+                  new ProjectMutationError({ commandId: mutation.commandId, message: kept.reason }),
+                ),
+              MendUnavailable: () =>
+                Effect.fail(
+                  new ProjectMutationError({
+                    commandId: mutation.commandId,
+                    message: PROJECT_UNREACHABLE,
+                  }),
+                ),
+              MendDeviceRefused: () => Effect.fail(deviceRefused(READ)),
+            }),
+          )
+        : Effect.fail(
+            new ProjectMutationError({
+              commandId: mutation.commandId,
+              message: "Projects are adopted and edited in Mend.",
+            }),
+          ),
     // Nothing opens on the machine Mend runs on.
     [WS_METHODS.shellOpenInEditor]: (input) =>
       Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
@@ -1205,8 +1220,18 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.vcsListRefs]: (input) =>
       authorize(session).pipe(Effect.andThen(vcs.listRefs(input))),
     [WS_METHODS.vcsCreateWorktree]: () => refuse(WS_METHODS.vcsCreateWorktree),
-    [WS_METHODS.vcsRemoveWorktree]: () =>
-      Effect.fail(refusalOf(WS_METHODS.vcsRemoveWorktree, WORKTREE_KEPT)),
+    // t3code's "Delete the worktree too?" once its last thread is deleted: Mend's removal, and
+    // never the `force` t3code always sends.
+    [WS_METHODS.vcsRemoveWorktree]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(hub.removeWorktree({ session, cwd: input.cwd, path: input.path })),
+        Effect.catchTags({
+          RemovalKept: (kept) => Effect.fail(refusalOf(WS_METHODS.vcsRemoveWorktree, kept.reason)),
+          MendUnavailable: () =>
+            Effect.fail(refusalOf(WS_METHODS.vcsRemoveWorktree, WORKTREE_UNREACHABLE)),
+          MendDeviceRefused: () => Effect.fail(deviceRefused(READ)),
+        }),
+      ),
     [WS_METHODS.vcsCreateRef]: () => Effect.fail(refusalOf(WS_METHODS.vcsCreateRef, BRANCH_KEPT)),
     [WS_METHODS.vcsSwitchRef]: () => Effect.fail(refusalOf(WS_METHODS.vcsSwitchRef, BRANCH_KEPT)),
     [WS_METHODS.vcsInit]: () => vcsUnsupported(WS_METHODS.vcsInit),

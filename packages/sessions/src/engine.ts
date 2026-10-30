@@ -7,6 +7,8 @@ import { pipeline } from "node:stream/promises";
 
 import {
   InstanceRolesRepo,
+  RemovalFencesRepo,
+  whileAdmitted,
   AgentConversationRepo,
   MessageSettingsRepo,
   AgentTurnNotFoundError,
@@ -247,7 +249,6 @@ import {
   type ConversationWaitWork,
   conversationWaitLine,
   OPENCODE_NOT_STEERABLE,
-  changeOwnerOf,
   PreReleaseMemory,
   WorkspaceRetirement,
   WorkspaceRetirementStop,
@@ -2591,23 +2592,6 @@ export interface CaptureHold {
   readonly kind: "saving" | "not-saved" | "executor" | "lease";
 }
 
-const sessionsWord = (n: number) => `${n} ${n === 1 ? "session" : "sessions"}`;
-
-/** `saving · 2 sessions · not saved · 1 session`: what holds a removal, in the status words. */
-export const captureHoldWords = (holds: ReadonlyArray<CaptureHold>): string => {
-  const count = (kind: CaptureHold["kind"]) => holds.filter((hold) => hold.kind === kind).length;
-  const parts: Array<string> = [];
-  if (count("saving") > 0) parts.push(`saving · ${sessionsWord(count("saving"))}`);
-  if (count("not-saved") > 0) {
-    parts.push(`not saved · ${sessionsWord(count("not-saved"))} · workspace kept`);
-  }
-  if (count("executor") > 0) {
-    parts.push(`executor not ended · ${sessionsWord(count("executor"))}`);
-  }
-  if (count("lease") > 0) parts.push("executor lease held");
-  return parts.join(" · ");
-};
-
 /** Why a repository was not added; `message` is what the person reads. */
 export class RepositoryAddError extends Schema.TaggedError<RepositoryAddError>()(
   "RepositoryAddError",
@@ -3378,6 +3362,7 @@ export class SessionEngine extends Context.Service<
 >()("@mend/sessions/SessionEngine") {}
 
 type SessionEngineRequirements =
+  | RemovalFencesRepo
   | SealantClient
   | WorkspaceCaller
   | AuditEventsRepo
@@ -7403,6 +7388,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (lookup.kind !== "gone") holds.push({ sessionId: member.id, kind: "executor" });
         }
         const lease = yield* capture.repo.leaseOf(worktreeId);
+        // Mend's own short claim is saving while it is live.
+        if (lease?.live === true && lease.executorId?.startsWith("mend:") === true) {
+          holds.push({ sessionId: null, kind: "lease" });
+        }
         if (
           lease !== null &&
           lease.executorId !== null &&
@@ -7412,17 +7401,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const holder = members.find((member) => member.id === lease.executorId) ?? null;
           // The lease's own executor (`leaseExecutorWorkspace`): none addressable, or a holder
           // with no workspace on its row (a launch cut short around its create,
-          // `launchUnresolved`), may exist and hold work — a hold, never an end.
+          // `launchUnresolved`), may exist and hold work — a hold, never an end. A live lease is
+          // never an end, even when its session's row is gone: something still renews it.
           const judged = lease.live ? null : yield* judgeLapsedLease(holder, lease, null);
           const workspaceId = judged?.workspaceId ?? null;
-          const ended = holder === null || judged?.state === "dead";
-          if (ended) {
-            if (!lease.live) {
-              if (workspaceId !== null) yield* owedBeforeRelease(workspaceId);
-              yield* capture.repo.release(worktreeId, lease.epoch);
-            }
+          if (judged?.state === "dead") {
+            if (workspaceId !== null) yield* owedBeforeRelease(workspaceId);
+            yield* capture.repo.release(worktreeId, lease.epoch);
           } else {
-            holds.push({ sessionId: holder.id, kind: "lease" });
+            holds.push({ sessionId: holder?.id ?? null, kind: "lease" });
           }
         }
         return holds;
@@ -8848,6 +8835,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const projects = yield* ProjectsRepo;
       const changes = yield* WorktreeChangesRepo;
       const worktreesRepo = yield* WorktreesRepo;
+      const removalFences = yield* RemovalFencesRepo;
       const checkpoints = yield* CheckpointsRepo;
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
@@ -17054,8 +17042,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (session.sealantWorkspaceId === null) return null;
         const retirement = yield* harnessLayouts.retirementOf(session.sealantWorkspaceId);
         if (retirement === null) return null;
-        const isOwner =
-          viewer === changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+        const isOwner = viewer === (yield* worktreesRepo.changeOwnerOf(session.worktreeId));
         const stops = stopsForViewer(retirement.stops, isOwner);
         return new WorkspaceRetirement({
           state: retirement.state,
@@ -17089,7 +17076,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (workspaceId === null) return yield* refuse(REPLACE_NOT_MARKED);
         let retirement = yield* harnessLayouts.retirementOf(workspaceId);
         if (retirement === null) return yield* refuse(REPLACE_NOT_MARKED);
-        if (actor !== changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId))) {
+        if (actor !== (yield* worktreesRepo.changeOwnerOf(session.worktreeId))) {
           return yield* refuse(REPLACE_NOT_OWNER);
         }
         if (retirement.state === "retiring") {
@@ -19217,8 +19204,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * owed and did not start is (`endPlannedLaunch`). A process that dies first leaves the plan
        * for the reaper (`resumeDrain`).
        */
+      // A launch runs the agent on the platform before the session reads live again: admitted
+      // first (0166), so a removal that marks the session's worktree meanwhile reads it as
+      // starting, and refused before anything runs while one already does.
       const launchInternal: typeof launchInternalBody = (sessionId, ...rest) =>
-        launchInternalBody(sessionId, ...rest).pipe(
+        whileAdmitted(removalFences, sessionId, launchInternalBody(sessionId, ...rest)).pipe(
           Effect.onExit((exit) =>
             Effect.suspend(() => {
               const own = relaunching.get(sessionId);
@@ -22623,7 +22613,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
       });
 
-      const openShell = Effect.fn("SessionEngine.openShell")(function* (
+      const openShellBody = Effect.fn("SessionEngine.openShell")(function* (
         sessionId: SessionId,
         openedBy?: string,
       ) {
@@ -22668,23 +22658,34 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           shellArgv,
           startAs === null ? undefined : { user: startAs.user, env: startAs.env },
         );
-        const shellProcess = yield* processes.create({
-          sessionId,
-          sealantWorkspaceId: session.sealantWorkspaceId ?? SealantWorkspaceId.make(workspace.id),
-          sealantSessionId: pty.id,
-          sealantRunId: SealantRunId.make(pty.runId),
-          kind: "shell",
-          label: `shell ${shellNumber}`,
-          argv: shellArgv,
-          // Recorded as an agent's is (docs/adr/0016, decision 1): the person it runs as.
-          runsAs: startAs === null ? null : (openedBy ?? session.ownerUserId),
-        });
+        const shellWorkspaceId =
+          session.sealantWorkspaceId ?? SealantWorkspaceId.make(workspace.id);
+        const shellProcess = yield* processes
+          .create({
+            sessionId,
+            sealantWorkspaceId: shellWorkspaceId,
+            sealantSessionId: pty.id,
+            sealantRunId: SealantRunId.make(pty.runId),
+            kind: "shell",
+            label: `shell ${shellNumber}`,
+            argv: shellArgv,
+            // Recorded as an agent's is (docs/adr/0016, decision 1): the person it runs as.
+            runsAs: startAs === null ? null : (openedBy ?? session.ownerUserId),
+          })
+          .pipe(
+            Effect.onError(() => closeProcessPty(shellWorkspaceId, pty.id).pipe(Effect.ignore)),
+          );
         yield* renewWorkspaceLease(sessionId, shellProcess.sealantWorkspaceId);
         // A shell rejoining a settled session's retained workspace makes it idle again.
         yield* reconcileSession(sessionId, { sweep: false });
         yield* Effect.forkIn(watchProcess(shellProcess), scope);
         return shellProcess;
       });
+
+      // A shell opens on the platform before its row exists: admitted first (0166), so a removal
+      // that marks the session's worktree meanwhile reads it as starting.
+      const openShell: typeof openShellBody = (sessionId, openedBy) =>
+        whileAdmitted(removalFences, sessionId, openShellBody(sessionId, openedBy));
 
       const stopShell = Effect.fn("SessionEngine.stopShell")(function* (
         processId: SessionProcessId,
@@ -26256,7 +26257,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A person standby's owner map names its owner as the worktree's: it serves only a
         // worktree whose change owner they are (the first session's owner), or will be.
         if (standby.layout === "person") {
-          const changeOwner = changeOwnerOf(yield* sessions.listForWorktree(worktree.id));
+          const changeOwner = worktree.changeOwnerUserId;
           if (changeOwner !== null && changeOwner !== ownerUserId) return null;
         }
         if (!(yield* mayRunIn(organizations, project, ownerUserId))) return null;

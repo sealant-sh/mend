@@ -32,6 +32,7 @@ import {
   type ProjectDto,
   type ReferenceDto,
 } from "#/lib/api";
+import { projectRemovalFailureOf, type ProjectRemovalFailure } from "#/lib/project-removal";
 import { useTRPC } from "#/lib/trpc";
 import { useInheritedSettings } from "#/lib/viewer";
 
@@ -508,9 +509,11 @@ export function RemoveProjectSection({ projectId }: { readonly projectId: string
   const queryClient = useQueryClient();
   const [removing, setRemoving] = useState<"idle" | "armed" | "working">("idle");
   const [leftoverNote, setLeftoverNote] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ProjectRemovalFailure | null>(null);
 
   const remove = () => {
     if (removing === "idle") {
+      setFailure(null);
       setRemoving("armed");
       return;
     }
@@ -522,7 +525,10 @@ export function RemoveProjectSection({ projectId }: { readonly projectId: string
         void queryClient.invalidateQueries();
         return navigate({ to: "/projects" });
       })
-      .catch(() => setRemoving("idle"));
+      .catch((cause: unknown) => {
+        setFailure(projectRemovalFailureOf(cause));
+        setRemoving("idle");
+      });
   };
 
   return (
@@ -542,9 +548,30 @@ export function RemoveProjectSection({ projectId }: { readonly projectId: string
       </button>
       {removing === "armed" && (
         <p className="mt-2 font-mono text-xs text-faint">
-          Stops live sessions, deletes sessions and reviews, and removes the store copy. The origin
+          Deletes every worktree, session and review, and removes the store copy. Refused while any
+          session runs or saves, or any change is not on origin, whoever started it. The origin
           repository is untouched.
         </p>
+      )}
+      {failure !== null && (
+        <div className="mt-2 flex min-w-0 flex-col gap-2">
+          <p
+            role="alert"
+            className="border-l-2 border-[var(--sw-amber)] pl-3 text-[13px] leading-relaxed text-ink-2 break-words"
+          >
+            {failure.words}
+          </p>
+          {failure.worktrees.length > 0 && (
+            <ul
+              aria-label="Worktrees in the way"
+              className="font-mono text-xs text-muted-foreground"
+            >
+              {failure.worktrees.map((name) => (
+                <li key={name}>{name}</li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
       {leftoverNote !== null && (
         <p className="mt-2 font-mono text-xs text-warning">

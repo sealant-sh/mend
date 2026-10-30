@@ -18,6 +18,9 @@ import { AuthMiddleware, BudgetExceeded } from "./common.ts";
 import { CheckpointRequest } from "./project-environment.ts";
 import {
   ObservationStamp,
+  RemovalForbidden,
+  RemovalInProgress,
+  RemovalRefused,
   RemovalReport,
   SessionAnnotation,
   StoreFailure,
@@ -90,13 +93,6 @@ const rawErrors = [
   RawFileTooLarge,
   BudgetExceeded,
 ] as const;
-
-/** Removing a worktree with live conversations is refused — stop them first. */
-export class WorktreeActive extends Schema.TaggedError<WorktreeActive>()(
-  "WorktreeActive",
-  { id: Schema.String, liveSessions: Schema.Int },
-  { httpApiStatus: 409 },
-) {}
 
 /** The name already names a worktree here. POST /worktrees never joins; joining is the sessions verb. */
 export class WorktreeNameTaken extends Schema.TaggedError<WorktreeNameTaken>()(
@@ -271,7 +267,7 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       params: { id: ProjectId },
       payload: NewWorktree,
       success: Worktree,
-      error: [NotFound, WorktreeNameTaken, StoreFailure],
+      error: [NotFound, WorktreeNameTaken, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -296,15 +292,16 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
     }),
   )
   .add(
-    // The one explicit destructive act: conversations, change, chain, and
-    // review artifacts go with the directory. Refused while any conversation
-    // is live, and while a change not on origin stands (docs/adr/0007-landing.md,
-    // "Worktree removal") unless `force=true`.
+    // The one explicit destructive act: conversations, change, chain, and review artifacts go
+    // with the directory. Only the change's owner removes it. Refused, every blocker at once,
+    // while anything runs or saves there, and while a change not on origin stands
+    // (docs/adr/0007-landing.md, "Worktree removal"); the owner's `force=true` lifts only the
+    // last.
     HttpApiEndpoint.delete("remove", "/worktrees/:id", {
       params: { id: WorktreeId },
       query: { force: Schema.optional(Schema.String) },
       success: RemovalReport,
-      error: [WorktreeNotFound, WorktreeActive, StoreFailure],
+      error: [WorktreeNotFound, RemovalForbidden, RemovalRefused],
     }),
   )
   .add(
@@ -312,7 +309,7 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       params: { id: WorktreeId },
       payload: NewWorktreeSession,
       success: Session,
-      error: [WorktreeNotFound, StoreFailure],
+      error: [WorktreeNotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(

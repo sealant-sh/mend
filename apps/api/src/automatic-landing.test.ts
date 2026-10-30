@@ -349,7 +349,17 @@ const layer = Layer.mergeAll(
     forOrganization: () =>
       Effect.sync(() => new MendSettings({ ...defaultSettings, autoLand: world.settingsAutoLand })),
   }),
-  Layer.mock(WorktreesRepo, { byId: () => Effect.succeed(worktree) }),
+  Layer.mock(WorktreesRepo, {
+    byId: () => Effect.succeed(worktree),
+    // The change's owner, as the first session's insert stored it.
+    changeOwnerOf: () =>
+      Effect.sync(
+        () =>
+          [session(), ...world.siblings].toSorted(
+            (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+          )[0]?.ownerUserId ?? null,
+      ),
+  }),
   Layer.mock(WorktreeChangesRepo, { byWorktree: () => Effect.succeed(change) }),
   Layer.mock(ChangeLandingsRepo, { listForChange: () => Effect.sync(() => world.landings) }),
   Layer.mock(SlackThreadsRepo, {

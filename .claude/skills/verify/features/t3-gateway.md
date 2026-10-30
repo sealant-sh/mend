@@ -644,3 +644,118 @@ conditional on project groups spanning environments and the thread having no bra
 (`t3code/apps/web/src/components/Sidebar.tsx`, `scratchMachineLabelFor`, and
 `components/sidebar/SidebarThreadRow.tsx`, `showsScratchMachine`). The scratch drafts and thread
 breadcrumbs read `No project`.
+
+### Worktree and project removal
+
+Observed on **2026-10-30**, hosted `v0.1.2` client from `/var/tmp/t3s1/t3code/apps/web/dist`, built
+with `VITE_HOSTED_APP_CHANNEL=latest`. Mend and the gateway used `f80019659802`, served by the local
+outer as `dff867c8a21b` with the same tree. The stack used pinned Sealant releases and fake Claude
+logins. Evidence: `/var/tmp/t3s1-removal-verify.ouXa5Z/evidence/`.
+
+`MEND_VERIFY_T3_REMOVAL` selects a focused pass after the recipe pairs the real client. Each pass
+starts with an empty browser. Use `MEND_VERIFY_T3_ACCOUNT=removal-member.json` for the second
+account, whose credentials stay in `$P`. Keep the served repositories and gateway state outside
+`$P`. Keep the gateway's PID and stop it and the client server during Cleanup.
+
+Prepare these disposable fixtures through Mend's API and the client's controls. Here `api` means the
+recipe's authenticated helper, acting as the named account. Register each invitation, password and
+minted token before saving evidence, as `scratchProjects` does.
+
+1. Use `verify-fixture`, the stack's local bare repository with an HTTP origin. Make it shared with
+   `PUT /api/projects/:id/visibility`, `{"visibility":"shared"}`. Invite a member with
+   `POST /api/organization/invitations`, `{"role":"member"}`, then sign up `Removal Teammate`
+   through `/api/auth/sign-up/email` with the invitation header. Keep its account in
+   `$P/removal-member.json`. Connect only the skill's `FAKES.claude` to each account.
+2. In T3 Code, command palette → New project → `removal-no-origin` → Create. Mend lists
+   `originUrl: null`. Set its verify workspace image through `PUT /api/projects/:id/workspace-image`
+   with
+   `{"workspaceImage":{"mode":"custom","baseImage":"node:26-bookworm","packages":[],"setupCommands":[],"services":{"docker":false}}}`,
+   the same configuration `stack.mjs project-image` gives adopted fixtures.
+3. In that project's draft, submit a message. After the fake login is refused, open Toggle terminal
+   drawer, wait for the terminal to run, and type `printf 'keep this work\n' > discard-proof.txt`.
+   Wait for `GET /api/worktrees/:id/contents?path=discard-proof.txt` to return `file.contents` equal
+   to `keep this work\n`, then exit the shell. A protocol session created in that worktree with
+   `POST /api/worktrees/:id/sessions`,
+   `{"harness":"claude","mode":"protocol","label":"removal-no-origin-refusal"}`, and launched
+   through `POST /api/sessions/:id/launch`, `{"mode":"protocol","prompt":"Check removal refusal"}`,
+   supplies the sole client thread for the focused deletion pass.
+4. For live sessions, create a `run` session with `POST /api/projects/:id/sessions`,
+   `{"harness":"run","label":"removal-live-owner","name":"removal-live","base":null}`. Add another
+   member-owned `run` session through `/api/worktrees/:id/sessions`. Launch both with
+   `{"argv":["sleep","86400"]}`. Read DELETE's 409 before stopping either. For the client pass, use
+   a separate worktree `removal-live-isolated`, one live `run` session and one launched Claude
+   protocol thread labelled `removal-live-isolated`. T3 Code offers worktree deletion only for its
+   last linked thread.
+5. For ownership, create worktree `removal-owner-isolated` with a first `run` session as Verifier.
+   As Removal Teammate, add and launch its sole Claude protocol thread, labelled
+   `removal-owner-isolated`. The first session records Verifier as the change owner. Run the `owner`
+   pass as the member, then DELETE the retained worktree as Verifier.
+6. As the member, create a separate `run` session in worktree `removal-teammate-change`. Launch
+   `{"argv":["sh","-c","printf 'teammate work\\n' > teammate-proof.txt"]}` and let it complete. Stop
+   the other live sessions and wait for their captures to finish. Read the file and the project's
+   DELETE answer again. Run `project-blocked` once while the live sessions exist and again with only
+   this saved change. After the member explicitly removes their worktree with
+   `DELETE /api/worktrees/:id?force=true`, run `project-remove` as Verifier.
+
+Run each prepared client pass with the same driver:
+
+```sh
+MEND_VERIFY_T3_REMOVAL=no-origin \
+MEND_VERIFY_T3_REMOVAL_THREAD=removal-no-origin-refusal \
+  node $skill/scripts/drive-web.mjs --web http://127.0.0.1:<client port> \
+  --out "$E/t3-client/no-origin" --private "$P" \
+  --recipe $skill/recipes/t3-client.mjs --timeout 60000
+```
+
+For `clean`, start on the fixture's draft; the recipe submits `removal-clean` itself. For `owner`
+and `live`, set `MEND_VERIFY_T3_REMOVAL_THREAD` to the corresponding isolated thread above. For
+`project-blocked` and `project-remove`, `MEND_VERIFY_T3_REMOVAL_PROJECT` defaults to
+`verify-fixture`. The project settings entry is reached by right-clicking its option in Filter
+threads by project.
+
+After the no-origin client refusal, drive Mend's explicit CLI force through `steps.mjs`:
+
+```json
+[
+  {
+    "name": "no-origin-force",
+    "run": [
+      "mend",
+      "worktrees",
+      "rm",
+      "<worktree name>",
+      "--project",
+      "removal-no-origin",
+      "--force"
+    ]
+  },
+  {
+    "name": "no-origin-list-after-force",
+    "run": ["mend", "worktrees", "--project", "removal-no-origin", "--json"]
+  }
+]
+```
+
+For the race, `MEND_VERIFY_T3_REMOVAL=race MEND_VERIFY_T3_REMOVAL_PROJECT=removal-no-origin` creates
+a clean worktree through the API, starts DELETE, yields once, and starts a session in that worktree.
+Retain both answers. This run's immediate attempt returned `409 RemovalInProgress` after 11 ms; its
+DELETE returned 200. An earlier attempt delayed by 20 ms reached an already removed worktree and
+returned 404. A later run records the typed refusal only when it observes it.
+
+Trace outgoing requests by starting the gateway with a Node preload that subscribes to
+`node:diagnostics_channel` channel `undici:request:create`. For DELETE only, append
+`{at, method: request.method, path: request.path}` as JSON lines. Record no headers or bodies. The
+client's `vcs.removeWorktree` and `projects.mutate` payloads carry `force: true`; the trace must
+show that it never reaches Mend. Keep the trace outside `$P` and scan it with all evidence.
+
+| Drive                                                                                                        | Observed end state on 2026-10-30                                                                                                                     | Evidence relative to the run directory                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Delete clean thread → Confirm → Delete the worktree too? → Confirm. Read Mend's worktrees.                   | Worktree absent 3,191 ms after confirmation; thread absent from client.                                                                              | `t3-client/clean-3/steps.log`, `clean-worktree-confirm.png`, `clean-removed.png` in that directory                                                        |
+| Delete the no-origin thread with its worktree. Read its file again.                                          | Client includes the required sentence; RPC message matches it byte-for-byte. Worktree and `discard-proof.txt` remain, containing `keep this work\n`. | `t3-client/no-origin-final/no-origin-refused.png`, `steps.log`; `api/no-origin-after-delete-refusal.json`                                                 |
+| Run Mend CLI worktree removal with `--force`, then list.                                                     | CLI exit 0; the no-origin worktree is absent from the listing.                                                                                       | `cli/no-origin-force.stdout`, `cli/no-origin-list-after-force.stdout`                                                                                     |
+| Delete a worktree with two live sessions through the API; delete the isolated live worktree through T3 Code. | API 409 lists both people and session IDs plus Saving. Client names the live-session and saving blockers and keeps the worktree.                     | `api/live-worktree-delete.json`; `t3-client/live-final/live-refused.aria.yml`, `steps.log`                                                                |
+| Remove Verifier's worktree as the member through API and T3 Code, then as Verifier.                          | API 403 `RemovalForbidden` names Verifier; client says only Verifier can remove it. Verifier's DELETE returns 200.                                   | `api/member-worktree-delete.json`, `api/owner-can-remove.json`; `t3-client/owner-final/owner-refused.png`, `steps.log`                                    |
+| Remove shared project with live sessions, then with only a teammate's saved change.                          | Client and API name worktrees and people. With live sessions gone, 409 still names Removal Teammate's unlanded change.                               | `t3-client/project-live/project-live-refused.aria.yml`, `t3-client/project-change/project-live-refused.aria.yml`; `api/project-only-teammate-change.json` |
+| Member removes their change; owner removes project in T3 Code; reload and open project picker.               | Mend detail returns 404. Client picker omits the project before and after reload.                                                                    | `t3-client/project-success/project-absent-after-reload.aria.yml`, `steps.log`; `api/teammate-explicit-force-remove.json`                                  |
+| Start a session while removal holds its fence.                                                               | Typed HTTP 409 `RemovalInProgress`; removal returns 200.                                                                                             | `api/race2-session-start.json`, `api/race2-removal.json`                                                                                                  |
+| Inspect gateway's outgoing DELETE requests for the client paths.                                             | Session, worktree and project DELETE paths have no query and no force.                                                                               | `gateway-delete.jsonl`                                                                                                                                    |

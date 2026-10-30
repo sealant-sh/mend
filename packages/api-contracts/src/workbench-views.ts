@@ -11,8 +11,10 @@ import {
   ChangePullRequest,
   RequestedGitAuthMode,
   GitAuthorSource,
+  Person,
   ProjectVisibility,
   Project,
+  RemovalBlocker,
   Session,
   SessionProcess,
   Worktree,
@@ -202,6 +204,44 @@ export class RemovalReport extends Schema.Class<RemovalReport>("RemovalReport")(
   removed: Schema.Boolean,
   leftover: Schema.NullOr(Schema.String),
 }) {}
+
+/**
+ * A worktree or project removal Mend refused (docs/adr/0007-landing.md, "Worktree removal"):
+ * every blocker at once. `DELETE /worktrees/:id` and `DELETE /projects/:id` both answer with it,
+ * so every client reads one shape. `forceWouldLift`: the change owner's `force=true` would remove
+ * the worktree; never true for a project. `message` is the in-Mend words, which a client from
+ * before this shape prints as they are.
+ */
+export class RemovalRefused extends Schema.TaggedError<RemovalRefused>()(
+  "RemovalRefused",
+  {
+    scope: Schema.Literals(["worktree", "project"]),
+    blockers: Schema.NonEmptyArray(RemovalBlocker),
+    forceWouldLift: Schema.Boolean,
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+/**
+ * The caller sees the worktree but did not start its change (decision Q4): only `owner` removes
+ * it, with or without force.
+ */
+export class RemovalForbidden extends Schema.TaggedError<RemovalForbidden>()(
+  "RemovalForbidden",
+  { owner: Person, message: Schema.String },
+  { httpApiStatus: 403 },
+) {}
+
+/**
+ * A session start or a new worktree in a worktree or project a removal is checking or deleting.
+ * Asked again once that removal is refused, the start goes ahead.
+ */
+export class RemovalInProgress extends Schema.TaggedError<RemovalInProgress>()(
+  "RemovalInProgress",
+  { message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
 
 /** Deleting a live session is refused — stop it first. */
 export class SessionActive extends Schema.TaggedError<SessionActive>()(

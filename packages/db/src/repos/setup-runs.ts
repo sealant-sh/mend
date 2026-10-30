@@ -104,6 +104,11 @@ export class SetupRunsRepo extends Context.Service<
     readonly busy: (siteKey: string) => Effect.Effect<boolean>;
     /** How many runs whose leases hold have their processes in the workspace. */
     readonly runningIn: (workspaceId: string) => Effect.Effect<number>;
+    /**
+     * Whether a run in the worktree is running, its lease lapsed or not: one whose lease lapsed
+     * may still be running commands there until a claimant confirms its processes stopped.
+     */
+    readonly unendedInWorktree: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
     readonly renew: (claimId: string, leaseMs: number) => Effect.Effect<boolean>;
     readonly finish: (claimId: string, outcome: SetupOutcome) => Effect.Effect<boolean>;
     readonly release: (claimId: string) => Effect.Effect<void>;
@@ -185,6 +190,17 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       return row?.n ?? 0;
     }, Effect.orDie);
 
+    const unendedInWorktree = Effect.fn("SetupRunsRepo.unendedInWorktree")(function* (
+      worktreeId: WorktreeId,
+    ) {
+      const rows = yield* db
+        .select({ claimId: setupRuns.claimId })
+        .from(setupRuns)
+        .where(and(eq(setupRuns.worktreeId, worktreeId), running))
+        .limit(1);
+      return rows.length > 0;
+    }, Effect.orDie);
+
     const renew = Effect.fn("SetupRunsRepo.renew")(function* (claimId: string, leaseMs: number) {
       const rows = yield* db
         .update(setupRuns)
@@ -229,6 +245,6 @@ export const SetupRunsRepoLive: Layer.Layer<SetupRunsRepo, never, MendDB> = Laye
       return row?.fingerprint ?? null;
     }, Effect.orDie);
 
-    return { claim, busy, runningIn, renew, finish, release, discard, stampAt };
+    return { claim, busy, runningIn, unendedInWorktree, renew, finish, release, discard, stampAt };
   }),
 );

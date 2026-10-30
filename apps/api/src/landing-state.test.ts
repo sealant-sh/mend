@@ -23,7 +23,7 @@ import { describe, expect, it } from "vitest";
 
 import { makeProject } from "../test/support/tenancy-harness.ts";
 import { ProjectAccess } from "./access.ts";
-import { unlandedWork } from "./landing-state.ts";
+import { changeStandingOf } from "./landing-state.ts";
 
 /** Worktree removal against the landing record (docs/adr/0007-landing.md, "Worktree removal"). */
 
@@ -93,7 +93,10 @@ const file = (path: string, additions: number, deletions: number): ChangedFile =
   deletions,
 });
 
+const LANDED_AT = { remoteBranch: "mend/fix-login", sha: PUSHED };
+
 interface Scene {
+  readonly project?: Project;
   /** Files that differ from each base the removal compares against. */
   readonly changedSince: Readonly<Record<string, ReadonlyArray<ChangedFile>>>;
   readonly landings: ReadonlyArray<ChangeLanding>;
@@ -158,47 +161,60 @@ const refusalFor = (scene: Scene) => {
     Layer.mock(AgentBridge, { socketPath: () => "/unused/agent.sock" }),
   );
   return Effect.runPromise(
-    unlandedWork({ change, project, worktree, userId: "ada" }).pipe(
-      Effect.map((refusal) => ({ refusal, probes })),
+    changeStandingOf({ change, project: scene.project ?? project, worktree, userId: "ada" }).pipe(
+      Effect.map((standing) => ({ standing, probes })),
       Effect.provide(layer),
     ),
   );
 };
 
-describe("unlandedWork", () => {
+describe("changeStandingOf", () => {
   it("lets a worktree with nothing past its base go, without asking origin", async () => {
-    const { refusal, probes } = await refusalFor({ changedSince: {}, landings: [] });
-    expect(refusal).toBeNull();
+    const { standing, probes } = await refusalFor({ changedSince: {}, landings: [] });
+    expect(standing).toEqual({ _tag: "at-base" });
     expect(probes).toEqual([]);
   });
 
   it("refuses a change that was never landed, naming its files and line counts", async () => {
-    const { refusal } = await refusalFor({
+    const { standing } = await refusalFor({
       changedSince: { [BASE]: [file("src/login.ts", 12, 3), file("notes.md", 1, 0)] },
       landings: [],
     });
-    expect(refusal).toBe(
-      "This worktree holds a change that was never landed · 2 files · +13 −3 · src/login.ts +12 −3, notes.md +1 −0. Land it or discard it before removal, or pass force=true to remove it anyway.",
-    );
+    expect(standing).toEqual({
+      _tag: "never-landed",
+      files: [file("src/login.ts", 12, 3), file("notes.md", 1, 0)],
+    });
+  });
+
+  it("names work in a project with no origin as on no remote (decision Q3)", async () => {
+    const { standing, probes } = await refusalFor({
+      project: new Project({ ...project, originUrl: null }),
+      changedSince: { [BASE]: [file("src/login.ts", 12, 3)] },
+      landings: [],
+    });
+    expect(standing).toEqual({ _tag: "no-remote", files: [file("src/login.ts", 12, 3)] });
+    expect(probes).toEqual([]);
   });
 
   it("refuses what changed since the last landing, counted from the landed checkpoint", async () => {
-    const { refusal, probes } = await refusalFor({
+    const { standing, probes } = await refusalFor({
       changedSince: { [BASE]: [file("src/login.ts", 12, 3)], [CHECKPOINT]: [file("a.ts", 2, 1)] },
       landings: [landed],
     });
-    expect(refusal).toBe(
-      "This worktree changed since its last landing (mend/fix-login · 3f2a1c0) · 1 file · +2 −1 · a.ts +2 −1. Land it again or discard it before removal, or pass force=true to remove it anyway.",
-    );
+    expect(standing).toEqual({
+      _tag: "changed-since-landing",
+      landed: LANDED_AT,
+      files: [file("a.ts", 2, 1)],
+    });
     expect(probes).toEqual([]);
   });
 
   it("lets a landed change go when origin's branch still holds the landed commit", async () => {
-    const { refusal, probes } = await refusalFor({
+    const { standing, probes } = await refusalFor({
       changedSince: { [BASE]: [file("src/login.ts", 12, 3)] },
       landings: [landed],
     });
-    expect(refusal).toBeNull();
+    expect(standing).toEqual({ _tag: "on-origin", landed: LANDED_AT, via: "branch" });
     expect(probes).toEqual([{ sha: PUSHED, remoteBranch: "mend/fix-login" }]);
   });
 
@@ -208,15 +224,17 @@ describe("unlandedWork", () => {
       landings: [landed],
       probe: { remoteSha: null, holds: false },
     });
-    expect(gone.refusal).toBe(
-      "origin's mend/fix-login no longer holds the landed commit 3f2a1c0 · the branch is gone. Land it again before removal, or pass force=true to remove it anyway.",
-    );
+    expect(gone.standing).toEqual({ _tag: "origin-moved", landed: LANDED_AT, remoteSha: null });
     const rewritten = await refusalFor({
       changedSince: { [BASE]: [file("src/login.ts", 12, 3)] },
       landings: [landed],
       probe: { remoteSha: Sha.make("9999999000000000000000000000000000000000"), holds: false },
     });
-    expect(rewritten.refusal).toContain("· it is at 9999999.");
+    expect(rewritten.standing).toEqual({
+      _tag: "origin-moved",
+      landed: LANDED_AT,
+      remoteSha: "9999999000000000000000000000000000000000",
+    });
   });
 
   it("lets a change go whose pull request was last reported merged, though its branch is gone", async () => {
@@ -231,12 +249,12 @@ describe("unlandedWork", () => {
         observedAt: NOW,
       },
     });
-    const { refusal, probes } = await refusalFor({
+    const { standing, probes } = await refusalFor({
       changedSince: { [BASE]: [file("src/login.ts", 12, 3)] },
       landings: [merged],
       probe: { remoteSha: null, holds: false },
     });
-    expect(refusal).toBeNull();
+    expect(standing).toEqual({ _tag: "on-origin", landed: LANDED_AT, via: "merged-pull-request" });
     // A squash merge leaves no ancestry to fetch: the recorded state answers.
     expect(probes).toEqual([]);
     // A later push the merged pull request does not hold is still asked about.
@@ -250,18 +268,20 @@ describe("unlandedWork", () => {
       landings: [later, merged],
       probe: { remoteSha: null, holds: false },
     });
-    expect(afterMerge.refusal).toContain("the branch is gone");
+    expect(afterMerge.standing).toMatchObject({ _tag: "origin-moved", remoteSha: null });
   });
 
   it("refuses in the remote's words when origin cannot be checked", async () => {
-    const { refusal } = await refusalFor({
+    const { standing } = await refusalFor({
       changedSince: { [BASE]: [file("src/login.ts", 12, 3)] },
       landings: [landed],
       probe: { fails: "Permission denied (publickey)." },
     });
-    expect(refusal).toBe(
-      "origin could not be checked for the last landing (mend/fix-login · 3f2a1c0) · Permission denied (publickey). Try again, or pass force=true to remove it anyway.",
-    );
+    expect(standing).toEqual({
+      _tag: "origin-unchecked",
+      landed: LANDED_AT,
+      reason: "Permission denied (publickey).",
+    });
   });
 
   it("skips a landing that pushed nothing", async () => {
@@ -272,10 +292,10 @@ describe("unlandedWork", () => {
       outcome: "refused",
       message: "[rejected] (fetch first)",
     });
-    const { refusal } = await refusalFor({
+    const { standing } = await refusalFor({
       changedSince: { [BASE]: [file("src/login.ts", 12, 3)] },
       landings: [refused],
     });
-    expect(refusal).toContain("never landed");
+    expect(standing).toMatchObject({ _tag: "never-landed" });
   });
 });

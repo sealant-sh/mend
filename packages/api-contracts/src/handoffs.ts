@@ -6,7 +6,7 @@ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware, BudgetExceeded } from "./common.ts";
 import { GIT_BUNDLE_CONTENT_TYPE } from "./landing.ts";
-import { StoreFailure } from "./workbench-views.ts";
+import { RemovalInProgress, StoreFailure } from "./workbench-views.ts";
 
 /** What this server takes in one handoff, in bytes. */
 export class HandoffTerms extends Schema.Class<HandoffTerms>("HandoffTerms")({
@@ -77,7 +77,7 @@ export const handoffsGroup = HttpApiGroup.make("handoffs")
       query: HandoffQuery,
       payload: HandoffBundleBytes,
       success: HandoffReceived,
-      error: [NotFound, HandoffRefused, BudgetExceeded, StoreFailure],
+      error: [NotFound, HandoffRefused, BudgetExceeded, StoreFailure, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

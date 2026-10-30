@@ -10,6 +10,7 @@ import {
   ResourcesRepo,
   SessionsRepo,
   UsersRepo,
+  WorktreesRepo,
 } from "@mend/db";
 import type {
   ProjectId,
@@ -19,7 +20,6 @@ import type {
   WorktreeId,
 } from "@mend/domain";
 import {
-  changeOwnerOf,
   PRESET_VERSION_RULE,
   presetDefinition,
   withPresetCommand,
@@ -286,7 +286,13 @@ const changed = (name: string, what: string) =>
 export const ResourcesLive: Layer.Layer<
   Resources,
   never,
-  ResourcesRepo | ProjectsRepo | SessionsRepo | UsersRepo | WorktreeReads | ResourceImageResolver
+  | ResourcesRepo
+  | ProjectsRepo
+  | SessionsRepo
+  | UsersRepo
+  | WorktreesRepo
+  | WorktreeReads
+  | ResourceImageResolver
 > = Layer.effect(
   Resources,
   Effect.gen(function* () {
@@ -294,6 +300,7 @@ export const ResourcesLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
     const sessions = yield* SessionsRepo;
     const users = yield* UsersRepo;
+    const worktrees = yield* WorktreesRepo;
     const reads = yield* WorktreeReads;
     const images = yield* ResourceImageResolver;
 
@@ -505,8 +512,7 @@ export const ResourcesLive: Layer.Layer<
       return { statusLine: `@${removed.spec.name} · definition removed` };
     });
 
-    const changeOwner = (worktreeId: WorktreeId) =>
-      sessions.listForWorktree(worktreeId).pipe(Effect.map(changeOwnerOf));
+    const changeOwner = (worktreeId: WorktreeId) => worktrees.changeOwnerOf(worktreeId);
 
     /** The spec `source` names, while it is still what its digest says was read. */
     const sourceSpec = Effect.fn("Resources.sourceSpec")(function* (

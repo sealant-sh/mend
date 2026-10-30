@@ -10,7 +10,6 @@ export interface Refusal {
   readonly [field: string]: unknown;
 }
 
-const count = (value: unknown): number | null => (typeof value === "number" ? value : null);
 const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
 /** Words for the refusals the contract declares without a sentence of their own. */
@@ -56,12 +55,6 @@ const wordsWithoutMessage = (refusal: Refusal): string | null => {
       return "The session is not running.";
     case "WorktreeNotFound":
       return "This worktree is no longer in the store.";
-    case "WorktreeActive": {
-      const live = count(refusal["liveSessions"]);
-      return live === null || live === 1
-        ? "A session in this worktree is live. Stop it first."
-        : `${live} sessions in this worktree are live. Stop them first.`;
-    }
     case "WorktreeNameTaken":
       return "That name is already used in this project. Choose another.";
     default:

@@ -171,6 +171,12 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   // it, and the sessions holding it as a repository beside their own (docs/adr/0010).
   "sessions.listForWorktree",
   "sessionRepositories.listForWorktree",
+  // ...and those of projects linking it (`removal_fence_sessions_in`).
+  "removalFences.sessionsIn",
+  // A worktree removal the caller may not make names the change's owner (decision Q4).
+  "users.byId",
+  // Who owns a change decides who may land it or remove its worktree.
+  "worktrees.changeOwnerOf",
   "worktrees.byId",
   "changes.byId",
   // A landing's change decides who may see it, so a refresh reads the landing first.
@@ -247,6 +253,11 @@ export interface TenancyWorld {
   readonly setVisibility: (project: HarnessProject, visibility: ProjectVisibility) => void;
   readonly addWorktree: (worktree: Worktree) => void;
   readonly addProject: (project: Project) => void;
+  /** Repositories nested in a worktree, as migration 0166 keeps them past their session. */
+  readonly nestedRepositories: Map<
+    WorktreeId,
+    ReadonlyArray<{ readonly path: string; readonly branch: string }>
+  >;
   /** Tokens: each user's bearer is their name. */
   readonly authLayer: Layer.Layer<Auth>;
   /** The authorization reads over the world, recorded like everything else. */
@@ -376,6 +387,7 @@ export const createTenancyWorld = async (
 
   const projects = new Map<ProjectId, Project>();
   const worktrees = new Map<WorktreeId, Worktree>();
+  const nestedRepositories: TenancyWorld["nestedRepositories"] = new Map();
   const changes = new Map<ChangeId, Change>();
   const sessions = new Map<SessionId, Session>();
   const processes = new Map<SessionProcessId, SessionProcess>();
@@ -575,6 +587,23 @@ export const createTenancyWorld = async (
     makeSession(NULL_OWNER_SESSION, sharedA.project, sharedA.worktree, null),
   );
   for (const extra of extraSessions) sessions.set(extra.id, extra);
+  // The change's owner, as migration 0166's insert trigger stores it: the first session's owner.
+  const inserted = [...sessions.values()].toSorted(
+    (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
+  );
+  for (const worktree of worktrees.values()) {
+    const first = inserted.find((session) => session.worktreeId === worktree.id);
+    if (first !== undefined) {
+      worktrees.set(
+        worktree.id,
+        new Worktree({
+          ...worktree,
+          changeOwnerUserId: first.ownerUserId,
+          changeOwnerProven: first.ownerUserId !== null,
+        }),
+      );
+    }
+  }
   const aliceProcess = processes.get(sharedA.process);
   if (aliceProcess !== undefined) {
     processes.set(
@@ -857,6 +886,8 @@ export const createTenancyWorld = async (
               (row) => row.projectId === projectId && row.handoff?.checkpoint === checkpoint,
             ) ?? null,
           ),
+        changeOwnerOf: (id) => Effect.succeed(worktrees.get(id)?.changeOwnerUserId ?? null),
+        nestedRepositories: (id) => Effect.succeed(nestedRepositories.get(id) ?? []),
         // A removal deletes the row; its sessions, change and chain cascade in the database.
         remove: (id) =>
           Effect.sync(() => {
@@ -976,6 +1007,7 @@ export const createTenancyWorld = async (
     },
     sessions,
     worktrees,
+    nestedRepositories,
     changes,
     processes,
     services,

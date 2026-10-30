@@ -35,6 +35,13 @@ import {
   PreviewsRepo,
   PushDevice,
   PushDevicesRepo,
+  type FencedRow,
+  type FenceTaken,
+  RemovalFenced,
+  RemovalFenceId,
+  RemovalFencesRepo,
+  SessionAdmissionId,
+  SetupRunsRepo,
   ReviewCommentsRepo,
   ReviewSlicesRepo,
   RunsRepo,
@@ -54,11 +61,12 @@ import {
   UserGitAccessRepo,
   UserGitAuthorRepo,
   UsersRepo,
+  UserFacts,
   type MendEvent,
   makeUpgradeTicketsMemory,
   UpgradeTicketsRepo,
 } from "@mend/db";
-import type { DotfilesRepository } from "@mend/domain";
+import type { DotfilesRepository, SessionId } from "@mend/domain";
 import {
   emptyHarnessModelCatalog,
   type Session,
@@ -129,9 +137,11 @@ import { EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { HandoffStartLive } from "../../src/handoff-start.ts";
+import { LIVE_STATES } from "../../src/live-states.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { PageViewTokens } from "../../src/page-view-tokens.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
+import { RemovalLive } from "../../src/removal.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
@@ -152,6 +162,11 @@ import { recording } from "./tenancy-harness.ts";
 
 export interface TenancyApi {
   readonly world: TenancyWorld;
+  /** Removal marks on worktree and project rows (`worktree:<id>`, `project:<id>`), in memory. */
+  readonly removalMarks: Map<
+    string,
+    { readonly phase: "checking" | "deleting"; readonly id: string }
+  >;
   /** Send a request as `user` (null: no credentials) and return the response. */
   readonly request: (
     user: HarnessUser | null,
@@ -188,6 +203,16 @@ export interface TenancyApi {
   readonly nodeOrigin: string | undefined;
   readonly dispose: () => Promise<void>;
 }
+
+const USER_NAMES: Readonly<Record<string, string>> = {
+  alice: "Alice",
+  carol: "Carol",
+  bob: "Bob",
+  dave: "Dave",
+};
+
+/** A removal mark's key in the in-memory marks: `worktree:<id>` or `project:<id>`. */
+const keyOf = (row: FencedRow) => `${row.kind}:${row.id}`;
 
 const network = makePublicNetwork(
   Schema.decodeUnknownSync(PublicOrigin)("http://api.internal"),
@@ -257,6 +282,8 @@ export const createTenancyApi = async (
     readonly checkpointRequestLimit?: Duration.Duration;
     /** How long a raw body waits for its reader (`RawReadStallLimit`). */
     readonly rawReadStall?: Duration.Duration;
+    /** Runs as a removal takes its mark, before anything else it reads: for races. */
+    readonly beforeTake?: Effect.Effect<void>;
     readonly implement?: {
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
@@ -287,6 +314,9 @@ export const createTenancyApi = async (
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
       readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
+      /** In place of the in-memory removal marks: Postgres's (`removal-postgres.ts`), or a part. */
+      readonly removalFences?: Partial<RemovalFencesRepo["Service"]>;
+      readonly setupRuns?: Layer.PartialEffectful<SetupRunsRepo["Service"]>;
       readonly users?: Layer.PartialEffectful<UsersRepo["Service"]>;
       readonly images?: Layer.PartialEffectful<ResourceImageResolver["Service"]>;
       readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
@@ -324,6 +354,88 @@ export const createTenancyApi = async (
   const budgetsLayer = Layer.succeed(Budgets, makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...limits }));
   const calls = world.calls;
   const deviceWrites: Array<string> = [];
+  // Removal marks on the rows (RemovalFencesRepo), held in memory. A mark here never ages: it
+  // refuses wherever Postgres's would, and more. What a mark's age decides is tested against
+  // Postgres (`removal-postgres.ts`).
+  const removalMarks = new Map<
+    string,
+    { readonly phase: "checking" | "deleting"; readonly id: string }
+  >();
+  const marked = (key: string) => removalMarks.has(key);
+  const inMemoryFences: RemovalFencesRepo["Service"] = {
+    take: (row) =>
+      Effect.andThen(
+        options.beforeTake ?? Effect.void,
+        Effect.sync((): FenceTaken => {
+          const exists =
+            row.kind === "worktree" ? world.worktrees.has(row.id) : world.projects.has(row.id);
+          if (!exists) return { _tag: "gone" };
+          const projectId =
+            row.kind === "project" ? row.id : world.worktrees.get(row.id)?.projectId;
+          const relativeMarked =
+            row.kind === "worktree"
+              ? marked(`project:${projectId}`)
+              : Array.from(world.worktrees.values()).some(
+                  (worktree) => worktree.projectId === row.id && marked(`worktree:${worktree.id}`),
+                );
+          if (marked(keyOf(row)) || relativeMarked) return { _tag: "underway", stopped: null };
+          const id = RemovalFenceId.make(`rmv_${crypto.randomUUID()}`);
+          removalMarks.set(keyOf(row), { phase: "checking", id });
+          return { _tag: "held", id };
+        }),
+      ),
+    commit: (row, id) =>
+      Effect.sync(() => {
+        if (removalMarks.get(keyOf(row))?.id !== id) return false;
+        removalMarks.set(keyOf(row), { phase: "deleting", id });
+        return true;
+      }),
+    release: (row, id) =>
+      Effect.sync(() => {
+        if (removalMarks.get(keyOf(row))?.id === id) removalMarks.delete(keyOf(row));
+      }),
+    handOver: () => Effect.void,
+    renew: (row, id) => Effect.sync(() => removalMarks.get(keyOf(row))?.id === id),
+    admitsStart: (place) =>
+      Effect.sync(
+        () =>
+          !marked(`project:${place.projectId}`) &&
+          (place.worktreeId === null || !marked(`worktree:${place.worktreeId}`)),
+      ),
+    admit: (sessionId) =>
+      Effect.suspend(() => {
+        const session = world.sessions.get(sessionId);
+        const refused =
+          session !== undefined &&
+          !LIVE_STATES.has(session.status) &&
+          (marked(`project:${session.projectId}`) || marked(`worktree:${session.worktreeId}`));
+        return refused
+          ? Effect.die(new RemovalFenced(`session ${sessionId} is being removed`))
+          : Effect.succeed(SessionAdmissionId.make(`adm_${sessionId}`));
+      }),
+    renewAdmission: () => Effect.void,
+    endAdmission: () => Effect.void,
+    // Its own sessions, and those the world's repositories name as holding it.
+    sessionsIn: (worktreeId) =>
+      Effect.gen(function* () {
+        const held =
+          options.implement?.sessionRepositories?.listForWorktree === undefined
+            ? []
+            : yield* options.implement.sessionRepositories.listForWorktree(worktreeId);
+        const ids = new Set<SessionId>([
+          ...Array.from(world.sessions.values())
+            .filter((session) => session.worktreeId === worktreeId)
+            .map((session) => session.id),
+          ...held.map((row) => row.sessionId),
+        ]);
+        return [...ids].toSorted();
+      }),
+    startingIn: () => Effect.succeed([]),
+  };
+  const removalFences: RemovalFencesRepo["Service"] = {
+    ...inMemoryFences,
+    ...options.implement?.removalFences,
+  };
   // Each account's saved dotfiles repository, when the world serves the dotfiles routes.
   const repositories = new Map<string, DotfilesRepository>();
   // Who turned on "Start my agents after install.sh" (docs/adr/0016).
@@ -438,7 +550,34 @@ export const createTenancyApi = async (
       recording(UserEvents, "userEvents", {}, calls),
       recording(UserGitAccessRepo, "gitAccess", options.implement?.gitAccess ?? {}, calls),
       recording(UserGitAuthorRepo, "gitAuthor", options.implement?.gitAuthor ?? {}, calls),
-      recording(UsersRepo, "users", options.implement?.users ?? {}, calls),
+      recording(
+        UsersRepo,
+        "users",
+        {
+          byId: (id) =>
+            Effect.succeed(
+              id in USER_NAMES
+                ? new UserFacts({
+                    id,
+                    name: USER_NAMES[id] ?? id,
+                    email: `${id}@example.com`,
+                  })
+                : null,
+            ),
+          ...options.implement?.users,
+        },
+        calls,
+      ),
+      recording(RemovalFencesRepo, "removalFences", removalFences, calls),
+      recording(
+        SetupRunsRepo,
+        "setupRuns",
+        {
+          unendedInWorktree: () => Effect.succeed(false),
+          ...options.implement?.setupRuns,
+        },
+        calls,
+      ),
       recording(JobRunner, "jobs", options.implement?.jobs ?? {}, calls),
       recording(SealantClient, "sealant", {}, calls),
       recording(ForwardAdapter, "forwards", {}, calls),
@@ -547,7 +686,10 @@ export const createTenancyApi = async (
         sessionStore: options.sessionStore ?? "captured",
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
-      Layer.succeed(TenancyConfig, { mode: options.tenancy ?? "single", gate: Effect.succeed([]) }),
+      Layer.succeed(TenancyConfig, {
+        mode: options.tenancy ?? "single",
+        gate: Effect.succeed([]),
+      }),
       Layer.succeed(ExposureConfig, {
         exposure: options.exposure?.exposure ?? "loopback",
         gate: Effect.succeed(options.exposure?.gate ?? []),
@@ -594,6 +736,7 @@ export const createTenancyApi = async (
     HandoffStartLive,
     ResourcesLive,
     ProjectCreationLive,
+    RemovalLive,
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),
@@ -645,9 +788,17 @@ export const createTenancyApi = async (
   const nodeOrigin = options.node
     ? await Effect.runPromise(
         Layer.buildWithScope(
-          HttpRouter.serve(apiLayer, { disableLogger: true, disableListenLog: true }).pipe(
+          HttpRouter.serve(apiLayer, {
+            disableLogger: true,
+            disableListenLog: true,
+          }).pipe(
             Layer.provide(Layer.succeedContext(context)),
-            Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+            Layer.provideMerge(
+              NodeHttpServer.layer(createServer, {
+                host: "127.0.0.1",
+                port: 0,
+              }),
+            ),
           ),
           nodeScope,
         ).pipe(
@@ -711,6 +862,7 @@ export const createTenancyApi = async (
 
   return {
     world,
+    removalMarks,
     request: (user, method, path, body, extraHeaders) => {
       const headers = new Headers(extraHeaders);
       if (user !== null) headers.set("authorization", `Bearer ${user}`);

@@ -11,6 +11,9 @@ import { Effect, Layer, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+/** How long migration 0166 keeps a removal's mark fresh without renewal. */
+const MIGRATION_0166_LEASE_SECONDS = 120;
+
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import {
@@ -336,10 +339,17 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
     });
   });
 
-  describe("the removal fence", () => {
-    it("refuses a declaration once set, and lifting it lets one through", async () => {
+  describe("a project removal's mark", () => {
+    const mark = (project: string, phase: "checking" | "deleting", secondsAgo = 0) =>
+      execute(
+        `UPDATE projects SET removal_phase = $2, removal_id = 'rmv_test',
+           removal_since = now() - make_interval(secs => $3) WHERE id = $1`,
+        [project, phase, secondsAgo],
+      );
+
+    it("refuses a declaration while it stands, and lets one through once it is lifted", async () => {
       const project = await newProject();
-      const fence = await withRepo((repo) => repo.fenceProjectRemoval(project));
+      await mark(project, "checking");
       expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toMatchObject(
         {
           _tag: "ResourceDefinitionRefusedError",
@@ -349,29 +359,32 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         },
       );
       expect(await withRepo((repo) => repo.listForProject(project))).toEqual([]);
-      await withRepo((repo) => repo.liftProjectRemovalFence(fence));
+      await execute(
+        "UPDATE projects SET removal_phase = NULL, removal_id = NULL, removal_since = NULL WHERE id = $1",
+        [project],
+      );
       expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toBe(
         "accepted",
       );
     });
 
-    it("stands while any removal holds one: lifting one removal's fence leaves another's", async () => {
+    it("refuses nothing once a removal that stopped while checking lets it lapse", async () => {
       const project = await newProject();
-      const first = await withRepo((repo) => repo.fenceProjectRemoval(project));
-      const second = await withRepo((repo) => repo.fenceProjectRemoval(project));
-      expect(first).not.toBe(second);
+      await mark(project, "checking", MIGRATION_0166_LEASE_SECONDS + 5);
+      expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toBe(
+        "accepted",
+      );
+    });
 
-      await withRepo((repo) => repo.liftProjectRemovalFence(first));
+    it("keeps refusing while a removal that passed its checks still has to delete", async () => {
+      const project = await newProject();
+      await mark(project, "deleting", MIGRATION_0166_LEASE_SECONDS + 5);
       expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toMatchObject(
         { _tag: "ResourceDefinitionRefusedError", refusals: [{ key: "project" }] },
       );
-      await withRepo((repo) => repo.liftProjectRemovalFence(second));
-      expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toBe(
-        "accepted",
-      );
     });
 
-    it("waits for a declaration in flight and refuses removal with what it stored", async () => {
+    it("makes a removal that marks during a declaration see what it stored", async () => {
       const project = await newProject();
       const spec = postgresDb();
       // An uncommitted row of the same name holds the declaration at its insert, after it read
@@ -384,15 +397,16 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       );
       const declaring = failureOf((repo) => repo.declare(project, spec, "alice"));
       await untilWaiting(1);
-      const fencing = failureOf((repo) => repo.fenceProjectRemoval(project));
+      const marking = execute(
+        `UPDATE projects SET removal_phase = 'checking', removal_id = 'rmv_test',
+           removal_since = now() WHERE id = $1`,
+        [project],
+      );
       await untilWaiting(2);
       await release();
       expect(await declaring).toBe("accepted");
-      expect(await fencing).toMatchObject({ _tag: "ProjectHasResourcesError", names: ["db"] });
-      // No fence was set, so the next declaration is not refused by one.
-      expect(await failureOf((repo) => repo.declare(project, redisCache(), "alice"))).toBe(
-        "accepted",
-      );
+      await marking;
+      expect(await withRepo((repo) => repo.declaredNames(project))).toEqual(["db"]);
     });
 
     it("names a definition whose stored spec no longer decodes", async () => {
@@ -408,21 +422,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
           "0".repeat(64),
         ],
       );
-      expect(await failureOf((repo) => repo.fenceProjectRemoval(project))).toMatchObject({
-        _tag: "ProjectHasResourcesError",
-        names: ["db"],
-      });
-    });
-
-    it("goes with the project's row", async () => {
-      const project = await newProject();
-      await withRepo((repo) => repo.fenceProjectRemoval(project));
-      await execute("DELETE FROM projects WHERE id = $1", [project]);
-      const [left] = await execute(
-        "SELECT count(*)::int AS n FROM project_removal_fences WHERE project_id = $1",
-        [project],
-      );
-      expect(left).toEqual({ n: 0 });
+      expect(await withRepo((repo) => repo.declaredNames(project))).toEqual(["db"]);
     });
   });
 

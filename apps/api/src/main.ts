@@ -77,6 +77,7 @@ import {
   SlackThreadsRepoLive,
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
+  RemovalFencesRepoLive,
   SessionGitOpsRepoLive,
   type SessionProcessesRepo,
   SessionProcessesRepoLive,
@@ -252,6 +253,7 @@ import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { RemoteCredentialCheckLive } from "./remote-credential-check.ts";
+import { RemovalLive } from "./removal.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
 import { type ReviewPassJob, runReviewPass } from "./review-pass-worker.ts";
 import { MendApiLive } from "./routes/api-live.ts";
@@ -337,6 +339,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ReviewSlicesRepoLive,
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
+  RemovalFencesRepoLive,
   NotificationSettingsRepoLive,
   UserAgentLoginsRepoLive,
   MessageSettingsRepoLive,
@@ -893,6 +896,7 @@ const MainLive = Layer.unwrap(
           landing,
           HandoffStartLive.pipe(Layer.provide(captureStore)),
           ResourcesLive.pipe(Layer.provide(ResourceImageResolverLive)),
+          RemovalLive.pipe(Layer.provide(landingGit)),
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.

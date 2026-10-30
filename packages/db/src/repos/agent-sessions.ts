@@ -838,15 +838,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* Effect.die("session insert returned no row");
+        // The insert's own trigger (0166) records its owner in `worktree_session_owners`.
         const created = toSession(row);
-        // Who ever had a session in the worktree, kept when the session is deleted (docs/adr/0016,
-        // decision 14: the migration's "only person" rule reads it).
-        if (created.ownerUserId !== null) {
-          yield* pg`
-            INSERT INTO worktree_session_owners (worktree_id, user_id)
-            VALUES (${created.worktreeId}, ${created.ownerUserId})
-            ON CONFLICT DO NOTHING`.pipe(Effect.orDie);
-        }
         yield* notifyEvent(pg, {
           type: "session",
           sessionId: created.id,

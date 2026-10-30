@@ -175,6 +175,27 @@ export interface FakeCall {
   readonly query: string;
   readonly body: unknown;
   readonly authorization: string | undefined;
+  /** Every header the request carried, by lower-case name. */
+  readonly headerNames: ReadonlyArray<string>;
+}
+
+/** A worktree as Mend lists it (`Worktree` in @mend/domain/workbench). */
+export interface FakeWorktree {
+  readonly id: string;
+  readonly projectId: string;
+  readonly name: string;
+  readonly directory: string;
+  readonly branch: string;
+  /** The owner of its first session; null when it had none. */
+  changeOwnerUserId: string | null;
+  /** Whether Mend's history proves that owner started it. */
+  changeOwnerProven: boolean;
+}
+
+/** An answer the fake gives in place of its own behaviour. */
+export interface FakeAnswer {
+  readonly status: number;
+  readonly body: unknown;
 }
 
 let clock = Date.parse("2026-10-04T09:00:00.000Z");
@@ -208,7 +229,11 @@ export class FakeWorkbench {
     string,
     {
       readonly diff: string;
-      readonly files: ReadonlyArray<{ path: string; additions: number; deletions: number }>;
+      readonly files: ReadonlyArray<{
+        path: string;
+        additions: number;
+        deletions: number;
+      }>;
     }
   >();
   /** Session id → the people live in its executor, as `GET /api/sessions` lists them. */
@@ -240,6 +265,25 @@ export class FakeWorkbench {
   projectsDown = false;
   /** How many `GET /api/projects/:id` reads answer 502 before they answer again. */
   projectDetailFailures = 0;
+  /**
+   * The next `GET /api/projects/:id` reads now and answers once `until` settles: a read that began
+   * before something changed and lands after it. `reached` runs as it reads.
+   */
+  holdProjectDetail: {
+    readonly until: Promise<void>;
+    readonly reached: () => void;
+  } | null = null;
+  /**
+   * The same, each for the next request of `method` whose path `path` matches. `before`: the
+   * request is not even handled until `until` settles (Mend busy before it acts).
+   */
+  readonly holds: Array<{
+    readonly method: string;
+    readonly path: RegExp;
+    readonly until: Promise<void>;
+    readonly reached: () => void;
+    readonly before?: boolean;
+  }> = [];
   /** Whether a launch brings the agent up at all (false: provisioning stalls, to fail it later). */
   launchBringsAgentUp = true;
   /** How long after a launch answers its new agent is running. */
@@ -288,7 +332,11 @@ export class FakeWorkbench {
     const entered = Promise.withResolvers<void>();
     const turnsRead = Promise.withResolvers<void>();
     const answer = Promise.withResolvers<void>();
-    this.nextRequestsRead = { sessionId, entered: () => entered.resolve(), answer: answer.promise };
+    this.nextRequestsRead = {
+      sessionId,
+      entered: () => entered.resolve(),
+      answer: answer.promise,
+    };
     this.nextTurnsRead = { sessionId, entered: () => turnsRead.resolve() };
     return {
       entered: entered.promise,
@@ -307,7 +355,11 @@ export class FakeWorkbench {
   } {
     const entered = Promise.withResolvers<void>();
     const answer = Promise.withResolvers<void>();
-    this.nextStatsRead = { stall, entered: () => entered.resolve(), answer: answer.promise };
+    this.nextStatsRead = {
+      stall,
+      entered: () => entered.resolve(),
+      answer: answer.promise,
+    };
     return { entered: entered.promise, release: () => answer.resolve() };
   }
 
@@ -318,7 +370,10 @@ export class FakeWorkbench {
   } {
     const entered = Promise.withResolvers<void>();
     const answer = Promise.withResolvers<number>();
-    this.nextLaunchAnswer = { entered: () => entered.resolve(), answer: answer.promise };
+    this.nextLaunchAnswer = {
+      entered: () => entered.resolve(),
+      answer: answer.promise,
+    };
     return { entered: entered.promise, release: answer.resolve };
   }
   private nextAgent: Promise<void> | null = null;
@@ -331,6 +386,20 @@ export class FakeWorkbench {
   }
   /** `DELETE /api/sessions/:id` keeps the row until the workspace stops (`removed: false`). */
   removalLeavesWorkspace = false;
+  /** Sessions Mend answered `removed: false` for: listed, and saving, until `removeSession`. */
+  private readonly leaving = new Set<string>();
+  /**
+   * Every worktree, by id, as `GET /api/projects/:id/worktrees` lists it: made with its first
+   * session and kept after its sessions go, until the worktree or its project is removed.
+   */
+  readonly worktrees = new Map<string, FakeWorktree>();
+  /**
+   * Worktree id → Mend's answer to `DELETE /api/worktrees/:id`. Without one, the fake removes a
+   * worktree whose sessions have all settled, and refuses one that is saving or has a live agent.
+   */
+  readonly worktreeRemovalAnswers = new Map<string, FakeAnswer>();
+  /** Project id → Mend's answer to `DELETE /api/projects/:id`; without one, the project goes. */
+  readonly projectRemovalAnswers = new Map<string, FakeAnswer>();
 
   get eventStreams(): number {
     return this.streams.size;
@@ -359,7 +428,11 @@ export class FakeWorkbench {
   }
 
   addProject(id: string, name: string): void {
-    this.projects.set(id, { id, name, storePath: `/var/lib/mend/store/${id}/repo.git` });
+    this.projects.set(id, {
+      id,
+      name,
+      storePath: `/var/lib/mend/store/${id}/repo.git`,
+    });
     this.emit({ type: "project", projectId: id });
   }
 
@@ -401,6 +474,7 @@ export class FakeWorkbench {
       updatedAt: createdAt,
     };
     this.sessions.set(session.id, session);
+    this.keepWorktree(session);
     const kind = input.kind ?? "agent-protocol";
     this.agents.set(session.id, {
       id: this.nextId("process"),
@@ -410,7 +484,11 @@ export class FakeWorkbench {
       providerSessionId: `provider-${input.id}`,
       protocolOptions:
         kind === "agent-protocol"
-          ? { model: session.model, effort: null, permissionMode: input.permissionMode ?? "bypass" }
+          ? {
+              model: session.model,
+              effort: null,
+              permissionMode: input.permissionMode ?? "bypass",
+            }
           : null,
       createdAt,
       exitedAt: input.live === false ? createdAt : null,
@@ -428,7 +506,11 @@ export class FakeWorkbench {
     this.turns.set(session.id, []);
     this.items.set(session.id, []);
     this.requests.set(session.id, []);
-    this.emit({ type: "session", sessionId: session.id, projectId: session.projectId });
+    this.emit({
+      type: "session",
+      sessionId: session.id,
+      projectId: session.projectId,
+    });
     return session;
   }
 
@@ -436,6 +518,7 @@ export class FakeWorkbench {
     const session = this.sessions.get(sessionId);
     if (session === undefined) return;
     this.sessions.delete(sessionId);
+    this.leaving.delete(sessionId);
     this.emit({ type: "session", sessionId, projectId: session.projectId });
   }
 
@@ -461,7 +544,11 @@ export class FakeWorkbench {
     agent.exitedAt = tick();
     session.status = "stopped";
     session.updatedAt = tick();
-    this.emit({ type: "session-process", sessionId, projectId: session.projectId });
+    this.emit({
+      type: "session-process",
+      sessionId,
+      projectId: session.projectId,
+    });
   }
 
   startAgentOn(sessionId: string, model: string): void {
@@ -479,13 +566,21 @@ export class FakeWorkbench {
     session.model = model;
     session.status = "running";
     session.updatedAt = tick();
-    this.emit({ type: "session-process", sessionId, projectId: session.projectId });
+    this.emit({
+      type: "session-process",
+      sessionId,
+      projectId: session.projectId,
+    });
   }
 
   private conversationChanged(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session !== undefined) {
-      this.emit({ type: "agent-conversation", sessionId, projectId: session.projectId });
+      this.emit({
+        type: "agent-conversation",
+        sessionId,
+        projectId: session.projectId,
+      });
     }
   }
 
@@ -601,9 +696,27 @@ export class FakeWorkbench {
     const path = url.pathname;
     const method = request.method ?? "GET";
     if (!path.startsWith("/api/")) return false;
+    const holdAt = this.holds.findIndex(
+      (candidate) => candidate.method === method && candidate.path.test(path),
+    );
+    const matched = holdAt === -1 ? null : (this.holds.splice(holdAt, 1)[0] ?? null);
+    if (matched?.before === true) {
+      matched.reached();
+      return matched.until.then(() => this.route(request, response, body, accepted));
+    }
+    const projectHold =
+      /^\/api\/projects\/[^/]+$/.test(path) && method === "GET" ? this.holdProjectDetail : null;
+    if (projectHold !== null) this.holdProjectDetail = null;
+    const hold = projectHold ?? matched;
+    hold?.reached();
     const json = (status: number, value: unknown): true => {
-      response.writeHead(status, { "content-type": "application/json" });
-      response.end(value === undefined ? "" : JSON.stringify(value));
+      const text = value === undefined ? "" : JSON.stringify(value);
+      const write = () => {
+        response.writeHead(status, { "content-type": "application/json" });
+        response.end(text);
+      };
+      if (hold === null) write();
+      else void hold.until.then(write);
       return true;
     };
     const known =
@@ -622,6 +735,7 @@ export class FakeWorkbench {
         query: url.search,
         body: value,
         authorization: request.headers.authorization,
+        headerNames: Object.keys(request.headers),
       });
     };
 
@@ -688,7 +802,10 @@ export class FakeWorkbench {
         const name = "name" in payload && typeof payload.name === "string" ? payload.name : null;
         const base = "base" in payload && typeof payload.base === "string" ? payload.base : null;
         if (base === "no-such-branch") {
-          return json(422, { _tag: "StoreFailure", message: "fatal: invalid reference" });
+          return json(422, {
+            _tag: "StoreFailure",
+            message: "fatal: invalid reference",
+          });
         }
         return json(200, this.createSession(id, payload, { name, base, worktreeId: null }));
       });
@@ -729,7 +846,10 @@ export class FakeWorkbench {
             : query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         pattern = new RegExp(source, url.searchParams.get("caseSensitive") === "true" ? "" : "i");
       } catch {
-        return json(422, { _tag: "StoreFailure", message: "fatal: invalid regular expression" });
+        return json(422, {
+          _tag: "StoreFailure",
+          message: "fatal: invalid regular expression",
+        });
       }
       const matches = Array.from(this.fileContents.get(id) ?? new Map<string, string>()).flatMap(
         ([file, contents]) =>
@@ -739,7 +859,11 @@ export class FakeWorkbench {
               pattern.test(text) ? [{ path: file, line: index + 1, text }] : [],
             ),
       );
-      return json(200, { worktreeId: id, file: null, search: { matches, truncated: false } });
+      return json(200, {
+        worktreeId: id,
+        file: null,
+        search: { matches, truncated: false },
+      });
     }
     if (method === "GET" && collection === "worktrees" && sub === "diff") {
       const key = `${url.searchParams.get("from") ?? "base"}..${url.searchParams.get("to") ?? ""}`;
@@ -805,12 +929,59 @@ export class FakeWorkbench {
     }
     if (method === "GET" && collection === "projects" && sub === "worktrees") {
       if (this.projectView(id) === null) return json(404, { _tag: "NotFound" });
-      const names = new Set(
-        Array.from(this.sessions.values())
-          .filter((session) => session.projectId === id)
-          .map((session) => session.worktree),
-      );
-      return json(200, { worktrees: Array.from(names, (name) => ({ name })) });
+      return json(200, {
+        worktrees: Array.from(this.worktrees.values()).filter(
+          (worktree) => worktree.projectId === id,
+        ),
+      });
+    }
+    if (method === "DELETE" && collection === "projects" && sub === undefined) {
+      record(undefined);
+      const answer = this.projectRemovalAnswers.get(id);
+      if (answer !== undefined) return json(answer.status, answer.body);
+      if (this.projectView(id) === null) return json(404, { _tag: "NotFound", id });
+      this.projects.delete(id);
+      for (const session of Array.from(this.sessions.values())) {
+        if (session.projectId === id) this.sessions.delete(session.id);
+      }
+      for (const worktree of Array.from(this.worktrees.values())) {
+        if (worktree.projectId === id) this.worktrees.delete(worktree.id);
+      }
+      this.emit({ type: "project", projectId: id });
+      return json(200, { removed: true, leftover: null });
+    }
+    if (method === "DELETE" && collection === "worktrees" && sub === undefined) {
+      record(undefined);
+      const answer = this.worktreeRemovalAnswers.get(id);
+      if (answer !== undefined) return json(answer.status, answer.body);
+      const worktree = this.worktrees.get(id);
+      if (worktree === undefined) return json(404, { _tag: "WorktreeNotFound", id });
+      const inside = Array.from(this.sessions.values()).filter((s) => s.worktreeId === id);
+      const saving = inside.filter((session) => this.leaving.has(session.id));
+      if (saving.length > 0) {
+        return json(409, {
+          _tag: "RemovalRefused",
+          scope: "worktree",
+          blockers: [
+            {
+              _tag: "Saving",
+              worktreeId: id,
+              worktreeName: worktree.name,
+              holds: saving.map((session) => ({
+                sessionId: session.id,
+                kind: "saving",
+                via: "own",
+              })),
+            },
+          ],
+          forceWouldLift: false,
+          message: "not removed · saving",
+        });
+      }
+      for (const session of inside) this.sessions.delete(session.id);
+      this.worktrees.delete(id);
+      this.emit({ type: "worktree", projectId: worktree.projectId });
+      return json(200, { removed: true, leftover: null });
     }
     if (
       method === "GET" &&
@@ -870,7 +1041,11 @@ export class FakeWorkbench {
       if (session === undefined || !canReadProject(session.projectId))
         return json(404, { _tag: "NotFound" });
       const notOwner = () =>
-        json(403, { _tag: "SessionNotSteerable", sessionId: id, message: "not yours" });
+        json(403, {
+          _tag: "SessionNotSteerable",
+          sessionId: id,
+          message: "not yours",
+        });
       if (method === "POST" && sub === "label") {
         return body().then((value) => {
           record(value);
@@ -880,7 +1055,11 @@ export class FakeWorkbench {
             "label" in payload && typeof payload.label === "string" ? payload.label.trim() : "";
           session.label = label.length === 0 ? null : label;
           session.updatedAt = tick();
-          this.emit({ type: "session", sessionId: id, projectId: session.projectId });
+          this.emit({
+            type: "session",
+            sessionId: id,
+            projectId: session.projectId,
+          });
           return json(200, session);
         });
       }
@@ -915,6 +1094,7 @@ export class FakeWorkbench {
           return json(409, { _tag: "SessionActive", id });
         }
         if (this.removalLeavesWorkspace) {
+          this.leaving.add(id);
           return json(200, {
             removed: false,
             leftover: "workspace · removed once its workspace has stopped",
@@ -1000,7 +1180,10 @@ export class FakeWorkbench {
           record(value);
           held.entered();
           const status = await held.answer;
-          return json(status, { _tag: "StoreFailure", message: "launch refused" });
+          return json(status, {
+            _tag: "StoreFailure",
+            message: "launch refused",
+          });
         });
       }
       if (method === "POST" && sub === "launch" && this.launchAnswerDelayMs > 0) {
@@ -1012,7 +1195,10 @@ export class FakeWorkbench {
               resolve(
                 status === null
                   ? this.command(sub, session, value, json)
-                  : json(status, { _tag: "StoreFailure", message: "launch refused" }),
+                  : json(status, {
+                      _tag: "StoreFailure",
+                      message: "launch refused",
+                    }),
               );
             }, this.launchAnswerDelayMs),
           );
@@ -1030,7 +1216,10 @@ export class FakeWorkbench {
           const encoded = Object.entries(payload).find(([key]) => key === "contentsBase64")?.[1];
           const bytes = Buffer.from(typeof encoded === "string" ? encoded : "", "base64");
           if (bytes.byteLength === 0) {
-            return json(422, { _tag: "PastedImageRejected", message: "not an image" });
+            return json(422, {
+              _tag: "PastedImageRejected",
+              message: "not an image",
+            });
           }
           this.pastedImages += 1;
           // As mend#615 places a paste: in a per-person executor, in the sender's own directory;
@@ -1041,7 +1230,11 @@ export class FakeWorkbench {
               ? "/workspace/harness-home/paste"
               : `/workspace/harness-home/people/${account}/paste`;
           const placed = `${directory}/20261010-090000-${this.pastedImages}.png`;
-          return json(200, { path: placed, mediaType: "image/png", bytes: bytes.byteLength });
+          return json(200, {
+            path: placed,
+            mediaType: "image/png",
+            bytes: bytes.byteLength,
+          });
         });
       }
       if (method === "POST" && (sub === "turns" || sub === "launch")) {
@@ -1207,7 +1400,10 @@ export class FakeWorkbench {
       if (this.turnsUnauthorized) return json(401, { _tag: "Unauthorized" });
       if (this.turnsNotLive) return json(409, { _tag: "ProtocolSessionNotLive", processId: "p" });
       if (agent === undefined || agent.exitedAt !== null || agent.status !== "running") {
-        return json(409, { _tag: "ProtocolSessionNotLive", processId: agent?.id ?? "none" });
+        return json(409, {
+          _tag: "ProtocolSessionNotLive",
+          processId: agent?.id ?? "none",
+        });
       }
       const input = "input" in payload && typeof payload.input === "string" ? payload.input : "";
       const open = (this.turns.get(session.id) ?? []).some(
@@ -1229,7 +1425,11 @@ export class FakeWorkbench {
         harness: session.harness,
         status: "exited",
         providerSessionId: `provider-${session.id}`,
-        protocolOptions: { model: named("model"), effort: named("effort"), permissionMode },
+        protocolOptions: {
+          model: named("model"),
+          effort: named("effort"),
+          permissionMode,
+        },
         createdAt: tick(),
         exitedAt: tick(),
       });
@@ -1275,7 +1475,11 @@ export class FakeWorkbench {
         });
         session.status = "running";
         session.updatedAt = tick();
-        this.emit({ type: "session-process", sessionId: session.id, projectId: session.projectId });
+        this.emit({
+          type: "session-process",
+          sessionId: session.id,
+          projectId: session.projectId,
+        });
       }, this.launchLiveDelayMs);
       return json(422, { _tag: "StoreFailure", message: refusal.words });
     }
@@ -1308,7 +1512,11 @@ export class FakeWorkbench {
         });
         session.status = "running";
         session.updatedAt = tick();
-        this.emit({ type: "session-process", sessionId: session.id, projectId: session.projectId });
+        this.emit({
+          type: "session-process",
+          sessionId: session.id,
+          projectId: session.projectId,
+        });
         if (prompt !== null && prompt !== "") this.addTurn(session.id, prompt, "running");
       };
       const held = this.nextAgent;
@@ -1347,7 +1555,12 @@ export class FakeWorkbench {
     string,
     {
       diff: string;
-      files: ReadonlyArray<{ path: string; status: string; additions: number; deletions: number }>;
+      files: ReadonlyArray<{
+        path: string;
+        status: string;
+        additions: number;
+        deletions: number;
+      }>;
       /** Mend rendered only some of the files' patches. */
       truncated?: boolean;
     }
@@ -1382,7 +1595,10 @@ export class FakeWorkbench {
   /** The next landing's pull request step fails with `gh`'s words, after its push. */
   nextPullRequestFailure: string | null = null;
   /** The next `POST /api/sessions/:id/land` answers this instead of landing. */
-  nextLandingAnswer: { readonly status: number; readonly body: unknown } | null = null;
+  nextLandingAnswer: {
+    readonly status: number;
+    readonly body: unknown;
+  } | null = null;
   private pullRequestNumbers = 0;
   private shas = 0;
 
@@ -1399,7 +1615,12 @@ export class FakeWorkbench {
   }
 
   private availabilityOf(projectId: string) {
-    return this.pullRequestAvailability.get(projectId) ?? { available: true, reason: null };
+    return (
+      this.pullRequestAvailability.get(projectId) ?? {
+        available: true,
+        reason: null,
+      }
+    );
   }
 
   /** `ChangeLandingsView` for a change, as the caller reads it. */
@@ -1414,11 +1635,22 @@ export class FakeWorkbench {
     const since = this.sinceLanding.get(changeId) ?? 0;
     const facts: Array<Record<string, unknown>> = [];
     if (lastPush?.pushedSha != null) {
-      facts.push({ _tag: "pushed", branch: lastPush.remoteBranch, sha: lastPush.pushedSha });
+      facts.push({
+        _tag: "pushed",
+        branch: lastPush.remoteBranch,
+        sha: lastPush.pushedSha,
+      });
     }
     if (lastPullRequest?.pullRequest != null) {
       const { number, state, observedAt } = lastPullRequest.pullRequest;
-      facts.push({ _tag: "pull-request", number, state, observedAt, outside: false, fork: null });
+      facts.push({
+        _tag: "pull-request",
+        number,
+        state,
+        observedAt,
+        outside: false,
+        fork: null,
+      });
     }
     if (lastPush !== undefined && since > 0) {
       facts.push({ _tag: "changed-since-landing", files: since });
@@ -1447,7 +1679,10 @@ export class FakeWorkbench {
     if (owner === null || owner !== caller) {
       return {
         status: 403,
-        body: { _tag: "LandingNotAllowed", message: "only the change's owner lands it" },
+        body: {
+          _tag: "LandingNotAllowed",
+          message: "only the change's owner lands it",
+        },
       };
     }
     const history = this.landings.get(changeId) ?? [];
@@ -1516,10 +1751,16 @@ export class FakeWorkbench {
       stepFailure !== null
         ? { _tag: "failed", message: stepFailure }
         : opened !== null
-          ? { _tag: previous === null ? "opened" : "updated", pullRequest: opened }
+          ? {
+              _tag: previous === null ? "opened" : "updated",
+              pullRequest: opened,
+            }
           : !pullRequest
             ? { _tag: "off" }
-            : { _tag: "unavailable", reason: availability.reason ?? "pull request unavailable" };
+            : {
+                _tag: "unavailable",
+                reason: availability.reason ?? "pull request unavailable",
+              };
     return { status: 200, body: { landing, pullRequest: step } };
   }
   /** How many images were pasted into workspaces. */
@@ -1552,7 +1793,10 @@ export class FakeWorkbench {
   }
 
   /** Every launch Mend took, with what it named. */
-  readonly launches: Array<{ readonly sessionId: string; readonly body: object }> = [];
+  readonly launches: Array<{
+    readonly sessionId: string;
+    readonly body: object;
+  }> = [];
 
   /** A session the caller owns, in a new worktree or one it joins; no agent until it launches. */
   private createSession(
@@ -1592,6 +1836,7 @@ export class FakeWorkbench {
       updatedAt: createdAt,
     };
     this.sessions.set(id, session);
+    this.keepWorktree(session);
     this.changes.set(
       id,
       joined === undefined ? `change-${id}` : (this.changes.get(joined.id) ?? ""),
@@ -1606,6 +1851,20 @@ export class FakeWorkbench {
     }
     this.emit({ type: "session", sessionId: id, projectId });
     return session;
+  }
+
+  /** The session's worktree, made with it when it is the first there. */
+  private keepWorktree(session: FakeSession): void {
+    if (this.worktrees.has(session.worktreeId)) return;
+    this.worktrees.set(session.worktreeId, {
+      id: session.worktreeId,
+      projectId: session.projectId,
+      name: session.worktree,
+      directory: session.worktree,
+      branch: session.branch,
+      changeOwnerUserId: session.ownerUserId,
+      changeOwnerProven: session.ownerUserId !== null,
+    });
   }
 
   private projectView(id: string) {

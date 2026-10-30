@@ -1,7 +1,15 @@
 import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 
-import { NotFound, SealantUnavailable, StoreFailure } from "@mend/api-contracts";
+import {
+  LaunchRequest,
+  NotFound,
+  ResumeRequest,
+  SealantUnavailable,
+  StoreFailure,
+} from "@mend/api-contracts";
+import { ServiceId, SessionId } from "@mend/domain";
+import { REMOVAL_START_REFUSED } from "@mend/domain/workbench";
 import { TRPCError } from "@trpc/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -17,10 +25,15 @@ import { run } from "./run.ts";
 
 let server: Server;
 let port = 0;
-let mode: "unreachable" | "http-503" | "http-401" = "http-503";
+let mode: "unreachable" | "http-503" | "http-401" | "removal-in-progress" = "http-503";
 
 beforeAll(async () => {
   server = createServer((_request, response) => {
+    if (mode === "removal-in-progress") {
+      response.writeHead(409, { "content-type": "application/json" });
+      response.end(JSON.stringify({ _tag: "RemovalInProgress", message: REMOVAL_START_REFUSED }));
+      return;
+    }
     if (mode === "http-503") {
       response.writeHead(503, { "content-type": "text/plain" });
       response.end("busy");
@@ -42,9 +55,12 @@ afterAll(() => {
 
 const ctxFor = (apiUrl: string) => ({ headers: new Headers(), apiUrl });
 
-const failure = async (apiUrl: string): Promise<TRPCError> => {
+const failure = async (
+  apiUrl: string,
+  call: Parameters<typeof run>[1] = (api) => api.health.status(),
+): Promise<TRPCError> => {
   try {
-    await run(ctxFor(apiUrl), (api) => api.health.status());
+    await run(ctxFor(apiUrl), call);
   } catch (error) {
     if (error instanceof TRPCError) return error;
     throw error;
@@ -73,6 +89,39 @@ describe("run + toTRPCError against a real client", () => {
     const error = await failure(`http://127.0.0.1:${port}`);
     expect(error.code).toBe("UNAUTHORIZED");
   });
+});
+
+describe("a start a removal's mark refused, through the real client", () => {
+  const session = SessionId.make("s-1");
+  const starts: ReadonlyArray<readonly [string, Parameters<typeof run>[1]]> = [
+    [
+      "launch",
+      (api) => api.sessions.launch({ params: { id: session }, payload: new LaunchRequest({}) }),
+    ],
+    [
+      "resume",
+      (api) =>
+        api.sessions.resume({
+          params: { id: session },
+          payload: new ResumeRequest({ harness: null }),
+        }),
+    ],
+    ["openShell", (api) => api.sessions.openShell({ params: { id: session } })],
+    [
+      "restartService",
+      (api) => api.sessions.restartService({ params: { id: ServiceId.make("svc-1") } }),
+    ],
+  ];
+
+  for (const [name, call] of starts) {
+    it(`reads ${name}'s refusal as the conflict it is, in the server's words`, async () => {
+      mode = "removal-in-progress";
+      const error = await failure(`http://127.0.0.1:${port}`, call);
+      expect(error.code).toBe("CONFLICT");
+      expect(error.message).toBe(REMOVAL_START_REFUSED);
+      expect(error.cause instanceof ApiRefusal ? error.cause.tag : null).toBe("RemovalInProgress");
+    });
+  }
 });
 
 describe("a refusal the API declared", () => {

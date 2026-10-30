@@ -2,6 +2,7 @@ import { SealantRunId, SessionProcessId } from "@mend/domain";
 import { Change as SessionChange } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApi } from "effect/http-api";
+import * as SchemaAST from "effect/SchemaAST";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -32,6 +33,61 @@ const typedEndpointNames = new Set([
   "renameShell",
   "sliceComment",
 ]);
+
+/**
+ * Every endpoint whose handler can start work a removal's mark refuses (migration 0166): a
+ * session, a launch, a shell, a Service, a standby, a new worktree. The API's error boundary
+ * answers that refusal `409 RemovalInProgress` on any route, so each must declare it, or the
+ * generated client cannot read it.
+ */
+const STARTS_WORK = [
+  "sessions.create",
+  "sessions.sendMessage",
+  "sessions.submitTurn",
+  "sessions.steerTurn",
+  "sessions.replaceWorkspace",
+  "sessions.openShell",
+  "sessions.addService",
+  "sessions.runService",
+  "sessions.runServiceRecipe",
+  "sessions.restartService",
+  "sessions.launch",
+  "sessions.resume",
+  "sessions.switchMode",
+  "sessions.followUpDeliver",
+  "worktrees.create",
+  "worktrees.createSession",
+  "handoffs.receive",
+  "projects.hotSessions",
+] as const;
+
+const sentinels = SchemaAST.resolveAt("~sentinels");
+const tagOf = (ast: SchemaAST.AST): unknown => {
+  const found = sentinels(ast);
+  return Array.isArray(found)
+    ? found.find((sentinel) => sentinel.key === "_tag")?.literal
+    : undefined;
+};
+
+describe("RemovalInProgress", () => {
+  it("is declared, at 409, by every endpoint that starts work", () => {
+    const declared = new Map<string, boolean>();
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint, errors }) => {
+        const name = `${group.identifier}.${endpoint.identifier}`;
+        if (!STARTS_WORK.some((start) => start === name)) return;
+        declared.set(
+          name,
+          [...(errors.get(409) ?? [])].some((schema) => tagOf(schema.ast) === "RemovalInProgress"),
+        );
+      },
+    });
+    expect(Object.fromEntries(declared)).toEqual(
+      Object.fromEntries(STARTS_WORK.map((name) => [name, true])),
+    );
+  });
+});
 
 describe("typed HTTP error contracts", () => {
   it("offers two source-free project creation endpoints alongside unchanged adoption", () => {
@@ -131,8 +187,12 @@ describe("typed HTTP error contracts", () => {
       expect(statuses.get(name)?.has(409)).toBe(false);
     }
     expect(statuses.get("create")?.has(409), "create should preserve WorktreeNameTaken").toBe(true);
-    expect(statuses.get("remove")?.has(409), "remove should preserve WorktreeActive").toBe(true);
-    expect(statuses.get("remove")?.has(422), "remove should preserve StoreFailure").toBe(true);
+    expect(statuses.get("remove")?.has(409), "remove should preserve RemovalRefused").toBe(true);
+    expect(statuses.get("remove")?.has(403), "remove should preserve RemovalForbidden").toBe(true);
+    expect(
+      statuses.get("createSession")?.has(409),
+      "createSession should preserve RemovalInProgress",
+    ).toBe(true);
     expect(statuses.get("diff")?.has(422), "diff should preserve StoreFailure").toBe(true);
     expect(statuses.get("contents")?.has(422), "contents should preserve StoreFailure").toBe(true);
   });

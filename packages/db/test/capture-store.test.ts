@@ -184,6 +184,40 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
     expect(outcomes.head?.headN).toBe(-1);
   });
 
+  it("claim: refused while a removal of the worktree or its project holds its mark (0166)", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const claimed = (executor: string) =>
+          repo.claim(worktreeId, executor).pipe(
+            Effect.as("claimed"),
+            Effect.catchTag("WorktreeLeasedError", () => Effect.succeed("refused")),
+          );
+        const mark = (table: "worktrees" | "projects", id: string) =>
+          sql`UPDATE ${sql(table)} SET removal_phase = 'checking', removal_id = 'rmv_test',
+                removal_since = now() WHERE id = ${id}`;
+        const clear = (table: "worktrees" | "projects", id: string) =>
+          sql`UPDATE ${sql(table)} SET removal_phase = NULL, removal_id = NULL,
+                removal_since = NULL WHERE id = ${id}`;
+        yield* mark("worktrees", worktreeId);
+        const whileWorktree = yield* claimed("exec-a");
+        yield* clear("worktrees", worktreeId);
+        yield* mark("projects", PROJECT);
+        const whileProject = yield* claimed("exec-a");
+        yield* clear("projects", PROJECT);
+        const after = yield* claimed("exec-a");
+        return { whileWorktree, whileProject, after };
+      }),
+    );
+    expect(outcome).toEqual({
+      whileWorktree: "refused",
+      whileProject: "refused",
+      after: "claimed",
+    });
+  });
+
   it("publication guard prepares only for the current live epoch and exact holder", async () => {
     const result = await run(
       Effect.gen(function* () {

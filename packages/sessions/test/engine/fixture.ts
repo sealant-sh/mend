@@ -72,6 +72,9 @@ import {
   type AgentMemoryHomes,
   makeScreensMemory,
   ScreensRepo,
+  RemovalFenced,
+  RemovalFencesRepo,
+  SessionAdmissionId,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -1482,6 +1485,10 @@ export interface World {
   readonly serviceForwards: Map<string, ServiceForward>;
   readonly serviceObservations: Map<string, ServiceObservation>;
   readonly reachedAttempts: Set<string>;
+  /** Sessions a removal's mark covers: their starts are not admitted (`RemovalFencesRepo.admit`). */
+  readonly removalMarkedSessions: Set<string>;
+  /** Starts admitted and not yet ended, by admission id: the session each is for. */
+  readonly admissions: Map<string, string>;
   /** Each Service attempt's recorded launch (`launch_cwd`, `launch_env`, `launch_ready`). */
   readonly launches: Map<string, ServiceLaunch>;
   readonly setupRuns: Array<WorldSetupRun>;
@@ -1590,6 +1597,8 @@ export const makeWorld = (): World => ({
   serviceForwards: new Map(),
   serviceObservations: new Map(),
   reachedAttempts: new Set(),
+  removalMarkedSessions: new Set(),
+  admissions: new Map(),
   launches: new Map(),
   setupRuns: [],
   setupFinishing: undefined,
@@ -2290,6 +2299,10 @@ export const setupRunsLayer = (world: World) => {
       Effect.sync(
         () => world.setupRuns.filter((row) => row.workspaceId === workspaceId && live(row)).length,
       ),
+    unendedInWorktree: (worktreeId) =>
+      Effect.sync(() =>
+        world.setupRuns.some((row) => row.worktreeId === worktreeId && row.state === "running"),
+      ),
     renew: (claimId, leaseMs) =>
       Effect.sync(() => {
         const row = held(claimId);
@@ -2690,6 +2703,17 @@ export const sessionsLayer = (world: World) => {
           createdAt: world.clock.now(),
           updatedAt: world.clock.now(),
         });
+        // Migration 0166's insert trigger: the first session's owner owns the change.
+        const worktree = world.worktrees.get(session.worktreeId);
+        const first = ![...world.sessions.values()].some(
+          (other) => other.worktreeId === session.worktreeId,
+        );
+        if (worktree !== undefined && worktree.changeOwnerUserId === null && first) {
+          world.worktrees.set(
+            worktree.id,
+            new Worktree({ ...worktree, changeOwnerUserId: session.ownerUserId }),
+          );
+        }
         world.sessions.set(session.id, session);
         return session;
       }),
@@ -3220,6 +3244,8 @@ export const worktreesLayer = (world: World) =>
       Effect.sync(() => {
         world.worktrees.delete(id);
       }),
+    changeOwnerOf: (id) => Effect.succeed(world.worktrees.get(id)?.changeOwnerUserId ?? null),
+    nestedRepositories: () => Effect.succeed([]),
     newestLiveSessionId: (id) =>
       Effect.succeed(
         [...world.sessions.values()]
@@ -3968,6 +3994,24 @@ export const withPreparedEngineEffect = <B, A, E>(
           });
     const preferences = options.messageSettings ?? new Map<string, MessageSettings>();
     const engineLayer = SessionEngineLive.pipe(
+      Layer.provide(
+        Layer.mock(RemovalFencesRepo, {
+          admit: (sessionId) =>
+            Effect.suspend(() => {
+              const live = ["starting", "running", "waiting", "idle"].includes(
+                world.sessions.get(sessionId)?.status ?? "",
+              );
+              if (world.removalMarkedSessions.has(sessionId) && !live) {
+                return Effect.die(new RemovalFenced(`session ${sessionId} is being removed`));
+              }
+              const id = SessionAdmissionId.make(`adm_${world.admissions.size + 1}_${sessionId}`);
+              world.admissions.set(id, sessionId);
+              return Effect.succeed(id);
+            }),
+          renewAdmission: () => Effect.void,
+          endAdmission: (id) => Effect.sync(() => void world.admissions.delete(id)),
+        }),
+      ),
       Layer.provide(
         Layer.succeed(MessageSettingsRepo, {
           forUser: (id) => Effect.sync(() => preferences.get(id) ?? DEFAULT_MESSAGE_SETTINGS),

@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
+import { hasProvenOwner, OWNERLESS_OUTSIDE_MEND } from "@mend/domain/workbench";
 import {
   EventId,
   OrchestrationProjectShell,
@@ -22,6 +23,7 @@ import {
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
   type OrchestrationV2ThreadProjection,
+  type Project,
   type ProjectScript,
   type ServerSettings,
 } from "@mend/t3-contracts";
@@ -109,6 +111,17 @@ import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
 import * as Queueing from "./queue.ts";
 import {
+  AMBIGUOUS_WORKTREE,
+  NOT_A_PROJECT,
+  NOT_A_WORKTREE,
+  PROJECT_NOT_LISTED,
+  projectRemovalWords,
+  RemovalKept,
+  removalUnansweredWords,
+  worktreeDirectoryAt,
+  worktreeRemovalWords,
+} from "./removal.ts";
+import {
   makeReplayLog,
   makeSequencer,
   SHELL_REPLAY_LIMITS,
@@ -195,6 +208,12 @@ export type HubReadError = MendDeviceRefused | MendUnavailable;
 
 /** How much of a branch's name a new worktree's name keeps, before its suffix. */
 const WORKTREE_NAME_STEM = 53;
+/**
+ * How long a worktree removal waits for the worktree's deleted threads to finish their removal in
+ * Mend (a stop drains and saves first), and how often it looks. Then Mend is asked anyway.
+ */
+const REMOVAL_SETTLE_WAIT = "45 seconds";
+const REMOVAL_SETTLE_LOOK = "1 second";
 const SUFFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 /** Six random characters of `[a-z0-9]`: what makes a new worktree's name its own. */
 const worktreeSuffix = (): string =>
@@ -386,6 +405,24 @@ export interface PersonHub {
     path: string,
     threadId?: string,
   ) => Effect.Effect<WorktreeFile | null, HubReadError>;
+  /**
+   * Removes the worktree at `path` of the project at `cwd` in Mend (`vcs.removeWorktree`, sent once
+   * t3code deleted its last thread), never with force: Mend's refusals stand. A worktree Mend no
+   * longer has is removed already.
+   */
+  readonly removeWorktree: (input: {
+    readonly session: BearerSession;
+    readonly cwd: string;
+    readonly path: string;
+  }) => Effect.Effect<void, RemovalKept | HubReadError>;
+  /**
+   * Removes the project in Mend (`project.delete`), which has no force. Answers the project as
+   * t3code's own server does, deleted, once the shell no longer holds it.
+   */
+  readonly removeProject: (input: {
+    readonly session: BearerSession;
+    readonly projectId: string;
+  }) => Effect.Effect<Project, RemovalKept | HubReadError>;
 }
 
 export interface WorktreeFile {
@@ -945,6 +982,10 @@ const FULL_READ_RETRY = "3 seconds";
 /** A stream that lasted this long resets the backoff: it was a drop, not a refusal loop. */
 const HEALTHY_STREAM_MS = 30_000;
 
+/** Mend took a removal and gave no answer to read: whether it removed anything is open. */
+const unanswered = (what: "worktree" | "project", error: MendUnavailable) =>
+  Effect.fail(new RemovalKept({ reason: removalUnansweredWords(what, error.status) }));
+
 const projectableSessionIds = (
   entry: ProjectEntry,
   launched: ReadonlyMap<string, LaunchedThread>,
@@ -1399,6 +1440,8 @@ export const makePersonHub = (input: {
     const handledCommands = new Set<string>();
 
     const projects = new Map<string, ProjectEntry>();
+    /** Projects removed from here: a read that began before the removal never brings one back. */
+    const removedProjects = new Set<string>();
     const conversations = new Map<string, Conversation>();
     /**
      * Session id → the turns Mend answered `POST /turns` with that no read of Mend has shown yet. A
@@ -2182,9 +2225,11 @@ export const makePersonHub = (input: {
         { concurrency: 2 },
       );
       const facts = people ?? active;
-      const entries = details.filter((entry): entry is ProjectEntry => entry !== null);
-      const sessionIds = entries.flatMap((entry) => projectableSessionIds(entry, launched));
-      const [read, retired] = yield* Effect.all(
+      const read = details.filter(
+        (entry): entry is ProjectEntry => entry !== null && !removedProjects.has(entry.project.id),
+      );
+      const sessionIds = read.flatMap((entry) => projectableSessionIds(entry, launched));
+      const [conversationsRead, retiredRead] = yield* Effect.all(
         [readConversations(sessionIds, facts), readRetirements(sessionIds, facts)],
         { concurrency: 2 },
       );
@@ -2199,22 +2244,26 @@ export const makePersonHub = (input: {
       );
       yield* locked(
         Effect.gen(function* () {
+          // A project removed while the reads above ran stays removed, with its threads.
+          const entries = read.filter((entry) => !removedProjects.has(entry.project.id));
+          const present = new Set(entries.flatMap((entry) => entry.sessions.map((s) => s.id)));
+          const kept = <A>(rows: ReadonlyArray<readonly [string, A]>) =>
+            rows.filter(([sessionId]) => present.has(sessionId));
           projects.clear();
           for (const entry of entries) projects.set(entry.project.id, entry);
-          const present = new Set(entries.flatMap((entry) => entry.sessions.map((s) => s.id)));
           seen(present);
           const finished = Array.from(removing).filter((sessionId) => !present.has(sessionId));
           for (const sessionId of finished) removing.delete(sessionId);
           yield* removed(finished);
           active = facts;
-          applyRetirements(retired);
+          applyRetirements(kept(retiredRead));
           conversations.clear();
-          for (const [sessionId, conversation] of read) {
+          for (const [sessionId, conversation] of kept(conversationsRead)) {
             if (conversation !== null) {
               conversations.set(sessionId, withAdopted(sessionId, conversation));
             }
           }
-          for (const [sessionId, items] of caughtUp) {
+          for (const [sessionId, items] of kept(caughtUp)) {
             const watch = watches.get(sessionId);
             if (watch !== undefined) mergeItems(watch, items);
           }
@@ -2273,6 +2322,7 @@ export const makePersonHub = (input: {
         );
         yield* locked(
           Effect.gen(function* () {
+            if (removedProjects.has(projectId)) return;
             const previous = projects.get(projectId);
             if (entry === null) {
               projects.delete(projectId);
@@ -3373,9 +3423,9 @@ export const makePersonHub = (input: {
      * saw free (review 590-R2-1). The suffix makes the name its own whoever creates at once.
      */
     const freeWorktreeName = (token: string, projectId: string, wanted: string) =>
-      mend.worktreeNames(token, projectId).pipe(
-        Effect.map((names) => {
-          const taken = new Set(names);
+      mend.listWorktrees(token, projectId).pipe(
+        Effect.map((worktrees) => {
+          const taken = new Set(worktrees.map((worktree) => worktree.name));
           for (let attempt = 0; attempt < 5; attempt++) {
             const candidate = `${wanted.slice(0, WORKTREE_NAME_STEM)}-${worktreeSuffix()}`;
             if (!taken.has(candidate)) return candidate;
@@ -4533,6 +4583,120 @@ export const makePersonHub = (input: {
         );
       });
 
+    // ─── Removing a worktree or a project (decision 11) ────────────────────
+
+    /** Sessions of the worktree whose removal Mend has not finished: deleted, still saving. */
+    const removalsUnderWay = (worktreeId: string) =>
+      locked(
+        Effect.sync(() =>
+          Array.from(projects.values()).some((entry) =>
+            entry.sessions.some(
+              (session) => session.worktreeId === worktreeId && removing.has(session.id),
+            ),
+          ),
+        ),
+      );
+
+    /**
+     * Waits, at most `REMOVAL_SETTLE_WAIT`, for the worktree's deleted sessions to finish their
+     * removal. t3code asks to remove the worktree right after deleting its last thread, whose stop
+     * may still be saving; asked now, Mend would refuse every such yes as saving.
+     */
+    const settledRemovals = (worktreeId: string) =>
+      Effect.gen(function* () {
+        while (yield* removalsUnderWay(worktreeId)) yield* Effect.sleep(REMOVAL_SETTLE_LOOK);
+      }).pipe(Effect.timeoutOrElse({ duration: REMOVAL_SETTLE_WAIT, orElse: () => Effect.void }));
+
+    const removeWorktree: PersonHub["removeWorktree"] = (request) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const token = request.session.deviceToken;
+        const project = yield* locked(
+          Effect.sync(
+            () =>
+              Array.from(projects.values()).find((entry) => entry.project.storePath === request.cwd)
+                ?.project ?? null,
+          ),
+        );
+        if (project === null) return yield* new RemovalKept({ reason: NOT_A_PROJECT });
+        const directory = worktreeDirectoryAt(project, request.path);
+        if (directory === null) return yield* new RemovalKept({ reason: NOT_A_WORKTREE });
+        const listed = yield* mend
+          .listWorktrees(token, project.id)
+          .pipe(
+            Effect.catchTag("MendNotFound", () =>
+              Effect.fail(new RemovalKept({ reason: PROJECT_NOT_LISTED })),
+            ),
+          );
+        const [worktree, ...others] = listed.filter(
+          (candidate) => candidate.directory === directory,
+        );
+        // Gone already: removed, as t3code's own server answers for a path that is not there.
+        if (worktree === undefined) return;
+        if (others.length > 0) return yield* new RemovalKept({ reason: AMBIGUOUS_WORKTREE });
+        // Decision Q8: a recorded owner never changes, so one proven here is the one Mend checks.
+        if (!hasProvenOwner(worktree)) {
+          return yield* new RemovalKept({ reason: OWNERLESS_OUTSIDE_MEND });
+        }
+        // Only the change's owner waits for a save: Mend refuses anyone else at once, by name.
+        if (worktree.changeOwnerUserId === request.session.mendUser.id) {
+          yield* settledRemovals(worktree.id);
+        }
+        const answer = yield* mend
+          .removeWorktree(token, worktree.id)
+          .pipe(Effect.catchTag("MendUnavailable", (error) => unanswered("worktree", error)));
+        const refusal = worktreeRemovalWords(answer);
+        if (refusal !== null) return yield* new RemovalKept({ reason: refusal });
+        yield* requestRefresh(`project:${project.id}`);
+      });
+
+    const removeProject: PersonHub["removeProject"] = (request) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const shown = yield* locked(
+          Effect.sync(() => {
+            const entry = projects.get(request.projectId);
+            return entry === undefined
+              ? null
+              : projectShellOf(
+                  entry.project,
+                  projectScripts.get(entry.project.id) ?? [],
+                  keeper?.id ?? "",
+                );
+          }),
+        );
+        if (shown === null) return yield* new RemovalKept({ reason: PROJECT_NOT_LISTED });
+        const refusal = projectRemovalWords(
+          yield* mend
+            .removeProject(request.session.deviceToken, request.projectId)
+            .pipe(Effect.catchTag("MendUnavailable", (error) => unanswered("project", error))),
+        );
+        if (refusal !== null) return yield* new RemovalKept({ reason: refusal });
+        yield* projectRemoved(request.projectId);
+        return { ...shown, deletedAt: DateTime.formatIso(yield* DateTime.now) };
+      });
+
+    /**
+     * Mend removed the project: it and its threads leave the shell now, from Mend's answer alone,
+     * and no read that began before it puts them back.
+     */
+    const projectRemoved = (projectId: string) =>
+      locked(
+        Effect.gen(function* () {
+          removedProjects.add(projectId);
+          const previous = projects.get(projectId);
+          projects.delete(projectId);
+          const finished: Array<string> = [];
+          for (const session of previous?.sessions ?? []) {
+            conversations.delete(session.id);
+            adoptedTurns.delete(session.id);
+            if (removing.delete(session.id)) finished.push(session.id);
+          }
+          yield* removed(finished);
+          yield* publishAll;
+        }),
+      );
+
     const terminals = makeTerminals({
       mend,
       mendUrl: input.mendUrl ?? new URL("http://127.0.0.1:0"),
@@ -4647,6 +4811,8 @@ export const makePersonHub = (input: {
       commands,
       createProject,
       changeOfWorktree,
+      removeWorktree,
+      removeProject,
     };
   });
 

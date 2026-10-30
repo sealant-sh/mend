@@ -32,6 +32,7 @@ import {
   type SlackLink,
   type SlackOwnedSession,
   type SlackThreadSession,
+  WorktreesRepo,
 } from "@mend/db";
 import {
   AgentRequestId,
@@ -720,6 +721,17 @@ const world = (options: WorldOptions = {}) => {
             ...sessionsCreated.values(),
             ...(earlierSession === null ? [] : [earlierSession]),
           ].filter((made) => made.worktreeId === worktreeId),
+        ),
+    }),
+    // The change's owner, as the first session's insert stored it.
+    Layer.mock(WorktreesRepo, {
+      changeOwnerOf: (worktreeId) =>
+        Effect.sync(
+          () =>
+            [...(earlierSession === null ? [] : [earlierSession]), ...sessionsCreated.values()]
+              .filter((made) => made.worktreeId === worktreeId)
+              .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0]?.ownerUserId ??
+            null,
         ),
     }),
     Layer.mock(AgentConversationRepo, {

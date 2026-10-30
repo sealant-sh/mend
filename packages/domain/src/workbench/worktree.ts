@@ -55,6 +55,25 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
    * started from a base, and for one a server from before handoffs lists.
    */
   handoff: Schema.NullOr(WorktreeHandoff).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /**
+   * The change's owner (docs/adr/0007-landing.md, "Who lands"): the owner of the worktree's first
+   * session, recorded once when that session starts and kept when it is deleted. Null when the
+   * worktree has had no session, or its first session had no owner; a server from before 0.37 never
+   * sends it.
+   */
+  changeOwnerUserId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Whether Mend's history proves `changeOwnerUserId` was the first session's owner. A worktree
+   * from before 0.37 may have had a first session that was deleted before Mend kept the owner: its
+   * owner is the earliest session's that still stood then, as landing has read it, but unproven.
+   */
+  changeOwnerProven: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+    Schema.withConstructorDefault(Effect.succeed(false)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

@@ -14,7 +14,6 @@ import type { ChangeId, ChangeLandingId, SessionId, Sha } from "@mend/domain";
 import {
   agentPushedBranches,
   type ChangeLanding,
-  changeOwnerOf,
   type Checkpoint,
   forkPullRequestReason,
   isLiveProcess,
@@ -60,7 +59,7 @@ import { PullRequests, PullRequestStepError } from "./pull-requests.ts";
  * `change_landings` row with its outcome and, when it did not finish, the words of whatever
  * stopped it. Nothing retries.
  *
- * Only the change's owner lands (`changeOwnerOf`: the owner of the worktree's first session), not
+ * Only the change's owner lands (`Worktree.changeOwnerUserId`: the owner of the worktree's first session), not
  * whoever owns the session that asked: the push signs with their key, Mend's commit is theirs, and
  * the pull request speaks as them on GitHub. Callers that serve other people refuse before
  * calling here, and `land` checks again.
@@ -514,7 +513,7 @@ export const LandingLive: Layer.Layer<
       const { session, project, worktree } = scope;
       // The change's owner, not the calling session's: a teammate who started a session in
       // this worktree, or steers one under shared control, never lands it.
-      const owner = changeOwnerOf(yield* sessions.listForWorktree(worktree.id));
+      const owner = worktree.changeOwnerUserId;
       if (owner === null) {
         return yield* notStarted("no-owner", "landing not started · the change has no owner");
       }
@@ -765,7 +764,7 @@ export const LandingLive: Layer.Layer<
       if (change === null) {
         return yield* notStarted("no-change", "bundle not made · the session has no change");
       }
-      const owner = changeOwnerOf(yield* sessions.listForWorktree(worktree.id));
+      const owner = worktree.changeOwnerUserId;
       // Pulling someone's change never adds to their record: only the change's owner gets a
       // checkpoint taken, anyone else the latest one there is.
       const recorded =
@@ -828,7 +827,7 @@ export const LandingLive: Layer.Layer<
       const availability = pullRequestAvailability(project.originUrl);
       if (!availability.available) return skipped(availability.reason);
       const members = yield* sessions.listForWorktree(worktree.id);
-      const owner = changeOwnerOf(members);
+      const owner = worktree.changeOwnerUserId;
       if (owner === null) return skipped("the change has no owner");
       const agentBranches = yield* agentBranchesOf(members);
       const commit =

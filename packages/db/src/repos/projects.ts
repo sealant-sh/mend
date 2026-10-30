@@ -186,7 +186,12 @@ const decodeWorkspaceImage = Schema.decodeUnknownSync(WorkspaceImage);
 
 // Every project read reaches everyone who can see the project: a credential in the URL never
 // leaves here, whatever an older server stored.
-const toProject = (row: typeof projects.$inferSelect): Project =>
+const toProject = ({
+  removalPhase: _phase,
+  removalId: _id,
+  removalSince: _since,
+  ...row
+}: typeof projects.$inferSelect): Project =>
   new Project({
     ...row,
     originUrl: redactNullableUrlCredentials(row.originUrl),

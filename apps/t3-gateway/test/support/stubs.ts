@@ -12,6 +12,7 @@ import {
   type MendClient,
 } from "../../src/mend-client.ts";
 import { NO_MODEL_PREFERENCES, settingsWith } from "../../src/model-preferences.ts";
+import { RemovalKept } from "../../src/removal.ts";
 import { EMPTY_SHELL_SNAPSHOT } from "../../src/shell.ts";
 import type { BearerSession } from "../../src/state.ts";
 import { makeTerminals } from "../../src/terminals.ts";
@@ -44,7 +45,9 @@ export const unreachableMend: MendClient["Service"] = {
   changeDiff: () => unavailable("GET /api/changes/:id/diff"),
   projectBranches: () => unavailable("GET /api/projects/:id/branches"),
   refreshProject: () => unavailable("POST /api/projects/:id/refresh"),
-  worktreeNames: () => unavailable("GET /api/projects/:id/worktrees"),
+  listWorktrees: () => unavailable("GET /api/projects/:id/worktrees"),
+  removeWorktree: () => unavailable("DELETE /api/worktrees/:id"),
+  removeProject: () => unavailable("DELETE /api/projects/:id"),
   projectFiles: () => unavailable("GET /api/projects/:id/files"),
   listSkills: () => unavailable("GET /api/skills"),
   projectSkills: () => unavailable("GET /api/projects/:id/skills"),
@@ -135,6 +138,8 @@ export const emptyHub: PersonHub = {
   subscribeThread: () => Effect.succeed(null),
   changeOfWorktree: () => Effect.succeed(null),
   locationOf: () => Effect.succeed(null),
+  removeWorktree: () => Effect.fail(new RemovalKept({ reason: "The empty hub has no worktrees." })),
+  removeProject: () => Effect.fail(new RemovalKept({ reason: "The empty hub has no projects." })),
   turnDiff: () => refused,
   commands: {
     send: () => refused,

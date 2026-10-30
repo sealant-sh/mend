@@ -4081,6 +4081,347 @@ const previewPreparationsMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE service_observations ADD COLUMN http_status integer`;
 });
 
+/**
+ * 0166 (docs/adr/0007-landing.md, "Worktree removal"; decisions Q1-Q8 of 2026-10-25 and 10-30):
+ *
+ * - `worktrees.change_owner_user_id`: the change's owner, the owner of the worktree's first
+ *   session, recorded once by that session's insert (`change_owner_recorded`), null included, and
+ *   kept when the session is deleted. `change_owner_proven`: whether the history proves that owner
+ *   was the first session's. A worktree with sessions is backfilled with the owner of its earliest
+ *   standing session, the owner landing has read until now; proven only outside
+ *   `worktree_owner_gaps` and when no other person ever had a session there. A worktree with no
+ *   session left stays unrecorded: its next session records the owner, proven on the same terms.
+ * - `removal_phase`, `removal_id`, `removal_since` on worktrees and projects: a removal's mark.
+ *   `checking` while it reads what stands in the way, `deleting` once that passed. Its holder
+ *   renews it in both phases; a mark not renewed for 120 s (`removal_fence_fresh`) is a removal
+ *   that stopped. While a mark is fresh, or `deleting` at any age, the triggers refuse new work
+ *   there with SQLSTATE MRFEN (a removal at work) or MRFES (a deletion that stopped partway): a
+ *   session that is inserted or becomes live (in its own worktree, one it holds as a repository,
+ *   or a linked project's worktree), a shell, Service or screen process, a Service forward, a
+ *   Service setup, a repository added, a new worktree, a standby made or claimed. Projects are
+ *   locked before worktrees, each in id order.
+ * - `session_admissions`: a launch or a shell, admitted before it runs anything on the platform.
+ *   A removal counts a fresh admission as a session starting; the admitted session's own rows
+ *   are let in while it holds.
+ * - The session insert writes `worktree_session_owners` in its own statement from here on.
+ * - `worktree_nested_repositories`: every repository added with `mend repo add` whose files are
+ *   saved only with a worktree, kept after the session that added it is deleted.
+ * - `project_removal_fences` goes: a resource declaration reads the project's mark instead, which
+ *   lapses with a removal that crashed.
+ */
+const worktreeRemovalMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE worktrees
+      ADD COLUMN change_owner_user_id text,
+      ADD COLUMN change_owner_recorded boolean NOT NULL DEFAULT false,
+      ADD COLUMN change_owner_proven boolean NOT NULL DEFAULT false,
+      ADD CONSTRAINT worktrees_change_owner_check CHECK (
+        (change_owner_recorded OR change_owner_user_id IS NULL)
+        AND (NOT change_owner_proven OR change_owner_user_id IS NOT NULL))`;
+  for (const table of ["worktrees", "projects"]) {
+    yield* sql.unsafe(`
+      ALTER TABLE ${table}
+        ADD COLUMN removal_phase text CHECK (removal_phase IN ('checking', 'deleting')),
+        ADD COLUMN removal_id text,
+        ADD COLUMN removal_since timestamptz,
+        ADD CONSTRAINT ${table}_removal_fence_check CHECK (
+          (removal_phase IS NULL AND removal_id IS NULL AND removal_since IS NULL)
+          OR (removal_phase IS NOT NULL AND removal_id IS NOT NULL AND removal_since IS NOT NULL))`);
+  }
+  yield* sql.unsafe(`CREATE FUNCTION change_owner_provable(wt text, who text)
+    RETURNS boolean LANGUAGE sql STABLE AS $$
+      SELECT who IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM worktree_owner_gaps g WHERE g.worktree_id = wt)
+        AND NOT EXISTS (SELECT 1 FROM worktree_session_owners h
+                        WHERE h.worktree_id = wt AND h.user_id <> who)
+    $$`);
+  yield* sql`
+    UPDATE worktrees w
+    SET change_owner_user_id = first.owner_user_id,
+        change_owner_recorded = true,
+        change_owner_proven = change_owner_provable(w.id, first.owner_user_id)
+    FROM (SELECT DISTINCT ON (worktree_id) worktree_id, owner_user_id
+          FROM agent_sessions ORDER BY worktree_id, created_at, id) first
+    WHERE first.worktree_id = w.id`;
+  yield* sql.unsafe(`CREATE FUNCTION change_owner_once() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF OLD.change_owner_recorded AND (
+        NEW.change_owner_user_id IS DISTINCT FROM OLD.change_owner_user_id
+        OR NEW.change_owner_proven IS DISTINCT FROM OLD.change_owner_proven
+        OR NOT NEW.change_owner_recorded) THEN
+        RAISE EXCEPTION 'worktree %: its change owner is recorded already', OLD.id
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER worktrees_change_owner_once
+    BEFORE UPDATE OF change_owner_user_id, change_owner_recorded, change_owner_proven ON worktrees
+    FOR EACH ROW EXECUTE FUNCTION change_owner_once()`;
+
+  // The one rule for a removal's mark. A mark is fresh while its holder renews it, through the
+  // checks and through the deletion. Every reader of a mark goes through these two functions:
+  // the triggers below, `RemovalFencesRepo`, and the capture claim.
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_fresh(since timestamptz)
+    RETURNS boolean LANGUAGE sql STABLE AS $$
+      SELECT coalesce(since > now() - interval '120 seconds', false)
+    $$`);
+  // A stale `deleting` mark is a deletion that stopped partway: it refuses until it is finished.
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_marked(phase text, since timestamptz)
+    RETURNS boolean LANGUAGE sql STABLE AS $$
+      SELECT coalesce(phase = 'deleting', false) OR removal_fence_fresh(since)
+    $$`);
+  // Every project and worktree a session works in: its own, those it holds as repositories, and
+  // the linked projects' worktrees a co-located workspace mounts read-write (ADR-0001).
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_places(sid text, pid text, wid text)
+    RETURNS TABLE (project_id text, worktree_id text) LANGUAGE sql STABLE AS $$
+      SELECT pid, wid
+      UNION
+      SELECT r.project_id, r.worktree_id FROM session_repositories r WHERE r.session_id = sid
+      UNION
+      SELECT l.linked_project_id, w.id
+        FROM project_links l
+        LEFT JOIN worktrees w ON w.project_id = l.linked_project_id AND w.name = l.worktree_name
+       WHERE l.project_id = pid
+    $$`);
+  // The inverse of removal_fence_places for one worktree: the sessions that work in it.
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_sessions_in(wid text)
+    RETURNS TABLE (session_id text) LANGUAGE sql STABLE AS $$
+      SELECT s.id FROM agent_sessions s WHERE s.worktree_id = wid
+      UNION
+      SELECT r.session_id FROM session_repositories r WHERE r.worktree_id = wid
+      UNION
+      SELECT s.id
+        FROM worktrees w
+        JOIN project_links l ON l.linked_project_id = w.project_id AND l.worktree_name = w.name
+        JOIN agent_sessions s ON s.project_id = l.project_id
+       WHERE w.id = wid
+    $$`);
+  // A start admitted before any mark (launch, shell): it runs on the platform before its rows
+  // exist, so the admission is what a removal reads, and what lets the start's own rows in.
+  yield* sql`
+    CREATE TABLE session_admissions (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      since timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX session_admissions_session_idx ON session_admissions (session_id)`;
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admitted(sid text)
+    RETURNS boolean LANGUAGE sql STABLE AS $$
+      SELECT EXISTS (SELECT 1 FROM session_admissions a
+                     WHERE a.session_id = sid AND removal_fence_fresh(a.since))
+    $$`);
+  // Waits for a removal taking a mark on any of the places, then refuses if one stands. MRFES:
+  // the mark is a deletion that stopped partway; MRFEN: a removal is at work.
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit(projects_in text[], worktrees_in text[])
+    RETURNS void LANGUAGE plpgsql AS $$
+    DECLARE
+      marked text;
+      fresh boolean;
+    BEGIN
+      PERFORM 1 FROM projects WHERE id = ANY (projects_in) ORDER BY id FOR SHARE;
+      SELECT id, removal_fence_fresh(removal_since) INTO marked, fresh FROM projects
+        WHERE id = ANY (projects_in) AND removal_fence_marked(removal_phase, removal_since)
+        ORDER BY removal_fence_fresh(removal_since) LIMIT 1;
+      IF marked IS NOT NULL THEN
+        RAISE EXCEPTION 'project % is being removed', marked
+          USING ERRCODE = CASE WHEN fresh THEN 'MRFEN' ELSE 'MRFES' END;
+      END IF;
+      PERFORM 1 FROM worktrees WHERE id = ANY (worktrees_in) ORDER BY id FOR SHARE;
+      SELECT id, removal_fence_fresh(removal_since) INTO marked, fresh FROM worktrees
+        WHERE id = ANY (worktrees_in) AND removal_fence_marked(removal_phase, removal_since)
+        ORDER BY removal_fence_fresh(removal_since) LIMIT 1;
+      IF marked IS NOT NULL THEN
+        RAISE EXCEPTION 'worktree % is being removed', marked
+          USING ERRCODE = CASE WHEN fresh THEN 'MRFEN' ELSE 'MRFES' END;
+      END IF;
+    END
+    $$`);
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit_session_work(sid text)
+    RETURNS void LANGUAGE plpgsql AS $$
+    DECLARE
+      ps text[];
+      ws text[];
+    BEGIN
+      IF removal_fence_admitted(sid) THEN
+        RETURN;
+      END IF;
+      SELECT array_agg(DISTINCT place.project_id), array_agg(DISTINCT place.worktree_id)
+        INTO ps, ws
+        FROM agent_sessions s
+        CROSS JOIN LATERAL removal_fence_places(s.id, s.project_id, s.worktree_id) place
+        WHERE s.id = sid;
+      PERFORM removal_fence_admit(coalesce(ps, '{}'), coalesce(ws, '{}'));
+    END
+    $$`);
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit_session() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    DECLARE
+      live text[] := ARRAY['starting', 'running', 'waiting', 'idle'];
+      ps text[];
+      ws text[];
+    BEGIN
+      IF TG_OP = 'INSERT' THEN
+        -- Inserts into one worktree take turns at its row lock, so only the first records the
+        -- owner.
+        PERFORM removal_fence_admit(ARRAY[NEW.project_id], '{}');
+        PERFORM 1 FROM worktrees WHERE id = NEW.worktree_id FOR NO KEY UPDATE;
+        PERFORM removal_fence_admit('{}', ARRAY[NEW.worktree_id]);
+        SELECT array_agg(DISTINCT place.project_id), array_agg(DISTINCT place.worktree_id)
+          INTO ps, ws
+          FROM removal_fence_places(NEW.id, NEW.project_id, NEW.worktree_id) place;
+        PERFORM removal_fence_admit(coalesce(ps, '{}'), coalesce(ws, '{}'));
+        -- In the insert's own statement: a session row never commits without its owner's
+        -- history, which change_owner_provable trusts.
+        IF NEW.owner_user_id IS NOT NULL THEN
+          INSERT INTO worktree_session_owners (worktree_id, user_id)
+            VALUES (NEW.worktree_id, NEW.owner_user_id) ON CONFLICT DO NOTHING;
+        END IF;
+        UPDATE worktrees
+        SET change_owner_user_id = NEW.owner_user_id,
+            change_owner_recorded = true,
+            change_owner_proven = change_owner_provable(NEW.worktree_id, NEW.owner_user_id)
+        WHERE id = NEW.worktree_id AND NOT change_owner_recorded;
+        RETURN NEW;
+      END IF;
+      IF NEW.status = ANY (live) AND (NOT (OLD.status = ANY (live))
+          OR (OLD.settled_at IS NOT NULL AND NEW.settled_at IS NULL)) THEN
+        PERFORM removal_fence_admit_session_work(NEW.id);
+      END IF;
+      RETURN NEW;
+    END
+    $$`);
+  // An admission is refused like the start it stands for, unless the session is live already:
+  // a removal then reads the session itself.
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit_admission() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM agent_sessions WHERE id = NEW.session_id
+                     AND status IN ('starting', 'running', 'waiting', 'idle')) THEN
+        PERFORM removal_fence_admit_session_work(NEW.session_id);
+      END IF;
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER session_admissions_removal_fence
+    BEFORE INSERT ON session_admissions
+    FOR EACH ROW EXECUTE FUNCTION removal_fence_admit_admission()`;
+  yield* sql`CREATE TRIGGER agent_sessions_removal_fence
+    BEFORE INSERT OR UPDATE OF status, settled_at ON agent_sessions
+    FOR EACH ROW EXECUTE FUNCTION removal_fence_admit_session()`;
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit_project_row() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      PERFORM removal_fence_admit(ARRAY[NEW.project_id], '{}');
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER worktrees_removal_fence
+    BEFORE INSERT ON worktrees
+    FOR EACH ROW EXECUTE FUNCTION removal_fence_admit_project_row()`;
+  yield* sql`CREATE TRIGGER hot_workspaces_removal_fence
+    BEFORE INSERT ON hot_workspaces
+    FOR EACH ROW EXECUTE FUNCTION removal_fence_admit_project_row()`;
+  yield* sql`CREATE TRIGGER hot_workspaces_claim_removal_fence
+    BEFORE UPDATE OF status ON hot_workspaces
+    FOR EACH ROW WHEN (NEW.status = 'claimed' AND OLD.status IS DISTINCT FROM 'claimed')
+    EXECUTE FUNCTION removal_fence_admit_project_row()`;
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit_repository() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    DECLARE
+      own_project text;
+      own_worktree text;
+    BEGIN
+      SELECT project_id, worktree_id INTO own_project, own_worktree
+        FROM agent_sessions WHERE id = NEW.session_id;
+      PERFORM removal_fence_admit(
+        ARRAY[own_project, NEW.project_id], ARRAY[own_worktree, NEW.worktree_id]);
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER session_repositories_removal_fence
+    BEFORE INSERT ON session_repositories
+    FOR EACH ROW EXECUTE FUNCTION removal_fence_admit_repository()`;
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit_child() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    DECLARE
+      sid text;
+    BEGIN
+      IF TG_TABLE_NAME = 'service_forwards' THEN
+        SELECT session_id INTO sid FROM services WHERE id = NEW.service_id;
+      ELSE
+        sid := NEW.session_id;
+      END IF;
+      PERFORM removal_fence_admit_session_work(sid);
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER session_processes_removal_fence
+    BEFORE INSERT ON session_processes
+    FOR EACH ROW WHEN (NEW.exited_at IS NULL AND NEW.kind IN ('shell', 'service', 'screen'))
+    EXECUTE FUNCTION removal_fence_admit_child()`;
+  yield* sql`CREATE TRIGGER session_processes_reopen_removal_fence
+    BEFORE UPDATE OF exited_at ON session_processes
+    FOR EACH ROW WHEN (OLD.exited_at IS NOT NULL AND NEW.exited_at IS NULL
+                       AND NEW.kind IN ('shell', 'service', 'screen'))
+    EXECUTE FUNCTION removal_fence_admit_child()`;
+  yield* sql`CREATE TRIGGER service_forwards_removal_fence
+    BEFORE INSERT ON service_forwards
+    FOR EACH ROW WHEN (NEW.closed_at IS NULL)
+    EXECUTE FUNCTION removal_fence_admit_child()`;
+  yield* sql`CREATE TRIGGER service_forwards_reopen_removal_fence
+    BEFORE UPDATE OF closed_at ON service_forwards
+    FOR EACH ROW WHEN (OLD.closed_at IS NOT NULL AND NEW.closed_at IS NULL)
+    EXECUTE FUNCTION removal_fence_admit_child()`;
+  // A Service's setup runs its commands in the worktree before any process row exists.
+  yield* sql.unsafe(`CREATE FUNCTION removal_fence_admit_worktree_row() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      PERFORM removal_fence_admit(
+        ARRAY[(SELECT project_id FROM worktrees WHERE id = NEW.worktree_id)],
+        ARRAY[NEW.worktree_id]);
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER setup_runs_removal_fence
+    BEFORE INSERT ON setup_runs
+    FOR EACH ROW WHEN (NEW.state = 'running')
+    EXECUTE FUNCTION removal_fence_admit_worktree_row()`;
+
+  yield* sql`
+    CREATE TABLE worktree_nested_repositories (
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      path text NOT NULL,
+      branch text NOT NULL,
+      PRIMARY KEY (worktree_id, path)
+    )`;
+  yield* sql`
+    INSERT INTO worktree_nested_repositories (worktree_id, path, branch)
+    SELECT DISTINCT ON (s.worktree_id, r.path) s.worktree_id, r.path, r.branch
+    FROM session_repositories r JOIN agent_sessions s ON s.id = r.session_id
+    WHERE r.capture = 'nested' AND r.state IN ('ready', 'missing')
+    ORDER BY s.worktree_id, r.path, r.created_at DESC`;
+  // Only an add that finished put a repository in the worktree; one that failed left nothing.
+  yield* sql.unsafe(`CREATE FUNCTION keep_nested_repository() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.capture = 'nested' AND NEW.state = 'ready' THEN
+        INSERT INTO worktree_nested_repositories (worktree_id, path, branch)
+          SELECT worktree_id, NEW.path, NEW.branch FROM agent_sessions WHERE id = NEW.session_id
+          ON CONFLICT (worktree_id, path) DO UPDATE SET branch = EXCLUDED.branch;
+      END IF;
+      RETURN NEW;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER session_repositories_keep_nested
+    AFTER INSERT OR UPDATE OF capture, path, branch, state ON session_repositories
+    FOR EACH ROW EXECUTE FUNCTION keep_nested_repository()`;
+
+  yield* sql`DROP TABLE project_removal_fences`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4236,4 +4577,5 @@ export const migrations = {
   "0162_scratch_projects": scratchProjectsMigration,
   "0163_push_device_credentials": pushDeviceCredentialsMigration,
   "0165_preview_preparations": previewPreparationsMigration,
+  "0166_worktree_removal": worktreeRemovalMigration,
 };

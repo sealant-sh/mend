@@ -3360,3 +3360,108 @@ describe.skipIf(postgres.skip)("0165 preview preparations", () => {
     ]);
   }, 60_000);
 });
+
+describe.skipIf(postgres.skip)("0166 worktree removal", () => {
+  const DB = `${SCRATCH_DB}_removal`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("records each worktree's earliest standing owner, proven only where the history vouches", async () => {
+    const outcome = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0165_preview_preparations");
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-1', 'Acme')`;
+        yield* sql`
+          INSERT INTO projects (id, name, organization_id, store_path, default_branch)
+          VALUES ('p-1', 'api', 'org-1', '/store/api/repo.git', 'main')`;
+        // Before 0118 every worktree has a gap in its owner history; these come after it.
+        yield* sql`DELETE FROM worktree_owner_gaps`;
+        for (const id of [
+          "w-sole",
+          "w-shared",
+          "w-first-deleted",
+          "w-ownerless",
+          "w-gap-standing",
+          "w-deleted-one",
+          "w-gap",
+          "w-empty",
+        ]) {
+          yield* sql`
+            INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+            VALUES (${id}, 'p-1', ${id}, ${id}, ${`mend/${id}`}, 'abc')`;
+        }
+        const session = (id: string, worktree: string, owner: string | null, at: string) => sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id,
+             status, created_at)
+          VALUES (${id}, 'p-1', ${worktree}, 'claude', ${worktree}, 'mend/x', 'abc', ${owner},
+                  'completed', ${at}::timestamptz)`;
+        yield* session("s-1", "w-sole", "anna", "2026-10-01T00:00:00Z");
+        yield* session("s-2", "w-shared", "kostas", "2026-10-02T00:00:00Z");
+        yield* session("s-3", "w-shared", "anna", "2026-10-01T00:00:00Z");
+        // Anna's first session here was deleted; Kostas's is the earliest that stands.
+        yield* session("s-4", "w-first-deleted", "kostas", "2026-10-02T00:00:00Z");
+        yield* session("s-5", "w-ownerless", null, "2026-10-01T00:00:00Z");
+        yield* session("s-6", "w-ownerless", "anna", "2026-10-02T00:00:00Z");
+        yield* session("s-7", "w-gap-standing", "anna", "2026-10-01T00:00:00Z");
+        yield* sql`
+          INSERT INTO worktree_session_owners (worktree_id, user_id)
+          VALUES ('w-sole', 'anna'), ('w-shared', 'anna'), ('w-shared', 'kostas'),
+                 ('w-first-deleted', 'anna'), ('w-first-deleted', 'kostas'),
+                 ('w-ownerless', 'anna'), ('w-gap-standing', 'anna'),
+                 ('w-deleted-one', 'anna'), ('w-gap', 'anna')`;
+        yield* sql`
+          INSERT INTO worktree_owner_gaps (worktree_id) VALUES ('w-gap'), ('w-gap-standing')`;
+        yield* migrations["0166_worktree_removal"];
+        // A worktree with no session left is recorded by the next one.
+        yield* session("s-8", "w-deleted-one", "kostas", "2026-10-31T00:00:00Z");
+        yield* session("s-9", "w-empty", "anna", "2026-10-31T00:00:00Z");
+        const rows = yield* sql<{
+          readonly id: string;
+          readonly owner: string | null;
+          readonly recorded: boolean;
+          readonly proven: boolean;
+        }>`
+          SELECT id, change_owner_user_id AS owner, change_owner_recorded AS recorded,
+                 change_owner_proven AS proven
+          FROM worktrees ORDER BY id`;
+        return Object.fromEntries(
+          rows.map((row) => [row.id, [row.owner, row.recorded, row.proven]]),
+        );
+      }),
+    );
+    expect(outcome).toEqual({
+      "w-sole": ["anna", true, true],
+      "w-shared": ["anna", true, false],
+      "w-first-deleted": ["kostas", true, false],
+      "w-ownerless": [null, true, false],
+      "w-gap-standing": ["anna", true, false],
+      "w-deleted-one": ["kostas", true, false],
+      "w-gap": [null, false, false],
+      "w-empty": ["anna", true, true],
+    });
+  });
+});

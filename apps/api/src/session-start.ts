@@ -6,6 +6,7 @@ import {
   SessionAgentLive,
   SessionMovedOn,
   StoreFailure,
+  RemovalInProgress,
 } from "@mend/api-contracts";
 import {
   AgentConversationRepo,
@@ -13,6 +14,7 @@ import {
   ProjectsRepo,
   SessionsRepo,
   SettingsRepo,
+  RemovalFencesRepo,
 } from "@mend/db";
 import type { ProjectId } from "@mend/domain";
 import {
@@ -40,6 +42,8 @@ import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
 import { Budgets } from "./budgets.ts";
+import { refusedWhileRemoving } from "./removal-refusal.ts";
+import { refuseStartWhileRemoving } from "./removal.ts";
 import { budgetExceeded, requireSessionRoom } from "./session-budgets.ts";
 
 /** The worktree and conversation to provision: the create route's payload, plus its origin. */
@@ -146,7 +150,7 @@ export class SessionStart extends Context.Service<
       userId: string,
       projectId: ProjectId,
       input: CreateSessionInput,
-    ) => Effect.Effect<Session, StartError>;
+    ) => Effect.Effect<Session, StartError | RemovalInProgress>;
     readonly launchAs: (
       userId: string,
       session: Session,
@@ -157,7 +161,7 @@ export class SessionStart extends Context.Service<
     readonly startAs: (
       userId: string,
       input: StartSessionInput,
-    ) => Effect.Effect<Session, StartError>;
+    ) => Effect.Effect<Session, StartError | RemovalInProgress>;
   }
 >()("@mend/api/SessionStart") {}
 
@@ -175,6 +179,7 @@ export const makeSessionStart = Effect.gen(function* () {
   const jobs = yield* JobRunner;
   const conversations = yield* AgentConversationRepo;
   const harnessModels = yield* HarnessModelsRepo;
+  const fences = yield* RemovalFencesRepo;
 
   /**
    * Whether the session's opening turn carries the prompt guard (docs/adr/0007-landing.md,
@@ -213,6 +218,9 @@ export const makeSessionStart = Effect.gen(function* () {
     yield* requireSessionRoom(userId, project.organizationId).pipe(
       Effect.provideService(Budgets, budgets),
       Effect.provideService(SessionsRepo, sessions),
+    );
+    yield* refuseStartWhileRemoving({ projectId, worktreeId: null }).pipe(
+      Effect.provideService(RemovalFencesRepo, fences),
     );
     // Ownership is stamped at provision: launches apply the OWNER's dotfiles.
     return yield* engine
@@ -253,6 +261,7 @@ export const makeSessionStart = Effect.gen(function* () {
             }),
           ),
         ),
+        refusedWhileRemoving,
       );
   });
 
@@ -467,6 +476,7 @@ export const SessionStartLive: Layer.Layer<
   | JobRunner
   | ProjectAccess
   | ProjectsRepo
+  | RemovalFencesRepo
   | SessionEngine
   | SessionsRepo
   | SettingsRepo
