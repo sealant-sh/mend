@@ -53,6 +53,7 @@ export const GROUP_DEFAULTS: ReadonlyArray<readonly [ReadonlyArray<string>, stri
   [["env"], "env show"],
   [["keys"], "keys show"],
   [["folder"], "folder list"],
+  [["resource"], "resource list"],
   [["operator", "org"], "operator org list"],
 ];
 

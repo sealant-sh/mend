@@ -104,6 +104,7 @@ import {
   missingRecipeLine,
   type ServiceDeclarationsDto,
 } from "./recipe-refusals.ts";
+import { resourceCommand } from "./resource.ts";
 import {
   beforeDeadline,
   type CommandDetail,
@@ -6327,6 +6328,8 @@ const main = async () => {
       return skillsCommand(config, rest);
     case "memory":
       return memoryCommand(config, rest);
+    case "resource":
+      return resourceCommand(boundApi(config), (explicit) => findProject(config, explicit), rest);
     case "secrets":
       return secretsCommand(config, rest);
     case "accounts":

@@ -598,6 +598,25 @@ export const isFlag = (token: string): boolean => token.startsWith("-") && token
 export const shellWord = (word: string): string =>
   /^[A-Za-z0-9_./:@=,+-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
 
+/** `text` in SGR `code` on a terminal, as it is anywhere else. */
+export const paint =
+  (code: string) =>
+  (text: string): string =>
+    process.stdout.isTTY === true ? `\u001b[${code}m${text}\u001b[0m` : text;
+
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/g;
+
+/**
+ * `text` from someone else, a server's line or another person's name, with each control character
+ * written as `\x1b`, so it cannot clear, move or retitle the reader's terminal.
+ */
+export const printable = (text: string): string =>
+  text.replace(
+    CONTROL_CHARACTER,
+    (control) => `\\x${control.charCodeAt(0).toString(16).padStart(2, "0")}`,
+  );
+
 export const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
   const at = args.indexOf(flag);
   if (at === -1) return null;
