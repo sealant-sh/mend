@@ -64,6 +64,11 @@ export class WorktreesRepo extends Context.Service<
     readonly rename: (id: WorktreeId, name: string, branch: string) => Effect.Effect<void>;
     readonly remove: (id: WorktreeId) => Effect.Effect<void>;
     /**
+     * The change's owner (docs/adr/0007-landing.md, "Who lands"), as the first session's insert
+     * stored it; null for a worktree with none, or one that is gone.
+     */
+    readonly changeOwnerOf: (id: WorktreeId) => Effect.Effect<string | null>;
+    /**
      * The follow-up target resolver: the newest live conversation in the
      * worktree, or null when none is live.
      */
@@ -227,6 +232,16 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         }
       });
 
+      const changeOwnerOf = Effect.fn("WorktreesRepo.changeOwnerOf")(function* (id: WorktreeId) {
+        const [row] = yield* db
+          .select({ owner: worktrees.changeOwnerUserId })
+          .from(worktrees)
+          .where(eq(worktrees.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.owner ?? null;
+      });
+
       const newestLiveSessionId = Effect.fn("WorktreesRepo.newestLiveSessionId")(function* (
         id: WorktreeId,
       ) {
@@ -256,6 +271,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         setBase,
         rename,
         remove,
+        changeOwnerOf,
         newestLiveSessionId,
       };
     }),

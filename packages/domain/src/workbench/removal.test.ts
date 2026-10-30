@@ -53,6 +53,18 @@ const liveSession = (id: string, owner = anna) => ({
   activity: "live" as const,
 });
 
+const project = (overrides: Partial<ProjectFacts> = {}): ProjectFacts => ({
+  worktrees: [],
+  foreignHolders: [],
+  resources: [],
+  ...overrides,
+});
+
+const refuse = (blockers: ReadonlyArray<RemovalBlocker>, forceWouldLift = false) => ({
+  blockers,
+  forceWouldLift,
+});
+
 const refusedBlockers = (decision: ReturnType<typeof decideRemoval>) =>
   decision._tag === "Refuse" ? decision.blockers.map((blocker) => blocker._tag) : [];
 
@@ -139,13 +151,6 @@ describe("decideRemoval, a worktree", () => {
 });
 
 describe("decideRemoval, a project", () => {
-  const project = (overrides: Partial<ProjectFacts> = {}): ProjectFacts => ({
-    worktrees: [],
-    foreignHolders: [],
-    resources: [],
-    ...overrides,
-  });
-
   it("removes a project whose every worktree is kept and idle", () => {
     expect(
       decideRemoval({ kind: "project", project: project({ worktrees: [worktree()] }) }),
@@ -267,10 +272,6 @@ describe("fenceStep", () => {
 });
 
 describe("worktreeRefusalWords", () => {
-  const refuse = (blockers: ReadonlyArray<RemovalBlocker>, forceWouldLift = false) => ({
-    blockers,
-    forceWouldLift,
-  });
   const unlanded = (standing: UnlandedStanding): RemovalBlocker => ({
     _tag: "Unlanded",
     worktreeId: WorktreeId.make("w-1"),

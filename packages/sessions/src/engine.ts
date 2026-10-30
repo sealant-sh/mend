@@ -240,7 +240,6 @@ import {
   type ConversationWaitWork,
   conversationWaitLine,
   OPENCODE_NOT_STEERABLE,
-  changeOwnerOf,
   PreReleaseMemory,
   WorkspaceRetirement,
   WorkspaceRetirementStop,
@@ -16940,8 +16939,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (session.sealantWorkspaceId === null) return null;
         const retirement = yield* harnessLayouts.retirementOf(session.sealantWorkspaceId);
         if (retirement === null) return null;
-        const isOwner =
-          viewer === changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+        const isOwner = viewer === (yield* worktreesRepo.changeOwnerOf(session.worktreeId));
         const stops = stopsForViewer(retirement.stops, isOwner);
         return new WorkspaceRetirement({
           state: retirement.state,
@@ -16975,7 +16973,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (workspaceId === null) return yield* refuse(REPLACE_NOT_MARKED);
         let retirement = yield* harnessLayouts.retirementOf(workspaceId);
         if (retirement === null) return yield* refuse(REPLACE_NOT_MARKED);
-        if (actor !== changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId))) {
+        if (actor !== (yield* worktreesRepo.changeOwnerOf(session.worktreeId))) {
           return yield* refuse(REPLACE_NOT_OWNER);
         }
         if (retirement.state === "retiring") {
@@ -25825,7 +25823,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A person standby's owner map names its owner as the worktree's: it serves only a
         // worktree whose change owner they are (the first session's owner), or will be.
         if (standby.layout === "person") {
-          const changeOwner = changeOwnerOf(yield* sessions.listForWorktree(worktree.id));
+          const changeOwner = worktree.changeOwnerUserId;
           if (changeOwner !== null && changeOwner !== ownerUserId) return null;
         }
         if (!(yield* mayRunIn(organizations, project, ownerUserId))) return null;

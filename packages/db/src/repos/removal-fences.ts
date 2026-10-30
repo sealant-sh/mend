@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import type { ProjectId, WorktreeId } from "@mend/domain";
-import { fenceStep, type RemovalPhase } from "@mend/domain/workbench";
+import { fenceStep, REMOVAL_FENCE_LEASE_SECONDS, type RemovalPhase } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -48,6 +48,11 @@ export class RemovalFencesRepo extends Context.Service<
     readonly commit: (row: FencedRow, id: RemovalFenceId) => Effect.Effect<boolean>;
     /** Clears the mark, only while it is still `id`. */
     readonly release: (row: FencedRow, id: RemovalFenceId) => Effect.Effect<void>;
+    /**
+     * A deletion under mark `id` failed partway: the row stays marked `deleting`, and the next
+     * removal finishes it at once instead of waiting out the lease.
+     */
+    readonly handOver: (row: FencedRow, id: RemovalFenceId) => Effect.Effect<void>;
     /** Whether a session may start in the worktree now, as the triggers judge it. */
     readonly admitsStart: (place: {
       readonly projectId: ProjectId;
@@ -127,6 +132,18 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
           WHERE id = ${row.id} AND removal_id = ${id}`.pipe(Effect.orDie);
       });
 
+      const handOver = Effect.fn("RemovalFencesRepo.handOver")(function* (
+        row: FencedRow,
+        id: RemovalFenceId,
+      ) {
+        yield* sql`
+          UPDATE ${sql(tableOf(row))}
+          SET removal_since = now() - make_interval(secs => ${REMOVAL_FENCE_LEASE_SECONDS + 1})
+          WHERE id = ${row.id} AND removal_id = ${id} AND removal_phase = 'deleting'`.pipe(
+          Effect.orDie,
+        );
+      });
+
       const admitsStart = Effect.fn("RemovalFencesRepo.admitsStart")(function* (place: {
         readonly projectId: ProjectId;
         readonly worktreeId: WorktreeId | null;
@@ -142,6 +159,6 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         return marked[0]?.marked !== true;
       });
 
-      return { take, commit, release, admitsStart };
+      return { take, commit, release, handOver, admitsStart };
     }),
   );

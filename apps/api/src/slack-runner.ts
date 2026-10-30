@@ -6,6 +6,7 @@ import {
   type SessionAgentLive,
   type SessionMovedOn,
   type StoreFailure,
+  type RemovalInProgress,
 } from "@mend/api-contracts";
 import {
   AgentConversationRepo,
@@ -21,10 +22,10 @@ import {
   SlackThreadsRepo,
   type SealedSlackInstall,
   type SlackThreadSession,
+  WorktreesRepo,
 } from "@mend/db";
 import { ProjectId, SessionId, type OrganizationId } from "@mend/domain";
 import {
-  changeOwnerOf,
   currentAgentProcess,
   isCredentialProvider,
   isLiveProcess,
@@ -411,7 +412,8 @@ type StartRefusal =
   | BudgetExceeded
   | HarnessLayoutRefused
   | SessionMovedOn
-  | SessionAgentLive;
+  | SessionAgentLive
+  | RemovalInProgress;
 
 /**
  * A refusal from `SessionStart`, as the thread reads it. A budget's words are the budget's own. A
@@ -437,6 +439,9 @@ export const refusalWords = (
     // words, which carry no paths.
     case "SessionMovedOn":
     case "SessionAgentLive":
+      return error.message;
+    // The project or worktree is being removed: the refusal's own words, which carry no paths.
+    case "RemovalInProgress":
       return error.message;
   }
 };
@@ -677,6 +682,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     const threads = yield* SlackThreadsRepo;
     const claims = yield* SlackEventClaimsRepo;
     const sessions = yield* SessionsRepo;
+    const worktrees = yield* WorktreesRepo;
     const audit = yield* AuditEventsRepo;
     const cipher = yield* SecretCipher;
     const slack = yield* SlackApi;
@@ -1746,7 +1752,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       if (session === null) return yield* whisper(token, at, notLanded("the session is gone"));
       // The change's owner, not whoever owns this session: a teammate's session in the owner's
       // worktree lends no key.
-      const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+      const owner = yield* worktrees.changeOwnerOf(session.worktreeId);
       if (owner === null || owner !== link.userId) {
         // The thread's requester is the session's owner; name them only when they own the change.
         const named = owner !== null && owner === session.ownerUserId ? thread.slackUserId : null;
@@ -2273,6 +2279,7 @@ export const SlackRunnerLive: Layer.Layer<
   | SlackThreadsRepo
   | Store
   | ThreadProjectReader
+  | WorktreesRepo
 > = Layer.effect(
   SlackRunner,
   Effect.gen(function* () {

@@ -43,6 +43,7 @@ import {
   ProjectHotSessionsStatus,
   ProjectWorkspaceImageRequest,
   ProjectWorkspaceImageSaveResult,
+  RemovalRefused,
   RemovalReport,
   SettingsFailure,
   StoreFailure,
@@ -92,13 +93,14 @@ export const projectsGroup = HttpApiGroup.make("projects")
     }),
   )
   .add(
-    // Removal stops the project's live sessions, deletes every row under it,
-    // and removes the store copy. `leftover` reports a path that would not
-    // delete (container-uid files) — honesty over a false clean.
+    // Removal deletes every row under the project and removes the store copy. It never stops
+    // anything: while any session, anyone's, is live or saving, or any change is not on origin
+    // (decisions Q1, Q2), it is refused with every blocker at once, and there is no force.
+    // `leftover` reports a path that would not delete (container-uid files).
     HttpApiEndpoint.delete("remove", "/projects/:id", {
       params: { id: ProjectId },
       success: RemovalReport,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, RemovalRefused, StoreFailure],
     }),
   )
   .add(

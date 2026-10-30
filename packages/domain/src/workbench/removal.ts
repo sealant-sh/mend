@@ -92,13 +92,18 @@ export interface SessionFact {
   readonly activity: SessionActivity | "settled";
 }
 
-export interface WorktreeFacts {
+/** What any worktree removal reads: what runs or saves there, and whose change it is. */
+export interface WorktreeHolds {
   readonly worktreeId: WorktreeId;
   readonly name: string;
   /** The owner of the worktree's first session, as stored on the worktree; null when unknown. */
   readonly changeOwner: Person | null;
   readonly sessions: ReadonlyArray<SessionFact>;
   readonly holds: ReadonlyArray<HoldFact>;
+}
+
+/** What only a removal without force reads as well: whether the work here is anywhere else. */
+export interface WorktreeFacts extends WorktreeHolds {
   readonly standing: ChangeStanding;
   readonly nestedRepositories: ReadonlyArray<NestedRepository>;
 }
@@ -179,9 +184,13 @@ const BLOCKER_ORDER = {
 
 // ─── Decision ───────────────────────────────────────────────────────────────
 
-/** What is being removed. Only a worktree removal carries `force`. */
+/**
+ * What is being removed. Only a worktree removal carries `force`, and a forced one is decided
+ * without reading what force lifts.
+ */
 export type RemovalTarget =
-  | { readonly kind: "worktree"; readonly force: boolean; readonly worktree: WorktreeFacts }
+  | { readonly kind: "worktree"; readonly force: false; readonly worktree: WorktreeFacts }
+  | { readonly kind: "worktree"; readonly force: true; readonly worktree: WorktreeHolds }
   | { readonly kind: "project"; readonly project: ProjectFacts };
 
 export type NonEmptyBlockers = readonly [RemovalBlocker, ...Array<RemovalBlocker>];
@@ -198,7 +207,7 @@ export type RemovalDecision =
 const isUnlanded = (standing: ChangeStanding): standing is UnlandedStanding =>
   standing._tag !== "at-base" && standing._tag !== "on-origin";
 
-const blockersOfWorktree = (facts: WorktreeFacts): ReadonlyArray<RemovalBlocker> => {
+const holdBlockers = (facts: WorktreeHolds): ReadonlyArray<RemovalBlocker> => {
   const ref = { worktreeId: facts.worktreeId, worktreeName: facts.name };
   const blockers: Array<RemovalBlocker> = [];
   for (const session of facts.sessions) {
@@ -213,6 +222,12 @@ const blockersOfWorktree = (facts: WorktreeFacts): ReadonlyArray<RemovalBlocker>
     });
   }
   if (facts.holds.length > 0) blockers.push({ _tag: "Saving", ...ref, holds: facts.holds });
+  return blockers;
+};
+
+const workBlockers = (facts: WorktreeFacts): ReadonlyArray<RemovalBlocker> => {
+  const ref = { worktreeId: facts.worktreeId, worktreeName: facts.name };
+  const blockers: Array<RemovalBlocker> = [];
   if (isUnlanded(facts.standing)) {
     blockers.push({ _tag: "Unlanded", ...ref, owner: facts.changeOwner, standing: facts.standing });
   }
@@ -221,6 +236,11 @@ const blockersOfWorktree = (facts: WorktreeFacts): ReadonlyArray<RemovalBlocker>
   }
   return blockers;
 };
+
+const blockersOfWorktree = (facts: WorktreeFacts): ReadonlyArray<RemovalBlocker> => [
+  ...holdBlockers(facts),
+  ...workBlockers(facts),
+];
 
 const ordered = (blockers: ReadonlyArray<RemovalBlocker>): ReadonlyArray<RemovalBlocker> =>
   blockers.toSorted((a, b) => BLOCKER_ORDER[a._tag] - BLOCKER_ORDER[b._tag]);
@@ -233,8 +253,9 @@ const nonEmpty = (blockers: ReadonlyArray<RemovalBlocker>): NonEmptyBlockers | n
 /** The one rule both removals follow. Never stops anything: it only says what stands in the way. */
 export const decideRemoval = (target: RemovalTarget): RemovalDecision => {
   if (target.kind === "worktree") {
-    const all = blockersOfWorktree(target.worktree);
-    const standing = target.force ? all.filter((blocker) => !LIFTED_BY_FORCE[blocker._tag]) : all;
+    const standing = target.force
+      ? holdBlockers(target.worktree).filter((blocker) => !LIFTED_BY_FORCE[blocker._tag])
+      : blockersOfWorktree(target.worktree);
     const blockers = nonEmpty(ordered(standing));
     if (blockers === null) return { _tag: "Remove" };
     return {

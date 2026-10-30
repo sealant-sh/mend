@@ -2638,6 +2638,17 @@ export const sessionsLayer = (world: World) => {
           createdAt: world.clock.now(),
           updatedAt: world.clock.now(),
         });
+        // Migration 0164's insert trigger: the first session's owner owns the change.
+        const worktree = world.worktrees.get(session.worktreeId);
+        const first = ![...world.sessions.values()].some(
+          (other) => other.worktreeId === session.worktreeId,
+        );
+        if (worktree !== undefined && worktree.changeOwnerUserId === null && first) {
+          world.worktrees.set(
+            worktree.id,
+            new Worktree({ ...worktree, changeOwnerUserId: session.ownerUserId }),
+          );
+        }
         world.sessions.set(session.id, session);
         return session;
       }),
@@ -3168,6 +3179,7 @@ export const worktreesLayer = (world: World) =>
       Effect.sync(() => {
         world.worktrees.delete(id);
       }),
+    changeOwnerOf: (id) => Effect.succeed(world.worktrees.get(id)?.changeOwnerUserId ?? null),
     newestLiveSessionId: (id) =>
       Effect.succeed(
         [...world.sessions.values()]

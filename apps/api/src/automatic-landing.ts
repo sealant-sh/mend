@@ -15,7 +15,6 @@ import {
 import { type ChangeLandingId, SessionId } from "@mend/domain";
 import {
   type AgentTurn,
-  changeOwnerOf,
   type NotLandedReason,
   notLandedLine,
   type Project,
@@ -355,7 +354,7 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
       }
       const project = yield* projects.byId(session.projectId);
       // The change's owner, who lands it: never a teammate who joined the worktree.
-      const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+      const owner = yield* worktrees.changeOwnerOf(session.worktreeId);
       const asked = requestBehind(turn, turns);
       const plan = planTurn({
         turn: {

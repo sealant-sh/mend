@@ -34,6 +34,8 @@ import {
   PreviewsRepo,
   PushDevice,
   PushDevicesRepo,
+  RemovalFenceId,
+  RemovalFencesRepo,
   ReviewCommentsRepo,
   ReviewSlicesRepo,
   RunsRepo,
@@ -53,6 +55,7 @@ import {
   UserGitAccessRepo,
   UserGitAuthorRepo,
   UsersRepo,
+  UserFacts,
   type MendEvent,
   makeUpgradeTicketsMemory,
   UpgradeTicketsRepo,
@@ -60,6 +63,8 @@ import {
 import type { DotfilesRepository } from "@mend/domain";
 import {
   emptyHarnessModelCatalog,
+  fenceStep,
+  type RemovalFence,
   type Session,
   type SessionProcess,
 } from "@mend/domain/workbench";
@@ -130,6 +135,7 @@ import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { PageViewTokens } from "../../src/page-view-tokens.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
+import { RemovalLive } from "../../src/removal.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
@@ -150,6 +156,8 @@ import { recording } from "./tenancy-harness.ts";
 
 export interface TenancyApi {
   readonly world: TenancyWorld;
+  /** Removal marks on worktree and project rows (`worktree:<id>`, `project:<id>`), as stored. */
+  readonly removalMarks: Map<string, RemovalFence & { readonly id: string }>;
   /** Send a request as `user` (null: no credentials) and return the response. */
   readonly request: (
     user: HarnessUser | null,
@@ -186,6 +194,13 @@ export interface TenancyApi {
   readonly nodeOrigin: string | undefined;
   readonly dispose: () => Promise<void>;
 }
+
+const USER_NAMES: Readonly<Record<string, string>> = {
+  alice: "Alice",
+  carol: "Carol",
+  bob: "Bob",
+  dave: "Dave",
+};
 
 const network = makePublicNetwork(
   Schema.decodeUnknownSync(PublicOrigin)("http://api.internal"),
@@ -319,6 +334,57 @@ export const createTenancyApi = async (
   const budgetsLayer = Layer.succeed(Budgets, makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...limits }));
   const calls = world.calls;
   const deviceWrites: Array<string> = [];
+  // Removal marks, as migration 0164 stores them on the rows (RemovalFencesRepo).
+  const removalMarks = new Map<string, RemovalFence & { readonly id: string }>();
+  const marked = (key: string) => {
+    const mark = removalMarks.get(key);
+    return mark !== undefined && fenceStep(mark, new Date())._tag === "underway";
+  };
+  const removalFences: RemovalFencesRepo["Service"] = {
+    take: (row) =>
+      Effect.sync(() => {
+        const exists =
+          row.kind === "worktree" ? world.worktrees.has(row.id) : world.projects.has(row.id);
+        if (!exists) return { _tag: "gone" } as const;
+        const key = `${row.kind}:${row.id}`;
+        const mark = removalMarks.get(key);
+        const step = fenceStep(mark ?? null, new Date());
+        if (step._tag === "underway") return { _tag: "underway" } as const;
+        if (step._tag === "finish" && mark !== undefined) {
+          return { _tag: "finish", id: RemovalFenceId.make(mark.id) } as const;
+        }
+        const id = RemovalFenceId.make(`rmv_${crypto.randomUUID()}`);
+        removalMarks.set(key, { phase: "checking", since: new Date(), id });
+        return { _tag: "held", id } as const;
+      }),
+    commit: (row, id) =>
+      Effect.sync(() => {
+        const key = `${row.kind}:${row.id}`;
+        const mark = removalMarks.get(key);
+        if (mark?.id !== id || !marked(key)) return false;
+        removalMarks.set(key, { phase: "deleting", since: new Date(), id });
+        return true;
+      }),
+    release: (row, id) =>
+      Effect.sync(() => {
+        const key = `${row.kind}:${row.id}`;
+        if (removalMarks.get(key)?.id === id) removalMarks.delete(key);
+      }),
+    handOver: (row, id) =>
+      Effect.sync(() => {
+        const key = `${row.kind}:${row.id}`;
+        const mark = removalMarks.get(key);
+        if (mark?.id === id && mark.phase === "deleting") {
+          removalMarks.set(key, { ...mark, since: new Date(0) });
+        }
+      }),
+    admitsStart: (place) =>
+      Effect.sync(
+        () =>
+          !marked(`project:${place.projectId}`) &&
+          (place.worktreeId === null || !marked(`worktree:${place.worktreeId}`)),
+      ),
+  };
   // Each account's saved dotfiles repository, when the world serves the dotfiles routes.
   const repositories = new Map<string, DotfilesRepository>();
   // Who turned on "Start my agents after install.sh" (docs/adr/0016).
@@ -422,7 +488,21 @@ export const createTenancyApi = async (
       recording(UserEvents, "userEvents", {}, calls),
       recording(UserGitAccessRepo, "gitAccess", options.implement?.gitAccess ?? {}, calls),
       recording(UserGitAuthorRepo, "gitAuthor", options.implement?.gitAuthor ?? {}, calls),
-      recording(UsersRepo, "users", options.implement?.users ?? {}, calls),
+      recording(
+        UsersRepo,
+        "users",
+        {
+          byId: (id) =>
+            Effect.succeed(
+              id in USER_NAMES
+                ? new UserFacts({ id, name: USER_NAMES[id] ?? id, email: `${id}@example.com` })
+                : null,
+            ),
+          ...options.implement?.users,
+        },
+        calls,
+      ),
+      recording(RemovalFencesRepo, "removalFences", removalFences, calls),
       recording(JobRunner, "jobs", options.implement?.jobs ?? {}, calls),
       recording(SealantClient, "sealant", {}, calls),
       recording(ForwardAdapter, "forwards", {}, calls),
@@ -577,6 +657,7 @@ export const createTenancyApi = async (
     HandoffStartLive,
     ResourcesLive,
     ProjectCreationLive,
+    RemovalLive,
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),
@@ -694,6 +775,7 @@ export const createTenancyApi = async (
 
   return {
     world,
+    removalMarks,
     request: (user, method, path, body, extraHeaders) => {
       const headers = new Headers(extraHeaders);
       if (user !== null) headers.set("authorization", `Bearer ${user}`);

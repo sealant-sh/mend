@@ -4,9 +4,9 @@ import {
   SessionsRepo,
   SlackInstallsRepo,
   SlackThreadsRepo,
+  WorktreesRepo,
 } from "@mend/db";
 import type { SessionId } from "@mend/domain";
-import { changeOwnerOf } from "@mend/domain/workbench";
 import { workspaceLandLines, workspaceLandRefusal } from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
 import { WorkspaceGitHooks, type WorkspaceLandOutcome } from "@mend/sessions";
@@ -28,6 +28,7 @@ const refused = (line: string): WorkspaceLandOutcome => ({ landed: false, lines:
 
 export const makeWorkspaceLanding = Effect.gen(function* () {
   const sessions = yield* SessionsRepo;
+  const worktrees = yield* WorktreesRepo;
   const projects = yield* ProjectsRepo;
   const conversations = yield* AgentConversationRepo;
   const threads = yield* SlackThreadsRepo;
@@ -51,7 +52,7 @@ export const makeWorkspaceLanding = Effect.gen(function* () {
       .byId(sessionId)
       .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
     if (session === null) return refused("not landed · the session is gone");
-    const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+    const owner = yield* worktrees.changeOwnerOf(session.worktreeId);
     const refusal = workspaceLandRefusal({
       session,
       changeOwnerUserId: owner,
@@ -108,6 +109,7 @@ export const WorkspaceLandingLive: Layer.Layer<
   | SessionsRepo
   | SlackInstallsRepo
   | SlackThreadsRepo
+  | WorktreesRepo
 > = Layer.effectDiscard(
   Effect.gen(function* () {
     const hooks = yield* WorkspaceGitHooks;

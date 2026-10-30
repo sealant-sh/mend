@@ -131,8 +131,13 @@ describe("typed HTTP error contracts", () => {
       expect(statuses.get(name)?.has(409)).toBe(false);
     }
     expect(statuses.get("create")?.has(409), "create should preserve WorktreeNameTaken").toBe(true);
-    expect(statuses.get("remove")?.has(409), "remove should preserve WorktreeActive").toBe(true);
+    expect(statuses.get("remove")?.has(409), "remove should preserve RemovalRefused").toBe(true);
+    expect(statuses.get("remove")?.has(403), "remove should preserve RemovalForbidden").toBe(true);
     expect(statuses.get("remove")?.has(422), "remove should preserve StoreFailure").toBe(true);
+    expect(
+      statuses.get("createSession")?.has(409),
+      "createSession should preserve RemovalInProgress",
+    ).toBe(true);
     expect(statuses.get("diff")?.has(422), "diff should preserve StoreFailure").toBe(true);
     expect(statuses.get("contents")?.has(422), "contents should preserve StoreFailure").toBe(true);
   });

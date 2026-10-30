@@ -62,6 +62,7 @@ import {
 import {
   ObservationStamp,
   PathsOutsideGit,
+  RemovalInProgress,
   RemovalReport,
   SessionActive,
   SessionNotLive,
@@ -309,7 +310,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: ProjectId },
       payload: NewWorkbenchSession,
       success: Session,
-      error: [NotFound, StoreFailure, BudgetExceeded, HarnessLayoutRefused],
+      error: [NotFound, StoreFailure, BudgetExceeded, HarnessLayoutRefused, RemovalInProgress],
     }),
   )
   .add(

@@ -108,10 +108,17 @@ export const makeWorld = (options: WorldOptions = {}) => {
     createdAt: NOW,
     updatedAt: NOW,
   });
+  // The change's owner, as the first session's insert stored it: the earliest session's owner.
+  const sessionOwner = options.ownerUserId === undefined ? OWNER : options.ownerUserId;
+  const firstOwner =
+    [{ id: sessionId, ownerUserId: sessionOwner, createdAt: NOW }, ...(options.siblings ?? [])]
+      .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
+      .at(0)?.ownerUserId ?? null;
   const worktree = new Worktree({
     id: worktreeId,
     projectId,
     name: "fix-login",
+    changeOwnerUserId: firstOwner,
     directory: options.directory ?? "wt-1",
     branch,
     baseSha,
@@ -143,7 +150,7 @@ export const makeWorld = (options: WorldOptions = {}) => {
     workspaceTtlRenewalError: null,
     workspaceImage: null,
     dotfiles: null,
-    ownerUserId: options.ownerUserId === undefined ? OWNER : options.ownerUserId,
+    ownerUserId: sessionOwner,
     hasTranscript: true,
     status: "idle",
     summary: null,
