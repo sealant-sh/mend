@@ -944,7 +944,6 @@ describe("SessionEngine", () => {
           expect(afterFailure?.workspaceExpiresAt).toEqual(firstExpiry);
           expect(afterFailure?.workspaceTtlRenewedAt).toEqual(firstRenewedAt);
           expect(afterFailure?.workspaceTtlRenewalFailedAt).not.toBeNull();
-          // The fake's words stand for the platform's own, which a line never says (SLNT-385).
           expect(afterFailure?.workspaceTtlRenewalError).toMatch(WITHHELD);
 
           yield* engine.openShell(session.id);
@@ -1924,7 +1923,6 @@ describe("SessionEngine", () => {
           expect(created).toHaveLength(1);
           const row = world.sessions.get(session.id);
           expect(row?.status).toBe("failed");
-          // The platform's own words stay in the log; the line names their reference (SLNT-385).
           expect(row?.summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
           expect(
             [...world.processes.values()].filter((process) => process.sessionId === session.id),

@@ -764,7 +764,6 @@ describe("a mode switch to the terminal continues the conversation it checked (S
       expect(refusal instanceof SealantPlatformError ? refusal.message : "").toContain(
         "nothing was stopped",
       );
-      // Mend's own sentence, said on a line (SLNT-385).
       expect(lineFailureOf(Cause.fail(refusal))).toMatchObject({
         _tag: "Said",
         words: expect.stringMatching(

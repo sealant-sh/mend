@@ -53,10 +53,6 @@ export class HarnessStateNotFoundError extends Schema.TaggedError<HarnessStateNo
   },
 ) {}
 
-/**
- * Its message is always Mend's own sentence, naming the session and the harness; the path and the
- * host's error ride beside it, for the log.
- */
 export class HarnessStateIOError
   extends Schema.TaggedError<HarnessStateIOError>()("HarnessStateIOError", {
     sessionId: Schema.String,

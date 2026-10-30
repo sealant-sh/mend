@@ -1564,8 +1564,6 @@ describe("per-person harness homes (docs/adr/0016)", () => {
 
   it("withholds the platform's own words when the layout's fallback after the create fails (SLNT-385)", async () => {
     const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
-    // The workspace cannot run processes as each person after all, and Core refuses to take the
-    // launcher's create-time logins back out of their home on the way to the shared layout.
     const platform = Layer.effect(
       PersonLayoutPlatform,
       Effect.map(PersonLayoutPlatform, (inner) => ({

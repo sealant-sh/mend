@@ -45,7 +45,6 @@ export const personPlatform = (
   },
   /** Each person's own login for a provider, as Core says it stands; `active` unless said. */
   logins?: (accountId: string) => PersonLogin,
-  /** A login write Core does not complete: it did not answer (`true`), or it refused with this. */
   postFails?: (onBehalfOf: string, home: string) => boolean | SealantPlatformError,
   /** What the control plane says of itself, asked each time; it can run per person unless said. */
   controlPlane?: () => string | null,

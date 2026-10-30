@@ -112,7 +112,6 @@ const launchOverOf = (request: LaunchRequest): LaunchOver =>
       ? Restart
       : NoLiveAgent;
 
-/** The launch failures that settle a session nothing was launched for. */
 const SETTLED_UNLAUNCHED: ReadonlySet<string> = new Set([
   "LegacyBenchReadOnlyError",
   "SealantPlatformError",
@@ -394,8 +393,6 @@ export const makeSessionStart = Effect.gen(function* () {
       userId,
       launch.pipe(
         Effect.tap(() => (inlineNamePrompt === null ? queueAutoName : Effect.void)),
-        // Settled from the failure itself, before it becomes the caller's answer: its line says
-        // only the words its class approved (SLNT-385).
         Effect.tapError((error) =>
           SETTLED_UNLAUNCHED.has(error._tag)
             ? settleUnlaunched(session, error).pipe(Effect.ignore)

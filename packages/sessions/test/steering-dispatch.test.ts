@@ -1110,7 +1110,6 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
       const steered = steeredWorld("claude");
       const alice = claudePipe("pipe-a");
       const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
-      // As the engine's look at the workspace fails, before anything stopped.
       steered.preparation.during = Effect.fail(
         toPlatformError(new SealantApiError(words, { status: 500 })),
       );

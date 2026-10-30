@@ -2061,7 +2061,6 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             onBehalfOf === MARIA && home.startsWith("/run/mend/conv/"),
           again: true,
         });
-        // Its failure was said on the turn, so there is no reference to name.
         expect(backoff.second?.message).toBe(
           "The last hand-over of this conversation failed less than a minute ago, so this turn was not started and nothing was stopped. Send it again in a minute.",
         );

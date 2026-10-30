@@ -19,17 +19,12 @@ export class SealantPlatformError
     code: Schema.String,
     /** HTTP status when the failure came from a control-plane response. */
     status: Schema.NullOr(Schema.Number),
-    /** The whole text, for the log. */
     message: Schema.String,
     /**
      * The connected account's provider a refused account names (`SealantApiError.provider`:
      * `connected-account-missing`, `-invalid` or `-unsupported`), when Core gave one.
      */
     provider: Schema.optionalKey(Schema.String),
-    /**
-     * What a line other people read may say, decided where the error is built: absent, it names
-     * only a reference to the log entry, since a message can quote what a person sent (SLNT-385).
-     */
     said: Schema.optionalKey(ApprovedWords),
     cause: Schema.Defect(),
   })
@@ -40,7 +35,6 @@ export class SealantPlatformError
   }
 }
 
-/** A failure in Mend's own words: what the log holds is what a line says. */
 export const curatedError = (fields: {
   readonly code: string;
   readonly status: number | null;
@@ -60,11 +54,6 @@ export const curatedError = (fields: {
 const messageOf = (failure: unknown): string =>
   failure instanceof Error ? failure.message : String(failure);
 
-/**
- * Mend's `lead` over another failure, `inner`: the log holds both, and a line says the lead and
- * the inner's words only as far as the inner's own class approved them, so no wrapper can say
- * words the failure it wraps withheld.
- */
 export const ledBy = (
   lead: ReaderLine,
   inner: unknown,

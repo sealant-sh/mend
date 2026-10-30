@@ -825,7 +825,6 @@ const secretFilesNotSetAside = (why: ReaderLine) =>
     cause: null,
   });
 
-/** As `secretFilesNotSetAside`, for a failure whose own words may be withheld. */
 const secretFilesNotSetAsideBy = (failure: unknown) =>
   ledBy(
     said`a secret file under a directory sessions now save could not be taken out of it, so the harness home was not moved and nothing of it is saved`,
@@ -1273,7 +1272,9 @@ const launchEndLine = (
       );
 };
 
-/** A session's line read back as it was stored, to be said again. */
+const personStartFailedAs = (error: SealantPlatformError): "launch" | "resume" =>
+  error.code === "PI_PROFILE_NOT_DELIVERED" ? "launch" : "resume";
+
 const storedLine = (summary: string | null): ReaderLine | null =>
   summary === null ? null : mendWords(summary);
 
@@ -2569,7 +2570,6 @@ type PreviewStartStep =
 const joinStep = (attemptId: SessionProcessId): PreviewStartStep => ({ _tag: "Join", attemptId });
 
 /** A custom-image setup command exited nonzero — the launch fails rather than run half-prepared. */
-/** Its message is Mend's, naming the setup command from the project's own config. */
 export class SessionLaunchSetupError extends Schema.TaggedError<SessionLaunchSetupError>()(
   "SessionLaunchSetupError",
   {
@@ -12266,7 +12266,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * captured (the co-located store).
          */
         readonly restoredFrom: number | null;
-        /** Told why the launch did not start. */
         readonly onFailure: (failure: Cause.Cause<unknown>) => Effect.Effect<void>;
         readonly abandon?: (
           workspace: Workspace,
@@ -12636,7 +12635,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly socketDir: string;
         readonly shape: ReturnType<typeof platformShape>;
         readonly ownerUserId: string | null;
-        /** Told why the launch did not start. */
         readonly onFailure: (failure: Cause.Cause<unknown>) => Effect.Effect<void>;
         /**
          * The platform accepted the create: from here on an executor exists. Runs before anything
@@ -20752,12 +20750,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             },
           ).pipe(
             Effect.tapError((error) =>
-              // A start refused before anything ran (a login not connected, a launch Mend cannot
-              // name) is no failed resume: the session never ran here.
-              launchEndLine(
-                Cause.fail(error),
-                error.code === "PI_PROFILE_NOT_DELIVERED" ? "launch" : "resume",
-              ).pipe(Effect.flatMap(settleUnlessHandedOver), Effect.ignore),
+              launchEndLine(Cause.fail(error), personStartFailedAs(error)).pipe(
+                Effect.flatMap(settleUnlessHandedOver),
+                Effect.ignore,
+              ),
             ),
           );
           const startAs = personStart;

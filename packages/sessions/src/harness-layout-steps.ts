@@ -195,10 +195,6 @@ export const SHARED_AS_BEFORE: LaunchLayout = {
   recorded: false,
 };
 
-/**
- * A login write that failed twice: what it says, and that nothing was started for them, Core's own
- * words withheld as the first failure's were.
- */
 const askedTwice = (again: SealantPlatformError, identity: LinuxIdentity) => {
   const tail = said`Asked twice; nothing was started for ${mendWords(identity.name)}.`;
   const words = approvedWordsOf(again);

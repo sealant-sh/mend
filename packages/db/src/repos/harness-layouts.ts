@@ -261,7 +261,6 @@ const RetirementRow = Schema.Struct({
 });
 const decodeRetirementRow = Schema.decodeUnknownSync(RetirementRow);
 
-/** Its message is Mend's own: which range or name ran out. */
 export class LinuxIdentityExhaustedError extends Schema.TaggedError<LinuxIdentityExhaustedError>()(
   "LinuxIdentityExhaustedError",
   { accountId: Schema.String, message: Schema.String },
