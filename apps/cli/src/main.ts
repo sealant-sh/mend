@@ -129,9 +129,11 @@ import {
   waitForCommand,
   waitForServiceStart,
   followServicePlan,
+  planSetupLine,
   planStepLine,
   type ServicePlanOutcome,
   type ServiceStartProgressSlice,
+  type ServiceStartSetupSlice,
 } from "./run-scripts.ts";
 import {
   secretFileLines,
@@ -151,6 +153,7 @@ import { ServerStoreError, whenServerLockReleased } from "./server-store.ts";
 import {
   isComposeFile,
   proposeForRepository,
+  proposeSetup,
   renderMendToml,
   workspaceGlobs,
 } from "./service-init.ts";
@@ -2074,6 +2077,8 @@ interface ServiceViewDto {
   readonly workspaceTtlRenewalFailedAt: string | null;
   readonly workspaceTtlRenewalError: string | null;
   readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
+  /** A recipe start's answer: how its `[setup]` went; absent from older servers. */
+  readonly setup?: ServiceStartSetupSlice | null;
 }
 
 interface ProcessLogPageDto {
@@ -2328,6 +2333,32 @@ const serviceList = async (config: CliConfig, args: ReadonlyArray<string>) => {
   for (const service of services) printService(config, service);
 };
 
+/**
+ * A Stop of `name` that no live Service answers to: each session of this repository (all of them
+ * outside one) ends a start of it still under way, before the Service has a row. How many ended.
+ */
+const stopServiceStarts = async (config: CliConfig, name: string): Promise<number> => {
+  const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions?retained=1");
+  const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
+  const project = matchProjectByCwd(projects, cwdFacts(process.cwd()));
+  const candidates =
+    project === undefined ? sessions : sessions.filter((s) => s.projectId === project.id);
+  const ended = await Promise.all(
+    candidates.map((session) =>
+      request<{ readonly ended: number }>(
+        config,
+        "POST",
+        `/sessions/${session.id}/services/starts/stop`,
+        { name },
+      ).then(
+        (answer) => answer.ended,
+        () => 0,
+      ),
+    ),
+  );
+  return ended.reduce((sum, count) => sum + count, 0);
+};
+
 const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const needle = args.find((a) => !a.startsWith("--"));
   if (needle === undefined) return fail(usageOf("service stop"));
@@ -2335,7 +2366,13 @@ const serviceStop = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const matches = services.filter(
     (service) => service.label === needle || service.id.startsWith(needle),
   );
-  if (matches.length === 0) return fail(`no live service matches "${needle}"`);
+  if (matches.length === 0) {
+    if ((await stopServiceStarts(config, needle)) > 0) {
+      say(`${green("✓")} stopped · ${needle}'s start, before its Service started`);
+      return;
+    }
+    return fail(`no live service matches "${needle}"`);
+  }
   const match = matches[0];
   if (matches.length > 1 || match === undefined) {
     return fail(`"${needle}" is ambiguous — use more of the id`);
@@ -2483,6 +2520,12 @@ type StartAnswer =
   | { readonly ok: true; readonly view: ServiceViewDto }
   | { readonly ok: false; readonly error: unknown };
 
+const sayRefusedSetup = (view: ServiceViewDto, alreadySaid: string | null = null): void => {
+  if (view.setup?.state !== "refused") return;
+  const words = planSetupLine(view.setup) ?? "setup · refused";
+  if (words !== alreadySaid) say(`${amber("!")} ${words}`);
+};
+
 /** What a waited start says once the port answered; a remote server's tunnel is the next command. */
 const reportAnswered = (config: CliConfig, service: ServiceDto): void => {
   const name = service.label;
@@ -2519,11 +2562,20 @@ const startServiceWaited = async (
     stepLine = `${words}…`;
     if (chrome.isTTY !== true) say(dim(`  ${words}`));
   };
+  let setupSaid: string | null = null;
+  const saySetup = (setup: ServiceStartSetupSlice) => {
+    const words = planSetupLine(setup);
+    if (words === null || setupSaid === words) return;
+    setupSaid = words;
+    stepLine = `${words}…`;
+    if (chrome.isTTY !== true) say(dim(`  ${words}`));
+  };
   const posting = new AbortController();
   if (plan !== null) {
     void (async () => {
       while (!posting.signal.aborted) {
         const progress = await plan(startId).catch(() => null);
+        if (progress?.setup !== undefined && progress.setup !== null) saySetup(progress.setup);
         for (const step of progress?.steps ?? []) sayStep(step);
         await clock.sleep(2000, posting.signal);
       }
@@ -2555,6 +2607,7 @@ const startServiceWaited = async (
   let attemptId: string | null = null;
   if (posted.value.ok) {
     const { view } = posted.value;
+    sayRefusedSetup(view, setupSaid);
     attemptId = answeredAttemptId(view, startId);
     if (attemptId !== null) {
       const first = serviceStartStateOf(
@@ -2609,12 +2662,13 @@ const startServiceWaited = async (
           read: () => plan(startId),
           deadline: wait.deadline,
           onStep: sayStep,
+          onSetup: saySetup,
           ...clock,
         }).catch((): ServicePlanOutcome => ({ kind: "unknown" })),
       );
       if (followed.kind === "ended") return failWith(1, `${name} · ${followed.message}`);
       if (followed.kind === "timeout") {
-        return stillStarting(null, " · its dependencies are still starting");
+        return stillStarting(null, " · its setup or dependencies are still starting");
       }
     }
   }
@@ -2696,10 +2750,12 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       ).catch(() => null);
       return fail(missingRecipeLine(name, recipes, declarations));
     }
+    const setupAgain = head.includes("--setup") ? { setup: "always" } : {};
     const startRecipe = (startId: string) =>
       request<ServiceViewDto>(config, "POST", `/sessions/${session.id}/services/recipe`, {
         name: recipe.name,
         startId,
+        ...setupAgain,
       });
     if (wait !== null) {
       if (recipe.protocol === "udp") {
@@ -2734,18 +2790,21 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
           }),
       );
     }
-    const service = await withSpinner(
+    const view = await withSpinner(
       recipe.command === null
         ? `adopting ${recipe.name} on :${recipe.port}…`
         : recipe.protocol === "udp"
           ? `starting ${recipe.name} (udp :${recipe.port})…`
           : `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
-      mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
+      api<ServiceViewDto>(config, "POST", `/sessions/${session.id}/services/recipe`, {
         name: recipe.name,
+        ...setupAgain,
       }),
     );
+    const service = flattenService(view);
     const tunneling = willAutoConnect(config, service, args.includes("--no-connect"));
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
+    sayRefusedSetup(view);
     printServiceEndpoint(config, service, tunneling);
     say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
     if (tunneling) await autoConnect(config, service);
@@ -2929,7 +2988,10 @@ const serviceInit = async (args: ReadonlyArray<string>) => {
       "nothing to propose — no server-ish package.json script with a nameable port, no compose ports",
     );
   }
-  const toml = renderMendToml(proposals);
+  const toml = renderMendToml(
+    proposals,
+    proposeSetup(rootFiles, rootFiles.includes("package.json") ? readRoot("package.json") : null),
+  );
   say(dim(`proposed ${target}:`));
   say("");
   // The preview loses URL credentials a package script carries; the file written keeps the

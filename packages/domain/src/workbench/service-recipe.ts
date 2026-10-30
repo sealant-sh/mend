@@ -9,7 +9,7 @@ const segmentsOf = (raw: string) =>
 /** Why `raw` is not a path inside the repository, or null when it is one. */
 export const repoRelativePathIssue = (raw: string): string | null => {
   if (raw.includes("\0")) return "contains a NUL byte";
-  if (raw.startsWith("/")) return "is absolute; name a directory inside the repository";
+  if (raw.startsWith("/")) return "is absolute; name a path inside the repository";
   if (segmentsOf(raw).includes("..")) return "leaves the repository (..)";
   return null;
 };
@@ -151,6 +151,17 @@ export class IgnoredDeclaration extends Schema.Class<IgnoredDeclaration>("Ignore
   key: Schema.String,
 }) {}
 
+/**
+ * `[setup]` (ADR 0017, decision 4): commands a recipe start runs first in the worktree, in order,
+ * once per place and fingerprint. The fingerprint covers `run` and the bytes of each of `inputs`,
+ * so editing a command or a lockfile runs setup again.
+ */
+export class SetupDeclaration extends Schema.Class<SetupDeclaration>("SetupDeclaration")({
+  run: Schema.NonEmptyArray(Schema.String),
+  /** Files, repository-relative, whose bytes join the fingerprint; an absent one counts too. */
+  inputs: Schema.Array(RepoRelativePath),
+}) {}
+
 /** `[preview]`: the Service a worktree's preview shows. */
 export class PreviewDeclaration extends Schema.Class<PreviewDeclaration>("PreviewDeclaration")({
   service: Schema.String,
@@ -165,7 +176,20 @@ export class ServiceDeclarations extends Schema.Class<ServiceDeclarations>("Serv
   refused: Schema.Array(RecipeRefusal),
   ignored: Schema.Array(IgnoredDeclaration),
   preview: Schema.NullOr(PreviewDeclaration),
+  /** `[setup]` when the file declares one Mend can run; a refused one is in `refused`. */
+  setup: Schema.NullOr(SetupDeclaration).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
 }) {}
+
+export const setupRefusalsOf = (
+  refused: ReadonlyArray<RecipeRefusal>,
+): ReadonlyArray<RecipeRefusal> =>
+  refused.filter(
+    (refusal) =>
+      refusal.name === null && (refusal.key === "setup" || refusal.key.startsWith("setup.")),
+  );
 
 export const ServiceStartStepState = Schema.Literals([
   "waiting",
@@ -186,11 +210,31 @@ export class ServiceStartStep extends Schema.Class<ServiceStartStep>("ServiceSta
   reason: Schema.NullOr(Schema.String),
 }) {}
 
+export const ServiceStartSetupState = Schema.Literals([
+  "waiting",
+  "running",
+  /** It ran now, every step exiting 0. */
+  "ran",
+  /** It ran here before for this fingerprint and succeeded, so it was not run again. */
+  "unchanged",
+  /** `[setup]` is refused: an explicit start goes on without it, and says why. */
+  "refused",
+  "failed",
+  "stopped",
+]);
+
+export class ServiceStartSetup extends Schema.Class<ServiceStartSetup>("ServiceStartSetup")({
+  state: ServiceStartSetupState,
+  step: Schema.NullOr(Schema.String),
+  reason: Schema.NullOr(Schema.String),
+}) {}
+
 /**
- * A recipe start Mend runs to its end whatever its request does (ADR 0017, delivery 9): each
- * recipe of its plan, dependencies first and the Service asked for last. `running` until that
- * Service's start has finished (`started`), a dependency did not start (`failed`) or a Stop came
- * first (`stopped`); `message` says why for the last two.
+ * A recipe start Mend runs to its end whatever its request does (ADR 0017, delivery 9): the
+ * file's `[setup]` first, when it declares one, then each recipe of its plan, dependencies first
+ * and the Service asked for last. `running` until that Service's start has finished (`started`),
+ * setup or a dependency did not finish (`failed`) or a Stop came first (`stopped`); `message`
+ * says why for the last two.
  */
 export class ServiceStartProgress extends Schema.Class<ServiceStartProgress>(
   "ServiceStartProgress",
@@ -199,7 +243,16 @@ export class ServiceStartProgress extends Schema.Class<ServiceStartProgress>(
   state: Schema.Literals(["running", "started", "failed", "stopped"]),
   steps: Schema.Array(ServiceStartStep),
   message: Schema.NullOr(Schema.String),
+  /** Null when the file declares no `[setup]`, or nothing in the plan runs a command. */
+  setup: Schema.NullOr(ServiceStartSetup).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
 }) {}
+
+/** `MEND_SERVICE_<NAME>`: the recipe name upper-cased, each character outside `[A-Z0-9]` a `_`. */
+export const dependencyEnvPrefix = (name: string): string =>
+  `MEND_SERVICE_${name.toUpperCase().replace(/[^A-Z0-9]/gu, "_")}`;
 
 /** A refusal as a person reads it: `web · cwd · is absolute; …`. */
 export const recipeRefusalLine = (refusal: RecipeRefusal): string =>
@@ -207,12 +260,14 @@ export const recipeRefusalLine = (refusal: RecipeRefusal): string =>
 
 /**
  * How one Service attempt was launched, as its row records it: a restart replays it rather than
- * reading the file again. `env` is the recipe's own, never Mend's.
+ * reading the file again. `env` is the recipe's own, never Mend's; `depends` names the session
+ * dependencies whose addresses its env carries, which a restart looks up again.
  */
 export interface ServiceLaunch {
   readonly cwd: RepoRelativePath | null;
   readonly env: RecipeEnv;
   readonly ready: RecipeReady;
+  readonly depends: ReadonlyArray<string>;
 }
 
 /** An explicit `mend service run` and an attempt from before 0143 launch this way. */
@@ -220,4 +275,5 @@ export const DEFAULT_SERVICE_LAUNCH: ServiceLaunch = {
   cwd: null,
   env: {},
   ready: DEFAULT_RECIPE_READY,
+  depends: [],
 };

@@ -28,7 +28,12 @@ import {
   SealantPlatformError,
   SealantPrincipal,
 } from "@mend/sealant";
-import { SessionEngine, WorkspaceGitHooks, WorkspaceGitHooksLive } from "@mend/sessions";
+import {
+  SessionEngine,
+  WORKSPACE_MEND_TOML,
+  WorkspaceGitHooks,
+  WorkspaceGitHooksLive,
+} from "@mend/sessions";
 import { AgentBridge, processStatePathOf } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
@@ -2354,6 +2359,12 @@ interface LivePersonJoinOptions<A> {
   readonly onePlatformUser?: boolean;
   /** Every log line the engine writes, when a scenario reads them. */
   readonly logs?: Array<string>;
+  /** A command in the executor a scenario answers itself; undefined falls through. */
+  readonly exec?: (
+    argv: ReadonlyArray<string>,
+  ) => { readonly exitCode: number; readonly stdout: string; readonly stderr: string } | undefined;
+  /** The user each exec ran as, in the order of `execs` (null: root). */
+  readonly execUsers?: Array<string | null>;
   /**
    * Runs beside the holder's launch and Maria's join, with the pickups as they land: a
    * clock-driven scenario. Its failure ends both.
@@ -2476,7 +2487,8 @@ const livePersonJoinEffect = <A>(options: LivePersonJoinOptions<A>): Effect.Effe
             undefined,
             person
               ? {
-                  exec: answerLayout(LAYOUT_READY),
+                  exec: (argv) => options.exec?.(argv) ?? answerLayout(LAYOUT_READY)(argv),
+                  ...(options.execUsers === undefined ? {} : { execUsers: options.execUsers }),
                   execEffect: identityExec({
                     pickups,
                     holder: holderOf,
@@ -3121,6 +3133,42 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           if (!grant.ok) throw new Error(grant.message);
           yield* grant.api.land();
           expect(landings).toEqual([`${join.joined.id}:${MARIA}`]);
+        }),
+    });
+  });
+
+  it("a person's [setup] runs as them with their Service's identity, and reads its inputs as them", async () => {
+    const users: Array<string | null> = [];
+    await livePersonJoin({
+      flag: "person",
+      execUsers: users,
+      exec: (argv) =>
+        argv.at(-1) === WORKSPACE_MEND_TOML
+          ? {
+              exitCode: 0,
+              stdout:
+                '[setup]\nrun = ["pnpm install"]\ninputs = ["pnpm-lock.yaml"]\n' +
+                '[service.web]\ncommand = "pnpm dev"\nport = 3000\n',
+              stderr: "",
+            }
+          : argv.includes("mend-setup-inputs")
+            ? { exitCode: 0, stdout: "--mend-setup-inputs--\nabsent\n", stderr: "" }
+            : undefined,
+      inspect: (engine, join) =>
+        Effect.gen(function* () {
+          const started = join.opened.length;
+          yield* engine.runServiceRecipe(join.joined.id, "web", { kind: "person", userId: MARIA });
+          const service = join.opened.at(started);
+          const stepAt = join.execs.findIndex((argv) => argv.includes("mend-setup"));
+          const inputsAt = join.execs.findIndex((argv) => argv.includes("mend-setup-inputs"));
+          expect(service?.user?.name).toBe(JOINER);
+          expect(users[inputsAt], "its inputs read as the joiner").toBe(JOINER);
+          expect(users[stepAt], "its step run as the joiner").toBe(JOINER);
+          const identity = Object.entries(service?.env ?? {})
+            .filter(([name]) => name !== "PORT")
+            .map(([name, value]) => `${name}=${value}`);
+          expect(identity).toContain(`MEND_SESSION_ID=${join.joined.id}`);
+          expect(join.execs[stepAt]).toEqual(expect.arrayContaining(identity));
         }),
     });
   });

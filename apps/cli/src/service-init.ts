@@ -51,6 +51,52 @@ const portFromScript = (script: string): { port: number; guessed: boolean } | nu
   return guessed === null ? null : { port: guessed, guessed: true };
 };
 
+export interface SetupProposal {
+  readonly run: string;
+  readonly input: string;
+}
+
+const LOCKFILE_INSTALLS: ReadonlyArray<readonly [string, string]> = [
+  ["pnpm-lock.yaml", "pnpm install --frozen-lockfile"],
+  ["yarn.lock", "yarn install --frozen-lockfile"],
+  ["bun.lock", "bun install --frozen-lockfile"],
+  ["bun.lockb", "bun install --frozen-lockfile"],
+  ["package-lock.json", "npm ci"],
+  ["npm-shrinkwrap.json", "npm ci"],
+];
+
+/**
+ * Yarn 2 and later (a `.yarnrc.yml`, or `packageManager` naming yarn@2+) install with
+ * `--immutable`; Yarn 1 only knows `--frozen-lockfile`, and takes `--immutable` as an unknown flag
+ * it ignores, rewriting `yarn.lock` as it installs.
+ */
+const yarnBerry = (rootFiles: ReadonlyArray<string>, packageJson: string | null) => {
+  if (rootFiles.includes(".yarnrc.yml")) return true;
+  let manifest: unknown = null;
+  try {
+    manifest = packageJson === null ? null : JSON.parse(packageJson);
+  } catch {
+    return false;
+  }
+  const packageManager =
+    typeof manifest === "object" && manifest !== null && "packageManager" in manifest
+      ? manifest.packageManager
+      : null;
+  return typeof packageManager === "string" && /^yarn@([2-9]|\d{2,})\./u.test(packageManager);
+};
+
+export const proposeSetup = (
+  rootFiles: ReadonlyArray<string>,
+  packageJson: string | null,
+): SetupProposal | null => {
+  const found = LOCKFILE_INSTALLS.find(([lockfile]) => rootFiles.includes(lockfile));
+  if (found === undefined) return null;
+  const [input, run] = found;
+  return input === "yarn.lock" && yarnBerry(rootFiles, packageJson)
+    ? { run: "yarn install --immutable", input }
+    : { run, input };
+};
+
 const packageManagerOf = (lockfiles: ReadonlyArray<string>): string => {
   if (lockfiles.includes("pnpm-lock.yaml")) return "pnpm";
   if (lockfiles.includes("yarn.lock")) return "yarn";
@@ -260,7 +306,21 @@ export const proposeFromWorkspacePackage = (
  * The proposal as the file the user will commit, with a `[preview]` when exactly one proposal is
  * something to open in a browser.
  */
-export const renderMendToml = (proposals: ReadonlyArray<ServiceProposal>): string => {
+export const renderMendToml = (
+  proposals: ReadonlyArray<ServiceProposal>,
+  setup: SetupProposal | null = null,
+): string => {
+  const setupBlock =
+    setup === null
+      ? []
+      : [
+          [
+            `# ${setup.input}: runs before a recipe starts, again when it changes`,
+            "[setup]",
+            `run = [${JSON.stringify(setup.run)}]`,
+            `inputs = [${JSON.stringify(setup.input)}]`,
+          ].join("\n"),
+        ];
   const blocks = proposals.map((proposal) =>
     [
       `# ${proposal.source.replace(/[\r\n]+/g, " ")}`,
@@ -281,7 +341,7 @@ export const renderMendToml = (proposals: ReadonlyArray<ServiceProposal>): strin
     browsers.length === 1 && browsers[0] !== undefined
       ? [`[preview]\nservice = ${JSON.stringify(browsers[0].name)}`]
       : [];
-  return `${[...blocks, ...preview].join("\n\n")}\n`;
+  return `${[...setupBlock, ...blocks, ...preview].join("\n\n")}\n`;
 };
 
 export interface RepositoryManifests {

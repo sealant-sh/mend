@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import {
   DEFAULT_RECIPE_READY,
+  dependencyEnvPrefix,
   ENV_NAME,
   IgnoredDeclaration,
   parseDuration,
@@ -19,6 +21,7 @@ import {
   type ServiceAddress,
   type ServiceHostPolicy,
   ServiceRecipe,
+  SetupDeclaration,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
@@ -42,6 +45,10 @@ import { readResourceProposals } from "./resource-proposals.ts";
  * env = { NODE_ENV = "development" }
  * ready = { http = "/", timeout = "120s" }
  * depends = ["db"]
+ *
+ * [setup]
+ * run = ["pnpm install --frozen-lockfile"]
+ * inputs = ["pnpm-lock.yaml"]
  *
  * [service.db]
  * # no command: an already-listening port to adopt
@@ -68,6 +75,7 @@ export interface MendTomlFile {
   readonly ignored: ReadonlyArray<IgnoredDeclaration>;
   /** `[preview].service` as written; checked against the merged recipes. */
   readonly preview: string | null;
+  readonly setup: SetupDeclaration | null;
 }
 
 export const EMPTY_MEND_TOML: MendTomlFile = {
@@ -76,6 +84,7 @@ export const EMPTY_MEND_TOML: MendTomlFile = {
   refused: [],
   ignored: [],
   preview: null,
+  setup: null,
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -234,6 +243,9 @@ const READERS: { readonly [K in keyof RecipeFields]: KeyReader<K> } = {
       } else if (isRecord(entry) && typeof entry["shared"] === "string") {
         refused = true;
         context.refuse("depends", sharedServiceRefusal(entry["shared"]));
+      } else if (isRecord(entry) && typeof entry["resource"] === "string") {
+        refused = true;
+        context.refuse("depends", sharedServiceRefusal(entry["resource"]));
       } else if (typeof entry === "string" && RECIPE_NAME.test(entry)) {
         if (!names.includes(entry)) names.push(entry);
       } else {
@@ -246,6 +258,75 @@ const READERS: { readonly [K in keyof RecipeFields]: KeyReader<K> } = {
 };
 
 const isRecipeKey = (key: string): key is keyof RecipeFields => Object.hasOwn(READERS, key);
+
+const readSetupRun = (value: unknown, context: KeyContext): SetupDeclaration["run"] | undefined => {
+  if (value === undefined) {
+    context.refuse("setup.run", 'is required: a list of shell commands, such as ["pnpm install"]');
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    context.refuse("setup.run", "must be a list of shell commands");
+    return undefined;
+  }
+  const steps: string[] = [];
+  value.forEach((entry: unknown, index) => {
+    if (typeof entry === "string" && entry.trim() !== "") steps.push(entry.trim());
+    else context.refuse("setup.run", `command ${index + 1} must be a non-empty shell command`);
+  });
+  const [first, ...more] = steps;
+  if (first === undefined) {
+    if (value.length === 0) context.refuse("setup.run", "must list at least one command");
+    return undefined;
+  }
+  return steps.length === value.length ? [first, ...more] : undefined;
+};
+
+const readSetupInput = (
+  entry: unknown,
+): { readonly path: RepoRelativePath } | { readonly issue: string } => {
+  if (typeof entry !== "string") return { issue: "is not a path" };
+  const read = repoRelativePathOf(entry);
+  if (!read.ok) return { issue: read.issue };
+  return read.path === null
+    ? { issue: "is the repository itself; name a file in it" }
+    : { path: read.path };
+};
+
+const readSetupInputs = (
+  value: unknown,
+  context: KeyContext,
+): ReadonlyArray<RepoRelativePath> | undefined => {
+  if (!Array.isArray(value)) {
+    context.refuse("setup.inputs", "must be a list of repository-relative file paths");
+    return undefined;
+  }
+  const paths: RepoRelativePath[] = [];
+  let refused = false;
+  for (const entry of value) {
+    const read = readSetupInput(entry);
+    if ("issue" in read) {
+      refused = true;
+      context.refuse("setup.inputs", `${JSON.stringify(entry)} ${read.issue}`);
+    } else if (!paths.includes(read.path)) {
+      paths.push(read.path);
+    }
+  }
+  return refused ? undefined : paths;
+};
+
+const readSetup = (value: unknown, context: KeyContext): SetupDeclaration | null => {
+  if (!isRecord(value)) {
+    context.refuse("setup", 'must be a table: [setup] run = ["pnpm install"]');
+    return null;
+  }
+  const { run, inputs = [], ...rest } = value;
+  for (const key of Object.keys(rest)) context.ignore(`setup.${key}`);
+  const steps = readSetupRun(run, context);
+  const paths = readSetupInputs(inputs, context);
+  return steps === undefined || paths === undefined
+    ? null
+    : new SetupDeclaration({ run: steps, inputs: paths });
+};
 
 type Draft = { -readonly [K in keyof RecipeFields]: RecipeFields[K] };
 
@@ -331,7 +412,7 @@ export const parseMendToml = (
       });
     }
     if (!isRecord(parsed)) return EMPTY_MEND_TOML;
-    const { service: services = {}, preview, ...rest } = parsed;
+    const { service: services = {}, preview, setup: setupTable, ...rest } = parsed;
     if (!isRecord(services)) {
       return yield* new RecipeFileError({
         path: filePath,
@@ -383,19 +464,129 @@ export const parseMendToml = (
         }
       }
     }
-    return { recipes, resources: resources.proposals, refused, ignored, preview: previewService };
+    const setup =
+      setupTable === undefined
+        ? null
+        : readSetup(setupTable, {
+            refuse: (key, message) => refused.push(new RecipeRefusal({ name: null, key, message })),
+            ignore: (key) => ignored.push(new IgnoredDeclaration({ name: null, key })),
+          });
+    return {
+      recipes,
+      resources: resources.proposals,
+      refused,
+      ignored,
+      preview: previewService,
+      setup,
+    };
   });
 
-/** Read and validate the worktree's `mend.toml`. Missing file = nothing declared. */
-export const readMendToml = (worktree: string): Effect.Effect<MendTomlFile, RecipeFileError> =>
-  Effect.gen(function* () {
-    const filePath = path.join(worktree, MEND_TOML);
-    const raw = yield* Effect.tryPromise({
-      try: () => fs.readFile(filePath, "utf8"),
-      catch: () => null,
-    }).pipe(Effect.orElseSucceed(() => null));
-    return raw === null ? EMPTY_MEND_TOML : yield* parseMendToml(raw, filePath);
+export class WorktreeFileError extends Schema.TaggedError<WorktreeFileError>()(
+  "WorktreeFileError",
+  { path: Schema.String, message: Schema.String },
+) {}
+
+const isMissing = (cause: unknown) =>
+  cause instanceof Error &&
+  "code" in cause &&
+  (cause.code === "ENOENT" || cause.code === "ENOTDIR");
+
+export const WORKTREE_FILE_MAX_BYTES = 16 * 1024 * 1024;
+
+class Refused extends Error {}
+
+const resolveInside = async (root: string, relative: string): Promise<string | null> => {
+  let real: string;
+  try {
+    real = await fs.realpath(path.join(root, relative));
+  } catch (cause) {
+    if (isMissing(cause)) return null;
+    throw cause;
+  }
+  if (real !== root && !real.startsWith(`${root}${path.sep}`)) {
+    throw new Refused("resolves outside the worktree");
+  }
+  return real;
+};
+
+/**
+ * Opens `relative` in the worktree for reading, or answers null for no file. Never a file that
+ * resolves outside it, whatever is swapped in meanwhile (the file opened is checked against the
+ * path as it resolves after the open), and never anything but a regular file: a FIFO would hold
+ * the read open forever, a directory has no bytes.
+ */
+const withWorktreeFile = <A>(
+  worktree: string,
+  relative: string,
+  use: (file: fs.FileHandle, size: number) => Promise<A>,
+): Effect.Effect<A | null, WorktreeFileError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const root = await fs.realpath(worktree);
+      const real = await resolveInside(root, relative);
+      if (real === null) return null;
+      const file = await fs.open(
+        real,
+        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+      );
+      try {
+        const opened = await file.stat();
+        if (opened.isDirectory()) throw new Refused("is a directory; name a file");
+        if (!opened.isFile()) throw new Refused("is not a regular file");
+        const now = await resolveInside(root, relative);
+        const there = now === null ? null : await fs.stat(now);
+        if (there === null || there.ino !== opened.ino || there.dev !== opened.dev) {
+          throw new Refused("changed while it was read");
+        }
+        return await use(file, opened.size);
+      } finally {
+        await file.close();
+      }
+    },
+    catch: (cause) =>
+      new WorktreeFileError({
+        path: relative,
+        message: `${relative} ${cause instanceof Refused ? "" : "could not be read: "}${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
   });
+
+/** A worktree file's bytes, or null for none (`withWorktreeFile`), up to the size limit. */
+export const readWorktreeFile = (
+  worktree: string,
+  relative: string,
+): Effect.Effect<Uint8Array | null, WorktreeFileError> =>
+  withWorktreeFile(worktree, relative, async (file, size) => {
+    if (size > WORKTREE_FILE_MAX_BYTES) {
+      throw new Refused(`is over the ${WORKTREE_FILE_MAX_BYTES / (1024 * 1024)} MiB Mend reads`);
+    }
+    return new Uint8Array(await file.readFile());
+  });
+
+/** The sha256 of a worktree file's bytes, read in chunks, or null for none (`withWorktreeFile`). */
+export const digestWorktreeFile = (
+  worktree: string,
+  relative: string,
+): Effect.Effect<string | null, WorktreeFileError> =>
+  withWorktreeFile(worktree, relative, async (file) => {
+    const hash = createHash("sha256");
+    const chunk = Buffer.alloc(1024 * 1024);
+    for (;;) {
+      const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) return hash.digest("hex");
+      hash.update(chunk.subarray(0, bytesRead));
+    }
+  });
+
+/** Read and validate the worktree's `mend.toml`. Missing or unreadable = nothing declared. */
+export const readMendToml = (worktree: string): Effect.Effect<MendTomlFile, RecipeFileError> =>
+  readWorktreeFile(worktree, MEND_TOML).pipe(
+    Effect.orElseSucceed(() => null),
+    Effect.flatMap((bytes) =>
+      bytes === null
+        ? Effect.succeed(EMPTY_MEND_TOML)
+        : parseMendToml(new TextDecoder().decode(bytes), path.join(worktree, MEND_TOML)),
+    ),
+  );
 
 /**
  * File + project recipes as ONE declaration set. Collisions are refused at write time (the web
@@ -455,6 +646,19 @@ export const resolveDeclarations = (
     }
   }
 
+  for (const recipe of runnable.values()) {
+    const named = new Map<string, string>();
+    for (const dependency of recipe.depends) {
+      const prefix = dependencyEnvPrefix(dependency);
+      const earlier = named.get(prefix);
+      if (earlier !== undefined) {
+        refuse(recipe.name, `names ${earlier} and ${dependency}, which both set ${prefix}_HOST`);
+        break;
+      }
+      named.set(prefix, dependency);
+    }
+  }
+
   for (const cycle of cyclesOf(runnable)) {
     const line = [...cycle, cycle[0]].join(" → ");
     for (const name of cycle) if (runnable.has(name)) refuse(name, `forms a cycle: ${line}`);
@@ -489,6 +693,7 @@ export const resolveDeclarations = (
     refused,
     ignored: file.ignored,
     preview,
+    setup: file.setup,
   });
 };
 

@@ -10,7 +10,7 @@ describe("mend service run <name> with no recipe to run", () => {
           {
             name: "web",
             key: "cwd",
-            message: "is absolute; name a directory inside the repository",
+            message: "is absolute; name a path inside the repository",
           },
           { name: "web", key: "depends", message: "@db · shared services are not available yet" },
           { name: "api", key: "port", message: "must be a port in 1..65535" },
@@ -18,7 +18,7 @@ describe("mend service run <name> with no recipe to run", () => {
         ignored: [],
       }),
     ).toBe(
-      "web is refused by mend.toml · cwd is absolute; name a directory inside the repository · depends @db · shared services are not available yet",
+      "web is refused by mend.toml · cwd is absolute; name a path inside the repository · depends @db · shared services are not available yet",
     );
   });
 

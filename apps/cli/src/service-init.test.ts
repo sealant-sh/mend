@@ -9,6 +9,7 @@ import {
   proposeFromCompose,
   proposeFromPackageJson,
   proposeFromWorkspacePackage,
+  proposeSetup,
   renderMendToml,
   workspaceGlobs,
 } from "./service-init.ts";
@@ -202,6 +203,49 @@ const parsedBack = (toml: string) =>
     Effect.map(parseMendToml(toml, "mend.toml"), (file) => resolveDeclarations(file, [])),
   );
 
+describe("[setup] from a lockfile", () => {
+  const api = {
+    name: "api",
+    command: "npm run dev",
+    port: 4000,
+    protocol: "tcp",
+    guessed: false,
+    browserScheme: null,
+    cwd: null,
+    address: "loopback",
+    source: "package.json",
+  } as const;
+  it.each([
+    [["pnpm-lock.yaml", "package.json"], null, "pnpm install --frozen-lockfile", "pnpm-lock.yaml"],
+    [["yarn.lock"], null, "yarn install --frozen-lockfile", "yarn.lock"],
+    [["yarn.lock", ".yarnrc.yml"], null, "yarn install --immutable", "yarn.lock"],
+    [
+      ["yarn.lock", "package.json"],
+      '{"packageManager":"yarn@4.5.0"}',
+      "yarn install --immutable",
+      "yarn.lock",
+    ],
+    [
+      ["yarn.lock", "package.json"],
+      '{"packageManager":"yarn@1.22.22"}',
+      "yarn install --frozen-lockfile",
+      "yarn.lock",
+    ],
+    [["bun.lock"], null, "bun install --frozen-lockfile", "bun.lock"],
+    [["bun.lockb"], null, "bun install --frozen-lockfile", "bun.lockb"],
+    [["package-lock.json"], null, "npm ci", "package-lock.json"],
+  ])("from %j and %s: %s, with the lockfile as its input", (rootFiles, packageJson, run, input) => {
+    const declared = parsedBack(renderMendToml([api], proposeSetup(rootFiles, packageJson)));
+    expect(declared.refused).toEqual([]);
+    expect(declared.setup).toMatchObject({ run: [run], inputs: [input] });
+  });
+
+  it("writes none without a lockfile", () => {
+    expect(proposeSetup(["package.json", "README.md"], null)).toBeNull();
+    expect(renderMendToml([api], proposeSetup(["package.json"], null))).not.toContain("[setup]");
+  });
+});
+
 describe("what init writes, read back by the server's parser", () => {
   it("refuses nothing in a compose file with UDP and TCP ports", () => {
     const proposals = proposeFromCompose(
@@ -278,7 +322,13 @@ describe("every proposal init makes", () => {
           }),
           { maxLength: 2 },
         ),
-        FastCheck.constantFrom<ReadonlyArray<string>>(["pnpm-lock.yaml"], ["yarn.lock"], []),
+        FastCheck.constantFrom<ReadonlyArray<string>>(
+          ["pnpm-lock.yaml"],
+          ["yarn.lock"],
+          ["bun.lock"],
+          ["package-lock.json"],
+          [],
+        ),
         (root, packages, composeFiles, rootFiles) => {
           const proposals = proposeForRepository({
             rootFiles,
@@ -290,9 +340,11 @@ describe("every proposal init makes", () => {
             composeFiles,
           });
           if (proposals.length === 0) return;
-          const declared = parsedBack(renderMendToml(proposals));
+          const setup = proposeSetup(rootFiles, root === null ? null : packageJsonOf(root));
+          const declared = parsedBack(renderMendToml(proposals, setup));
           expect(declared.refused).toEqual([]);
           expect(declared.ignored).toEqual([]);
+          expect(declared.setup?.inputs ?? []).toEqual(setup === null ? [] : [setup.input]);
           expect(declared.recipes.map((recipe) => recipe.name).toSorted()).toEqual(
             proposals.map((proposal) => proposal.name).toSorted(),
           );

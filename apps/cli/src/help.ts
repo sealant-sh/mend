@@ -668,7 +668,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "start and supervise a server in the session's workspace",
     synopsis: [
       "[session] --port <port> [--name <n>] [--udp] [--http|--https] [--wait [--timeout <duration>]] [--no-connect] -- <command...>",
-      "[session] <name> [--wait [--timeout <duration>]] [--no-connect]",
+      "[session] <name> [--setup] [--wait [--timeout <duration>]] [--no-connect]",
     ],
     description: [
       "With --, the command after it is started in the workspace and supervised: its output is recorded, and mend service restart re-runs it. Without --, the name is a Service declared in the worktree's mend.toml. mend service <name> is the shorthand for that.",
@@ -689,6 +689,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--udp", text: "a UDP port" },
       { flag: "--http, --https", text: "how a browser should open it" },
       { flag: "--no-connect", text: "do not tunnel the port to this machine" },
+      {
+        flag: "--setup",
+        text: "a recipe: run mend.toml's [setup] even if it already succeeded here",
+      },
     ],
     examples: [
       { command: "mend service run --port 3000 -- pnpm dev", text: "" },
@@ -764,7 +768,9 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "services",
     summary: "stop a service and close its host port",
     synopsis: ["<name-or-id>"],
-    description: ["Ends the process and the tunnel. The record of its output remains."],
+    description: [
+      "Ends the process and the tunnel. The record of its output remains. A name no live Service answers to ends a start of it still under way in a session of this repository, during its [setup] or a dependency's start.",
+    ],
     see: ["service restart"],
   },
   {
@@ -773,7 +779,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "scaffold mend.toml from package.json and compose ports",
     synopsis: ["[--yes]"],
     description: [
-      'Writes a mend.toml in the current repository with one Service per script and exposed port it can find. A workspace package\'s server runs in its own directory (cwd), a known dev server gets browserScheme = "http", a compose service gets address = "docker", and the one browser Service, when there is exactly one, becomes the [preview]. Edit it afterwards; sessions read it from their worktree.',
+      'Writes a mend.toml in the current repository with one Service per script and exposed port it can find. A workspace package\'s server runs in its own directory (cwd), a known dev server gets browserScheme = "http", a compose service gets address = "docker", and the one browser Service, when there is exactly one, becomes the [preview]. With a lockfile at the root it adds a [setup] that installs from it (pnpm install --frozen-lockfile, yarn install --frozen-lockfile, or --immutable on Yarn 2 and later, bun install --frozen-lockfile or npm ci), run before a recipe starts and again when the lockfile changes. Edit it afterwards; sessions read it from their worktree.',
     ],
     options: [{ flag: "--yes", text: "write without asking" }],
     see: ["service run"],

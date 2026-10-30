@@ -686,11 +686,14 @@ selection and host-key verification.
 | `mend service stop <name-or-id>`                                              | Stop the process and close its host port                                    |
 
 `mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, `--wait`, `--timeout`
-and `--no-connect`. Mend holds the start for up to a minute until the port answers. `--wait` keeps
-waiting while the Service is still starting, which means its process runs and its port has not
-answered yet (building, installing, booting), up to `--timeout` (a duration as `mend wait` takes it;
-default `10m`). Mend probes a started Service's port every 20 seconds, so the wait ends at the first
-probe that answers. The exit status says how it ended:
+and `--no-connect`, and for a recipe `--setup`, which runs `mend.toml`'s `[setup]` even where it
+already succeeded. `mend service stop <name>` also ends a start of that Service still under way, in
+its setup or a dependency's start, before the Service exists. Mend holds the start for up to a
+minute until the port answers. `--wait` keeps waiting while the Service is still starting, which
+means its process runs and its port has not answered yet (building, installing, booting), up to
+`--timeout` (a duration as `mend wait` takes it; default `10m`). Mend probes a started Service's
+port every 20 seconds, so the wait ends at the first probe that answers. The exit status says how it
+ended:
 
 | Exit  | What was observed                                                                                            |
 | ----- | ------------------------------------------------------------------------------------------------------------ |
@@ -711,10 +714,10 @@ server older than the CLI stamps no id: a start whose answer an edge cut is then
 command that exits inside the server's minute reads as the refusal the server answers with, both
 exit `1`.
 
-A recipe whose `depends` start first runs to its end on the server whatever happens to the command:
-Ctrl-C at the spinner, or an edge cutting the request, leaves it going, and a Stop of one of its
-Services ends it. `--wait` follows it, with a line for each dependency as it starts and answers, for
-as long as `--timeout` allows.
+A recipe whose `[setup]` or `depends` run first runs to its end on the server whatever happens to
+the command: Ctrl-C at the spinner, or an edge cutting the request, leaves it going, and a Stop of
+one of its Services ends it. `--wait` follows it, with a line for setup's steps and for each
+dependency as it starts and answers, for as long as `--timeout` allows.
 
 A waited start returns and opens no tunnel; `mend service connect` reaches the port. `--wait` takes
 TCP ports only (UDP has no probe), and not a recipe that declares only a port, which Mend adopts

@@ -558,6 +558,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("steer", "POST", "/label", { label: "renamed" })("sessions.label"),
   session("stop", "POST", "/stop")("sessions.stop"),
   session("stop", "POST", "/services/stop")("sessions.stopServices"),
+  session("stop", "POST", "/services/starts/stop", { name: "web" })("sessions.stopServiceStarts"),
   // Turning it off: the owner or an organization owner. Turning it on is the owner's alone
   // (shared-control.test.ts); off leaves the world unshared for every other case.
   session("stop", "PUT", "/shared-control", { enabled: false })("sessions.sharedControl"),
@@ -908,6 +909,7 @@ const ADMITTED: Readonly<
   "sessions.label": { status: 500, calls: ["sessions.setLabel"] },
   "sessions.stop": { status: 500, calls: ["engine.stop"] },
   "sessions.stopServices": { status: 500, calls: ["engine.stopServices"] },
+  "sessions.stopServiceStarts": { status: 500, calls: ["engine.stopServiceStarts"] },
   "sessions.sharedControl": {
     status: 200,
     calls: [

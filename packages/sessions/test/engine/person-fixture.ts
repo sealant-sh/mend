@@ -287,6 +287,8 @@ export const workspacesPerOwner = (
           guarded("runtimeDeadline", ofWorkspace(workspace.id), () =>
             client.runtimeDeadline(workspace),
           ),
+        bootedImage: (workspace) =>
+          guarded("bootedImage", ofWorkspace(workspace.id), () => client.bootedImage(workspace)),
         expireWorkspace: (workspaceId, ttlSeconds) =>
           guarded("expireWorkspace", ofWorkspace(workspaceId), () =>
             client.expireWorkspace(workspaceId, ttlSeconds),

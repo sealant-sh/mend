@@ -1845,6 +1845,8 @@ export const sessionProcesses = pgTable(
     launchCwd: text().$type<RepoRelativePath>(),
     launchEnv: jsonb().$type<RecipeEnv>(),
     launchReady: jsonb().$type<RecipeReady>(),
+    /** The session dependencies it was started with, bound again at a restart; null: none. */
+    launchDepends: jsonb().$type<ReadonlyArray<string>>(),
   },
   (table) => [
     index("session_processes_session_idx").on(table.sessionId, table.createdAt),
@@ -2219,6 +2221,40 @@ export const serviceObservations = pgTable(
   (table) => [
     index("service_observations_service_observed_idx").on(table.serviceId, table.lastObservedAt),
     index("service_observations_forward_observed_idx").on(table.forwardId, table.lastObservedAt),
+  ],
+);
+
+/** At most one `running` row per site, whatever its fingerprint (ADR 0017, decision 4). */
+export const setupRuns = pgTable(
+  "setup_runs",
+  {
+    siteKey: text().notNull(),
+    fingerprint: text().notNull(),
+    // A removed worktree takes its stamps with it: a new checkout at the same path starts bare.
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    state: text().$type<"running" | "done" | "failed">().notNull(),
+    claimId: uuid().notNull(),
+    // Where the run's processes are, so a later claimant can stop them once its lease lapses.
+    workspaceId: text().notNull(),
+    runsAs: text(),
+    claimedAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    leaseUntil: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    finishedAt: timestamp({ mode: "date", withTimezone: true }),
+    exitCode: integer(),
+    outputTail: text(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.siteKey, table.fingerprint] }),
+    uniqueIndex("setup_runs_one_running_idx")
+      .on(table.siteKey)
+      .where(sql`${table.state} = 'running'`),
+    index("setup_runs_worktree_idx").on(table.worktreeId),
+    index("setup_runs_running_workspace_idx")
+      .on(table.workspaceId)
+      .where(sql`${table.state} = 'running'`),
   ],
 );
 

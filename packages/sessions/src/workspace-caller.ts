@@ -323,6 +323,7 @@ export const byWorkspaceCreator = (
     captureFlush: (workspace, kind) => look(workspace.id)(client.captureFlush(workspace, kind)),
     captureStatus: (workspace) => look(workspace.id)(client.captureStatus(workspace)),
     runtimeDeadline: (workspace) => look(workspace.id)(client.runtimeDeadline(workspace)),
+    bootedImage: (workspace) => look(workspace.id)(client.bootedImage(workspace)),
     runtimeResourceId: (workspace, launchId) =>
       look(workspace.id)(client.runtimeResourceId(workspace, launchId)),
     launchedRuntime: (workspace) => look(workspace.id)(client.launchedRuntime(workspace)),

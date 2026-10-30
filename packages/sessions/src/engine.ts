@@ -29,6 +29,8 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   ServicesRepo,
+  type SetupRunAgain,
+  SetupRunsRepo,
   SessionGitOpsRepo,
   WorktreeChangesRepo,
   type WorktreeNotFoundError,
@@ -96,7 +98,10 @@ import type {
 import {
   DEFAULT_SERVICE_LAUNCH,
   ServiceStartProgress,
+  ServiceStartSetup,
   ServiceStartStep,
+  type SetupDeclaration,
+  setupRefusalsOf,
   previewControlDecider,
   previewStartId,
   recipeRefusalLine,
@@ -592,6 +597,7 @@ import {
 import type { SteerTurnInput } from "./protocol-steer.ts";
 import {
   EMPTY_MEND_TOML,
+  MEND_TOML,
   type MendTomlFile,
   parseMendToml,
   planStart,
@@ -625,6 +631,7 @@ import {
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
 import {
   checkReady,
+  type DependencyAddress,
   explicitLaunch,
   type LaunchSpec,
   PreviewUrls,
@@ -635,6 +642,7 @@ import {
   serviceCwdOf,
   serviceProcessEnv,
   TCP_READY,
+  WORKSPACE_REPO,
 } from "./service-launch.ts";
 import {
   type AddableProject,
@@ -661,6 +669,7 @@ import {
   type AgentHookOutcome,
   type SessionSocketApi,
 } from "./session-socket.ts";
+import { makeSetupRunner, SetupNotRun } from "./setup-run.ts";
 import { loadShellProfile, shellProfileApplies } from "./shell-profile.ts";
 import {
   MANAGED_SKILLS_DIGESTS,
@@ -1465,6 +1474,7 @@ interface ServiceStart {
   readonly launch: LaunchSpec;
   /** The file's `[preview]` when it was read for this start, for `MEND_PREVIEW_URL`. */
   readonly filePreview: string | null;
+  readonly dependencies: ReadonlyArray<DependencyAddress>;
 }
 
 type StartOutcome =
@@ -1492,6 +1502,7 @@ interface ServicePlan {
   progress: ServiceStartProgress;
   /** A Stop of one of its Services, or of all the session's: it starts nothing more. */
   stopped: boolean;
+  readonly stopping: Deferred.Deferred<void>;
   target: ServiceId | null;
   readonly done: Deferred.Deferred<ServiceView, PlanFailure>;
 }
@@ -1511,6 +1522,30 @@ const stepTo = (
       ),
     });
   });
+
+const setupTo = (
+  plan: ServicePlan,
+  state: ServiceStartSetup["state"],
+  step: string | null = null,
+  reason: string | null = null,
+) =>
+  Effect.sync(() => {
+    plan.progress = new ServiceStartProgress({
+      ...plan.progress,
+      setup: new ServiceStartSetup({ state, step, reason }),
+    });
+  });
+
+/** An attempt's recorded dependencies at their addresses, looked up for a replay of it. */
+interface AttemptDependencies {
+  readonly attemptId: SessionProcessId;
+  readonly addresses: ReadonlyArray<DependencyAddress>;
+}
+
+type PlanSetup =
+  | { readonly _tag: "None" }
+  | { readonly _tag: "Declared"; readonly setup: SetupDeclaration }
+  | { readonly _tag: "Refused"; readonly line: string };
 
 /** What the reaper writes when a lease lapsed and the platform no longer answers. */
 const EXECUTOR_LOST_SUMMARY = "executor lost · lease expired";
@@ -2017,7 +2052,7 @@ export interface ProvisionInput {
 /** Where a linked project is bound inside the workspace (ADR-0001). */
 export const linkedProjectMountPath = (name: string) => `/workspace/repos/${name}`;
 /** The worktree's `mend.toml` as a workspace sees it. */
-export const WORKSPACE_MEND_TOML = "/workspace/repo/mend.toml";
+export const WORKSPACE_MEND_TOML = `${WORKSPACE_REPO}/${MEND_TOML}`;
 /** The read script's exit code for "no mend.toml": distinct from `cat`'s own failures. */
 const WORKSPACE_MEND_TOML_ABSENT = 44;
 const isLinkedProjectMountPath = (mountPath: string) => mountPath.startsWith("/workspace/repos/");
@@ -2903,6 +2938,8 @@ export class SessionEngine extends Context.Service<
       cause?: ServiceStartCause,
       /** The client's id for this start; the attempt carries `serviceStartCorrelation(startId)`. */
       startId?: string,
+      /** Run `[setup]` even where it already succeeded for its fingerprint. */
+      options?: { readonly setupAgain?: boolean },
     ) => Effect.Effect<
       ServiceView,
       | SessionNotFoundError
@@ -2949,6 +2986,15 @@ export class SessionEngine extends Context.Service<
     readonly stopServices: (
       sessionId: SessionId,
       cause: ServiceStopCause,
+    ) => Effect.Effect<number, SessionNotFoundError>;
+    /**
+     * A Stop by name that finds no live Service: it ends each start under way in the session that
+     * would start `name`, its setup or a dependency included, before that Service has a row.
+     * Answers how many it ended.
+     */
+    readonly stopServiceStarts: (
+      sessionId: SessionId,
+      name: string,
     ) => Effect.Effect<number, SessionNotFoundError>;
     /**
      * Start a stopped preview's Service for a request to it (ADR 0017): its source attempt's
@@ -3179,6 +3225,7 @@ type SessionEngineRequirements =
   | SessionProcessesRepo
   | SessionPagesRepo
   | ServicesRepo
+  | SetupRunsRepo
   | ServiceForwardsRepo
   | ServiceObservationsRepo
   | ServiceHost
@@ -5377,7 +5424,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const savedWhileDiscarding = new Set<SealantWorkspaceId>();
       /**
        * Joins under way into each executor, from just before the join's last look at its holder
-       * until its process row exists: they count as in use (`workspaceInUse`), so a drain that
+       * until its process row exists, and recipe starts from their `[setup]` until their plan
+       * ends (`runPlanSetup`): they count as in use (`workspaceInUse`), so a drain that
        * begins meanwhile yields to them instead of flushing the executor shut under them. Each
        * side writes first and reads second (the drain its durable intent, the join this count),
        * so one always sees the other (RC 0.36.0-next.761: a `mend run` that joined while the
@@ -6186,6 +6234,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           (yield* serviceForwards.listOpen()).filter(
             (forward) => forward.sealantWorkspaceId === workspaceId,
           ).length +
+          (yield* setupRuns.runningIn(workspaceId)) +
           (workspaceHolds.get(workspaceId) ?? 0)
         );
       });
@@ -8576,6 +8625,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       const services = yield* ServicesRepo;
+      const setupRuns = yield* SetupRunsRepo;
+      const runSetup = yield* makeSetupRunner;
       const serviceForwards = yield* ServiceForwardsRepo;
       const serviceObservations = yield* ServiceObservationsRepo;
       const previews = yield* PreviewsRepo;
@@ -10382,7 +10433,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               (forward) => forward.sealantWorkspaceId === workspaceId,
             );
             const leaseCount =
-              processLeases.length + forwardLeases.length + (workspaceHolds.get(workspaceId) ?? 0);
+              processLeases.length +
+              forwardLeases.length +
+              (yield* setupRuns.runningIn(workspaceId)) +
+              (workspaceHolds.get(workspaceId) ?? 0);
             if (leaseCount > 0) {
               yield* Effect.logInfo("session engine: workspace stop deferred by live leases").pipe(
                 Effect.annotateLogs({ sessionId, workspaceId, leases: leaseCount }),
@@ -22176,16 +22230,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * The worktree's `mend.toml` recipes, wherever the worktree is: beside this process when
-       * the deployment co-locates it, else in the session's live workspace — the only copy
-       * capture mode has that includes the agent's latest edit. No live workspace there is a
-       * typed `SessionNotLiveError`, never a defect.
+       * The copy of a session's worktree Mend reads: beside this process when the deployment
+       * co-locates it, else the session's live workspace, the only copy capture mode has that
+       * includes the agent's latest edit. No live workspace there is a `SessionNotLiveError`.
        */
-      const mendTomlOf = Effect.fn("SessionEngine.mendTomlOf")(function* (session: Session) {
+      const worktreeCopyOf = Effect.fn("SessionEngine.worktreeCopyOf")(function* (
+        session: Session,
+      ) {
         const mount = yield* sessionRepo.worktreeMount(session.projectId, session.worktree);
-        if (mount !== undefined) return yield* readMendToml(mount);
-        const workspace = yield* workspaceForSupportingProcess(session);
-        return yield* readWorkspaceMendToml(workspace);
+        if (mount !== undefined) return { _tag: "Host", path: mount } as const;
+        return {
+          _tag: "Workspace",
+          workspace: yield* workspaceForSupportingProcess(session),
+        } as const;
+      });
+
+      const mendTomlOf = Effect.fn("SessionEngine.mendTomlOf")(function* (session: Session) {
+        const copy = yield* worktreeCopyOf(session);
+        return copy._tag === "Host"
+          ? yield* readMendToml(copy.path)
+          : yield* readWorkspaceMendToml(copy.workspace);
       });
 
       const declarationsOf = Effect.fn("SessionEngine.declarationsOf")(function* (
@@ -23004,6 +23068,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly argv: ReadonlyArray<string>;
         readonly launch: ServiceLaunch;
         readonly filePreview: string | null;
+        readonly dependencies: ReadonlyArray<DependencyAddress>;
         readonly runsAs: string | null;
         readonly launchCorrelationId: string | null;
       }) {
@@ -23043,6 +23108,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 recipe: launch.env,
                 port: service.workspacePort,
                 previewUrl,
+                dependencies: start.dependencies,
                 person: startAs?.env ?? {},
               }),
               ...(startAs === null ? {} : { user: startAs.user }),
@@ -23132,6 +23198,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv: launch.argv,
           launch,
           filePreview: start.filePreview,
+          dependencies: start.dependencies,
           runsAs,
           launchCorrelationId,
         });
@@ -23252,6 +23319,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             declarationSource,
             launch: explicitLaunch(argv),
             filePreview: null,
+            dependencies: [],
           },
           cause,
           startId,
@@ -23345,6 +23413,59 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * Where each of `names` answers inside the session's workspace, as a dependent Service's
+       * env gives it. A docker one is reached on loopback when Docker publishes there, else on the
+       * sidecar; one not running, or not answering, is left out.
+       */
+      const dependencyAddressesOf = Effect.fn("SessionEngine.dependencyAddressesOf")(function* (
+        sessionId: SessionId,
+        names: ReadonlyArray<string>,
+      ) {
+        const addresses: DependencyAddress[] = [];
+        for (const name of names) {
+          const live = yield* liveServiceNamed(sessionId, name);
+          if (live === null) continue;
+          const { service } = live;
+          const port = service.workspacePort;
+          if (service.address === "loopback") {
+            addresses.push({ name, host: "127.0.0.1", port });
+            continue;
+          }
+          const workspaceId = (yield* sessions.byId(sessionId)).sealantWorkspaceId;
+          if (workspaceId === null) continue;
+          const probed = yield* forwardAdapter.probe(portTarget(workspaceId, port), {
+            purpose: "readiness",
+          });
+          if (probed.kind === "ready") {
+            addresses.push({
+              name,
+              host: probed.arrival.route === "docker" ? "docker" : "127.0.0.1",
+              port,
+            });
+          }
+        }
+        return addresses;
+      });
+
+      /**
+       * A restart's dependencies: the ones its attempt was started with (`launch.depends`), at
+       * their addresses now. One that is not running is left out; a lookup that fails refuses.
+       */
+      const attemptDependencyAddressesOf = (
+        attemptId: SessionProcessId | null,
+        sessionId: SessionId,
+      ) =>
+        (attemptId === null ? Effect.succeed(null) : processes.launchOf(attemptId)).pipe(
+          Effect.flatMap((launch) => dependencyAddressesOf(sessionId, launch?.depends ?? [])),
+          Effect.mapError(
+            (error) =>
+              new ServiceStartError({
+                message: `the addresses of the Service's dependencies could not be read, so it was not started · ${error.message}`,
+              }),
+          ),
+        );
+
+      /**
        * One recipe of a plan, started or met: a dependency already live is waited for (never
        * started again), an adopt-only recipe is adopted and its port waited for, and anything else
        * starts. The Service asked for is always started: one live by now is refused as a name
@@ -23416,6 +23537,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             declarationSource,
             launch: recipeLaunch({ ...recipe, command }),
             filePreview,
+            dependencies: yield* dependencyAddressesOf(sessionId, recipe.depends),
           },
           cause,
           startId,
@@ -23483,11 +23605,71 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** A Stop reaching the plans its Services belong to (all the session's when `name` is null). */
       const stopPlans = (sessionId: SessionId, name: string | null) =>
         Effect.sync(() => {
+          let ended = 0;
           for (const plan of servicePlans.values()) {
             if (plan.sessionId !== sessionId || plan.progress.state !== "running") continue;
-            if (name === null || plan.names.has(name)) plan.stopped = true;
+            if (name === null || plan.names.has(name)) {
+              plan.stopped = true;
+              Deferred.doneUnsafe(plan.stopping, Effect.void);
+              ended += 1;
+            }
           }
+          return ended;
         });
+
+      const setupErrorOf = (error: { readonly _tag: string; readonly message: string }) =>
+        error instanceof ServiceStartError
+          ? error
+          : new ServiceStartError({
+              message:
+                error._tag === "SessionNotLiveError"
+                  ? "This session has no live workspace, so setup cannot run. Resume it, then run the recipe."
+                  : error instanceof SetupNotRun
+                    ? error.message
+                    : `setup did not run · ${error.message}`,
+            });
+
+      /**
+       * Runs outside the lifecycle permit, before anything else the plan starts (ADR 0017,
+       * decision 4), as the person the plan's Service runs as. The workspace counts as in use for
+       * the rest of the plan, so an idle stop waits for setup and then for the Service's attempt.
+       */
+      const runPlanSetup = Effect.fn("SessionEngine.runPlanSetup")(function* (
+        plan: ServicePlan,
+        setup: SetupDeclaration,
+        cause: AcceptedStart,
+        runAgain: SetupRunAgain,
+      ) {
+        const session = yield* sessions.byId(plan.sessionId);
+        const copy = yield* worktreeCopyOf(session);
+        const workspace =
+          copy._tag === "Workspace"
+            ? copy.workspace
+            : yield* workspaceForSupportingProcess(session);
+        const workspaceId = SealantWorkspaceId.make(workspace.id);
+        const runsAs = serviceRunsAs(cause) ?? session.ownerUserId;
+        const retired = yield* retirementRefusalFor(workspaceId, runsAs);
+        if (retired !== null) return yield* new ServiceStartError({ message: retired });
+        yield* Effect.acquireRelease(enterJoin(workspaceId), () => leaveJoin(workspaceId));
+        const person = yield* startAsPerson(session, workspace, Effect.succeed(runsAs), "shell");
+        yield* runSetup({
+          plan: {
+            stopped: () => plan.stopped,
+            stopping: plan.stopping,
+            report: (state) =>
+              Effect.sync(() => {
+                plan.progress = new ServiceStartProgress({ ...plan.progress, setup: state });
+              }),
+          },
+          setup,
+          worktreeId: session.worktreeId,
+          copy,
+          workspace,
+          person: person === null ? null : { user: person.user, env: person.env },
+          runsAs,
+          runAgain,
+        });
+      }, Effect.mapError(setupErrorOf));
 
       const runPlan = Effect.fn("SessionEngine.runPlan")(function* (
         plan: ServicePlan,
@@ -23495,6 +23677,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         filePreview: string | null,
         cause: AcceptedStart,
         startId: string | null,
+        setup: PlanSetup,
+        runAgain: SetupRunAgain,
       ) {
         const target = steps.at(-1);
         if (target === undefined) return yield* Effect.die("a plan without its Service");
@@ -23503,6 +23687,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             plan.progress = new ServiceStartProgress({ ...plan.progress, state, message });
           }).pipe(Effect.andThen(Effect.fail(new ServiceStartError({ message }))));
         const stoppedWords = `a Stop came before ${target.name} started`;
+        if (setup._tag === "Declared") {
+          const ran = yield* runPlanSetup(plan, setup.setup, cause, runAgain).pipe(Effect.result);
+          if (Result.isFailure(ran)) {
+            const left = plan.progress.setup;
+            if (left !== null && (left.state === "waiting" || left.state === "running")) {
+              yield* plan.stopped
+                ? setupTo(plan, "stopped", left.step)
+                : setupTo(plan, "failed", left.step, ran.failure.message);
+            }
+            return yield* plan.stopped
+              ? end("stopped", stoppedWords)
+              : end("failed", ran.failure.message);
+          }
+        }
         for (const dependency of steps.slice(0, -1)) {
           if (plan.stopped) return yield* end("stopped", stoppedWords);
           yield* stepTo(plan, dependency.name, "starting");
@@ -23573,6 +23771,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         name: string,
         cause: AcceptedStart,
         startId: string | null,
+        setupAgain = false,
       ) {
         const session = yield* sessions.byId(sessionId);
         const file = yield* mendTomlOf(session).pipe(
@@ -23612,6 +23811,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (recipe === undefined || recipe.name !== name) {
           return yield* notRun(`No Service recipe named "${name}" exists in this session.`);
         }
+        const setupRefusals = setupRefusalsOf(declared.refused);
+        const setup: PlanSetup = !steps.some((step) => step.command !== null)
+          ? { _tag: "None" }
+          : setupRefusals.length > 0
+            ? { _tag: "Refused", line: setupRefusals.map(recipeRefusalLine).join("; ") }
+            : declared.setup === null
+              ? { _tag: "None" }
+              : { _tag: "Declared", setup: declared.setup };
+        if (setup._tag === "Refused" && cause.kind === "system") {
+          return yield* new ServiceStartError({
+            message: `mend.toml refuses [setup], so ${name} is not started automatically: ${setup.line}`,
+          });
+        }
         const key = planKey(sessionId, startId ?? crypto.randomUUID());
         const running = servicePlans.get(key);
         // Before any dependency starts: a refused start leaves nothing new running.
@@ -23636,14 +23848,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }),
             ),
             message: null,
+            setup:
+              setup._tag === "None"
+                ? null
+                : setup._tag === "Refused"
+                  ? new ServiceStartSetup({ state: "refused", step: null, reason: setup.line })
+                  : new ServiceStartSetup({ state: "waiting", step: null, reason: null }),
           }),
           stopped: false,
+          stopping: Deferred.makeUnsafe<void>(),
           target: null,
           done: Deferred.makeUnsafe<ServiceView, PlanFailure>(),
         };
         if (running === undefined) {
           servicePlans.set(key, plan);
-          yield* runPlan(plan, steps, declared.preview?.service ?? null, cause, startId).pipe(
+          yield* runPlan(
+            plan,
+            steps,
+            declared.preview?.service ?? null,
+            cause,
+            startId,
+            setup,
+            cause.kind === "system" ? "never" : setupAgain ? "always" : "after-failure",
+          ).pipe(
+            Effect.scoped,
             Effect.onExit((exit) =>
               Deferred.done(plan.done, exit).pipe(
                 Effect.andThen(Effect.sleep(Duration.millis(SERVICE_PLAN_KEPT_MS))),
@@ -23657,9 +23885,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const settled = yield* Deferred.await(plan.done).pipe(
           Effect.timeoutOption(Duration.millis(SERVICE_START_HOLD_MS)),
         );
-        if (Option.isSome(settled)) return settled.value;
+        const withSetup = (view: ServiceView) =>
+          new ServiceView({ ...view, setup: plan.progress.setup });
+        if (Option.isSome(settled)) return withSetup(settled.value);
         // Held long enough: the start goes on without its request.
-        if (plan.target !== null) return yield* readServiceView(plan.target);
+        if (plan.target !== null) return withSetup(yield* readServiceView(plan.target));
+        const setupState = plan.progress.setup?.state;
+        if (setupState === "waiting" || setupState === "running") {
+          return yield* new ServiceStartUnderWayError({
+            message: `${name} waits on setup, which has not finished yet · the start goes on · mend service list`,
+          });
+        }
         const waiting = plan.progress.steps.find((step) => step.state === "starting");
         return yield* new ServiceStartUnderWayError({
           message: `${name} waits on ${waiting?.name ?? "its dependencies"}, which has not answered yet · the start goes on · mend service list`,
@@ -23670,6 +23906,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         serviceId: ServiceId,
         cause: AcceptedStart,
         filePreview: string | null,
+        dependencies: ReadonlyArray<DependencyAddress>,
       ) {
         const service = yield* services.byId(serviceId);
         if (service === null) return yield* new ServiceNotFoundError({ processId: serviceId });
@@ -23713,6 +23950,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv: previous.argv,
           launch,
           filePreview,
+          dependencies,
           runsAs: yield* services.startedByOf(service.id),
           launchCorrelationId: null,
         });
@@ -23730,8 +23968,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   Effect.flatMap(filePreviewOf),
                   Effect.orElseSucceed(() => null),
                 );
+          const dependencies =
+            service === null
+              ? []
+              : yield* attemptDependencyAddressesOf(service.currentAttemptId, service.sessionId);
           const started = yield* withServiceLifecycle(
-            restartServiceUnlocked(serviceId, cause, filePreview),
+            restartServiceUnlocked(serviceId, cause, filePreview, dependencies),
           );
           const verdict = yield* awaitAttemptReady(started);
           const { view } = yield* withServiceLifecycle(
@@ -24374,6 +24616,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const acceptPreviewStart = Effect.fn("SessionEngine.acceptPreviewStart")(function* (
         step: Extract<PreviewStartStep, { readonly _tag: "Start" }>,
+        lookedUp: AttemptDependencies | null,
       ) {
         const service = yield* services.byId(step.serviceId);
         if (service === null) return yield* previewRefused("preview-gone");
@@ -24408,6 +24651,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           argv: step.source.argv,
           launch: (yield* processes.launchOf(step.source.id)) ?? DEFAULT_SERVICE_LAUNCH,
           filePreview: null,
+          dependencies:
+            lookedUp?.attemptId === step.source.id
+              ? lookedUp.addresses
+              : yield* attemptDependencyAddressesOf(step.source.id, service.sessionId).pipe(
+                  Effect.mapError((error) => previewRefused("command-failed", error.message)),
+                ),
           runsAs: starter,
           launchCorrelationId: step.correlation,
         }).pipe(Effect.mapError((error) => previewRefused("command-failed", error.message)));
@@ -24519,6 +24768,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const step = yield* previewStartStep(request);
         if (step._tag === "Join")
           return yield* joinPreviewAttempt(step.attemptId, request.deadline);
+        // Outside the permit: a docker dependency's address is a probe of the workspace.
+        const lookedUp: AttemptDependencies = {
+          attemptId: step.source.id,
+          addresses: yield* attemptDependencyAddressesOf(
+            step.source.id,
+            step.source.sessionId,
+          ).pipe(Effect.mapError((error) => previewRefused("command-failed", error.message))),
+        };
         const accepted = yield* withServiceLifecycle(
           Effect.gen(function* () {
             if (previewRemainingMs(request.deadline) === 0) {
@@ -24527,7 +24784,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const again = yield* previewStartStep(request);
             if (again._tag === "Join") return again;
             yield* claim;
-            return yield* acceptPreviewStart(again);
+            return yield* acceptPreviewStart(again, lookedUp);
           }),
         );
         if ("_tag" in accepted) {
@@ -26254,10 +26511,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         listServiceRecipes: (sessionId) => owned(sessionId)(listServiceRecipes(sessionId)),
         serviceDeclarations: (sessionId) => owned(sessionId)(serviceDeclarations(sessionId)),
-        runServiceRecipe: (sessionId, name, cause, startId) =>
+        runServiceRecipe: (sessionId, name, cause, startId, options) =>
           owned(sessionId)(
             Effect.flatMap(acceptStart(cause ?? SYSTEM_START), (accepted) =>
-              runServiceRecipe(sessionId, name, accepted, startId ?? null),
+              runServiceRecipe(
+                sessionId,
+                name,
+                accepted,
+                startId ?? null,
+                options?.setupAgain === true,
+              ),
             ),
           ),
         serviceStartProgress: (sessionId, startId) =>
@@ -26275,6 +26538,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         stopService: (serviceId, cause) => ownedByService(serviceId)(stopService(serviceId, cause)),
         stopServices: (sessionId, cause) => owned(sessionId)(stopServices(sessionId, cause)),
+        stopServiceStarts: (sessionId, name) =>
+          owned(sessionId)(
+            sessions.byId(sessionId).pipe(Effect.andThen(stopPlans(sessionId, name))),
+          ),
         ensurePreviewRunning,
         storePastedImage: (sessionId, bytes, sender) =>
           owned(sessionId)(storePastedImage(sessionId, bytes, sender)),

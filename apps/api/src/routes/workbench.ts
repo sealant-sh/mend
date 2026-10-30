@@ -2908,6 +2908,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             payload.name,
             { kind: "person", userId: caller.user.id },
             payload.startId,
+            { setupAgain: payload.setup === "always" },
           )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
@@ -3260,6 +3261,16 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         return yield* sessions
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    )
+    .handle("stopServiceStarts", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.stop(params.id);
+        const ended = yield* (yield* SessionEngine)
+          .stopServiceStarts(params.id, payload.name)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return { ended };
       }),
     )
     .handle("stopServices", ({ params }) =>

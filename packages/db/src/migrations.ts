@@ -3901,6 +3901,30 @@ const screenLogMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX screen_calls_open_idx ON screen_calls (screen_id) WHERE outcome IS NULL`;
 });
 
+const setupRunsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE setup_runs (
+    site_key text NOT NULL,
+    fingerprint text NOT NULL,
+    worktree_id text NOT NULL REFERENCES worktrees (id) ON DELETE CASCADE,
+    state text NOT NULL CHECK (state IN ('running','done','failed')),
+    claim_id uuid NOT NULL,
+    workspace_id text NOT NULL,
+    runs_as text,
+    claimed_at timestamptz NOT NULL,
+    lease_until timestamptz NOT NULL,
+    finished_at timestamptz,
+    exit_code integer,
+    output_tail text,
+    PRIMARY KEY (site_key, fingerprint),
+    CHECK ((state = 'running') = (finished_at IS NULL))
+  )`;
+  yield* sql`CREATE UNIQUE INDEX setup_runs_one_running_idx ON setup_runs (site_key) WHERE state = 'running'`;
+  yield* sql`CREATE INDEX setup_runs_worktree_idx ON setup_runs (worktree_id)`;
+  yield* sql`CREATE INDEX setup_runs_running_workspace_idx ON setup_runs (workspace_id) WHERE state = 'running'`;
+  yield* sql`ALTER TABLE session_processes ADD COLUMN launch_depends jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4049,4 +4073,5 @@ export const migrations = {
   "0148_resources": resourcesMigration,
   "0151_screens": screensMigration,
   "0152_screen_log": screenLogMigration,
+  "0155_setup_runs": setupRunsMigration,
 };

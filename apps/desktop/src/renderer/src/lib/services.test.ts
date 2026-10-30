@@ -94,6 +94,7 @@ const view = (patch: Partial<ServiceViewDto> = {}): ServiceViewDto => ({
     },
   ],
   previousEndpoints: [],
+  setup: null,
   ...patch,
 });
 

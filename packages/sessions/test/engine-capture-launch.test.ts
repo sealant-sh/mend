@@ -16,7 +16,15 @@ import {
 } from "@mend/domain";
 import { Project, RepositoryCloneUrl, Session, SessionProcess } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
-import { HARNESS_HOME_MOUNT_PATH, SessionEngine, WORKSPACE_MEND_TOML } from "@mend/sessions";
+import {
+  HARNESS_HOME_MOUNT_PATH,
+  PLATFORM_PROBE_SCRIPT,
+  platformKeyOf,
+  SessionEngine,
+  setupFingerprint,
+  sha256Hex,
+  WORKSPACE_MEND_TOML,
+} from "@mend/sessions";
 import {
   BlobStoreFsLive,
   captureKeys,
@@ -55,6 +63,7 @@ import {
   withEngine,
   withEngineEffect,
   withPreparedEngineEffect,
+  type World,
 } from "./engine/fixture.ts";
 
 /**
@@ -383,6 +392,36 @@ const verifyDeferredFinalHarvest = (pathKind: "stop" | "mode-switch" | "sweep") 
 
 /** The engine's read of the worktree's `mend.toml` inside a workspace. */
 const readsToml = (argv: ReadonlyArray<string>) => argv.at(-1) === WORKSPACE_MEND_TOML;
+
+/**
+ * The executor's copy of the repository as a directory here: an exec that reads it (setup's
+ * inputs, the platform probe) runs in a real shell with `/workspace/repo` mapped onto it, and
+ * hands its output back decoded as UTF-8 as the platform does. Setup's steps answer 0 unrun.
+ */
+const executorRepository = (repository: string) => (argv: ReadonlyArray<string>) => {
+  if (argv.includes("mend-setup")) return { exitCode: 0, stdout: "", stderr: "" };
+  const reads =
+    argv[0] === "sh" &&
+    argv[1] === "-c" &&
+    (argv[2] === PLATFORM_PROBE_SCRIPT ||
+      argv.slice(3).some((arg) => arg === "/workspace/repo" || arg.startsWith("/workspace/repo/")));
+  if (!reads || readsToml(argv)) return undefined;
+  const [command = "sh", ...args] = argv.map((arg) =>
+    arg.startsWith("/workspace/repo") ? `${repository}${arg.slice("/workspace/repo".length)}` : arg,
+  );
+  const ran = spawnSync(command, args);
+  return {
+    exitCode: ran.status ?? 1,
+    stdout: ran.stdout.toString("utf8"),
+    stderr: ran.stderr.toString("utf8"),
+  };
+};
+
+const setupStepsIn = (execCalls: ReadonlyArray<ReadonlyArray<string>>) =>
+  execCalls.flatMap((argv) => {
+    const at = argv.indexOf("mend-setup");
+    return at === -1 ? [] : [argv[at + 1]];
+  });
 describe("SessionEngine capture mode", () => {
   it("tells the daemon only what the deployment stated about its transport", async () => {
     // Without a statement the source names no transport: the daemon then requires verified
@@ -682,12 +721,16 @@ describe("SessionEngine capture mode", () => {
     { timeout: 20_000 },
   );
 
-  it("reads mend.toml from the live executor, not the host: lists and runs a recipe, and tells the agent about it", async () => {
+  it("reads mend.toml and setup's inputs from the live executor, not the host: lists and runs a recipe, and tells the agent about it", async () => {
     const created: Array<CreateOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
     const memory = makeMemoryCaptureStore();
+    const lockfile = "lockfileVersion: '9.0'\n";
+    const repository = fs.mkdtempSync(path.join(os.tmpdir(), "mend-executor-repo-"));
+    fs.writeFileSync(path.join(repository, "pnpm-lock.yaml"), lockfile);
     /** The executor's own copy of the worktree file; null is no file. */
     let workspaceToml: string | null =
+      '[setup]\nrun = ["pnpm install --frozen-lockfile"]\ninputs = ["pnpm-lock.yaml"]\n' +
       '[service.web]\ncommand = "pnpm dev --host"\nport = 5173\nbrowserScheme = "http"\n' +
       '[service.api]\ncommand = "node api.js"\nport = 4000\ncwd = "/srv/api"\n';
     await withEngine(
@@ -738,6 +781,27 @@ describe("SessionEngine capture mode", () => {
           expect(service.service.browserScheme).toBe("http");
           expect(service.attempts[0]?.argv).toEqual(["sh", "-c", "pnpm dev --host"]);
 
+          expect(
+            execCalls
+              .filter((argv) => argv.includes("mend-setup-inputs"))
+              .map((argv) => argv.slice(6)),
+          ).toEqual([["/workspace/repo", "pnpm-lock.yaml"]]);
+          expect(setupStepsIn(execCalls)).toEqual(["pnpm install --frozen-lockfile"]);
+          const workspaceId = world.sessions.get(session.id)?.sealantWorkspaceId;
+          const platform = execFileSync("sh", ["-c", PLATFORM_PROBE_SCRIPT], { encoding: "utf8" });
+          expect(world.setupRuns).toMatchObject([
+            {
+              siteKey: `executor:${workspaceId}`,
+              state: "done",
+              fingerprint: setupFingerprint({
+                run: ["pnpm install --frozen-lockfile"],
+                inputs: [{ path: "pnpm-lock.yaml", digest: sha256Hex(lockfile) }],
+                platform: platformKeyOf(platform),
+                image: null,
+              }),
+            },
+          ]);
+
           // A malformed file is a readable refusal naming the problem.
           workspaceToml = "[service.web\n";
           const malformed = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
@@ -767,10 +831,228 @@ describe("SessionEngine capture mode", () => {
           {
             exec: (argv) =>
               !readsToml(argv)
-                ? undefined
+                ? executorRepository(repository)(argv)
                 : workspaceToml === null
                   ? { exitCode: 44, stdout: "", stderr: "" }
                   : { exitCode: 0, stdout: workspaceToml, stderr: "" },
+          },
+        ),
+      },
+    );
+  });
+
+  const captureSetupWorld = (
+    repository: string,
+    then: (
+      engine: SessionEngine["Service"],
+      world: World,
+      sessionId: Session["id"],
+    ) => Effect.Effect<void, unknown, SessionEngine>,
+    execCalls: Array<ReadonlyArray<string>>,
+  ) =>
+    withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          yield* then(engine, world, session.id);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            exec: (argv) =>
+              readsToml(argv)
+                ? {
+                    exitCode: 0,
+                    stdout: fs.readFileSync(path.join(repository, "mend.toml"), "utf8"),
+                    stderr: "",
+                  }
+                : executorRepository(repository)(argv),
+          },
+        ),
+      },
+    );
+
+  it("ends a start whose setup inputs read does not answer once a Stop names it, and stops the read", async () => {
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const stops: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const starting = yield* engine
+            .runServiceRecipe(session.id, "web")
+            .pipe(Effect.flip, Effect.forkChild);
+          const reads = () => execCalls.filter((argv) => argv.includes("mend-setup-inputs"));
+          while (reads().length === 0) yield* Effect.sleep("10 millis");
+
+          expect(yield* engine.stopServiceStarts(session.id, "web")).toBe(1);
+          const error = yield* Fiber.join(starting);
+
+          expect(error.message).toBe("a Stop came before web started");
+          expect(stops).toEqual([reads()[0]?.[4]]);
+          expect(world.setupRuns).toEqual([]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            exec: (argv) =>
+              readsToml(argv)
+                ? {
+                    exitCode: 0,
+                    stdout:
+                      '[setup]\nrun = ["pnpm install"]\ninputs = ["pnpm-lock.yaml"]\n' +
+                      '[service.web]\ncommand = "pnpm dev"\nport = 5173\n',
+                    stderr: "",
+                  }
+                : undefined,
+            execEffect: (argv) => {
+              if (argv.includes("mend-setup-inputs")) return Effect.never;
+              const [, , , tag, runId] = argv;
+              if (tag !== "mend-setup-stop" || runId === undefined) return undefined;
+              return Effect.sync(() => stops.push(runId)).pipe(
+                Effect.as({ exitCode: 0, stdout: "", stderr: "" }),
+              );
+            },
+          },
+        ),
+      },
+    );
+  });
+
+  it("runs setup again in an executor when only a non-UTF-8 byte of a binary input changes", async () => {
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const repository = fs.mkdtempSync(path.join(os.tmpdir(), "mend-executor-repo-"));
+    fs.writeFileSync(
+      path.join(repository, "mend.toml"),
+      '[setup]\nrun = ["bun install --frozen-lockfile"]\ninputs = ["bun.lockb"]\n' +
+        '[service.web]\ncommand = "bun dev"\nport = 3000\n',
+    );
+    fs.writeFileSync(path.join(repository, "bun.lockb"), Uint8Array.of(0x62, 0x75, 0x80));
+    await captureSetupWorld(
+      repository,
+      (engine, _world, sessionId) =>
+        Effect.gen(function* () {
+          const stop = { kind: "person", userId: "user-fixture" } as const;
+          yield* engine.runServiceRecipe(sessionId, "web");
+          yield* engine.stopServices(sessionId, stop);
+          fs.writeFileSync(path.join(repository, "bun.lockb"), Uint8Array.of(0x62, 0x75, 0x81));
+          yield* engine.runServiceRecipe(sessionId, "web");
+          expect(setupStepsIn(execCalls)).toEqual([
+            "bun install --frozen-lockfile",
+            "bun install --frozen-lockfile",
+          ]);
+        }),
+      execCalls,
+    );
+  });
+
+  it("refuses an input that links out of the repository in an executor, and never carries a file's bytes out", async () => {
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const outputs: string[] = [];
+    const repository = fs.mkdtempSync(path.join(os.tmpdir(), "mend-executor-repo-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-executor-home-"));
+    fs.writeFileSync(path.join(home, "credentials.json"), "another person's token");
+    fs.symlinkSync(path.join(home, "credentials.json"), path.join(repository, "pnpm-lock.yaml"));
+    fs.writeFileSync(path.join(repository, ".env"), "API_KEY=a-secret");
+    fs.writeFileSync(
+      path.join(repository, "mend.toml"),
+      '[setup]\nrun = ["pnpm install"]\ninputs = [".env", "pnpm-lock.yaml"]\n' +
+        '[service.web]\ncommand = "pnpm dev"\nport = 3000\n',
+    );
+    const reading = executorRepository(repository);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const error = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
+          expect(error.message).toBe(
+            "setup did not run · input pnpm-lock.yaml resolves outside the repository",
+          );
+          expect(setupStepsIn(execCalls)).toEqual([]);
+          expect(outputs.join("\n")).not.toContain("another person's token");
+          expect(outputs.join("\n")).not.toContain("a-secret");
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            exec: (argv) => {
+              if (readsToml(argv)) {
+                return {
+                  exitCode: 0,
+                  stdout: fs.readFileSync(path.join(repository, "mend.toml"), "utf8"),
+                  stderr: "",
+                };
+              }
+              const answer = reading(argv);
+              if (answer !== undefined) outputs.push(answer.stdout);
+              return answer;
+            },
           },
         ),
       },

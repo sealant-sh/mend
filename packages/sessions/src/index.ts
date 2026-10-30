@@ -27,6 +27,7 @@ export * from "./forward-node.ts";
 export * from "./service-host.ts";
 export * from "./service-launch.ts";
 export * from "./recipes.ts";
+export * from "./setup.ts";
 export * from "./session-socket.ts";
 export * from "./session-channel.ts";
 export { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";

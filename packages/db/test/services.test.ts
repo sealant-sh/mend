@@ -188,6 +188,7 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
           cwd: RepoRelativePath.make("deploy/wp"),
           env: { WP_ENV: "local" },
           ready: { _tag: "Http", path: "/wp-login.php", timeoutMs: 120_000 },
+          depends: ["db", "cache"],
         });
         const explicit = yield* attempt(null);
         yield* sql`
@@ -210,6 +211,7 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
       cwd: "deploy/wp",
       env: { WP_ENV: "local" },
       ready: { _tag: "Http", path: "/wp-login.php", timeoutMs: 120_000 },
+      depends: ["db", "cache"],
     });
     expect(result.explicit, "an attempt with no recorded launch").toBeNull();
   });

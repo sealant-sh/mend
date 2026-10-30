@@ -22,8 +22,10 @@ import {
   type ServiceViewSlice,
   waitForCommand,
   followServicePlan,
+  planSetupLine,
   planStepLine,
   type ServiceStartProgressSlice,
+  type ServiceStartSetupSlice,
   waitForServiceStart,
 } from "./run-scripts.ts";
 import { MendRequestError } from "./server-request.ts";
@@ -881,6 +883,14 @@ const planAt = (
   message,
 });
 
+/** A setup that waits on another start for 4 s, then installs until 200 s. */
+const setupAt = (now: number): ServiceStartSetupSlice =>
+  now < 4_000
+    ? { state: "waiting", step: null, reason: "another start is running setup here" }
+    : now < 200_000
+      ? { state: "running", step: "pnpm install --frozen-lockfile", reason: null }
+      : { state: "ran", step: null, reason: null };
+
 describe("followServicePlan", () => {
   it("follows a dependency that takes six minutes, past the request's five, then the Service's own start", async () => {
     const clock = fakeClock();
@@ -916,6 +926,52 @@ describe("followServicePlan", () => {
       ...clock,
     });
     expect(answered).toMatchObject({ kind: "answered", processId: "attempt-a" });
+  });
+
+  it("says setup's lines before the recipes', once each, as a long setup runs", async () => {
+    const clock = fakeClock();
+    const said: Array<string> = [];
+    const followed = await followServicePlan({
+      read: async () => ({
+        ...(clock.now() < 202_000 ? planAt("waiting", "waiting") : planAt("ready", "starting")),
+        setup: setupAt(clock.now()),
+      }),
+      deadline: 900_000,
+      onSetup: (setup) => {
+        const line = planSetupLine(setup);
+        if (line !== null) said.push(line);
+      },
+      onStep: (step) => {
+        const line = planStepLine(step);
+        if (line !== null) said.push(line);
+      },
+      ...clock,
+    });
+    expect(followed).toEqual({ kind: "began" });
+    expect(said).toEqual([
+      "setup · waiting · another start is running setup here",
+      "setup · running `pnpm install --frozen-lockfile`",
+      "setup · done",
+      "db · answered on :5432",
+      "web · starting · waiting for :3000 to answer",
+    ]);
+  });
+
+  it("ends with setup's words when a step fails", async () => {
+    const clock = fakeClock();
+    const message = "setup did not finish, so nothing was started · `pnpm install` exited 1";
+    const said: Array<string> = [];
+    const followed = await followServicePlan({
+      read: async () => ({
+        ...planAt("waiting", "waiting", "failed", message),
+        setup: { state: "failed", step: "pnpm install", reason: "`pnpm install` exited 1" },
+      }),
+      deadline: null,
+      onSetup: (setup) => said.push(planSetupLine(setup) ?? ""),
+      ...clock,
+    });
+    expect(followed).toEqual({ kind: "ended", message });
+    expect(said).toEqual(["setup · did not finish · `pnpm install` exited 1"]);
   });
 
   it("ends with the server's words when a dependency does not start, or a Stop comes first", async () => {

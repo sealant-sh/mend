@@ -2,7 +2,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { ServiceRecipe } from "@mend/domain/workbench";
+import {
+  recipeRefusalLine,
+  RepoRelativePath,
+  ServiceRecipe,
+  SetupDeclaration,
+  setupRefusalsOf,
+} from "@mend/domain/workbench";
 import {
   type MendTomlFile,
   mergeRecipes,
@@ -150,6 +156,12 @@ service = "web"
     ["cwd", 'cwd = "a\\u0000b"', "cwd", /NUL/],
     ["cwd", "cwd = 3", "cwd", /repository-relative/],
     ["env", 'env = { MEND_X = "1" }', "env.MEND_X", /MEND_\* names are Mend's/],
+    [
+      "env",
+      'env = { MEND_SERVICE_DB_HOST = "db.local" }',
+      "env.MEND_SERVICE_DB_HOST",
+      /MEND_\* names are Mend's/,
+    ],
     ["env", 'env = { PORT = "3000" }', "env.PORT", /PORT is Mend's/],
     ["env", "env = { X = 1 }", "env.X", /string/],
     ["env", 'env = { "1X" = "a" }', "env.1X", /not an environment variable name/],
@@ -238,10 +250,13 @@ ready = { http = "/" }
   });
 
   it("refuses the reserved shared-service forms, word for word", () => {
-    const file = parse([...WEB, 'depends = ["@db", { shared = "cache" }]'].join("\n"));
+    const file = parse(
+      [...WEB, 'depends = ["@db", { shared = "cache" }, { resource = "queue" }]'].join("\n"),
+    );
     expect(file.refused.map((refusal) => refusal.message)).toEqual([
       "@db · shared services are not available yet",
       "@cache · shared services are not available yet",
+      "@queue · shared services are not available yet",
     ]);
     expect(file.refused.every((refusal) => refusal.key === "depends")).toBe(true);
   });
@@ -271,12 +286,13 @@ command = "x"
     ]);
   });
 
-  it("lists unknown keys, [setup] among them, as ignored, never refused", () => {
+  it("lists unknown keys as ignored, never refused", () => {
     const file = parse(`
 title = "x"
 
 [setup]
 run = ["pnpm install"]
+retries = 2
 
 [service.web]
 command = "pnpm dev"
@@ -292,10 +308,10 @@ open = "/"
     expect(file.recipes.map((recipe) => recipe.name)).toEqual(["web"]);
     expect(file.ignored.map((ignored) => [ignored.name, ignored.key])).toEqual([
       [null, "title"],
-      [null, "setup"],
       ["web", "disposable"],
       ["web", "ready.every"],
       [null, "preview.open"],
+      [null, "setup.retries"],
     ]);
   });
 
@@ -312,6 +328,71 @@ open = "/"
       expect(file.recipes).toEqual([]);
       expect(file.refused).toEqual([]);
     }
+  });
+});
+
+describe("[setup]", () => {
+  it("reads its commands in order and its inputs normalized, once each", () => {
+    const declared = declare(
+      [
+        "[setup]",
+        'run = ["pnpm install --frozen-lockfile", " pnpm build:deps "]',
+        'inputs = ["./pnpm-lock.yaml", "apps/web/package.json", "pnpm-lock.yaml"]',
+        "",
+        ...WEB,
+      ].join("\n"),
+    );
+    expect(declared.refused).toEqual([]);
+    expect(declared.setup).toEqual(
+      new SetupDeclaration({
+        run: ["pnpm install --frozen-lockfile", "pnpm build:deps"],
+        inputs: [
+          RepoRelativePath.make("pnpm-lock.yaml"),
+          RepoRelativePath.make("apps/web/package.json"),
+        ],
+      }),
+    );
+  });
+
+  it("reads no inputs as an empty list, and a file without [setup] as none", () => {
+    expect(declare('[setup]\nrun = ["make deps"]').setup?.inputs).toEqual([]);
+    expect(declare(WEB.join("\n")).setup).toBeNull();
+  });
+
+  it.each([
+    ["[setup] that is not a table", 'setup = "pnpm install"', "setup"],
+    ["no run", '[setup]\ninputs = ["pnpm-lock.yaml"]', "setup.run"],
+    ["an empty run", "[setup]\nrun = []", "setup.run"],
+    ["a run that is a string", '[setup]\nrun = "pnpm install"', "setup.run"],
+    ["a step that is not a string", '[setup]\nrun = ["pnpm install", 3]', "setup.run"],
+    ["a blank step", '[setup]\nrun = ["  "]', "setup.run"],
+    [
+      "inputs that is not a list",
+      '[setup]\nrun = ["x"]\ninputs = "pnpm-lock.yaml"',
+      "setup.inputs",
+    ],
+    ["an absolute input", '[setup]\nrun = ["x"]\ninputs = ["/etc/passwd"]', "setup.inputs"],
+    [
+      "an input that leaves the repository",
+      '[setup]\nrun = ["x"]\ninputs = ["a/../../b"]',
+      "setup.inputs",
+    ],
+    ["the repository as an input", '[setup]\nrun = ["x"]\ninputs = ["."]', "setup.inputs"],
+    ["an input that is not a string", '[setup]\nrun = ["x"]\ninputs = [1]', "setup.inputs"],
+  ])("refuses %s at file level, naming the key, and every recipe still lists", (_, table, key) => {
+    const declared = declare(`${table}\n\n${WEB.join("\n")}`);
+    expect(declared.setup).toBeNull();
+    expect(declared.refused.map((refusal) => [refusal.name, refusal.key])).toEqual([[null, key]]);
+    expect(setupRefusalsOf(declared.refused)).toHaveLength(1);
+    expect(declared.recipes.map((recipe) => recipe.name)).toEqual(["web"]);
+  });
+
+  it("says which step and which input it refuses", () => {
+    const declared = declare('[setup]\nrun = ["ok", 3]\ninputs = ["/abs"]');
+    expect(declared.refused.map(recipeRefusalLine)).toEqual([
+      "mend.toml · setup.run · command 2 must be a non-empty shell command",
+      'mend.toml · setup.inputs · "/abs" is absolute; name a path inside the repository',
+    ]);
   });
 });
 
