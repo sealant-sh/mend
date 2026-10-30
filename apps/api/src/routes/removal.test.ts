@@ -740,19 +740,30 @@ describe.skipIf(postgres.skip)("a removal against Postgres's marks", () => {
     expect(instance.world.calls.filter((call) => call === "worktrees.remove")).toHaveLength(1);
   }, 60_000);
 
-  it("refuses a worktree whose project's deletion stopped partway, saying how to finish it", async () => {
+  it("answers a worktree of a project whose purge stopped partway as not found, deleting nothing", async () => {
     const instance = await marked();
-    await setMark("projects", privateAlice.project, "deleting", "10 minutes");
+    await database?.sql(
+      (sql) => sql`
+        UPDATE projects
+        SET removal_phase = 'deleting', removal_id = 'rmv_earlier',
+            removal_since = now() - interval '10 minutes', removed_at = now() - interval '1 hour'
+        WHERE id = ${privateAlice.project}`,
+    );
+    const project = ProjectId.make(privateAlice.project);
+    const kept = instance.world.projects.get(project);
+    if (kept === undefined) throw new Error("missing project fixture");
+    instance.world.retainedProjects.set(project, {
+      project: kept,
+      removedAt: new Date(),
+      removedByUserId: "alice",
+      state: "purging",
+    });
     const response = await instance.request(
       "alice",
       "DELETE",
       `/api/worktrees/${privateAlice.worktree}`,
     );
-    expect(response.status).toBe(409);
-    expect(await bodyOf(response)).toMatchObject({
-      blockers: [{ _tag: "RemovalUnderway", stopped: { kind: "project", name: "private-alice" } }],
-      message: expect.stringContaining("remove that project again to finish it"),
-    });
+    expect(response.status).toBe(404);
     expect(removedWorktrees).toEqual([]);
   }, 60_000);
 

@@ -43,7 +43,6 @@ import {
   resourceSelections,
   worktrees,
 } from "../schema/workbench.ts";
-import { projectListed } from "./projects.ts";
 
 /** A definition as a project's settings hold it (ADR 0019); a `mend.toml` proposal is not one. */
 export interface StoredResourceDefinition {
@@ -521,13 +520,19 @@ const writeSelection = Effect.fn("ResourcesRepo.writeSelection")(function* (
   return yield* toSelection(row);
 });
 
-const fenceRefusal = (spec: ResourceDefinitionInput) =>
+/** What refuses a declaration before any rule: a removal's mark, or a removed project (0167). */
+type ProjectFence = "removing" | "removed";
+
+const fenceRefusal = (spec: ResourceDefinitionInput, fence: ProjectFence) =>
   new ResourceDefinitionRefusedError({
     name: spec.name,
     refusals: [
       {
         key: "project",
-        message: "is being removed · declare it again if the removal stops",
+        message:
+          fence === "removed"
+            ? "was removed · restore it to declare resources"
+            : "is being removed · declare it again if the removal stops",
       },
     ],
   });
@@ -556,9 +561,9 @@ const redefaultSelections = Effect.fn("ResourcesRepo.redefaultSelections")(funct
 });
 
 /**
- * The project's row, locked: it orders every declaration and a removal taking its mark (0166),
- * so each sees the other. True while a removal holds its mark; a mark that lapsed is a removal
- * that stopped.
+ * The project's row, locked in every state: it orders every declaration and a removal taking its
+ * mark (0166), so each sees the other. Answers the fence that refuses a declaration, or null; a
+ * mark that lapsed is a removal that stopped, and a removed project (0167) is marked for good.
  */
 const lockProject = Effect.fn("ResourcesRepo.lockProject")(function* (
   tx: Tx,
@@ -567,14 +572,20 @@ const lockProject = Effect.fn("ResourcesRepo.lockProject")(function* (
   const [project] = yield* tx
     .select({
       removing: sql<boolean>`removal_fence_marked(${projects.removalPhase}, ${projects.removalSince})`,
+      removed: sql<boolean>`${projects.removedAt} IS NOT NULL`,
     })
     .from(projects)
-    .where(and(projectListed, eq(projects.id, projectId)))
+    .where(eq(projects.id, projectId))
     .for("no key update");
   if (project === undefined) {
     return yield* Effect.die(new Error(`project ${projectId} does not exist`));
   }
-  return project.removing;
+  const fence: ProjectFence | null = !project.removing
+    ? null
+    : project.removed
+      ? "removed"
+      : "removing";
+  return fence;
 });
 
 /** The definition settings hold under `name`, row-locked; null for none. */
@@ -680,7 +691,8 @@ const writeDeclarationIn = Effect.fn("ResourcesRepo.writeDeclarationIn")(functio
   spec: ResourceDefinitionInput,
   declaredBy: string,
 ) {
-  if (yield* lockProject(tx, projectId)) return yield* fenceRefusal(spec);
+  const fence = yield* lockProject(tx, projectId);
+  if (fence !== null) return yield* fenceRefusal(spec, fence);
   const encoded = yield* encodeSpec(spec).pipe(Effect.orDie);
   const specDigest = resourceSpecDigest(spec);
   const held = yield* lockByName(tx, projectId, spec.name);

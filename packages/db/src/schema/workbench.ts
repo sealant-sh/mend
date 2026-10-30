@@ -2838,7 +2838,7 @@ export const captureSeals = pgTable(
     worktreeId: text()
       .$type<WorktreeId>()
       .notNull()
-      .references(() => worktreeChain.worktreeId, { onDelete: "cascade" }),
+      .references(() => worktrees.id, { onDelete: "cascade" }),
     epoch: bigint({ mode: "number" }).notNull(),
     executorId: text().notNull(),
     captureId: text().notNull(),
