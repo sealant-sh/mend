@@ -15,6 +15,7 @@ import {
   ClipboardCheck,
   CircleStop,
   FileDiff,
+  Globe,
   Play,
   RefreshCw,
   Send,
@@ -26,6 +27,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAsk } from "@/components/ask";
 import { EvButton } from "@/components/button";
+import { PreviewServices } from "@/components/preview-services";
 import { ProtocolConversation } from "@/components/protocol-conversation";
 import { PtyConversation } from "@/components/pty-conversation";
 import { SessionHeader, type HeaderAction } from "@/components/session-header";
@@ -46,6 +48,8 @@ import {
   useViewerId,
   useWorkspaceRetirement,
 } from "@/data/live";
+import { usePreviewOpen, useWorktreePreviews } from "@/data/preview-queries";
+import { previewToOpen } from "@/data/previews";
 import {
   keyedLines,
   readsRetirement,
@@ -135,6 +139,9 @@ export function SessionPane({
         ? replaceWorkspace.error.message
         : String(replaceWorkspace.error);
   const [shellError, setShellError] = useState<string | null>(null);
+  const previews = useWorktreePreviews(session?.worktreeId ?? null).data;
+  const preview = previewToOpen(previews, sessionId);
+  const openPreview = usePreviewOpen(preview);
   // Cross-mode pickup: claude and codex sessions continue here in structured
   // mode; other harnesses keep the raw terminal composer.
   const canPickUp = own && (session?.harness === "claude" || session?.harness === "codex");
@@ -287,6 +294,15 @@ export function SessionPane({
       onPress: () => openDiff(change.id),
     });
   }
+  if (preview !== null) {
+    actions.push({
+      key: "preview",
+      label: openPreview.pending ? "Opening the preview…" : `Preview ${preview.serviceName}`,
+      icon: Globe,
+      disabled: openPreview.pending,
+      onPress: openPreview.open,
+    });
+  }
   if (terminalInput && steer && canOpenShell) {
     actions.push({
       key: "shell",
@@ -382,7 +398,8 @@ export function SessionPane({
       resumeError === null &&
       sharedLine === null &&
       retirement === null &&
-      replaceError === null ? null : (
+      replaceError === null &&
+      openPreview.failure === null ? null : (
         <View style={{ paddingHorizontal: 16, paddingVertical: 6, gap: 4 }}>
           {sharedLine === null ? null : (
             <UiText tone="ink2" size={12} numberOfLines={3}>
@@ -426,8 +443,14 @@ export function SessionPane({
               resume · {resumeError}
             </MonoText>
           )}
+          {openPreview.failure === null ? null : (
+            <MonoText tone="danger" size={11} numberOfLines={4}>
+              {openPreview.failure}
+            </MonoText>
+          )}
         </View>
       )}
+      <PreviewServices read={previews} />
       {conversation}
     </View>
   );

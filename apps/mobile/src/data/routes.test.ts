@@ -46,6 +46,8 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/turns/:id/steer"],
   ["POST", "/processes/:id/stop"],
   ["DELETE", "/worktrees/:id"],
+  ["GET", "/worktrees/:id/previews"],
+  ["POST", "/previews/:id/open"],
   ["GET", "/github/status"],
   ["GET", "/github/repos"],
   ["POST", "/upgrade-tickets"],
