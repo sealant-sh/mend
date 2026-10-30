@@ -55,6 +55,20 @@ const SHIFT_TAP: ReadonlyArray<Input> = [
   { _tag: "Key", down: false, keysym: 0xffe1 },
 ];
 
+/** A step's inputs in the runs that each end at a rebound key, which the next must wait behind. */
+const pacedRuns = (inputs: ReadonlyArray<Input>): ReadonlyArray<ReadonlyArray<Input>> => {
+  const sent = inputs.some(rebound) ? [...SHIFT_TAP, ...inputs] : inputs;
+  const runs: Array<ReadonlyArray<Input>> = [];
+  let from = 0;
+  for (let at = 0; at < sent.length - 1; at++) {
+    if (!rebound(sent[at])) continue;
+    runs.push(sent.slice(from, at + 1));
+    from = at + 1;
+  }
+  runs.push(sent.slice(from));
+  return runs;
+};
+
 export type HandEndReason =
   | SignInRefusal
   | FramebufferRefusal
@@ -116,18 +130,6 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
       held = inputs.reduce(hold, held);
       return send(inputs.map(encodeInput));
     });
-  const pressPaced = (inputs: ReadonlyArray<Input>) =>
-    Effect.gen(function* () {
-      const sent = inputs.some(rebound) ? [...SHIFT_TAP, ...inputs] : inputs;
-      let from = 0;
-      for (let at = 0; at < sent.length - 1; at++) {
-        if (!rebound(sent[at])) continue;
-        yield* press(sent.slice(from, at + 1));
-        yield* Effect.sleep(PACE_MS);
-        from = at + 1;
-      }
-      yield* press(sent.slice(from));
-    });
   const current = (epoch: number) => Effect.map(currentEpoch, (now) => now === epoch);
   const sleepUntil = (until: () => number, epoch: number | undefined) =>
     Effect.gen(function* () {
@@ -150,12 +152,35 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
       if ((yield* Clock.currentTimeMillis) >= limit) return "skipped: time limit";
       return undefined;
     });
-  const perform = (step: Step, epoch: number, limit: number) =>
+  const pressPaced = (
+    inputs: ReadonlyArray<Input>,
+    epoch: number,
+    limit: number,
+  ): Effect.Effect<ScreenActionResult, HandEnded> =>
+    Effect.gen(function* () {
+      for (const [at, run] of pacedRuns(inputs).entries()) {
+        if (at > 0) {
+          yield* Effect.sleep(PACE_MS);
+          const skip = yield* skipped(epoch, limit);
+          if (skip !== undefined) {
+            yield* press(releaseAll(held));
+            return skip;
+          }
+        }
+        yield* press(run);
+      }
+      return "done";
+    });
+  const perform = (
+    step: Step,
+    epoch: number,
+    limit: number,
+  ): Effect.Effect<ScreenActionResult, HandEnded> =>
     step._tag === "Inputs"
-      ? pressPaced(step.inputs)
+      ? pressPaced(step.inputs, epoch, limit)
       : Effect.flatMap(Clock.currentTimeMillis, (now) =>
           sleepUntil(() => Math.min(now + step.ms, limit), epoch),
-        );
+        ).pipe(Effect.as("done"));
   const run = <A, E>(task: Effect.Effect<A, E>): Effect.Effect<A, E | HandEnded> =>
     Effect.gen(function* () {
       const done = yield* Deferred.make<A, E>();
@@ -224,8 +249,7 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
         for (const step of steps) {
           const skip =
             results.find((result) => result !== "done") ?? (yield* skipped(epoch, limit));
-          if (skip === undefined) yield* perform(step, epoch, limit);
-          results.push(skip ?? "done");
+          results.push(skip ?? (yield* perform(step, epoch, limit)));
         }
         return { results, pixels: yield* settledFrame(epoch) };
       }),
