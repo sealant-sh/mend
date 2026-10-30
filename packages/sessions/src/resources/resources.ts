@@ -314,8 +314,10 @@ const approvalsOf = (
     approvals: listedApprovals(approvals),
     approve: {
       project: offer(null, approvals.project, { kind: "project" }),
+      // A worktree's approval needs its image approved for the project first (G4). Before the image
+      // resolves, the page knows of one such approval: this definition's own, for the project.
       worktree:
-        worktree === null || spec.scope !== "worktree"
+        worktree === null || spec.scope !== "worktree" || approvals.project === null
           ? null
           : offer(worktree.id, approvals.worktree, {
               kind: "worktree",

@@ -932,11 +932,12 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       });
       expect(await flags("carol", CAROL_WORKTREE_IN_SHARED_A)).toEqual({
         settings: [
-          { name: "box", approved: [], offers: ["worktree"], choice: null, canChoose: false },
+          // No manager approved either for the project, so neither may be approved for the worktree.
+          { name: "box", approved: [], offers: [], choice: null, canChoose: false },
           { name: "db", approved: alices, offers: [], choice: "shared", canChoose: true },
         ],
         proposals: [{ name: "db", approved: [], offers: [], mine: true }],
-        file: [{ name: "mail", approved: [], offers: ["worktree"] }],
+        file: [{ name: "mail", approved: [], offers: [] }],
       });
       // With no worktree read there is no choice and no worktree's approval.
       expect(await flags("carol", null)).toEqual({
@@ -960,6 +961,11 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       const managers = await read("alice");
       const table = managers.file.proposals[0];
       expect(table.approve.worktree).toBeNull();
+      // Before a manager approves it for the project, its change owner is offered nothing to post.
+      expect((await read("carol")).file.proposals[0].approve).toEqual({
+        project: null,
+        worktree: null,
+      });
       const forProject = await approveVia("alice", table.approve.project);
       expect(forProject).toMatchObject({
         status: 200,
