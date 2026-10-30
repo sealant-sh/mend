@@ -409,6 +409,11 @@ const testLayer = (world: TestWorld) => {
   });
 
   const conversationLayer = Layer.succeed(AgentConversationRepo, {
+    messageByClientId: () => Effect.succeed(null),
+    messageById: () => Effect.die("message read not in this test"),
+    admitSteerMessage: () => Effect.die("message admission not in this test"),
+    admitTurnMessage: () => Effect.die("message admission not in this test"),
+    withdrawMessageTurn: () => Effect.succeed(false),
     submitTurn: () => Effect.die("not in test"),
     byTurnId: () => Effect.succeed(null),
     byLaunchCorrelation: (sessionId, correlationId) =>

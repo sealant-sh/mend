@@ -1,6 +1,8 @@
 import { accountsGroup } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
+import { MessageSettingsRepo } from "@mend/db";
 import { UserAgentLoginsRepo, UserEvents } from "@mend/db";
+import { DEFAULT_MESSAGE_SETTINGS } from "@mend/domain/workbench";
 import { AgentLogins, DEFAULT_AGENT_LOGINS } from "@mend/domain/workbench";
 import { SealantClients } from "@mend/sealant";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
@@ -55,6 +57,10 @@ const world = () => {
         remove: () => Effect.die("not in this test"),
       }),
     }),
+    Layer.succeed(MessageSettingsRepo, {
+      forUser: () => Effect.succeed(DEFAULT_MESSAGE_SETTINGS),
+      set: (_, value) => Effect.succeed(value),
+    }),
     Layer.succeed(UserEvents, {
       changed: (userId, facet) => Effect.sync(() => changed.push(`${userId}:${facet}`)),
     }),
@@ -81,7 +87,7 @@ const world = () => {
     const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
     try {
       const context = await runtime.runPromise(
-        Effect.context<SealantClients | UserEvents | UserAgentLoginsRepo>(),
+        Effect.context<SealantClients | UserEvents | UserAgentLoginsRepo | MessageSettingsRepo>(),
       );
       const response = await handler(
         new Request("http://api.internal/api/me/agent-logins", {

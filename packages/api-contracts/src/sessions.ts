@@ -8,6 +8,8 @@ import {
   Timestamp,
 } from "@mend/domain";
 import {
+  MessageInput,
+  SessionMessageResult,
   AgentApprovalDecision,
   AgentInputAnswers,
   AgentItem,
@@ -131,6 +133,37 @@ export class HarnessLayoutRefused extends Schema.TaggedError<HarnessLayoutRefuse
     message: Schema.String,
   },
   { httpApiStatus: 403 },
+) {}
+
+export class SendSessionMessageRequest extends Schema.Class<SendSessionMessageRequest>(
+  "SendSessionMessageRequest",
+)({
+  input: MessageInput,
+  clientMessageId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),
+  queue: Schema.optionalKey(Schema.Literal(true)),
+}) {}
+
+export class InvalidSessionMessage extends Schema.TaggedError<InvalidSessionMessage>()(
+  "InvalidSessionMessage",
+  { message: Schema.String },
+  { httpApiStatus: 400 },
+) {}
+
+export class MessageKeyConflict extends Schema.TaggedError<MessageKeyConflict>()(
+  "MessageKeyConflict",
+  {
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+export class MessageTargetAmbiguous extends Schema.TaggedError<MessageTargetAmbiguous>()(
+  "MessageTargetAmbiguous",
+  {
+    sessionId: SessionId,
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
 ) {}
 
 export class SteerTurnRequest extends Schema.Class<SteerTurnRequest>("SteerTurnRequest")({
@@ -284,6 +317,21 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: SessionDetail,
       error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("sendMessage", "/sessions/:id/messages", {
+      params: { id: SessionId },
+      payload: SendSessionMessageRequest,
+      success: SessionMessageResult,
+      error: [
+        InvalidSessionMessage,
+        NotFound,
+        SessionNotSteerable,
+        ProtocolSessionNotLive,
+        MessageKeyConflict,
+        MessageTargetAmbiguous,
+      ],
     }),
   )
   .add(

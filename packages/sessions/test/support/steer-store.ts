@@ -1,6 +1,17 @@
-import { AgentTurnNotFoundError, type AgentConversationRepo } from "@mend/db";
-import { AgentTurnId, AgentTurnSteerId, type SessionProcessId } from "@mend/domain";
+import { SessionStoppingError, AgentTurnNotFoundError, type AgentConversationRepo } from "@mend/db";
 import {
+  SessionMessageId,
+  AgentTurnId,
+  AgentTurnSteerId,
+  type SessionProcessId,
+} from "@mend/domain";
+import {
+  MessageKeyConflictError,
+  TurnSteerForbiddenError,
+  messageOutcome,
+  type SendMessageInput,
+  type MessageTurnReason,
+  type SessionMessageResult,
   AgentTurn,
   AgentTurnSteer,
   ConversationTurn,
@@ -11,6 +22,11 @@ import { Effect } from "effect";
 
 type SteerMethods = Pick<
   AgentConversationRepo["Service"],
+  | "messageByClientId"
+  | "messageById"
+  | "admitSteerMessage"
+  | "admitTurnMessage"
+  | "withdrawMessageTurn"
   | "admitTurnSteer"
   | "steerByClientId"
   | "settleTurnSteer"
@@ -33,7 +49,110 @@ export const makeSteerStore = (
     if (steer === undefined) throw new Error(`unknown steer ${id}`);
     return steer;
   };
+  const messages = new Map<
+    SessionMessageId,
+    { input: SendMessageInput; reason: MessageTurnReason | null; result: SessionMessageResult }
+  >();
+  const readMessage = (id: SessionMessageId): SessionMessageResult => {
+    const saved = messages.get(id);
+    if (saved === undefined) throw new Error("message missing");
+    const result = saved.result;
+    if (result._tag === "Steer")
+      return messageOutcome({ ...result, steer: get(result.steer.id) }, null);
+    const turn = turns.get(result.turn.id);
+    if (turn === undefined) throw new Error("message turn missing");
+    return messageOutcome({ ...result, turn }, saved.reason);
+  };
+  const withdrawUntaken = (id: AgentTurnId, processId: SessionProcessId) => {
+    const turn = turns.get(id);
+    if (
+      turn?.status !== "queued" ||
+      turn.processId !== processId ||
+      turn.startedAt !== null ||
+      turn.providerTurnId !== null
+    )
+      return false;
+    turns.set(id, new AgentTurn({ ...turn, status: "cancelled", endedAt: new Date() }));
+    return true;
+  };
   const methods: SteerMethods = {
+    messageById: (id) => Effect.sync(() => readMessage(id)),
+    messageByClientId: (input) =>
+      Effect.suspend(() => {
+        const saved =
+          input.clientMessageId === null
+            ? undefined
+            : [...messages.values()].find(
+                (row) =>
+                  row.input.sender === input.sender &&
+                  row.input.clientMessageId?.toLowerCase() === input.clientMessageId?.toLowerCase(),
+              );
+        if (saved === undefined || input.clientMessageId === null) return Effect.succeed(null);
+        if (
+          saved.input.sessionId !== input.sessionId ||
+          saved.input.input !== input.input ||
+          saved.input.intent !== input.intent
+        )
+          return Effect.fail(
+            new MessageKeyConflictError({
+              clientMessageId: input.clientMessageId,
+              message: "This message key was already used for another request.",
+            }),
+          );
+        return Effect.succeed(readMessage(saved.result.messageId));
+      }),
+    admitSteerMessage: (input, turnId) =>
+      Effect.gen(function* () {
+        const replay = yield* methods.messageByClientId(input);
+        if (replay !== null) return { _tag: "Replay", result: replay };
+        if (stopping()) return yield* new SessionStoppingError({ sessionId: input.sessionId });
+        const turn = turns.get(turnId);
+        if (turn === undefined || turn.sessionId !== input.sessionId)
+          return yield* new AgentTurnNotFoundError({ turnId });
+        if (turnSteerSender(turn) !== input.sender)
+          return yield* new TurnSteerForbiddenError({
+            turnId: turn.id,
+            reason: turnSteerSender(turn) === null ? "no-sender" : "not-sender",
+            message: "Only this turn's sender may steer it.",
+          });
+        const { steer } = yield* methods.admitTurnSteer({
+          turnId: turn.id,
+          author: input.sender,
+          input: input.input,
+          clientSteerId: null,
+        });
+        const messageId = SessionMessageId.make(crypto.randomUUID());
+        const result = messageOutcome({ _tag: "Steer", messageId, steer }, null);
+        messages.set(messageId, { input, reason: null, result });
+        return { _tag: "Created", result };
+      }),
+    admitTurnMessage: (input, processId, reason) =>
+      Effect.gen(function* () {
+        const replay = yield* methods.messageByClientId(input);
+        if (replay !== null) return { _tag: "Replay", result: replay };
+        if (stopping()) return yield* new SessionStoppingError({ sessionId: input.sessionId });
+        const turn = new AgentTurn({
+          id: AgentTurnId.make(crypto.randomUUID()),
+          sessionId: input.sessionId,
+          processId,
+          ordinal: Math.max(-1, ...[...turns.values()].map((row) => row.ordinal)) + 1,
+          author: input.sender,
+          input: input.input,
+          status: "queued",
+          providerTurnId: null,
+          error: null,
+          usage: null,
+          createdAt: new Date(),
+          startedAt: null,
+          endedAt: null,
+        });
+        turns.set(turn.id, turn);
+        const messageId = SessionMessageId.make(crypto.randomUUID());
+        const result = messageOutcome({ _tag: "Turn", messageId, turn }, reason);
+        messages.set(messageId, { input, reason, result });
+        return { _tag: "Created", result };
+      }),
+    withdrawMessageTurn: (id, processId) => Effect.sync(() => withdrawUntaken(id, processId)),
     listConversationTurns: () =>
       Effect.sync(() =>
         [...turns.values()]
@@ -128,14 +247,12 @@ export const makeSteerStore = (
         steers.set(id, queued);
         return Effect.succeed(queued);
       }),
-    withdrawTurnSteer: (id) =>
+    withdrawTurnSteer: (id, processId) =>
       Effect.sync(() => {
         const steer = get(id);
         const delivery = steer.delivery;
-        if (delivery._tag !== "Queued") return steer;
-        const turn = turns.get(delivery.turnId);
-        if (turn?.status !== "queued") return steer;
-        turns.set(turn.id, new AgentTurn({ ...turn, status: "cancelled", endedAt: new Date() }));
+        if (delivery._tag !== "Queued" || !withdrawUntaken(delivery.turnId, processId))
+          return steer;
         const withdrawn = new AgentTurnSteer({
           ...steer,
           delivery: {

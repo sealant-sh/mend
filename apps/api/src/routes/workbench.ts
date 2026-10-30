@@ -39,6 +39,9 @@ import {
   DotfilesSnapshotView,
   DotfilesView,
   HandoffUnsupported,
+  InvalidSessionMessage,
+  MessageKeyConflict,
+  MessageTargetAmbiguous,
   ObservationStamp,
   OpenReviewResult,
   PathsOutsideGit,
@@ -48,6 +51,7 @@ import {
   ReviewDiffFileView,
   ReviewDiffHunkView,
   ReviewDiffView,
+  SendSessionMessageRequest,
   SessionActive,
   SessionAnnotation,
   WorktreeAnnotation,
@@ -109,6 +113,7 @@ import {
   UserGitAuthorRepo,
 } from "@mend/db";
 import {
+  ClientMessageId,
   dotfilesRepositoryUrlCredentialIssue,
   MendSettings,
   workspaceImagesEqual,
@@ -2512,6 +2517,65 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           preReleaseMemory: yield* (yield* SessionEngine).preReleaseMemory(session.worktreeId),
           launchAdmission: LAUNCH_ADMISSION,
         });
+      }),
+    )
+    .handleRaw("sendMessage", ({ params, request }) =>
+      Effect.gen(function* () {
+        const payload = yield* request.json.pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(SendSessionMessageRequest, { onExcessProperty: "error" }),
+          ),
+          Effect.mapError(
+            () =>
+              new InvalidSessionMessage({
+                message:
+                  "A message needs nonblank input, an optional UUID clientMessageId, and optional queue: true.",
+              }),
+          ),
+        );
+        // A keyed retry reaches the engine, which replays the caller's own message before it
+        // checks steering rights: they may have lost them since the first attempt.
+        yield* (yield* SessionSteering)
+          .session(params.id)
+          .pipe(
+            Effect.catchTag("SessionNotSteerable", (refusal) =>
+              payload.clientMessageId === undefined ? Effect.fail(refusal) : Effect.void,
+            ),
+          );
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionEngine)
+          .sendMessage({
+            sessionId: params.id,
+            sender: caller.user.id,
+            input: payload.input,
+            clientMessageId:
+              payload.clientMessageId === undefined
+                ? null
+                : ClientMessageId.make(payload.clientMessageId.toLowerCase()),
+            intent: payload.queue === true ? "queue" : "default",
+          })
+          .pipe(
+            Effect.catchTags({
+              SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+              ProtocolHostNotLiveError: (error) =>
+                Effect.fail(
+                  new ProtocolSessionNotLive({
+                    processId: error.processId,
+                    message: "This session has no live conversation; resume it first.",
+                  }),
+                ),
+              SessionTurnRefusedError: (error) =>
+                Effect.fail(
+                  new SessionNotSteerable({ sessionId: params.id, message: error.message }),
+                ),
+              MessageKeyConflictError: (error) =>
+                Effect.fail(new MessageKeyConflict({ message: error.message })),
+              MessageTargetAmbiguousError: (error) =>
+                Effect.fail(
+                  new MessageTargetAmbiguous({ sessionId: params.id, message: error.message }),
+                ),
+            }),
+          );
       }),
     )
     .handle("submitTurn", ({ params, payload }) =>

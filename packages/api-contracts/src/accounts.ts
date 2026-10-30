@@ -1,5 +1,5 @@
 import { Issue, Run, Timestamp } from "@mend/domain";
-import { AgentLogins } from "@mend/domain/workbench";
+import { AgentLogins, MessageSettings } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -55,6 +55,12 @@ export class SealantIdentity extends Schema.Class<SealantIdentity>("SealantIdent
   accounts: Schema.Array(ConnectedAccount),
 }) {}
 
+export class InvalidMessageSettings extends Schema.TaggedError<InvalidMessageSettings>()(
+  "InvalidMessageSettings",
+  { message: Schema.String },
+  { httpApiStatus: 400 },
+) {}
+
 export const accountsGroup = HttpApiGroup.make("accounts")
   .add(
     HttpApiEndpoint.get("identity", "/me/sealant", {
@@ -83,6 +89,14 @@ export const accountsGroup = HttpApiGroup.make("accounts")
     HttpApiEndpoint.put("setAgentLogins", "/me/agent-logins", {
       payload: AgentLogins,
       success: AgentLogins,
+    }),
+  )
+  .add(HttpApiEndpoint.get("messageSettings", "/me/message-settings", { success: MessageSettings }))
+  .add(
+    HttpApiEndpoint.put("setMessageSettings", "/me/message-settings", {
+      payload: MessageSettings,
+      success: MessageSettings,
+      error: [InvalidMessageSettings],
     }),
   )
   .middleware(AuthMiddleware);

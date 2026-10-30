@@ -44,6 +44,16 @@ export const AgentTurnSteerId = Schema.String.check(Schema.isUUID()).pipe(
 );
 export type AgentTurnSteerId = typeof AgentTurnSteerId.Type;
 
+export const SessionMessageId = Schema.String.check(Schema.isUUID()).pipe(
+  Schema.brand("SessionMessageId"),
+);
+export type SessionMessageId = typeof SessionMessageId.Type;
+
+export const ClientMessageId = Schema.String.check(Schema.isUUID()).pipe(
+  Schema.brand("ClientMessageId"),
+);
+export type ClientMessageId = typeof ClientMessageId.Type;
+
 export const WorktreeId = Schema.String.pipe(Schema.brand("WorktreeId"));
 export type WorktreeId = typeof WorktreeId.Type;
 

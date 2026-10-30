@@ -3,6 +3,8 @@ import { type AgentConversationRepo, AgentTurnNotFoundError } from "@mend/db";
 import type { AgentTurnId, SessionProcessId } from "@mend/domain";
 import {
   turnSteerSender,
+  TurnSteerForbiddenError,
+  type SendMessageInput,
   type AgentTurn,
   type AgentTurnSteer,
   type SessionProcess,
@@ -11,14 +13,7 @@ import {
 import { Cause, Deferred, Effect, Exit, Fiber, Option, Schema, type Scope } from "effect";
 import type * as Semaphore from "effect/Semaphore";
 
-export class TurnSteerForbiddenError extends Schema.TaggedError<TurnSteerForbiddenError>()(
-  "TurnSteerForbiddenError",
-  {
-    turnId: Schema.String,
-    reason: Schema.Literals(["not-sender", "no-sender"]),
-    message: Schema.String,
-  },
-) {}
+export { TurnSteerForbiddenError } from "@mend/domain/workbench";
 
 export class InvalidTurnSteerError extends Schema.TaggedError<InvalidTurnSteerError>()(
   "InvalidTurnSteerError",
@@ -52,7 +47,8 @@ export interface SteerableProcess {
 export interface TurnSteeringHost<P extends SteerableProcess, E> {
   readonly conversations: AgentConversationRepo["Service"];
   readonly hosted: (processId: SessionProcessId) => P | undefined;
-  readonly requireLive: (turn: AgentTurn) => Effect.Effect<void, E>;
+  /** `placed` also accepts a conversation between processes, which queues the words. */
+  readonly requireLive: (turn: AgentTurn, needs: "hosted" | "placed") => Effect.Effect<void, E>;
   readonly carryToNextTurn: (
     steer: AgentTurnSteer,
     reason: TurnSteerQueueReason,
@@ -76,6 +72,15 @@ export const openSteerGate = (
     }
     yield* Deferred.succeed(gate, undefined);
   });
+
+/** A failure named for a log, never quoted: a query error's message carries a person's words. */
+export const failureName = (cause: Cause.Cause<unknown>): string => {
+  const failure = Cause.squash(cause);
+  if (typeof failure !== "object" || failure === null) return typeof failure;
+  if ("_tag" in failure && typeof failure._tag === "string") return failure._tag;
+  if ("name" in failure && typeof failure.name === "string") return failure.name;
+  return "unknown";
+};
 
 export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeringHost<P, E>) => {
   const { conversations } = host;
@@ -174,6 +179,47 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
     );
   });
 
+  const deliverNewSteer = (steer: AgentTurnSteer, entry: P | undefined) =>
+    deliverSteer(steer, entry).pipe(
+      Effect.onExit((exit) =>
+        Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
+          ? conversations
+              .settleTurnSteer(steer.id, { _tag: "Unknown", reason: "failed" })
+              .pipe(Effect.exit, Effect.asVoid)
+          : Effect.void,
+      ),
+    );
+
+  const steerMessage = Effect.fn("ProtocolHost.steerMessage")(function* (
+    input: SendMessageInput,
+    turnId: AgentTurnId,
+  ) {
+    const turn = yield* conversations.byTurnId(turnId);
+    if (turn === null) return yield* new AgentTurnNotFoundError({ turnId });
+    const entry = host.hosted(turn.processId);
+    const attempt = Effect.gen(function* () {
+      yield* host.requireLive(turn, "placed");
+      const admitted = yield* conversations.admitSteerMessage(input, turnId);
+      if (admitted._tag === "Replay") return admitted.result;
+      const { steer, messageId } = admitted.result;
+      yield* deliverNewSteer(steer, entry).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logError("protocol host: a message's steer delivery failed").pipe(
+                Effect.annotateLogs({ steerId: steer.id, failure: failureName(cause) }),
+              ),
+        ),
+      );
+      return yield* conversations.messageById(messageId);
+    });
+    const fiber = yield* Effect.forkIn(
+      entry === undefined ? attempt : entry.steerPermit.withPermit(attempt),
+      host.scope,
+    );
+    return yield* Fiber.join(fiber);
+  });
+
   const steerTurn = Effect.fn("ProtocolHost.steerTurn")(function* (input: SteerTurnInput) {
     if (input.input.trim().length === 0)
       return yield* new InvalidTurnSteerError({ message: "A steer must contain words." });
@@ -203,7 +249,7 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
       const existing = yield* conversations.steerByClientId(input.sender, clientSteerId);
       if (existing !== null) return yield* firstReceiptOrConflict(existing);
     }
-    yield* host.requireLive(turn);
+    yield* host.requireLive(turn, "hosted");
     const entry = host.hosted(turn.processId);
     const attempt = Effect.gen(function* () {
       const admitted = yield* conversations.admitTurnSteer({
@@ -213,15 +259,7 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
         clientSteerId,
       });
       if (!admitted.created) return yield* firstReceiptOrConflict(admitted.steer);
-      return yield* deliverSteer(admitted.steer, entry).pipe(
-        Effect.onExit((exit) =>
-          Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
-            ? conversations
-                .settleTurnSteer(admitted.steer.id, { _tag: "Unknown", reason: "failed" })
-                .pipe(Effect.exit, Effect.asVoid)
-            : Effect.void,
-        ),
-      );
+      return yield* deliverNewSteer(admitted.steer, entry);
     });
     const fiber = yield* Effect.forkIn(
       entry === undefined ? attempt : entry.steerPermit.withPermit(attempt),
@@ -230,5 +268,5 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
     return yield* Fiber.join(fiber);
   });
 
-  return { steerTurn };
+  return { steerTurn, steerMessage };
 };

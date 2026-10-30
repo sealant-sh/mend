@@ -531,7 +531,7 @@ export class SubmitAgentTurnRequest extends Schema.Class<SubmitAgentTurnRequest>
 /** A live protocol process is required for this operation. */
 export class ProtocolSessionNotLive extends Schema.TaggedError<ProtocolSessionNotLive>()(
   "ProtocolSessionNotLive",
-  { processId: Schema.String },
+  { processId: Schema.String, message: Schema.optionalKey(Schema.String) },
   { httpApiStatus: 409 },
 ) {}
 

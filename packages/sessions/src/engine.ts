@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import {
   InstanceRolesRepo,
   AgentConversationRepo,
+  MessageSettingsRepo,
   AgentTurnNotFoundError,
   type AgentRequestAlreadyResolvedError,
   AgentRequestNotFoundError,
@@ -77,6 +78,12 @@ import {
   workspaceImagePackages,
   WorktreeId,
 } from "@mend/domain";
+import type {
+  SendMessageInput,
+  SessionMessageResult,
+  MessageKeyConflictError,
+  MessageTargetAmbiguousError,
+} from "@mend/domain/workbench";
 import type {
   AgentHookReport,
   Checkpoint,
@@ -485,6 +492,7 @@ import {
   McpCallerUnavailableError,
 } from "./mend-mcp/caller.ts";
 import { withMendMcp } from "./mend-mcp/launch.ts";
+import { chooseMessageDelivery } from "./message-delivery.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
   convertNativeSession,
@@ -591,6 +599,7 @@ import {
   stopsWithin,
   uncheckedStop,
 } from "./pre-release.ts";
+import type { MessageSendError } from "./protocol-host.ts";
 import {
   type ConversationWait as HostedConversationWait,
   type HandOverCheck,
@@ -2723,6 +2732,17 @@ export class SessionEngine extends Context.Service<
       input: string,
       author: string | null,
     ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | SessionTurnRefusedError>;
+    /** The send rule: the caller's words steer their own running turn, or become their next turn. */
+    readonly sendMessage: (
+      input: SendMessageInput,
+    ) => Effect.Effect<
+      SessionMessageResult,
+      | SessionNotFoundError
+      | SessionTurnRefusedError
+      | MessageSendError
+      | MessageKeyConflictError
+      | MessageTargetAmbiguousError
+    >;
     /**
      * What holds the next sender's turn in a shared conversation, as both people see it
      * (decision 6, the waiting line); null when nothing waits.
@@ -3230,6 +3250,7 @@ type SessionEngineRequirements =
   | SessionChannelTokensRepo
   | DeploymentConfig
   | AgentConversationRepo
+  | MessageSettingsRepo
   | ProtocolHost
   | SessionsRepo
   | HotWorkspacesRepo
@@ -3383,6 +3404,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ...(api.channelFor === undefined ? {} : { channelFor: api.channelFor }),
       });
       const conversations = yield* AgentConversationRepo;
+      const messageSettings = yield* MessageSettingsRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
       const deployment = yield* DeploymentConfig;
       if (deployment.mode === "kubernetes" && deployment.sessionEndpoint === undefined) {
@@ -19841,6 +19863,55 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           cancelQueued(sessionId, (turn) => turn.author === userId),
         ).pipe(Effect.map((counts) => counts.reduce((sum, count) => sum + count, 0)));
 
+      const sendMessage = (input: SendMessageInput) =>
+        detached(
+          owned(input.sessionId)(
+            Effect.gen(function* () {
+              const session = yield* sessions.byId(input.sessionId);
+              const replay = yield* conversations.messageByClientId(input);
+              if (replay !== null) return replay;
+              if (!canSteerSession(session, input.sender))
+                return yield* new SessionTurnRefusedError({
+                  sessionId: session.id,
+                  message: "Shared control is off, so only the session's owner sends it turns.",
+                });
+              const attempt = Effect.gen(function* () {
+                const settings = yield* messageSettings.forUser(input.sender);
+                const turns = yield* conversations.openTurns(input.sessionId);
+                const choice = yield* chooseMessageDelivery(input, settings, turns);
+                const retired = yield* retirementRefusalFor(
+                  session.sealantWorkspaceId,
+                  input.sender,
+                );
+                if (retired !== null)
+                  return yield* new SessionTurnRefusedError({
+                    sessionId: session.id,
+                    message: retired,
+                  });
+                const refusal = yield* steeringRefusal(session, input.sender);
+                if (refusal !== null)
+                  return yield* new SessionTurnRefusedError({
+                    sessionId: session.id,
+                    message: refusal,
+                  });
+                return yield* protocolHost.sendMessage(input, choice);
+              });
+              // A concurrent request with the same key may have committed as this one failed.
+              return yield* attempt.pipe(
+                Effect.catch((error) =>
+                  conversations
+                    .messageByClientId(input)
+                    .pipe(
+                      Effect.flatMap((committed) =>
+                        committed === null ? Effect.fail(error) : Effect.succeed(committed),
+                      ),
+                    ),
+                ),
+              );
+            }).pipe(queueingTurn(input.sessionId)),
+          ),
+        );
+
       const steerTurn = Effect.fn("SessionEngine.steerTurn")(function* (input: SteerTurnInput) {
         const turn = yield* conversations.byTurnId(input.turnId);
         if (turn === null) return yield* new AgentTurnNotFoundError({ turnId: input.turnId });
@@ -26647,6 +26718,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         submitTurn: (sessionId, input, author) =>
           owned(sessionId)(submitTurn(sessionId, input, author)),
+        sendMessage,
         steerTurn,
         interruptTurn,
         respondRequest,

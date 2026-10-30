@@ -27,6 +27,11 @@ import type {
   TurnPayer,
 } from "@mend/domain/workbench";
 import {
+  type SendMessageInput,
+  type SessionMessageResult,
+  type MessageChoice,
+  type MessageKeyConflictError,
+  type MessageTurnReason,
   CONVERSATION_UNREPORTED_WAIT_MS,
   CONVERSATION_WAIT_BOUNDS_MS,
   STARTED_BEFORE_STEERING,
@@ -36,12 +41,13 @@ import {
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
-import { Clock, Deferred, Effect, Layer, Schema, Scope, Stream } from "effect";
+import { Cause, Clock, Deferred, Effect, Exit, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
 import { HAND_OVER_NOT_NOW } from "./conversation-steps.ts";
 import {
+  failureName,
   makeTurnSteering,
   openSteerGate,
   type InvalidTurnSteerError,
@@ -62,6 +68,8 @@ export type TurnSteerError =
   | TurnSteerForbiddenError
   | InvalidTurnSteerError
   | TurnSteerKeyConflictError;
+
+export type MessageSendError = ProtocolHostNotLiveError | MessageKeyConflictError;
 
 /** Hooks that return protocol observations to the owning session engine. */
 export interface ProtocolHostHooks {
@@ -277,6 +285,10 @@ export class ProtocolHost extends Context.Service<
       author: string | null,
       launchCorrelationId?: string | null,
     ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError>;
+    readonly sendMessage: (
+      input: SendMessageInput,
+      choice: MessageChoice,
+    ) => Effect.Effect<SessionMessageResult, MessageSendError>;
     readonly steerTurn: (input: SteerTurnInput) => Effect.Effect<AgentTurnSteer, TurnSteerError>;
     readonly interruptTurn: (turnId: AgentTurnId) => Effect.Effect<void, ProtocolHostNotLiveError>;
     readonly respondRequest: (
@@ -1096,6 +1108,26 @@ export const ProtocolHostLive: Layer.Layer<
       return turn;
     });
 
+    /**
+     * Dispatches a turn admitted at `place` on the process that holds the conversation now: its
+     * own, or the one that replaced it, which takes it first. False when no process will take it.
+     */
+    const dispatchAdmitted = (
+      sessionId: SessionId,
+      place: { readonly processId: SessionProcessId },
+      dispatch: (entry: HostedProcess) => Effect.Effect<void>,
+    ): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        const entry =
+          hosted.get(place.processId) ??
+          [...hosted.values()].findLast((candidate) => candidate.process.sessionId === sessionId);
+        if (entry === undefined) return handingOver.has(sessionId);
+        if (entry.process.id !== place.processId)
+          yield* takeQueuedTurns(sessionId, entry.process.id);
+        yield* dispatch(entry);
+        return true;
+      });
+
     const carrySteer = Effect.fn("ProtocolHost.carrySteer")(function* (
       steer: AgentTurnSteer,
       reason: TurnSteerQueueReason,
@@ -1107,21 +1139,21 @@ export const ProtocolHostLive: Layer.Layer<
         reason,
       );
       if (receipt.delivery._tag !== "Queued" || place === null) return receipt;
-      const live = yield* dispatchPlaced(steer.sessionId, place, (entry) =>
+      const live = yield* dispatchAdmitted(steer.sessionId, place, (entry) =>
         Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid),
       );
-      return live ? receipt : yield* conversations.withdrawTurnSteer(steer.id);
+      return live ? receipt : yield* conversations.withdrawTurnSteer(steer.id, place.processId);
     });
 
-    const { steerTurn } = makeTurnSteering({
+    const { steerTurn, steerMessage } = makeTurnSteering({
       conversations,
       hosted: (processId) => hosted.get(processId),
-      requireLive: (turn) =>
+      requireLive: (turn, needs) =>
         placeTurn(turn.sessionId).pipe(
           Effect.flatMap((place) =>
-            place?._tag === "Hosted"
-              ? Effect.void
-              : Effect.fail(new ProtocolHostNotLiveError({ processId: turn.processId })),
+            place === null || (needs === "hosted" && place._tag !== "Hosted")
+              ? Effect.fail(new ProtocolHostNotLiveError({ processId: turn.processId }))
+              : Effect.void,
           ),
         ),
       carryToNextTurn: carrySteer,
@@ -1130,6 +1162,54 @@ export const ProtocolHostLive: Layer.Layer<
           ? Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid)
           : Effect.void,
       scope,
+    });
+
+    const sendTurnMessage = Effect.fn("ProtocolHost.sendTurnMessage")(function* (
+      input: SendMessageInput,
+      reason: MessageTurnReason,
+    ) {
+      const place = yield* placeTurn(input.sessionId);
+      if (place === null)
+        return yield* new ProtocolHostNotLiveError({ processId: input.sessionId });
+      const admitted = yield* conversations.admitTurnMessage(input, place.processId, reason);
+      if (admitted._tag === "Replay") return admitted.result;
+      const { turn, messageId } = admitted.result;
+      const dispatched = yield* dispatchAdmitted(input.sessionId, place, dispatchNext).pipe(
+        Effect.exit,
+      );
+      if (Exit.isSuccess(dispatched)) {
+        if (!dispatched.value) yield* conversations.withdrawMessageTurn(turn.id, place.processId);
+        return yield* conversations.messageById(messageId);
+      }
+      if (Cause.hasInterruptsOnly(dispatched.cause))
+        return yield* Effect.failCause(dispatched.cause);
+      yield* Effect.logError("protocol host: a message's turn was not dispatched").pipe(
+        Effect.annotateLogs({ turnId: turn.id, failure: failureName(dispatched.cause) }),
+      );
+      // A claimed turn may already have reached the harness, so the failure stands.
+      if (!(yield* conversations.withdrawMessageTurn(turn.id, place.processId)))
+        return yield* Effect.failCause(dispatched.cause);
+      return yield* conversations.messageById(messageId);
+    });
+
+    const sendMessage = Effect.fn("ProtocolHost.sendMessage")(function* (
+      input: SendMessageInput,
+      choice: MessageChoice,
+    ) {
+      const steered =
+        choice._tag === "Steer"
+          ? steerMessage(input, choice.turnId).pipe(
+              Effect.catchTags({
+                AgentTurnNotFoundError: () => sendTurnMessage(input, "no-own-running-turn"),
+                TurnSteerForbiddenError: () => sendTurnMessage(input, "no-own-running-turn"),
+              }),
+            )
+          : sendTurnMessage(input, choice.reason);
+      return yield* steered.pipe(
+        Effect.catchTag("SessionStoppingError", () =>
+          Effect.fail(new ProtocolHostNotLiveError({ processId: input.sessionId })),
+        ),
+      );
     });
 
     const interruptTurn = Effect.fn("ProtocolHost.interruptTurn")(function* (turnId: AgentTurnId) {
@@ -1255,6 +1335,7 @@ export const ProtocolHostLive: Layer.Layer<
     return ProtocolHost.of({
       attach,
       rehydrate,
+      sendMessage,
       submitTurn,
       steerTurn,
       interruptTurn,

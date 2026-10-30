@@ -3940,6 +3940,32 @@ const recipeApprovalsMigration = Effect.gen(function* () {
     ADD COLUMN launch_source text CHECK (launch_source IN ('recipe', 'command'))`;
 });
 
+const sessionMessagesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE user_message_settings (
+    user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+    send_steers_running_turn boolean NOT NULL DEFAULT true,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`;
+  yield* sql`CREATE TABLE session_messages (
+    id uuid PRIMARY KEY,
+    session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    author text NOT NULL REFERENCES "user"(id) ON DELETE RESTRICT,
+    client_message_id uuid,
+    queue_requested boolean NOT NULL,
+    turn_reason text CHECK (turn_reason IN ('queue-requested', 'steering-off', 'no-own-running-turn')),
+    turn_id text REFERENCES agent_turns(id) ON DELETE CASCADE,
+    steer_id uuid REFERENCES agent_turn_steers(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT session_messages_author_client_key UNIQUE (author, client_message_id),
+    CONSTRAINT session_messages_turn_key UNIQUE (turn_id),
+    CONSTRAINT session_messages_steer_key UNIQUE (steer_id),
+    CONSTRAINT session_messages_target_check CHECK ((turn_id IS NULL) <> (steer_id IS NULL)),
+    CONSTRAINT session_messages_reason_check CHECK ((turn_id IS NULL) = (turn_reason IS NULL))
+  )`;
+  yield* sql`CREATE INDEX session_messages_session_idx ON session_messages(session_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4090,4 +4116,5 @@ export const migrations = {
   "0152_screen_log": screenLogMigration,
   "0155_setup_runs": setupRunsMigration,
   "0157_recipe_approvals": recipeApprovalsMigration,
+  "0159_session_messages": sessionMessagesMigration,
 };

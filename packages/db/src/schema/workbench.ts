@@ -10,6 +10,8 @@ import {
   WorkspaceImage,
 } from "@mend/domain";
 import type {
+  SessionMessageId,
+  ClientMessageId,
   AgentItemId,
   AgentTurnSteerId,
   AuditEventId,
@@ -70,6 +72,7 @@ import type {
   WorktreeId,
 } from "@mend/domain";
 import type {
+  MessageTurnReason,
   CapturePosition,
   HarnessLayout,
   RecipeEnv,
@@ -2996,3 +2999,37 @@ export type CaptureRow = typeof captures.$inferSelect;
 export type PackRow = typeof packs.$inferSelect;
 export type CaptureSummaryRow = typeof captureSummaries.$inferSelect;
 export type StoreRefRow = typeof storeRefs.$inferSelect;
+
+export const userMessageSettings = pgTable("user_message_settings", {
+  userId: text().primaryKey(),
+  sendSteersRunningTurn: boolean().notNull().default(true),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+export const sessionMessages = pgTable(
+  "session_messages",
+  {
+    id: uuid().$type<SessionMessageId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    author: text().notNull(),
+    clientMessageId: uuid().$type<ClientMessageId>(),
+    queueRequested: boolean().notNull(),
+    turnReason: text().$type<MessageTurnReason>(),
+    turnId: text()
+      .$type<AgentTurnId>()
+      .references(() => agentTurns.id, { onDelete: "cascade" }),
+    steerId: uuid()
+      .$type<AgentTurnSteerId>()
+      .references(() => agentTurnSteers.id, { onDelete: "cascade" }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("session_messages_author_client_key").on(table.author, table.clientMessageId),
+    unique("session_messages_turn_key").on(table.turnId),
+    unique("session_messages_steer_key").on(table.steerId),
+    index("session_messages_session_idx").on(table.sessionId),
+  ],
+);
