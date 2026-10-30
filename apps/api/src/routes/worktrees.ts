@@ -624,8 +624,8 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
               Effect.fail(new WorktreeNotFound({ id: params.id })),
             ),
           );
-        const { previews, unprepared } = yield* describeWorktreePreviews(worktree.id, views);
         const { setup } = yield* PreviewSetupConfig;
+        const { previews, unprepared } = yield* describeWorktreePreviews(worktree.id, views, setup);
         const now = new Date(yield* Clock.currentTimeMillis);
         const described = previews.map(({ view, facts, open, boundTo }) => ({
           ...view,

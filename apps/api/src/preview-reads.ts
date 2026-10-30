@@ -17,7 +17,7 @@ import { NetworkConfig } from "@mend/network";
 import type { PreviewNotice, WorktreePreviews } from "@mend/slack";
 import { Cause, Effect, Layer } from "effect";
 
-import { PreviewSetupConfig } from "./preview-config.ts";
+import { PreviewSetupConfig, type PreviewSetup } from "./preview-config.ts";
 import { previewOpenOf, type PreviewOpen } from "./preview-open.ts";
 
 export interface DescribedPreview {
@@ -38,8 +38,7 @@ type PreviewReads =
   | PreviewPreparationsRepo
   | ServiceObservationsRepo
   | SessionProcessesRepo
-  | ServicesRepo
-  | PreviewSetupConfig;
+  | ServicesRepo;
 
 /**
  * The web's read and Slack's both come through here, so their facts cannot disagree. It writes
@@ -48,6 +47,7 @@ type PreviewReads =
 export const describeWorktreePreviews = (
   worktreeId: WorktreeId,
   views: ReadonlyArray<PreviewView>,
+  setup: PreviewSetup,
 ): Effect.Effect<DescribedPreviews, never, PreviewReads> =>
   Effect.gen(function* () {
     const previews = yield* PreviewsRepo;
@@ -56,7 +56,6 @@ export const describeWorktreePreviews = (
     const services = yield* ServicesRepo;
     const snapshots = yield* previews.gatewaySnapshots(views.map(({ preview }) => preview.id));
     const preparation = yield* (yield* PreviewPreparationsRepo).latestForWorktree(worktreeId);
-    const { setup } = yield* PreviewSetupConfig;
     const described = yield* Effect.forEach(views, (view) =>
       Effect.gen(function* () {
         const resolution = snapshots.get(view.preview.id)?.resolution ?? null;
@@ -113,7 +112,7 @@ const byServiceThenId = (a: PreviewNotice, b: PreviewNotice) =>
 export const SlackPreviewReadsLive: Layer.Layer<
   SlackPreviewReads,
   never,
-  PreviewReads | NetworkConfig
+  PreviewReads | PreviewSetupConfig | NetworkConfig
 > = Layer.effect(
   SlackPreviewReads,
   Effect.gen(function* () {
@@ -127,7 +126,7 @@ export const SlackPreviewReadsLive: Layer.Layer<
           ? Effect.succeed({ _tag: "Hidden" })
           : Effect.gen(function* () {
               const views = yield* previews.readForWorktree(worktreeId);
-              const described = yield* describeWorktreePreviews(worktreeId, views);
+              const described = yield* describeWorktreePreviews(worktreeId, views, setup);
               const shown: WorktreePreviews = {
                 _tag: "Shown",
                 appUrl,

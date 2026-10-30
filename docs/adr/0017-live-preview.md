@@ -411,11 +411,11 @@ One function builds the status line for every surface, so they all say the same 
   `<APP_URL>/preview-auth?preview=<id>&path=%2F`: no credential, no preview host. Everyone in the
   thread sees it, as with **Open in Mend**; a Slack Connect channel sees it only when the owner
   turned on external channels (`disclosureFor`). The reporter's private-project check hides a
-  project that was made private (`packages/jobs/src/slack-reporter.ts`, `observe`), and a project's
-  change reaches its threads at once. The reporter reads the worktree's previews through
-  `SlackPreviewReads` (`apps/api/src/preview-reads.ts`), the web's own fact assembly without its
-  allocation, and hears the events bus, not a LISTEN of its own. Unfurls are off for preview links,
-  and a crawler never gets a grant.
+  project that was made private (`packages/jobs/src/slack-reporter.ts`, `look`), and a change of the
+  project's visibility reaches its threads at once. The reporter reads the worktree's previews
+  through `SlackPreviewReads` (`apps/api/src/preview-reads.ts`), the web's own fact assembly without
+  its allocation, and hears the events bus, not a LISTEN of its own. Unfurls are off for preview
+  links, and a crawler never gets a grant.
 - **Phone.** A **Preview** button on the session screen, and the session's Services.
 - **Web.** The Services card's **Open** goes to the preview on every instance where the gateway is
   on.

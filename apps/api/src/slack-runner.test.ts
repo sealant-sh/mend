@@ -55,14 +55,12 @@ import {
   Project,
   Session,
   SessionProcess,
-  SlackStatusKey,
   type AgentInputQuestion,
   type AgentTurnStatus,
   type RequestIntentReading,
   type SessionStatus,
   type SlackLinkedMentionJob,
   type SlackPendingMention,
-  type SlackStatusShown,
 } from "@mend/domain/workbench";
 import {
   InferenceError,
@@ -99,7 +97,7 @@ import {
   SecretCipher,
   Store,
 } from "@mend/store";
-import { Effect, Layer, Logger, Schema } from "effect";
+import { Effect, Layer, Logger } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ADMISSION_REFUSED, refusedAdmissions } from "../test/support/refused-admissions.ts";
@@ -391,13 +389,6 @@ const inferred = (
  * records what it was asked. `effects` holds acks, claims and starts in order; Slack's writes are
  * in `slack.calls`. Alice is linked and sees every project; Bob is not linked.
  */
-const shownOf = (stored: string | undefined): SlackStatusShown =>
-  stored === undefined
-    ? { _tag: "Unknown" }
-    : Schema.is(SlackStatusKey)(stored)
-      ? { _tag: "Rendered", key: stored }
-      : { _tag: "Legacy", text: stored };
-
 const world = (options: WorldOptions = {}) => {
   const effects: Array<string> = [];
   const note = (entry: string) => Effect.sync(() => void effects.push(entry));
@@ -539,7 +530,7 @@ const world = (options: WorldOptions = {}) => {
     return {
       ...row,
       statusTs: statusTs.get(row.sessionId) ?? null,
-      shown: shownOf(reported.get(row.sessionId)),
+      reportedStatus: reported.get(row.sessionId) ?? null,
       reportedState:
         state === "starting" || state === "running" || state === "failed" || state === "stopped"
           ? state
@@ -658,7 +649,7 @@ const world = (options: WorldOptions = {}) => {
             ...input,
             statusTs: null,
             reportedState: null,
-            shown: { _tag: "Unknown" },
+            reportedStatus: null,
             createdAt: NOW,
           };
           recorded.push(row);
@@ -678,7 +669,7 @@ const world = (options: WorldOptions = {}) => {
                 projectSource: "picked",
                 external: false,
                 reportedState: null,
-                shown: { _tag: "Unknown" },
+                reportedStatus: null,
                 createdAt: NOW,
               }
             : null,
@@ -694,7 +685,7 @@ const world = (options: WorldOptions = {}) => {
             Effect.sync(() => {
               statusTs.set(sessionId, ts);
               shownState.set(sessionId, shown.state);
-              reported.set(sessionId, options.reporterMovedFirst === true ? "moved" : shown.key);
+              reported.set(sessionId, options.reporterMovedFirst === true ? "moved" : shown.status);
             }),
           ),
         ),
@@ -704,17 +695,9 @@ const world = (options: WorldOptions = {}) => {
         ),
       claimStatus: (sessionId, from, to) =>
         Effect.sync(() => {
-          if (JSON.stringify(shownOf(reported.get(sessionId))) !== JSON.stringify(from)) {
-            return false;
-          }
-          reported.set(sessionId, to.key);
+          if ((reported.get(sessionId) ?? null) !== from.status) return false;
+          reported.set(sessionId, to.status);
           shownState.set(sessionId, to.state);
-          return true;
-        }),
-      releaseStatus: (sessionId, key) =>
-        Effect.sync(() => {
-          if (reported.get(sessionId) !== key) return false;
-          reported.delete(sessionId);
           return true;
         }),
     }),
@@ -2230,7 +2213,7 @@ describe("the Slack runner, for `settings` and `list`", () => {
       projectSource: "picked",
       external: false,
       reportedState: state,
-      shown: { _tag: "Unknown" },
+      reportedStatus: null,
       createdAt: NOW,
       projectId,
       label: null,
@@ -3248,7 +3231,7 @@ describe("existing-thread authorization and joined-session landing", () => {
       projectSource: "picked",
       external: false,
       reportedState: null,
-      shown: { _tag: "Unknown" },
+      reportedStatus: null,
       createdAt: NOW,
     };
     const w = world({

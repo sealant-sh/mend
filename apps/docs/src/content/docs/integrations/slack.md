@@ -243,6 +243,8 @@ An owner sets how much reaches Slack in **Settings → Slack**:
 | Slack Connect channels | Only status and links there, without previews. The default            | The two settings above apply there too, and the previews show              |
 | Land automatically     | A completed turn pushes nothing; the thread offers the owner a button | A request that asked for a change lands when a turn completes. The default |
 
+A change to these settings reaches an open thread the next time Mend updates it, not at once.
+
 ## Automatic landing from Slack
 
 A session started from Slack lands its change by default: after a completed turn whose request asked

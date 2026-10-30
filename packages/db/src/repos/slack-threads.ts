@@ -1,14 +1,8 @@
 import type { ProjectId, SessionId, WorktreeId } from "@mend/domain";
-import {
-  SlackStatusKey,
-  type SessionStatus,
-  type SlackProjectSource,
-  type SlackSessionState,
-  type SlackStatusShown,
-} from "@mend/domain/workbench";
-import { and, desc, eq, getTableColumns, inArray, isNotNull, isNull, type SQL } from "drizzle-orm";
+import type { SessionStatus, SlackProjectSource, SlackSessionState } from "@mend/domain/workbench";
+import { and, desc, eq, getTableColumns, inArray, isNotNull, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -35,43 +29,19 @@ export interface SlackThreadSession extends SlackThreadRef {
   readonly external: boolean;
   /** The state the status message last showed; null until it is posted. */
   readonly reportedState: SlackSessionState | null;
-  readonly shown: SlackStatusShown;
+  /**
+   * What Mend keeps about the status message, as its writer stored it (the Slack package's
+   * `SlackStatusReceipt`), or the line a release before receipts wrote; null until it is posted.
+   */
+  readonly reportedStatus: string | null;
   readonly createdAt: Date;
 }
 
+/** The status message's state and receipt, as stored. */
 export interface SlackReportedStatus {
   readonly state: SlackSessionState;
-  readonly key: SlackStatusKey;
+  readonly status: string;
 }
-
-const isStatusKey = Schema.is(SlackStatusKey);
-
-/** `reported_status` holds a key, or the line a release before keys wrote there. */
-const shownOf = (stored: string | null): SlackStatusShown =>
-  stored === null
-    ? { _tag: "Unknown" }
-    : isStatusKey(stored)
-      ? { _tag: "Rendered", key: stored }
-      : { _tag: "Legacy", text: stored };
-
-const storedIs = (shown: SlackStatusShown): SQL | undefined => {
-  switch (shown._tag) {
-    case "Unknown":
-      return isNull(slackThreads.reportedStatus);
-    case "Legacy":
-      return eq(slackThreads.reportedStatus, shown.text);
-    case "Rendered":
-      return eq(slackThreads.reportedStatus, shown.key);
-  }
-};
-
-const threadOf = <Row extends typeof slackThreads.$inferSelect>({
-  reportedStatus,
-  ...row
-}: Row): Omit<Row, "reportedStatus"> & { readonly shown: SlackStatusShown } => ({
-  ...row,
-  shown: shownOf(reportedStatus),
-});
 
 /** A session its owner started from Slack, with what `@mend list` shows of it. */
 export interface SlackOwnedSession extends SlackThreadSession {
@@ -118,20 +88,18 @@ export class SlackThreadsRepo extends Context.Service<
       reported: SlackReportedStatus,
     ) => Effect.Effect<void>;
     /**
-     * Move the status message from what it showed (`from`) to `to`: true for exactly one caller,
-     * who then edits the message. False when another worker moved it first, or when the message
-     * has not been posted.
+     * Move the status message from its state and receipt as read (`from`) to `to`: true for
+     * exactly one caller, who then edits the message or records how the edit went. False when
+     * another writer moved it first, or when the message has not been posted.
      */
     readonly claimStatus: (
       sessionId: SessionId,
-      from: SlackStatusShown,
+      from: {
+        readonly state: SlackSessionState | null;
+        readonly status: string | null;
+      },
       to: SlackReportedStatus,
     ) => Effect.Effect<boolean>;
-    /**
-     * Slack refused the edit a claim of `key` made: the message does not show it, so the next look
-     * edits again. A later claim is left alone. The state stays: the reaction follows the session.
-     */
-    readonly releaseStatus: (sessionId: SessionId, key: SlackStatusKey) => Effect.Effect<boolean>;
     /**
      * Whether the session is the latest to start from its request (the same workspace, channel
      * and message): the one whose reaction the request carries. A switch reuses the request.
@@ -170,7 +138,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
     const record = Effect.fn("SlackThreadsRepo.record")(function* (input: NewSlackThreadSession) {
       const [row] = yield* db.insert(slackThreads).values(input).returning().pipe(Effect.orDie);
       if (row === undefined) return yield* Effect.die("slack thread insert returned no row");
-      return threadOf(row);
+      return row;
     });
 
     const latestInThread = Effect.fn("SlackThreadsRepo.latestInThread")(function* (
@@ -189,7 +157,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
         .orderBy(desc(slackThreads.createdAt), desc(slackThreads.sessionId))
         .limit(1)
         .pipe(Effect.orDie);
-      return row === undefined ? null : threadOf(row);
+      return row ?? null;
     });
 
     const forSession = Effect.fn("SlackThreadsRepo.forSession")(function* (sessionId: SessionId) {
@@ -199,7 +167,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
         .where(eq(slackThreads.sessionId, sessionId))
         .limit(1)
         .pipe(Effect.orDie);
-      return row === undefined ? null : threadOf(row);
+      return row ?? null;
     });
 
     const setStatusTs = Effect.fn("SlackThreadsRepo.setStatusTs")(function* (
@@ -209,42 +177,34 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
     ) {
       yield* db
         .update(slackThreads)
-        .set({ statusTs, reportedState: reported.state, reportedStatus: reported.key })
+        .set({ statusTs, reportedState: reported.state, reportedStatus: reported.status })
         .where(eq(slackThreads.sessionId, sessionId))
         .pipe(Effect.orDie);
     });
 
     const claimStatus = Effect.fn("SlackThreadsRepo.claimStatus")(function* (
       sessionId: SessionId,
-      from: SlackStatusShown,
+      from: { readonly state: SlackSessionState | null; readonly status: string | null },
       to: SlackReportedStatus,
     ) {
       const moved = yield* db
         .update(slackThreads)
-        .set({ reportedState: to.state, reportedStatus: to.key })
+        .set({ reportedState: to.state, reportedStatus: to.status })
         .where(
           and(
             eq(slackThreads.sessionId, sessionId),
             isNotNull(slackThreads.statusTs),
-            storedIs(from),
+            from.state === null
+              ? isNull(slackThreads.reportedState)
+              : eq(slackThreads.reportedState, from.state),
+            from.status === null
+              ? isNull(slackThreads.reportedStatus)
+              : eq(slackThreads.reportedStatus, from.status),
           ),
         )
         .returning({ sessionId: slackThreads.sessionId })
         .pipe(Effect.orDie);
       return moved.length === 1;
-    });
-
-    const releaseStatus = Effect.fn("SlackThreadsRepo.releaseStatus")(function* (
-      sessionId: SessionId,
-      key: SlackStatusKey,
-    ) {
-      const released = yield* db
-        .update(slackThreads)
-        .set({ reportedStatus: null })
-        .where(and(eq(slackThreads.sessionId, sessionId), eq(slackThreads.reportedStatus, key)))
-        .returning({ sessionId: slackThreads.sessionId })
-        .pipe(Effect.orDie);
-      return released.length === 1;
     });
 
     const ownsRequestReaction = Effect.fn("SlackThreadsRepo.ownsRequestReaction")(function* (
@@ -344,7 +304,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
         .orderBy(desc(slackThreads.createdAt), desc(slackThreads.sessionId))
         .limit(input.limit)
         .pipe(Effect.orDie);
-      return rows.map(threadOf);
+      return rows;
     });
 
     return {
@@ -353,7 +313,6 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       forSession,
       setStatusTs,
       claimStatus,
-      releaseStatus,
       ownsRequestReaction,
       sessionsReached,
       claimPost,

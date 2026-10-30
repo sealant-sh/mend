@@ -8,6 +8,7 @@ import {
   MendDBLive,
   migrations,
   notifyEvent,
+  openEvents,
   type PreviewPreparationClaim,
   PreviewPreparationsRepo,
   PreviewPreparationsRepoLive,
@@ -44,6 +45,7 @@ import { WorktreeReads } from "@mend/sessions";
 import { makeFakeSlack, type FakeSlackCall } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
 import {
+  Deferred,
   Effect,
   Exit,
   Layer,
@@ -51,12 +53,14 @@ import {
   Redacted,
   Schema,
   Scope,
+  Stream,
   String as Str,
 } from "effect";
 import { SqlClient } from "effect/sql";
+import type { SqlError } from "effect/sql/SqlError";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { EventBusLive } from "./events-bus.ts";
+import { EventBus, EventBusLive, makeEventBus } from "./events-bus.ts";
 import { PreviewSetupConfig } from "./preview-config.ts";
 import { PREVIEW_GATEWAY_DEFAULTS } from "./preview-gateway-settings.ts";
 import { SlackPreviewReadsLive } from "./preview-reads.ts";
@@ -179,6 +183,9 @@ const opensOf = (statusTs: string) =>
       ([, url]) => url,
     ),
   );
+
+const gapLine = (state: string) =>
+  `billing-api · named in the request · claude · ${state} · mend/wt-gap`;
 
 let turns = 0;
 /** A turn of a thread session ended, and preparation claimed it, as the preparation job does. */
@@ -392,6 +399,97 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
     }
     expect(JSON.stringify(slack.calls)).not.toMatch(/ticket|preview\.test|__mend/u);
     expect(editsOf(ELSEWHERE.statusTs)).toEqual([]);
+  }, 120_000);
+
+  it("brings a thread up to date with what changed while the events connection was down", async () => {
+    const GAP = { sessionId: SessionId.make("s-gap"), statusTs: "1700000400.000200" } as const;
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-gap', ${PROJECT}, 'wt-gap', 'wt-gap', 'mend/wt-gap', 'abc')`;
+        yield* sql`INSERT INTO agent_sessions (id, project_id, worktree_id, owner_user_id, harness,
+            worktree, branch, base_sha, status, origin)
+          VALUES (${GAP.sessionId}, ${PROJECT}, 'wt-gap', 'maria', 'claude', 'wt-gap',
+            'mend/wt-gap', 'abc', 'idle', 'slack')`;
+        yield* sql`INSERT INTO session_processes (id, session_id, sealant_workspace_id, kind, status)
+          VALUES ('agent-s-gap', ${GAP.sessionId}, 'ws-1', 'agent-protocol', 'running')`;
+        yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status, ended_at)
+          VALUES ('turn-gap-1', ${GAP.sessionId}, 'agent-s-gap', 1, 'fix it', 'completed', now())`;
+        yield* (yield* SlackThreadsRepo).record({
+          sessionId: GAP.sessionId,
+          teamId: "T-acme",
+          channelId: "C-general",
+          threadTs: "1700000400.000100",
+          requestTs: "1700000400.000100",
+          slackUserId: "U-maria",
+          projectSource: "message",
+          external: false,
+        });
+        yield* sql`UPDATE slack_threads SET status_ts = ${GAP.statusTs},
+            reported_state = 'completed', reported_status = 'billing-api · named in the request'
+          WHERE session_id = ${GAP.sessionId}`;
+      }),
+    );
+    const lose = Deferred.makeUnsafe<void>();
+    const reconnect = Deferred.makeUnsafe<void>();
+    let opens = 0;
+    const gappedBus = Layer.effect(
+      EventBus,
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        return yield* makeEventBus<SqlError | string, never>(
+          Effect.gen(function* () {
+            opens += 1;
+            if (opens === 1) {
+              const payloads = yield* openEvents(sql);
+              return Stream.merge(
+                payloads,
+                Stream.fromEffect(Deferred.await(lose)).pipe(
+                  Stream.flatMap(() => Stream.fail("connection lost")),
+                ),
+              );
+            }
+            yield* Deferred.await(reconnect);
+            return yield* openEvents(sql);
+          }),
+        );
+      }),
+    );
+    const gapped = await runtime.runPromise(Scope.make());
+    await runtime.runPromise(
+      Layer.buildWithScope(
+        SlackReportEventsLive.pipe(
+          Layer.provide(gappedBus),
+          Layer.provide(SlackReportsLive.pipe(Layer.provide(SlackPreviewReadsLive))),
+        ),
+        gapped,
+      ),
+    );
+    try {
+      await runtime.runPromise(Deferred.succeed(lose, undefined));
+      await vi.waitFor(
+        () =>
+          expect(editsOf(GAP.statusTs).map((edit) => edit.text)).toEqual([gapLine("completed")]),
+        { timeout: 20_000 },
+      );
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status,
+              ended_at)
+            VALUES ('turn-gap-2', ${GAP.sessionId}, 'agent-s-gap', 2, 'and the docs', 'failed',
+              now())`;
+        }),
+      );
+      await runtime.runPromise(Deferred.succeed(reconnect, undefined));
+      await vi.waitFor(() => expect(editsOf(GAP.statusTs).at(-1)?.text).toBe(gapLine("failed")), {
+        timeout: 20_000,
+      });
+      expect(opens).toBe(2);
+    } finally {
+      await runtime.runPromise(Scope.close(gapped, Exit.void));
+    }
   }, 120_000);
 
   it("says a preparation that failed before any preview, and removes every preview when the project turns private", async () => {

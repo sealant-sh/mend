@@ -33,6 +33,7 @@ import {
   tearDownPreviewAuth,
   whoami,
 } from "../../test/support/preview-auth-fixture.ts";
+import { PreviewSetupConfig } from "../preview-config.ts";
 import { describeWorktreePreviews, SlackPreviewReadsLive } from "../preview-reads.ts";
 
 const SHARED_WORKTREE = WorktreeId.make("wt-p-shared");
@@ -54,7 +55,8 @@ const webRead = () =>
   runtime.runPromise(
     Effect.gen(function* () {
       const views = yield* (yield* PreviewsRepo).ensureForWorktree(SHARED_WORKTREE);
-      return yield* describeWorktreePreviews(SHARED_WORKTREE, views);
+      const { setup } = yield* PreviewSetupConfig;
+      return yield* describeWorktreePreviews(SHARED_WORKTREE, views, setup);
     }).pipe(Effect.provide(previewReads)),
   );
 const previewRows = () =>

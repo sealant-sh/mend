@@ -266,7 +266,7 @@ const thread: SlackThreadSession = {
   projectSource: "message",
   external: false,
   reportedState: null,
-  shown: { _tag: "Unknown" },
+  reportedStatus: null,
   createdAt: NOW,
 };
 

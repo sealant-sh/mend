@@ -309,45 +309,25 @@ export const slackApiError = (method: string, cause: unknown): SlackApiError => 
   });
 };
 
-const MESSAGE_GONE: ReadonlySet<string> = new Set([
-  "message_not_found",
-  "channel_not_found",
-  "is_archived",
-  "cant_update_message",
-  "not_in_channel",
-]);
-
-const TRANSIENT: ReadonlySet<string> = new Set([
-  "ratelimited",
-  "request_failed",
-  "timeout",
-  "internal_error",
-  "fatal_error",
-  "service_unavailable",
-]);
-
-export const UPDATE_RETRY_MS = 5_000;
+const MESSAGE_GONE: ReadonlySet<string> = new Set(["message_not_found", "channel_not_found"]);
 
 /**
- * `MessageGone`: never edited again. `Refused`: Slack rejected what was sent; the next change may
- * fix it.
+ * `MessageGone`: never edited again. `Refused`: anything else, from a rate limit to a channel
+ * archived for now or a token that stopped working; the edit waits `retryAfterMs` when Slack
+ * named a Retry-After, and backs off otherwise.
  */
 export type UpdateRefusal =
   | { readonly _tag: "MessageGone" }
-  | { readonly _tag: "Transient"; readonly retryInMs: number }
-  | { readonly _tag: "Refused" };
+  | { readonly _tag: "Refused"; readonly retryAfterMs: number | null };
 
-export const updateRefusalOf = (error: SlackApiError): UpdateRefusal => {
-  if (MESSAGE_GONE.has(error.code)) return { _tag: "MessageGone" };
-  if (TRANSIENT.has(error.code) || /^http_5\d\d$/u.test(error.code)) {
-    return {
-      _tag: "Transient",
-      retryInMs:
-        error.retryAfterSeconds === undefined ? UPDATE_RETRY_MS : error.retryAfterSeconds * 1_000,
-    };
-  }
-  return { _tag: "Refused" };
-};
+export const updateRefusalOf = (error: SlackApiError): UpdateRefusal =>
+  MESSAGE_GONE.has(error.code)
+    ? { _tag: "MessageGone" }
+    : {
+        _tag: "Refused",
+        retryAfterMs:
+          error.retryAfterSeconds === undefined ? null : error.retryAfterSeconds * 1_000,
+      };
 
 /** The one host family the bot token is ever sent to. */
 export const isSlackFileUrl = (url: string): boolean => {

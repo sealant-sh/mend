@@ -15,7 +15,9 @@ shows none, and making a project private now edits its threads at once. With the
 off, Slack shows no preview.
 
 The status message has one writer after launch, and Mend compares it whole, so a button that appears
-or goes reaches Slack. An edit Slack refuses is tried again, after Slack's `Retry-After` when Slack
-was busy, and Mend stops editing a message that was deleted. The Slack reporter now shares the
-server's events connection, so a server pins four LISTEN connections instead of five, and the
-reporter looks at every active session again after that connection comes back.
+or goes reaches Slack. An edit Slack refuses waits for Slack's `Retry-After`, or backs off, on every
+worker, and Mend stops editing a message that was deleted or whose channel is gone. A thread whose
+previews cannot be read for a moment keeps the ones it shows, and its replies still post. The Slack
+reporter now shares the server's events connection, so a server pins four LISTEN connections instead
+of five, and the reporter looks at every active session again when that connection drops and once it
+is back, so a change made in between reaches Slack.

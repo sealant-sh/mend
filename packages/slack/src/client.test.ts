@@ -1,13 +1,7 @@
 import { Effect, Fiber } from "effect";
 import { describe, expect, it } from "vitest";
 
-import {
-  makeFakeSlack,
-  makeSlackApi,
-  updateRefusalOf,
-  UPDATE_RETRY_MS,
-  type FakeSlackWorkspace,
-} from "./client.ts";
+import { makeFakeSlack, makeSlackApi, updateRefusalOf, type FakeSlackWorkspace } from "./client.ts";
 
 /** One request as the SDK sent it: the method, the bearer and the form body. */
 interface Sent {
@@ -247,28 +241,31 @@ describe("the live Slack client (over @slack/web-api)", () => {
     expect(calls).toBe(3);
     if (result._tag !== "Failure") throw new Error("a rate-limited edit succeeded");
     expect(result.failure).toMatchObject({ code: "ratelimited", retryAfterSeconds: 0 });
-    expect(updateRefusalOf(result.failure)).toEqual({ _tag: "Transient", retryInMs: 0 });
+    expect(updateRefusalOf(result.failure)).toEqual({ _tag: "Refused", retryAfterMs: 0 });
   });
 
-  it("says a deleted message is gone, and gives anything Slack refused for what was sent no retry", async () => {
-    const slack = fakeFetch({
-      "chat.update": [
-        { ok: false, error: "message_not_found" },
-        { ok: false, error: "invalid_blocks" },
-        { ok: false, error: "internal_error" },
-      ],
-    });
+  it("says only a deleted message or channel is gone; an archived channel or a lost invite may come back", async () => {
+    const codes = [
+      "message_not_found",
+      "channel_not_found",
+      "is_archived",
+      "not_in_channel",
+      "cant_update_message",
+      "invalid_blocks",
+      "internal_error",
+    ];
+    const slack = fakeFetch({ "chat.update": codes.map((error) => ({ ok: false, error })) });
     const api = makeSlackApi({ fetch: slack.fetch });
     const refusals = [];
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < codes.length; attempt++) {
       const result = await run(api.update("xoxb-1", { channel: "C1", ts: "1.1", text: "x" }));
       if (result._tag !== "Failure") throw new Error("a refused edit succeeded");
       refusals.push(updateRefusalOf(result.failure));
     }
     expect(refusals).toEqual([
       { _tag: "MessageGone" },
-      { _tag: "Refused" },
-      { _tag: "Transient", retryInMs: UPDATE_RETRY_MS },
+      { _tag: "MessageGone" },
+      ...Array.from({ length: 5 }, () => ({ _tag: "Refused", retryAfterMs: null })),
     ]);
   });
 

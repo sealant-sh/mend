@@ -85,7 +85,11 @@ import {
   SLACK_ACTIONS,
   slackToPlain,
   NO_PREVIEWS,
+  editedReceipt,
+  postedReceipt,
+  receiptAfter,
   statusKey,
+  storedReceipt,
   statusMessage,
   switchOffered,
   threadContext,
@@ -103,7 +107,7 @@ import {
   type ThreadImageLimits,
   type ThreadImageSkip,
 } from "@mend/slack";
-import { SlackApi, type SlackApiError } from "@mend/slack/client";
+import { SlackApi, type SlackApiError, updateRefusalOf } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
 import { SecretCipher, Store } from "@mend/store";
 import { Cause, Clock, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
@@ -674,6 +678,11 @@ export const SLACK_TURN_IMAGE_LIMITS: ThreadImageLimits = {
   maxBytes: PASTED_IMAGE_MAX_BYTES,
   maxImages: 10,
   maxTotalBytes: 3 * PASTED_IMAGE_MAX_BYTES,
+};
+
+const renderingOf = (message: SlackMessage) => {
+  const key = statusKey(message);
+  return { key, base: key, previews: NO_PREVIEWS, counts: null };
 };
 
 export const makeSlackRunner = (options: SlackRunnerOptions) =>
@@ -1437,20 +1446,21 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           ),
         ),
       );
-      const shownKey = statusKey(shown);
+      const posting = postedReceipt(renderingOf(shown));
+      const postedStatus = storedReceipt(posting);
       if (posted !== null) {
-        yield* threads.setStatusTs(session.id, posted, { state: "starting", key: shownKey });
+        yield* threads.setStatusTs(session.id, posted, { state: "starting", status: postedStatus });
       }
       /** Move the status message on from `starting`, or ask the reporter once it has. */
       const updateStatus = (state: SlackSessionState, current: Session) =>
         Effect.gen(function* () {
           if (posted === null) return;
           const next = status(state, current);
-          const key = statusKey(next);
+          const claimed = storedReceipt(editedReceipt(renderingOf(next), now()));
           const moved = yield* threads.claimStatus(
             session.id,
-            { _tag: "Rendered", key: shownKey },
-            { state, key },
+            { state: "starting", status: postedStatus },
+            { state, status: claimed },
           );
           const edited =
             moved &&
@@ -1459,7 +1469,16 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
               Effect.catch((error) =>
                 Effect.logWarning("slack runner: chat.update failed").pipe(
                   Effect.annotateLogs({ method: error.method, code: error.code }),
-                  Effect.andThen(threads.releaseStatus(session.id, key)),
+                  Effect.andThen(
+                    threads.claimStatus(
+                      session.id,
+                      { state, status: claimed },
+                      {
+                        state,
+                        status: storedReceipt(receiptAfter(posting, updateRefusalOf(error), now())),
+                      },
+                    ),
+                  ),
                   Effect.as(false),
                 ),
               ),
