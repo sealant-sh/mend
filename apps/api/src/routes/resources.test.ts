@@ -408,6 +408,27 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     ]);
   });
 
+  it("gives a whole preset definition with no command its engine settings, the same as settings", async () => {
+    await start();
+    await declare();
+    const spec = presetDefinition({
+      name: ResourceName.make("db"),
+      preset: "postgres",
+      version: PresetVersion.make("17"),
+      scope: "project",
+    });
+    const proposed = await harness()
+      .request("carol", "POST", `/api/projects/${shared.project}/resource-proposals?${zone}`, {
+        kind: "definition",
+        spec: { ...spec, command: null },
+      })
+      .then(json);
+    expect(proposed.body).toMatchObject({
+      spec: { command: spec.command },
+      statusLine: "@db · postgres 17 · project · proposed by Carol · same as settings",
+    });
+  });
+
   it("names every person on the page with one read of the accounts", async () => {
     await start();
     await approve(await declare(), "alice", null);

@@ -5,6 +5,7 @@ import {
   ResourceDefinitionInput,
   ResourceSpecDigest,
   resourceSpecDigest,
+  withPresetCommand,
 } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
@@ -51,19 +52,21 @@ const failureOf = <A, E>(use: (repo: ResourcesRepo["Service"]) => Effect.Effect<
 
 const decode = Schema.decodeUnknownSync(ResourceDefinitionInput);
 const postgresDb = (overrides: Record<string, unknown> = {}) =>
-  decode({
-    name: "db",
-    scope: "project",
-    preset: "postgres",
-    image: "postgres:17",
-    command: null,
-    ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
-    env: {},
-    volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
-    ready: { kind: "preset" },
-    exports: {},
-    ...overrides,
-  });
+  withPresetCommand(
+    decode({
+      name: "db",
+      scope: "project",
+      preset: "postgres",
+      image: "postgres:17",
+      command: null,
+      ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
+      env: {},
+      volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
+      ready: { kind: "preset" },
+      exports: {},
+      ...overrides,
+    }),
+  );
 const redisCache = () =>
   postgresDb({
     name: "cache",

@@ -14,7 +14,11 @@ import {
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
-import { ResourceDefinitionInput, WORKSPACE_RESOURCE_REFUSAL } from "@mend/domain/workbench";
+import {
+  ResourceDefinitionInput,
+  withPresetCommand,
+  WORKSPACE_RESOURCE_REFUSAL,
+} from "@mend/domain/workbench";
 import { Effect, Layer, ManagedRuntime, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -173,18 +177,20 @@ describe.skipIf(postgres.skip)("a session's read of its project's resources, end
         );
         yield* repo.propose(
           PROJECT,
-          decodeSpec({
-            name: "cache",
-            scope: "project",
-            preset: "redis",
-            image: "redis:8",
-            command: null,
-            ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
-            env: {},
-            volumes: [{ name: "data", mountPath: "/data" }],
-            ready: { kind: "preset" },
-            exports: {},
-          }),
+          withPresetCommand(
+            decodeSpec({
+              name: "cache",
+              scope: "project",
+              preset: "redis",
+              image: "redis:8",
+              command: null,
+              ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
+              env: {},
+              volumes: [{ name: "data", mountPath: "/data" }],
+              ready: { kind: "preset" },
+              exports: {},
+            }),
+          ),
           "u-tom",
         );
       }),

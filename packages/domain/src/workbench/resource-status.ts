@@ -4,6 +4,7 @@ import {
   isDatabasePreset,
   type ProjectResourceDefinition,
   type ResourceDefinitionInput,
+  type WorktreeChoice,
   type WorktreeResourceDefinition,
 } from "./resource.ts";
 
@@ -114,7 +115,12 @@ export type ResourceStatusView =
 export type ResourceDeclaration =
   | { readonly kind: "proposal"; readonly by: string; readonly sameAsSettings: boolean }
   | { readonly kind: "file"; readonly sameAsSettings: boolean }
-  | { readonly kind: "settings"; readonly approval: ResourceDeclaredApproval | null };
+  | {
+      readonly kind: "settings";
+      readonly approval: ResourceDeclaredApproval | null;
+      /** The worktree's stored choice, when the line is read for one that made it. */
+      readonly choice?: WorktreeChoice;
+    };
 
 /**
  * The approval of the spec as listed: a manager's for the project, or a change owner's for the
@@ -128,21 +134,34 @@ export interface ResourceDeclaredApproval {
 const waits = (sameAsSettings: boolean) =>
   sameAsSettings ? "same as settings" : "waiting for approval";
 
-const declarationParts = (source: ResourceDeclaration): ReadonlyArray<string> => {
+const chosen = (def: ResourceDefinitionInput, choice: WorktreeChoice) => {
+  if (choice === "off") return "off";
+  const database = isDatabasePreset(def);
+  if (choice === "shared") return database ? "shared database" : "shared";
+  return database ? "its own database" : "its own instance";
+};
+
+const declarationParts = (
+  def: ResourceDefinitionInput,
+  source: ResourceDeclaration,
+): ReadonlyArray<string> => {
   switch (source.kind) {
     case "proposal":
       return [`proposed by ${source.by}`, waits(source.sameAsSettings)];
     case "file":
       return ["proposed in mend.toml", waits(source.sameAsSettings)];
-    case "settings":
+    case "settings": {
+      const choice = source.choice === undefined ? [] : [chosen(def, source.choice)];
       return source.approval === null
-        ? ["waiting for approval"]
+        ? ["waiting for approval", ...choice]
         : [
             source.approval.for === "project"
               ? `approved by ${source.approval.by}`
               : `approved by ${source.approval.by} for this worktree`,
+            ...choice,
             "not started",
           ];
+    }
   }
 };
 
@@ -283,14 +302,17 @@ const clockIn = (now: Date, timeZone: string): Clock => {
   };
 };
 
-const launchParts = (def: ResourceDefinitionInput, because: ResourceLaunchHold) => {
-  if (because.kind === "stopped-by") {
-    return [`stopped by ${because.by}`, "this session starts without it"];
-  }
-  return because.reason === "needs-newer-sealant"
-    ? [BLOCKED[because.reason], `this session can run its own [service.${def.name}]`]
+/**
+ * What every start of `@name` answers while this runtime's Sealant runs no resources: a launch, a
+ * `mend resource start` and a recipe's `depends` on it all say this sentence, from here.
+ */
+export const resourceRuntimeRefusal = (name: string): string =>
+  `@${name} · ${BLOCKED["needs-newer-sealant"]} · this session can run its own [service.${name}]`;
+
+const launchParts = (because: ResourceLaunchHold) =>
+  because.kind === "stopped-by"
+    ? [`stopped by ${because.by}`, "this session starts without it"]
     : ["blocked", BLOCKED[because.reason], "this session starts without it"];
-};
 
 /**
  * The one status line every client shows for a resource (ADR 0019, decision S5): what was
@@ -301,14 +323,21 @@ export const resourceStatusLine = (
   view: ResourceStatusView,
   at: { readonly now: Date; readonly timeZone: string },
 ): string => {
-  const clock = clockIn(at.now, at.timeZone);
   const def = view.definition;
+  if (
+    view.kind === "launched-without" &&
+    view.because.kind === "blocked" &&
+    view.because.reason === "needs-newer-sealant"
+  ) {
+    return resourceRuntimeRefusal(def.name);
+  }
+  const clock = clockIn(at.now, at.timeZone);
   const parts = ((): ReadonlyArray<string> => {
     switch (view.kind) {
       case "launched-without":
-        return launchParts(def, view.because);
+        return launchParts(view.because);
       case "declared":
-        return [engineOf(def), def.scope, ...declarationParts(view.source)];
+        return [engineOf(def), def.scope, ...declarationParts(def, view.source)];
       case "switched":
         return [
           ...choiceParts(def, view.use, clock),

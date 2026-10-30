@@ -135,7 +135,7 @@ export interface ResourceDefinition {
   readonly scope: "project" | "worktree";
   readonly preset: "postgres" | "redis" | "mysql" | null; // null for any other image
   readonly image: ImageRef; // resolved to a digest when approved
-  readonly command: readonly string[] | null; // null keeps the image's entrypoint
+  readonly command: readonly string[] | null; // replaces the image's CMD; its entrypoint always runs
   readonly ports: readonly ResourcePort[]; // { name, port, protocol: "tcp" | "udp" }
   readonly env: readonly ResourceEnv[]; // literal values or project secret references
   readonly volumes: readonly ResourceVolume[]; // { name, mountPath }

@@ -10,7 +10,7 @@ import {
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { ProjectRemovalFenceId } from "@mend/domain";
-import { ResourceDefinitionInput } from "@mend/domain/workbench";
+import { ResourceDefinitionInput, withPresetCommand } from "@mend/domain/workbench";
 import { Effect, Layer, ManagedRuntime, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterEach, describe, expect, it } from "vitest";
@@ -182,18 +182,20 @@ describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () =>
     firstAtStore.end("fails");
     expect((await first)?.status).toBe(500);
 
-    const spec = Schema.decodeUnknownSync(ResourceDefinitionInput)({
-      name: "db",
-      scope: "project",
-      preset: "postgres",
-      image: "postgres:17",
-      command: null,
-      ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
-      env: {},
-      volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
-      ready: { kind: "preset" },
-      exports: {},
-    });
+    const spec = withPresetCommand(
+      Schema.decodeUnknownSync(ResourceDefinitionInput)({
+        name: "db",
+        scope: "project",
+        preset: "postgres",
+        image: "postgres:17",
+        command: null,
+        ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
+        env: {},
+        volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
+        ready: { kind: "preset" },
+        exports: {},
+      }),
+    );
     const declared = await runtime.runPromise(
       resources.declare(project, spec, "alice").pipe(Effect.result),
     );

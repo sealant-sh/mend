@@ -5,6 +5,7 @@ import * as path from "node:path";
 import {
   recipeRefusalLine,
   RepoRelativePath,
+  resourceRuntimeRefusal,
   ServiceRecipe,
   SetupDeclaration,
   setupRefusalsOf,
@@ -249,14 +250,19 @@ ready = { http = "/" }
     ]);
   });
 
-  it("refuses the reserved shared-service forms, word for word", () => {
+  it("refuses a dependency on a resource in the words a start of it says", () => {
     const file = parse(
       [...WEB, 'depends = ["@db", { shared = "cache" }, { resource = "queue" }]'].join("\n"),
     );
     expect(file.refused.map((refusal) => refusal.message)).toEqual([
-      "@db · shared services are not available yet",
-      "@cache · shared services are not available yet",
-      "@queue · shared services are not available yet",
+      "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+      "@cache · resources need a newer Sealant on this runtime · this session can run its own [service.cache]",
+      "@queue · resources need a newer Sealant on this runtime · this session can run its own [service.queue]",
+    ]);
+    expect(file.refused.map((refusal) => refusal.message)).toEqual([
+      resourceRuntimeRefusal("db"),
+      resourceRuntimeRefusal("cache"),
+      resourceRuntimeRefusal("queue"),
     ]);
     expect(file.refused.every((refusal) => refusal.key === "depends")).toBe(true);
   });

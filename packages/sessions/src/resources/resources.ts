@@ -12,6 +12,7 @@ import type { ProjectId, ResourceProposalId, SessionId, WorktreeId } from "@mend
 import {
   PRESET_VERSION_RULE,
   presetDefinition,
+  withPresetCommand,
   PresetVersion,
   type ProjectTenancy,
   type ResourceAct,
@@ -370,7 +371,8 @@ export const ResourcesLive: Layer.Layer<
     ) {
       const actor: ResourceActor = { kind: "person", viewer };
       yield* decide(project, actor, { kind: "propose" });
-      const spec = input.kind === "preset" ? yield* presetSpec(input) : input.spec;
+      const spec =
+        input.kind === "preset" ? yield* presetSpec(input) : withPresetCommand(input.spec);
       const proposal = yield* repo.propose(project.id, spec, viewer.userId);
       const held = yield* repo.byName(project.id, spec.name);
       const nameOf = yield* namesOf([proposal.proposedBy]);

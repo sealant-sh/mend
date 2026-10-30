@@ -7,6 +7,7 @@ import {
   RESOURCE_PROPOSALS_HEADING,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
+  withPresetCommand,
   type ResourceEnvValue,
   ResourceLimits,
   resourceNameIssue,
@@ -367,14 +368,15 @@ const readResource = (
     context.refuse("", "is not a resource definition Mend can read");
     return null;
   }
-  const reported = resourceDefinitionRefusals(decoded.value).filter((refusal) => {
+  const def = withPresetCommand(decoded.value);
+  const reported = resourceDefinitionRefusals(def).filter((refusal) => {
     const reads = READS[refusal.key.split(".")[0] ?? refusal.key];
     return reads === undefined
       ? refusedFields.size === 0
       : !reads.some((field) => refusedFields.has(field));
   });
   for (const refusal of reported) context.refuse(refusal.key, refusal.message);
-  return refusedFields.size === 0 && reported.length === 0 ? decoded.value : null;
+  return refusedFields.size === 0 && reported.length === 0 ? def : null;
 };
 
 /** The key a collision refuses: the export that sets the name, else the table. */

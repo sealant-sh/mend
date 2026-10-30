@@ -12,6 +12,7 @@ import {
   imageDigestOf,
   imageReference,
   onlyOfItsEngine,
+  parseImageReference,
   pinImage,
   presetDefinition,
   PresetVersion,
@@ -25,6 +26,7 @@ import {
   resourceSpecDigest,
   secretEnvNames,
   selectionRefusal,
+  withPresetCommand,
   WorktreeSelection,
 } from "./resource.ts";
 
@@ -46,37 +48,43 @@ const define = (overrides: Record<string, unknown> = {}): ResourceDefinitionInpu
   });
 
 const postgres = (overrides: Record<string, unknown> = {}) =>
-  define({
-    name: "db",
-    preset: "postgres",
-    image: "postgres:17",
-    ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
-    volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
-    ready: { kind: "preset" },
-    ...overrides,
-  });
+  withPresetCommand(
+    define({
+      name: "db",
+      preset: "postgres",
+      image: "postgres:17",
+      ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
+      volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
+      ready: { kind: "preset" },
+      ...overrides,
+    }),
+  );
 
 const mysql = (overrides: Record<string, unknown> = {}) =>
-  define({
-    name: "db",
-    preset: "mysql",
-    image: "mysql:8.4",
-    ports: [{ name: "mysql", port: 3306, protocol: "tcp" }],
-    volumes: [{ name: "data", mountPath: "/var/lib/mysql" }],
-    ready: { kind: "preset" },
-    ...overrides,
-  });
+  withPresetCommand(
+    define({
+      name: "db",
+      preset: "mysql",
+      image: "mysql:8.4",
+      ports: [{ name: "mysql", port: 3306, protocol: "tcp" }],
+      volumes: [{ name: "data", mountPath: "/var/lib/mysql" }],
+      ready: { kind: "preset" },
+      ...overrides,
+    }),
+  );
 
 const redis = (overrides: Record<string, unknown> = {}) =>
-  define({
-    name: "cache",
-    preset: "redis",
-    image: "redis:8",
-    ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
-    volumes: [{ name: "data", mountPath: "/data" }],
-    ready: { kind: "preset" },
-    ...overrides,
-  });
+  withPresetCommand(
+    define({
+      name: "cache",
+      preset: "redis",
+      image: "redis:8",
+      ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
+      volumes: [{ name: "data", mountPath: "/data" }],
+      ready: { kind: "preset" },
+      ...overrides,
+    }),
+  );
 
 describe("resource names", () => {
   it.each(["db", "queue", "mail-catcher", "a", "a2", `a${"b".repeat(30)}`])(
@@ -624,6 +632,29 @@ describe("an image pinned to its digest", () => {
   });
 });
 
+describe("an image reference's parts", () => {
+  it.each([
+    ["postgres:17", { host: null, repository: "postgres", tag: "17", digest: null }],
+    [
+      "docker.io/library/postgres:17",
+      { host: "docker.io", repository: "library/postgres", tag: "17", digest: null },
+    ],
+    [
+      "mirror.example:5000/library/postgres",
+      { host: "mirror.example:5000", repository: "library/postgres", tag: null, digest: null },
+    ],
+    ["localhost/acme/app:1", { host: "localhost", repository: "acme/app", tag: "1", digest: null }],
+    ["[::1]:5000/mail:v1", { host: "[::1]:5000", repository: "mail", tag: "v1", digest: null }],
+    ["localhost:5000", { host: null, repository: "localhost", tag: "5000", digest: null }],
+    [
+      `ghcr.io/acme/mail:v1@sha256:${"a".repeat(64)}`,
+      { host: "ghcr.io", repository: "acme/mail", tag: "v1", digest: `sha256:${"a".repeat(64)}` },
+    ],
+  ])("reads %s as its host, repository, tag and digest", (image, parts) => {
+    expect(parseImageReference(image)).toEqual(parts);
+  });
+});
+
 describe("a definition's digest", () => {
   it("is the sha256 of its JSON with sorted keys and no whitespace, limits defaulted", () => {
     const spec = define({ env: { B: "2", A: { secret: "TOKEN" } } });
@@ -712,6 +743,52 @@ describe("a preset's definition", () => {
     });
     expect(db.volumes).toEqual([{ name: "data", mountPath: "/var/lib/postgresql" }]);
     expect(db.scope).toBe("worktree");
+  });
+
+  it.each([
+    ["postgres", "17", ["-c", "fsync=on", "-c", "synchronous_commit=on"]],
+    ["mysql", "8.4", ["--innodb-flush-log-at-trx-commit=1"]],
+    [
+      "redis",
+      "8",
+      ["--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"],
+    ],
+  ] as const)(
+    "runs %s with its durable engine settings as flags, which every image of the preset hands to its own server, inside the approved digest",
+    (preset, version, command) => {
+      const input = {
+        name: ResourceName.make("db"),
+        preset,
+        version: PresetVersion.make(version),
+        scope: "project",
+      } as const;
+      const def = presetDefinition(input);
+      expect(def.command).toEqual(command);
+      expect(resourceSpecDigest(def)).not.toBe(resourceSpecDigest({ ...def, command: null }));
+    },
+  );
+
+  it("gives a preset definition that names no command its engine settings, so a table and --preset propose one spec", () => {
+    const declared = presetDefinition({
+      name: ResourceName.make("cache"),
+      preset: "redis",
+      version: PresetVersion.make("8"),
+      scope: "project",
+    });
+    const table = withPresetCommand({ ...declared, command: null });
+    expect(resourceSpecDigest(table)).toBe(resourceSpecDigest(declared));
+    expect(withPresetCommand(define()).command).toBeNull();
+  });
+
+  it("refuses a preset definition whose command is not its engine settings, by key", () => {
+    const fixed = {
+      key: "command",
+      message:
+        "is fixed by the redis preset to --appendonly yes --appendfsync always --maxmemory-policy noeviction",
+    };
+    expect(resourceDefinitionRefusals(redis({ command: ["--appendonly", "no"] }))).toEqual([fixed]);
+    expect(resourceDefinitionRefusals({ ...redis(), command: null })).toEqual([fixed]);
+    expect(resourceDefinitionRefusals(redis())).toEqual([]);
   });
 });
 
