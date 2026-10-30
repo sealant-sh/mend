@@ -5,9 +5,18 @@ import { fileURLToPath } from "node:url";
 import type { ForwardBytes, ForwardRead } from "@mend/sealant";
 import { Effect } from "effect";
 
-const IMAGE = "mend-hand-xvnc:local";
 const CONTEXT = fileURLToPath(new URL("fixtures/rfb", import.meta.url));
+const IMAGES = { xvnc: "mend-hand-xvnc:local", screen: "mend-screen-script:local" } as const;
 export const XVNC_PASSWORD = "handpass";
+
+/** Builds a stage of the fixtures' Dockerfile, a cache hit once the global setup built it. */
+export const fixtureImage = (target: keyof typeof IMAGES): string => {
+  execFileSync("docker", ["build", "-q", "--target", target, "-t", IMAGES[target], CONTEXT], {
+    stdio: "ignore",
+    timeout: 600_000,
+  });
+  return IMAGES[target];
+};
 
 export const dockerReady = (() => {
   try {
@@ -32,15 +41,12 @@ export interface Xvnc {
 
 /** TigerVNC Xvnc at 1280x800 with VncAuth, in a container called `name`, removed by that name. */
 export const startXvnc = (name: string): Xvnc => {
-  execFileSync("docker", ["build", "-q", "--target", "xvnc", "-t", IMAGE, CONTEXT], {
-    stdio: "ignore",
-    timeout: 600_000,
-  });
+  const image = fixtureImage("xvnc");
   const xvnc = [
     `printf '%s\\n' ${XVNC_PASSWORD} | vncpasswd -f > /tmp/passwd`,
     "exec Xvnc :0 -geometry 1280x800 -depth 24 -SecurityTypes VncAuth -PasswordFile /tmp/passwd -rfbport 5900 -SendCutText=0 -nolisten tcp",
   ].join(" && ");
-  docker("run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::5900", IMAGE, "sh", "-c", xvnc);
+  docker("run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::5900", image, "sh", "-c", xvnc);
   const remove = () => void execFileSync("docker", ["rm", "-f", name], { stdio: "ignore" });
   try {
     const port = Number(docker("port", name, "5900").trim().split(":").at(-1));

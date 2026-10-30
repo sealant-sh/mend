@@ -1,19 +1,16 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 
 import { DisplayNumber } from "@mend/domain/workbench";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 
-import { connectInside, dockerReady } from "../../test/xvnc.ts";
+import { connectInside, dockerReady, fixtureImage } from "../../test/xvnc.ts";
 import { planActions } from "./hand-steps.ts";
 import { openHand } from "./hand.ts";
 import { SCREEN_WORKER, screenWorkersLayer } from "./screen-workers.ts";
 import { screenArgv, screenPort, screenReapArgv, screenReportOf } from "./script.ts";
 
-const IMAGE = "mend-screen-script:local";
-const CONTEXT = fileURLToPath(new URL("../../test/fixtures/rfb", import.meta.url));
 const FULL = "fullpass";
 const VIEW_ONLY = "viewpass";
 const RUNTIME = "/run/user/40001";
@@ -118,10 +115,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
   };
 
   beforeAll(() => {
-    execFileSync("docker", ["build", "-q", "--target", "screen", "-t", IMAGE, CONTEXT], {
-      stdio: "ignore",
-      timeout: 600_000,
-    });
+    const image = fixtureImage("screen");
     docker(
       "run",
       "-d",
@@ -130,7 +124,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
       "none",
       "--name",
       container,
-      IMAGE,
+      image,
       "sleep",
       "infinity",
     );
