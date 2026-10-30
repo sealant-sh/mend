@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+import { gitAuthorIssue, normalizeGitAuthor } from "./git-author.ts";
+
 /** The stored name rule shared with adoption. */
 export const PROJECT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const ProjectName = Schema.String.pipe(
@@ -50,11 +52,17 @@ export interface FirstCommit {
   readonly at: Date;
 }
 
-/** Author of a first commit: the person's Git author, the email's local part for an empty name. */
+/**
+ * Author of a first commit: the person's Git author, or the email's local part for a name git
+ * would refuse or rewrite (empty, `<`, `>`, a line break, too long).
+ */
 export const firstCommitAuthor = (author: {
   readonly name: string;
   readonly email: string;
 }): FirstCommit["author"] => {
-  const email = author.email.trim();
-  return { name: author.name.trim() || (email.split("@")[0] ?? ""), email };
+  const { name, email } = normalizeGitAuthor(author);
+  return {
+    name: gitAuthorIssue({ name, email }) === null ? name : (email.split("@")[0] ?? ""),
+    email,
+  };
 };

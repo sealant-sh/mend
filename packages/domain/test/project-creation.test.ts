@@ -74,4 +74,13 @@ describe("project creation names", () => {
       email: "Cleo.Q+mend@example.com",
     });
   });
+  it.each(["Jane <Team>", "<>", "Jane\nDoe", "x".repeat(201)])(
+    "authors as the email's local part when git cannot store the name %j as it is",
+    (name) => {
+      expect(firstCommitAuthor({ name, email: "jane.doe@example.com" })).toEqual({
+        name: "jane.doe",
+        email: "jane.doe@example.com",
+      });
+    },
+  );
 });

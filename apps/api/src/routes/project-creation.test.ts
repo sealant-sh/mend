@@ -147,6 +147,25 @@ describe("private project creation over HTTP", () => {
     }
   });
 
+  it("authors as the email's local part when the account name is not one git stores as it is", async () => {
+    const f = await fixture();
+    try {
+      f.setAuthor(null);
+      for (const [name, project] of [
+        ["Jane <Team>", "angled"],
+        ["<>", "bracketed"],
+      ] as const) {
+        f.profile.name = name;
+        const created = await create(f.api, project);
+        expect(await git(created.storePath, "log", "--format=%an|%ae|%cn|%ce")).toBe(
+          "alice|alice@example.invalid|alice|alice@example.invalid",
+        );
+      }
+    } finally {
+      await f.dispose();
+    }
+  });
+
   it("keeps scratch fixed after account rename and author changes, and never reuses an ordinary scratch-prefixed project", async () => {
     const f = await fixture();
     try {
