@@ -12,7 +12,12 @@ describe("mend service run <name> with no recipe to run", () => {
             key: "cwd",
             message: "is absolute; name a path inside the repository",
           },
-          { name: "web", key: "depends", message: "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]" },
+          {
+            name: "web",
+            key: "depends",
+            message:
+              "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+          },
           { name: "api", key: "port", message: "must be a port in 1..65535" },
         ],
         ignored: [],

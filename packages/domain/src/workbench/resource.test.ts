@@ -730,17 +730,20 @@ describe("a preset's definition", () => {
         "noeviction",
       ],
     ],
-  ] as const)("runs %s with its durable engine settings, inside the approved digest", (preset, version, command) => {
-    const input = {
-      name: ResourceName.make("db"),
-      preset,
-      version: PresetVersion.make(version),
-      scope: "project",
-    } as const;
-    const def = presetDefinition(input);
-    expect(def.command).toEqual(command);
-    expect(resourceSpecDigest(def)).not.toBe(resourceSpecDigest({ ...def, command: null }));
-  });
+  ] as const)(
+    "runs %s with its durable engine settings, inside the approved digest",
+    (preset, version, command) => {
+      const input = {
+        name: ResourceName.make("db"),
+        preset,
+        version: PresetVersion.make(version),
+        scope: "project",
+      } as const;
+      const def = presetDefinition(input);
+      expect(def.command).toEqual(command);
+      expect(resourceSpecDigest(def)).not.toBe(resourceSpecDigest({ ...def, command: null }));
+    },
+  );
 });
 
 describe("a definition's free text and image", () => {

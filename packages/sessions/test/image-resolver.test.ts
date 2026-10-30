@@ -15,7 +15,12 @@ import {
 const INDEX_TYPE = "application/vnd.oci.image.index.v1+json";
 const index = (tag: string) =>
   Buffer.from(
-    JSON.stringify({ schemaVersion: 2, mediaType: INDEX_TYPE, manifests: [], annotations: { tag } }),
+    JSON.stringify({
+      schemaVersion: 2,
+      mediaType: INDEX_TYPE,
+      manifests: [],
+      annotations: { tag },
+    }),
   );
 const digestOf = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
@@ -77,6 +82,9 @@ const resolveWith = (access: Partial<RegistryAccess>, image: string) =>
     ),
   );
 
+const refusalLine = (reason: ImageResolutionError["reason"]) =>
+  imageRefusalLine("db", new ImageResolutionError({ image: "postgres:17", reason }));
+
 const failureOf = (result: Result.Result<unknown, ImageResolutionError>) =>
   Result.isFailure(result) ? result.failure.reason : "resolved";
 
@@ -85,16 +93,17 @@ describe("pinning a resource's image through the registry API", () => {
     const bytes = index("17");
     const mirror = await registry(serve(bytes, { "docker-content-digest": digestOf(bytes) }));
     const result = await resolveWith({ mirrors: [new URL(mirror.origin)] }, "postgres:17");
-    expect(result).toEqual(
-      Result.succeed({ digest: digestOf(bytes), resolvedBy: mirror.host }),
-    );
+    expect(result).toEqual(Result.succeed({ digest: digestOf(bytes), resolvedBy: mirror.host }));
     expect(mirror.seen.map((each) => each.url)).toEqual(["/v2/library/postgres/manifests/17"]);
   });
 
   it("answers an image pinned by digest with that digest, asking no registry", async () => {
     const mirror = await registry(serve(index("17")));
     const pinned = `sha256:${"b".repeat(64)}`;
-    const result = await resolveWith({ mirrors: [new URL(mirror.origin)] }, `postgres:17@${pinned}`);
+    const result = await resolveWith(
+      { mirrors: [new URL(mirror.origin)] },
+      `postgres:17@${pinned}`,
+    );
     expect(result).toEqual(Result.succeed({ digest: pinned, resolvedBy: null }));
     expect(mirror.seen).toEqual([]);
   });
@@ -206,7 +215,10 @@ describe("pinning a resource's image through the registry API", () => {
   });
 
   it.each([
-    ["to plain HTTP off the mirror", (other: string) => `${other}/v2/library/postgres/manifests/17`],
+    [
+      "to plain HTTP off the mirror",
+      (other: string) => `${other}/v2/library/postgres/manifests/17`,
+    ],
     ["to a name on a private address", () => "https://registry.internal/v2/x/manifests/17"],
     ["to a private address", () => "https://10.0.0.5/v2/x/manifests/17"],
   ])("refuses a redirect %s, dialing nothing there", async (_, target) => {
@@ -242,19 +254,19 @@ describe("pinning a resource's image through the registry API", () => {
   });
 
   it("says each failure in words that end in not approved", () => {
-    const line = (reason: ImageResolutionError["reason"]) =>
-      imageRefusalLine("db", new ImageResolutionError({ image: "postgres:17", reason }));
-    expect(line("not-found")).toBe("@db · image postgres:17 · not found in the registry · not approved");
-    expect(line("login-required")).toBe(
+    expect(refusalLine("not-found")).toBe(
+      "@db · image postgres:17 · not found in the registry · not approved",
+    );
+    expect(refusalLine("login-required")).toBe(
       "@db · image postgres:17 · registry needs a login · ask the operator · not approved",
     );
-    expect(line("registry-refused")).toBe(
+    expect(refusalLine("registry-refused")).toBe(
       "@db · image postgres:17 · registry is not allowed on this instance · not approved",
     );
-    expect(line("unavailable")).toBe(
+    expect(refusalLine("unavailable")).toBe(
       "@db · image postgres:17 · registry did not answer · try approval again · not approved",
     );
-    expect(line("unverifiable")).toBe(
+    expect(refusalLine("unverifiable")).toBe(
       "@db · image postgres:17 · registry returned an unverifiable manifest · not approved",
     );
   });
