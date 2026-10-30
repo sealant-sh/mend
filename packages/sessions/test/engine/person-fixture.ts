@@ -43,8 +43,8 @@ export const personPlatform = (
   },
   /** Each person's own login for a provider, as Core says it stands; `active` unless said. */
   logins?: (accountId: string) => PersonLogin,
-  /** A login write Core does not complete (it did not answer). */
-  postFails?: (onBehalfOf: string, home: string) => boolean,
+  /** A login write Core does not complete: it did not answer (`true`), or it refused with this. */
+  postFails?: (onBehalfOf: string, home: string) => boolean | SealantPlatformError,
   /** What the control plane says of itself, asked each time; it can run per person unless said. */
   controlPlane?: () => string | null,
   /** Core runs a workspace's SSH sessions as a user (`features.workspaceSshUser`); yes unless said. */
@@ -87,7 +87,9 @@ export const personPlatform = (
     postCredentials: (_workspace, input) =>
       Effect.suspend(() => {
         calls.push(`post:${input.onBehalfOf}:${input.home}`);
-        return postFails?.(input.onBehalfOf, input.home) === true
+        const failed = postFails?.(input.onBehalfOf, input.home) ?? false;
+        if (failed instanceof SealantPlatformError) return Effect.fail(failed);
+        return failed
           ? Effect.fail(
               new SealantPlatformError({
                 code: "control_plane_unavailable",

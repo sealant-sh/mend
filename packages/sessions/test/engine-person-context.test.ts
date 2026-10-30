@@ -1562,6 +1562,126 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(summary).not.toContain(words);
   });
 
+  it("withholds the platform's own words when the layout's fallback after the create fails (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    // The workspace cannot run processes as each person after all, and Core refuses to take the
+    // launcher's create-time logins back out of their home on the way to the shared layout.
+    const platform = Layer.effect(
+      PersonLayoutPlatform,
+      Effect.map(PersonLayoutPlatform, (inner) => ({
+        ...inner,
+        workspaceProcessUser: () => Effect.succeed("unsupported" as const),
+        deleteCredentials: () =>
+          Effect.fail(toPlatformError(new SealantApiError(`release: ${words}`, { status: 500 }))),
+      })),
+    ).pipe(Layer.provide(personPlatform([], { person: true })));
+    const created: Array<CreateOptions> = [];
+    const result = await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "layout",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
+          const row = world.sessions.get(session.id);
+          return { launched, status: row?.status, summary: row?.summary ?? null };
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        harnessLayout: { flag: "person", platform },
+      },
+    );
+    expect(created).toHaveLength(1);
+    expect(Exit.isFailure(result.launched)).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.summary).toMatch(/^launch failed: internal error · reference [0-9a-f]{16}$/);
+    expect(result.summary).not.toContain(words);
+  });
+
+  it("withholds Core's words from the line of a join whose login write it refused, and keeps Mend's (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    const platform = Layer.effect(
+      PersonLayoutPlatform,
+      Effect.map(PersonLayoutPlatform, (inner) => ({
+        ...inner,
+        postCredentials: (
+          workspace: Workspace,
+          input: Parameters<typeof inner.postCredentials>[1],
+        ) =>
+          input.onBehalfOf === MARIA
+            ? Effect.fail(toPlatformError(new SealantApiError(`write: ${words}`, { status: 500 })))
+            : inner.postCredentials(workspace, input),
+      })),
+    ).pipe(Layer.provide(personPlatform([], { person: true })));
+    const summary = await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(holder.id, ["claude"]);
+          const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          yield* engine.launch(joined.id, ["claude"]).pipe(Effect.exit);
+          return world.sessions.get(joined.id)?.summary ?? null;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        harnessLayout: { flag: "person", platform },
+      },
+    );
+    expect(summary).not.toContain(words);
+    expect(summary).toMatch(
+      /^resume failed: .*'s logins could not be written into this workspace.* · reference [0-9a-f]{16}$/,
+    );
+  });
+
   it("takes another person's turn onto the conversation in a person executor, on their own login (Delivery 18)", async () => {
     const authors: Array<string | null> = [];
     const submitted: Array<string> = [];

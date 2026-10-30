@@ -26,6 +26,7 @@ import {
   type PersonSessionOptions,
   SealantClient,
   SealantPlatformError,
+  toPlatformError,
 } from "@mend/sealant";
 import {
   NoLiveAgent,
@@ -36,7 +37,12 @@ import {
   WorkspaceHostUserNamespaces,
 } from "@mend/sessions";
 import { it } from "@mend/test-ci/effect-vitest";
-import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
+import {
+  type CreateOptions,
+  SealantApiError,
+  type SessionOptions,
+  type Workspace,
+} from "@sealant/sdk";
 import { Deferred, Effect, Fiber, Layer, Queue } from "effect";
 import { describe, expect } from "vitest";
 
@@ -1749,7 +1755,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
    */
   const handOverToMaria = (options: {
     readonly logins?: (accountId: string) => PersonLogin;
-    readonly postFails?: (onBehalfOf: string, home: string) => boolean;
+    readonly postFails?: (onBehalfOf: string, home: string) => boolean | SealantPlatformError;
     /** What the host says at the stop (review 2 of mend#572, P2-2). */
     readonly stillQuiescent?: Effect.Effect<boolean>;
     /** Maria's next turn asks for the conversation again at once (review 2, P3-3). */
@@ -2054,10 +2060,22 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             onBehalfOf === MARIA && home.startsWith("/run/mend/conv/"),
           again: true,
         });
-        expect(backoff.second?.message).toMatch(
-          /^The last hand-over of this conversation failed less than a minute ago(?: \(reference [0-9a-f]{16}\))?, so this turn was not started and nothing was stopped\. Send it again in a minute\.$/,
+        // Its failure was said on the turn, so there is no reference to name.
+        expect(backoff.second?.message).toBe(
+          "The last hand-over of this conversation failed less than a minute ago, so this turn was not started and nothing was stopped. Send it again in a minute.",
         );
-        expect(backoff.second?.message).not.toContain("Core did not answer");
+        const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+        const withheld = yield* handOverToMaria({
+          postFails: (onBehalfOf, home) =>
+            onBehalfOf === MARIA &&
+            home.startsWith("/run/mend/conv/") &&
+            toPlatformError(new SealantApiError(words, { status: 500 })),
+          again: true,
+        });
+        expect(withheld.second?.message).toMatch(
+          /^The last hand-over of this conversation failed less than a minute ago \(reference [0-9a-f]{16}\), so this turn was not started and nothing was stopped\. Send it again in a minute\.$/,
+        );
+        expect(withheld.failed.map((failed) => failed.words).join(" ")).not.toContain(words);
         expect(backoff.stops).toHaveLength(backoff.stopsBeforeSecond);
         // Every write into the home after the owner's first fails: Maria's, then Alice's restart.
         let intoHome = 0;

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { SessionProcessId } from "@mend/domain";
+import { lineFailureOf, SessionProcessId } from "@mend/domain";
 import { AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
@@ -13,7 +13,7 @@ import {
 } from "@mend/sessions";
 import { harnessHomePathOf, processStatePathOf } from "@mend/store";
 import type { CreateOptions, InteractiveSessionStatus } from "@sealant/sdk";
-import { Deferred, Effect, Fiber, Layer, Result, Stream } from "effect";
+import { Cause, Deferred, Effect, Fiber, Layer, Result, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
@@ -764,6 +764,13 @@ describe("a mode switch to the terminal continues the conversation it checked (S
       expect(refusal instanceof SealantPlatformError ? refusal.message : "").toContain(
         "nothing was stopped",
       );
+      // Mend's own sentence, said on a line (SLNT-385).
+      expect(lineFailureOf(Cause.fail(refusal))).toMatchObject({
+        _tag: "Said",
+        words: expect.stringMatching(
+          /^Mend could not read the conversation's saved state \(Could not read the claude transcript of session [^)]+\) · nothing was stopped · try again$/,
+        ),
+      });
       expect.soft(run.detached).toEqual([]);
       expect.soft(run.closes).toEqual([]);
       expect.soft(after).toEqual(before);

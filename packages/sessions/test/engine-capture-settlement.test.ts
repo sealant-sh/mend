@@ -13,7 +13,9 @@ import {
 } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
+  SealantClient,
   SealantPlatformError,
+  toPlatformError,
   type WorkspaceStopOptions,
 } from "@mend/sealant";
 import {
@@ -27,11 +29,12 @@ import {
 import { BlobStoreFsLive, captureKeys, sha256Hex } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type {
-  CreateOptions,
-  InteractiveSessionStatus,
-  WorkspaceCaptureDrain,
-  WorkspaceCaptureStatus,
+import {
+  type CreateOptions,
+  type InteractiveSessionStatus,
+  SealantApiError,
+  type WorkspaceCaptureDrain,
+  type WorkspaceCaptureStatus,
 } from "@sealant/sdk";
 import { Clock, Deferred, Duration, Effect, Fiber, Layer, Option, Queue } from "effect";
 import { describe, expect } from "vitest";
@@ -2799,6 +2802,73 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               expect(created).toHaveLength(1);
             }),
           { captured: memory, fixture: observed.fixture, sealantLayer: lifecycleLayer(created) },
+        );
+      }),
+    { timeout: 30_000 },
+  );
+
+  it.effect(
+    "#9 a planned launch the platform refuses in its own words keeps them off the session line (SLNT-385)",
+    () =>
+      Effect.gen(function* () {
+        const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const observed = yield* observedWorld;
+        let refusing = false;
+        const refused = () =>
+          Effect.fail(toPlatformError(new SealantApiError(words, { status: 500 })));
+        const refusingLayer = Layer.effect(
+          SealantClient,
+          Effect.map(SealantClient, (inner) => ({
+            ...inner,
+            createWorkspace: (...args: Parameters<typeof inner.createWorkspace>) =>
+              refusing ? refused() : inner.createWorkspace(...args),
+          })),
+        ).pipe(Layer.provide(lifecycleLayer(created)));
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const process = [...world.processes.values()].find((p) => p.sessionId === session.id);
+              if (process === undefined) throw new Error("missing process");
+              world.processes.set(
+                process.id,
+                new SessionProcess({
+                  ...process,
+                  kind: "agent-protocol",
+                  launchCorrelationId: "slnt-385-refused",
+                  exitedAt: new Date(),
+                }),
+              );
+              world.relaunches.set(
+                session.id,
+                JSON.stringify({
+                  kind: "launch",
+                  argv: ["codex"],
+                  launchCorrelationId: "slnt-385-refused",
+                  start: { mode: "protocol", prompt: "keep me" },
+                  author: "user-fixture",
+                  resumeId: null,
+                }),
+              );
+              refusing = true;
+              yield* engine.reapCaptureLeases();
+              yield* observed.untilChanged(
+                () =>
+                  world.sessions
+                    .get(session.id)
+                    ?.summary?.startsWith("opening prompt not delivered · the launch failed") ===
+                  true,
+                "the retained plan's words",
+              );
+              const summary = world.sessions.get(session.id)?.summary ?? "";
+              expect(summary).not.toContain(words);
+              expect(summary).toMatch(/ · reference [0-9a-f]{16}$/);
+            }),
+          { captured: memory, fixture: observed.fixture, sealantLayer: refusingLayer },
         );
       }),
     { timeout: 30_000 },

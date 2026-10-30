@@ -1,5 +1,5 @@
 import { lineFailureOf } from "@mend/domain";
-import { type RunChanges, SealantApiError, SealantError } from "@sealant/sdk";
+import { claudeCode, type RunChanges, Sealant, SealantApiError, SealantError } from "@sealant/sdk";
 import { Cause, Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -78,14 +78,21 @@ const lineOf = (error: SealantPlatformError) => lineFailureOf(Cause.fail(error))
 
 describe("toPlatformError's words on a line", () => {
   const WORDS = "Anna is interviewing at Northwind on Friday, keep it quiet";
-  const SOURCE_SELECTION =
-    "workspaces.create requires exactly one of `repository` (a git remote to clone) or `source` (a caller-owned mount).";
 
-  it("says the SDK's fixed source-selection refusal, in Mend's own copy of it", () => {
-    const line = lineOf(
-      toPlatformError(new SealantError(SOURCE_SELECTION, { code: "invalid_create_options" })),
-    );
-    expect(line).toMatchObject({ _tag: "Said", words: SOURCE_SELECTION });
+  it("says the SDK's fixed source-selection refusal, as its own validator throws it", () => {
+    const thrown = (() => {
+      try {
+        new Sealant({ baseUrl: "http://127.0.0.1:9" }).workspaces.imageKey({
+          harness: claudeCode(),
+        });
+        return null;
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(thrown).toBeInstanceOf(SealantError);
+    const words = thrown instanceof Error ? thrown.message : "";
+    expect(lineOf(toPlatformError(thrown))).toMatchObject({ _tag: "Said", words });
   });
 
   it("withholds every other message, the same code's included", () => {
@@ -140,6 +147,16 @@ describe("toPlatformError's words on a line", () => {
     });
     const withheld = toPlatformError(new SealantApiError(WORDS, { status: 500 }));
     expect(lineOf(imageBuildFailure(withheld))._tag).toBe("Withheld");
+  });
+
+  it("withholds a platform error built without reader words, whatever its message holds (SLNT-385)", () => {
+    const error = new SealantPlatformError({
+      code: "secret_files_not_set_aside",
+      status: null,
+      message: `a secret file could not be taken out of it (the home's record: ${WORDS})`,
+      cause: null,
+    });
+    expect(lineOf(error)._tag).toBe("Withheld");
   });
 
   it("says Mend's own words", () => {

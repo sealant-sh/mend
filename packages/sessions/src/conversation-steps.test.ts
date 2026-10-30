@@ -1,6 +1,8 @@
+import { failureReport } from "@mend/domain";
 import { LinuxIdentity } from "@mend/domain/workbench";
-import { type HomeLogins, SealantPlatformError } from "@mend/sealant";
-import { Effect } from "effect";
+import { type HomeLogins, SealantPlatformError, toPlatformError } from "@mend/sealant";
+import { SealantApiError } from "@sealant/sdk";
+import { Cause, Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { execAnswer, fakeWorkspace } from "../test/fake-workspace.ts";
@@ -23,6 +25,7 @@ const harness = (
   options: {
     readonly stage?: string;
     readonly post?: (logins: HomeLogins) => SealantPlatformError | null;
+    readonly release?: () => SealantPlatformError | null;
   } = {},
 ) => {
   const calls: Array<string> = [];
@@ -41,8 +44,10 @@ const harness = (
           return failure === null ? Effect.succeed({ skipped: [] }) : Effect.fail(failure);
         }),
       deleteCredentials: (_workspace, input) =>
-        Effect.sync(() => {
+        Effect.suspend(() => {
           calls.push(`delete:${input.home}`);
+          const failure = options.release?.() ?? null;
+          return failure === null ? Effect.void : Effect.fail(failure);
         }),
     },
     sealant: {
@@ -205,5 +210,21 @@ describe("the hand-over (docs/adr/0016, decision 6)", () => {
     );
     expect(world.calls).toEqual([`delete:${HOME}`]);
     expect(world.steps.holderOf("workspace-1", SESSION)).toBeNull();
+  });
+
+  it("keeps Core's words of a release it refused to the log, and says Mend's own (SLNT-385)", async () => {
+    const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+    let refuse = false;
+    const world = harness({
+      release: () => (refuse ? toPlatformError(new SealantApiError(words, { status: 500 })) : null),
+    });
+    await Effect.runPromise(handOverTo(world, alice, { first: true }));
+    refuse = true;
+    const failed = await Effect.runPromise(Effect.flip(handOverTo(world, bob)));
+    expect(failed.code).toBe("conversation_login_not_released");
+    const report = await Effect.runPromise(failureReport(Cause.fail(failed)));
+    expect(report.words).not.toContain(words);
+    expect(report.words).toMatch(/^The previous sender's login could not be taken out/);
+    expect(report.reference).toMatch(/^[0-9a-f]{16}$/);
   });
 });

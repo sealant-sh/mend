@@ -7,9 +7,9 @@ import {
   SessionProcessId,
 } from "@mend/domain";
 import { AgentItem, AgentTurn, SessionProcess, type TurnPayer } from "@mend/domain/workbench";
-import { SealantPlatformError } from "@mend/sealant";
+import { SealantPlatformError, toPlatformError } from "@mend/sealant";
 import { it } from "@mend/test-ci/effect-vitest";
-import type { InteractiveSession } from "@sealant/sdk";
+import { type InteractiveSession, SealantApiError } from "@sealant/sdk";
 import { Effect, Fiber, Layer } from "effect";
 import { describe, expect } from "vitest";
 
@@ -1097,6 +1097,40 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
           processId: steered.processA.id,
           billedUserId: ALICE,
         });
+        yield* host.detach(steered.processA.id);
+      }).pipe(Effect.scoped, Effect.provide(steered.host));
+    },
+  );
+
+  it.live(
+    "a hand-over the platform refuses before the stop, in words Mend never curated, fails B's waiting turn with a reference to them (SLNT-385)",
+    () => {
+      const steered = steeredWorld("claude");
+      const alice = claudePipe("pipe-a");
+      const words = "Anna is interviewing at Northwind on Friday, keep it quiet";
+      // As the engine's look at the workspace fails, before anything stopped.
+      steered.preparation.during = Effect.fail(
+        toPlatformError(new SealantApiError(words, { status: 500 })),
+      );
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachAs(steered.processA, alice.pipe, steered.hooksFor(ALICE, Effect.void));
+        yield* host.submitTurn(sessionId, "Alice's request", ALICE);
+        yield* waitUntil(
+          () => alice.sent.some((message) => message["type"] === "user"),
+          "Alice's turn sent",
+        );
+        alice.push({ type: "result", subtype: "success" });
+        alice.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+        yield* pause(30);
+        const bobs = yield* host.submitTurn(sessionId, "Bob's request", BOB);
+        yield* waitUntil(
+          () => steered.world.turns.get(bobs.id)?.status === "failed",
+          "Bob's turn refused",
+        );
+        const error = steered.world.turns.get(bobs.id)?.error ?? "";
+        expect(error).not.toContain(words);
+        expect(error).toMatch(/internal error · reference [0-9a-f]{16}$/);
         yield* host.detach(steered.processA.id);
       }).pipe(Effect.scoped, Effect.provide(steered.host));
     },
