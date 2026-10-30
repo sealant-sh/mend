@@ -63,6 +63,13 @@ when that port is free here: `web → http://localhost:5173`. The tunnel closes 
 or when you detach. `--no-tunnel` turns this off. The web app, looking at a remote server, shows
 `mend service connect <name>` where an Open link to the server's loopback would not load.
 
+Where the server serves previews, the web app's Open goes to the worktree's preview of that Service
+instead. The link is `/preview-auth`, which signs you in to the preview's own address, so it never
+depends on where the Service's port is. An https Service, or one Mend adopted without a command,
+keeps its own address, because the preview gateway does not serve it. The preview's status line
+shows under the Service's row (`preview · web · answered HTTP 200 · observed 4 s ago`), and a
+preview that another session of the same worktree runs gets its own row.
+
 ## Declaring
 
 You can declare a Service from three places, and the result is the same:
