@@ -525,3 +525,52 @@ describe.each(["ios", "android"])("a question with Platform.OS %s, on react-nati
     expect(replace).not.toHaveBeenCalled();
   });
 });
+
+const elementWithText = (wanted: string): HTMLElement => {
+  const found = [...document.body.querySelectorAll<HTMLElement>("*")].find(
+    (element) => element.children.length === 0 && element.textContent === wanted,
+  );
+  if (found === undefined) throw new Error(`no ${wanted} on screen`);
+  return found;
+};
+const ancestorsOf = (element: HTMLElement): ReadonlyArray<HTMLElement> => {
+  const found = new Array<HTMLElement>();
+  for (let at = element.parentElement; at !== null; at = at.parentElement) found.push(at);
+  return found;
+};
+
+describe("the pairing's dialog", () => {
+  it("keeps its buttons on screen when the message runs longer than the screen", async () => {
+    await pairByLink("a.example");
+    show(<Questions />);
+    const stops = Array.from({ length: 200 }, (_, index) => `service payroll-${index}`).join("\n");
+    act(() =>
+      askNow()("Replace this workspace now?", stops, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Replace this workspace now", style: "destructive" },
+      ]),
+    );
+
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]');
+    expect(dialog?.style.maxHeight).toBe("100%");
+    const scrolled = ancestorsOf(elementWithText(stops)).find((element) =>
+      ["auto", "scroll"].includes(getComputedStyle(element).overflowY),
+    );
+    expect(scrolled !== undefined && dialog?.contains(scrolled)).toBe(true);
+    expect(scrolled?.contains(elementWithText("Replace this workspace now"))).toBe(false);
+  });
+
+  it("puts nothing focusable around its title, message and buttons, so each is reached on its own", async () => {
+    await pairByLink("a.example");
+    show(<Questions />);
+    askToReplace(() => undefined);
+
+    for (const label of ["Replace this workspace now?", A_PROCESSES, "Cancel"]) {
+      const focusableAround = ancestorsOf(elementWithText(label)).filter(
+        (element) =>
+          element.getAttribute("tabindex") === "0" && element.getAttribute("role") !== "button",
+      );
+      expect(focusableAround).toEqual([]);
+    }
+  });
+});
