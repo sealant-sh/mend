@@ -247,6 +247,11 @@ catalogs:
 overrides:
   '@effect/platform-node@4.0.5>@effect/platform-node-shared': 4.0.5
 
+patchedDependencies:
+  drizzle-orm@1.0.0-rc.5-5935859:
+    hash: a59ece5696df2801eb4fe428eaa8e76dcffb43563820001119ac5e4be53ebcff
+    path: patches/drizzle-orm@1.0.0-rc.5-5935859.patch
+
 importers:
 
   .:
@@ -1237,7 +1242,7 @@ importers:
         version: link:../sealant
       drizzle-orm:
         specifier: 'catalog:'
-        version: 1.0.0-rc.5-5935859(@effect/sql-pg@4.0.5(effect@4.0.5))(@types/pg@8.20.0)(effect@4.0.5)(pg@8.22.0)(zod@4.6.7)
+        version: 1.0.0-rc.5-5935859(patch_hash=a59ece5696df2801eb4fe428eaa8e76dcffb43563820001119ac5e4be53ebcff)(@effect/sql-pg@4.0.5(effect@4.0.5))(@types/pg@8.20.0)(effect@4.0.5)(pg@8.22.0)(zod@4.6.7)
       effect:
         specifier: 'catalog:'
         version: 4.0.5
@@ -19528,7 +19533,7 @@ snapshots:
 
   dotenv@16.6.1: {}
 
-  drizzle-orm@1.0.0-rc.5-5935859(@effect/sql-pg@4.0.5(effect@4.0.5))(@types/pg@8.20.0)(effect@4.0.5)(pg@8.22.0)(zod@4.6.7):
+  drizzle-orm@1.0.0-rc.5-5935859(patch_hash=a59ece5696df2801eb4fe428eaa8e76dcffb43563820001119ac5e4be53ebcff)(@effect/sql-pg@4.0.5(effect@4.0.5))(@types/pg@8.20.0)(effect@4.0.5)(pg@8.22.0)(zod@4.6.7):
     optionalDependencies:
       '@effect/sql-pg': 4.0.5(effect@4.0.5)
       '@types/pg': 8.20.0

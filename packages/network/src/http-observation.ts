@@ -147,7 +147,6 @@ const logObservation = (observation: HttpObservation, cause: Option.Option<strin
 const observed = <E, R>(
   request: HttpServerRequest.HttpServerRequest,
   app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
-  formatCause: (cause: Cause.Cause<unknown>) => string,
 ) =>
   Effect.gen(function* () {
     let route: RouteTemplate = UNROUTED;
@@ -166,7 +165,7 @@ const observed = <E, R>(
             durationMillis: Number(endTime - startTime) / 1_000_000,
           };
           const cause = Option.map(failedCause(exit, observation.outcome), (failed) =>
-            withoutUrlOf(formatCause(failed), request, route),
+            withoutUrlOf(Cause.pretty(failed), request, route),
           );
           return logObservation(observation, cause).pipe(
             Effect.andThen(Effect.sync(() => endSpan(span, observation, endTime))),
@@ -183,23 +182,13 @@ const observed = <E, R>(
     );
   });
 
-interface ObservationOptions {
-  /** How a 5xx's cause is written, before its URL is taken out. `Cause.pretty` by default. */
-  readonly formatCause?: (cause: Cause.Cause<unknown>) => string;
-}
-
-const observeRequests =
-  (options: ObservationOptions) =>
-  <E, R>(
-    app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
-  ): Effect.Effect<
-    HttpServerResponse.HttpServerResponse,
-    E,
-    R | HttpServerRequest.HttpServerRequest
-  > =>
-    Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-      observed(request, app, options.formatCause ?? Cause.pretty),
-    );
+const observeRequests = <E, R>(
+  app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+): Effect.Effect<
+  HttpServerResponse.HttpServerResponse,
+  E,
+  R | HttpServerRequest.HttpServerRequest
+> => Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => observed(request, app));
 
 /** Effect's own server tracer records the URL a client sent; the observation replaces it. */
 const effectTracerOff = Layer.succeed(HttpMiddleware.TracerDisabledWhen)(() => true);
@@ -228,12 +217,12 @@ const observationDefaults = Layer.merge(effectTracerOff, mendCredentialsRedacted
 /** `HttpRouter.serve`, logging and tracing each request by its route's template. */
 export const serveObserved = <A, E, R>(
   appLayer: Layer.Layer<A, E, R>,
-  options: ObservationOptions & { readonly disableListenLog?: boolean } = {},
+  options: { readonly disableListenLog?: boolean } = {},
 ) =>
   HttpRouter.serve(Layer.provide(appLayer, reportsMatchedRoute), {
     disableLogger: true,
     disableListenLog: options.disableListenLog ?? false,
-    middleware: observeRequests(options),
+    middleware: observeRequests,
   }).pipe(Layer.provide(observationDefaults));
 
 /** `HttpRouter.toWebHandler`, logging and tracing each request by its route's template. */
@@ -248,9 +237,8 @@ export const observedWebHandler = <
     | HttpRouter.Request<"GlobalError", unknown>,
 >(
   appLayer: Layer.Layer<A, E, R>,
-  options: ObservationOptions = {},
 ) =>
   HttpRouter.toWebHandler(
     Layer.provide(appLayer, reportsMatchedRoute).pipe(Layer.provideMerge(observationDefaults)),
-    { disableLogger: true, middleware: observeRequests(options) },
+    { disableLogger: true, middleware: observeRequests },
   );
