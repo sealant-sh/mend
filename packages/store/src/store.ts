@@ -1914,6 +1914,14 @@ export class Store extends Context.Service<
         );
       };
 
+      /** Throws when `entry` is missing. A configured root reached through a link is fine. */
+      const linkFreeBelowRoot = (entry: string) =>
+        fs.realpathSync(entry) ===
+        path.join(
+          fs.realpathSync(config.root),
+          path.relative(path.resolve(config.root), path.resolve(entry)),
+        );
+
       const retainedStoreProblem = Effect.fn("Store.retainedStoreProblem")(function* (
         storePath: string,
         directories: ReadonlyArray<string>,
@@ -1922,10 +1930,7 @@ export class Store extends Context.Service<
           const parent = path.dirname(storePath);
           if (!withinStore(parent)) return "The repository is outside Mend's store.";
           try {
-            if (
-              fs.realpathSync(parent) !== path.resolve(parent) ||
-              fs.lstatSync(storePath).isSymbolicLink()
-            )
+            if (!linkFreeBelowRoot(storePath))
               return "The kept repository uses a symbolic link. Its identity needs recovery.";
             if (!fs.statSync(storePath).isDirectory()) return "The kept repository is missing.";
             for (const directory of directories) {
@@ -1933,7 +1938,7 @@ export class Store extends Context.Service<
               const checkout = path.resolve(base, directory);
               if (!checkout.startsWith(`${base}${path.sep}`))
                 return "A kept worktree path is outside its project.";
-              if (fs.realpathSync(checkout) !== checkout || !fs.statSync(checkout).isDirectory())
+              if (!linkFreeBelowRoot(checkout) || !fs.statSync(checkout).isDirectory())
                 return `The kept worktree ${directory} is missing.`;
             }
             return null;
@@ -1955,7 +1960,7 @@ export class Store extends Context.Service<
           const parent = path.dirname(storePath);
           if (!withinStore(parent)) return null;
           try {
-            if (fs.realpathSync(parent) !== path.resolve(parent)) return null;
+            if (!linkFreeBelowRoot(parent)) return null;
             const seen = new Set<string>();
             const bytes = (entry: string): number => {
               const stat = fs.lstatSync(entry);
@@ -1986,7 +1991,7 @@ export class Store extends Context.Service<
           if (!withinStore(parent)) return { leftover: parent };
           if (!fs.existsSync(parent)) return { leftover: null };
           try {
-            if (fs.realpathSync(parent) !== path.resolve(parent)) return { leftover: parent };
+            if (!linkFreeBelowRoot(parent)) return { leftover: parent };
           } catch {
             return { leftover: parent };
           }
