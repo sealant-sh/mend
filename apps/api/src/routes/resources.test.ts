@@ -35,19 +35,28 @@ const postgres = postgresTestConfig();
 const decodeSpec = Schema.decodeUnknownSync(ResourceDefinitionInput);
 const lines = (entries: ReadonlyArray<{ readonly statusLine: string }>) =>
   entries.map((entry) => entry.statusLine);
-/** Each entry's name, its approval and choice when it is a definition, and its flags. */
-type Flags = {
+type Listed = {
   readonly spec: { readonly name: string };
-  readonly approval?: unknown;
+  readonly approvals: {
+    readonly project: { readonly by: string } | null;
+    readonly worktree: { readonly by: string } | null;
+  };
+  readonly approve: { readonly project: unknown; readonly worktree: unknown };
   readonly choice?: unknown;
-  readonly canApprove: boolean;
   readonly canChoose?: boolean;
+  readonly mine?: boolean;
 };
-const flagsOf = (entries: ReadonlyArray<Flags>) =>
-  entries.map(({ spec, approval, choice, canApprove, canChoose }) => ({
+/** Each entry's name, who approved it for which target, the targets it offers, and its flags. */
+const flagsOf = (entries: ReadonlyArray<Listed>) =>
+  entries.map(({ spec, approvals, approve, choice, canChoose, mine }) => ({
     name: spec.name,
-    ...(approval === undefined ? {} : { approval, choice, canChoose }),
-    canApprove,
+    approved: [
+      ...(approvals.project === null ? [] : [`project:${approvals.project.by}`]),
+      ...(approvals.worktree === null ? [] : [`worktree:${approvals.worktree.by}`]),
+    ],
+    offers: (["project", "worktree"] as const).filter((target) => approve[target] !== null),
+    ...(choice === undefined ? {} : { choice, canChoose }),
+    ...(mine === undefined ? {} : { mine }),
   }));
 const shared = ids("shared-a");
 const NAMES: Readonly<Record<string, string>> = { alice: "Alice", carol: "Carol" };
@@ -617,9 +626,9 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
           resolvedBy: "docker-mirror:5000",
           definition: {
             digest: proposal.digest,
-            approval: { by: "alice", for: "project" },
+            approvals: { project: { by: "alice" }, worktree: null },
+            approve: { project: null, worktree: null },
             choice: null,
-            canApprove: true,
             canChoose: false,
             statusLine: "@db · postgres 17 · project · approved by Alice · not started",
           },
@@ -909,39 +918,82 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
           file: body.file.kind === "read" ? flagsOf(body.file.proposals) : body.file.kind,
         };
       };
-      const approved = { by: "alice", for: "project" };
+      const alices = ["project:alice"];
 
-      // A manager approves for the project; a worktree's own acts stay its change owner's.
+      // A manager approves for the project, a worktree-scoped mend.toml table included; a
+      // worktree's own approval and its choice stay its change owner's.
       expect(await flags("alice", CAROL_WORKTREE_IN_SHARED_A)).toEqual({
         settings: [
-          { name: "box", approval: null, choice: null, canChoose: false, canApprove: false },
-          { name: "db", approval: approved, choice: "shared", canChoose: false, canApprove: true },
+          { name: "box", approved: [], offers: ["project"], choice: null, canChoose: false },
+          { name: "db", approved: alices, offers: [], choice: "shared", canChoose: false },
         ],
-        proposals: [{ name: "db", canApprove: true }],
-        file: [{ name: "mail", canApprove: false }],
+        proposals: [{ name: "db", approved: [], offers: ["project"], mine: false }],
+        file: [{ name: "mail", approved: [], offers: ["project"] }],
       });
-      // The change owner chooses for their worktree and approves its worktree resources.
       expect(await flags("carol", CAROL_WORKTREE_IN_SHARED_A)).toEqual({
         settings: [
-          { name: "box", approval: null, choice: null, canChoose: false, canApprove: true },
-          { name: "db", approval: approved, choice: "shared", canChoose: true, canApprove: false },
+          { name: "box", approved: [], offers: ["worktree"], choice: null, canChoose: false },
+          { name: "db", approved: alices, offers: [], choice: "shared", canChoose: true },
         ],
-        proposals: [{ name: "db", canApprove: false }],
-        file: [{ name: "mail", canApprove: true }],
+        proposals: [{ name: "db", approved: [], offers: [], mine: true }],
+        file: [{ name: "mail", approved: [], offers: ["worktree"] }],
       });
-      // With no worktree read there is no choice, and every approval is the project's.
+      // With no worktree read there is no choice and no worktree's approval.
       expect(await flags("carol", null)).toEqual({
         settings: [
-          { name: "box", approval: null, choice: null, canChoose: false, canApprove: false },
-          { name: "db", approval: approved, choice: null, canChoose: false, canApprove: false },
+          { name: "box", approved: [], offers: [], choice: null, canChoose: false },
+          { name: "db", approved: alices, offers: [], choice: null, canChoose: false },
         ],
-        proposals: [{ name: "db", canApprove: false }],
+        proposals: [{ name: "db", approved: [], offers: [], mine: true }],
         file: "not-selected",
       });
       expect((await flags("alice", null)).settings).toEqual([
-        { name: "box", approval: null, choice: null, canChoose: false, canApprove: true },
-        { name: "db", approval: approved, choice: null, canChoose: false, canApprove: true },
+        { name: "box", approved: [], offers: ["project"], choice: null, canChoose: false },
+        { name: "db", approved: alices, offers: [], choice: null, canChoose: false },
       ]);
+    });
+
+    it("approves a worktree's mend.toml table for the project, then for the worktree, as the page offers", async () => {
+      await start();
+      const read = (as: HarnessUser) =>
+        list(as, `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`).then(({ body }) => body);
+      const managers = await read("alice");
+      const table = managers.file.proposals[0];
+      expect(table.approve.worktree).toBeNull();
+      const forProject = await approveVia("alice", table.approve.project);
+      expect(forProject).toMatchObject({
+        status: 200,
+        body: {
+          definition: {
+            statusLine: "@mail · mailpit · worktree · approved by Alice · not started",
+          },
+        },
+      });
+
+      const owners = await read("carol");
+      const mail = owners.settings.find((entry: Listed) => entry.spec.name === "mail");
+      expect(mail.approvals).toEqual({ project: { by: "alice" }, worktree: null });
+      expect(mail.approve.project).toBeNull();
+      expect(await approveVia("carol", mail.approve.worktree)).toMatchObject({
+        status: 200,
+        body: {
+          definition: {
+            approvals: { project: { by: "alice" }, worktree: { by: "carol" } },
+            approve: { project: null, worktree: null },
+            statusLine:
+              "@mail · mailpit · worktree · approved by Carol for this worktree · not started",
+          },
+        },
+      });
+      // Each target's approval stays listed, so neither offer comes back.
+      const after = (await read("carol")).settings.find(
+        (entry: Listed) => entry.spec.name === "mail",
+      );
+      expect(after).toMatchObject({
+        approvals: { project: { by: "alice" }, worktree: { by: "carol" } },
+        approve: { project: null, worktree: null },
+      });
+      expect((await read("alice")).settings[0].approve).toEqual({ project: null, worktree: null });
     });
 
     it("names the resource a refused choice is of, and says each refusal as a clause", async () => {

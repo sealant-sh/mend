@@ -117,9 +117,18 @@ export interface StoredResourceProposal {
   readonly proposedAt: Date;
 }
 
+/**
+ * The latest approval of a definition's listed spec for each target: the project's, a manager's,
+ * and the listed worktree's own (decision G4), null where that target has none.
+ */
+export interface ResourceApprovalsByTarget {
+  readonly project: ResourceApproval | null;
+  readonly worktree: ResourceApproval | null;
+}
+
 export interface DefinitionWithApproval {
   readonly definition: StoredResourceDefinition;
-  readonly approval: ResourceApproval | null;
+  readonly approvals: ResourceApprovalsByTarget;
   /** The listed worktree's stored choice; null when it made none, or no worktree was listed. */
   readonly choice: WorktreeChoice | null;
 }
@@ -226,9 +235,9 @@ export class ResourcesRepo extends Context.Service<
       projectId: ProjectId,
     ) => Effect.Effect<ReadonlyArray<StoredResourceDefinition>>;
     /**
-     * Each definition with the latest approval of the spec it holds as read: a manager's for the
-     * project, or, for a worktree resource, `worktreeId`'s own (decision G4); and `worktreeId`'s
-     * stored choice, read as it is, writing no default. Three queries.
+     * Each definition with the latest approval of the spec it holds as read for each target: a
+     * manager's for the project, and, for a worktree resource, `worktreeId`'s own (decision G4);
+     * and `worktreeId`'s stored choice, read as it is, writing no default. Three queries.
      */
     readonly listWithApprovals: (
       projectId: ProjectId,
@@ -1003,15 +1012,21 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         definitions,
         Effect.fnUntraced(function* (definition): Effect.fn.Return<DefinitionWithApproval> {
           // Bound to the digest listed, so a spec declared since cannot borrow its approval.
-          const row = rows.find(
-            (approval) =>
-              approval.definitionId === definition.id &&
-              approval.definitionDigest === definition.specDigest &&
-              (approval.worktreeId === null || definition.spec.scope === "worktree"),
-          );
+          const latest = (forWorktree: boolean) => {
+            const row = rows.find(
+              (approval) =>
+                approval.definitionId === definition.id &&
+                approval.definitionDigest === definition.specDigest &&
+                (approval.worktreeId !== null) === forWorktree,
+            );
+            return row === undefined ? Effect.succeed(null) : toApproval(row);
+          };
           return {
             definition,
-            approval: row === undefined ? null : yield* toApproval(row),
+            approvals: {
+              project: yield* latest(false),
+              worktree: definition.spec.scope === "worktree" ? yield* latest(true) : null,
+            },
             choice: choices.get(definition.id) ?? null,
           };
         }),

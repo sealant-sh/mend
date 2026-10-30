@@ -47,128 +47,6 @@ export const ResourceProposalInput = Schema.Union([
 ]);
 export type ResourceProposalInput = typeof ResourceProposalInput.Type;
 
-/**
- * The approval of a definition's spec as listed: the approver's account id, and whether it is a
- * manager's for the project or a change owner's for the worktree read (decision G4).
- */
-export const ResourceListedApproval = Schema.Struct({
-  by: Schema.String,
-  for: Schema.Literals(["project", "worktree"]),
-});
-export type ResourceListedApproval = typeof ResourceListedApproval.Type;
-
-/**
- * Whom approving `spec` as read for `worktreeId` approves it for: a worktree resource read for a
- * worktree is approved for that worktree alone (decision G4), anything else for the project.
- */
-export const approvalWorktreeOf = (
-  spec: Pick<ResourceDefinitionInput, "scope">,
-  worktreeId: WorktreeId | null,
-): WorktreeId | null => (spec.scope === "worktree" ? worktreeId : null);
-
-export const ResourceSettingEntry = Schema.Struct({
-  id: ResourceDefinitionId,
-  /** What a removal sends back: it holds only while the definition still has this spec. */
-  digest: ResourceSpecDigest,
-  spec: ResourceDefinitionInput,
-  approval: Schema.NullOr(ResourceListedApproval),
-  /** The read worktree's stored choice; null when no worktree was read or it stored none. */
-  choice: Schema.NullOr(WorktreeChoice),
-  canRemove: Schema.Boolean,
-  /** For the reader, approving it for the target `approvalWorktreeOf` names. */
-  canApprove: Schema.Boolean,
-  /** For the reader, choosing how the read worktree uses it; false when no worktree was read. */
-  canChoose: Schema.Boolean,
-  statusLine: Schema.String,
-});
-export type ResourceSettingEntry = typeof ResourceSettingEntry.Type;
-
-export const ResourceProposalEntry = Schema.Struct({
-  id: ResourceProposalId,
-  digest: ResourceSpecDigest,
-  spec: ResourceDefinitionInput,
-  /** The proposer's account id; the status line names them. */
-  proposedBy: Schema.String,
-  canRemove: Schema.Boolean,
-  /** For the reader, adopting it into settings, as `canApprove` on a settings entry. */
-  canApprove: Schema.Boolean,
-  statusLine: Schema.String,
-});
-export type ResourceProposalEntry = typeof ResourceProposalEntry.Type;
-
-/**
- * A worktree's `mend.toml` as read: unavailable is never shown as an empty file. Bytes that were
- * read keep where they came from, whether they parsed or not.
- */
-export const ResourceFileRead = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("not-selected") }),
-  Schema.Struct({
-    kind: Schema.Literal("absent"),
-    worktreeId: WorktreeId,
-    /** Where the bytes came from: `observed at capture 12 · seq 4,180`. */
-    observed: Schema.String,
-  }),
-  /** No bytes: the read itself failed. */
-  Schema.Struct({
-    kind: Schema.Literal("unavailable"),
-    worktreeId: WorktreeId,
-    message: Schema.String,
-  }),
-  /** Bytes were read and are not a file Mend parses: too large, not text, or not TOML. */
-  Schema.Struct({
-    kind: Schema.Literal("unparsed"),
-    worktreeId: WorktreeId,
-    observed: Schema.String,
-    message: Schema.String,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("read"),
-    worktreeId: WorktreeId,
-    observed: Schema.String,
-    proposals: Schema.Array(
-      Schema.Struct({
-        digest: ResourceSpecDigest,
-        spec: ResourceDefinitionInput,
-        /** For the reader, adopting the table into settings, as on a member's proposal. */
-        canApprove: Schema.Boolean,
-        statusLine: Schema.String,
-      }),
-    ),
-    /** Keyed in full (`resource.queue.ports.amqp`). */
-    refused: Schema.Array(ResourceRefusal),
-    ignored: Schema.Array(Schema.Struct({ key: Schema.String })),
-  }),
-]);
-export type ResourceFileRead = typeof ResourceFileRead.Type;
-
-export const ResourcesPage = Schema.Struct({
-  settings: Schema.Array(ResourceSettingEntry),
-  proposals: Schema.Array(ResourceProposalEntry),
-  file: ResourceFileRead,
-  canPropose: Schema.Boolean,
-});
-export type ResourcesPage = typeof ResourcesPage.Type;
-
-/**
- * What a workspace reads of its project's resources (ADR 0019, "Read status"): each status line
- * and its file's diagnostics. No spec, env value, account id or digest.
- */
-export interface ResourcesStatus {
-  readonly statusLines: ReadonlyArray<string>;
-  readonly file:
-    | { readonly kind: "not-selected" }
-    | { readonly kind: "absent"; readonly observed: string }
-    | { readonly kind: "unavailable"; readonly message: string }
-    | { readonly kind: "unparsed"; readonly observed: string; readonly message: string }
-    | {
-        readonly kind: "read";
-        readonly observed: string;
-        readonly statusLines: ReadonlyArray<string>;
-        /** `resourceProposalNotices`: each refused or ignored key, one line each. */
-        readonly notices: ReadonlyArray<string>;
-      };
-}
-
 /** A definition settings hold, as its reader saw it: a write over it holds only while it still is. */
 export const ResourceDefinitionVersion = Schema.Struct({
   id: ResourceDefinitionId,
@@ -209,6 +87,139 @@ export const ResourceApprovalRequest = Schema.Struct({
   worktreeId: Schema.NullOr(WorktreeId),
 });
 export type ResourceApprovalRequest = typeof ResourceApprovalRequest.Type;
+
+/** One target's approval of the listed spec: the approver's account id. */
+export const ResourceListedApproval = Schema.Struct({ by: Schema.String });
+export type ResourceListedApproval = typeof ResourceListedApproval.Type;
+
+/**
+ * The listed spec's latest approval for each target: the project's, a manager's, and the read
+ * worktree's own (decision G4), which is null when no worktree was read.
+ */
+export const ResourceApprovals = Schema.Struct({
+  project: Schema.NullOr(ResourceListedApproval),
+  worktree: Schema.NullOr(ResourceListedApproval),
+});
+export type ResourceApprovals = typeof ResourceApprovals.Type;
+
+/**
+ * For each target, the approval request the reader may post as it stands, built by the server
+ * from what it listed. Null where `resourceActRefusal` refuses the reader that target, where the
+ * target already approves this exact spec, and for the worktree when none was read or the
+ * resource is the project's.
+ */
+export const ResourceApprovalOffers = Schema.Struct({
+  project: Schema.NullOr(ResourceApprovalRequest),
+  worktree: Schema.NullOr(ResourceApprovalRequest),
+});
+export type ResourceApprovalOffers = typeof ResourceApprovalOffers.Type;
+
+export const ResourceSettingEntry = Schema.Struct({
+  id: ResourceDefinitionId,
+  /** What a removal sends back: it holds only while the definition still has this spec. */
+  digest: ResourceSpecDigest,
+  spec: ResourceDefinitionInput,
+  approvals: ResourceApprovals,
+  approve: ResourceApprovalOffers,
+  /** The read worktree's stored choice; null when no worktree was read or it stored none. */
+  choice: Schema.NullOr(WorktreeChoice),
+  canRemove: Schema.Boolean,
+  /** For the reader, choosing how the read worktree uses it; false when no worktree was read. */
+  canChoose: Schema.Boolean,
+  statusLine: Schema.String,
+});
+export type ResourceSettingEntry = typeof ResourceSettingEntry.Type;
+
+export const ResourceProposalEntry = Schema.Struct({
+  id: ResourceProposalId,
+  digest: ResourceSpecDigest,
+  spec: ResourceDefinitionInput,
+  /** The proposer's account id; the status line names them. */
+  proposedBy: Schema.String,
+  /** Whether the reader proposed it: they withdraw it, where a manager removes another's. */
+  mine: Schema.Boolean,
+  canRemove: Schema.Boolean,
+  /** Of the definition settings hold under its name, when that holds this exact spec. */
+  approvals: ResourceApprovals,
+  /** Each adopts it into settings and approves it for that target. */
+  approve: ResourceApprovalOffers,
+  statusLine: Schema.String,
+});
+export type ResourceProposalEntry = typeof ResourceProposalEntry.Type;
+
+/**
+ * A worktree's `mend.toml` as read: unavailable is never shown as an empty file. Bytes that were
+ * read keep where they came from, whether they parsed or not.
+ */
+export const ResourceFileRead = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("not-selected") }),
+  Schema.Struct({
+    kind: Schema.Literal("absent"),
+    worktreeId: WorktreeId,
+    /** Where the bytes came from: `observed at capture 12 · seq 4,180`. */
+    observed: Schema.String,
+  }),
+  /** No bytes: the read itself failed. */
+  Schema.Struct({
+    kind: Schema.Literal("unavailable"),
+    worktreeId: WorktreeId,
+    message: Schema.String,
+  }),
+  /** Bytes were read and are not a file Mend parses: too large, not text, or not TOML. */
+  Schema.Struct({
+    kind: Schema.Literal("unparsed"),
+    worktreeId: WorktreeId,
+    observed: Schema.String,
+    message: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("read"),
+    worktreeId: WorktreeId,
+    observed: Schema.String,
+    proposals: Schema.Array(
+      Schema.Struct({
+        digest: ResourceSpecDigest,
+        spec: ResourceDefinitionInput,
+        /** As on a member's proposal. */
+        approvals: ResourceApprovals,
+        approve: ResourceApprovalOffers,
+        statusLine: Schema.String,
+      }),
+    ),
+    /** Keyed in full (`resource.queue.ports.amqp`). */
+    refused: Schema.Array(ResourceRefusal),
+    ignored: Schema.Array(Schema.Struct({ key: Schema.String })),
+  }),
+]);
+export type ResourceFileRead = typeof ResourceFileRead.Type;
+
+export const ResourcesPage = Schema.Struct({
+  settings: Schema.Array(ResourceSettingEntry),
+  proposals: Schema.Array(ResourceProposalEntry),
+  file: ResourceFileRead,
+  canPropose: Schema.Boolean,
+});
+export type ResourcesPage = typeof ResourcesPage.Type;
+
+/**
+ * What a workspace reads of its project's resources (ADR 0019, "Read status"): each status line
+ * and its file's diagnostics. No spec, env value, account id or digest.
+ */
+export interface ResourcesStatus {
+  readonly statusLines: ReadonlyArray<string>;
+  readonly file:
+    | { readonly kind: "not-selected" }
+    | { readonly kind: "absent"; readonly observed: string }
+    | { readonly kind: "unavailable"; readonly message: string }
+    | { readonly kind: "unparsed"; readonly observed: string; readonly message: string }
+    | {
+        readonly kind: "read";
+        readonly observed: string;
+        readonly statusLines: ReadonlyArray<string>;
+        /** `resourceProposalNotices`: each refused or ignored key, one line each. */
+        readonly notices: ReadonlyArray<string>;
+      };
+}
 
 export const ResourceApproved = Schema.Struct({
   definition: ResourceSettingEntry,

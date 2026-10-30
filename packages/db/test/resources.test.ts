@@ -618,19 +618,30 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       );
       const approvals = (worktree: WorktreeId | null) =>
         withRepo((repo) => repo.listWithApprovals(project, worktree)).then((listed) =>
-          listed.map((each) => [each.definition.spec.name, each.approval?.id ?? null]),
+          listed.map((each) => [
+            each.definition.spec.name,
+            each.approvals.project?.id ?? null,
+            each.approvals.worktree?.id ?? null,
+          ]),
         );
       expect(await approvals(mine)).toEqual([
-        ["box", forMine.id],
-        ["mail", expect.any(String)],
+        ["box", null, forMine.id],
+        ["mail", expect.any(String), null],
       ]);
       expect(await approvals(theirs)).toEqual([
-        ["box", null],
-        ["mail", expect.any(String)],
+        ["box", null, null],
+        ["mail", expect.any(String), null],
       ]);
       expect(await approvals(null)).toEqual([
-        ["box", null],
-        ["mail", expect.any(String)],
+        ["box", null, null],
+        ["mail", expect.any(String), null],
+      ]);
+
+      // A manager's later approval for the project lists beside the worktree's, never over it.
+      const forProject = await withRepo((repo) => repo.approve(approval(box)));
+      expect(await approvals(mine)).toEqual([
+        ["box", forProject.id, forMine.id],
+        ["mail", expect.any(String), null],
       ]);
 
       // Declared again with another spec, the listed spec has no approval of its own.
@@ -638,8 +649,8 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         repo.declare(project, { ...mailpit("project"), image: "axllent/mailpit:v1.28" }, "maria"),
       );
       expect(await approvals(null)).toEqual([
-        ["box", null],
-        ["mail", null],
+        ["box", forProject.id, null],
+        ["mail", null, null],
       ]);
     });
 
