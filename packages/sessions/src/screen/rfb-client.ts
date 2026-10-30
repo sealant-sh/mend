@@ -62,6 +62,18 @@ export const setEncodings = (encodings: ReadonlyArray<number>): Uint8Array =>
     encodings.forEach((encoding, index) => m.setInt32(4 + 4 * index, encoding));
   });
 
+export const framebufferUpdateRequest = (
+  incremental: boolean,
+  width: number,
+  height: number,
+): Uint8Array =>
+  message(10, (m) => {
+    m.setUint8(0, 3);
+    m.setUint8(1, incremental ? 1 : 0);
+    m.setUint16(6, width);
+    m.setUint16(8, height);
+  });
+
 const RETURN = 0xff0d;
 const TAB = 0xff09;
 
