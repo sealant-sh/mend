@@ -17,8 +17,6 @@ interface Machine {
   readonly token: string;
 }
 
-const FORGET_MS = 5_000;
-
 export const mintPushToken = async (): Promise<
   { readonly state: "minted"; readonly token: string } | Unavailable
 > => {
@@ -50,6 +48,7 @@ export const grantedPushToken = async (): Promise<string | null> => {
 export const postDevice = async (
   machine: Machine,
   pushToken: string,
+  signal: AbortSignal,
 ): Promise<PushRegistration> => {
   const response = await fetch(`${machine.url}/api/devices`, {
     method: "POST",
@@ -58,7 +57,12 @@ export const postDevice = async (
       authorization: `Bearer ${machine.token}`,
     },
     body: JSON.stringify({ token: pushToken, platform: Platform.OS }),
-  });
+    signal,
+  }).catch(() => null);
+  if (response === null) {
+    console.warn(failureLogLine("POST /api/devices", 0, null));
+    return { state: "unavailable", reason: failureWords(0, null).words };
+  }
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null);
     console.warn(failureLogLine("POST /api/devices", response.status, body));
@@ -67,14 +71,16 @@ export const postDevice = async (
   return { state: "registered", token: pushToken };
 };
 
-export const forgetDevice = async (machine: Machine, pushToken: string): Promise<void> => {
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), FORGET_MS);
+export const forgetDevice = async (
+  machine: Machine,
+  pushToken: string,
+  signal: AbortSignal,
+): Promise<void> => {
   try {
     const response = await fetch(`${machine.url}/api/devices/${encodeURIComponent(pushToken)}`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${machine.token}` },
-      signal: abort.signal,
+      signal,
     });
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => null);
@@ -82,8 +88,6 @@ export const forgetDevice = async (machine: Machine, pushToken: string): Promise
     }
   } catch {
     console.warn(failureLogLine("DELETE /api/devices", 0, null));
-  } finally {
-    clearTimeout(timer);
   }
 };
 

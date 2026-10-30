@@ -3,12 +3,14 @@ import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
 import { Platform } from "react-native";
 
+import { NO_ANSWER } from "@/data/failure-words";
 import {
   clearTray,
   forgetDevice,
   grantedPushToken,
   mintPushToken,
   postDevice,
+  pushPermissionGranted,
   type PushRegistration,
 } from "@/data/notifications";
 import { pairingKeyOf, type PairingKey } from "@/data/pairing-key";
@@ -129,44 +131,73 @@ const samePairing = (a: Pick<Connection, "url" | "token">, b: Pick<Connection, "
 export const isCurrentPairing = (connection: Pick<Connection, "url" | "token">): boolean =>
   current !== null && current.token !== "" && samePairing(current, connection);
 
-// ─── a pairing ends ─────────────────────────────────────────────────────────
+const PUSH_STEP_MS = 10_000;
+const NOT_ANSWERED: PushRegistration = { state: "unavailable", reason: NO_ANSWER };
 
-let farewells: Promise<void> = Promise.resolve();
+let lastPushRequest: Promise<unknown> = Promise.resolve();
 
-const farewell = async (ended: MendConfig): Promise<void> => {
-  const unregister = async () => {
-    // Phones paired before the record kept the token still hold a pairing without one.
-    const pushToken = ended.pushToken ?? (await grantedPushToken());
-    if (pushToken !== null) await forgetDevice(ended, pushToken);
-  };
-  await Promise.allSettled([unregister(), clearTray()]);
+const withDeadline = async <T>(
+  step: (deadline: AbortSignal) => Promise<T>,
+  late: T,
+): Promise<T> => {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), PUSH_STEP_MS);
+  const passed = new Promise<T>((resolve) => {
+    deadline.signal.addEventListener("abort", () => resolve(late));
+  });
+  try {
+    return await Promise.race([step(deadline.signal), passed]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const pushRequestInTurn = <T>(step: (deadline: AbortSignal) => Promise<T>, late: T): Promise<T> => {
+  const done = lastPushRequest.then(() => withDeadline(step, late)).catch(() => late);
+  lastPushRequest = done;
+  return done;
 };
 
 const endPairing = (ended: MendConfig): void => {
-  farewells = farewells.then(() => farewell(ended));
+  void clearTray().catch(() => undefined);
+  void pushRequestInTurn(async (deadline) => {
+    const pushToken = ended.pushToken ?? (await grantedPushToken());
+    if (pushToken !== null && !deadline.aborted) await forgetDevice(ended, pushToken, deadline);
+  }, undefined);
 };
 
-const write = async (next: Connection | null): Promise<void> => {
+let stored: Promise<void> = Promise.resolve();
+
+const write = async (change: (before: MendConfig) => MendConfig): Promise<void> => {
   await hydrated;
   const before = current ?? EMPTY;
-  const kept = next !== null && samePairing(before, next);
-  const after: MendConfig =
-    next === null ? EMPTY : { ...next, pushToken: kept ? before.pushToken : null };
+  const after = change(before);
+  if (after === before) return;
   settle(after);
-  if (before.token !== "" && !kept) endPairing(before);
-  await (next === null ? removeStoredConfig() : writeStoredConfig(JSON.stringify(after)));
+  if (!samePairing(before, after)) {
+    if (before.token !== "") endPairing(before);
+    if (after.token !== "") void registerPushIfAllowed(after);
+  }
+  const saved = stored.then(() =>
+    after === EMPTY ? removeStoredConfig() : writeStoredConfig(JSON.stringify(after)),
+  );
+  stored = saved.catch(() => undefined);
+  await saved;
 };
 
-export const saveConfig = (connection: Connection): Promise<void> => write(connection);
+export const saveConfig = (connection: Connection): Promise<void> =>
+  write((before) => ({
+    ...connection,
+    pushToken: samePairing(before, connection) ? before.pushToken : null,
+  }));
 
 /** Forget the machine on this device, and ask it to stop pushing here. It keeps the device. */
-export const clearConfig = (): Promise<void> => write(null);
+export const clearConfig = (): Promise<void> => write(() => EMPTY);
 
-const keepPushToken = async (pushToken: string): Promise<void> => {
-  const next: MendConfig = { ...(current ?? EMPTY), pushToken };
-  settle(next);
-  await writeStoredConfig(JSON.stringify(next));
-};
+const keepPushToken = (connection: Connection, pushToken: string): Promise<void> =>
+  write((before) => (samePairing(before, connection) ? { ...before, pushToken } : before)).catch(
+    () => console.warn("the push token the machine accepted was not stored on this phone"),
+  );
 
 let registering: { readonly key: PairingKey; readonly done: Promise<PushRegistration> } | null =
   null;
@@ -178,23 +209,35 @@ export const registerPush = (connection: Connection): Promise<PushRegistration> 
     if (connection.url === "") return { state: "unavailable", reason: "set the server URL first" };
     const minted = await mintPushToken();
     if (minted.state !== "minted") return minted;
-    await farewells;
-    if (!isCurrentPairing(connection)) {
-      return {
+    return pushRequestInTurn(async (deadline): Promise<PushRegistration> => {
+      if (!isCurrentPairing(connection)) {
+        return {
+          state: "unavailable",
+          reason: "the pairing changed meanwhile — enable notifications again",
+        };
+      }
+      const posted = await postDevice(connection, minted.token, deadline);
+      if (posted.state === "registered" && !deadline.aborted) {
+        await keepPushToken(connection, posted.token);
+      }
+      return posted;
+    }, NOT_ANSWERED);
+  })()
+    .catch(
+      (cause: unknown): PushRegistration => ({
         state: "unavailable",
-        reason: "the pairing changed meanwhile — enable notifications again",
-      };
-    }
-    const posted = await postDevice(connection, minted.token);
-    if (posted.state !== "registered") return posted;
-    if (isCurrentPairing(connection)) await keepPushToken(posted.token);
-    else endPairing({ ...connection, pushToken: posted.token });
-    return posted;
-  })().finally(() => {
-    if (registering?.done === done) registering = null;
-  });
+        reason: cause instanceof Error ? cause.message : String(cause),
+      }),
+    )
+    .finally(() => {
+      if (registering?.done === done) registering = null;
+    });
   registering = { key, done };
   return done;
+};
+
+const registerPushIfAllowed = async (connection: Connection): Promise<void> => {
+  if (await pushPermissionGranted().catch(() => false)) await registerPush(connection);
 };
 
 /** null until the stored config has been read — see the note on `current`. */
