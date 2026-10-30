@@ -294,10 +294,14 @@ access is required after Restore.
 
 Purge requires the exact project name and deletes its content and exclusively referenced assets.
 Shared context snapshots remain by inverse session reference. Instance-wide audit and backups are
-unchanged. A purge that stopped partway is finished by purging again. The name is checked under the
-project's lock against the removal it was read from, so a purge never acts on a removal made after
-the person confirmed. Remove, Restore, purge start and purge entries name the project in the audit
-log, so the log still says what was purged once the row is gone.
+unchanged. A purge that stopped partway is finished by purging again, and purging a project already
+purged succeeds and says so, from the organization's `project.purged` entry, to the people who could
+have purged it; anyone else, and an id that was never a project, gets 404. A write asked of a
+removed project by someone who can see it is refused with words saying to restore it; reads
+stay 404. The name is checked under the project's lock against the removal it was read from, so a
+purge never acts on a removal made after the person confirmed. Remove, Restore, purge start and
+purge entries name the project in the audit log, so the log still says what was purged once the row
+is gone.
 
 A departed member's removed private project stays reachable: an owner sees it among orphaned
 projects and takes it over in any state, then Restores or purges it as its creator. An owner's disk
