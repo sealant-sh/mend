@@ -14,9 +14,12 @@ desktop app) is a listed device under Settings → Devices, and revoking one end
 - `mint-by-hand` mints a named device token shown once, for a device that cannot scan.
 - `claim-mobile` claims a code in the phone app, by deep link, scan or typed URL and code.
 - `device-list` lists every device with its platform, pairing day and last use.
-- `revoke` ends one device's token from the list.
-- `unpair-mobile` clears the URL and token on the phone and unregisters its push token on the
-  machine (`DELETE /api/devices/:token`); the server keeps the device.
+- `revoke` ends one device's token from the list, and drops the push token that device registered.
+- `unpair-mobile` clears the URL and token on the phone and asks the machine to drop the push token
+  this pairing registered (`DELETE /api/devices`, which names no token); the server keeps the
+  device. An app released before 0.37 sends `DELETE /api/devices/<token>` instead: the server
+  ignores the token, forgets the calling device the same way, and writes no `/api/devices/` URL to
+  its request log or traces, a 404 included.
 - `qr-render` is the hidden `mend qr <text>` the installer prints its QR with.
 
 ## How to get to it (user POV)
