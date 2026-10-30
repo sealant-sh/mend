@@ -7,9 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PageDocument } from "@/components/page-document";
 import { PageFrame } from "@/components/page-frame";
-import { api, clearConfig, saveConfig } from "@/data/live";
+import { api } from "@/data/live";
 import { pageHostThemeCall } from "@/data/page-host";
 import { pageOf } from "@/data/pages";
+import { clearConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 import { onlyWebView, resetWebViews, webViews } from "@/test/fake-webview";
 

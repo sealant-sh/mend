@@ -13,12 +13,12 @@ import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
 import { failureLogLine, failureWords } from "@/data/failure-words";
-import { clearConfig, registerPush, saveConfig } from "@/data/live";
 import {
   type NotificationSettingsDto,
   useNotificationSettings,
   useSetNotificationSettings,
 } from "@/data/notification-settings";
+import { clearConfig, registerPush, saveConfig } from "@/data/pairing-config";
 import { serverUrlOf } from "@/data/pairing-key";
 import { usePairing } from "@/data/pairing-scope";
 import type { ThemePreference } from "@/data/preferences";

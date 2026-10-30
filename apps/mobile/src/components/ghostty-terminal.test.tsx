@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
-import { saveConfig } from "@/data/live";
+import { saveConfig } from "@/data/pairing-config";
 import { onlyWebView, resetWebViews, webViews } from "@/test/fake-webview";
 
 vi.mock("react-native-webview", () => import("@/test/fake-webview"));

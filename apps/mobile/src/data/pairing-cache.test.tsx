@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AskDialog, useAsk } from "@/components/ask";
 import { useAgentConversation } from "@/data/agent-conversation";
 import type { Ask } from "@/data/ask";
-import { clearConfig, loadConfig, saveConfig, useSession } from "@/data/live";
+import { useSession } from "@/data/live";
 import { HttpPairingClient, type PairingDevice } from "@/data/pairing-client";
+import { clearConfig, loadConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 
 vi.mock("@react-native-async-storage/async-storage", async () => ({

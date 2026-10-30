@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsScreen from "@/app/(tabs)/settings";
 import PageScreen from "@/app/page/[id]";
 import PairScreen from "@/app/pair";
-import { clearConfig } from "@/data/live";
 import { claimPairing } from "@/data/pairing";
+import { clearConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 
 vi.mock("react-native-webview", () => import("@/test/fake-webview"));

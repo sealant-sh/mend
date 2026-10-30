@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { Keyboard } from "react-native";
 
 import { createAsker, type Asker } from "@/data/ask";
-import { useConfig, type MendConfig } from "@/data/live";
+import { useConfig, type MendConfig } from "@/data/pairing-config";
 import { pairingKeyOf, type PairingKey } from "@/data/pairing-key";
 
 export interface Pairing {

@@ -13,7 +13,6 @@ import { EvButton } from "@/components/button";
 import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { MonoText, UiText } from "@/components/typography";
-import { registerPush } from "@/data/live";
 import type { PairPayload } from "@/data/pairing";
 import {
   claimPairing,
@@ -23,6 +22,7 @@ import {
   parsePairParams,
   parseScanned,
 } from "@/data/pairing";
+import { registerPush } from "@/data/pairing-config";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
 /** Ignore the same QR for this long — the camera reports it many times a second. */

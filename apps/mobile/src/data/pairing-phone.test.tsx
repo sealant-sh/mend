@@ -7,7 +7,7 @@ import SettingsScreen from "@/app/(tabs)/settings";
 import PairScreen from "@/app/pair";
 import { AskDialog, useAsk } from "@/components/ask";
 import type { Ask, AskButton } from "@/data/ask";
-import { clearConfig, loadConfig, saveConfig } from "@/data/live";
+import { clearConfig, loadConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 
 interface OsAlert {

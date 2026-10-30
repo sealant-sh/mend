@@ -2,9 +2,9 @@ import { PublicOrigin } from "@mend/network";
 import { Option, Schema } from "effect";
 
 import { failureLogLine, failureWords } from "./failure-words";
-import type { Connection } from "./live";
 import type { PairPayload } from "./pairing-code";
 import { CODE_LENGTH, normalizeBaseUrl, normalizeCode } from "./pairing-code";
+import type { Connection } from "./pairing-config";
 
 /** The account that authorized this pairing. */
 export interface PairedUser {

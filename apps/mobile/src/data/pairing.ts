@@ -4,10 +4,10 @@
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 
-import { isCurrentPairing, saveConfig } from "@/data/live";
 import type { PairOutcome } from "@/data/pairing-client";
 import { HttpPairingClient } from "@/data/pairing-client";
 import { normalizeBaseUrl, normalizeCode, type PairPayload } from "@/data/pairing-code";
+import { isCurrentPairing, saveConfig } from "@/data/pairing-config";
 
 export type { PairedUser, PairOutcome } from "@/data/pairing-client";
 export * from "@/data/pairing-code";

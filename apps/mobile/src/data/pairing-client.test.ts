@@ -4,10 +4,10 @@ import { createServer } from "node:http";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
-import type { Connection } from "./live";
 import type { PairingConfigStore, PairingDevice } from "./pairing-client";
 import { HttpPairingClient } from "./pairing-client";
 import { parsePairUrl } from "./pairing-code";
+import type { Connection } from "./pairing-config";
 
 class InMemoryConfigStore implements PairingConfigStore {
   config: Connection | null = null;
