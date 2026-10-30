@@ -276,7 +276,14 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
       const session = yield* sessions.byId(sessionId);
       const change = yield* changes.byWorktree(session.worktreeId);
       if (change === null) return;
-      const project = yield* projects.byId(session.projectId);
+      // A removed project keeps its sessions and changes, and prepares nothing until restored.
+      const project = yield* projects
+        .byId(session.projectId)
+        .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+      if (project === null) {
+        behind.delete(change.id);
+        return;
+      }
       const switches = reviewPassesFor({
         origin: session.origin,
         project,
@@ -437,6 +444,11 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
     const prepare = Effect.fn("ReviewPrep.prepare")(function* (sessionId: SessionId) {
       const session = yield* sessions.byId(sessionId);
       if ((yield* changes.byWorktree(session.worktreeId)) === null) return;
+      const listed = yield* projects.byId(session.projectId).pipe(
+        Effect.as(true),
+        Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(false)),
+      );
+      if (!listed) return;
       yield* observeSummary(session.worktreeId);
       yield* queuePasses(sessionId);
     });
