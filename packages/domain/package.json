@@ -8,8 +8,7 @@
     ".": "./src/index.ts",
     "./workbench": "./src/workbench/index.ts",
     "./host-user-namespaces": "./src/workbench/host-user-namespaces.ts",
-    "./default-login": "./src/workbench/default-login.ts",
-    "./project-creation": "./src/workbench/project-creation.ts"
+    "./default-login": "./src/workbench/default-login.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

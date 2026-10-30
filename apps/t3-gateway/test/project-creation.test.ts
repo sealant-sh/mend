@@ -331,7 +331,6 @@ describe("project creation through the gateway", () => {
           "Mend",
         ])
           expect(yield* f.hub.locationOf(root)).toBe(null);
-        expect(personProjectPaths(person.id)).toEqual(personProjectPaths(person.id));
         expect(personProjectPaths(person.id)).not.toEqual(personProjectPaths("someone-else"));
       }),
     ));

@@ -1,4 +1,4 @@
-import { projectNameFrom } from "@mend/domain/project-creation";
+import { projectNameFrom } from "@mend/domain/workbench";
 import { ProjectId } from "@mend/t3-contracts";
 import {
   AcpRegistryOperationError,
