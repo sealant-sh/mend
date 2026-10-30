@@ -76,6 +76,7 @@ import {
   SessionId,
   SessionProcessId,
   type ProjectId,
+  imageHasScreen,
   type WorkspaceImage,
   workspaceImagePackages,
   WorktreeId,
@@ -650,6 +651,7 @@ import {
   type ScreenProcess,
 } from "./screen-process.ts";
 import { makeScreenPasswords, type ScreenPasswords } from "./screen/passwords.ts";
+import { onScreenPath, screenEnvOf, type ScreenUser } from "./screen/script.ts";
 import {
   decodeSecretFilesRecord,
   encodeSecretFilesRecord,
@@ -8621,7 +8623,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* sessions.settle(sessionId, outcome, summary);
         yield* settleRunsOfSettled(sessionId);
         yield* screenProcess.stop(sessionId, "session-stopped").pipe(owned(sessionId));
+        yield* betweenLaunches(sessionId, releaseDisplayIfEnded(sessionId));
       });
+
+      /**
+       * A session that ended gives its display back (ADR 0020, "One display per session"): it
+       * reads settled, and no agent of it still runs with the display in its env (one the fold
+       * will reopen the session over). Only between the session's launches (review 2 of
+       * mend#1209): a resume reserves the display and opens its process with it, so a release
+       * decided before it and landing after would free a display the resumed session runs on.
+       */
+      const releaseDisplayIfEnded = Effect.fn("SessionEngine.releaseDisplayIfEnded")(function* (
+        sessionId: SessionId,
+      ) {
+        const screen = yield* screens.ofSession(sessionId);
+        if (screen === null) return;
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session !== null && session.settledAt === null) return;
+        if ((yield* processes.listForSession(sessionId)).some(isLiveAgentProcess)) return;
+        yield* screenProcess.release(sessionId, screen.id).pipe(owned(sessionId));
+      });
+
+      /**
+       * Runs `effect` between the session's launches (`launch-gate.ts`): now when nothing holds
+       * the gate, or else forked to run once its holder is done. It never waits in place: the
+       * caller may be the very launch that holds the gate (one that fails settles its session).
+       */
+      const betweenLaunches = (sessionId: SessionId, effect: Effect.Effect<void>) =>
+        launchGate.runBetweenOr(
+          sessionId,
+          Effect.asVoid(Effect.forkIn(launchGate.runBetween(sessionId)(effect), scope)),
+        )(effect);
 
       /**
        * Runs left `running` under sessions that settled, each settled with its session's outcome
@@ -17445,6 +17479,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         },
       };
 
+      /**
+       * The session's display in this workspace for a process it opens there as its person (ADR
+       * 0020, "One display per session"): reserved at its first launch when the workspace's image
+       * has a screen, kept for the session's life; null without a screen, without a person (the
+       * screen runs only as one), or with every display taken.
+       */
+      const displayOfLaunch = (
+        sessionId: SessionId,
+        workspaceId: SealantWorkspaceId,
+        image: WorkspaceImage | null,
+        user: ScreenUser | null,
+      ) =>
+        user !== null && imageHasScreen(image)
+          ? screens.reserve({ sessionId, workspaceId }).pipe(
+              Effect.map((screen) => ({ display: screen.display, user })),
+              Effect.catchTag("ScreenDisplaysFullError", () =>
+                Effect.logWarning("session engine: no display left for the session's screen").pipe(
+                  Effect.annotateLogs({ sessionId, workspaceId }),
+                  Effect.as(null),
+                ),
+              ),
+            )
+          : Effect.succeed(null);
+
       const launchInternalBody = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         plan: LaunchPlan,
@@ -18789,18 +18847,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
+        const onScreen = yield* displayOfLaunch(
+          sessionId,
+          SealantWorkspaceId.make(workspace.id),
+          workspaceImage,
+          startAs?.user ?? null,
+        );
         const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
           Effect.andThen(
             sealant.openSession(
               workspace,
-              startedArgv,
+              onScreen === null ? startedArgv : onScreenPath(startedArgv),
               launchOpenOptions({
                 pipe: protocolStart !== null,
                 person:
                   startAs === null
                     ? null
                     : { user: startAs.user, env: inConversation?.env ?? startAs.env },
-                env: records.processEnv(processId),
+                env: {
+                  ...records.processEnv(processId),
+                  ...(onScreen === null ? {} : screenEnvOf(onScreen.display, onScreen.user)),
+                },
               }),
             ),
           ),
@@ -20734,18 +20801,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 });
           const records = launchRecords[plan.role];
           const processId = SessionProcessId.make(crypto.randomUUID());
+          const workspaceId = SealantWorkspaceId.make(workspace.id);
+          // The screen runs as the session's owner: a steerer's process cannot open its cookie.
+          const onScreen =
+            startAs === null || sender !== session.ownerUserId
+              ? null
+              : yield* displayOfLaunch(
+                  sessionId,
+                  workspaceId,
+                  (yield* sessions.executorSessionOf(workspaceId))?.workspaceImage ??
+                    session.workspaceImage,
+                  startAs.user,
+                );
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
               sealant.openSession(
                 workspace,
-                startedArgv,
+                onScreen === null ? startedArgv : onScreenPath(startedArgv),
                 launchOpenOptions({
                   pipe: protocolStart !== null,
                   person:
                     startAs === null
                       ? null
                       : { user: startAs.user, env: inConversation?.env ?? startAs.env },
-                  env: records.processEnv(processId),
+                  env: {
+                    ...records.processEnv(processId),
+                    ...(onScreen === null ? {} : screenEnvOf(onScreen.display, onScreen.user)),
+                  },
                 }),
               ),
             ),
@@ -26198,6 +26280,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // before anything re-attaches to it: it is not live work, and the next resume of its
         // session would otherwise meet the one-active-run index.
         yield* reconcileStaleRuns();
+        // A display still held by a session that ended goes back: one an earlier Mend never
+        // released, or a release a restart cut short. Forked, each between its session's
+        // launches: a screen still running closes first, and a resume sent meanwhile waits.
+        for (const screen of yield* screens.listHeld()) {
+          yield* Effect.forkIn(
+            launchGate.runBetween(screen.sessionId)(releaseDisplayIfEnded(screen.sessionId)),
+            scope,
+          );
+        }
         const activeRuns = yield* sessionRuns.listActive();
         const reattached = new Set<string>();
         for (const sessionRun of activeRuns) {

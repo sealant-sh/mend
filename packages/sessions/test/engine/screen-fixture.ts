@@ -1,4 +1,5 @@
 import { linuxLoginNameOf, type SessionChannelTokensRepo } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import type { HarnessLayout } from "@mend/domain/workbench";
 import {
   type PersonExecOptions,
@@ -43,16 +44,22 @@ export const withScreens = <A, E>(
     readonly printed?: ReadonlyArray<string>;
     readonly layout?: HarnessLayout;
     readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
+    readonly screen?: boolean;
+    /** A world the caller keeps; `restart` boots another engine over one an engine already set up. */
+    readonly fixture?: { readonly world: World; readonly tmp: string };
+    readonly restart?: boolean;
   } = {},
 ) => {
   const platform: Platform = { spawned: [], opened: [], execs: [], execUsers: [], listeners: [] };
   const created: Array<CreateOptions> = [];
   return withPreparedEngineEffect(
-    (world, tmp) => setup(tmp, world),
+    (world, tmp) => (options.restart === true ? Effect.void : setup(tmp, world)),
     (world) => work(world, platform),
     {
       captured: makeMemoryCaptureStore(),
+      ...(options.fixture === undefined ? {} : { fixture: options.fixture }),
       ...(options.tokensLayer === undefined ? {} : { tokensLayer: options.tokensLayer }),
+      workspaceImage: { ...defaultWorkspaceImage, screen: options.screen ?? true },
       sealantLayer: sealantLaunchLayer(
         created,
         undefined,

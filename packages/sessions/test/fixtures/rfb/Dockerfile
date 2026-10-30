@@ -9,7 +9,7 @@ ENV LANG=en_US.UTF-8
 
 FROM xvnc AS screen
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openbox procps socat xauth \
+  && apt-get install -y --no-install-recommends chromium openbox procps socat xauth \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --uid 40001 --create-home person \
   && install -d -o person -m 700 /run/user/40001

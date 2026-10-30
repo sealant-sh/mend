@@ -10,6 +10,7 @@ import { Layer } from "effect";
 import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { CHROMIUM_WRAPPER_SCRIPT } from "../src/screen/chromium.ts";
 import { SessionChannelRegistryLive } from "../src/session-channel.ts";
 import type { SessionSocketApi } from "../src/session-socket.ts";
 
@@ -142,6 +143,13 @@ describe("SessionSocketHost", () => {
             ),
           );
           expect(shim).toContain("/git/transport");
+
+          const wrapper = yield* Effect.promise(() =>
+            import("node:fs/promises").then((fs) =>
+              fs.readFile(path.join(dir, "bin", "chromium"), "utf8"),
+            ),
+          );
+          expect(wrapper).toBe(CHROMIUM_WRAPPER_SCRIPT);
 
           // A restart re-binds IN PLACE: the workspace bind-mounts this
           // directory by inode, so recreating it would leave every live

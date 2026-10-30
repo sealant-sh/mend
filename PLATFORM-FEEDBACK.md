@@ -7,6 +7,22 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-30 · 0.40.0-next.768 · A session's env cannot put a directory in front of PATH
+
+ADR 0020 puts a `chromium` wrapper, staged in `/run/mend/bin`, first on the PATH of a session with a
+screen, so the agent's `chromium <url>` opens on its own screen with its own profile.
+
+- **Today:** `SessionOptions.env` sets each variable whole. sealantd applies the caller's entries
+  over the image's person environment with no expansion, and the SDK reports no image's PATH. A
+  literal `PATH` from Mend would drop what the image and `/etc/sealant/person-env` put there (a nix
+  profile, an Environment's own directories). sealantd already has the mechanism for images:
+  `PATH_PREPEND` in that file.
+- **Mend today:** a screen session's agent starts as `sh -c 'PATH=/run/mend/bin:$PATH exec "$@"'`
+  followed by its argv, so the workspace's shell puts the directory in front of its own PATH. The
+  process row records the agent's argv without the prefix.
+- **Needed:** a `pathPrepend` (directories) on `SessionOptions` and `WorkspaceExecOptions`, applied
+  after the person environment, as `PATH_PREPEND` is.
+
 ## 2026-10-30 · 0.40.0-next.763 · Catalog ids for a screen's packages, per-manager packages, and the image's architecture
 
 **Shipped in part:** ask (1), the six ids with `chromium` refused on Ubuntu, landed in sealant#419

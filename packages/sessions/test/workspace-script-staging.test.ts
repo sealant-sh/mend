@@ -7,6 +7,7 @@ import { GIT_SSH_SHIM_SCRIPT } from "@mend/sessions";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { GIT_CREDENTIAL_HELPER_SCRIPT } from "../src/git-credential.ts";
+import { CHROMIUM_WRAPPER_SCRIPT } from "../src/screen/chromium.ts";
 import { SESSION_HELPER_SCRIPT, workspaceScriptStaging } from "../src/session-socket.ts";
 
 const roots: string[] = [];
@@ -24,13 +25,14 @@ afterEach(() => {
  * The command is run for real under `sh`, as `sealant.exec` runs it in the workspace.
  */
 describe("workspaceScriptStaging", () => {
-  it("writes both scripts, byte for byte and executable, into <dir>/bin", () => {
+  it("writes the helper, the shim and the browser wrapper, byte for byte and executable, into <dir>/bin", () => {
     // A quote and a space in the path: the directory is the one argument that is not base64.
     const dir = path.join(freshDirectory("mend-staging-"), "it's here");
     execFileSync("sh", ["-c", workspaceScriptStaging(dir)]);
     for (const [name, script] of [
       ["mend", SESSION_HELPER_SCRIPT],
       ["mend-git-ssh", GIT_SSH_SHIM_SCRIPT],
+      ["chromium", CHROMIUM_WRAPPER_SCRIPT],
     ] as const) {
       const file = path.join(dir, "bin", name);
       expect(fs.readFileSync(file, "utf8")).toBe(script);
@@ -64,6 +66,7 @@ describe("workspaceScriptStaging", () => {
     );
     expect(fs.statSync(path.join(dir, "bin", "mend")).mode & 0o111).toBe(0o111);
     expect(fs.readdirSync(path.join(dir, "bin")).toSorted()).toEqual([
+      "chromium",
       "mend",
       "mend-git-credential",
       "mend-git-ssh",

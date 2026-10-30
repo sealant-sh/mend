@@ -85,7 +85,7 @@ describe("screen data shapes", () => {
 
 describe("screenStatusLine", () => {
   const now = new Date("2026-10-30T10:00:10Z");
-  const live: ScreenLife = { _tag: "Live", degraded: null };
+  const live: ScreenLife = { _tag: "Live", degraded: null, browserSandboxOff: false };
   const line = (input: ScreenInput, facts: { life?: ScreenLife; viewers?: number } = {}) =>
     screenStatusLine({
       life: facts.life ?? live,
@@ -127,14 +127,17 @@ describe("screenStatusLine", () => {
     expect(line(input)).toBe(expected);
   });
 
-  it("names a degraded screen, its watchers and a missing frame", () => {
+  it("names a degraded screen, a browser without its sandbox, its watchers and a missing frame", () => {
     expect(
       line(
         { _tag: "Agent", epoch: 1 },
-        { life: { _tag: "Live", degraded: "client-failed" }, viewers: 2 },
+        {
+          life: { _tag: "Live", degraded: "client-failed", browserSandboxOff: true },
+          viewers: 2,
+        },
       ),
     ).toBe(
-      "screen · agent has input · frame 3 s ago · degraded · an app failed to start · 2 watching",
+      "screen · agent has input · frame 3 s ago · degraded · an app failed to start · browser sandbox off · 2 watching",
     );
     expect(
       screenStatusLine({
@@ -164,7 +167,7 @@ describe("screenStatusLine", () => {
 describe("screenIdleStopDue", () => {
   const started = new Date("2026-10-30T10:00:00Z");
   const after = (ms: number) => started.getTime() + ms;
-  const live: ScreenLife = { _tag: "Live", degraded: null };
+  const live: ScreenLife = { _tag: "Live", degraded: null, browserSandboxOff: false };
   const awaiting: ScreenInput = { _tag: "AwaitingAgent", epoch: 0 };
   const person: ScreenInput = {
     _tag: "Person",

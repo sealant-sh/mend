@@ -4,7 +4,7 @@ import type {
   ScreensRepo,
   SessionProcessesRepo,
 } from "@mend/db";
-import { SealantRunId, SealantWorkspaceId, type SessionId } from "@mend/domain";
+import { type ScreenId, SealantRunId, SealantWorkspaceId, type SessionId } from "@mend/domain";
 import type {
   DisplayNumber,
   Screen,
@@ -74,6 +74,12 @@ export interface ScreenProcess<E> {
     E | SealantPlatformError | ScreenDisplaysFullError | ScreenNeedsPersonError
   >;
   readonly stop: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
+  /**
+   * The session ended: its screen stops and the reservation `screenId` gives its display back. A
+   * screen whose process would not end keeps it, so a later release (or the next boot) gives it
+   * back. A reservation the session holds now that is not `screenId` is not the one that ended.
+   */
+  readonly release: (sessionId: SessionId, screenId: ScreenId) => Effect.Effect<void>;
   /** A screen row ended without a stop of ours: its process exited, or its workspace ended. */
   readonly ended: (
     rows: ReadonlyArray<SessionProcess>,
@@ -89,10 +95,17 @@ const STARTED = new Set<Screen["life"]["_tag"]>(["Starting", "Live"]);
 type Live = Extract<Screen["life"], { readonly _tag: "Live" }>;
 
 const lifeAfter = (life: Screen["life"], report: ScreenReport): Live | null => {
-  if (report._tag === "Ready") {
-    return life._tag === "Starting" ? { _tag: "Live", degraded: null } : null;
+  if (!STARTED.has(life._tag)) return null;
+  const live: Live =
+    life._tag === "Live" ? life : { _tag: "Live", degraded: null, browserSandboxOff: false };
+  switch (report._tag) {
+    case "Ready":
+      return life._tag === "Starting" ? live : null;
+    case "Degraded":
+      return { ...live, degraded: report.reason };
+    case "BrowserSandboxOff":
+      return { ...live, browserSandboxOff: true };
   }
-  return STARTED.has(life._tag) ? { _tag: "Live", degraded: report.reason } : null;
 };
 
 /**
@@ -182,7 +195,7 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
             message: "this workspace cannot give a screen its own person · no screen was started",
           });
         }
-        const argv = screenArgv(screen.display);
+        const argv = screenArgv(screen.display, startAs.user);
         const row = yield* processes.create({
           sessionId,
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
@@ -225,16 +238,27 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
       }),
     );
 
+  /** Ends the session's screen; false when its process would not end and still holds the display. */
+  const stopped = (sessionId: SessionId, reason: ScreenEndReason) =>
+    Effect.gen(function* () {
+      const screen = yield* screens.ofSession(sessionId);
+      if (screen === null || !STARTED.has(screen.life._tag)) return true;
+      const running = yield* live(screen.processId);
+      if (running !== null && !(yield* endedRow(running, screen.display))) return false;
+      passwords.forget(sessionId);
+      yield* setLife(screen, { life: { _tag: "Ended", reason } });
+      return true;
+    });
+
   const stop = (sessionId: SessionId, reason: ScreenEndReason) =>
+    locked(sessionId, Effect.asVoid(stopped(sessionId, reason)));
+
+  const release = (sessionId: SessionId, screenId: ScreenId) =>
     locked(
       sessionId,
       Effect.gen(function* () {
-        const screen = yield* screens.ofSession(sessionId);
-        if (screen === null || !STARTED.has(screen.life._tag)) return;
-        const running = yield* live(screen.processId);
-        if (running !== null && !(yield* endedRow(running, screen.display))) return;
-        passwords.forget(sessionId);
-        yield* setLife(screen, { life: { _tag: "Ended", reason } });
+        if ((yield* screens.ofSession(sessionId))?.id !== screenId) return;
+        if (yield* stopped(sessionId, "session-stopped")) yield* screens.release(screenId);
       }),
     );
 
@@ -254,5 +278,5 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
       { discard: true },
     );
 
-  return { start, stop, ended };
+  return { start, stop, release, ended };
 };

@@ -70,7 +70,7 @@ const screenContract = (runFixture: RunFixture) => {
         const process = yield* agentProcess(a);
         yield* screens.setLife(first.id, { life: { _tag: "Starting" }, processId: process });
         const live = yield* screens.setLife(first.id, {
-          life: { _tag: "Live", degraded: null },
+          life: { _tag: "Live", degraded: null, browserSandboxOff: false },
           processId: process,
         });
         expect(live.processId).toBe(process);
@@ -126,15 +126,44 @@ const screenContract = (runFixture: RunFixture) => {
         const ws = workspace();
         const ended = yield* session();
         const reserved = yield* screens.reserve({ sessionId: ended, workspaceId: ws });
-        yield* screens.release(ended);
-        yield* screens.release(ended);
+        const heldIds = () =>
+          Effect.map(screens.listHeld(), (held) => held.map((screen) => screen.id));
+        expect(yield* heldIds()).toContain(reserved.id);
+        yield* screens.release(reserved.id);
+        yield* screens.release(reserved.id);
         expect(yield* screens.ofSession(ended)).toBeNull();
+        expect(yield* heldIds()).not.toContain(reserved.id);
         expect((yield* screens.byId(reserved.id))?.life).toEqual({
           _tag: "Ended",
           reason: "session-stopped",
         });
         const next = yield* screens.reserve({ sessionId: yield* session(), workspaceId: ws });
         expect(next.display).toBe(reserved.display);
+      }),
+    ));
+
+  it("releases only the reservation it names, so one its session took since keeps its display", async () =>
+    runFixture(({ screens, session }) =>
+      Effect.gen(function* () {
+        const [first, second] = [workspace(), workspace()];
+        const sessionId = yield* session();
+        const decided = yield* screens.reserve({ sessionId, workspaceId: first });
+        yield* screens.release(decided.id);
+        const taken = yield* screens.reserve({ sessionId, workspaceId: first });
+        expect(taken.id).not.toBe(decided.id);
+        expect(taken.display).toBe(decided.display);
+        yield* screens.release(decided.id);
+        expect(yield* screens.ofSession(sessionId)).toEqual(taken);
+        const next = yield* screens.reserve({ sessionId: yield* session(), workspaceId: first });
+        expect(next.display).not.toBe(taken.display);
+
+        const moved = yield* screens.reserve({ sessionId, workspaceId: second });
+        yield* screens.release(taken.id);
+        expect(yield* screens.ofSession(sessionId)).toEqual(moved);
+        expect((yield* screens.byId(taken.id))?.life).toEqual({
+          _tag: "Ended",
+          reason: "workspace-ended",
+        });
       }),
     ));
 

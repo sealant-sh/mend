@@ -146,8 +146,14 @@ export class ScreensRepo extends Context.Service<
       id: ScreenId,
       change: ScreenLifeChange,
     ) => Effect.Effect<Screen, ScreenNotFoundError>;
-    /** The session ended: its display goes back to the workspace. */
-    readonly release: (sessionId: SessionId) => Effect.Effect<void>;
+    /**
+     * The session ended: the reservation `id` gives its display back, if it still holds it. Only
+     * that reservation: one the session takes after it is a new row, and keeps its display. Once
+     * is enough.
+     */
+    readonly release: (id: ScreenId) => Effect.Effect<void>;
+    /** Every screen still holding a display, oldest first. */
+    readonly listHeld: () => Effect.Effect<ReadonlyArray<Screen>>;
     /**
      * The screen's last activity (ADR 0020, D7): its latest log entry, change of holder or change
      * of life; null for no such screen. What a viewer does is none of these.
@@ -395,15 +401,29 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return toScreen(row);
     });
 
-    const release = Effect.fn("ScreensRepo.release")(function* (sessionId: SessionId) {
+    const release = Effect.fn("ScreensRepo.release")(function* (id: ScreenId) {
       yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            const held = yield* heldRow(tx, sessionId);
-            if (held !== null) yield* releaseRow(tx, held, ENDED_BY_SESSION);
+            const [held] = yield* tx
+              .select()
+              .from(screens)
+              .where(and(eq(screens.id, id), isNull(screens.releasedAt)))
+              .for("update");
+            if (held !== undefined) yield* releaseRow(tx, held, ENDED_BY_SESSION);
           }),
         )
         .pipe(Effect.orDie);
+    });
+
+    const listHeld = Effect.fn("ScreensRepo.listHeld")(function* () {
+      const rows = yield* db
+        .select()
+        .from(screens)
+        .where(isNull(screens.releasedAt))
+        .orderBy(asc(screens.createdAt))
+        .pipe(Effect.orDie);
+      return rows.map(toScreen);
     });
 
     const lastActivityAt = Effect.fn("ScreensRepo.lastActivityAt")(function* (id: ScreenId) {
@@ -575,6 +595,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       ofSession,
       setLife,
       release,
+      listHeld,
       lastActivityAt,
       control,
       append,
@@ -663,11 +684,12 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
         row.activeAt = new Date();
         return Effect.succeed(row.screen);
       }),
-    release: (sessionId) =>
+    release: (id) =>
       Effect.sync(() => {
-        const row = held(sessionId);
-        if (row !== null) release(row, ENDED_BY_SESSION);
+        const row = rowOf(id);
+        if (row !== null && !row.released) release(row, ENDED_BY_SESSION);
       }),
+    listHeld: () => Effect.sync(() => rows.filter((row) => !row.released).map((row) => row.screen)),
     lastActivityAt: (id) => Effect.sync(() => rowOf(id)?.activeAt ?? null),
     control: (id, event, owner) =>
       Effect.suspend(() => {

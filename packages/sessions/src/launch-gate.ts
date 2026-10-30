@@ -17,7 +17,8 @@ export interface LaunchGate {
   ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E | SealantPlatformError, R>;
   /**
    * `run`, answering a refusal with `refused` (a public launch says why in its own terms; a hold
-   * answers the session as it stands).
+   * answers the session as it stands). Work between launches (`runBetween`) is waited for, not
+   * refused.
    */
   readonly runOr: <A2, E2, R2>(
     sessionId: string,
@@ -31,15 +32,35 @@ export interface LaunchGate {
   readonly runWhenFree: (
     sessionId: string,
   ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  /**
+   * Work between the session's launches, not a launch (a display going back, ADR 0020): it waits
+   * for the holder as `runWhenFree` does, and a launch sent while it runs waits for it in turn
+   * instead of being refused. `underWay` stays false: nothing of the session is starting.
+   */
+  readonly runBetween: (
+    sessionId: string,
+  ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  /** `runBetween` while nothing holds the gate; `busy` at once otherwise. */
+  readonly runBetweenOr: <A2, E2, R2>(
+    sessionId: string,
+    busy: Effect.Effect<A2, E2, R2>,
+  ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A | A2, E | E2, R | R2>;
+  /**
+   * A launch of the session is under way, or waits for work between launches to end; that work
+   * alone is not one.
+   */
   readonly underWay: (sessionId: string) => boolean;
 }
 
 export const makeLaunchGate = (): LaunchGate => {
-  /** Each holder's release, awaited by whoever waits for the gate. */
-  const held = new Map<string, Deferred.Deferred<void>>();
-  const hold = <A, E, R>(sessionId: string, effect: Effect.Effect<A, E, R>) => {
+  /** Each holder's release, awaited by whoever waits for the gate, and whether it is a launch. */
+  const held = new Map<
+    string,
+    { readonly released: Deferred.Deferred<void>; readonly launch: boolean }
+  >();
+  const hold = <A, E, R>(sessionId: string, launch: boolean, effect: Effect.Effect<A, E, R>) => {
     const released = Deferred.makeUnsafe<void>();
-    held.set(sessionId, released);
+    held.set(sessionId, { released, launch });
     return effect.pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -49,21 +70,41 @@ export const makeLaunchGate = (): LaunchGate => {
       ),
     );
   };
+  /** Launches waiting for work between launches to end: under way already, so a Stop finds them. */
+  const waiting = new Map<string, number>();
+  const waitFor = (sessionId: string, released: Deferred.Deferred<void>) =>
+    Effect.suspend(() => {
+      waiting.set(sessionId, (waiting.get(sessionId) ?? 0) + 1);
+      return Deferred.await(released).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            const left = (waiting.get(sessionId) ?? 1) - 1;
+            if (left <= 0) waiting.delete(sessionId);
+            else waiting.set(sessionId, left);
+          }),
+        ),
+      );
+    });
   const runOr =
     <A2, E2, R2>(sessionId: string, refused: Effect.Effect<A2, E2, R2>) =>
-    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      Effect.suspend(
-        (): Effect.Effect<A | A2, E | E2, R | R2> =>
-          held.has(sessionId) ? refused : hold(sessionId, effect),
-      );
-  const runWhenFree =
-    (sessionId: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+      const attempt: Effect.Effect<A | A2, E | E2, R | R2> = Effect.suspend(() => {
+        const current = held.get(sessionId);
+        if (current === undefined) return hold(sessionId, true, effect);
+        return current.launch
+          ? refused
+          : waitFor(sessionId, current.released).pipe(Effect.andThen(attempt));
+      });
+      return attempt;
+    };
+  const whenFree =
+    (sessionId: string, launch: boolean) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
       const attempt: Effect.Effect<A, E, R> = Effect.suspend(() => {
         const current = held.get(sessionId);
         return current === undefined
-          ? hold(sessionId, effect)
-          : Deferred.await(current).pipe(Effect.andThen(attempt));
+          ? hold(sessionId, launch, effect)
+          : Deferred.await(current.released).pipe(Effect.andThen(attempt));
       });
       return attempt;
     };
@@ -81,7 +122,15 @@ export const makeLaunchGate = (): LaunchGate => {
         ),
       ),
     runOr,
-    runWhenFree,
-    underWay: (sessionId) => held.has(sessionId),
+    runWhenFree: (sessionId) => whenFree(sessionId, true),
+    runBetween: (sessionId) => whenFree(sessionId, false),
+    runBetweenOr:
+      <A2, E2, R2>(sessionId: string, busy: Effect.Effect<A2, E2, R2>) =>
+      <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.suspend(
+          (): Effect.Effect<A | A2, E | E2, R | R2> =>
+            held.has(sessionId) ? busy : hold(sessionId, false, effect),
+        ),
+    underWay: (sessionId) => held.get(sessionId)?.launch === true || waiting.has(sessionId),
   };
 };
