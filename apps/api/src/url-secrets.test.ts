@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { createTenancyApi } from "../test/support/tenancy-api.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
-import { apiObservation, RedactedRequestPartsLive } from "./request-observation.ts";
+import { apiObservation } from "./request-observation.ts";
 
 const network = makePublicNetwork(PublicOrigin.make("http://localhost:3105"), []);
 
@@ -33,7 +33,6 @@ const betterAuthBoundary = () => {
   );
   const { handler, dispose } = observedWebHandler(
     routes.pipe(
-      Layer.provideMerge(RedactedRequestPartsLive),
       // Effect records no header on a span until a filter opts in; this one opts in to every one.
       Layer.provideMerge(Layer.succeed(HttpMiddleware.TracerHeaderFilter)(() => true)),
       Layer.provideMerge(
@@ -168,7 +167,7 @@ describe("secrets in request URLs", () => {
         { "x-mend-invitation": "invite-secret-needle" },
         { name: "Dana", email: "dana@example.com", password: "a long enough password" },
       );
-      expect(traced(boundary.spans)).toContain("http.request.header.content-type");
+      expect(traced(boundary.spans)).toContain('["http.route","/api/auth/*"]');
       expect
         .soft(boundary.logs.filter((line) => line.includes("invite-secret-needle")))
         .toEqual([]);

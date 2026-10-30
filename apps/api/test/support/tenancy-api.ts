@@ -144,7 +144,7 @@ import { PageViewTokens } from "../../src/page-view-tokens.ts";
 import { type PreviewSetup, PreviewSetupConfig } from "../../src/preview-config.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
 import { RemovalLive } from "../../src/removal.ts";
-import { apiObservation, RedactedRequestPartsLive } from "../../src/request-observation.ts";
+import { apiObservation } from "../../src/request-observation.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
@@ -752,11 +752,7 @@ export const createTenancyApi = async (
     MendApiLive,
     options.browserHeaders ? apiResponseHeaders : Layer.empty,
     options.errorDetail === undefined ? Layer.empty : errorBoundary(options.errorDetail),
-  ).pipe(
-    Layer.provideMerge(RedactedRequestPartsLive),
-    Layer.provide(authorization),
-    Layer.provide(HttpServer.layerServices),
-  );
+  ).pipe(Layer.provide(authorization), Layer.provide(HttpServer.layerServices));
   const runtime = ManagedRuntime.make(authorization);
   const services = await runtime.runPromise(Effect.context<Layer.Success<typeof authorization>>());
   const context =
