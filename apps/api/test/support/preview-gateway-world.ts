@@ -301,6 +301,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       Object.values(PREVIEWS).find((preview) => preview.id === id) ?? null;
     const previewsRepo: PreviewsRepo["Service"] = {
       ensureForWorktree: () => Effect.die("unused"),
+      ensureNamed: () => Effect.die("unused"),
       resolveByLabel: () => Effect.die("unused"),
       byLabel: (label) =>
         Effect.succeed(Object.values(PREVIEWS).find((preview) => preview.label === label) ?? null),

@@ -93,6 +93,13 @@ type StepEnd =
   | { readonly _tag: "Exited"; readonly exitCode: number; readonly output: string }
   | { readonly _tag: "OverLimit" };
 
+const siteKeyOf = (run: Pick<SetupRun, "copy" | "worktreeId" | "workspace">) =>
+  setupSiteKey(
+    run.copy._tag === "Host"
+      ? { _tag: "Host", worktreeId: run.worktreeId }
+      : { _tag: "Executor", workspaceId: run.workspace.id },
+  );
+
 /**
  * Runs a recipe start's `[setup]` once per site and fingerprint (ADR 0017, decision 4), outside
  * the lifecycle permit. One claimant at a time runs it in a site: a lapsed claim's processes are
@@ -177,11 +184,7 @@ export const makeSetupRunner = Effect.gen(function* () {
   const claimSite = Effect.fn("SetupRunner.claim")(function* (run: SetupRun) {
     const { plan } = run;
     const workspaceId = run.workspace.id;
-    const siteKey = setupSiteKey(
-      run.copy._tag === "Host"
-        ? { _tag: "Host", worktreeId: run.worktreeId }
-        : { _tag: "Executor", workspaceId },
-    );
+    const siteKey = siteKeyOf(run);
     let fenced: string | null = null;
     for (;;) {
       if (plan.stopped()) return yield* notRun(SETUP_STOPPED);
@@ -340,7 +343,20 @@ export const makeSetupRunner = Effect.gen(function* () {
     yield* report(plan, "ran");
   });
 
-  return Effect.fn("SetupRunner.run")(function* (run: SetupRun) {
+  const inputsChanged = Effect.fn("SetupRunner.inputsChanged")(function* (
+    run: Pick<SetupRun, "setup" | "worktreeId" | "copy" | "workspace" | "person">,
+  ) {
+    const stamp = yield* setupRuns.stampAt(siteKeyOf(run));
+    if (stamp === null) return false;
+    const never = yield* Deferred.make<void>();
+    const plan: SetupPlan = { stopped: () => false, stopping: never, report: () => Effect.void };
+    return yield* fingerprintOf({ ...run, plan, runsAs: null, runAgain: "never" }).pipe(
+      Effect.map((fingerprint) => fingerprint !== stamp),
+      Effect.catchTag("SetupNotRun", () => Effect.succeed(false)),
+    );
+  });
+
+  const runSetup = Effect.fn("SetupRunner.run")(function* (run: SetupRun) {
     const claim = yield* claimSite(run);
     if (claim._tag === "Done") return yield* report(run.plan, "unchanged");
     if (claim._tag === "Failed") {
@@ -376,4 +392,6 @@ export const makeSetupRunner = Effect.gen(function* () {
       ),
     );
   });
+
+  return { run: runSetup, inputsChanged };
 });

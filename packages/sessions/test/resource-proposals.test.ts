@@ -1,6 +1,10 @@
 import {
+  presetDefinition,
+  PresetVersion,
   recipeRefusalLine,
   type ResourceDefinitionInput,
+  ResourceName,
+  resourceSpecDigest,
   ServiceRecipe,
 } from "@mend/domain/workbench";
 import {
@@ -66,8 +70,8 @@ describe("[resource.*] proposals in mend.toml", () => {
       },
     ]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
-      "web · depends · @db · shared services are not available yet",
-      "web · depends · @queue · shared services are not available yet",
+      "web · depends · @db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+      "web · depends · @queue · resources need a newer Sealant on this runtime · this session can run its own [service.queue]",
     ]);
     expect(file.ignored).toEqual([]);
   });
@@ -108,6 +112,36 @@ describe("[resource.*] proposals in mend.toml", () => {
     expect(byName.get("dns")?.command).toEqual(["/coredns", "-conf", "/etc/Corefile"]);
     expect(byName.get("probe")?.ready).toEqual({ kind: "command", argv: ["probe", "--once"] });
     expect(byName.get("probe")?.limits).toEqual({ cpu: 0.5, memoryMiB: 256, diskGiB: 10 });
+  });
+
+  it("gives a preset table its engine settings, so it proposes what --preset proposes", () => {
+    const file = parse([
+      "[resource.cache]",
+      'preset = "redis"',
+      'image = "redis:8"',
+      "ports = { redis = 6379 }",
+      'volumes = { data = "/data" }',
+    ]);
+    expect(file.refused).toEqual([]);
+    const preset = presetDefinition({
+      name: ResourceName.make("cache"),
+      preset: "redis",
+      version: PresetVersion.make("8"),
+      scope: "project",
+    });
+    expect(file.resources.map(resourceSpecDigest)).toEqual([resourceSpecDigest(preset)]);
+  });
+
+  it("refuses a preset table's own command by its key", () => {
+    const file = parse([
+      "[resource.cache]",
+      'preset = "redis"',
+      'image = "redis:8"',
+      "ports = { redis = 6379 }",
+      'command = ["--appendonly", "no"]',
+    ]);
+    expect(file.resources).toEqual([]);
+    expect(refusedKeys(file)).toEqual(["resource.cache.command"]);
   });
 
   it("refuses a preset with no image, since no preset names a default version", () => {

@@ -1,8 +1,9 @@
 import {
   type PreviewGatewayRefusal,
+  previewFactLine,
+  type PreviewNotDelivered,
+  previewStatusLine,
   type ServiceHostPolicy,
-  type PreviewUndelivered,
-  previewUndeliveredLine,
 } from "@mend/domain/workbench";
 import type { ForwardIssueReason } from "@mend/sealant";
 
@@ -174,13 +175,11 @@ export const gatewayPage = (status: number, text: string): PreviewAnswer => {
   );
 };
 
-export const undeliveredAnswer = (fact: PreviewUndelivered): PreviewAnswer =>
-  gatewayPage(503, previewUndeliveredLine(fact));
-
-export const stated = (service: string, fact: string): string => `preview · ${service} · ${fact}`;
+export const undeliveredAnswer = (service: string, why: PreviewNotDelivered): PreviewAnswer =>
+  gatewayPage(503, previewStatusLine({ _tag: "Undelivered", service, why }));
 
 export const notDelivered = (service: string, fact: string): string =>
-  `${stated(service, fact)} · your request was not delivered`;
+  `${previewFactLine(service, fact)} · your request was not delivered`;
 
 export const CEILING_RETRY_SECONDS = 1;
 

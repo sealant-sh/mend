@@ -519,6 +519,22 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-manage-visible", "DELETE", "/resources/rdef_1", {
     expectedDigest: "a".repeat(64),
   })("resources.remove"),
+  project("project-manage-visible", "POST", "/resources/approvals?timeZone=UTC", {
+    source: { kind: "settings", id: "rdef_1", digest: "a".repeat(64) },
+    worktreeId: null,
+  })("resources.approve"),
+  // A worktree's choice is its change owner's, which in the harness is its session's owner.
+  {
+    endpoint: "resources.use",
+    rule: "steer",
+    call: (target) => ({
+      method: "PUT",
+      path: `/api/projects/${ids(target).project}/worktrees/${ids(target).worktree}/resources/rdef_1/selection?timeZone=UTC`,
+      id: ids(target).project,
+      body: { mode: "own" },
+    }),
+  },
+  project("project-read", "POST", "/resources/db/start")("resources.start"),
 
   // ── Sessions ──
   project("project-read", "POST", "/sessions", { harness: "shell", label: null, base: null })(
@@ -894,6 +910,19 @@ const ADMITTED: Readonly<
   // The proposal's author decides who may remove it, so it is read first.
   "resources.withdraw": { status: 500, calls: ["resources.proposalById"] },
   "resources.remove": { status: 500, calls: ["resources.removeIfCurrent"] },
+  // The approver's permission is decided before the definition they name is read.
+  "resources.approve": { status: 500, calls: ["resources.listForProject"] },
+  "resources.use": { status: 500, calls: ["resources.setSelection"] },
+  // Every start is refused, and nothing is read or written for it.
+  "resources.start": {
+    status: 409,
+    calls: [],
+    body: {
+      _tag: "ResourceRuntimeUnavailable",
+      message:
+        "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+    },
+  },
   "sessions.create": { status: 500, calls: ["removalFences.admitsStart", "engine.provision"] },
   // Refresh-capture helper defects before detail reads.
   "sessions.detail": {

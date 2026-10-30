@@ -10,7 +10,13 @@ import {
   SessionProcessId,
   WorktreeId,
 } from "../ids.ts";
-import { type ServiceAddress, ServiceHostPolicy } from "./service-recipe.ts";
+import { observedAgo } from "./landing.ts";
+import {
+  recipeChangedLine,
+  recipeUnapprovedLine,
+  type ServiceAddress,
+  ServiceHostPolicy,
+} from "./service-recipe.ts";
 import { type Service, serviceStartCorrelation } from "./service.ts";
 import type { SessionProcess } from "./session-process.ts";
 
@@ -439,25 +445,112 @@ const START_REFUSAL_REASON = {
 export const previewStartReasonOf = (refusal: PreviewStartRefusal): PreviewStartReason =>
   START_REFUSAL_REASON[refusal];
 
-export type PreviewUndelivered =
+export type PreviewStopper =
+  | { readonly _tag: "Person"; readonly name: string }
+  | { readonly _tag: "Idle"; readonly minutes: number };
+
+export const PreviewPhase = Schema.Literals(["setup", "depends", "service"]);
+export type PreviewPhase = typeof PreviewPhase.Type;
+
+export type PreviewNotPrepared =
+  | { readonly _tag: "NotCaptured" }
+  | { readonly _tag: "SessionEnded" }
+  | { readonly _tag: "NotApproved" }
+  | { readonly _tag: "Refused"; readonly words: string };
+
+export type PreviewNotDelivered =
+  | { readonly _tag: "DidNotStart"; readonly holdMs: number; readonly reason: PreviewStartReason }
+  | { readonly _tag: "Stopped"; readonly by: string };
+
+export type PreviewStatus =
   | {
-      readonly _tag: "DidNotStart";
-      readonly serviceName: string;
-      readonly holdMs: number;
-      readonly reason: PreviewStartReason;
+      readonly _tag: "Observed";
+      readonly service: string;
+      readonly reachable: boolean;
+      /** The status code its HTTP ready check read; null under a TCP rule. */
+      readonly httpStatus: number | null;
+      readonly observedAt: Date;
+      readonly now: Date;
     }
-  | { readonly _tag: "Stopped"; readonly serviceName: string; readonly by: string };
+  | { readonly _tag: "Starting"; readonly service: string; readonly phase: PreviewPhase }
+  | { readonly _tag: "Stopped"; readonly service: string; readonly by: PreviewStopper }
+  | {
+      readonly _tag: "NotPrepared";
+      /**
+       * Null when no Service was chosen: the change was not captured, the session ended, or
+       * mend.toml was unreadable.
+       */
+      readonly service: string | null;
+      readonly why: PreviewNotPrepared;
+    }
+  | { readonly _tag: "RecipeChanged"; readonly service: string }
+  | { readonly _tag: "SetupInputsChanged" }
+  | { readonly _tag: "Undelivered"; readonly service: string; readonly why: PreviewNotDelivered };
 
 const holdText = (ms: number): string =>
   ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.round(ms / 1000)} s`;
 
-export const previewUndeliveredLine = (fact: PreviewUndelivered): string => {
-  switch (fact._tag) {
-    case "DidNotStart": {
-      const within = fact.reason === "start timed out" ? ` in ${holdText(fact.holdMs)}` : "";
-      return `preview · ${fact.serviceName} · did not start${within} · ${fact.reason} · your request was not delivered`;
-    }
+const firstLine = (text: string): string => text.split("\n", 1)[0] ?? "";
+
+const observedWords = (status: Extract<PreviewStatus, { readonly _tag: "Observed" }>): string =>
+  !status.reachable
+    ? "unreachable"
+    : status.httpStatus === null
+      ? "reachable"
+      : `answered HTTP ${status.httpStatus}`;
+
+const notPreparedWords = (service: string | null, why: PreviewNotPrepared): string => {
+  switch (why._tag) {
+    case "NotCaptured":
+      return "change not captured";
+    case "SessionEnded":
+      return "session ended";
+    case "NotApproved":
+      return service === null ? "recipe not approved" : recipeUnapprovedLine(service);
+    case "Refused":
+      return firstLine(why.words);
+  }
+};
+
+export const previewFactLine = (service: string, fact: string): string =>
+  `preview · ${service} · ${fact}`;
+
+export const previewStatusLine = (status: PreviewStatus): string => {
+  switch (status._tag) {
+    case "Observed":
+      return previewFactLine(
+        status.service,
+        `${observedWords(status)} · observed ${observedAgo(status.observedAt, status.now)}`,
+      );
+    case "Starting":
+      return previewFactLine(
+        status.service,
+        `starting · ${status.phase === "service" ? status.service : status.phase}`,
+      );
     case "Stopped":
-      return `preview · ${fact.serviceName} · ${fact.by} stopped the preview · your request was not delivered`;
+      return previewFactLine(
+        status.service,
+        status.by._tag === "Person"
+          ? `stopped by ${status.by.name}`
+          : `stopped after ${status.by.minutes} min idle`,
+      );
+    case "NotPrepared": {
+      const words = notPreparedWords(status.service, status.why);
+      return status.service === null || status.why._tag === "NotApproved"
+        ? `preview not prepared · ${words}`
+        : `preview not prepared · ${status.service} · ${words}`;
+    }
+    case "RecipeChanged":
+      return `preview · ${recipeChangedLine(status.service)}`;
+    case "SetupInputsChanged":
+      return "setup inputs changed · restart to apply";
+    case "Undelivered": {
+      const { why } = status;
+      const fact =
+        why._tag === "Stopped"
+          ? `${why.by} stopped the preview`
+          : `did not start${why.reason === "start timed out" ? ` in ${holdText(why.holdMs)}` : ""} · ${why.reason}`;
+      return `${previewFactLine(status.service, fact)} · your request was not delivered`;
+    }
   }
 };

@@ -3280,6 +3280,87 @@ describe.skipIf(postgres.skip)("0163 push device credentials", () => {
   });
 });
 
+describe.skipIf(postgres.skip)("0165 preview preparations", () => {
+  const PREPARATION_DB = `${SCRATCH_DB}_preview_preparations`;
+  const preparationLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${PREPARATION_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withPreparationDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(preparationLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${PREPARATION_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${PREPARATION_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("decides every turn that already ended, and leaves an open one to the job", async () => {
+    const rows = await withPreparationDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0157_recipe_approvals");
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1))`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status)
+          VALUES ('s-1', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running')`;
+        yield* sql`
+          INSERT INTO session_processes
+            (id, session_id, sealant_workspace_id, sealant_session_id, kind, status)
+          VALUES ('proc-1', 's-1', 'ws-1', 'pty-1', 'agent-protocol', 'running')`;
+        yield* sql`
+          INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status, ended_at)
+          VALUES ('t-done', 's-1', 'proc-1', 0, 'fix it', 'completed', '2026-09-01T00:00:00Z'),
+                 ('t-failed', 's-1', 'proc-1', 1, 'fix it', 'failed', NULL),
+                 ('t-open', 's-1', 'proc-1', 2, 'fix it', 'running', NULL)`;
+        yield* migrations["0165_preview_preparations"];
+        return yield* sql<{
+          readonly turnId: string;
+          readonly state: string;
+          readonly worktreeId: string;
+          readonly decidedAt: Date | null;
+        }>`
+          SELECT turn_id AS "turnId", state, worktree_id AS "worktreeId", decided_at AS "decidedAt"
+          FROM preview_preparations ORDER BY turn_id`;
+      }),
+    );
+    expect(rows.map((row) => ({ ...row, decided: row.decidedAt !== null }))).toEqual([
+      {
+        turnId: "t-done",
+        state: "skipped",
+        worktreeId: "wt-1",
+        decidedAt: new Date("2026-09-01T00:00:00Z"),
+        decided: true,
+      },
+      expect.objectContaining({
+        turnId: "t-failed",
+        state: "skipped",
+        worktreeId: "wt-1",
+        decided: true,
+      }),
+    ]);
+  }, 60_000);
+});
+
 describe.skipIf(postgres.skip)("0166 worktree removal", () => {
   const DB = `${SCRATCH_DB}_removal`;
   const layer = (() => {
@@ -3311,7 +3392,7 @@ describe.skipIf(postgres.skip)("0166 worktree removal", () => {
     const outcome = await withDb(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* upTo("0162_scratch_projects");
+        yield* upTo("0165_preview_preparations");
         yield* sql`INSERT INTO organizations (id, name) VALUES ('org-1', 'Acme')`;
         yield* sql`
           INSERT INTO projects (id, name, organization_id, store_path, default_branch)

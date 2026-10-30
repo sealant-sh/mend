@@ -166,7 +166,10 @@ const definitionFields = {
   name: ResourceName,
   preset: Schema.NullOr(ResourcePreset),
   image: ImageReference,
-  /** Null keeps the image's entrypoint. */
+  /**
+   * Replaces the image's default command (Docker `CMD`); the image's entrypoint always runs. Null
+   * keeps the default.
+   */
   command: Schema.NullOr(Argv),
   ports: Schema.Array(ResourcePort),
   /** Keys are refused by name in `resourceDefinitionRefusals`; a checked key would be dropped. */
@@ -388,19 +391,35 @@ export const RESOURCE_PRESETS: {
   },
 };
 
-/** The port and data directory a preset's own image uses, by its major version. */
+/**
+ * The port and data directory a preset's own image uses, by its major version, and the command
+ * that runs its engine with every acknowledged write durable (ADR 0019, "Engine settings are part
+ * of the preset"). The command is in the definition, so approving it approves those settings. It
+ * is flags alone: each image's entrypoint starts its own server for a leading flag (`mariadbd`,
+ * `valkey-server`) and still sets up an empty volume.
+ */
 const PRESET_LAYOUT: {
   readonly [P in ResourcePreset]: {
     readonly port: number;
     readonly data: (major: number) => string;
+    readonly command: readonly [string, ...Array<string>];
   };
 } = {
   postgres: {
     port: 5432,
     data: (major) => (major >= 18 ? "/var/lib/postgresql" : "/var/lib/postgresql/data"),
+    command: ["-c", "fsync=on", "-c", "synchronous_commit=on"],
   },
-  mysql: { port: 3306, data: () => "/var/lib/mysql" },
-  redis: { port: 6379, data: () => "/data" },
+  mysql: {
+    port: 3306,
+    data: () => "/var/lib/mysql",
+    command: ["--innodb-flush-log-at-trx-commit=1"],
+  },
+  redis: {
+    port: 6379,
+    data: () => "/data",
+    command: ["--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"],
+  },
 };
 
 export const PRESET_VERSION_RULE =
@@ -419,7 +438,7 @@ export type PresetVersion = typeof PresetVersion.Type;
 
 /**
  * The definition `--preset postgres --version 17` names: the preset's own image at that tag, its
- * port, one data volume and its own ready check. Built in one place so every client proposes the
+ * engine settings, its port, one data volume and its own ready check. Built in one place so every client proposes the
  * same spec.
  */
 export const presetDefinition = (input: {
@@ -433,7 +452,7 @@ export const presetDefinition = (input: {
     name: input.name,
     preset: input.preset,
     image: `${RESOURCE_PRESETS[input.preset].images[0] ?? input.preset}:${input.version}`,
-    command: null,
+    command: layout.command,
     ports: [{ name: input.preset, port: layout.port, protocol: "tcp" as const }],
     env: {},
     volumes: [
@@ -451,27 +470,60 @@ export const presetDefinition = (input: {
     : { ...fields, scope: input.scope };
 };
 
+/**
+ * A preset definition that names no command runs its preset's engine settings. Every reader of a
+ * declared definition applies this before the definition is shown or digested, so a `mend.toml`
+ * table, a whole definition and `--preset` all propose the same spec.
+ */
+export const withPresetCommand = <D extends ResourceDefinitionInput>(def: D): D =>
+  def.preset === null || def.command !== null
+    ? def
+    : { ...def, command: PRESET_LAYOUT[def.preset].command };
+
 /** Whether `own` is a database on the project instance rather than an instance of its own. */
 export const isDatabasePreset = (def: PolicySubject): boolean =>
   def.preset !== null && RESOURCE_PRESETS[def.preset].database;
 
 /**
- * An image reference's repository and tag: `docker.io/library/postgres:17@sha256:…` is
+ * An image reference's parts, as written: `ghcr.io/acme/mail:v1@sha256:…` is host `ghcr.io`,
+ * repository `acme/mail`, tag `v1` and that digest. A first segment is a host when it has a `.` or
+ * a `:`, or is `localhost`; with none, the image is Docker Hub's. The one reading of the grammar,
+ * so a preset's check and the registry Mend asks name the same repository.
+ */
+export const parseImageReference = (
+  image: string,
+): {
+  readonly host: string | null;
+  readonly repository: string;
+  readonly tag: string | null;
+  readonly digest: string | null;
+} => {
+  const at = image.indexOf("@");
+  const named = at === -1 ? image : image.slice(0, at);
+  const tagAt = named.lastIndexOf(":");
+  const tagged = tagAt > named.lastIndexOf("/");
+  const path = tagged ? named.slice(0, tagAt) : named;
+  const slash = path.indexOf("/");
+  const first = slash === -1 ? "" : path.slice(0, slash);
+  const host = first.includes(".") || first.includes(":") || first === "localhost" ? first : null;
+  return {
+    host,
+    repository: host === null ? path : path.slice(slash + 1),
+    tag: tagged ? named.slice(tagAt + 1) : null,
+    digest: at === -1 ? null : image.slice(at + 1),
+  };
+};
+
+/**
+ * An image's repository and tag as a preset reads them: `docker.io/library/postgres:17@sha256:…` is
  * `postgres` and `17`. A registry host is dropped, so a mirror's `postgres` is still `postgres`.
  */
 export const imageReference = (image: string): { repository: string; tag: string } => {
-  const [named = image] = image.split("@");
-  const tagAt = named.lastIndexOf(":");
-  const tagged = tagAt > named.lastIndexOf("/");
-  const segments = (tagged ? named.slice(0, tagAt) : named).split("/");
-  const [first = "", ...rest] = segments;
-  const isHost =
-    rest.length > 0 && (first.includes(".") || first.includes(":") || first === "localhost");
-  const path = isHost ? rest : segments;
-  const repository = path.length === 2 && path[0] === "library" ? path.slice(1) : path;
+  const { repository, tag } = parseImageReference(image);
+  const path = repository.split("/");
   return {
-    repository: repository.join("/"),
-    tag: tagged ? named.slice(tagAt + 1) : "",
+    repository: path.length === 2 && path[0] === "library" ? (path[1] ?? "") : repository,
+    tag: tag ?? "",
   };
 };
 
@@ -524,6 +576,7 @@ const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRef
       : [];
   }
   const preset = RESOURCE_PRESETS[def.preset];
+  const { command } = PRESET_LAYOUT[def.preset];
   const { repository, tag } = imageReference(def.image);
   return [
     ...(preset.images.includes(repository)
@@ -549,6 +602,16 @@ const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRef
           {
             key: "ready",
             message: `is fixed by the ${def.preset} preset to its own check`,
+          },
+        ]),
+    ...(def.command !== null &&
+    def.command.length === command.length &&
+    def.command.every((arg, at) => arg === command[at])
+      ? []
+      : [
+          {
+            key: "command",
+            message: `is fixed by the ${def.preset} preset to ${command.join(" ")}`,
           },
         ]),
     ...(Object.keys(def.exports).length > 0

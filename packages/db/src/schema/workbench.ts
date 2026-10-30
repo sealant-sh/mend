@@ -150,6 +150,8 @@ import type {
   AgentWait,
   SessionControlKind,
   SessionExtraMount,
+  PreviewPhase,
+  PreviewPreparationNote,
   ServiceBrowserScheme,
   ServiceDeclarationSource,
   ServiceForwardState,
@@ -2242,6 +2244,7 @@ export const serviceObservations = pgTable(
     state: text().$type<ServiceTargetState>().notNull(),
     source: text().$type<ServiceObservationSource>().notNull(),
     error: text(),
+    httpStatus: integer(),
     firstObservedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     lastObservedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
@@ -2250,6 +2253,53 @@ export const serviceObservations = pgTable(
     index("service_observations_forward_observed_idx").on(table.forwardId, table.lastObservedAt),
   ],
 );
+
+export const previewPreparations = pgTable(
+  "preview_preparations",
+  {
+    turnId: text()
+      .$type<AgentTurnId>()
+      .primaryKey()
+      .references(() => agentTurns.id, { onDelete: "cascade" }),
+    sessionId: text().$type<SessionId>().notNull(),
+    worktreeId: text().$type<WorktreeId>().notNull(),
+    state: text().$type<PreviewPreparationStateColumn>().notNull(),
+    reason: text(),
+    note: text().$type<PreviewPreparationNote>(),
+    serviceName: text(),
+    previewId: text()
+      .$type<PreviewId>()
+      .references(() => previews.id, { onDelete: "set null" }),
+    startId: text(),
+    phase: text().$type<PreviewPhase>(),
+    claimId: uuid().notNull(),
+    claimedAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    leaseUntil: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    decidedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    index("preview_preparations_worktree_idx").on(table.worktreeId, table.decidedAt.desc()),
+    index("preview_preparations_session_idx").on(table.sessionId),
+    uniqueIndex("preview_preparations_one_start_idx")
+      .on(table.worktreeId, table.serviceName)
+      .where(sql`${table.state} = 'starting'`),
+  ],
+);
+
+export type PreviewPreparationStateColumn =
+  | "claimed"
+  | "starting"
+  | "skipped"
+  | "superseded"
+  | "no-change"
+  | "not-captured"
+  | "no-preview"
+  | "session-ended"
+  | "stopped"
+  | "not-approved"
+  | "refused"
+  | "running"
+  | "started";
 
 /** At most one `running` row per site, whatever its fingerprint (ADR 0017, decision 4). */
 export const setupRuns = pgTable(

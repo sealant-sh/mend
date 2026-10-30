@@ -47,6 +47,11 @@ export class PreviewsRepo extends Context.Service<
     readonly ensureForWorktree: (
       id: WorktreeId,
     ) => Effect.Effect<ReadonlyArray<PreviewView>, WorktreeNotFoundError>;
+    /** The kept preview of `serviceName` in the worktree, allocated now if it has none. */
+    readonly ensureNamed: (
+      id: WorktreeId,
+      serviceName: string,
+    ) => Effect.Effect<PreviewId, WorktreeNotFoundError>;
     readonly resolveByLabel: (label: PreviewLabel) => Effect.Effect<PreviewView | null>;
     readonly byId: (id: PreviewId) => Effect.Effect<Preview | null>;
     readonly byLabel: (label: PreviewLabel) => Effect.Effect<Preview | null>;
@@ -399,6 +404,24 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         return (yield* snapshot((tx) => readPreviews(tx, id))).views;
       }, Effect.catchTags(queryErrorsDie));
 
+      const ensureNamed = Effect.fn("PreviewsRepo.ensureNamed")(function* (
+        id: WorktreeId,
+        serviceName: string,
+      ) {
+        const kept = () =>
+          db
+            .select({ id: previews.id })
+            .from(previews)
+            .where(and(eq(previews.worktreeId, id), eq(previews.serviceName, serviceName)))
+            .pipe(Effect.map(([row]) => row?.id ?? null));
+        const found = yield* kept();
+        if (found !== null) return found;
+        yield* allocate(id, [serviceName]);
+        const allocated = yield* kept();
+        if (allocated === null) return yield* new WorktreeNotFoundError({ id });
+        return allocated;
+      }, Effect.catchTags(queryErrorsDie));
+
       const resolveByLabel = Effect.fn("PreviewsRepo.resolveByLabel")(function* (
         label: PreviewLabel,
       ) {
@@ -678,6 +701,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         touchTailnetPorts,
         tailnetPortReused,
         ensureForWorktree,
+        ensureNamed,
         resolveByLabel,
         byId,
         byLabel,

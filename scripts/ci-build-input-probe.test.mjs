@@ -22,27 +22,26 @@ const workspace = (t, packages, options = () => ({})) => {
     "package.json",
     JSON.stringify({ name: "build-probe", private: true, packageManager: "pnpm@10.32.1" }),
   );
-  write("pnpm-workspace.yaml", "packages:\n  - packages/*\n");
+  write("pnpm-workspace.yaml", "packages:\n  - packages/*\n  - apps/*\n");
   write(
     "pnpm-lock.yaml",
-    `lockfileVersion: '9.0'\nimporters:\n  .: {}\n${Object.keys(packages)
-      .map((name) => `  packages/${name}: {}\n`)
+    `lockfileVersion: '9.0'\nimporters:\n  .: {}\n${Object.entries(packages)
+      .map(([name, { dir = `packages/${name}` }]) => `  ${dir}: {}\n`)
       .join("")}`,
   );
-  write(".gitignore", "node_modules/\n.turbo/\ndist/\n");
+  write(".gitignore", "node_modules/\n.turbo/\ndist/\n.output/\n");
   write(
     "turbo.json",
     execFileSync("git", ["show", "HEAD:turbo.json"], { cwd: repository, encoding: "utf8" }),
   );
-  for (const [name, { build, files = {}, turbo }] of Object.entries(packages)) {
-    write(
-      `packages/${name}/package.json`,
-      JSON.stringify({ name, scripts: { build: "node build.cjs" } }),
-    );
-    write(`packages/${name}/build.cjs`, build);
-    write(`packages/${name}/src/a.test.mjs`, "export const checked = 1;\n");
-    for (const [file, text] of Object.entries(files)) write(`packages/${name}/${file}`, text);
-    if (turbo) write(`packages/${name}/turbo.json`, JSON.stringify(turbo));
+  for (const [name, { build, dir = `packages/${name}`, files = {}, turbo }] of Object.entries(
+    packages,
+  )) {
+    write(`${dir}/package.json`, JSON.stringify({ name, scripts: { build: "node build.cjs" } }));
+    write(`${dir}/build.cjs`, build);
+    write(`${dir}/src/a.test.mjs`, "export const checked = 1;\n");
+    for (const [file, text] of Object.entries(files)) write(`${dir}/${file}`, text);
+    if (turbo) write(`${dir}/turbo.json`, JSON.stringify(turbo));
   }
   const git = (...args) =>
     execFileSync(
@@ -149,6 +148,31 @@ process.exit(run.status ?? 1);
   ]);
 });
 
+const webBuildWritingAssetMap = (text) => ({
+  dir: "apps/web",
+  build: `const fs=require("node:fs");fs.mkdirSync(".output/server",{recursive:true});fs.writeFileSync(".output/server/index.mjs",${JSON.stringify(text)}.replace("<now>",new Date().toISOString()));\n`,
+});
+
+test("the asset map Vite 8 prints passes with its mtime normalized", (t) => {
+  const result = workspace(t, {
+    web: webBuildWritingAssetMap(
+      'x();\nvar public_assets_data_default = {\n\t"/assets/a.js": {\n\t\t"mtime": "<now>",\n\t\t"size": 1\n\t}\n};\n',
+    ),
+  });
+  assert.deepEqual(result.violations, []);
+});
+
+test("a volatile rule that matches nothing fails by name instead of blaming the build", (t) => {
+  const result = workspace(t, {
+    web: webBuildWritingAssetMap(
+      'x();\nconst assets = {\n  "/assets/a.js": {\n    "mtime": "<now>",\n    "size": 1\n  }\n};\n',
+    ),
+  });
+  assert.deepEqual(result.violations, [
+    "the volatile rule for apps/web/.output/server/index.mjs matched nothing in apps/web/.output/server/index.mjs",
+  ]);
+});
+
 test("each known volatile field normalizes alone, and nothing else does", () => {
   const rule = (file) => VOLATILE.find((candidate) => candidate.glob === file).normalize;
   const nitro = rule("apps/web/.output/nitro.json");
@@ -162,8 +186,9 @@ test("each known volatile field normalizes alone, and nothing else does", () => 
   );
   const server = rule("apps/web/.output/server/index.mjs");
   const entry = (name, mtime, size) =>
-    `  "/assets/${name}": {\n    "type": "text/javascript",\n    "mtime": "${mtime}",\n    "size": ${size}\n  }`;
-  const assets = (...entries) => `x();\nconst assets = {\n${entries.join(",\n")}\n};\ny();`;
+    `\t"/assets/${name}": {\n\t\t"type": "text/javascript",\n\t\t"mtime": "${mtime}",\n\t\t"size": ${size}\n\t}`;
+  const assets = (...entries) =>
+    `x();\nvar public_assets_data_default = {\n${entries.join(",\n")}\n};\ny();`;
   assert.equal(
     server(
       assets(

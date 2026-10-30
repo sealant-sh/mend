@@ -759,18 +759,25 @@ const main = async () => {
       String(text).replace(/[\\u0000-\\u001f\\u007f-\\u009f]/g, (c) => "\\\\x" + c.charCodeAt(0).toString(16).padStart(2, "0"));
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
     const query = "?timeZone=" + encodeURIComponent(zone);
+    const named = (tail) => "/resources/" + encodeURIComponent(rest[0]) + tail + query;
     const asked =
       verb === undefined || verb === "list"
         ? ["GET", "/resources" + query]
         : verb === "add"
           ? ["POST", "/resources" + query]
-          : verb === "remove" && rest[0] !== undefined
-            ? ["DELETE", "/resources/" + encodeURIComponent(rest[0]) + query]
-            : null;
-    if (asked === null) fail("this workspace helper speaks: mend resource list · mend resource add · mend resource remove NAME");
+          : rest[0] === undefined
+            ? null
+            : verb === "remove"
+              ? ["DELETE", named("")]
+              : verb === "approve"
+                ? ["POST", named("/approval")]
+                : verb === "use"
+                  ? ["PUT", named("/selection")]
+                  : null;
+    if (asked === null) fail("this workspace helper speaks: mend resource list · mend resource add · mend resource remove|approve|use NAME");
     let status;
     try {
-      status = await request(asked[0], asked[1], asked[0] === "POST" ? {} : undefined, 30 * 1000);
+      status = await request(asked[0], asked[1], asked[0] === "GET" || asked[0] === "DELETE" ? undefined : {}, 30 * 1000);
     } catch (error) {
       fail(printable(error.message));
     }

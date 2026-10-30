@@ -4,7 +4,8 @@ import {
   Change as SessionChange,
   Checkpoint,
   PreReleaseMemory,
-  PreviewView,
+  Preview,
+  PreviewBinding,
   Session,
   Worktree,
   WorktreeName,
@@ -237,6 +238,29 @@ export class WorktreeDetail extends Schema.Class<WorktreeDetail>("WorktreeDetail
   ),
 }) {}
 
+/**
+ * One kept preview of the worktree (ADR 0017, "Where the link shows up"): its identity, which
+ * attempt the gateway binds, and its status lines as every surface says them (`previewStatusLine`),
+ * most telling first. Empty when Mend has observed and decided nothing about it worth saying.
+ */
+export const WorktreePreview = Schema.Struct({
+  preview: Preview,
+  binding: PreviewBinding,
+  status: Schema.Array(Schema.String),
+});
+export type WorktreePreview = typeof WorktreePreview.Type;
+
+/**
+ * A worktree's previews, and the worktree's own line when its latest preparation names no kept
+ * preview: `preview not prepared · change not captured`, or a recipe refused before any preview
+ * of it existed. Null when there is none.
+ */
+export const WorktreePreviews = Schema.Struct({
+  previews: Schema.Array(WorktreePreview),
+  unprepared: Schema.NullOr(Schema.String),
+});
+export type WorktreePreviews = typeof WorktreePreviews.Type;
+
 export const worktreesGroup = HttpApiGroup.make("worktrees")
   .add(
     HttpApiEndpoint.post("create", "/projects/:id/worktrees", {
@@ -263,7 +287,7 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
   .add(
     HttpApiEndpoint.get("previews", "/worktrees/:id/previews", {
       params: { id: WorktreeId },
-      success: Schema.Array(PreviewView),
+      success: WorktreePreviews,
       error: WorktreeNotFound,
     }),
   )

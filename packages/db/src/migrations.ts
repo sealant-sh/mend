@@ -4030,6 +4030,57 @@ const pushDeviceCredentialsMigration = Effect.gen(function* () {
     EXECUTE FUNCTION push_devices_drop_for_user()`;
 });
 
+const previewPreparationsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE preview_preparations (
+    turn_id text PRIMARY KEY REFERENCES agent_turns (id) ON DELETE CASCADE,
+    session_id text NOT NULL,
+    worktree_id text NOT NULL,
+    state text NOT NULL CHECK (state IN (
+      'claimed', 'starting', 'skipped', 'superseded', 'no-change', 'not-captured', 'no-preview',
+      'session-ended', 'stopped', 'not-approved', 'refused', 'running', 'started'
+    )),
+    reason text,
+    note text CHECK (note IN ('recipe-changed', 'setup-inputs-changed')),
+    service_name text,
+    preview_id text REFERENCES previews (id) ON DELETE SET NULL,
+    start_id text,
+    phase text CHECK (phase IN ('setup', 'depends', 'service')),
+    claim_id uuid NOT NULL,
+    claimed_at timestamptz NOT NULL,
+    lease_until timestamptz NOT NULL,
+    decided_at timestamptz,
+    CONSTRAINT preview_preparations_decided_facts
+      CHECK ((state IN ('claimed', 'starting')) = (decided_at IS NULL)),
+    CONSTRAINT preview_preparations_phase_facts CHECK ((state = 'starting') = (phase IS NOT NULL)),
+    CONSTRAINT preview_preparations_reason_facts
+      CHECK ((state IN ('skipped', 'refused')) = (reason IS NOT NULL)),
+    CONSTRAINT preview_preparations_note_facts
+      CHECK (note IS NULL OR state IN ('starting', 'running', 'started')),
+    CONSTRAINT preview_preparations_service_facts CHECK (CASE
+      WHEN state IN ('starting', 'stopped', 'not-approved', 'running', 'started')
+        THEN service_name IS NOT NULL
+      WHEN state = 'refused' THEN true
+      ELSE service_name IS NULL
+    END)
+  )`;
+  yield* sql`CREATE INDEX preview_preparations_worktree_idx
+    ON preview_preparations (worktree_id, decided_at DESC)`;
+  yield* sql`CREATE INDEX preview_preparations_session_idx ON preview_preparations (session_id)`;
+  yield* sql`CREATE UNIQUE INDEX preview_preparations_one_start_idx
+    ON preview_preparations (worktree_id, service_name) WHERE state = 'starting'`;
+  yield* sql`
+    INSERT INTO preview_preparations
+      (turn_id, session_id, worktree_id, state, reason, claim_id, claimed_at, lease_until,
+       decided_at)
+    SELECT t.id, t.session_id, s.worktree_id, 'skipped', 'ended before previews were prepared',
+      gen_random_uuid(), coalesce(t.ended_at, t.created_at), coalesce(t.ended_at, t.created_at),
+      coalesce(t.ended_at, t.created_at)
+    FROM agent_turns t JOIN agent_sessions s ON s.id = t.session_id
+    WHERE t.status NOT IN ('queued', 'running')`;
+  yield* sql`ALTER TABLE service_observations ADD COLUMN http_status integer`;
+});
+
 /**
  * 0166 (docs/adr/0007-landing.md, "Worktree removal"; decisions Q1-Q8 of 2026-10-25 and 10-30):
  *
@@ -4525,5 +4576,6 @@ export const migrations = {
   "0161_resource_proposals": resourceProposalsMigration,
   "0162_scratch_projects": scratchProjectsMigration,
   "0163_push_device_credentials": pushDeviceCredentialsMigration,
+  "0165_preview_preparations": previewPreparationsMigration,
   "0166_worktree_removal": worktreeRemovalMigration,
 };

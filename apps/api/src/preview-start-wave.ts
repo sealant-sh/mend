@@ -50,7 +50,7 @@ export const routeOf = (
   switch (resolution._tag) {
     case "Stopped":
       return refused(
-        undeliveredAnswer({ _tag: "Stopped", serviceName, by: resolution.control.byName }),
+        undeliveredAnswer(serviceName, { _tag: "Stopped", by: resolution.control.byName }),
       );
     case "Refused": {
       const reason = REFUSED[resolution.reason];
@@ -110,9 +110,8 @@ export const makeStartWaves = (startHoldMs: number) =>
 
     const didNotStart = (preview: PreviewToStart, reason: PreviewStartReason): WaveOutcome =>
       refused(
-        undeliveredAnswer({
+        undeliveredAnswer(preview.serviceName, {
           _tag: "DidNotStart",
-          serviceName: preview.serviceName,
           holdMs: startHoldMs,
           reason,
         }),
