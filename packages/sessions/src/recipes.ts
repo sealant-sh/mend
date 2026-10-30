@@ -24,7 +24,7 @@ import {
   SetupDeclaration,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, TomlError } from "smol-toml";
 
 import { readResourceProposals } from "./resource-proposals.ts";
 
@@ -394,6 +394,17 @@ const readRecipe = (
 };
 
 /**
+ * Why `mend.toml` does not parse, by position and the parser's reason alone. The parser's own
+ * message quotes the lines around the error, which can hold env values, and this text reaches the
+ * workspace note, the session's routes and their logs.
+ */
+export const tomlDiagnostic = (cause: unknown): string => {
+  if (!(cause instanceof TomlError)) return "mend.toml is not valid TOML";
+  const reason = cause.message.replace(/^Invalid TOML document: /u, "").split("\n", 1)[0];
+  return `mend.toml is not valid TOML: line ${cause.line}, column ${cause.column} · ${reason}`;
+};
+
+/**
  * Read `mend.toml` text wherever it was read from: the co-located worktree, or the session's live
  * workspace when Mend is not beside the files. `filePath` only names the file in the error.
  */
@@ -408,7 +419,7 @@ export const parseMendToml = (
     } catch (cause) {
       return yield* new RecipeFileError({
         path: filePath,
-        message: `mend.toml is not valid TOML: ${cause instanceof Error ? cause.message : String(cause)}`,
+        message: tomlDiagnostic(cause),
       });
     }
     if (!isRecord(parsed)) return EMPTY_MEND_TOML;
