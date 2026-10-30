@@ -2543,8 +2543,9 @@ export const makePersonHub = (input: {
             if (projectReadOrder.newerThan(id, started)) {
               entries.push(current);
               for (const session of current.sessions) supersededSessions.add(session.id);
-            } else projectReadOrder.apply(id, started);
+            }
           }
+          projectReadOrder.snapshot(started);
           const present = new Set(entries.flatMap((entry) => entry.sessions.map((s) => s.id)));
           const kept = <A>(rows: ReadonlyArray<readonly [string, A]>) =>
             rows.filter(

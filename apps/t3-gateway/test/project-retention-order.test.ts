@@ -21,4 +21,13 @@ describe("project restoration ordering", () => {
     expect(order.apply("project", old404)).toBe(false);
     expect(order.newerThan("project", old404)).toBe(true);
   });
+  it("a newer snapshot without the project refuses an older read of it, though it was never cached", () => {
+    const order = makeProjectReadOrder();
+    order.removed("project");
+    const delayed = order.begin();
+    const resync = order.begin();
+    order.snapshot(resync);
+    expect(order.apply("project", delayed)).toBe(false);
+    expect(order.apply("project", order.begin())).toBe(true);
+  });
 });
