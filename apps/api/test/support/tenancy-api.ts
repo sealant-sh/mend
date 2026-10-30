@@ -31,6 +31,7 @@ import {
   ProjectServiceRecipesRepo,
   type ProjectsRepo,
   ResourcesRepo,
+  PreviewPreparationsRepo,
   PreviewsRepo,
   PushDevice,
   PushDevicesRepo,
@@ -260,6 +261,8 @@ export const createTenancyApi = async (
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
       readonly previews?: Layer.PartialEffectful<PreviewsRepo["Service"]>;
+      readonly preparations?: Layer.PartialEffectful<PreviewPreparationsRepo["Service"]>;
+      readonly observations?: Layer.PartialEffectful<ServiceObservationsRepo["Service"]>;
       readonly storeRefs?: Layer.PartialEffectful<StoreRefsRepo["Service"]>;
       readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
       readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
@@ -419,7 +422,18 @@ export const createTenancyApi = async (
       recording(RunsRepo, "runs", {}, calls),
       recording(ServiceForwardsRepo, "forwards", options.implement?.forwards ?? {}, calls),
       recording(PreviewsRepo, "previews", options.implement?.previews ?? {}, calls),
-      recording(ServiceObservationsRepo, "observations", {}, calls),
+      recording(
+        PreviewPreparationsRepo,
+        "preparations",
+        options.implement?.preparations ?? {},
+        calls,
+      ),
+      recording(
+        ServiceObservationsRepo,
+        "observations",
+        options.implement?.observations ?? {},
+        calls,
+      ),
       recording(SettingsRepo, "settings", {}, calls),
       recording(UserEvents, "userEvents", {}, calls),
       recording(UserGitAccessRepo, "gitAccess", options.implement?.gitAccess ?? {}, calls),

@@ -26,7 +26,9 @@ import {
 } from "@mend/api-contracts";
 import {
   ProjectsRepo,
+  PreviewPreparationsRepo,
   PreviewsRepo,
+  ServiceObservationsRepo,
   SessionsRepo,
   ServiceForwardsRepo,
   ServicesRepo,
@@ -37,7 +39,13 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import type { CheckpointId, WorktreeId } from "@mend/domain";
-import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
+import {
+  currentAgentProcess,
+  heldRepositoriesRefusal,
+  previewStatusesOf,
+  previewStatusLine,
+  unpreparedStatusOf,
+} from "@mend/domain/workbench";
 import {
   captureHoldWords,
   SessionEngine,
@@ -620,13 +628,55 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const worktree = yield* (yield* ProjectAccess)
           .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
-        return yield* (yield* PreviewsRepo)
+        const previews = yield* PreviewsRepo;
+        const observations = yield* ServiceObservationsRepo;
+        const processes = yield* SessionProcessesRepo;
+        const views = yield* previews
           .ensureForWorktree(worktree.id)
           .pipe(
             Effect.catchTag("WorktreeNotFoundError", () =>
               Effect.fail(new WorktreeNotFound({ id: params.id })),
             ),
           );
+        const snapshots = yield* previews.gatewaySnapshots(views.map(({ preview }) => preview.id));
+        const preparation = yield* (yield* PreviewPreparationsRepo).latestForWorktree(worktree.id);
+        const now = new Date(yield* Clock.currentTimeMillis);
+        const described = yield* Effect.forEach(views, (view) =>
+          Effect.gen(function* () {
+            const resolution = snapshots.get(view.preview.id)?.resolution ?? null;
+            const bound = resolution?._tag === "Bound" ? resolution.attempt : null;
+            const observation =
+              bound === null ? null : yield* observations.latestForService(bound.serviceId);
+            const attemptId =
+              resolution?._tag === "Bound"
+                ? resolution.attempt.attemptId
+                : resolution?._tag === "Starting"
+                  ? resolution.attemptId
+                  : resolution?._tag === "Dormant"
+                    ? resolution.source.sourceAttemptId
+                    : null;
+            const attempt = attemptId === null ? null : yield* processes.byId(attemptId);
+            const statuses = previewStatusesOf(
+              {
+                preview: view.preview,
+                resolution,
+                observation,
+                attemptStartedAt: attempt?.createdAt ?? null,
+              },
+              preparation,
+              now,
+            );
+            return { ...view, status: statuses.map(previewStatusLine) };
+          }),
+        );
+        const unprepared = unpreparedStatusOf(
+          views.map(({ preview }) => preview),
+          preparation,
+        );
+        return {
+          previews: described,
+          unprepared: unprepared === null ? null : previewStatusLine(unprepared),
+        };
       }),
     )
     .handle("remove", ({ params, query }) =>
