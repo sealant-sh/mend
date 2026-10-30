@@ -194,11 +194,12 @@ idempotency key for its POST; stopping a claim retires its worker, and archiving
 preparing. Exact prepared input and image paths are written before posting. An uncertain answer
 leaves the input pending; once a later read shows no receipt, the same input is posted again under
 the same key, so Mend keeps one copy. After three such POSTs it fails with its words kept and is
-never requeued. Mend's answers are written until kept, never rolled back. A settled steer leaves the
-working table for one narrow row: key, ids, words, image ids, and where the words show. After
-restart, the ordinary queue waits only for the first successful Mend read, except that an identified
-Queued destination must also be installed. Steers on their way keep a person's hub alive without a
-socket. The submitting bearer-session id, not its token, is stored.
+never requeued. A refusal after such a POST fails it the same way, and a re-send of the message is
+refused, never claimed under a new key. Mend's answers are written until kept, never rolled back. A
+settled steer leaves the working table for one narrow row: key, ids, words, image ids, and where the
+words show. After restart, the ordinary queue waits only for the first successful Mend read, except
+that an identified Queued destination must also be installed. Steers on their way keep a person's
+hub alive without a socket. The submitting bearer-session id, not its token, is stored.
 
 Snapshots and streams link one initial attempt, root node and bound provider turn per Mend turn.
 Native steering does not create another attempt. Codex and Claude advertise active steering; Claude

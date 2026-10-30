@@ -240,7 +240,9 @@ An uncertain answer (none, a 5xx, the 30-second timeout, one that does not decod
 pending. Once a read that started after it shows no receipt, the gateway posts the same frozen input
 again under the same `clientSteerId`, so Mend answers the receipt it holds or admits the steer once.
 After three such POSTs the input fails where it stands with its words, and a promotion is not put
-back in the queue, since Mend may have it.
+back in the queue, since Mend may have it. A refusal after such a POST fails it the same way, since
+that POST may still be admitted. A re-send of a message that failed so is refused and keeps its key;
+only a message Mend never had is claimed again under a new one.
 
 A `Queued` receipt adopts exactly its destination turn with the original message id, once a read
 shows the turn is the steer's own; it never sends the words again. Until then a placeholder holds
