@@ -198,6 +198,7 @@ export const mainTestFixtures = () => {
     args: ReadonlyArray<string>,
     env: Readonly<Record<string, string>> = {},
     cwd?: string,
+    stdin?: string,
   ) => {
     const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-process-"));
@@ -231,11 +232,10 @@ export const mainTestFixtures = () => {
         MEND_DETACH_KEY: "none",
         ...env,
       },
-      // stdin is /dev/null on every run, whatever terminal vitest itself has, so the CLI never
-      // sees a terminal here and an attach always says so once on stderr.
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       ...(cwd === undefined ? {} : { cwd }),
     });
+    if (stdin !== undefined) child.stdin?.end(stdin);
     cliChildren.add(child);
     child.once("close", () => {
       cliChildren.delete(child);
@@ -243,10 +243,10 @@ export const mainTestFixtures = () => {
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
     });
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr?.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
     });
     const exited = new Promise<{ readonly kind: "exit"; readonly code: number | null }>(
@@ -254,7 +254,8 @@ export const mainTestFixtures = () => {
         child.once("exit", (code) => resolve({ kind: "exit", code }));
       },
     );
-    return { child, exited, stdout: () => stdout, stderr: () => stderr };
+    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    return { child, exited, closed, stdout: () => stdout, stderr: () => stderr };
   };
 
   return { spawning, project, session, json, startFakeMend, startCli, waitFor, expectExit, git };

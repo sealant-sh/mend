@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   mayStillBeWorking,
   MendRequestError,
+  neverConnected,
   noAnswerMessage,
   noAnswerOf,
 } from "./server-request.ts";
@@ -44,6 +45,33 @@ const fetchError = async (behave: "refuse" | "drop" | "hang"): Promise<unknown> 
     server.close();
   }
 };
+
+const failed = (cause: unknown) => new TypeError("fetch failed", { cause });
+const coded = (code: string) => Object.assign(new Error(code), { code });
+
+describe("neverConnected", () => {
+  it("is true only for codes that prove the connection never opened", async () => {
+    expect(neverConnected(await fetchError("refuse"))).toBe(true);
+    for (const code of [
+      "ENOTFOUND",
+      "EAI_AGAIN",
+      "EHOSTUNREACH",
+      "ENETUNREACH",
+      "UND_ERR_CONNECT_TIMEOUT",
+    ])
+      expect(neverConnected(failed(coded(code))), code).toBe(true);
+    expect(
+      neverConnected(failed(new AggregateError([coded("ECONNREFUSED"), coded("ENETUNREACH")]))),
+    ).toBe(true);
+    expect(neverConnected(await fetchError("drop"))).toBe(false);
+    expect(neverConnected(await fetchError("hang"))).toBe(false);
+    expect(neverConnected(failed(coded("UND_ERR_HEADERS_OVERFLOW")))).toBe(false);
+    expect(
+      neverConnected(failed(new AggregateError([coded("ECONNREFUSED"), coded("ECONNRESET")]))),
+    ).toBe(false);
+    expect(neverConnected(failed(new Error("no code")))).toBe(false);
+  });
+});
 
 describe("noAnswerOf", () => {
   it("calls only a connection that never opened unreachable", async () => {
