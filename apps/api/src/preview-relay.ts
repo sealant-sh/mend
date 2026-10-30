@@ -7,6 +7,7 @@ import {
 } from "node:http";
 import { type Duplex, pipeline } from "node:stream";
 
+import { previewFactLine } from "@mend/domain/workbench";
 import type { ForwardAgent, ForwardSocket } from "@mend/sessions";
 import { Effect } from "effect";
 
@@ -17,7 +18,6 @@ import {
   forwardResponseHead,
   gatewayPage,
   notDelivered,
-  stated,
 } from "./preview-headers.ts";
 import {
   type HeaderPair,
@@ -239,7 +239,7 @@ const sendUpstream = (
         }
         end(
           delivered
-            ? gatewayPage(502, stated(serviceName, "the app did not answer"))
+            ? gatewayPage(502, previewFactLine(serviceName, "the app did not answer"))
             : lease.refusal(error),
         );
       });
@@ -267,7 +267,12 @@ const streamBody = (
       if (seen <= cap.bytes) return;
       request.unpipe(upstream);
       request.pause();
-      end(gatewayPage(413, stated(serviceName, `the request body passed ${cap.bytes} bytes`)));
+      end(
+        gatewayPage(
+          413,
+          previewFactLine(serviceName, `the request body passed ${cap.bytes} bytes`),
+        ),
+      );
       upstream.destroy();
     });
   }

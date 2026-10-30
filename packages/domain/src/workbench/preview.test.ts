@@ -26,7 +26,8 @@ import {
   previewStartId,
   previewStartReasonOf,
   type PreviewTarget,
-  previewUndeliveredLine,
+  previewStatusLine,
+  type PreviewStatus,
   resolvePreviewBinding,
   selectPreviewTarget,
   startedByPreviewRequest,
@@ -283,32 +284,86 @@ it("a label preserves all 128 input bits and leaves only two zero padding bits",
   );
 });
 
-describe("previewUndeliveredLine", () => {
-  it("names the hold only for a start that outlasted it, and says nothing was delivered", () => {
-    expect(
-      previewUndeliveredLine({
-        _tag: "DidNotStart",
-        serviceName: "web",
-        holdMs: 180_000,
-        reason: "setup failed",
-      }),
-    ).toBe("preview · web · did not start · setup failed · your request was not delivered");
-    expect(
-      previewUndeliveredLine({
-        _tag: "DidNotStart",
-        serviceName: "web",
-        holdMs: 45_000,
-        reason: previewStartReasonOf("start-expired"),
-      }),
-    ).toBe(
+describe("previewStatusLine", () => {
+  const observedAt = new Date("2026-10-30T12:00:00.000Z");
+  const now = new Date(observedAt.getTime() + 4_000);
+  const lines: ReadonlyArray<readonly [PreviewStatus, string]> = [
+    [
+      { _tag: "Observed", service: "web", reachable: true, httpStatus: 200, observedAt, now },
+      "preview · web · answered HTTP 200 · observed 4 s ago",
+    ],
+    [
+      { _tag: "Observed", service: "web", reachable: true, httpStatus: null, observedAt, now },
+      "preview · web · reachable · observed 4 s ago",
+    ],
+    [
+      { _tag: "Observed", service: "web", reachable: false, httpStatus: null, observedAt, now },
+      "preview · web · unreachable · observed 4 s ago",
+    ],
+    [{ _tag: "Starting", service: "web", phase: "setup" }, "preview · web · starting · setup"],
+    [{ _tag: "Starting", service: "web", phase: "depends" }, "preview · web · starting · depends"],
+    [{ _tag: "Starting", service: "web", phase: "service" }, "preview · web · starting · web"],
+    [
+      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
+      "preview · web · stopped by Maria",
+    ],
+    [
+      { _tag: "Stopped", service: "web", by: { _tag: "Idle", minutes: 30 } },
+      "preview · web · stopped after 30 min idle",
+    ],
+    [
+      { _tag: "NotPrepared", service: null, why: { _tag: "NotCaptured" } },
+      "preview not prepared · change not captured",
+    ],
+    [
+      { _tag: "NotPrepared", service: null, why: { _tag: "SessionEnded" } },
+      "preview not prepared · session ended",
+    ],
+    [
+      { _tag: "NotPrepared", service: "web", why: { _tag: "NotApproved" } },
+      "preview not prepared · web · recipe not approved · the owner's Start runs it",
+    ],
+    [
+      {
+        _tag: "NotPrepared",
+        service: "web",
+        why: { _tag: "Refused", words: "mend.toml refuses web: web · cwd · is absolute\nnotices" },
+      },
+      "preview not prepared · web · mend.toml refuses web: web · cwd · is absolute",
+    ],
+    [
+      { _tag: "RecipeChanged", service: "web" },
+      "preview · web · recipe changed · the owner's Start runs it",
+    ],
+    [{ _tag: "SetupInputsChanged" }, "setup inputs changed · restart to apply"],
+    [
+      {
+        _tag: "Undelivered",
+        service: "web",
+        why: { _tag: "DidNotStart", holdMs: 180_000, reason: "setup failed" },
+      },
+      "preview · web · did not start · setup failed · your request was not delivered",
+    ],
+    [
+      {
+        _tag: "Undelivered",
+        service: "web",
+        why: {
+          _tag: "DidNotStart",
+          holdMs: 45_000,
+          reason: previewStartReasonOf("start-expired"),
+        },
+      },
       "preview · web · did not start in 45 s · start timed out · your request was not delivered",
-    );
-  });
-
-  it("says who stopped it", () => {
-    expect(previewUndeliveredLine({ _tag: "Stopped", serviceName: "web", by: "Carol" })).toBe(
+    ],
+    [
+      { _tag: "Undelivered", service: "web", why: { _tag: "Stopped", by: "Carol" } },
       "preview · web · Carol stopped the preview · your request was not delivered",
-    );
+    ],
+  ];
+
+  it.each(lines)("states %j as the ADR writes it", (status, line) => {
+    expect(previewStatusLine(status)).toBe(line);
   });
 });
 
