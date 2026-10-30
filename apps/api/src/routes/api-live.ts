@@ -3,6 +3,7 @@ import {
   BriefDetail,
   AccountRejected,
   CurrentUser,
+  deviceIdOf,
   SealantUnavailable,
   HealthStatus,
   InstanceView,
@@ -12,6 +13,7 @@ import {
   LossSpanView,
   MendApi,
   NotFound,
+  PushNeedsPairedDevice,
   RegisteredDevice,
   RunCommandView,
   RunDetail,
@@ -618,17 +620,24 @@ export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handle
   handlers
     .handle("register", ({ payload }) =>
       Effect.gen(function* () {
-        const devices = yield* PushDevicesRepo;
         const caller = yield* CurrentUser;
-        const device = yield* devices.register(caller.user.id, payload.token, payload.platform);
+        const deviceTokenId = deviceIdOf(caller.credential);
+        if (deviceTokenId === undefined) return yield* new PushNeedsPairedDevice();
+        const device = yield* (yield* PushDevicesRepo)
+          .register({
+            userId: caller.user.id,
+            deviceTokenId,
+            token: payload.token,
+            platform: payload.platform,
+          })
+          .pipe(Effect.catchTag("PushCredentialEndedError", () => Effect.fail(new Unauthorized())));
         return new RegisteredDevice({ token: device.token, platform: device.platform });
       }),
     )
-    .handle("unregister", ({ params }) =>
+    .handle("unregister", () =>
       Effect.gen(function* () {
-        const devices = yield* PushDevicesRepo;
-        const caller = yield* CurrentUser;
-        yield* devices.removeOwned(caller.user.id, params.token);
+        const deviceTokenId = deviceIdOf((yield* CurrentUser).credential);
+        if (deviceTokenId !== undefined) yield* (yield* PushDevicesRepo).forget(deviceTokenId);
       }),
     )
     .handle("notificationSettings", () =>

@@ -3,14 +3,13 @@ import {
   AgentConversationRepo,
   AgentConversationRepoLive,
   AuditEventsRepoLive,
+  DevicesRepo,
   DevicesRepoLive,
   MendDBLive,
   MemberRevocationsRepoLive,
   MemberRevocationsRepo,
   OrganizationsRepoLive,
   ProjectsRepoLive,
-  PushDevicesRepoLive,
-  PushDevicesRepo,
   SessionControlEventsRepoLive,
   SessionsRepoLive,
   SlackLinksRepoLive,
@@ -65,7 +64,6 @@ const reposLayer = Layer.mergeAll(
   DevicesRepoLive,
   OrganizationsRepoLive,
   ProjectsRepoLive,
-  PushDevicesRepoLive,
   SessionControlEventsRepoLive,
   SessionsRepoLive,
   SlackLinksRepoLive,
@@ -136,15 +134,15 @@ const externalLayer = Layer.mergeAll(
   ),
 );
 // Only readiness barriers wrap live implementations; the SQL mutations and transaction are real.
-const controlledPush = Layer.effect(
-  PushDevicesRepo,
+const controlledDevices = Layer.effect(
+  DevicesRepo,
   Effect.gen(function* () {
-    const actual = yield* PushDevicesRepo;
+    const actual = yield* DevicesRepo;
     return {
       ...actual,
-      removeAllForUser: (userId: string) =>
+      revokeAllForUser: (userId: string) =>
         actual
-          .removeAllForUser(userId)
+          .revokeAllForUser(userId)
           .pipe(
             Effect.tap(() =>
               Effect.suspend(() =>
@@ -158,7 +156,7 @@ const controlledPush = Layer.effect(
           ),
     };
   }),
-).pipe(Layer.provide(PushDevicesRepoLive));
+).pipe(Layer.provide(DevicesRepoLive));
 const controlledRemoval = Layer.effect(
   MemberRevocationsRepo,
   Effect.gen(function* () {
@@ -181,7 +179,7 @@ const controlledRemoval = Layer.effect(
           ),
     };
   }),
-).pipe(Layer.provide(MemberRevocationsRepoLive.pipe(Layer.provide(controlledPush))));
+).pipe(Layer.provide(MemberRevocationsRepoLive.pipe(Layer.provide(controlledDevices))));
 const layer = MemberRemovalLive.pipe(
   Layer.provide(controlledRemoval),
   Layer.provide(externalLayer),
@@ -221,7 +219,8 @@ const state = (userId = "removed") =>
         (SELECT "deactivatedAt" IS NULL FROM "user" WHERE id = ${userId}) AS active,
         (SELECT count(*)::int FROM "session" WHERE "userId" = ${userId}) AS auth,
         (SELECT count(*)::int FROM device_tokens WHERE user_id = ${userId} AND revoked_at IS NULL) AS devices,
-        (SELECT count(*)::int FROM push_devices WHERE user_id = ${userId}) AS push,
+        (SELECT count(*)::int FROM push_devices p JOIN device_tokens d ON d.id = p.device_token_id
+          WHERE d.user_id = ${userId}) AS push,
         (SELECT shared_control_enabled_at IS NOT NULL FROM agent_sessions WHERE id = ${`s-${userId}`}) AS shared,
         (SELECT count(*)::int FROM agent_turns WHERE author = ${userId} AND status = 'queued') AS queued,
         (SELECT count(*)::int FROM agent_requests r JOIN agent_turns t ON t.id = r.turn_id
@@ -316,7 +315,7 @@ describe.skipIf(postgres.skip)("member removal with real PostgreSQL", () => {
           (${`auth-${userId}`},${userId},${`auth-token-${userId}`},now()+interval '1 day')`;
           yield* sql`INSERT INTO device_tokens (id,user_id,name,platform,token_hash) VALUES
           (${`device-${userId}`},${userId},'Test','cli',${`hash-${userId}`})`;
-          yield* sql`INSERT INTO push_devices (token,user_id,platform) VALUES (${`push-${userId}`},${userId},'ios')`;
+          yield* sql`INSERT INTO push_devices (token,device_token_id,platform) VALUES (${`push-${userId}`},${`device-${userId}`},'ios')`;
           yield* sql`INSERT INTO projects (id,name,store_path,default_branch,organization_id) VALUES
           (${`p-${userId}`},${userId},${`/store/${userId}`},'main',${organizationId})`;
           yield* sql`INSERT INTO worktrees (id,project_id,name,directory,branch,base_sha) VALUES

@@ -4,21 +4,29 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware } from "./common.ts";
+import { AuthMiddleware, Unauthorized } from "./common.ts";
 import { RegisterDeviceRequest, RegisteredDevice } from "./github.ts";
 
+export class PushNeedsPairedDevice extends Schema.TaggedError<PushNeedsPairedDevice>()(
+  "PushNeedsPairedDevice",
+  {},
+  { httpApiStatus: 403 },
+) {}
+
+/**
+ * A phone's push token. Register sends it in the body; unregister names none and drops the tokens
+ * of the calling phone's own pairing.
+ */
 export const devicesGroup = HttpApiGroup.make("devices")
   .add(
     HttpApiEndpoint.post("register", "/devices", {
       payload: RegisterDeviceRequest,
       success: RegisteredDevice,
+      // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.
+      error: [PushNeedsPairedDevice, Unauthorized],
     }),
   )
-  .add(
-    HttpApiEndpoint.delete("unregister", "/devices/:token", {
-      params: { token: Schema.String },
-    }),
-  )
+  .add(HttpApiEndpoint.delete("unregister", "/devices"))
   // What the signed-in account hears about on its phones; PUT saves the whole setting.
   .add(
     HttpApiEndpoint.get("notificationSettings", "/me/notifications", {

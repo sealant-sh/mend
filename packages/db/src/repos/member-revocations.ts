@@ -15,7 +15,6 @@ import {
   type LastOwnerError,
   type MemberNotFoundError,
 } from "./organizations.ts";
-import { PushDevicesRepo } from "./push-devices.ts";
 import { SlackLinksRepo } from "./slack-links.ts";
 import { UsersRepo } from "./users.ts";
 
@@ -58,7 +57,7 @@ export class MemberRevocationsRepo extends Context.Service<
 export const MemberRevocationsRepoLive: Layer.Layer<
   MemberRevocationsRepo,
   never,
-  MendDB | PgClient.PgClient | UsersRepo | DevicesRepo | PushDevicesRepo | SlackLinksRepo
+  MendDB | PgClient.PgClient | UsersRepo | DevicesRepo | SlackLinksRepo
 > = Layer.effect(
   MemberRevocationsRepo,
   Effect.gen(function* () {
@@ -66,7 +65,6 @@ export const MemberRevocationsRepoLive: Layer.Layer<
     const pg = yield* PgClient.PgClient;
     const users = yield* UsersRepo;
     const devices = yield* DevicesRepo;
-    const pushDevices = yield* PushDevicesRepo;
     const slackLinks = yield* SlackLinksRepo;
 
     const beginRemoval: MemberRevocationsRepo["Service"]["beginRemoval"] = Effect.fn(
@@ -107,7 +105,6 @@ export const MemberRevocationsRepoLive: Layer.Layer<
               tx,
               queued.map((turn) => turn.turnId),
             );
-            yield* pushDevices.removeAllForUser(input.userId);
             return Schema.decodeUnknownSync(MemberRevocation)({
               organizationId: input.organizationId,
               userId: input.userId,

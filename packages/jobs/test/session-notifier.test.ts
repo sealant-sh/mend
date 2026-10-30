@@ -216,8 +216,7 @@ describe("pushTargets", () => {
         return registered.filter((device) => userIds.includes(device.userId));
       }),
     remove: () => Effect.void,
-    removeOwned: () => Effect.void,
-    removeAllForUser: () => Effect.void,
+    forget: () => Effect.void,
   };
   const saved = new Map<string, NotificationSettings>();
   const settings: Pick<NotificationSettingsRepo["Service"], "forUsers"> = {

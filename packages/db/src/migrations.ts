@@ -3995,6 +3995,40 @@ const scratchProjectsMigration = Effect.gen(function* () {
   )`;
 });
 
+const pushDeviceCredentialsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  // Dropping user_id first holds the table's exclusive lock to commit, so an API process still on
+  // the last release cannot register a row between the delete and the NOT NULL column.
+  yield* sql`ALTER TABLE push_devices DROP COLUMN user_id`;
+  yield* sql`DELETE FROM push_devices`;
+  yield* sql`ALTER TABLE push_devices
+    ADD COLUMN device_token_id text NOT NULL REFERENCES device_tokens(id) ON DELETE CASCADE`;
+  yield* sql`CREATE INDEX push_devices_device_token_idx ON push_devices (device_token_id)`;
+  yield* sql.unsafe(`CREATE FUNCTION push_devices_drop_for_device() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      DELETE FROM push_devices WHERE device_token_id = NEW.id;
+      RETURN NULL;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER device_tokens_drop_push
+    AFTER UPDATE OF revoked_at ON device_tokens
+    FOR EACH ROW WHEN (NEW.revoked_at IS NOT NULL)
+    EXECUTE FUNCTION push_devices_drop_for_device()`;
+  yield* sql.unsafe(`CREATE FUNCTION push_devices_drop_for_user() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+    BEGIN
+      DELETE FROM push_devices p USING device_tokens d
+       WHERE d.id = p.device_token_id AND d.user_id = NEW.id;
+      RETURN NULL;
+    END
+    $$`);
+  yield* sql`CREATE TRIGGER user_drop_push
+    AFTER UPDATE OF "deactivatedAt" ON "user"
+    FOR EACH ROW WHEN (NEW."deactivatedAt" IS NOT NULL)
+    EXECUTE FUNCTION push_devices_drop_for_user()`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4148,4 +4182,5 @@ export const migrations = {
   "0159_session_messages": sessionMessagesMigration,
   "0161_resource_proposals": resourceProposalsMigration,
   "0162_scratch_projects": scratchProjectsMigration,
+  "0163_push_device_credentials": pushDeviceCredentialsMigration,
 };

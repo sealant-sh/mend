@@ -65,6 +65,9 @@ export interface AuthenticatedSession {
   readonly credential?: `session:${string}` | `device:${string}`;
 }
 
+export const deviceIdOf = (credential: AuthenticatedSession["credential"]): string | undefined =>
+  credential?.startsWith("device:") ? credential.slice("device:".length) : undefined;
+
 /** Who is signed in, provided to protected endpoints by the auth middleware. */
 export class CurrentUser extends Context.Service<CurrentUser, AuthenticatedSession>()(
   "@mend/api/CurrentUser",

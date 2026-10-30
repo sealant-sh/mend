@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { Timestamp } from "@mend/domain";
-import { and, desc, eq, gt, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, lt, sql as drizzleSql } from "drizzle-orm";
 import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -295,11 +295,12 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return rows.map((row) => new PairedDevice(row));
       });
 
-      // Revoking is idempotent: a device already revoked still answers as itself.
       const revoke = Effect.fn("DevicesRepo.revoke")(function* (userId: string, id: string) {
         const [row] = yield* db
           .update(deviceTokens)
-          .set({ revokedAt: yield* DateTime.nowAsDate })
+          .set({
+            revokedAt: drizzleSql`COALESCE(${deviceTokens.revokedAt}, ${yield* DateTime.nowAsDate})`,
+          })
           .where(and(eq(deviceTokens.id, id), eq(deviceTokens.userId, userId)))
           .returning(selectedDevice)
           .pipe(Effect.orDie);

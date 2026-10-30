@@ -181,7 +181,6 @@ export interface TenancyApi {
   readonly openConnections: (user: HarnessUser, kind: ConnectionKind) => Promise<number>;
   /** What removing a member does to their connections: close every one this process holds. */
   readonly closeConnectionsOf: (user: HarnessUser) => Promise<number>;
-  /** Push-device writes as `method:userId:token`, to prove the caller's id reaches the repo. */
   readonly deviceWrites: ReadonlyArray<string>;
   /** Where the Node-served API listens on loopback, with the `node` option. */
   readonly nodeOrigin: string | undefined;
@@ -389,14 +388,14 @@ export const createTenancyApi = async (
         PushDevicesRepo,
         "pushDevices",
         {
-          register: (userId, token, platform) =>
+          register: ({ userId, deviceTokenId, token, platform }) =>
             Effect.sync(() => {
-              deviceWrites.push(`register:${userId}:${token}`);
+              deviceWrites.push(`register:${userId}:${deviceTokenId}:${token}`);
               return new PushDevice({ token, platform, userId });
             }),
-          removeOwned: (userId, token) =>
+          forget: (deviceTokenId) =>
             Effect.sync(() => {
-              deviceWrites.push(`removeOwned:${userId}:${token}`);
+              deviceWrites.push(`forget:${deviceTokenId}`);
             }),
         },
         calls,

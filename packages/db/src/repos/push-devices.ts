@@ -1,9 +1,6 @@
-import { and, eq, inArray } from "drizzle-orm";
-import { DateTime, Effect, Layer, Schema } from "effect";
+import { PgClient } from "@effect/sql-pg";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
-
-import { MendDB } from "../client.ts";
-import { pushDevices } from "../schema/workbench.ts";
 
 export class PushDevice extends Schema.Class<PushDevice>("PushDevice")({
   token: Schema.String,
@@ -11,99 +8,99 @@ export class PushDevice extends Schema.Class<PushDevice>("PushDevice")({
   userId: Schema.String,
 }) {}
 
-/**
- * Phones registered for push notifications (Expo push tokens), each belonging to the account that
- * registered it (docs/adr/0003-organizations-and-tenancy.md). The token is the identity:
- * registering again refreshes `last_seen_at` and moves the phone to whoever registered it last,
- * and a token the push service reports as dead is removed.
- */
+export class PushCredentialEndedError extends Schema.TaggedError<PushCredentialEndedError>()(
+  "PushCredentialEndedError",
+  {},
+) {}
+
+const decodeDevices = Schema.decodeUnknownSync(Schema.Array(PushDevice));
+
 export class PushDevicesRepo extends Context.Service<
   PushDevicesRepo,
   {
-    readonly register: (
-      userId: string,
-      token: string,
-      platform: string,
-    ) => Effect.Effect<PushDevice>;
-    /** The devices of these accounts only; notifications never go to everyone. */
+    readonly register: (input: {
+      readonly userId: string;
+      readonly deviceTokenId: string;
+      readonly token: string;
+      readonly platform: string;
+    }) => Effect.Effect<PushDevice, PushCredentialEndedError>;
     readonly listForUsers: (
       userIds: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<PushDevice>>;
     /** Prune a token the push service reported dead, whoever it belongs to. */
     readonly remove: (token: string) => Effect.Effect<void>;
-    /** Unregister the caller's own device; another account's token is left untouched. */
-    readonly removeOwned: (userId: string, token: string) => Effect.Effect<void>;
-    /** Drop every phone of an account that lost access. */
-    readonly removeAllForUser: (userId: string) => Effect.Effect<void>;
+    readonly forget: (deviceTokenId: string) => Effect.Effect<void>;
   }
 >()("@mend/db/PushDevicesRepo") {}
 
-const selectedDevice = {
-  token: pushDevices.token,
-  platform: pushDevices.platform,
-  userId: pushDevices.userId,
-};
-const toPushDevice = (row: {
-  readonly token: string;
-  readonly platform: string;
-  readonly userId: string;
-}): PushDevice => new PushDevice(row);
+export const PushDevicesRepoLive: Layer.Layer<PushDevicesRepo, never, PgClient.PgClient> =
+  Layer.effect(
+    PushDevicesRepo,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
 
-export const PushDevicesRepoLive: Layer.Layer<PushDevicesRepo, never, MendDB> = Layer.effect(
-  PushDevicesRepo,
-  Effect.gen(function* () {
-    const db = yield* MendDB;
+      const shareLockStandingAccountThenDevice = (userId: string, deviceTokenId: string) =>
+        Effect.gen(function* () {
+          const account = yield* sql`
+            SELECT 1 FROM "user" WHERE id = ${userId} AND "deactivatedAt" IS NULL FOR SHARE`;
+          if (account.length === 0) return false;
+          const device = yield* sql`
+            SELECT 1 FROM device_tokens
+            WHERE id = ${deviceTokenId} AND user_id = ${userId} AND revoked_at IS NULL
+            FOR SHARE`;
+          return device.length > 0;
+        });
 
-    const register = Effect.fn("PushDevicesRepo.register")(function* (
-      userId: string,
-      token: string,
-      platform: string,
-    ) {
-      const [row] = yield* db
-        .insert(pushDevices)
-        .values({ token, platform, userId })
-        .onConflictDoUpdate({
-          target: pushDevices.token,
-          set: { platform, userId, lastSeenAt: yield* DateTime.nowAsDate },
-        })
-        .returning(selectedDevice)
-        .pipe(Effect.orDie);
-      if (row === undefined) return yield* Effect.die("push device upsert returned no row");
-      return toPushDevice(row);
-    });
+      const register: PushDevicesRepo["Service"]["register"] = Effect.fn(
+        "PushDevicesRepo.register",
+      )((input) =>
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              if (!(yield* shareLockStandingAccountThenDevice(input.userId, input.deviceTokenId)))
+                return yield* new PushCredentialEndedError();
+              yield* sql`
+                INSERT INTO push_devices (token, platform, device_token_id)
+                VALUES (${input.token}, ${input.platform}, ${input.deviceTokenId})
+                ON CONFLICT (token) DO UPDATE SET
+                  platform = EXCLUDED.platform,
+                  device_token_id = EXCLUDED.device_token_id,
+                  last_seen_at = now()`;
+              return new PushDevice({
+                token: input.token,
+                platform: input.platform,
+                userId: input.userId,
+              });
+            }),
+          )
+          .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error))),
+      );
 
-    const listForUsers = Effect.fn("PushDevicesRepo.listForUsers")(function* (
-      userIds: ReadonlyArray<string>,
-    ) {
-      if (userIds.length === 0) return [];
-      const rows = yield* db
-        .select(selectedDevice)
-        .from(pushDevices)
-        .where(inArray(pushDevices.userId, [...userIds]))
-        .pipe(Effect.orDie);
-      return rows.map(toPushDevice);
-    });
+      const listForUsers = Effect.fn("PushDevicesRepo.listForUsers")(function* (
+        userIds: ReadonlyArray<string>,
+      ) {
+        if (userIds.length === 0) return [];
+        const rows = yield* sql`
+          SELECT p.token, p.platform, d.user_id AS "userId"
+          FROM push_devices p
+          JOIN device_tokens d ON d.id = p.device_token_id
+          JOIN "user" u ON u.id = d.user_id
+          WHERE d.user_id IN ${sql.in([...userIds])}
+            AND d.revoked_at IS NULL
+            AND u."deactivatedAt" IS NULL`.pipe(Effect.orDie);
+        return decodeDevices(rows);
+      });
 
-    const remove = Effect.fn("PushDevicesRepo.remove")(function* (token: string) {
-      yield* db.delete(pushDevices).where(eq(pushDevices.token, token)).pipe(Effect.orDie);
-    });
+      const remove = Effect.fn("PushDevicesRepo.remove")(function* (token: string) {
+        yield* sql`DELETE FROM push_devices WHERE token = ${token}`.pipe(Effect.orDie);
+      });
 
-    const removeOwned = Effect.fn("PushDevicesRepo.removeOwned")(function* (
-      userId: string,
-      token: string,
-    ) {
-      yield* db
-        .delete(pushDevices)
-        .where(and(eq(pushDevices.token, token), eq(pushDevices.userId, userId)))
-        .pipe(Effect.orDie);
-    });
+      const forget = Effect.fn("PushDevicesRepo.forget")(function* (deviceTokenId: string) {
+        yield* sql`DELETE FROM push_devices WHERE device_token_id = ${deviceTokenId}`.pipe(
+          Effect.orDie,
+        );
+      });
 
-    const removeAllForUser = Effect.fn("PushDevicesRepo.removeAllForUser")(function* (
-      userId: string,
-    ) {
-      yield* db.delete(pushDevices).where(eq(pushDevices.userId, userId)).pipe(Effect.orDie);
-    });
-
-    return { register, listForUsers, remove, removeOwned, removeAllForUser };
-  }),
-);
+      return { register, listForUsers, remove, forget };
+    }),
+  );

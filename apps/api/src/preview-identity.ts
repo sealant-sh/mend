@@ -1,3 +1,4 @@
+import { deviceIdOf } from "@mend/api-contracts";
 import {
   type PreviewGrantKey,
   type PreviewGrantSecret,
@@ -211,7 +212,7 @@ const selects = (selection: Selection, registration: Registration): boolean => {
     case "UserDevices":
       return (
         registration.subject.userId === selection.userId &&
-        registration.subject.credential.startsWith("device:")
+        deviceIdOf(registration.subject.credential) !== undefined
       );
     case "User":
       return registration.subject.userId === selection.userId;

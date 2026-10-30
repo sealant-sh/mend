@@ -512,25 +512,40 @@ describe.skipIf(postgres.skip)("organizations", () => {
     expect(result.operators).toEqual(["carol"]);
   });
 
-  it("push devices belong to an account: listing is per account and unregistering touches only your own", async () => {
+  it("push devices belong to the paired device that registered them: listing is per account, forgetting touches only that device", async () => {
     const result = await run(
       Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO device_tokens (id, user_id, name, platform, token_hash) VALUES
+            ('phone-bob', 'bob', 'Bob', 'ios', 'hash-phone-bob'),
+            ('phone-carol', 'carol', 'Carol', 'android', 'hash-phone-carol'),
+            ('phone-alice', 'alice', 'Alice', 'android', 'hash-phone-alice')`;
         const devices = yield* PushDevicesRepo;
-        yield* devices.register("bob", "tok-bob", "ios");
-        yield* devices.register("carol", "tok-carol", "android");
-        yield* devices.removeOwned("carol", "tok-bob");
-        const afterForeignRemove = yield* devices.listForUsers(["bob"]);
+        const register = (userId: string, deviceTokenId: string, token: string) =>
+          devices.register({ userId, deviceTokenId, token, platform: "ios" });
+        yield* register("bob", "phone-bob", "tok-bob");
+        yield* register("carol", "phone-carol", "tok-carol");
+        const foreignDevice = yield* register("carol", "phone-bob", "tok-bob").pipe(Effect.flip);
         // The phone signs in as someone else: it moves to whoever registered it last.
-        yield* devices.register("alice", "tok-carol", "android");
+        yield* register("alice", "phone-alice", "tok-carol");
+        yield* devices.forget("phone-carol");
         return {
-          bob: afterForeignRemove.map((device) => device.token),
+          foreignDevice: foreignDevice._tag,
+          bob: (yield* devices.listForUsers(["bob"])).map((device) => device.token),
           alice: (yield* devices.listForUsers(["alice"])).map((device) => device.token),
           carol: (yield* devices.listForUsers(["carol"])).map((device) => device.token),
           nobody: yield* devices.listForUsers([]),
         };
       }),
     );
-    expect(result).toEqual({ bob: ["tok-bob"], alice: ["tok-carol"], carol: [], nobody: [] });
+    expect(result).toEqual({
+      foreignDevice: "PushCredentialEndedError",
+      bob: ["tok-bob"],
+      alice: ["tok-carol"],
+      carol: [],
+      nobody: [],
+    });
   });
 
   it("folders: unique per organization, selected per project, kept while in use", async () => {
