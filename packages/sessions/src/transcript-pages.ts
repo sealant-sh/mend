@@ -1,4 +1,10 @@
-import { isMendPageTool, mendPageReferenceIn } from "@mend/agent-protocol";
+import {
+  isMendPageTool,
+  isMendScreenTool,
+  mendPageReferenceIn,
+  screenArgumentsWithoutText,
+  screenToolTextIn,
+} from "@mend/agent-protocol";
 import type { PageRef } from "@mend/domain/workbench";
 
 import type { CanonicalEvent } from "./native-convert.ts";
@@ -21,6 +27,20 @@ const pageCalledBy = (
   return id === null ? undefined : pages.get(id);
 };
 
+/** A screen call shows its tool's text, never its frame, and each typed text by its length. */
+const withoutScreenPayload = (event: CanonicalEvent): CanonicalEvent => {
+  if (event.kind !== "tool" || !isMendScreenTool({ name: event.name, namespace: null })) {
+    return event;
+  }
+  const args = screenArgumentsWithoutText(event.args);
+  const text = screenToolTextIn(event.output);
+  return {
+    ...event,
+    args: typeof args === "string" ? args : "",
+    output: text === null ? "" : JSON.stringify(text),
+  };
+};
+
 export const withPages = (
   events: ReadonlyArray<CanonicalEvent>,
   pages: ReadonlyArray<PageRef>,
@@ -30,7 +50,7 @@ export const withPages = (
   for (const event of events) {
     const page = pageCalledBy(event, unplaced);
     if (page === undefined) {
-      entries.push(event);
+      entries.push(withoutScreenPayload(event));
       continue;
     }
     unplaced.delete(page.id);

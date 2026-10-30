@@ -76,3 +76,13 @@ export const ScreenToolText = Schema.Struct({
   message: Schema.String,
 });
 export type ScreenToolText = typeof ScreenToolText.Type;
+
+/** What a stored screen call keeps of its answer: the receipt that links it to the screen log. */
+export const MendScreenCall = Schema.Struct({
+  receipt: Schema.NullOr(ScreenToolReceipt),
+  outcome: ScreenCallOutcome,
+  refusal: Schema.NullOr(ScreenToolRefusal),
+});
+export type MendScreenCall = typeof MendScreenCall.Type;
+
+export const MEND_SCREEN_CALL_FIELD = "mendScreenCall";

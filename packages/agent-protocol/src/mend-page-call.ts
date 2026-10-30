@@ -49,7 +49,7 @@ export const isMendTool = (tool: string, { name, namespace }: ToolIdentity): boo
 export const isMendPageTool = (identity: ToolIdentity): boolean =>
   isMendTool(HTML_RENDER_TOOL, identity);
 
-const identityOf = (data: JsonObject): ToolIdentity | null => {
+export const toolIdentityOf = (data: JsonObject): ToolIdentity | null => {
   switch (text(data, "type")) {
     case "tool_use":
       return { name: text(data, "name"), namespace: null };
@@ -80,7 +80,7 @@ const referenceOf = (value: unknown): string | null => {
 
 // Codex puts an MCP tool's wall time before its output (codex-rs core/src/tools/context.rs,
 // `McpToolOutput::response_payload`): as text before the result, or as a content item of its own.
-const CODEX_TIMING = /^Wall time: [^\n]*\nOutput:\n?/;
+export const CODEX_TIMING = /^Wall time: [^\n]*\nOutput:\n?/;
 
 export const mendPageReferenceIn = (output: unknown): string | null => {
   if (typeof output === "string")
@@ -186,7 +186,7 @@ const compacted = (
 ): { readonly data: JsonObject; readonly marker: MendPageCall } | null => {
   const data = item.data;
   if (item.kind !== "tool-call" || !isObject(data)) return null;
-  const identity = identityOf(data);
+  const identity = toolIdentityOf(data);
   if (identity === null || !isMendPageTool(identity)) return null;
   const { result, error, input, arguments: args, [MEND_PAGE_CALL_FIELD]: kept, ...rest } = data;
   const marker: MendPageCall = isMarker(kept)
