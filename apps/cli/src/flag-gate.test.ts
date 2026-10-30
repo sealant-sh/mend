@@ -205,6 +205,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "main.ts refreshCommand": { pages: ["refresh"] },
   "main.ts modelsCommand": { pages: ["models"] },
   "message.ts parseMessageArguments": { pages: ["message"] },
+  "settings.ts parseSettingsArgs": { pages: ["settings"] },
   "main.ts sessionsCommand": { pages: ["sessions"] },
   "main.ts worktreesCommand": { pages: ["worktrees"] },
   "main.ts dashboard": CHILD,
