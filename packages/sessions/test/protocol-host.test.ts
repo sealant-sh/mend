@@ -182,6 +182,7 @@ const makeConversationWorld = () => {
             ? Effect.fail(new SessionStoppingError({ sessionId }))
             : Effect.sync(() => seed(input)),
         ),
+        Effect.tap(() => admission.afterMessageAdmit),
       ),
     byTurnId: (id) => Effect.succeed(turns.get(id) ?? null),
     byLaunchCorrelation: () => Effect.succeed(null),
@@ -555,6 +556,19 @@ const attachCodex = (host: ProtocolHost["Service"], pipe: InteractiveSession) =>
     hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
   });
 
+const autonomousStarted = {
+  method: "turn/started",
+  params: { threadId: "thread-1", turn: { id: "autonomous" } },
+};
+const autonomousCompleted = {
+  method: "turn/completed",
+  params: { threadId: "thread-1", turn: { id: "autonomous", status: "completed" } },
+};
+const autonomousEnded = (world: ReturnType<typeof makeConversationWorld>) => () =>
+  [...world.turns.values()].some(
+    (turn) => turn.providerTurnId === "autonomous" && turn.status === "completed",
+  );
+
 describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => {
   /** Through a message, a retry reads its key first, as the engine does. */
   const sendSteer = (
@@ -630,6 +644,260 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
             { _tag: "Turn", reason: "queue-requested" },
           )
           .pipe(Effect.map((receipt) => receipt.explanation));
+
+  it.live("sends a message once when Codex runs a turn of its own between claim and answer", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a", "turn-b", "turn-c"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterClaim = once(
+        Effect.sync(() => {
+          peer.push(autonomousStarted);
+          peer.push(autonomousCompleted);
+        }).pipe(Effect.andThen(waitUntil(autonomousEnded(world)))),
+      );
+      yield* submit(host, "healthy storage words");
+      yield* Effect.sleep("100 millis");
+      expect(startsWith(peer, "healthy storage words")).toBe(1);
+      expect(turnWith(world, "healthy storage words")).toMatchObject({
+        status: "running",
+        providerTurnId: "turn-a",
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.live("never puts back a claim when Codex's own turn is recorded after the claim", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["human-a", "human-b"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const eventEntered = yield* Deferred.make<void>();
+      const releaseEvent = yield* Deferred.make<void>();
+      world.admission.beforeHarnessTurn = Deferred.succeed(eventEntered, undefined).pipe(
+        Effect.andThen(Deferred.await(releaseEvent)),
+      );
+      world.admission.afterMessageAdmit = once(
+        Effect.sync(() => peer.push(autonomousStarted)).pipe(
+          Effect.andThen(Deferred.await(eventEntered)),
+        ),
+      );
+      world.admission.afterClaim = once(
+        Deferred.succeed(releaseEvent, undefined).pipe(
+          Effect.andThen(Effect.sync(() => peer.push(autonomousCompleted))),
+          Effect.andThen(waitUntil(autonomousEnded(world))),
+        ),
+      );
+      yield* submit(host, "healthy words");
+      yield* Effect.sleep("100 millis");
+      expect(startsWith(peer, "healthy words")).toBe(1);
+      expect(turnWith(world, "healthy words")).toMatchObject({
+        status: "running",
+        providerTurnId: "human-a",
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.live("fails a message Codex rejected after its own turn ended during the send", () => {
+    const world = makeConversationWorld();
+    let attempts = 0;
+    const peer = makePipe([], {
+      start: (request, push) => {
+        attempts += 1;
+        if (attempts === 1) {
+          push(autonomousCompleted);
+          push({ id: request.id, error: { message: "model unavailable" } });
+        } else push({ id: request.id, result: { turn: { id: "human-a" } } });
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const eventEntered = yield* Deferred.make<void>();
+      world.admission.beforeHarnessTurn = Deferred.succeed(eventEntered, undefined).pipe(
+        Effect.asVoid,
+      );
+      world.admission.afterClaim = once(
+        Effect.sync(() => peer.push(autonomousStarted)).pipe(
+          Effect.andThen(Deferred.await(eventEntered)),
+          Effect.andThen(Effect.sleep("20 millis")),
+        ),
+      );
+      yield* submit(host, "healthy words");
+      yield* Effect.sleep("100 millis");
+      expect(attempts).toBe(1);
+      expect(turnWith(world, "healthy words")).toMatchObject({
+        status: "failed",
+        providerTurnId: null,
+        error: expect.stringContaining("model unavailable"),
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.live("never completes a rejected message with another turn's end seen during the send", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], {
+      start: (request, push) => {
+        push(autonomousCompleted);
+        push({ id: request.id, error: { message: "model unavailable" } });
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      yield* submit(host, "healthy words");
+      yield* Effect.sleep("50 millis");
+      expect(turnWith(world, "healthy words")).toMatchObject({
+        status: "failed",
+        providerTurnId: null,
+        error: expect.stringContaining("model unavailable"),
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.live("fails a message Codex rejected while a turn of its own started during the send", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], {
+      start: (request, push) => {
+        push(autonomousStarted);
+        push({ id: request.id, error: { message: "model unavailable" } });
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      yield* submit(host, "healthy words");
+      peer.push(autonomousCompleted);
+      yield* Effect.sleep("100 millis");
+      expect(startsWith(peer, "healthy words")).toBe(1);
+      expect(turnWith(world, "healthy words")).toMatchObject({
+        status: "failed",
+        providerTurnId: null,
+        error: expect.stringContaining("model unavailable"),
+      });
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.live("binds a turn to the id Codex answered, not one that started during the send", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], {
+      start: (request, push) => {
+        push(autonomousStarted);
+        push({ id: request.id, result: { turn: { id: "human-a" } } });
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      yield* submit(host, "healthy words");
+      yield* waitUntil(() => turnWith(world, "healthy words")?.providerTurnId === "human-a");
+      peer.push(autonomousCompleted);
+      yield* Effect.sleep("50 millis");
+      expect(turnWith(world, "healthy words")).toMatchObject({ status: "running" });
+      peer.push({
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "human-a", status: "completed" } },
+      });
+      yield* waitUntil(() => turnWith(world, "healthy words")?.status === "completed");
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.live("completes a fast turn whose end arrives before Codex's answer to the send", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([], {
+      start: (request, push) => {
+        push({
+          method: "turn/completed",
+          params: { threadId: "thread-1", turn: { id: "turn-a", status: "completed" } },
+        });
+        push({ id: request.id, result: { turn: { id: "turn-a" } } });
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      yield* submit(host, "quick words");
+      yield* waitUntil(() => turnWith(world, "quick words")?.status === "completed");
+      expect(turnWith(world, "quick words")).toMatchObject({
+        providerTurnId: "turn-a",
+        error: null,
+      });
+      expect(startsWith(peer, "quick words")).toBe(1);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.live(
+    "puts a claim no dispatch holds back when Codex opens its own turn on an idle host",
+    () => {
+      const world = makeConversationWorld();
+      const peer = makePipe([]);
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachCodex(host, peer.pipe);
+        const orphan = world.seed("orphaned");
+        world.turns.set(
+          orphan.id,
+          new AgentTurn({ ...orphan, status: "running", providerTurnId: null, startedAt: now() }),
+        );
+        peer.push(autonomousStarted);
+        yield* waitUntil(() =>
+          [...world.turns.values()].some(
+            (turn) => turn.providerTurnId === "autonomous" && turn.status === "running",
+          ),
+        );
+        expect(turnWith(world, "orphaned")).toMatchObject({ status: "queued", startedAt: null });
+        expect(turnStarts(peer)).toBe(0);
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    },
+  );
+
+  it.live("interrupts and never resends a turn a Stop ended while Codex had not answered", () => {
+    const world = makeConversationWorld();
+    const answers: Array<() => void> = [];
+    const peer = makePipe([], {
+      start: (request, push) => {
+        answers.push(() => push({ id: request.id, result: { turn: { id: "turn-a" } } }));
+        return Promise.resolve();
+      },
+    });
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      const caller = yield* submit(host, "stopped words").pipe(Effect.forkChild);
+      yield* waitUntil(() => turnStarts(peer) === 1);
+      const sending = turnWith(world, "stopped words");
+      if (sending === undefined) return expect.fail("the turn was not admitted");
+      world.turns.set(
+        sending.id,
+        new AgentTurn({ ...sending, status: "cancelled", endedAt: now() }),
+      );
+      for (const answer of answers) answer();
+      yield* Fiber.join(caller);
+      yield* waitUntil(() => peer.interrupted.length === 1);
+      expect(peer.interrupted).toEqual(["turn-a"]);
+      expect(turnWith(world, "stopped words")).toMatchObject({
+        status: "cancelled",
+        providerTurnId: null,
+      });
+      yield* Effect.sleep("50 millis");
+      expect(startsWith(peer, "stopped words")).toBe(1);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 
   it.effect("withdraws a turn whose claim failed before writing it, and sends the next", () => {
     const world = makeConversationWorld();
