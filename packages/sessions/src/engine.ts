@@ -2980,8 +2980,13 @@ export class SessionEngine extends Context.Service<
     >;
     /** Ends the session's screen for `reason`; one already ended, or never started, is left. */
     readonly stopScreen: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
-    /** The live screen's passwords, held only by the process that started it. */
+    /** The live screen's passwords, held only by the process that started or rekeyed it. */
     readonly screenPasswords: (sessionId: SessionId) => Effect.Effect<ScreenPasswords | null>;
+    /**
+     * A live screen an earlier process started, signed for again with fresh passwords its person
+     * writes over the old, so it keeps running; false when that could not be done.
+     */
+    readonly rekeyScreen: (sessionId: SessionId) => Effect.Effect<boolean>;
     /** Rename one live supporting shell inside its owning session. */
     readonly renameShell: (
       processId: SessionProcessId,
@@ -27377,6 +27382,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         startScreen: (sessionId) => owned(sessionId)(screenProcess.start(sessionId)),
         stopScreen: (sessionId, reason) => owned(sessionId)(screenProcess.stop(sessionId, reason)),
         screenPasswords: (sessionId) => Effect.sync(() => screenPasswords.of(sessionId)),
+        rekeyScreen: (sessionId) => owned(sessionId)(screenProcess.rekey(sessionId)),
         stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
         personTyped,

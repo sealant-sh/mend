@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { makeHarnessLayoutsMemoryState } from "@mend/db";
 import { DisplayNumber, type Screen, type Session } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { sessionStatePathOf } from "@mend/store";
@@ -9,7 +10,13 @@ import { it } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Redacted } from "effect";
 import { describe, expect } from "vitest";
 
-import { onScreenPath, screenArgv, screenReapArgv } from "../src/screen/script.ts";
+import {
+  onScreenPath,
+  screenArgv,
+  screenDirOfArgv,
+  screenReapArgv,
+  screenRekeyArgv,
+} from "../src/screen/script.ts";
 import { makeWorld, type World } from "./engine/fixture.ts";
 import {
   LAUNCHER,
@@ -191,6 +198,73 @@ describe("the session's display for its life (ADR 0020)", () => {
         expect(world.processes.get(screen.processId ?? "")?.exitedAt).not.toBeNull();
       }),
     ),
+  );
+
+  it.effect(
+    "signs a screen that outlived its engine for again, as its person, with fresh passwords and no start",
+    () => {
+      const fixture = {
+        world: makeWorld(),
+        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-screen-rekey-")),
+      };
+      const { world } = fixture;
+      const layoutState = makeHarnessLayoutsMemoryState();
+      return Effect.gen(function* () {
+        const first = yield* withScreens(
+          () =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launched(world);
+              const screen = yield* engine.startScreen(session.id);
+              yield* until(
+                () => Effect.map(world.screens.byId(screen.id), (now) => now?.life._tag === "Live"),
+                "the screen live",
+              );
+              const passwords = yield* engine.screenPasswords(session.id);
+              if (passwords === null) throw new Error("no passwords held");
+              return { session, screen, passwords };
+            }),
+          { fixture, layoutState, printed: ["mend-screen ready"] },
+        );
+        const row = world.processes.get(first.screen.processId ?? "");
+        const dir = row === undefined ? null : screenDirOfArgv(row.argv);
+        if (dir === null) throw new Error("no screen process to sign for");
+
+        yield* withScreens(
+          (_, platform) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              expect(yield* engine.rekeyScreen(first.session.id)).toBe(false);
+              expect(yield* engine.screenPasswords(first.session.id)).toBeNull();
+              expect(platform.spawned).toEqual([screenRekeyArgv(dir)]);
+            }),
+          { fixture, layoutState, restart: true, rekeyPrinted: [] },
+        );
+
+        yield* withScreens(
+          (_, platform) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              expect(yield* engine.screenPasswords(first.session.id)).toBeNull();
+              expect(yield* engine.rekeyScreen(first.session.id)).toBe(true);
+              const passwords = yield* engine.screenPasswords(first.session.id);
+              if (passwords === null) throw new Error("no passwords after the rekey");
+              expect(Redacted.value(passwords.full)).not.toBe(Redacted.value(first.passwords.full));
+              expect(platform.spawned).toEqual([screenRekeyArgv(dir)]);
+              expect(platform.opened.at(-1)?.user?.name).toBe(LAUNCHER);
+              const handedOver = JSON.stringify([platform.spawned, platform.opened]);
+              for (const password of [passwords.full, passwords.viewOnly]) {
+                expect(handedOver).not.toContain(Redacted.value(password));
+              }
+              expect(screenRows(world)).toHaveLength(1);
+              expect(world.processes.get(first.screen.processId ?? "")?.exitedAt).toBeNull();
+              expect(yield* engine.rekeyScreen(first.session.id)).toBe(true);
+              expect(yield* engine.screenPasswords(first.session.id)).toBe(passwords);
+              expect(platform.spawned).toHaveLength(1);
+            }),
+          { fixture, layoutState, restart: true },
+        );
+      });
+    },
   );
 
   it.effect("goes back at boot when its session ended without giving it back", () => {

@@ -15,6 +15,7 @@ import {
 import type { BoundedWorkspaceForward } from "@sealant/sdk";
 import { Effect, Layer, Redacted } from "effect";
 
+import { type ScreenPasswords, makeScreenPasswords } from "../src/screen/passwords.ts";
 import { ScreenHost } from "../src/screen/screen-host.ts";
 import { fakeWorkspace } from "./fake-workspace.ts";
 import { XVNC_PASSWORD } from "./xvnc.ts";
@@ -31,6 +32,7 @@ export interface Dial {
 export interface ScreenWorld {
   readonly dials: Array<Dial>;
   readonly starts: Array<SessionId>;
+  readonly rekeys: Array<SessionId>;
   readonly screenProcess: Map<SessionId, SessionProcessId>;
   readonly sockets: Array<net.Socket>;
   /** False for a session whose screen this process holds no passwords for. */
@@ -38,6 +40,11 @@ export interface ScreenWorld {
   xvncPort: number;
   /** Called at each dial, once it is recorded. */
   onDial: (() => void) | null;
+  /**
+   * Where each start's and rekey's fresh passwords go, as the screen's own script writes them;
+   * null keeps the test Xvnc's fixed password for every screen.
+   */
+  signWith: ((passwords: ScreenPasswords) => void) | null;
 }
 
 export const makeScreenWorld = (
@@ -45,11 +52,13 @@ export const makeScreenWorld = (
 ): ScreenWorld => ({
   dials: [],
   starts: [],
+  rekeys: [],
   screenProcess: new Map(),
   sockets: [],
   signable,
   xvncPort: 0,
   onDial: null,
+  signWith: null,
 });
 
 /** One TCP connection to Xvnc, with the SDK's forward shape, bound as it was asked to be. */
@@ -100,12 +109,18 @@ export const screenSealantLayer = (world: ScreenWorld) =>
       }),
   });
 
-/** The session side: one owner, the test's Xvnc password, and a start that goes Live at once. */
+/**
+ * The session side: one owner, and a start that goes Live at once. Passwords are the test Xvnc's
+ * fixed one, or with `signWith` fresh at each start and rekey and held by this process alone, so
+ * a later process holds none of what an earlier one issued.
+ */
 export const screenHostLayer = (world: ScreenWorld) =>
   Layer.effect(
     ScreenHost,
     Effect.gen(function* () {
       const screens = yield* ScreensRepo;
+      const issued = makeScreenPasswords();
+      const issue = (sessionId: SessionId) => world.signWith?.(issued.issue(sessionId, OWNER));
       return {
         ownerOf: () => Effect.succeed(OWNER),
         start: (sessionId) =>
@@ -114,17 +129,26 @@ export const screenHostLayer = (world: ScreenWorld) =>
             const screen = yield* screens.ofSession(sessionId);
             const processId = world.screenProcess.get(sessionId);
             if (screen === null || processId === undefined) return yield* Effect.die("no screen");
+            issue(sessionId);
             return yield* screens.setLife(screen.id, {
               life: { _tag: "Live", degraded: null, browserSandboxOff: false },
               processId,
             });
           }).pipe(Effect.orDie),
         passwords: (sessionId) =>
-          Effect.succeed(
-            world.signable(sessionId)
+          Effect.sync(() => {
+            if (world.signWith !== null) return issued.of(sessionId);
+            return world.signable(sessionId)
               ? { full: Redacted.make(XVNC_PASSWORD), viewOnly: Redacted.make(XVNC_PASSWORD) }
-              : null,
-          ),
+              : null;
+          }),
+        rekey: (sessionId) =>
+          Effect.sync(() => {
+            world.rekeys.push(sessionId);
+            if (world.signWith === null) return world.signable(sessionId);
+            issue(sessionId);
+            return true;
+          }),
         ptyOf: (processId) => Effect.succeed(`pty-${processId}`),
         turnOf: () => Effect.succeed(null),
       };

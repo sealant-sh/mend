@@ -11,7 +11,7 @@ import {
   transitionInput,
 } from "@mend/domain/workbench";
 import type { BlobStore } from "@mend/store";
-import { Clock, Effect, Fiber, Scope } from "effect";
+import { Clock, Deferred, Effect, Fiber, Option, Scope } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import { storeFrame } from "./frames.ts";
@@ -61,19 +61,25 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
   const context = yield* Effect.context<BlobStore>();
   const timers = new Map<ScreenId, Armed>();
   const locks = new Map<ScreenId, Semaphore.Semaphore>();
+  const booting = new Map<ScreenId, Deferred.Deferred<void>>();
   /** Every change to a screen's row or timer this process makes, one at a time per screen. */
-  const serially = <A, E>(screenId: ScreenId, effect: Effect.Effect<A, E>) => {
+  const lockOf = (screenId: ScreenId) => {
     const lock = locks.get(screenId) ?? Semaphore.makeUnsafe(1);
     locks.set(screenId, lock);
-    return lock.withPermit(effect);
+    return lock;
   };
+  const serially = <A, E>(screenId: ScreenId, effect: Effect.Effect<A, E>) =>
+    lockOf(screenId).withPermit(effect);
 
   const frameOf = (screen: Screen) =>
     Effect.gen(function* () {
       const hand = yield* hands.of(screen);
-      if (hand === null) return null;
-      const png = yield* hand.look.pipe(Effect.option);
-      return png._tag === "Some" ? yield* storeFrame(screen.id, png.value) : null;
+      const png = hand === null ? Option.none() : yield* hand.look.pipe(Effect.option);
+      if (Option.isSome(png)) return yield* storeFrame(screen.id, png.value);
+      yield* Effect.logWarning(
+        "screen: no frame at a change of holder · the screen was not observable",
+      ).pipe(Effect.annotateLogs({ screenId: screen.id, life: screen.life._tag }));
+      return null;
     }).pipe(Effect.provideContext(context));
 
   /**
@@ -170,6 +176,45 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
     decide,
     serially,
     arm: (screen: Screen, input: ScreenInput) => serially(screen.id, arm(screen.id, input)),
+    /**
+     * Mend booted: the screen's lock is held from now until `prepare` has run and Boot is stored,
+     * with the frame a fresh hand takes, so nothing else changes the row before its boot.
+     */
+    boot: (screen: Screen, at: Date, prepare: Effect.Effect<void>) =>
+      Effect.gen(function* () {
+        const lock = lockOf(screen.id);
+        yield* lock.take(1);
+        const done = yield* Deferred.make<void>();
+        booting.set(screen.id, done);
+        const boot = Effect.gen(function* () {
+          yield* prepare;
+          const current = yield* screens.byId(screen.id);
+          if (current === null) return;
+          const event: ScreenInputEvent = { _tag: "Boot", at };
+          const foreseen = transitionInput(current.input, event, null);
+          const frame =
+            foreseen._tag === "Changed" && foreseen.log !== null ? yield* frameOf(current) : null;
+          const booted = yield* screens
+            .control(screen.id, event, null, frame)
+            .pipe(Effect.catchTag("ScreenNotFoundError", () => Effect.succeed(NO_SCREEN)));
+          yield* arm(screen.id, booted._tag === "Changed" ? booted.next : current.input);
+          // A fresh hand lets go of whatever the last process's hand left held before anything else.
+          yield* hands.of(current);
+        });
+        const finished = lock
+          .release(1)
+          .pipe(
+            Effect.andThen(Effect.sync(() => booting.delete(screen.id))),
+            Effect.andThen(Deferred.succeed(done, undefined)),
+          );
+        yield* Effect.forkIn(Effect.ensuring(boot, finished), scope);
+      }),
+    /** Waits while the screen's boot runs; at once for one that is not booting. */
+    booted: (screenId: ScreenId) =>
+      Effect.suspend(() => {
+        const done = booting.get(screenId);
+        return done === undefined ? Effect.void : Deferred.await(done);
+      }),
     /** A hand ended by itself. One open since then replaced it, and what it was given stands. */
     ended: (screenId: ScreenId) =>
       decide(screenId, { _tag: "Ended" }, null, () => hands.open(screenId) === null),

@@ -19,6 +19,8 @@ export class ScreenHost extends Context.Service<
     /** Starts the session's screen, or answers the one this process started and still holds. */
     readonly start: (sessionId: SessionId) => Effect.Effect<Screen, ScreenStartError>;
     readonly passwords: (sessionId: SessionId) => Effect.Effect<ScreenPasswords | null>;
+    /** A live screen an earlier process started, signed for again; false when it could not be. */
+    readonly rekey: (sessionId: SessionId) => Effect.Effect<boolean>;
     /** The Sealant PTY session a live screen process leads, which a forward to it is bound to. */
     readonly ptyOf: (processId: SessionProcessId) => Effect.Effect<string | null>;
     /** The turn the agent process is running; null for one that runs no turns. */
@@ -55,6 +57,7 @@ export const ScreenHostLive: Layer.Layer<
             ),
           ),
       passwords: engine.screenPasswords,
+      rekey: engine.rekeyScreen,
       ptyOf: (processId) =>
         Effect.map(processes.byId(processId), (row) =>
           row?.exitedAt === null ? row.sealantSessionId : null,

@@ -335,6 +335,8 @@ export const ScreensLive: Layer.Layer<
             return yield* replay(reserved, who, claim.call);
           case "Claimed": {
             const ran = Effect.gen(function* () {
+              // A screen still booting is signed for again first, never started over.
+              yield* control.booted(reserved.id);
               const screen = yield* started(reserved).pipe(
                 Effect.tapError(() => settle(reserved, who, "refused", null)),
               );
@@ -358,12 +360,19 @@ export const ScreensLive: Layer.Layer<
     yield* screens.boot();
     const at = new Date(yield* Clock.currentTimeMillis);
     for (const screen of yield* screens.held()) {
-      const booted = yield* screens
-        .control(screen.id, { _tag: "Boot", at }, null)
-        .pipe(Effect.orElseSucceed(() => null));
-      yield* control.arm(screen, booted?._tag === "Changed" ? booted.next : screen.input);
-      // A fresh hand lets go of whatever the last process's hand left held before anything else.
-      yield* Effect.forkIn(hands.of(screen), scope);
+      // A screen that outlived the last process keeps running: its person writes fresh passwords
+      // over the ones that process held, and Xvnc signs the next connection in with them.
+      const rekeyed =
+        screen.life._tag === "Live"
+          ? Effect.flatMap(host.rekey(screen.sessionId), (signed) =>
+              signed
+                ? Effect.void
+                : Effect.logWarning("screen: not signed for again at boot").pipe(
+                    Effect.annotateLogs({ screenId: screen.id }),
+                  ),
+            )
+          : Effect.void;
+      yield* control.boot(screen, at, rekeyed);
     }
 
     return {

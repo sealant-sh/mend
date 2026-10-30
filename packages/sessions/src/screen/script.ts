@@ -105,6 +105,36 @@ export const screenArgv = (display: DisplayNumber, user: ScreenUser): ReadonlyAr
   screenDirOf(display, user),
 ];
 
+/** The line the rekey script ends with once the new passwords are in place. */
+export const SCREEN_REKEYED = "mend-screen rekeyed";
+
+/**
+ * A running screen signed for again, as its person, when Mend restarted and kept none of its
+ * passwords: fresh ones fetched over the session channel replace the old file in one rename. Xvnc
+ * reads its password file at each sign-in, so the screen and its apps keep running.
+ */
+const REKEY_SCRIPT = `set -eu
+dir=$1
+umask 077
+secret=$(${MEND_HELPER_PATH} screen-secret)
+printf '%s\\n' "$secret" | vncpasswd -f >"$dir/passwd.next"
+unset secret
+mv -f "$dir/passwd.next" "$dir/passwd"
+echo "${SCREEN_REKEYED}"
+`;
+
+export const screenRekeyArgv = (dir: string): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  REKEY_SCRIPT,
+  "mend-screen-rekey",
+  dir,
+];
+
+/** The directory a screen process runs in, read from the argv it was started with. */
+export const screenDirOfArgv = (argv: ReadonlyArray<string>): string | null =>
+  argv.length === 7 && argv[3] === "mend-screen" ? (argv[6] ?? null) : null;
+
 const REAP_SCRIPT = `lock=/tmp/.X$1-lock
 pid=$(tr -d ' ' <"$lock" 2>/dev/null) || exit 0
 [ -n "$pid" ] || exit 0

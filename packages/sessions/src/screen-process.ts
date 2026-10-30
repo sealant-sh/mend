@@ -14,11 +14,19 @@ import type {
 } from "@mend/domain/workbench";
 import type { PersonSessionOptions, ProcessUser, SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession, Workspace, WorkspaceExecResult } from "@sealant/sdk";
-import { Effect, Schema, Stream } from "effect";
+import { Effect, Option, Schema, Stream } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import type { ScreenPasswordsHeld } from "./screen/passwords.ts";
-import { type ScreenReport, screenArgv, screenReapArgv, screenReportOf } from "./screen/script.ts";
+import {
+  SCREEN_REKEYED,
+  type ScreenReport,
+  screenArgv,
+  screenDirOfArgv,
+  screenReapArgv,
+  screenRekeyArgv,
+  screenReportOf,
+} from "./screen/script.ts";
 
 /** What the screen process needs of the engine (ADR 0020): its process primitives, no more. */
 export interface ScreenProcessDeps<E> {
@@ -75,6 +83,11 @@ export interface ScreenProcess<E> {
   >;
   readonly stop: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
   /**
+   * A running screen this process holds no passwords for, as after Mend restarted: its person
+   * writes fresh ones over the old, so it keeps running. False when it could not be signed for.
+   */
+  readonly rekey: (sessionId: SessionId) => Effect.Effect<boolean>;
+  /**
    * The session ended: its screen stops and the reservation `screenId` gives its display back. A
    * screen whose process would not end keeps it, so a later release (or the next boot) gives it
    * back. A reservation the session holds now that is not `screenId` is not the one that ended.
@@ -91,6 +104,8 @@ export interface ScreenProcess<E> {
 const lostAnswer = (error: SealantPlatformError) => error.status === null || error.status >= 500;
 
 const STARTED = new Set<Screen["life"]["_tag"]>(["Starting", "Live"]);
+
+const REKEYED_WITHIN = "15 seconds";
 
 type Live = Extract<Screen["life"], { readonly _tag: "Live" }>;
 
@@ -253,6 +268,48 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
   const stop = (sessionId: SessionId, reason: ScreenEndReason) =>
     locked(sessionId, Effect.asVoid(stopped(sessionId, reason)));
 
+  const rekey = (sessionId: SessionId) =>
+    locked(
+      sessionId,
+      Effect.gen(function* () {
+        if (passwords.of(sessionId) !== null) return true;
+        const screen = yield* screens.ofSession(sessionId);
+        const running = screen?.life._tag === "Live" ? yield* live(screen.processId) : null;
+        const dir = running === null ? null : screenDirOfArgv(running.argv);
+        if (running === null || running.runsAs === null || dir === null) return false;
+        const { session, workspace } = yield* deps.workspaceOf(sessionId);
+        const startAs = yield* deps.startAs(session, workspace);
+        if (startAs === null) return false;
+        passwords.issue(sessionId, running.runsAs);
+        const pty = yield* deps.open(workspace, screenRekeyArgv(dir), {
+          user: startAs.user,
+          env: startAs.env,
+        });
+        const said = yield* Stream.fromAsyncIterable(pty.output(), (cause) => cause).pipe(
+          Stream.map((chunk) => chunk.data),
+          Stream.decodeText,
+          Stream.splitLines,
+          Stream.filter((line) => line.trim() === SCREEN_REKEYED),
+          Stream.runHead,
+          Effect.timeoutOption(REKEYED_WITHIN),
+          Effect.map((line) => Option.isSome(Option.flatten(line))),
+        );
+        if (!said) {
+          passwords.forget(sessionId);
+          yield* deps.close(SealantWorkspaceId.make(workspace.id), pty.id);
+        }
+        return said;
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("screen: not signed for again").pipe(
+            Effect.annotateLogs({ sessionId, cause: String(error) }),
+            Effect.andThen(Effect.sync(() => passwords.forget(sessionId))),
+            Effect.as(false),
+          ),
+        ),
+      ),
+    );
+
   const release = (sessionId: SessionId, screenId: ScreenId) =>
     locked(
       sessionId,
@@ -278,5 +335,5 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
       { discard: true },
     );
 
-  return { start, stop, release, ended };
+  return { start, stop, rekey, release, ended };
 };

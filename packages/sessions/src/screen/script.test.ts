@@ -11,16 +11,21 @@ import { planActions } from "./hand-steps.ts";
 import { openHand } from "./hand.ts";
 import { SCREEN_WORKER, screenWorkersLayer } from "./screen-workers.ts";
 import {
+  SCREEN_REKEYED,
   onScreenPath,
   screenArgv,
+  screenDirOfArgv,
   screenEnvOf,
   screenPort,
   screenReapArgv,
+  screenRekeyArgv,
   screenReportOf,
 } from "./script.ts";
 
 const FULL = "fullpass";
 const VIEW_ONLY = "viewpass";
+const REKEYED_FULL = "newfull1";
+const REKEYED_VIEW_ONLY = "newview1";
 const RUNTIME = "/run/user/40001";
 
 const docker = (...args: ReadonlyArray<string>) =>
@@ -140,6 +145,14 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
     return { child, lines, said, exited };
   };
 
+  /** The staged helper, answering `screen-secret` with these two passwords. */
+  const stageHelper = (full: string, viewOnly: string, on = container) =>
+    inside(
+      `mkdir -p /run/mend/bin && printf '#!/bin/sh\\nprintf "%s\\\\n%s\\\\n"\\n' ${full} ${viewOnly} > /run/mend/bin/mend && chmod 755 /run/mend/bin/mend`,
+      "root",
+      on,
+    );
+
   beforeAll(() => {
     const image = fixtureImage("screen");
     for (const [name, privileges] of [
@@ -159,11 +172,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         "sleep",
         "infinity",
       );
-      inside(
-        `mkdir -p /run/mend/bin && printf '#!/bin/sh\\nprintf "%s\\\\n%s\\\\n"\\n' ${FULL} ${VIEW_ONLY} > /run/mend/bin/mend && chmod 755 /run/mend/bin/mend`,
-        "root",
-        name,
-      );
+      stageHelper(FULL, VIEW_ONLY, name);
       execFileSync(
         "docker",
         [
@@ -289,6 +298,51 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         expect(yield* settled).toEqual(BASELINE);
         docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
       }),
+    { timeout: 180_000 },
+  );
+
+  it.live(
+    "signs a running screen for again with its person's fresh passwords, Xvnc and its apps left running",
+    () =>
+      Effect.gen(function* () {
+        const screen = start(16);
+        yield* Effect.promise(() => screen.said("mend-screen ready"));
+        const pid = xvncPid(16);
+        const pointer = () =>
+          asPerson(16, "xdotool getmouselocation").match(/x:(\d+) y:(\d+)/)?.[0];
+        const signIn = (password: string) =>
+          openHand({
+            bytes: connectInside(container, screenPort(DisplayNumber.make(16))).bytes,
+            password: Redacted.make(password),
+            currentEpoch: Effect.succeed(1),
+          });
+        yield* signIn(FULL);
+
+        const dir = screenDirOfArgv(screenArgv(DisplayNumber.make(16), PERSON));
+        if (dir === null) throw new Error("a screen's argv names its directory");
+        stageHelper(REKEYED_FULL, REKEYED_VIEW_ONLY);
+        const said = yield* Effect.ensuring(
+          Effect.sync(() => docker("exec", "-u", "person", container, ...screenRekeyArgv(dir))),
+          Effect.sync(() => stageHelper(FULL, VIEW_ONLY)),
+        );
+        expect(said.trim()).toBe(SCREEN_REKEYED);
+        expect(xvncPid(16)).toBe(pid);
+        expect(inside(`stat -c '%a %U %s' ${dir}/passwd`).trim()).toBe("600 person 16");
+        expect(inside(`ls ${dir}`)).not.toContain("passwd.next");
+
+        const plan = planActions([{ kind: "move", to: { x: 222, y: 111 } }]);
+        if (plan._tag === "Unsupported") throw new Error("a move is always planned");
+        yield* (yield* signIn(REKEYED_FULL)).act(plan.steps, 1);
+        expect(pointer()).toBe("x:222 y:111");
+        expect((yield* signIn(FULL).pipe(Effect.flip)).reason).toBe("auth-failed");
+        const argv = inside("cat /proc/[0-9]*/cmdline | tr '\\0' ' '");
+        expect(argv).not.toContain(REKEYED_FULL);
+        expect(argv).not.toContain(REKEYED_VIEW_ONLY);
+
+        inside(`kill ${pid}`);
+        yield* Effect.promise(() => screen.exited);
+        expect(yield* settled).toEqual(BASELINE);
+      }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
     { timeout: 180_000 },
   );
 

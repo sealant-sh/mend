@@ -344,9 +344,14 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
   beforeAll(() => {
     xvnc = startXvnc(`mend-screens-${process.pid}-${Date.now()}`);
     world.xvncPort = xvnc.port;
+    world.signWith = ({ full, viewOnly }) =>
+      xvnc.signWith(Redacted.value(full), Redacted.value(viewOnly));
   }, 660_000);
 
-  afterAll(() => xvnc?.remove());
+  afterAll(() => {
+    world.signWith = null;
+    xvnc?.remove();
+  });
 
   it.live(
     "looks: the screen started on demand, its frame stored, the receipt returned, a retry answered from the store",
@@ -669,10 +674,10 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
               outcome: "outcome_unknown",
             });
             expect(pointer()).toEqual([7, 7]);
-            expect((yield* rowOf(crashed.screen.id)).input._tag).toBe("AwaitingAgent");
             expect(
               yield* screens.act(crashed.agent.call(), { actions: [movedTo({ x: 1, y: 1 })] }),
             ).toEqual({ _tag: "Refused", refusal: "look_first" });
+            expect((yield* rowOf(crashed.screen.id)).input._tag).toBe("AwaitingAgent");
             expect(world.starts.filter((started) => started === crashed.sessionId).length).toBe(1);
           }),
         );
@@ -694,18 +699,61 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
               OWNER,
             );
             expect((yield* rowOf(screen.id)).input._tag).toBe("Fencing");
-            return screen;
+            return { sessionId, screen };
           }),
         );
         yield* asProcess(
           Effect.gen(function* () {
-            yield* Screens;
-            const row = yield* rowOf(fenced.id);
+            const screens = yield* Screens;
+            x("xsetroot -solid '#55aa33'");
+            expect(yield* screens.heartbeat(fenced.sessionId, CONNECTION)).toBe(false);
+            const row = yield* rowOf(fenced.screen.id);
             expect(row.input).toMatchObject({ _tag: "Paused", reason: "restart" });
             expect(row.input.epoch).toBe(3);
-            const last = (yield* logOf(fenced.id)).at(-1);
+            const last = (yield* logOf(fenced.screen.id)).at(-1);
             expect(last?.body).toEqual({ _tag: "Paused", reason: "restart" });
+            if (last?.frame == null) throw new Error("the restart's pause kept no frame");
+            const stored = path.join(
+              blobRoot,
+              "screen-frames",
+              fenced.screen.id,
+              `${last.frame.digest}.png`,
+            );
+            expect(decodePng(readFileSync(stored)).at(640, 400)).toEqual([0x55, 0xaa, 0x33]);
             expect(keysDown()).toBe(0);
+          }),
+        );
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "takes over a screen that outlived Mend, signed for again rather than started over, and moves its pointer",
+    () =>
+      Effect.gen(function* () {
+        const before = yield* asProcess(
+          Effect.gen(function* () {
+            const { sessionId, screen } = yield* sessionWithScreen;
+            answered(yield* (yield* Screens).look(agentOf(sessionId).call()));
+            return { sessionId, screen };
+          }),
+        );
+        yield* asProcess(
+          Effect.gen(function* () {
+            const screens = yield* Screens;
+            const viewer = ViewerConnectionId.make("viewer-after-restart");
+            yield* screens.take(before.sessionId, OWNER, viewer);
+            expect((yield* rowOf(before.screen.id)).input).toMatchObject({
+              _tag: "Person",
+              connection: viewer,
+            });
+            const moved = yield* screens.input(before.sessionId, viewer, [
+              { _tag: "Pointer", buttons: 0, x: 444, y: 333 },
+            ]);
+            expect(moved).toBe(true);
+            expect(pointer()).toEqual([444, 333]);
+            expect(world.rekeys).toContain(before.sessionId);
+            expect(world.starts.filter((started) => started === before.sessionId)).toHaveLength(1);
           }),
         );
       }),
