@@ -125,6 +125,51 @@ export const notifyEvent = (sql: PgClient.PgClient, event: MendEvent) =>
     yield* sql`SELECT pg_notify(${MEND_EVENTS_CHANNEL}, ${payload})`.pipe(Effect.orDie);
   });
 
+/** The client's own pool size when none is set. */
+const CLIENT_DEFAULT_POOL = 10;
+
+/** LISTEN connections each pool holds now: every one is pinned for as long as its stream runs. */
+const pinned = new WeakMap<PgClient.PgClient, number>();
+
+/** The pool's size: a pooled client's config carries it, though `PgClientConfig` does not say so. */
+const poolSize = (sql: PgClient.PgClient) => {
+  const config = sql.config;
+  return "maxConnections" in config && typeof config.maxConnections === "number"
+    ? config.maxConnections
+    : CLIENT_DEFAULT_POOL;
+};
+
+/** How many LISTEN connections a pool may pin: all but one, which is left for queries. */
+export const listenBudget = (sql: PgClient.PgClient) => poolSize(sql) - 1;
+
+export const listenRefusal = (sql: PgClient.PgClient, channel: string) =>
+  `a LISTEN on ${channel} would pin connection ${(pinned.get(sql) ?? 0) + 1} of a pool of ${poolSize(sql)}, and a pool whose every connection listens answers no query · subscribe to the events bus (apps/api/src/events-bus.ts) instead of calling listenEvents`;
+
+const guarded = new WeakSet<PgClient.PgClient>();
+
+/**
+ * Counts every LISTEN the client takes, however its caller reached it (`listenEvents`, a direct
+ * `sql.listen`, an alias of the service tag), and refuses, as a defect, the one that would leave
+ * its pool no connection for queries. `PgLive` installs it on Mend's pool.
+ */
+export const guardListens = (sql: PgClient.PgClient): void => {
+  if (guarded.has(sql)) return;
+  guarded.add(sql);
+  const listen = sql.listen;
+  const counted: PgClient.PgClient["listen"] = (channel) =>
+    Effect.gen(function* () {
+      if ((pinned.get(sql) ?? 0) >= listenBudget(sql)) {
+        return yield* Effect.die(new Error(listenRefusal(sql, channel)));
+      }
+      yield* Effect.acquireRelease(
+        Effect.sync(() => pinned.set(sql, (pinned.get(sql) ?? 0) + 1)),
+        () => Effect.sync(() => pinned.set(sql, (pinned.get(sql) ?? 1) - 1)),
+      );
+      return yield* listen(channel);
+    });
+  Reflect.set(sql, "listen", counted);
+};
+
 /**
  * The channel's payloads, from the moment PostgreSQL confirms the LISTEN. The stream holds one
  * connection while it runs and fails with the connection's `SqlError` when it drops.

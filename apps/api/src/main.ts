@@ -754,7 +754,9 @@ const WorkerLive = Layer.mergeAll(
   SlackReporterLive,
   // Lands a change when a turn completes and automatic landing is on (docs/adr/0007-landing.md).
   AutomaticLandingLive,
-  PreviewPreparationLive,
+  // On the process's events bus (shared with the HTTP half under MEND_MODE=all): every LISTEN
+  // pins one pool connection for good.
+  PreviewPreparationLive.pipe(Layer.provide(EventBusLive)),
   // Adopts a pull request the agent opened itself, after its push and when its turn ends.
   PullRequestAdoptionLive,
   // Names the stores whose git config has a login, a token or an include: refused until fixed.
