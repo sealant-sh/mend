@@ -388,8 +388,8 @@ export function ResourcesView(props: ResourcesViewProps) {
         ["for the project", offers.project],
         [`for worktree ${worktreeName ?? ""}`, offers.worktree],
       ] as const
-    ).map(([target, request]) =>
-      request === null ? null : (
+    ).map(([target, offer]) =>
+      offer?.kind !== "ready" ? null : (
         <button
           key={target}
           type="button"
@@ -399,7 +399,7 @@ export function ResourcesView(props: ResourcesViewProps) {
               key,
               spec: item.spec,
               digest: item.digest,
-              request,
+              request: offer.request,
               target,
               worktreeId,
             })

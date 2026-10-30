@@ -5,6 +5,7 @@ import {
   type ResourceApprovalRequest,
   ResourceName,
   ResourceSpecDigest,
+  type ResourceApprovalOffers,
 } from "@mend/domain/workbench";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -42,6 +43,10 @@ const handlers: ResourceHandlers = {
   reload: nothing,
 };
 const none = { project: null, worktree: null };
+const withheld: ResourceApprovalOffers = {
+  project: { kind: "denied", message: "is a manager's to approve" },
+  worktree: null,
+};
 const forProject: ResourceApprovalRequest = {
   source: { kind: "settings", id: ResourceDefinitionId.make("rdef_db"), digest },
   worktreeId: null,
@@ -52,7 +57,7 @@ const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingV
   digest,
   spec: db,
   approvals: { project: { by: "alice" }, worktree: null },
-  approve: none,
+  approve: withheld,
   choice: "shared",
   canRemove: false,
   canChoose: false,
@@ -68,7 +73,7 @@ const proposal = (overrides: Partial<ResourceProposalView> = {}): ResourcePropos
   mine: true,
   canRemove: true,
   approvals: none,
-  approve: none,
+  approve: withheld,
   statusLine: "@db · postgres 17 · project · proposed by Carol · waiting for approval",
   ...overrides,
 });
@@ -120,7 +125,10 @@ describe("the resources card", () => {
       settings: [
         setting({
           approvals: none,
-          approve: { project: forProject, worktree: { ...forProject, worktreeId: worktree } },
+          approve: {
+            project: { kind: "ready", request: forProject },
+            worktree: { kind: "ready", request: { ...forProject, worktreeId: worktree } },
+          },
         }),
       ],
     });
@@ -150,7 +158,10 @@ describe("the resources card", () => {
   });
 
   it("reviews every field apart and the definition digest, for the read it was opened on", () => {
-    const entry = setting({ approvals: none, approve: { project: forProject, worktree: null } });
+    const entry = setting({
+      approvals: none,
+      approve: { project: { kind: "ready", request: forProject }, worktree: null },
+    });
     const confirming = {
       key: "s:rdef_db",
       spec: db,

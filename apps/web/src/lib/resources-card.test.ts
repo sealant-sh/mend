@@ -25,7 +25,10 @@ const page = (choice: WorktreeChoice | null): ResourcesPageView => ({
         scope: "project",
       }),
       approvals: { project: null, worktree: null },
-      approve: { project: null, worktree: null },
+      approve: {
+        project: { kind: "denied", message: "is a manager's to approve" },
+        worktree: null,
+      },
       choice,
       canRemove: false,
       canChoose: true,

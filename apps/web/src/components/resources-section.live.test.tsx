@@ -71,7 +71,7 @@ const db = {
     scope: "project",
   }),
   approvals: { project: { by: "manager" }, worktree: null },
-  approve: { project: null, worktree: null },
+  approve: { project: { kind: "approved" as const }, worktree: null },
   choice: "shared" as const,
   canRemove: false,
   canChoose: true,
@@ -213,7 +213,10 @@ describe("the Resources card's answers", () => {
 
   it("leaves a review opened on worktree-B open when an approval sent on worktree-A answers", async () => {
     const offered = (id: ResourceDefinitionId) => ({
-      project: { source: { kind: "settings" as const, id, digest: db.digest }, worktreeId: null },
+      project: {
+        kind: "ready" as const,
+        request: { source: { kind: "settings" as const, id, digest: db.digest }, worktreeId: null },
+      },
       worktree: null,
     });
     const cache = ResourceDefinitionId.make("rdef_cache");
