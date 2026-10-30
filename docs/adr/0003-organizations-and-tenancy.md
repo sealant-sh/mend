@@ -127,13 +127,14 @@ secure), per-project roles, an admin role between owner and member, and self-ser
   instance project).
 - The creator picks the visibility when adopting. After that, only an owner changes it.
 - Members may also create a project by name, with no repository source. It starts private with one
-  README commit on `main`, authored as the creator (as their email's local part when git cannot
-  store their name as it is). Its repository is marked until its row exists; at startup the API
-  removes a marked repository no row names once it is ten minutes old, and never one a row names.
-  Scratch is one private project per person, created on first use and identified by its owner,
-  independently of its name. It stays private. Departed-member recovery clears that identity when
-  transferring the project, making it an ordinary private project. The next scratch request can
-  create a replacement.
+  README commit on `main`, authored as the creator. Mend applies git's own name rule first (it trims
+  whitespace and `,:;<>"\'` from the ends and drops `<`, `>` and line breaks), so git never refuses
+  or rewrites the name; when nothing remains it uses the email's local part, then `person`. Its
+  repository is marked until its row exists; at startup the API removes a marked repository no row
+  names once it is ten minutes old, and never one a row names. Scratch is one private project per
+  person, created on first use and identified by its owner, independently of its name. It stays
+  private. Departed-member recovery clears that identity when transferring the project, making it an
+  ordinary private project. The next scratch request can create a replacement.
 - Names are unique within an organization, not across the instance. The CLI resolves names inside
   the caller's organization; automation uses IDs.
 - New project stores live at `store/<projectId>`. Existing projects keep their recorded `storePath`.

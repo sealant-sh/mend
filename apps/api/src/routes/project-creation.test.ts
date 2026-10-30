@@ -133,20 +133,24 @@ describe("private project creation over HTTP", () => {
     }
   });
 
-  it("authors as the email's local part when the account name is not one git stores as it is", async () => {
+  it("authors as the name git stores, or the email's local part when git stores none of the account name", async () => {
     const f = await fixture();
     try {
       f.setAuthor(null);
-      for (const [name, project] of [
-        ["Jane <Team>", "angled"],
-        ["<>", "bracketed"],
-      ] as const) {
-        f.profile.name = name;
-        const created = await create(f.api, project);
+      f.profile.name = "Jane <Team>;";
+      const angled = await create(f.api, "angled");
+      expect(await git(angled.storePath, "log", "--format=%an|%ae|%cn|%ce")).toBe(
+        "Jane Team|alice@example.invalid|Jane Team|alice@example.invalid",
+      );
+      f.profile.name = ":";
+      const named = await create(f.api, "colon-notes");
+      const scratchResponse = await f.api.request("alice", "POST", "/api/projects/scratch", {});
+      expect(scratchResponse.status).toBe(200);
+      const scratch = decodeProject(await scratchResponse.json());
+      for (const created of [named, scratch])
         expect(await git(created.storePath, "log", "--format=%an|%ae|%cn|%ce")).toBe(
           "alice|alice@example.invalid|alice|alice@example.invalid",
         );
-      }
     } finally {
       await f.dispose();
     }

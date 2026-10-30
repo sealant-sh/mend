@@ -734,7 +734,9 @@ not as a wrong code. The code is not spent.
 T3 Code's **New project** creates a private Mend project by name. Mend allocates the first free
 name, trying suffixes `-2` through `-100` when needed, and returns the allocated name in the
 sidebar. The repository has one `Initial commit` on `main`, a README naming the project, your Mend
-Git author, and no origin. The existing client toast still uses the name you typed.
+Git author, and no origin. Mend writes the author name as git would store it; a name git keeps
+nothing of, such as `:`, becomes your email's local part, then `person`. The existing client toast
+still uses the name you typed.
 
 **No project** uses your private scratch project, made on first use and reused across devices and
 gateway restarts. Each new scratch thread starts a session in its own worktree from `main`. Mend

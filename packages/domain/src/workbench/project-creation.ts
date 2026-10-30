@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { gitAuthorIssue, normalizeGitAuthor } from "./git-author.ts";
+import { normalizeGitAuthor } from "./git-author.ts";
 
 /** The stored name rule shared with adoption. */
 export const PROJECT_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -52,9 +52,25 @@ export interface FirstCommit {
   readonly at: Date;
 }
 
+/** Bytes git's ident.c calls crud: control characters, space and `,:;<>"\'`. */
+const isIdentCrud = (code: number): boolean =>
+  code <= 32 || ",:;<>\"\\'".includes(String.fromCharCode(code));
+
 /**
- * Author of a first commit: the person's Git author, or the email's local part for a name git
- * would refuse or rewrite (empty, `<`, `>`, a line break, too long).
+ * The name git stores for `text` (ident.c, strbuf_addstr_without_crud): crud trimmed from both
+ * ends, then `<`, `>` and line feeds dropped. Empty is a name git refuses.
+ */
+const gitIdentName = (text: string): string => {
+  let start = 0;
+  let end = text.length;
+  while (start < end && isIdentCrud(text.charCodeAt(start))) start++;
+  while (end > start && isIdentCrud(text.charCodeAt(end - 1))) end--;
+  return text.slice(start, end).replace(/[<>\n]/g, "");
+};
+
+/**
+ * Author of a first commit, with the name git would store so git never refuses or rewrites it:
+ * the person's Git author name, else the email's local part, else `person`.
  */
 export const firstCommitAuthor = (author: {
   readonly name: string;
@@ -62,7 +78,7 @@ export const firstCommitAuthor = (author: {
 }): FirstCommit["author"] => {
   const { name, email } = normalizeGitAuthor(author);
   return {
-    name: gitAuthorIssue({ name, email }) === null ? name : (email.split("@")[0] ?? ""),
+    name: gitIdentName(name) || gitIdentName(email.split("@")[0] ?? "") || "person",
     email,
   };
 };
