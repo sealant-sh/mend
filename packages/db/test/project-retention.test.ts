@@ -75,6 +75,22 @@ const keep = (id: ProjectId) =>
     expect(yield* fences.keep(id, mark.id, "anna")).toBe("kept");
   });
 
+/** Takes the mark and keeps the project as `by`, answering what keep answered. */
+const removeAs = (id: ProjectId, by: string) =>
+  Effect.gen(function* () {
+    const fences = yield* RemovalFencesRepo;
+    const mark = yield* fences.take({ kind: "project", id });
+    if (mark._tag !== "held") return yield* Effect.die("expected removal mark");
+    return yield* fences.keep(id, mark.id, by);
+  });
+const member = (user: string, role: "owner" | "member") =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO "user" (id, name, email, "createdAt") VALUES (${user}, ${user}, ${`${user}@example.invalid`}, now()) ON CONFLICT DO NOTHING`;
+    yield* sql`INSERT INTO organization_members (organization_id, user_id, role) VALUES (${org}, ${user}, ${role})
+      ON CONFLICT (organization_id, user_id) DO UPDATE SET role = EXCLUDED.role`;
+  });
+
 describe.skipIf(postgres.skip)("project retention on a populated database (0167)", () => {
   let created = false;
   beforeAll(async () => {
@@ -360,22 +376,6 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
       }),
     ));
 
-  /** Takes the mark and keeps the project as `by`, answering what keep answered. */
-  const removeAs = (id: ProjectId, by: string) =>
-    Effect.gen(function* () {
-      const fences = yield* RemovalFencesRepo;
-      const mark = yield* fences.take({ kind: "project", id });
-      if (mark._tag !== "held") return yield* Effect.die("expected removal mark");
-      return yield* fences.keep(id, mark.id, by);
-    });
-  const member = (user: string, role: "owner" | "member") =>
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO "user" (id, name, email, "createdAt") VALUES (${user}, ${user}, ${`${user}@example.invalid`}, now()) ON CONFLICT DO NOTHING`;
-      yield* sql`INSERT INTO organization_members (organization_id, user_id, role) VALUES (${org}, ${user}, ${role})
-        ON CONFLICT (organization_id, user_id) DO UPDATE SET role = EXCLUDED.role`;
-    });
-
   it("answers Restore, purge and removal by what the person may do when they commit", async () =>
     run(
       Effect.gen(function* () {
@@ -522,10 +522,10 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
   it("keeps a removed project's standby in the pool's sweep until it is drained", async () =>
     run(
       Effect.gen(function* () {
-        const pool = yield* HotWorkspacesRepo;
+        const standbys = yield* HotWorkspacesRepo;
         const id = yield* seed("standby");
         const standby = SessionId.make("hot-standby");
-        yield* pool.create({
+        yield* standbys.create({
           id: standby,
           projectId: id,
           worktreeId: null,
@@ -537,7 +537,7 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           baseSha: null,
         });
         yield* keep(id);
-        expect((yield* pool.listAll()).map((entry) => entry.id)).toContain(standby);
+        expect((yield* standbys.listAll()).map((entry) => entry.id)).toContain(standby);
       }),
     ));
 });
