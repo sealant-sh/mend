@@ -1052,13 +1052,23 @@ const capListing = (paths: ReadonlyArray<string>, limit: number): FileListing =>
   return { files: sorted.slice(0, limit), truncated: sorted.length > limit };
 };
 
+/** Only a lookup that answers ENOENT proves a path is gone: a refused one says nothing. */
+const confirmedAbsent = (target: string): boolean => {
+  try {
+    fs.lstatSync(target);
+    return false;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "ENOENT";
+  }
+};
+
 const rmBestEffort = (target: string): { readonly leftover: string | null } => {
   try {
     fs.rmSync(target, { recursive: true, force: true });
   } catch {
     // EACCES on container-uid files — what survives is reported by the caller.
   }
-  return { leftover: fs.existsSync(target) ? target : null };
+  return { leftover: confirmedAbsent(target) ? null : target };
 };
 
 /** Where a named worktree lives relative to its project's bare repo. */
@@ -1202,17 +1212,25 @@ export class Store extends Context.Service<
       name: string,
     ) => Effect.Effect<{ readonly leftover: string | null }>;
     /**
-     * Remove the project's whole store directory (bare repo + worktrees).
-     * Same honesty contract: a path that would not delete is the answer.
+     * Why a removed project's kept files cannot be restored as they are (the bare repository and,
+     * for each of `directories`, its worktree checkout), in words for the person; null: they can.
      */
     readonly retainedStoreProblem: (
       storePath: string,
       directories: ReadonlyArray<string>,
     ) => Effect.Effect<string | null>;
+    /** Bytes on disk under the project's store directory; null when it cannot be measured. */
     readonly projectDiskUsage: (storePath: string) => Effect.Effect<number | null>;
+    /**
+     * Remove the project's whole store directory (bare repo + worktrees).
+     * Same honesty contract: a path that would not delete is the answer, and only a lookup that
+     * found nothing there counts as deleted. `outsideRoot`: the recorded directory is outside the
+     * store root Mend runs with now (`MEND_STORE_ROOT` changed since adoption), so nothing was
+     * touched.
+     */
     readonly removeProjectStore: (
       storePath: string,
-    ) => Effect.Effect<{ readonly leftover: string | null }>;
+    ) => Effect.Effect<{ readonly leftover: string | null; readonly outsideRoot?: string }>;
     /**
      * Snapshot the worktree without touching HEAD, index, or files: throwaway
      * index → write-tree → commit-tree (parented on the previous checkpoint)
@@ -1928,7 +1946,8 @@ export class Store extends Context.Service<
       ) {
         const problem = yield* Effect.sync(() => {
           const parent = path.dirname(storePath);
-          if (!withinStore(parent)) return "The repository is outside Mend's store.";
+          if (!withinStore(parent))
+            return `The kept repository is at ${storePath}, outside the store root ${config.root} Mend runs with now. Run Mend with the store root it was adopted under to restore it.`;
           try {
             if (!linkFreeBelowRoot(storePath))
               return "The kept repository uses a symbolic link. Its identity needs recovery.";
@@ -1988,8 +2007,8 @@ export class Store extends Context.Service<
       ) {
         return yield* Effect.sync(() => {
           const parent = path.dirname(storePath);
-          if (!withinStore(parent)) return { leftover: parent };
-          if (!fs.existsSync(parent)) return { leftover: null };
+          if (!withinStore(parent)) return { leftover: parent, outsideRoot: config.root };
+          if (confirmedAbsent(parent)) return { leftover: null };
           try {
             if (!linkFreeBelowRoot(parent)) return { leftover: parent };
           } catch {

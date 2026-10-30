@@ -63,6 +63,7 @@ import {
   Worktree,
   type OrganizationRole,
   type ProjectVisibility,
+  type Viewer,
 } from "@mend/domain/workbench";
 import { Effect, Layer, Option } from "effect";
 import type * as Context from "effect/Context";
@@ -244,6 +245,8 @@ export interface TenancyWorld {
   readonly projects: ReadonlyMap<ProjectId, Project>;
   readonly retainedProjects: Map<ProjectId, RetainedProject>;
   readonly purgeProject: (id: ProjectId) => void;
+  /** Who `userId` is in their organization now, as authorization reads it; null: no member. */
+  readonly viewerOf: (userId: string) => Viewer | null;
   readonly sessions: ReadonlyMap<SessionId, Session>;
   readonly worktrees: ReadonlyMap<WorktreeId, Worktree>;
   readonly changes: ReadonlyMap<ChangeId, Change>;
@@ -773,10 +776,8 @@ export const createTenancyWorld = async (
           Effect.sync(() =>
             [...retainedProjects.values()].filter(({ project }) => project.organizationId === id),
           ),
-        storeClaimed: (storePath, except) =>
-          Effect.sync(() =>
-            [...projects.values()].some((p) => p.storePath === storePath && p.id !== except),
-          ),
+        storeClaimed: (storePath) =>
+          Effect.sync(() => [...projects.values()].some((p) => p.storePath === storePath)),
         byName: (org, name) =>
           Effect.sync(
             () =>
@@ -1032,6 +1033,12 @@ export const createTenancyWorld = async (
 
   return {
     retainedProjects,
+    viewerOf: (userId) => {
+      const membership = membershipOf(userId);
+      return membership === null
+        ? null
+        : { userId, organizationId: membership.organization.id, role: membership.role };
+    },
     purgeProject: (id) => {
       projects.delete(id);
       retainedProjects.delete(id);

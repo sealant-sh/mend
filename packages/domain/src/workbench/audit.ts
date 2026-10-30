@@ -18,6 +18,7 @@ export const AuditAction = Schema.Literals([
   "project.taken_over",
   "project.removed",
   "project.restored",
+  "project.purge_started",
   "project.purged",
   "folder.created",
   "folder.removed",

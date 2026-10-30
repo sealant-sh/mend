@@ -7,7 +7,7 @@ import {
   type GitAuthMode,
   type ProjectVisibility,
 } from "@mend/domain/workbench";
-import { and, asc, eq, isNull, isNotNull, ne } from "drizzle-orm";
+import { and, asc, eq, isNull, isNotNull } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -99,8 +99,8 @@ export class ProjectsRepo extends Context.Service<
     readonly removedForOrganization: (
       id: OrganizationId,
     ) => Effect.Effect<ReadonlyArray<RetainedProject>>;
-    /** Whether any row, in any state, other than `except` claims the store directory. */
-    readonly storeClaimed: (storePath: string, except?: ProjectId) => Effect.Effect<boolean>;
+    /** Whether any row, in any state, claims the store directory. */
+    readonly storeClaimed: (storePath: string) => Effect.Effect<boolean>;
     readonly byScratchOwner: (userId: string) => Effect.Effect<Project | null>;
     readonly publishInitialized: (
       project: InitializedProject,
@@ -253,19 +253,11 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
         return rows.map(retained);
       });
-      const storeClaimed = Effect.fn("ProjectsRepo.storeClaimed")(function* (
-        storePath: string,
-        except?: ProjectId,
-      ) {
+      const storeClaimed = Effect.fn("ProjectsRepo.storeClaimed")(function* (storePath: string) {
         const rows = yield* db
           .select({ id: projects.id })
           .from(projects)
-          .where(
-            and(
-              eq(projects.storePath, storePath),
-              except === undefined ? undefined : ne(projects.id, except),
-            ),
-          )
+          .where(eq(projects.storePath, storePath))
           .limit(1)
           .pipe(Effect.orDie);
         return rows.length > 0;

@@ -105,10 +105,16 @@ export class RemovalFencesRepo extends Context.Service<
       "restored" | "listed" | "purging" | "legacy" | "gone" | "forbidden",
       ProjectNameTakenError
     >;
+    /**
+     * Takes the purge's mark, with its `project.purge_started` entry, only while the project is
+     * still the removal `confirmed` was read from: that name, removed at that moment. `changed`:
+     * it was restored, renamed or removed again since, and the person confirmed something else.
+     */
     readonly takePurge: (
       id: ProjectId,
       userId: string,
-    ) => Effect.Effect<FenceTaken | { readonly _tag: "forbidden" }>;
+      confirmed: { readonly name: string; readonly removedAt: Date },
+    ) => Effect.Effect<FenceTaken | { readonly _tag: "forbidden" } | { readonly _tag: "changed" }>;
     /**
      * Deletes the purged project's row, its exclusive context snapshots and its audit entry in one
      * transaction, only while `mark` is still the purge's and fresh. False: it is not.
@@ -218,9 +224,11 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
       const lockMembership = (id: ProjectId, by: string) =>
         sql`SELECT 1 FROM organization_members WHERE user_id = ${by}
           AND organization_id = (SELECT organization_id FROM projects WHERE id = ${id}) FOR SHARE`;
+      /** The entry names the project: once purged, nothing else in the log does. */
       const audited = (id: ProjectId, by: string, action: string) =>
         sql`INSERT INTO audit_events (id, organization_id, actor_user_id, action, subject_type, subject_id, data)
-          SELECT ${crypto.randomUUID()}, organization_id, ${by}, ${action}, 'project', id, '{}'::jsonb
+          SELECT ${crypto.randomUUID()}, organization_id, ${by}, ${action}, 'project', id,
+                 jsonb_build_object('name', name, 'visibility', visibility)
           FROM projects WHERE id = ${id}`;
 
       const keep = Effect.fn("RemovalFencesRepo.keep")(function* (
@@ -314,27 +322,34 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
       const takePurge = Effect.fn("RemovalFencesRepo.takePurge")(function* (
         projectId: ProjectId,
         userId: string,
+        confirmed: { readonly name: string; readonly removedAt: Date },
       ) {
         return yield* sql
           .withTransaction(
             Effect.gen(function* () {
               yield* lockMembership(projectId, userId);
+              // `removedAt` was read through the driver, which keeps milliseconds only.
               const [row] = yield* sql<{
                 readonly phase: string | null;
                 readonly fresh: boolean;
                 readonly removed: boolean;
                 readonly allowed: boolean;
+                readonly confirmed: boolean;
               }>`
                 SELECT removal_phase AS phase, removal_fence_fresh(removal_since) AS fresh,
-                       removed_at IS NOT NULL AS removed, ${mayRemove(userId)} AS allowed
+                       removed_at IS NOT NULL AS removed, ${mayRemove(userId)} AS allowed,
+                       coalesce(name = ${confirmed.name} AND removed_at >= ${confirmed.removedAt}
+                         AND removed_at < ${confirmed.removedAt}::timestamptz + interval '1 millisecond', false) AS confirmed
                 FROM projects p WHERE id = ${projectId} FOR NO KEY UPDATE`;
               if (row === undefined || !row.removed) return { _tag: "gone" } as const;
               if (!row.allowed) return { _tag: "forbidden" } as const;
+              if (!row.confirmed) return { _tag: "changed" } as const;
               if (row.phase === "deleting" && row.fresh)
                 return { _tag: "underway", stopped: null } as const;
               const id = RemovalFenceId.make(`rmv_${crypto.randomUUID()}`);
               yield* sql`UPDATE projects SET removal_phase = 'deleting', removal_id = ${id}, removal_since = now()
                 WHERE id = ${projectId}`;
+              yield* audited(projectId, userId, "project.purge_started");
               return { _tag: "finish", id } as const;
             }),
           )

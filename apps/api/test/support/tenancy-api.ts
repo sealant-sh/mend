@@ -69,7 +69,7 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import type { DotfilesRepository, SessionId } from "@mend/domain";
-import { Project } from "@mend/domain/workbench";
+import { canRemoveProject, Project } from "@mend/domain/workbench";
 import {
   emptyHarnessModelCatalog,
   type Session,
@@ -385,12 +385,18 @@ export const createTenancyApi = async (
     { readonly phase: "checking" | "deleting"; readonly id: string }
   >();
   const marked = (key: string) => removalMarks.has(key);
+  /** `canRemoveProject` as the person's membership reads at the commit, as Postgres asks it. */
+  const mayRemove = (project: Project, userId: string) => {
+    const viewer = world.viewerOf(userId);
+    return viewer !== null && canRemoveProject(project, viewer);
+  };
   const inMemoryFences: RemovalFencesRepo["Service"] = {
     keep: (id, mark, userId) =>
       Effect.sync(() => {
         const project = world.projects.get(id);
         if (project === undefined || removalMarks.get(`project:${id}`)?.id !== mark)
           return "lost" as const;
+        if (!mayRemove(project, userId)) return "forbidden" as const;
         world.retainedProjects.set(id, {
           project,
           removedAt: new Date(),
@@ -399,11 +405,12 @@ export const createTenancyApi = async (
         });
         return "kept" as const;
       }),
-    restore: (id, _userId, name) =>
+    restore: (id, userId, name) =>
       Effect.gen(function* () {
         const kept = world.retainedProjects.get(id);
         if (kept === undefined)
           return world.projects.has(id) ? ("listed" as const) : ("gone" as const);
+        if (!mayRemove(kept.project, userId)) return "forbidden" as const;
         if (kept.state === "purging") return "purging" as const;
         if (kept.state === "recovery-required") return "legacy" as const;
         const desiredName = name ?? kept.project.name;
@@ -441,10 +448,16 @@ export const createTenancyApi = async (
         removalMarks.delete(`project:${id}`);
         return true;
       }),
-    takePurge: (id) =>
-      Effect.sync((): FenceTaken => {
+    takePurge: (id, userId, confirmed) =>
+      Effect.sync((): Effect.Success<ReturnType<RemovalFencesRepo["Service"]["takePurge"]>> => {
         const kept = world.retainedProjects.get(id);
         if (kept === undefined) return { _tag: "gone" };
+        if (!mayRemove(kept.project, userId)) return { _tag: "forbidden" };
+        if (
+          kept.project.name !== confirmed.name ||
+          kept.removedAt.getTime() !== confirmed.removedAt.getTime()
+        )
+          return { _tag: "changed" };
         const mark = RemovalFenceId.make(`rmv_${crypto.randomUUID()}`);
         world.retainedProjects.set(id, { ...kept, state: "purging" });
         removalMarks.set(`project:${id}`, { phase: "deleting", id: mark });

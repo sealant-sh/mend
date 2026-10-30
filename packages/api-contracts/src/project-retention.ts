@@ -28,7 +28,7 @@ export class PurgeNotConfirmed extends Schema.TaggedError<PurgeNotConfirmed>()(
 export class ProjectPurgeIncomplete extends Schema.TaggedError<ProjectPurgeIncomplete>()(
   "ProjectPurgeIncomplete",
   { message: Schema.String },
-  { httpApiStatus: 503 },
+  { httpApiStatus: 409 },
 ) {}
 
 export class ProjectPurgeReport extends Schema.Class<ProjectPurgeReport>("ProjectPurgeReport")({

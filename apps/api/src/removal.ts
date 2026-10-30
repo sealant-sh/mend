@@ -690,11 +690,25 @@ export const RemovalLive: Layer.Layer<
           capture,
           (yield* worktrees.listForProject(id)).map((tree) => tree.id),
         ).pipe(Effect.mapError(uploadOpen));
-      const taken = yield* fences.takePurge(id, viewer.userId);
+      const taken = yield* fences.takePurge(id, viewer.userId, {
+        name: kept.project.name,
+        removedAt: kept.removedAt,
+      });
       if (taken._tag === "gone") return yield* new NotFound({ id });
       if (taken._tag === "forbidden") return yield* retentionForbidden;
+      if (taken._tag === "changed")
+        return yield* new PurgeNotConfirmed({
+          message:
+            "This project was restored, renamed or removed again since you confirmed. Check its name and confirm purge again.",
+        });
       if (taken._tag === "underway")
-        return yield* refused("project", underway(taken.stopped), false);
+        return yield* new RemovalRefused({
+          scope: "project",
+          blockers: underway(taken.stopped),
+          forceWouldLift: false,
+          message:
+            "Another purge of this project is under way. Purge again later to see its result.",
+        });
       const row = { kind: "project", id } as const;
       // Asked before every destructive step: once another purge took the mark, this one stops.
       const holding = fences.renew(row, taken.id).pipe(
@@ -733,16 +747,16 @@ export const RemovalLive: Layer.Layer<
                 }),
               );
             yield* holding;
-            if (yield* projects.storeClaimed(kept.project.storePath, id))
+            const { leftover, outsideRoot } = yield* store.removeProjectStore(
+              kept.project.storePath,
+            );
+            if (outsideRoot !== undefined)
               return yield* new ProjectPurgeIncomplete({
-                message:
-                  "Another project now claims this project's store directory, so its files were kept.",
+                message: `The kept store is at ${leftover ?? kept.project.storePath}, outside the store root ${outsideRoot} Mend runs with now, so nothing there was deleted. Run Mend with the store root the project was adopted under and purge again.`,
               });
-            const { leftover } = yield* store.removeProjectStore(kept.project.storePath);
             if (leftover !== null)
               return yield* new ProjectPurgeIncomplete({
-                message:
-                  "Some files could not be deleted. Fix their permissions and purge again to finish.",
+                message: `Some files under ${leftover} could not be deleted or checked. Fix their permissions and purge again to finish.`,
               });
             if (!(yield* fences.finishPurge(id, taken.id, viewer.userId)))
               return yield* new ProjectPurgeIncomplete({

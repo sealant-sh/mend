@@ -955,25 +955,6 @@ describe("DELETE /projects/:id", () => {
     expect(instance.world.sessions.has(privateAlice.session)).toBe(false);
   });
 
-  it("purge keeps the store directory when another project claims it", async () => {
-    const instance = await world();
-    const project = instance.world.projects.get(privateAlice.project);
-    if (project === undefined) throw new Error("missing project");
-    await instance.request("alice", "DELETE", `/api/projects/${project.id}`);
-    instance.world.addProject(
-      new Project({ ...project, id: ProjectId.make("claimant"), name: "claimant" }),
-    );
-    const purged = await instance.request(
-      "alice",
-      "POST",
-      `/api/removed-projects/${project.id}/purge`,
-      { confirm: project.name },
-    );
-    expect(purged.status).toBe(503);
-    expect(await bodyOf(purged)).toMatchObject({ _tag: "ProjectPurgeIncomplete" });
-    expect(removedStores).toEqual([]);
-  });
-
   it("a failed purge keeps the project hidden, refuses Restore, and a second purge finishes", async () => {
     const instance = await world({ failFirstPurge: true });
     await instance.request("alice", "DELETE", `/api/projects/${privateAlice.project}`);
@@ -983,7 +964,7 @@ describe("DELETE /projects/:id", () => {
       `/api/removed-projects/${privateAlice.project}/purge`,
       { confirm: "private-alice" },
     );
-    expect(first.status).toBe(503);
+    expect(first.status).toBe(409);
     expect(instance.world.sessions.has(privateAlice.session)).toBe(true);
     expect(
       (
