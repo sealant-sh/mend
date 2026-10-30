@@ -1,6 +1,6 @@
 import { SCREEN_LIMITS } from "@mend/domain/workbench";
 import type { ForwardBytes, ForwardRead } from "@mend/sealant";
-import { it } from "@mend/test-ci/effect-vitest";
+import { TestClock, it } from "@mend/test-ci/effect-vitest";
 import { Clock, Deferred, Effect, Fiber, Queue, Redacted, Ref } from "effect";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 
@@ -42,6 +42,15 @@ const serverInit = (width: number, height: number) => {
   init.writeUInt16BE(width, 0);
   init.writeUInt16BE(height, 2);
   return init;
+};
+
+/** A FramebufferUpdate of one Raw rectangle at the origin, without its pixels. */
+const rawUpdate = (width: number, height: number) => {
+  const header = Buffer.alloc(16);
+  header.writeUInt16BE(1, 2);
+  header.writeUInt16BE(width, 8);
+  header.writeUInt16BE(height, 10);
+  return header;
 };
 
 const SIGNED_IN = Buffer.concat([VERSION, VNC_AUTH, signedIn, serverInit(1280, 800)]);
@@ -211,6 +220,36 @@ describe("a hand whose batch or stream runs long", () => {
         });
       }).pipe(Effect.provideService(Clock.Clock, clock));
     }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
+  );
+
+  it.effect(
+    "ends with stream-stalled when a frame stops partway, and not while it moves or the screen is quiet",
+    () =>
+      Effect.gen(function* () {
+        const display = yield* heldDisplay;
+        const hand = yield* openHand({
+          bytes: display.bytes,
+          password: Redacted.make(XVNC_PASSWORD),
+          currentEpoch: Effect.succeed(1),
+        });
+        const ending = yield* Effect.forkChild(Effect.flip(hand.ended));
+        const header = rawUpdate(10, 10);
+        const pixels = Buffer.alloc(400, 0x7f);
+        let ask = yield* display.asked;
+        yield* display.answer(ask, Buffer.concat([header, pixels.subarray(0, 100)]));
+        for (let at = 100; at < pixels.length; at += 100) {
+          ask = yield* display.asked;
+          yield* TestClock.adjust("9 seconds");
+          yield* display.answer(ask, pixels.subarray(at, at + 100));
+        }
+        ask = yield* display.asked;
+        yield* TestClock.adjust("1 minute");
+        expect(ending.pollUnsafe()).toBeUndefined();
+        yield* display.answer(ask, Buffer.concat([header, pixels.subarray(0, 2)]));
+        yield* display.asked;
+        yield* TestClock.adjust("10 seconds");
+        expect((yield* Fiber.join(ending)).reason).toBe("stream-stalled");
+      }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
   );
 
   it.live("ends when its decoder's thread has gone, once a look finds it", () =>

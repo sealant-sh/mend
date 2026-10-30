@@ -28,6 +28,8 @@ const SLICE_MS = 100;
 const PACE_MS = 20;
 const QUEUED_AT_MOST = 256;
 const SIGN_IN_DEADLINE = Duration.seconds(10);
+/** Longest a server message read in part may go without another byte. */
+const STALL_DEADLINE = Duration.seconds(10);
 const RELEASE_DEADLINE = Duration.seconds(1);
 /** Shift, Control, Caps Lock, Shift Lock, Meta, Alt, Super and Hyper, then AltGr. */
 const MODIFIERS = [...Array.from({ length: 14 }, (_, at) => 0xffe1 + at), 0xfe03];
@@ -75,6 +77,7 @@ export type HandEndReason =
   | "sign-in-deadline"
   | "decode-deadline"
   | "decoder-failed"
+  | "stream-stalled"
   | "connection-failed"
   | "closed";
 
@@ -203,8 +206,20 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
     const signIn = new VncSignIn(Redacted.value(options.password));
     const handshake = new ByteQueue();
     let signedIn = false;
+    let partial = false;
+    const readServer = () => {
+      const read = bytes.read().pipe(Effect.mapError(() => ended("connection-failed")));
+      return partial
+        ? read.pipe(
+            Effect.timeoutOrElse({
+              duration: STALL_DEADLINE,
+              orElse: () => Effect.fail(ended("stream-stalled")),
+            }),
+          )
+        : read;
+    };
     for (;;) {
-      const read = yield* bytes.read().pipe(Effect.mapError(() => ended("connection-failed")));
+      const read = yield* readServer();
       if (read.kind === "eof") return yield* ended("closed");
       let chunk = read.bytes;
       if (!signedIn) {
@@ -219,6 +234,7 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
       }
       const decoded = yield* decoder.decode(chunk).pipe(Effect.mapError(decoderEnded));
       if (decoded._tag === "Refused") return yield* ended(decoded.reason);
+      partial = decoded.partial;
       for (const event of decoded.events) {
         if (event._tag === "Ready") {
           yield* send([...HAND_SETUP, ...BOOT_RESET]);

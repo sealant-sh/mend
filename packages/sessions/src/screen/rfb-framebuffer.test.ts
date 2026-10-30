@@ -258,7 +258,7 @@ describe("Framebuffer", () => {
     for (const cut of [unsplit, split]) {
       const framebuffer = signedIn();
       const queue = queueOf(header.subarray(0, cut));
-      expect(framebuffer.read(queue)).toEqual({ _tag: "Read", events: [] });
+      expect(framebuffer.read(queue)).toEqual({ _tag: "Read", events: [], partial: true });
       queue.push(Buffer.concat([header.subarray(cut), Buffer.alloc(16 * 1024 * 1024)]));
       const { result, bytes: added } = allocatedBy(() => framebuffer.read(queue));
       expect(refusal(result)).toBe("oversized");
@@ -288,6 +288,7 @@ describe("Framebuffer", () => {
     expect(read).toEqual({
       _tag: "Read",
       events: [{ _tag: "Bell" }, { _tag: "Updated", rects: [] }],
+      partial: false,
     });
   });
 });
