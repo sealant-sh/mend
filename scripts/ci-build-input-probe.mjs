@@ -115,10 +115,15 @@ export const probe = (
     walk(root);
     return found.toSorted();
   };
+  const unmatched = new Set();
   const digest = (file) => {
     const bytes = readFileSync(path.join(repository, file));
     const rule = VOLATILE.find((candidate) => path.matchesGlob(file, candidate.glob));
-    const content = rule ? rule.normalize(bytes.toString("utf8")) : bytes;
+    if (!rule) return createHash("sha256").update(bytes).digest("hex");
+    const text = bytes.toString("utf8");
+    const content = rule.normalize(text);
+    if (content === text)
+      unmatched.add(`the volatile rule for ${rule.glob} matched nothing in ${file}`);
     return createHash("sha256").update(content).digest("hex");
   };
   // A run is read only from the one summary its own invocation wrote: a summary is never chosen by
@@ -186,6 +191,7 @@ export const probe = (
     ["second", secondRun],
   ])
     if (run.failure) violations.push(`the ${label} unchanged build: ${run.failure}`);
+  violations.push(...unmatched);
   if (violations.length)
     return { builds: builds.map((task) => task.taskId), probed: {}, violations };
   const first = firstRun.tasks;
