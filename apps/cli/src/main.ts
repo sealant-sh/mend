@@ -5708,7 +5708,7 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
       }),
     );
     if (command.json) return printJson(result);
-    return say(`Purged ${command.id}. Instance audit and backups are unchanged.`);
+    return say(result.message);
   }
 
   const unknown = args.find((arg) => arg !== "--json");

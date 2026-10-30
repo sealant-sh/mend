@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
+import { AuditEventsRepo, AuditEventsRepoLive } from "../src/repos/audit-events.ts";
 import { CaptureStoreRepo, CaptureStoreRepoLive } from "../src/repos/capture-store.ts";
 import { HarnessLayoutsRepo, HarnessLayoutsRepoLive } from "../src/repos/harness-layouts.ts";
 import { HotWorkspacesRepo, HotWorkspacesRepoLive } from "../src/repos/hot-workspaces.ts";
@@ -43,6 +44,7 @@ const pool = PgClient.layer({
   transformQueryNames: Str.camelToSnake,
 });
 const repos = Layer.mergeAll(
+  AuditEventsRepoLive,
   ProjectsRepoLive,
   RemovalFencesRepoLive,
   CaptureStoreRepoLive,
@@ -61,6 +63,7 @@ const run = <A, E>(
   effect: Effect.Effect<
     A,
     E,
+    | AuditEventsRepo
     | ProjectsRepo
     | RemovalFencesRepo
     | CaptureStoreRepo
@@ -624,6 +627,19 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         const stale = yield* fences.finishPurge(id, first.id, "anna");
         const rowAfterStale = (yield* sql`SELECT id FROM projects WHERE id = ${id}`).length;
         const finished = yield* fences.finishPurge(id, second.id, "anna");
+        const audit = yield* AuditEventsRepo;
+        const latestPurge = (organizationId: OrganizationId) =>
+          audit
+            .latest({ organizationId, action: "project.purged", subjectId: id })
+            .pipe(
+              Effect.map((event) =>
+                event === null ? null : { actor: event.actorUserId, data: event.data },
+              ),
+            );
+        expect({
+          purgedHere: yield* latestPurge(org),
+          purgedElsewhere: yield* latestPurge(OrganizationId.make("org-elsewhere")),
+        }).toEqual({ purgedHere: { actor: "anna", data: named }, purgedElsewhere: null });
         expect({
           afterRemove,
           afterRestore,

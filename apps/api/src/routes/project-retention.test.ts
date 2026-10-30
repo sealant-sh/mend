@@ -236,6 +236,38 @@ describe("a removed project", () => {
     expect(instance.world.sessions.has(privateAlice.session)).toBe(false);
   });
 
+  it("purging a project already purged succeeds and says so, to those who could purge it", async () => {
+    const instance = await world();
+    await instance.request("alice", "DELETE", `/api/projects/${privateAlice.project}`);
+    const purge = (user: "alice" | "carol", id: string) =>
+      instance.request(user, "POST", `/api/removed-projects/${id}/purge`, {
+        confirm: "private-alice",
+      });
+    const first = await purge("alice", privateAlice.project);
+    expect(await bodyOf(first)).toMatchObject({ purged: true, alreadyPurged: false });
+    const again = await purge("alice", privateAlice.project);
+    expect({ status: again.status, body: await bodyOf(again) }).toEqual({
+      status: 200,
+      body: {
+        id: privateAlice.project,
+        purged: true,
+        alreadyPurged: true,
+        message: expect.stringMatching(/^private-alice was already purged on \d{4}-\d\d-\d\d\./),
+      },
+    });
+    expect(removedStores).toHaveLength(1);
+    const byOther = await purge("carol", privateAlice.project);
+    expect({ status: byOther.status, body: await bodyOf(byOther) }).toEqual({
+      status: 404,
+      body: { _tag: "NotFound", id: privateAlice.project },
+    });
+    const never = await purge("alice", "never-a-project");
+    expect({ status: never.status, body: await bodyOf(never) }).toEqual({
+      status: 404,
+      body: { _tag: "NotFound", id: "never-a-project" },
+    });
+  });
+
   it("a failed purge keeps the project hidden, refuses Restore, and a second purge finishes", async () => {
     const instance = await world({ failFirstPurge: true });
     await instance.request("alice", "DELETE", `/api/projects/${privateAlice.project}`);

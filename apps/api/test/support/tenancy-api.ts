@@ -68,8 +68,8 @@ import {
   makeUpgradeTicketsMemory,
   UpgradeTicketsRepo,
 } from "@mend/db";
-import type { DotfilesRepository, SessionId } from "@mend/domain";
-import { canRemoveProject, Project } from "@mend/domain/workbench";
+import { AuditEventId, type DotfilesRepository, type SessionId } from "@mend/domain";
+import { AuditEvent, canRemoveProject, Project } from "@mend/domain/workbench";
 import {
   emptyHarnessModelCatalog,
   type Session,
@@ -386,6 +386,8 @@ export const createTenancyApi = async (
     { readonly phase: "checking" | "deleting"; readonly id: string }
   >();
   const marked = (key: string) => removalMarks.has(key);
+  /** Each purged project's `project.purged` audit entry, written as Postgres writes it with the purge. */
+  const purged = new Map<string, AuditEvent>();
   /** `canRemoveProject` as the person's membership reads at the commit, as Postgres asks it. */
   const mayRemove = (project: Project, userId: string) => {
     const viewer = world.viewerOf(userId);
@@ -441,10 +443,25 @@ export const createTenancyApi = async (
         removalMarks.delete(`project:${id}`);
         return "restored" as const;
       }),
-    finishPurge: (id, mark) =>
+    finishPurge: (id, mark, userId) =>
       Effect.sync(() => {
         if (removalMarks.get(`project:${id}`)?.id !== mark) return false;
         world.calls.push(`projects.purge:${id}`);
+        const kept = world.retainedProjects.get(id);
+        if (kept !== undefined)
+          purged.set(
+            id,
+            new AuditEvent({
+              id: AuditEventId.make(`purged-${id}`),
+              organizationId: kept.project.organizationId,
+              actorUserId: userId,
+              action: "project.purged",
+              subjectType: "project",
+              subjectId: id,
+              data: { name: kept.project.name, visibility: kept.project.visibility },
+              createdAt: new Date(),
+            }),
+          );
         world.purgeProject(id);
         removalMarks.delete(`project:${id}`);
         return true;
@@ -565,7 +582,15 @@ export const createTenancyApi = async (
       recording(
         AuditEventsRepo,
         "audit",
-        options.implement?.audit ?? { record: () => Effect.void },
+        {
+          record: () => Effect.void,
+          latest: ({ organizationId, action, subjectId }) =>
+            Effect.sync(() => {
+              const event = action === "project.purged" ? purged.get(subjectId) : undefined;
+              return event?.organizationId === organizationId ? event : null;
+            }),
+          ...options.implement?.audit,
+        },
         calls,
       ),
       recording(BriefCommentsRepo, "briefComments", {}, calls),

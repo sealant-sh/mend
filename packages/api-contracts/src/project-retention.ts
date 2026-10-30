@@ -31,9 +31,12 @@ export class ProjectPurgeIncomplete extends Schema.TaggedError<ProjectPurgeIncom
   { httpApiStatus: 409 },
 ) {}
 
+/** A purge that finished, now or in an earlier request (`alreadyPurged`), in words to show. */
 export class ProjectPurgeReport extends Schema.Class<ProjectPurgeReport>("ProjectPurgeReport")({
   id: ProjectId,
   purged: Schema.Literal(true),
+  alreadyPurged: Schema.Boolean,
+  message: Schema.String,
 }) {}
 
 export class ProjectRemovalReport extends Schema.Class<ProjectRemovalReport>(

@@ -14,6 +14,7 @@ import {
   WorktreeNotFound,
 } from "@mend/api-contracts";
 import {
+  AuditEventsRepo,
   type FencedRow,
   type RemovalFenceId,
   ProjectsRepo,
@@ -40,6 +41,7 @@ import {
   notChangeOwnerWords,
   type Person,
   type Project,
+  ProjectVisibility,
   type Viewer,
   RemovedProject,
   canSeeProject,
@@ -60,7 +62,7 @@ import {
 } from "@mend/domain/workbench";
 import { SessionEngine, CaptureRuntime } from "@mend/sessions";
 import { Store } from "@mend/store";
-import { Data, Effect, Fiber, Layer } from "effect";
+import { Data, Effect, Fiber, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { changeStandingOf } from "./landing-state.ts";
@@ -201,6 +203,7 @@ export const RemovalLive: Layer.Layer<
   Removal,
   never,
   | StandingServices
+  | AuditEventsRepo
   | CaptureRuntime
   | ProjectsRepo
   | RemovalFencesRepo
@@ -220,6 +223,7 @@ export const RemovalLive: Layer.Layer<
   Removal,
   Effect.gen(function* () {
     const capture = yield* CaptureRuntime;
+    const audit = yield* AuditEventsRepo;
     const fences = yield* RemovalFencesRepo;
     const worktrees = yield* WorktreesRepo;
     const projects = yield* ProjectsRepo;
@@ -683,11 +687,46 @@ export const RemovalLive: Layer.Layer<
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.fail(new NotFound({ id }))));
     });
 
+    /**
+     * The organization's record that `id` was purged, when the viewer is someone who could have
+     * purged it: an owner for a shared project, its creator (who purged it) for a private one.
+     */
+    const purgedEarlier = Effect.fn("Removal.purgedEarlier")(function* (
+      id: ProjectId,
+      viewer: Viewer,
+    ) {
+      const event = yield* audit.latest({
+        organizationId: viewer.organizationId,
+        action: "project.purged",
+        subjectId: id,
+      });
+      if (event === null) return null;
+      const visibility = Schema.decodeUnknownOption(ProjectVisibility)(event.data["visibility"]);
+      if (Option.isNone(visibility)) return null;
+      const tenancy = {
+        organizationId: event.organizationId,
+        visibility: visibility.value,
+        createdByUserId: visibility.value === "private" ? event.actorUserId : null,
+      };
+      return canRemoveProject(tenancy, viewer) ? event : null;
+    });
+
     const purge = Effect.fn("Removal.purge")(function* (
       id: ProjectId,
       viewer: Viewer,
       confirm: string,
     ) {
+      // The row goes in the transaction that records `project.purged`, so an id has one or the other.
+      const earlier = yield* purgedEarlier(id, viewer);
+      if (earlier !== null) {
+        const name = earlier.data["name"];
+        return new ProjectPurgeReport({
+          id,
+          purged: true,
+          alreadyPurged: true,
+          message: `${typeof name === "string" ? name : "This project"} was already purged on ${earlier.createdAt.toISOString().slice(0, 10)}. Nothing is left to delete.`,
+        });
+      }
       const kept = yield* authorizedRetained(id, viewer);
       if (confirm !== kept.project.name)
         return yield* new PurgeNotConfirmed({
@@ -771,7 +810,12 @@ export const RemovalLive: Layer.Layer<
               return yield* new ProjectPurgeIncomplete({
                 message: "Purge stopped before deleting records. Purge again to finish.",
               });
-            return new ProjectPurgeReport({ id, purged: true });
+            return new ProjectPurgeReport({
+              id,
+              purged: true,
+              alreadyPurged: false,
+              message: `Purged ${kept.project.name}. Instance audit and backups are unchanged.`,
+            });
           }),
         ).pipe(Effect.onError(() => fences.handOver(row, taken.id))),
       );
