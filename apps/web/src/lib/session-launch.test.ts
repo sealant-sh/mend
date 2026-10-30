@@ -243,6 +243,7 @@ describe("Composed session launch", () => {
       directory: session.worktree,
       branch: session.branch,
       baseRef: session.baseRef,
+      changeOwnerUserId: null,
       baseSha: session.baseSha,
       handoff: null,
       createdAt: session.createdAt,

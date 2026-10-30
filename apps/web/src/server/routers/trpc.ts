@@ -16,7 +16,11 @@ const t = initTRPC.context<TrpcContext>().create({
   // live, a name taken); the message a person reads never carries it (api/errors.ts).
   errorFormatter: ({ shape, error }) => ({
     ...shape,
-    data: { ...shape.data, tag: error.cause instanceof ApiRefusal ? error.cause.tag : null },
+    data: {
+      ...shape.data,
+      tag: error.cause instanceof ApiRefusal ? error.cause.tag : null,
+      removal: error.cause instanceof ApiRefusal ? error.cause.removal : null,
+    },
   }),
 });
 

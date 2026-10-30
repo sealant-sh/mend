@@ -6,7 +6,7 @@ import {
   SessionProcess,
   captureStatusLine,
 } from "@mend/domain/workbench";
-import { LAUNCH_WAITING_PREFIX, LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
+import { holdWords, LAUNCH_WAITING_PREFIX, LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
   SealantClient,
@@ -14,7 +14,6 @@ import {
   SealantPlatformError,
 } from "@mend/sealant";
 import {
-  captureHoldWords,
   NoLiveAgent,
   ProtocolHost,
   ProtocolHostNotLiveError,
@@ -2191,7 +2190,9 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
               );
               const saving = yield* engine.captureHolds(session.worktreeId);
               expect(saving).toContainEqual({ sessionId: session.id, kind: "saving" });
-              expect(captureHoldWords(saving)).toContain("saving · 1 session");
+              expect(holdWords(saving.map((hold) => ({ ...hold, via: "own" as const })))).toContain(
+                "saving · 1 session",
+              );
               saveNow = true;
               // The drain's next round reads it saved.
               yield* TestClock.adjust(pollInterval);

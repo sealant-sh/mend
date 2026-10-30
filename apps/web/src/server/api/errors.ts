@@ -36,12 +36,27 @@ const hasTag = (error: unknown): error is Refusal =>
  */
 export class ApiRefusal extends Error {
   readonly tag: string;
-  constructor(tag: string) {
+  /**
+   * A refused removal's blockers (`RemovalRefused`), so the page lays out what stands in the way
+   * from the data and never reads it back out of the words. Null for every other refusal.
+   */
+  readonly removal: unknown;
+  constructor(tag: string, removal: unknown = null) {
     super(tag);
     this.name = "ApiRefusal";
     this.tag = tag;
+    this.removal = removal;
   }
 }
+
+const removalOf = (refusal: Refusal): unknown =>
+  refusal._tag === "RemovalRefused"
+    ? {
+        scope: refusal["scope"],
+        blockers: refusal["blockers"],
+        forceWouldLift: refusal["forceWouldLift"],
+      }
+    : null;
 
 /**
  * One translation from an API-call failure to the tRPC wire. Contract errors carry their status
@@ -62,7 +77,7 @@ export const toTRPCError = (error: unknown): TRPCError => {
       return new TRPCError({
         code: codeForStatus(status),
         message: refusalWords(error),
-        cause: new ApiRefusal(error._tag),
+        cause: new ApiRefusal(error._tag, removalOf(error)),
       });
     }
   }

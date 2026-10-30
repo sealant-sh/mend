@@ -532,6 +532,7 @@ const request = async <T>(
     throw new MendRequestError("http", failure.words, response.status, {
       call,
       tag: failure.tag,
+      body: parsed,
     });
   }
   // A route with nothing to return answers 204 with no body (`mend workspace replace`).
@@ -6051,7 +6052,6 @@ const worktreesCommand = async (config: CliConfig, args: ReadonlyArray<string>) 
       {
         request: (method, route, body) => request(config, method, route, body),
         listWorktrees: async (project) => (await buildWorktreesJson(config, project)).worktrees,
-        liveStatuses: ACTIVE_STATUSES,
         say,
         fail,
       },

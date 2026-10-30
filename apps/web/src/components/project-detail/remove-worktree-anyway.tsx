@@ -1,4 +1,3 @@
-import type { WorktreeRemovalRefusal } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import {
   Dialog,
@@ -12,14 +11,14 @@ import { useState } from "react";
 
 import { removeWorktree, type WorktreeDto } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
-import { forcedRemovalFailureOf } from "#/lib/worktree-removal";
+import { forcedRemovalFailureOf, type WorktreeRemovalRefusal } from "#/lib/worktree-removal";
 
 /**
  * The second step after the store refused a worktree removal (docs/adr/0007-landing.md,
- * "Worktree removal"). The ordinary removal already happened and was refused in words; this shows
- * those words verbatim, lays out what the change holds, and only then offers "Remove anyway", the
- * same endpoint with `force=true`. A refusal force does not lift, a capture still saving, shows
- * its words and offers nothing.
+ * "Worktree removal"). The ordinary removal already happened and was refused; this shows Mend's
+ * words verbatim, lays out what the change holds from the refusal's blockers, and only then offers
+ * "Remove anyway", the same endpoint with `force=true`. A refusal force does not lift, a session
+ * still live or a capture still saving, shows its words and offers nothing.
  */
 
 /** A removal the store refused, with the worktree it named. */

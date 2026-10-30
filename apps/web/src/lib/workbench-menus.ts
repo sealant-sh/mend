@@ -1,9 +1,4 @@
-import {
-  canRelaunchSession,
-  resumesOwnHarness,
-  type Viewer,
-  type WorktreeRemovalRefusal,
-} from "@mend/domain/workbench";
+import { canRelaunchSession, resumesOwnHarness, type Viewer } from "@mend/domain/workbench";
 import type { ContextMenuEntry, ContextMenuSpec } from "@mend/ui/context-menu";
 import type { UseNavigateResult } from "@tanstack/react-router";
 
@@ -29,7 +24,7 @@ import {
   type LaunchContext,
 } from "#/lib/session-launch";
 import { canRemove, sessionActions } from "#/lib/viewer";
-import { removalRefusalOf } from "#/lib/worktree-removal";
+import { removalRefusalOf, type WorktreeRemovalRefusal } from "#/lib/worktree-removal";
 
 /** Session states with a live process behind them. */
 export const LIVE_STATES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);

@@ -1,5 +1,4 @@
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
-import type { WorktreeRemovalRefusal } from "@mend/domain/workbench";
 import { QueryClient } from "@tanstack/react-query";
 import { serialize } from "superjson";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { removeWorktree, type WorktreeDto } from "#/lib/api";
 import { makeTrpcProxy } from "#/lib/trpc";
 import { worktreeMenu } from "#/lib/workbench-menus";
+import type { WorktreeRemovalRefusal } from "#/lib/worktree-removal";
 
 /**
  * The refusal → remove-anyway flow against the real tRPC client: the menu's removal never carries
@@ -25,6 +25,7 @@ const worktree: WorktreeDto = {
   branch: "mend/fix-login",
   baseRef: "main",
   handoff: null,
+  changeOwnerUserId: "ada",
   baseSha: Sha.make("0123456789abcdef0123456789abcdef01234567"),
   createdAt: new Date("2026-09-01T00:00:00Z"),
   updatedAt: new Date("2026-09-01T00:00:00Z"),
@@ -65,7 +66,38 @@ const fixture = () => {
           error: serialize({
             message: WORDS,
             code: -32022,
-            data: { code: "UNPROCESSABLE_CONTENT", httpStatus: 422, tag: "StoreFailure" },
+            data: {
+              code: "CONFLICT",
+              httpStatus: 409,
+              tag: "RemovalRefused",
+              removal: {
+                scope: "worktree",
+                forceWouldLift: true,
+                blockers: [
+                  {
+                    _tag: "Unlanded",
+                    worktreeId: worktree.id,
+                    worktreeName: "fix-login",
+                    owner: null,
+                    standing: {
+                      _tag: "never-landed",
+                      files: [
+                        "a.ts",
+                        "b.ts",
+                        "c.ts",
+                        "d.ts",
+                        "e.ts",
+                        "f.ts",
+                        "g.ts",
+                        "h.ts",
+                        "i.ts",
+                        "j.ts",
+                      ].map((name) => ({ path: name, additions: 0, deletions: 0 })),
+                    },
+                  },
+                ],
+              },
+            },
           }),
         },
       ]);

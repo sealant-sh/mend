@@ -2513,23 +2513,6 @@ export interface CaptureHold {
   readonly kind: "saving" | "not-saved" | "executor" | "lease";
 }
 
-const sessionsWord = (n: number) => `${n} ${n === 1 ? "session" : "sessions"}`;
-
-/** `saving · 2 sessions · not saved · 1 session`: what holds a removal, in the status words. */
-export const captureHoldWords = (holds: ReadonlyArray<CaptureHold>): string => {
-  const count = (kind: CaptureHold["kind"]) => holds.filter((hold) => hold.kind === kind).length;
-  const parts: Array<string> = [];
-  if (count("saving") > 0) parts.push(`saving · ${sessionsWord(count("saving"))}`);
-  if (count("not-saved") > 0) {
-    parts.push(`not saved · ${sessionsWord(count("not-saved"))} · workspace kept`);
-  }
-  if (count("executor") > 0) {
-    parts.push(`executor not ended · ${sessionsWord(count("executor"))}`);
-  }
-  if (count("lease") > 0) parts.push("executor lease held");
-  return parts.join(" · ");
-};
-
 /** Why a repository was not added; `message` is what the person reads. */
 export class RepositoryAddError extends Schema.TaggedError<RepositoryAddError>()(
   "RepositoryAddError",
