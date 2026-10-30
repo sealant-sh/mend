@@ -9,7 +9,7 @@ import { type ScreenId, SealantWorkspaceId, SessionId, SessionProcessId } from "
 import type { Screen } from "@mend/domain/workbench";
 import { BlobStoreFsLive } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
-import { Effect, Layer, Redacted } from "effect";
+import { Deferred, Effect, Fiber, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 
@@ -38,13 +38,37 @@ const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
     ),
   );
 
-const reposLayer = ScreensRepoLive.pipe(
+const storedReposLayer = ScreensRepoLive.pipe(
   Layer.provideMerge(
     MendDBLive.pipe(
       Layer.provideMerge(PgClient.layer({ url: Redacted.make(scratchUrl.toString()) })),
     ),
   ),
 );
+
+/** Holds the next `Ended` transition at the store until the test lets it through. */
+interface EndHeld {
+  readonly reached: Deferred.Deferred<void>;
+  readonly go: Deferred.Deferred<void>;
+}
+let holdNextEnd: EndHeld | null = null;
+
+const reposLayer = Layer.effect(
+  ScreensRepo,
+  Effect.map(ScreensRepo, (stored): ScreensRepo["Service"] => ({
+    ...stored,
+    control: (id, event, owner) =>
+      Effect.gen(function* () {
+        const held = event._tag === "Ended" ? holdNextEnd : null;
+        if (held !== null) {
+          holdNextEnd = null;
+          yield* Deferred.succeed(held.reached, undefined);
+          yield* Deferred.await(held.go);
+        }
+        return yield* stored.control(id, event, owner);
+      }),
+  })),
+).pipe(Layer.provideMerge(storedReposLayer));
 
 const world = makeScreenWorld();
 
@@ -95,6 +119,7 @@ const agentOf = (sessionId: SessionId) => {
     id,
     call: (callKey = `call-${++calls}`): ScreenCaller => ({
       sessionId,
+      accountId: OWNER,
       agentProcess: { _tag: "Current", id },
       callKey,
     }),
@@ -188,6 +213,27 @@ describe.skipIf(postgres.skip)("who may call, and on what", () => {
         }),
       ),
   );
+
+  it.live("refuses a turn someone other than the screen's person sent, claiming nothing", () =>
+    asProcess(
+      Effect.gen(function* () {
+        const screens = yield* Screens;
+        const sql = yield* SqlClient.SqlClient;
+        const { sessionId, screen } = yield* sessionWithScreen;
+        const agent = agentOf(sessionId);
+        for (const accountId of ["bob", null]) {
+          expect(yield* screens.look({ ...agent.call(), accountId })).toEqual({
+            _tag: "Refused",
+            refusal: "owner_only",
+          });
+        }
+        const [claims] = yield* sql<{ readonly count: number }>`
+          SELECT count(*)::int AS count FROM screen_calls WHERE screen_id = ${screen.id}`;
+        expect(claims?.count).toBe(0);
+        expect(world.starts).not.toContain(sessionId);
+      }),
+    ),
+  );
 });
 
 describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against TigerVNC Xvnc", () => {
@@ -258,5 +304,47 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
         }),
       ),
     { timeout: 60_000 },
+  );
+
+  it.live("answers a retry after the screen stopped from its claim, starting nothing", () =>
+    asProcess(
+      Effect.gen(function* () {
+        const screens = yield* Screens;
+        const repo = yield* ScreensRepo;
+        const { sessionId, screen } = yield* sessionWithScreen;
+        const caller = agentOf(sessionId).call("before-idle-stop");
+        const first = answered(yield* screens.look(caller));
+        yield* repo.setLife(screen.id, { life: { _tag: "Ended", reason: "idle" } });
+        const starts = world.starts.length;
+        expect(answered(yield* screens.look(caller)).receipt).toEqual(first.receipt);
+        expect(world.starts.length).toBe(starts);
+      }),
+    ),
+  );
+
+  it.live("keeps a look on a new hand admitted while the old hand's end was still settling", () =>
+    asProcess(
+      Effect.gen(function* () {
+        const screens = yield* Screens;
+        const { sessionId, screen } = yield* sessionWithScreen;
+        const agent = agentOf(sessionId);
+        answered(yield* screens.look(agent.call()));
+        const held: EndHeld = {
+          reached: yield* Deferred.make<void>(),
+          go: yield* Deferred.make<void>(),
+        };
+        holdNextEnd = held;
+        world.sockets.at(-1)?.destroy();
+        yield* Deferred.await(held.reached);
+        const dialled = yield* Deferred.make<void>();
+        world.onDial = () => Deferred.doneUnsafe(dialled, Effect.void);
+        const looking = yield* Effect.forkChild(screens.look(agent.call()));
+        yield* Deferred.await(dialled);
+        world.onDial = null;
+        yield* Deferred.succeed(held.go, undefined);
+        expect(answered(yield* Fiber.join(looking)).outcome).toBe("applied");
+        expect((yield* rowOf(screen.id)).input._tag).toBe("Agent");
+      }),
+    ),
   );
 });

@@ -9,6 +9,7 @@ import type { Screen, ScreenLogBody, ScreenLogEntry } from "@mend/domain/workben
 import { BlobStore } from "@mend/store";
 import { Effect, Fiber, Layer, Scope } from "effect";
 import * as Context from "effect/Context";
+import * as Semaphore from "effect/Semaphore";
 
 import { ForwardAdapter } from "../forward.ts";
 import type { Caller } from "../mend-mcp/caller.ts";
@@ -18,7 +19,7 @@ import { type Hands, makeHands } from "./hands.ts";
 import { ScreenHost, ScreenStartError } from "./screen-host.ts";
 import { ScreenWorkers, type WorkerStopped } from "./screen-workers.ts";
 
-export type ScreenCaller = Pick<Caller, "sessionId" | "agentProcess" | "callKey">;
+export type ScreenCaller = Pick<Caller, "sessionId" | "accountId" | "agentProcess" | "callKey">;
 
 export type ScreenRefusal =
   | "no_screen"
@@ -27,7 +28,9 @@ export type ScreenRefusal =
   | "look_first"
   | "call_reused"
   | "observation_unavailable"
-  | "unattributed_caller";
+  | "unattributed_caller"
+  /** A turn the screen's own person did not send: its keys would spend their logins (D3). */
+  | "owner_only";
 
 /** What links a call's log entry to the tool call that holds it. */
 export interface ScreenReceipt {
@@ -120,8 +123,24 @@ export const ScreensLive: Layer.Layer<
     const host = yield* ScreenHost;
     const scope = yield* Scope.Scope;
     const blobs = yield* Effect.context<BlobStore>();
+    const locks = new Map<ScreenId, Semaphore.Semaphore>();
+    /** A hand's end and an admission on a hand, one at a time per screen. */
+    const serially = <A, E>(screenId: ScreenId, effect: Effect.Effect<A, E>) => {
+      const lock = locks.get(screenId) ?? Semaphore.makeUnsafe(1);
+      locks.set(screenId, lock);
+      return lock.withPermit(effect);
+    };
+    // The hand that ended has already left `hands`, so a hand open now is its replacement, and what
+    // was admitted on that one stands.
     const hands: Hands = yield* makeHands((screen) =>
-      Effect.ignore(screens.control(screen.id, { _tag: "Ended" }, null)),
+      serially(
+        screen.id,
+        Effect.suspend(() =>
+          hands.open(screen.id) === null
+            ? Effect.ignore(screens.control(screen.id, { _tag: "Ended" }, null))
+            : Effect.void,
+        ),
+      ),
     );
 
     /** The screen, Live with passwords this process holds: started on demand (D7). */
@@ -193,16 +212,24 @@ export const ScreensLive: Layer.Layer<
 
     const look = (screen: Screen, who: Attributed) =>
       Effect.gen(function* () {
-        const admitted = yield* screens.control(screen.id, { _tag: "AgentLooked" }, null);
-        if (admitted._tag === "Refused") return yield* settle(screen, who, "refused", "held");
         const hand = yield* hands.of(screen);
         if (hand === null) return yield* settle(screen, who, "outcome_unknown", null);
+        const admitted = yield* serially(
+          screen.id,
+          Effect.suspend(() =>
+            hands.open(screen.id) === hand
+              ? screens.control(screen.id, { _tag: "AgentLooked" }, null)
+              : Effect.succeed(null),
+          ),
+        );
+        if (admitted === null) return yield* settle(screen, who, "outcome_unknown", null);
+        if (admitted._tag === "Refused") return yield* settle(screen, who, "refused", "held");
         return yield* answer(screen, who, { _tag: "Looked" }, yield* hand.look, "applied");
       });
 
     /**
-     * Claims the call before any input, then runs it where the caller's going away cannot leave
-     * the claim open behind input already sent.
+     * Claims the call before it starts anything, so a retry answers from the claim alone, then
+     * runs it where the caller's going away cannot leave the claim open behind input already sent.
      */
     const call = (
       caller: ScreenCaller,
@@ -215,24 +242,35 @@ export const ScreensLive: Layer.Layer<
       Effect.gen(function* () {
         const who = attributed(caller);
         if (who === null) return refused("unattributed_caller");
+        const owner = yield* host.ownerOf(caller.sessionId);
+        if (owner === null || caller.accountId !== owner) return refused("owner_only");
         const reserved = yield* screens.ofSession(caller.sessionId);
         if (reserved === null) return refused("no_screen");
-        const screen = yield* started(reserved);
-        const claim = yield* screens.claim({ screenId: screen.id, callKey: who.callKey, args });
+        const claim = yield* screens.claim({ screenId: reserved.id, callKey: who.callKey, args });
         switch (claim._tag) {
           case "CallReused":
             return refused("call_reused");
           case "Open":
             return refused("busy");
           case "Settled":
-            return yield* replay(screen, who, claim.call);
+            return yield* replay(reserved, who, claim.call);
           case "Claimed": {
-            const ran = run(screen, who).pipe(
-              Effect.catchTags({
-                HandEnded: () => settle(screen, who, "outcome_unknown", null),
-                WorkerStopped: () => settle(screen, who, "outcome_unknown", null),
-              }),
-            );
+            const ran = Effect.gen(function* () {
+              const screen = yield* started(reserved).pipe(
+                Effect.tapError(() => settle(reserved, who, "refused", null)),
+              );
+              // The start moved the session to another workspace's screen: the call is its own there.
+              if (screen.id !== reserved.id) {
+                yield* settle(reserved, who, "refused", null);
+                return yield* call(caller, args, run);
+              }
+              return yield* run(screen, who).pipe(
+                Effect.catchTags({
+                  HandEnded: () => settle(screen, who, "outcome_unknown", null),
+                  WorkerStopped: () => settle(screen, who, "outcome_unknown", null),
+                }),
+              );
+            });
             return yield* Effect.flatMap(Effect.forkIn(ran, scope), Fiber.join);
           }
         }

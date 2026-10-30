@@ -36,6 +36,8 @@ export interface ScreenWorld {
   /** False for a session whose screen this process holds no passwords for. */
   readonly signable: (sessionId: SessionId) => boolean;
   xvncPort: number;
+  /** Called at each dial, once it is recorded. */
+  onDial: (() => void) | null;
 }
 
 export const makeScreenWorld = (
@@ -47,6 +49,7 @@ export const makeScreenWorld = (
   sockets: [],
   signable,
   xvncPort: 0,
+  onDial: null,
 });
 
 /** One TCP connection to Xvnc, with the SDK's forward shape, bound as it was asked to be. */
@@ -88,6 +91,7 @@ export const screenSealantLayer = (world: ScreenWorld) =>
         return yield* openBoundedForward(
           () => {
             world.dials.push({ port, destination, as });
+            world.onDial?.();
             return tcpForward(world, destination);
           },
           options.signal,
