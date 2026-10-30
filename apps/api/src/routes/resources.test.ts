@@ -48,6 +48,10 @@ const admin = (statement: string) =>
     ),
   );
 
+/** The digest the fake registry pins `image` to. */
+const digestFor = (image: string) =>
+  ImageDigest.make(`sha256:${createHash("sha256").update(image).digest("hex")}`);
+
 const json = async (response: Response) => ({
   status: response.status,
   body: await response.json(),
@@ -122,8 +126,6 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
   let file = { text: MEND_TOML, stamp: WORKTREE_STAMP };
   /** Each image the registry was asked for; every tag pins to the same digest per image. */
   const resolved: Array<string> = [];
-  const digestFor = (image: string) =>
-    ImageDigest.make(`sha256:${createHash("sha256").update(image).digest("hex")}`);
   const pinned: ResourceImageResolver["Service"]["resolve"] = (image) =>
     Effect.succeed({ digest: digestFor(image), resolvedBy: "docker-mirror:5000" });
   let resolveImage = pinned;
