@@ -422,6 +422,85 @@ describe("pre-release executors and the migration of their shared home (docs/adr
   );
 
   it.effect(
+    "the SLNT-167 pickup poll asserts a resumed agent while the held-off pickup is still opening it (SLNT-340)",
+    () =>
+      Effect.gen(function* () {
+        const held = yield* Deferred.make<void>();
+        const answer = yield* Deferred.make<HostUserNamespaces | null>();
+        let holding = false;
+        const seen = { holder: "", status: "", planLeft: true };
+        const flushing = yield* Deferred.make<void>();
+        const flushed = yield* Deferred.make<void>();
+        let holdFlush = false;
+        const pickupOpening = yield* Deferred.make<void>();
+        const pickupOpen = yield* Deferred.make<void>();
+        let holdPickup = false;
+        yield* retiringWorldEffect(
+          (engine, world, { session }) =>
+            Effect.gen(function* () {
+              holdFlush = true;
+              const sweeping = yield* Effect.forkChild(engine.sweepRetirements());
+              yield* Deferred.await(flushing);
+              holding = true;
+              const launching = yield* engine
+                .launch(session.id, ["codex"], { over: Restart })
+                .pipe(Effect.result, Effect.forkChild);
+              yield* Deferred.await(held);
+              yield* Deferred.succeed(flushed, undefined);
+              yield* Fiber.join(sweeping);
+              yield* Deferred.succeed(answer, {
+                allowed: false,
+                setting: "kernel.unprivileged_userns_clone=1",
+              });
+              seen.holder = (yield* Fiber.join(launching))._tag;
+              holdPickup = true;
+              yield* engine.reapCaptureLeases();
+              // The pickup the reaper took up holds the launch gate at its agent's open, as a
+              // pickup whose real I/O a loaded runner slows does past the poll below.
+              yield* Deferred.await(pickupOpening);
+              for (let step = 0; step < 100 && world.relaunches.has(session.id); step += 1) {
+                yield* TestClock.adjust("100 millis");
+                yield* Effect.yieldNow;
+              }
+              seen.status = world.sessions.get(session.id)?.status ?? "";
+              seen.planLeft = world.relaunches.has(session.id);
+              yield* Deferred.succeed(pickupOpen, undefined);
+            }),
+          {
+            aroundOpen: () =>
+              Effect.suspend(() => {
+                if (!holdPickup) return Effect.void;
+                holdPickup = false;
+                return Deferred.succeed(pickupOpening, undefined).pipe(
+                  Effect.andThen(Deferred.await(pickupOpen)),
+                );
+              }),
+            aroundFlush: () =>
+              Effect.suspend(() => {
+                if (!holdFlush) return Effect.void;
+                holdFlush = false;
+                return Deferred.succeed(flushing, undefined).pipe(
+                  Effect.andThen(Deferred.await(flushed)),
+                );
+              }),
+            hostUserNamespaces: Layer.succeed(WorkspaceHostUserNamespaces, {
+              observe: () =>
+                Effect.suspend(() => {
+                  if (!holding) return Effect.succeed(null);
+                  holding = false;
+                  return Deferred.succeed(held, undefined).pipe(
+                    Effect.andThen(Deferred.await(answer)),
+                  );
+                }),
+            }),
+          },
+        );
+        expect(seen).toMatchObject({ holder: "Failure", status: "running", planLeft: false });
+      }),
+    { timeout: 30_000 },
+  );
+
+  it.effect(
     "the owner's Stop during a pre-release replacement's final flush wins: the replacement ends the executor, and no pickup starts the agent again (SLNT-167)",
     () =>
       Effect.gen(function* () {
