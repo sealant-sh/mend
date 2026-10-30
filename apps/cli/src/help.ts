@@ -793,7 +793,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[--project <p>] [--worktree <w>] [--json]"],
     description: [
       "One status line per resource, then the image it would run and its id: the definitions project settings hold, the proposals members made beside them, and, with --worktree, the [resource.*] proposals in that worktree's mend.toml with the keys it refuses or ignores. A proposal runs nothing until a manager approves it in project settings.",
-      "Inside a session's workspace, mend resource list reads the session's own project and worktree. Proposing and removing are a person's: run them from the web app, VS Code, the phone or mend on your machine.",
+      "Inside a session's workspace, mend resource list reads the session's own project and worktree. Proposing, removing, approving and choosing are a person's: run them from the web app, VS Code, the phone or mend on your machine.",
     ],
     options: [
       project(),
@@ -839,7 +839,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "propose a mail catcher for each worktree",
       },
     ],
-    see: ["resource list", "resource remove"],
+    see: ["resource list", "resource remove", "resource approve"],
   },
   {
     name: "resource remove",
@@ -859,6 +859,58 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--definition <id>", text: "the definition to remove" },
       project(),
     ],
+    see: ["resource list"],
+  },
+  {
+    name: "resource approve",
+    section: "project setup",
+    summary: "approve a resource's definition, pinning its image",
+    synopsis: [
+      "<name> [--proposal <id> | --worktree <w> [--for-project]] [--digest sha256:<hex>] [--project <p>]",
+    ],
+    description: [
+      "Approves the definition project settings hold under the name, or adopts a proposal into settings and approves it in the same write: the one --proposal names, the only one of the name, or the [resource.*] table in --worktree's mend.toml. Every field that runs prints first, with the digest approved. Mend pins the image to the digest its registry serves for the tag, asking the operator's mirrors first; a registry that cannot say leaves nothing approved.",
+      "Approving for the project is a manager's. A worktree resource read with --worktree is approved for that worktree, which is its change owner's, and only for an image a manager approved for the project; --for-project approves it for the project instead. A definition changed since it was read is not approved. Without a terminal, --digest names the digest of the definition you read, as printed.",
+    ],
+    options: [
+      { flag: "--proposal <id>", text: "the proposal to adopt and approve" },
+      { flag: "--worktree <w>", text: "read this worktree's mend.toml, by name or id" },
+      { flag: "--for-project", text: "approve a worktree resource for the project" },
+      { flag: "--digest <d>", text: "the definition's digest, as printed: sha256:<hex>" },
+      project(),
+    ],
+    examples: [
+      {
+        command: "mend resource approve db --proposal rprop_21",
+        text: "adopt and approve a proposal",
+      },
+      {
+        command: "mend resource approve mail --worktree checkout",
+        text: "approve checkout's mail for checkout",
+      },
+    ],
+    see: ["resource list", "resource use"],
+  },
+  {
+    name: "resource use",
+    section: "project setup",
+    summary: "choose how a worktree uses a project resource",
+    synopsis: ["<name> <off|shared|own> --worktree <w> [--project <p>]"],
+    description: [
+      "Stores the worktree's choice and prints the line it wrote: shared reaches the project's instance, own its own database or instance, off none. The choice is the worktree's change owner's: the owner of its first session. Nothing runs yet, so choosing starts, copies and moves nothing.",
+    ],
+    options: [{ flag: "--worktree <w>", text: "the worktree, by name or id" }, project()],
+    see: ["resource approve"],
+  },
+  {
+    name: "resource start",
+    section: "project setup",
+    summary: "start a resource's instance",
+    synopsis: ["<name> [--project <p>]"],
+    description: [
+      "Refused on every runtime this Mend reaches: resources need a newer Sealant there. A session can run its own [service.<name>] instead. Nothing is started.",
+    ],
+    options: [project()],
     see: ["resource list"],
   },
 

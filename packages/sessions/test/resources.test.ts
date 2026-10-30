@@ -23,6 +23,7 @@ import { Effect, Layer, ManagedRuntime, Redacted, Result, Schema } from "effect"
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { ResourceImageResolver } from "../src/resources/image-resolver.ts";
 import { Resources, ResourcesChannelLive, ResourcesLive } from "../src/resources/resources.ts";
 import {
   handleSessionRequest,
@@ -108,7 +109,8 @@ const repos = Layer.mergeAll(
   SessionsRepoLive,
   UsersRepoLive,
 ).pipe(Layer.provideMerge(dbLayer));
-const resources = ResourcesLive.pipe(Layer.provideMerge(Layer.merge(repos, reads)));
+const images = Layer.mock(ResourceImageResolver, {});
+const resources = ResourcesLive.pipe(Layer.provideMerge(Layer.mergeAll(repos, reads, images)));
 const channel = ResourcesChannelLive.pipe(
   Layer.provideMerge(Layer.merge(resources, SessionChannelRegistryLive)),
 );
@@ -286,6 +288,20 @@ describe.skipIf(postgres.skip)("a session's read of its project's resources, end
         WORKSPACE_RESOURCE_REFUSAL,
       );
     }
+  });
+
+  it("says the worktree's stored choice in its workspace's read", async () => {
+    const statusLines = await runtime.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* ResourcesRepo;
+        const queue = yield* repo.byName(PROJECT, "queue");
+        if (queue === null) return yield* Effect.die(new Error("no @queue"));
+        yield* repo.setSelection(PROJECT, WORKTREE, queue.id, { mode: "off" }, "u-tom");
+        const read = yield* serve;
+        return (yield* read(SESSION, { kind: "read" }, clock)).statusLines;
+      }),
+    );
+    expect(statusLines[0]).toBe("@queue · rabbitmq 4 · project · waiting for approval · off");
   });
 
   it("refuses a person's read of a project they cannot see, in the service itself", async () => {

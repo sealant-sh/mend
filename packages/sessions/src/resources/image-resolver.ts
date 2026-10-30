@@ -30,23 +30,26 @@ type ImageFailure = keyof typeof FAILURE_WORDS;
 
 const isFailure = (answer: string): answer is ImageFailure => Object.hasOwn(FAILURE_WORDS, answer);
 
+export const ImageFailureReason = Schema.Literals([
+  "not-found",
+  "login-required",
+  "registry-refused",
+  "unavailable",
+  "unverifiable",
+]);
+
 export class ImageResolutionError extends Schema.TaggedError<ImageResolutionError>()(
   "ImageResolutionError",
-  {
-    image: Schema.String,
-    reason: Schema.Literals([
-      "not-found",
-      "login-required",
-      "registry-refused",
-      "unavailable",
-      "unverifiable",
-    ]),
-  },
+  { image: Schema.String, reason: ImageFailureReason },
 ) {}
+
+/** `postgres:17 · not found in the registry · not approved`: what the image refusal says of it. */
+export const imageRefusalClause = (error: ImageResolutionError): string =>
+  `${error.image} · ${FAILURE_WORDS[error.reason]} · not approved`;
 
 /** `@db · image postgres:17 · not found in the registry · not approved`. */
 export const imageRefusalLine = (name: string, error: ImageResolutionError): string =>
-  `@${name} · image ${error.image} · ${FAILURE_WORDS[error.reason]} · not approved`;
+  `@${name} · image ${imageRefusalClause(error)}`;
 
 export interface ResolvedImage {
   readonly digest: ImageDigest;
