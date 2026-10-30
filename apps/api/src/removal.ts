@@ -143,7 +143,7 @@ export const refuseStartWhileRemoving = Effect.fn("refuseStartWhileRemoving")(fu
   }
 });
 
-/** An upload started before the removal may still land: purge waits it out. */
+/** An upload started before the removal may still land: purge refuses until it cannot. */
 const uploadOpen = ({ until }: UploadAuthorityOpen) =>
   new ProjectPurgeIncomplete({
     message: `An upload this project started may still land until ${until.toISOString()}. Purge again after then to finish.`,

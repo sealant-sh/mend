@@ -1176,7 +1176,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
                    FOR SHARE`;
               if (lease?.held !== true) return { recorded: false, reason: "lease" } as const;
             }
-            // A removed project hands out no upload URL: purge waits out only those it gave before.
+            // A removed project is issued no upload URL: purge refuses only while earlier ones are valid.
             const [parent] = yield* sql<{ readonly removed: boolean }>`
               SELECT p.removed_at IS NOT NULL AS removed
                 FROM projects p JOIN worktrees w ON w.project_id = p.id
