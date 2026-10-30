@@ -1,7 +1,8 @@
 // `useAsk`: every confirm-first action and every notice in the app goes through it (data/ask.ts).
 
 import { useSyncExternalStore } from "react";
-import { Platform, Pressable, StyleSheet, View } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AskLayer } from "@/components/ask-layer";
 import { EvButton, type ButtonVariant } from "@/components/button";
@@ -23,30 +24,37 @@ const variantOf = (button: AskButton, buttons: ReadonlyArray<AskButton>): Button
 export function AskDialog() {
   const { colors, shadow } = useEvidenceTheme();
   const { asker } = usePairing();
+  const insets = useSafeAreaInsets();
   const question = useSyncExternalStore(asker.subscribe, asker.showing, () => null);
   if (question === null) return null;
   const dismiss = () => asker.dismiss(question.id);
 
   return (
     <AskLayer onRequestClose={dismiss}>
-      <Pressable
-        onPress={dismiss}
+      <View
         style={{
           flex: 1,
-          backgroundColor: "rgba(0,0,0,0.35)",
           justifyContent: "center",
           alignItems: "center",
           paddingHorizontal: 24,
+          paddingTop: insets.top + 24,
+          paddingBottom: insets.bottom + 24,
         }}
       >
         <Pressable
+          accessible={false}
+          onPress={dismiss}
+          style={[StyleSheet.absoluteFill, { backgroundColor: "rgba(0,0,0,0.35)" }]}
+        />
+        <View
           role="alertdialog"
           aria-label={question.title}
           aria-modal
-          onPress={(event) => event.stopPropagation()}
+          onAccessibilityEscape={dismiss}
           style={{
             width: "100%",
             maxWidth: 400,
+            maxHeight: "100%",
             backgroundColor: colors.panel,
             borderRadius: radius.xl2,
             borderWidth: StyleSheet.hairlineWidth,
@@ -60,9 +68,11 @@ export function AskDialog() {
             {question.title}
           </UiText>
           {question.message !== null && (
-            <UiText tone="ink2" size={14}>
-              {question.message}
-            </UiText>
+            <ScrollView style={{ flexGrow: 0, flexShrink: 1 }}>
+              <UiText tone="ink2" size={14}>
+                {question.message}
+              </UiText>
+            </ScrollView>
           )}
           <View
             style={{
@@ -83,8 +93,8 @@ export function AskDialog() {
               />
             ))}
           </View>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </AskLayer>
   );
 }

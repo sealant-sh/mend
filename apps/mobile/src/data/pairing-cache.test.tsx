@@ -16,6 +16,9 @@ vi.mock("@react-native-async-storage/async-storage", async () => ({
 }));
 vi.mock("expo-secure-store", async () => (await import("@/test/memory-storage")).secureStore);
 vi.mock("expo-notifications", () => ({}));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+}));
 
 const SESSION = "session-a";
 const A_HEADER = "rotate the payroll keys";
