@@ -1,3 +1,4 @@
+import { PgClient } from "@effect/sql-pg";
 import type { AgentTurnId, PreviewId, SessionId, WorktreeId } from "@mend/domain";
 import {
   OPEN_AGENT_TURN_STATUSES,
@@ -13,11 +14,13 @@ import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
+import { notifyEvent } from "../events.ts";
 import {
   agentSessions,
   agentTurns,
   type PreviewPreparationStateColumn,
   previewPreparations,
+  worktrees,
 } from "../schema/workbench.ts";
 import { isUniqueViolation } from "./unique-violation.ts";
 
@@ -237,184 +240,205 @@ const claimOf = (row: Row): PreviewPreparationClaim => ({
 
 const UNSPOKEN: ReadonlyArray<PreviewPreparationStateColumn> = ["claimed", "skipped", "superseded"];
 
-export const PreviewPreparationsRepoLive: Layer.Layer<PreviewPreparationsRepo, never, MendDB> =
-  Layer.effect(
-    PreviewPreparationsRepo,
-    Effect.gen(function* () {
-      const db = yield* MendDB;
+export const PreviewPreparationsRepoLive: Layer.Layer<
+  PreviewPreparationsRepo,
+  never,
+  MendDB | PgClient.PgClient
+> = Layer.effect(
+  PreviewPreparationsRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
+    const pg = yield* PgClient.PgClient;
 
-      const undecided = Effect.fn("PreviewPreparationsRepo.undecided")(function* (
-        sessionId: SessionId,
-      ) {
-        const rows = yield* db
-          .select({ id: agentTurns.id })
-          .from(agentTurns)
-          .leftJoin(previewPreparations, eq(previewPreparations.turnId, agentTurns.id))
-          .where(
-            and(
-              eq(agentTurns.sessionId, sessionId),
-              notInArray(agentTurns.status, [...OPEN_AGENT_TURN_STATUSES]),
-              or(isNull(previewPreparations.turnId), isNull(previewPreparations.decidedAt)),
-            ),
-          )
-          .orderBy(agentTurns.ordinal);
-        return rows.map((row) => row.id);
-      }, Effect.orDie);
+    const notifyWorktree = Effect.fn("PreviewPreparationsRepo.notifyWorktree")(function* (
+      worktreeId: WorktreeId,
+    ) {
+      const [row] = yield* db
+        .select({ projectId: worktrees.projectId })
+        .from(worktrees)
+        .where(eq(worktrees.id, worktreeId))
+        .pipe(Effect.orDie);
+      if (row !== undefined) {
+        yield* notifyEvent(pg, { type: "worktree", worktreeId, projectId: row.projectId });
+      }
+    });
 
-      const claim = Effect.fn("PreviewPreparationsRepo.claim")(function* (
-        turnId: AgentTurnId,
-        leaseMs: number,
-      ) {
-        const [turn] = yield* db
-          .select({ sessionId: agentTurns.sessionId, worktreeId: agentSessions.worktreeId })
-          .from(agentTurns)
-          .innerJoin(agentSessions, eq(agentSessions.id, agentTurns.sessionId))
-          .where(
-            and(
-              eq(agentTurns.id, turnId),
-              notInArray(agentTurns.status, [...OPEN_AGENT_TURN_STATUSES]),
-            ),
-          );
-        if (turn === undefined) return null;
-        const claimId = crypto.randomUUID();
-        const [row] = yield* db
-          .insert(previewPreparations)
-          .values({
-            turnId,
-            sessionId: turn.sessionId,
-            worktreeId: turn.worktreeId,
-            state: "claimed",
-            claimId,
-            claimedAt: sql`now()`,
-            leaseUntil: leaseEnd(leaseMs),
-          })
-          .onConflictDoUpdate({
-            target: previewPreparations.turnId,
-            set: {
-              state: "claimed",
-              note: null,
-              serviceName: null,
-              previewId: null,
-              startId: null,
-              phase: null,
-              claimId,
-              claimedAt: sql`now()`,
-              leaseUntil: leaseEnd(leaseMs),
-            },
-            setWhere: sql`${previewPreparations.decidedAt} IS NULL AND ${previewPreparations.leaseUntil} <= now()`,
-          })
-          .returning();
-        return row === undefined ? null : claimOf(row);
-      }, Effect.orDie);
+    const undecided = Effect.fn("PreviewPreparationsRepo.undecided")(function* (
+      sessionId: SessionId,
+    ) {
+      const rows = yield* db
+        .select({ id: agentTurns.id })
+        .from(agentTurns)
+        .leftJoin(previewPreparations, eq(previewPreparations.turnId, agentTurns.id))
+        .where(
+          and(
+            eq(agentTurns.sessionId, sessionId),
+            notInArray(agentTurns.status, [...OPEN_AGENT_TURN_STATUSES]),
+            or(isNull(previewPreparations.turnId), isNull(previewPreparations.decidedAt)),
+          ),
+        )
+        .orderBy(agentTurns.ordinal);
+      return rows.map((row) => row.id);
+    }, Effect.orDie);
 
-      const renew = Effect.fn("PreviewPreparationsRepo.renew")(function* (
-        held_: PreviewPreparationClaim,
-        leaseMs: number,
-      ) {
-        const rows = yield* db
-          .update(previewPreparations)
-          .set({ leaseUntil: leaseEnd(leaseMs) })
-          .where(held(held_))
-          .returning({ turnId: previewPreparations.turnId });
-        return rows.length === 1;
-      }, Effect.orDie);
-
-      const left = Effect.fn("PreviewPreparationsRepo.left")(function* (sessionId: SessionId) {
-        const rows = yield* db
-          .select({ turnId: previewPreparations.turnId, state: previewPreparations.state })
-          .from(previewPreparations)
-          .where(
-            and(
-              eq(previewPreparations.sessionId, sessionId),
-              isNotNull(previewPreparations.decidedAt),
-            ),
-          );
-        return new Map(
-          rows.map((row): [AgentTurnId, PreviewPreparationLeft] => [
-            row.turnId,
-            row.state === "superseded" ? "superseded" : "decided",
-          ]),
+    const claim = Effect.fn("PreviewPreparationsRepo.claim")(function* (
+      turnId: AgentTurnId,
+      leaseMs: number,
+    ) {
+      const [turn] = yield* db
+        .select({ sessionId: agentTurns.sessionId, worktreeId: agentSessions.worktreeId })
+        .from(agentTurns)
+        .innerJoin(agentSessions, eq(agentSessions.id, agentTurns.sessionId))
+        .where(
+          and(
+            eq(agentTurns.id, turnId),
+            notInArray(agentTurns.status, [...OPEN_AGENT_TURN_STATUSES]),
+          ),
         );
-      }, Effect.orDie);
-
-      const progress = Effect.fn("PreviewPreparationsRepo.progress")(function* (
-        held_: PreviewPreparationClaim,
-        update: PreviewPreparationProgress,
-      ) {
-        yield* db
-          .update(previewPreparations)
-          .set({
+      if (turn === undefined) return null;
+      const claimId = crypto.randomUUID();
+      const [row] = yield* db
+        .insert(previewPreparations)
+        .values({
+          turnId,
+          sessionId: turn.sessionId,
+          worktreeId: turn.worktreeId,
+          state: "claimed",
+          claimId,
+          claimedAt: sql`now()`,
+          leaseUntil: leaseEnd(leaseMs),
+        })
+        .onConflictDoUpdate({
+          target: previewPreparations.turnId,
+          set: {
             state: "claimed",
+            note: null,
             serviceName: null,
             previewId: null,
             startId: null,
             phase: null,
-            note: null,
-          })
-          .where(
-            and(
-              eq(previewPreparations.worktreeId, held_.worktreeId),
-              eq(previewPreparations.serviceName, update.service),
-              eq(previewPreparations.state, "starting"),
-              lte(previewPreparations.leaseUntil, sql`now()`),
-            ),
-          )
-          .pipe(Effect.orDie);
-        return yield* db
-          .update(previewPreparations)
-          .set({
-            state: "starting",
-            serviceName: update.service,
-            previewId: update.previewId,
-            startId: update.startId,
-            phase: update.phase,
-            note: update.note,
-          })
-          .where(held(held_))
-          .returning({ turnId: previewPreparations.turnId })
-          .pipe(
-            Effect.map((rows): PreviewPreparationHeld => (rows.length === 1 ? "Held" : "Lost")),
-            Effect.catchTag("EffectDrizzleQueryError", (error) =>
-              isUniqueViolation(error)
-                ? Effect.succeed<PreviewPreparationHeld>("Taken")
-                : Effect.die(error),
-            ),
-          );
-      });
+            claimId,
+            claimedAt: sql`now()`,
+            leaseUntil: leaseEnd(leaseMs),
+          },
+          setWhere: sql`${previewPreparations.decidedAt} IS NULL AND ${previewPreparations.leaseUntil} <= now()`,
+        })
+        .returning();
+      return row === undefined ? null : claimOf(row);
+    }, Effect.orDie);
 
-      const decide = Effect.fn("PreviewPreparationsRepo.decide")(function* (
-        held_: PreviewPreparationClaim,
-        decision: PreviewPreparationDecision,
-      ) {
-        const rows = yield* db
-          .update(previewPreparations)
-          .set({ ...columnsOf(decision), phase: null, decidedAt: sql`now()` })
-          .where(held(held_))
-          .returning({ turnId: previewPreparations.turnId });
-        return rows.length === 1;
-      }, Effect.orDie);
+    const renew = Effect.fn("PreviewPreparationsRepo.renew")(function* (
+      held_: PreviewPreparationClaim,
+      leaseMs: number,
+    ) {
+      const rows = yield* db
+        .update(previewPreparations)
+        .set({ leaseUntil: leaseEnd(leaseMs) })
+        .where(held(held_))
+        .returning({ turnId: previewPreparations.turnId });
+      return rows.length === 1;
+    }, Effect.orDie);
 
-      const latestForWorktree = Effect.fn("PreviewPreparationsRepo.latestForWorktree")(function* (
-        worktreeId: WorktreeId,
-      ) {
-        const [row] = yield* db
-          .select()
-          .from(previewPreparations)
-          .where(
-            and(
-              eq(previewPreparations.worktreeId, worktreeId),
-              notInArray(previewPreparations.state, [...UNSPOKEN]),
-            ),
-          )
-          .orderBy(
-            desc(sql`${previewPreparations.state} = 'starting'`),
-            desc(previewPreparations.decidedAt),
-          )
-          .limit(1)
-          .pipe(Effect.orDie);
-        return row === undefined ? null : yield* toPreparation(row);
-      });
+    const left = Effect.fn("PreviewPreparationsRepo.left")(function* (sessionId: SessionId) {
+      const rows = yield* db
+        .select({ turnId: previewPreparations.turnId, state: previewPreparations.state })
+        .from(previewPreparations)
+        .where(
+          and(
+            eq(previewPreparations.sessionId, sessionId),
+            isNotNull(previewPreparations.decidedAt),
+          ),
+        );
+      return new Map(
+        rows.map((row): [AgentTurnId, PreviewPreparationLeft] => [
+          row.turnId,
+          row.state === "superseded" ? "superseded" : "decided",
+        ]),
+      );
+    }, Effect.orDie);
 
-      return { undecided, claim, left, renew, progress, decide, latestForWorktree };
-    }),
-  );
+    const progress = Effect.fn("PreviewPreparationsRepo.progress")(function* (
+      held_: PreviewPreparationClaim,
+      update: PreviewPreparationProgress,
+    ) {
+      const freed = yield* db
+        .update(previewPreparations)
+        .set({
+          state: "claimed",
+          serviceName: null,
+          previewId: null,
+          startId: null,
+          phase: null,
+          note: null,
+        })
+        .where(
+          and(
+            eq(previewPreparations.worktreeId, held_.worktreeId),
+            eq(previewPreparations.serviceName, update.service),
+            eq(previewPreparations.state, "starting"),
+            lte(previewPreparations.leaseUntil, sql`now()`),
+          ),
+        )
+        .returning({ turnId: previewPreparations.turnId })
+        .pipe(Effect.orDie);
+      const outcome = yield* db
+        .update(previewPreparations)
+        .set({
+          state: "starting",
+          serviceName: update.service,
+          previewId: update.previewId,
+          startId: update.startId,
+          phase: update.phase,
+          note: update.note,
+        })
+        .where(held(held_))
+        .returning({ turnId: previewPreparations.turnId })
+        .pipe(
+          Effect.map((rows): PreviewPreparationHeld => (rows.length === 1 ? "Held" : "Lost")),
+          Effect.catchTag("EffectDrizzleQueryError", (error) =>
+            isUniqueViolation(error)
+              ? Effect.succeed<PreviewPreparationHeld>("Taken")
+              : Effect.die(error),
+          ),
+        );
+      if (outcome === "Held" || freed.length > 0) yield* notifyWorktree(held_.worktreeId);
+      return outcome;
+    });
+
+    const decide = Effect.fn("PreviewPreparationsRepo.decide")(function* (
+      held_: PreviewPreparationClaim,
+      decision: PreviewPreparationDecision,
+    ) {
+      const rows = yield* db
+        .update(previewPreparations)
+        .set({ ...columnsOf(decision), phase: null, decidedAt: sql`now()` })
+        .where(held(held_))
+        .returning({ turnId: previewPreparations.turnId });
+      if (rows.length === 1) yield* notifyWorktree(held_.worktreeId);
+      return rows.length === 1;
+    }, Effect.orDie);
+
+    const latestForWorktree = Effect.fn("PreviewPreparationsRepo.latestForWorktree")(function* (
+      worktreeId: WorktreeId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(previewPreparations)
+        .where(
+          and(
+            eq(previewPreparations.worktreeId, worktreeId),
+            notInArray(previewPreparations.state, [...UNSPOKEN]),
+          ),
+        )
+        .orderBy(
+          desc(sql`${previewPreparations.state} = 'starting'`),
+          desc(previewPreparations.decidedAt),
+        )
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : yield* toPreparation(row);
+    });
+
+    return { undecided, claim, left, renew, progress, decide, latestForWorktree };
+  }),
+);

@@ -502,6 +502,7 @@ function SessionPage() {
             <RepositoriesCard repositories={repositories} />
             <ServicesCard
               sessionId={sessionId}
+              worktreeId={session.worktreeId}
               sessionLive={ACTIVE.has(session.status)}
               steer={control.steer}
               runs={control.terminalInput}

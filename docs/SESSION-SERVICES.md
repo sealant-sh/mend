@@ -418,6 +418,9 @@ question, and it never restarts a running preview. Its limits until later delive
 - A turn whose session ended while no API process was listening is never looked at: the pass reads
   only sessions that have not ended.
 - Terminal sessions' turns, including history a mode switch copies in, start nothing (step 13).
+- The web Open on an ended Service row goes through the gateway, whose start on a request (step 7)
+  runs the Service's last command without the recipe approval a turn's preparation asks for, until
+  step 12. Any request to the preview's address does the same, so the link adds no reach.
 
 Project recipes, the machine-local ones the web app adds, keep their four fields: no `cwd`, `env`,
 `ready`, `host`, `address` or `depends`.
@@ -619,6 +622,27 @@ an instance declared `public` every Service forward stays on loopback, so a brow
 open it. The web and desktop then show no Open link; they show `mend service connect <name>`
 (copyable) and say that the CLI tunnels it to that machine's loopback. A private-interface endpoint
 keeps Open, since a client on that network reaches it.
+
+**Open through the preview.** On an instance whose preview gateway is on, the web Services card's
+Open goes to the worktree's preview of the row's Service: `/preview-auth?preview=<id>&path=%2F` in a
+new tab, which mints the ticket and redirects to the preview's origin (ADR 0017, "Where the link
+shows up"). The browser never builds a preview host. The server decides the link: each preview in
+`GET /worktrees/:id/previews` carries `open`, set while the gateway is on and the preview is bound,
+or ended with a run a request starts (`previewOpenTarget`). Where the gateway would refuse it (an
+https Service, an adopted one, one no longer browser-facing or declared), `open` is null and the row
+keeps the Service's own address. Each preview also carries `boundTo`, the Service it binds and that
+Service's session. A preview goes under the row of the Service it binds; one a sibling session runs
+gets a row of its own, `runs in another session of this worktree`, whatever row of this session
+shares its name; one that binds nothing goes under the row of its name. Until the read answers, or
+while it fails, Open waits and says why, and never falls back to the Service's own address.
+
+The card shows each preview's status under its row, worded from `facts` with `previewStatusLine` as
+time passes, so `observed 4 s ago` keeps ageing on screen, and the worktree's own line below the
+rows. It reads the previews again on `session-process` events, and on the `worktree` event each
+phase and decision of a preparation emits. While the read says a start is under way (`starting`) it
+also polls every 2 s, until the start settles, its facts stand still for 10 minutes, or 30 minutes
+pass. With the gateway off, or no kept preview of the name, Open is the Service's own address, as
+above.
 
 The CLI tunnel is one authenticated WebSocket per connection (`service-tunnel`, an upgrade ticket
 each). `mend service connect` opens it on request. `mend attach`, `mend codex|claude|opencode`,

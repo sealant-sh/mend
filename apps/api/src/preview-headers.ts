@@ -2,7 +2,7 @@ import {
   type PreviewGatewayRefusal,
   previewFactLine,
   type PreviewNotDelivered,
-  previewStatusLine,
+  previewUndeliveredLine,
   type ServiceHostPolicy,
 } from "@mend/domain/workbench";
 import type { ForwardIssueReason } from "@mend/sealant";
@@ -176,7 +176,7 @@ export const gatewayPage = (status: number, text: string): PreviewAnswer => {
 };
 
 export const undeliveredAnswer = (service: string, why: PreviewNotDelivered): PreviewAnswer =>
-  gatewayPage(503, previewStatusLine({ _tag: "Undelivered", service, why }));
+  gatewayPage(503, previewUndeliveredLine(service, why));
 
 export const notDelivered = (service: string, fact: string): string =>
   `${previewFactLine(service, fact)} · your request was not delivered`;

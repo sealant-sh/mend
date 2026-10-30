@@ -10,6 +10,7 @@ import {
   SessionProcessId,
   WorktreeId,
 } from "../ids.ts";
+import { Timestamp } from "../timestamp.ts";
 import { observedAgo } from "./landing.ts";
 import {
   recipeChangedLine,
@@ -76,6 +77,15 @@ export type PreviewBinding = typeof PreviewBinding.Type;
 
 export const PreviewView = Schema.Struct({ preview: Preview, binding: PreviewBinding });
 export type PreviewView = typeof PreviewView.Type;
+
+export const previewAuthTarget = (previewId: PreviewId, path: string): string =>
+  `/preview-auth?preview=${encodeURIComponent(previewId)}&path=${encodeURIComponent(path)}`;
+
+const gatewayServes = (binding: PreviewBinding): boolean =>
+  binding._tag === "Bound" || binding.reason === "no-live-attempt";
+
+export const previewOpenTarget = ({ preview, binding }: PreviewView): string | null =>
+  preview.state === "kept" && gatewayServes(binding) ? previewAuthTarget(preview.id, "/") : null;
 
 export interface PreviewTarget {
   readonly service: Service;
@@ -445,47 +455,53 @@ const START_REFUSAL_REASON = {
 export const previewStartReasonOf = (refusal: PreviewStartRefusal): PreviewStartReason =>
   START_REFUSAL_REASON[refusal];
 
-export type PreviewStopper =
-  | { readonly _tag: "Person"; readonly name: string }
-  | { readonly _tag: "Idle"; readonly minutes: number };
+export const PreviewStopper = Schema.Union([
+  Schema.TaggedStruct("Person", { name: Schema.String }),
+  Schema.TaggedStruct("Idle", { minutes: Schema.Int }),
+]);
+export type PreviewStopper = typeof PreviewStopper.Type;
 
 export const PreviewPhase = Schema.Literals(["setup", "depends", "service"]);
 export type PreviewPhase = typeof PreviewPhase.Type;
 
-export type PreviewNotPrepared =
-  | { readonly _tag: "NotCaptured" }
-  | { readonly _tag: "SessionEnded" }
-  | { readonly _tag: "NotApproved" }
-  | { readonly _tag: "Refused"; readonly words: string };
+export const PreviewNotPrepared = Schema.Union([
+  Schema.TaggedStruct("NotCaptured", {}),
+  Schema.TaggedStruct("SessionEnded", {}),
+  Schema.TaggedStruct("NotApproved", {}),
+  Schema.TaggedStruct("Refused", { words: Schema.String }),
+]);
+export type PreviewNotPrepared = typeof PreviewNotPrepared.Type;
 
 export type PreviewNotDelivered =
   | { readonly _tag: "DidNotStart"; readonly holdMs: number; readonly reason: PreviewStartReason }
   | { readonly _tag: "Stopped"; readonly by: string };
 
-export type PreviewStatus =
-  | {
-      readonly _tag: "Observed";
-      readonly service: string;
-      readonly reachable: boolean;
-      /** The status code its HTTP ready check read; null under a TCP rule. */
-      readonly httpStatus: number | null;
-      readonly observedAt: Date;
-      readonly now: Date;
-    }
-  | { readonly _tag: "Starting"; readonly service: string; readonly phase: PreviewPhase }
-  | { readonly _tag: "Stopped"; readonly service: string; readonly by: PreviewStopper }
-  | {
-      readonly _tag: "NotPrepared";
-      /**
-       * Null when no Service was chosen: the change was not captured, the session ended, or
-       * mend.toml was unreadable.
-       */
-      readonly service: string | null;
-      readonly why: PreviewNotPrepared;
-    }
-  | { readonly _tag: "RecipeChanged"; readonly service: string }
-  | { readonly _tag: "SetupInputsChanged" }
-  | { readonly _tag: "Undelivered"; readonly service: string; readonly why: PreviewNotDelivered };
+/**
+ * What Mend observed or decided about a preview, as facts. A surface words each with
+ * `previewStatusLine` at the time it shows it.
+ */
+export const PreviewStatus = Schema.Union([
+  Schema.TaggedStruct("Observed", {
+    service: Schema.String,
+    reachable: Schema.Boolean,
+    /** The status code its HTTP ready check read; null under a TCP rule. */
+    httpStatus: Schema.NullOr(Schema.Int),
+    observedAt: Timestamp,
+  }),
+  Schema.TaggedStruct("Starting", { service: Schema.String, phase: PreviewPhase }),
+  Schema.TaggedStruct("Stopped", { service: Schema.String, by: PreviewStopper }),
+  Schema.TaggedStruct("NotPrepared", {
+    /**
+     * Null when no Service was chosen: the change was not captured, the session ended, or
+     * mend.toml was unreadable.
+     */
+    service: Schema.NullOr(Schema.String),
+    why: PreviewNotPrepared,
+  }),
+  Schema.TaggedStruct("RecipeChanged", { service: Schema.String }),
+  Schema.TaggedStruct("SetupInputsChanged", {}),
+]);
+export type PreviewStatus = typeof PreviewStatus.Type;
 
 const holdText = (ms: number): string =>
   ms % 60_000 === 0 ? `${ms / 60_000} min` : `${Math.round(ms / 1000)} s`;
@@ -515,12 +531,12 @@ const notPreparedWords = (service: string | null, why: PreviewNotPrepared): stri
 export const previewFactLine = (service: string, fact: string): string =>
   `preview · ${service} · ${fact}`;
 
-export const previewStatusLine = (status: PreviewStatus): string => {
+export const previewStatusLine = (status: PreviewStatus, now: Date): string => {
   switch (status._tag) {
     case "Observed":
       return previewFactLine(
         status.service,
-        `${observedWords(status)} · observed ${observedAgo(status.observedAt, status.now)}`,
+        `${observedWords(status)} · observed ${observedAgo(status.observedAt, now)}`,
       );
     case "Starting":
       return previewFactLine(
@@ -544,13 +560,13 @@ export const previewStatusLine = (status: PreviewStatus): string => {
       return `preview · ${recipeChangedLine(status.service)}`;
     case "SetupInputsChanged":
       return "setup inputs changed · restart to apply";
-    case "Undelivered": {
-      const { why } = status;
-      const fact =
-        why._tag === "Stopped"
-          ? `${why.by} stopped the preview`
-          : `did not start${why.reason === "start timed out" ? ` in ${holdText(why.holdMs)}` : ""} · ${why.reason}`;
-      return `${previewFactLine(status.service, fact)} · your request was not delivered`;
-    }
   }
+};
+
+export const previewUndeliveredLine = (service: string, why: PreviewNotDelivered): string => {
+  const fact =
+    why._tag === "Stopped"
+      ? `${why.by} stopped the preview`
+      : `did not start${why.reason === "start timed out" ? ` in ${holdText(why.holdMs)}` : ""} · ${why.reason}`;
+  return `${previewFactLine(service, fact)} · your request was not delivered`;
 };

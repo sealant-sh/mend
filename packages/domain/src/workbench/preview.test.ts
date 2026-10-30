@@ -18,16 +18,21 @@ import {
   changePreviewControl,
   previewControlDecider,
   Preview,
+  type PreviewBinding,
   PREVIEW_CONTROL_INITIAL,
   type PreviewControlIntent,
   type PreviewControlRead,
   previewGatewayResolution,
+  type PreviewNotDelivered,
+  previewOpenTarget,
   previewResumeCandidate,
   previewStartId,
   previewStartReasonOf,
   type PreviewTarget,
   previewStatusLine,
-  type PreviewStatus,
+  PreviewStatus,
+  previewUndeliveredLine,
+  type PreviewUnboundReason,
   resolvePreviewBinding,
   selectPreviewTarget,
   startedByPreviewRequest,
@@ -289,15 +294,15 @@ describe("previewStatusLine", () => {
   const now = new Date(observedAt.getTime() + 4_000);
   const lines: ReadonlyArray<readonly [PreviewStatus, string]> = [
     [
-      { _tag: "Observed", service: "web", reachable: true, httpStatus: 200, observedAt, now },
+      { _tag: "Observed", service: "web", reachable: true, httpStatus: 200, observedAt },
       "preview · web · answered HTTP 200 · observed 4 s ago",
     ],
     [
-      { _tag: "Observed", service: "web", reachable: true, httpStatus: null, observedAt, now },
+      { _tag: "Observed", service: "web", reachable: true, httpStatus: null, observedAt },
       "preview · web · reachable · observed 4 s ago",
     ],
     [
-      { _tag: "Observed", service: "web", reachable: false, httpStatus: null, observedAt, now },
+      { _tag: "Observed", service: "web", reachable: false, httpStatus: null, observedAt },
       "preview · web · unreachable · observed 4 s ago",
     ],
     [{ _tag: "Starting", service: "web", phase: "setup" }, "preview · web · starting · setup"],
@@ -336,35 +341,92 @@ describe("previewStatusLine", () => {
       "preview · web · recipe changed · the owner's Start runs it",
     ],
     [{ _tag: "SetupInputsChanged" }, "setup inputs changed · restart to apply"],
-    [
-      {
-        _tag: "Undelivered",
-        service: "web",
-        why: { _tag: "DidNotStart", holdMs: 180_000, reason: "setup failed" },
-      },
-      "preview · web · did not start · setup failed · your request was not delivered",
-    ],
-    [
-      {
-        _tag: "Undelivered",
-        service: "web",
-        why: {
-          _tag: "DidNotStart",
-          holdMs: 45_000,
-          reason: previewStartReasonOf("start-expired"),
-        },
-      },
-      "preview · web · did not start in 45 s · start timed out · your request was not delivered",
-    ],
-    [
-      { _tag: "Undelivered", service: "web", why: { _tag: "Stopped", by: "Carol" } },
-      "preview · web · Carol stopped the preview · your request was not delivered",
-    ],
   ];
 
   it.each(lines)("states %j as the ADR writes it", (status, line) => {
-    expect(previewStatusLine(status)).toBe(line);
+    expect(previewStatusLine(status, now)).toBe(line);
   });
+
+  it("ages an observation by the time it is worded, not when it was read", () => {
+    const status: PreviewStatus = {
+      _tag: "Observed",
+      service: "web",
+      reachable: true,
+      httpStatus: 200,
+      observedAt,
+    };
+    expect(previewStatusLine(status, new Date(observedAt.getTime() + 90_000))).toBe(
+      "preview · web · answered HTTP 200 · observed 1 min ago",
+    );
+  });
+
+  it("travels the JSON wire as facts a client words again", () => {
+    const wire = Schema.toCodecJson(Schema.Array(PreviewStatus));
+    const facts = lines.map(([status]) => status);
+    const decoded = Schema.decodeUnknownSync(wire)(
+      JSON.parse(JSON.stringify(Schema.encodeSync(wire)(facts))),
+    );
+    expect(decoded.map((status) => previewStatusLine(status, now))).toEqual(
+      lines.map(([, line]) => line),
+    );
+  });
+});
+
+describe("previewUndeliveredLine", () => {
+  it.each([
+    [
+      "web",
+      { _tag: "DidNotStart", holdMs: 180_000, reason: "setup failed" },
+      "preview · web · did not start · setup failed · your request was not delivered",
+    ],
+    [
+      "web",
+      { _tag: "DidNotStart", holdMs: 45_000, reason: previewStartReasonOf("start-expired") },
+      "preview · web · did not start in 45 s · start timed out · your request was not delivered",
+    ],
+    [
+      "web",
+      { _tag: "Stopped", by: "Carol" },
+      "preview · web · Carol stopped the preview · your request was not delivered",
+    ],
+  ] satisfies ReadonlyArray<readonly [string, PreviewNotDelivered, string]>)(
+    "states %s %j as the ADR writes it",
+    (name, why, line) => {
+      expect(previewUndeliveredLine(name, why)).toBe(line);
+    },
+  );
+});
+
+describe("previewOpenTarget", () => {
+  const bound: PreviewBinding = {
+    _tag: "Bound",
+    serviceId: ServiceId.make("service"),
+    attemptId: SessionProcessId.make("attempt"),
+    host: "rewrite",
+    dial: "session-bound",
+  };
+
+  it("opens a bound preview, and an ended one the gateway starts on a request", () => {
+    expect(previewOpenTarget({ preview, binding: bound })).toBe(
+      "/preview-auth?preview=preview&path=%2F",
+    );
+    expect(
+      previewOpenTarget({ preview, binding: { _tag: "Unbound", reason: "no-live-attempt" } }),
+    ).toBe("/preview-auth?preview=preview&path=%2F");
+  });
+
+  it.each([
+    "https-unsupported",
+    "no-recorded-command",
+    "not-browser-service",
+    "service-missing",
+    "removed",
+  ] satisfies ReadonlyArray<PreviewUnboundReason>)(
+    "offers nothing the gateway refuses: %s",
+    (reason) => {
+      expect(previewOpenTarget({ preview, binding: { _tag: "Unbound", reason } })).toBeNull();
+    },
+  );
 });
 
 describe("previewControlDecider", () => {

@@ -207,6 +207,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
               trpc.sessions.processes.queryFilter({ id: event.sessionId }),
             );
             void queryClient.invalidateQueries(trpc.services.list.pathFilter());
+            void queryClient.invalidateQueries(trpc.worktrees.previews.pathFilter());
           }
           break;
         case "worktree":
@@ -264,6 +265,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
       reconnected: () => {
         void queryClient.invalidateQueries(trpc.sessions.processes.pathFilter());
         void queryClient.invalidateQueries(trpc.services.list.pathFilter());
+        void queryClient.invalidateQueries(trpc.worktrees.previews.pathFilter());
       },
       onEvent,
     });

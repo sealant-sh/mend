@@ -19,6 +19,11 @@ export const worktreesRouter = router({
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.worktrees.detail({ params: { id: i.id } })),
     ),
+  previews: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.worktrees.previews({ params: { id: i.id } })),
+    ),
   create: procedure
     .input(input(Schema.Struct({ projectId: ProjectId, worktree: NewWorktree })))
     .mutation(({ ctx, input: i }) =>
