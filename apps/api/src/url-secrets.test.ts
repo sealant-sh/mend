@@ -1,7 +1,7 @@
 import { createAuthHandler } from "@mend/auth";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { Effect, Layer, Logger, Tracer } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/http";
+import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/http";
 import { describe, expect, it } from "vitest";
 
 import { boundedWebRequest } from "./request-budgets.ts";
@@ -32,6 +32,8 @@ const betterAuthBoundary = () => {
   const { handler, dispose } = HttpRouter.toWebHandler(
     Layer.mergeAll(routes, unloggedRequests).pipe(
       Layer.provideMerge(UntracedRequestsLive),
+      // Effect records no header on a span until a filter opts in; this one opts in to every one.
+      Layer.provideMerge(Layer.succeed(HttpMiddleware.TracerHeaderFilter)(() => true)),
       Layer.provideMerge(
         Layer.succeed(
           Tracer.Tracer,
@@ -50,7 +52,15 @@ const betterAuthBoundary = () => {
     ),
   );
   const get = (path: string) => handler(new Request(`${network.appUrl}${path}`));
-  return { logs, spans, get, dispose };
+  const post = (path: string, headers: Record<string, string>, body: unknown) =>
+    handler(
+      new Request(`${network.appUrl}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: network.appUrl, ...headers },
+        body: JSON.stringify(body),
+      }),
+    );
+  return { logs, spans, get, post, dispose };
 };
 
 describe("secrets in request URLs", () => {
@@ -84,6 +94,24 @@ describe("secrets in request URLs", () => {
       expect(boundary.logs.filter((line) => line.includes("Sent HTTP response"))).toHaveLength(3);
       expect.soft(boundary.logs.filter((line) => line.includes("secret-needle"))).toEqual([]);
       expect.soft(traced(boundary.spans)).not.toContain("secret-needle");
+    } finally {
+      await boundary.dispose();
+    }
+  });
+
+  it("keeps the invitation token a sign-up carries in its header out of the request log and traces", async () => {
+    const boundary = betterAuthBoundary();
+    try {
+      await boundary.post(
+        "/api/auth/sign-up/email",
+        { "x-mend-invitation": "invite-secret-needle" },
+        { name: "Dana", email: "dana@example.com", password: "a long enough password" },
+      );
+      expect(traced(boundary.spans)).toContain("http.request.header.content-type");
+      expect
+        .soft(boundary.logs.filter((line) => line.includes("invite-secret-needle")))
+        .toEqual([]);
+      expect.soft(traced(boundary.spans)).not.toContain("invite-secret-needle");
     } finally {
       await boundary.dispose();
     }
