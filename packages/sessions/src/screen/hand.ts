@@ -1,6 +1,6 @@
 import { SCREEN_LIMITS, type ScreenActionResult } from "@mend/domain/workbench";
 import type { ForwardBytes } from "@mend/sealant";
-import { Clock, Data, Deferred, Duration, Effect, Fiber, Queue, Redacted, Semaphore } from "effect";
+import { Clock, Data, Deferred, Duration, Effect, Queue, Redacted, Semaphore } from "effect";
 
 import type { Step } from "./hand-steps.ts";
 import {
@@ -130,6 +130,15 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
       held = inputs.reduce(hold, held);
       return send(inputs.map(encodeInput));
     });
+  /**
+   * Runs `effect` only while the hand is open. The hand's ending interrupts it, and its failure ends
+   * the hand. `end` races first, so a hand already ended never starts `effect`.
+   */
+  const whileOpen = <A>(effect: Effect.Effect<A, HandEnded>) =>
+    Deferred.await(end).pipe(
+      Effect.raceFirst(effect),
+      Effect.tapError((error) => Deferred.fail(end, error)),
+    );
   const current = (epoch: number) => Effect.map(currentEpoch, (now) => now === epoch);
   const sleepUntil = (until: () => number, epoch: number | undefined) =>
     Effect.gen(function* () {
@@ -181,12 +190,14 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
       : Effect.flatMap(Clock.currentTimeMillis, (now) =>
           sleepUntil(() => Math.min(now + step.ms, limit), epoch),
         ).pipe(Effect.as("done"));
-  const run = <A, E>(task: Effect.Effect<A, E>): Effect.Effect<A, E | HandEnded> =>
-    Effect.gen(function* () {
-      const done = yield* Deferred.make<A, E>();
-      yield* Queue.offer(tasks, Deferred.into(task, done).pipe(Effect.asVoid));
-      return yield* Deferred.await(done);
-    }).pipe(Effect.raceFirst(Deferred.await(end)));
+  const run = <A>(task: Effect.Effect<A, HandEnded>) =>
+    whileOpen(
+      Effect.gen(function* () {
+        const done = yield* Deferred.make<A, HandEnded>();
+        yield* Queue.offer(tasks, Deferred.into(whileOpen(task), done).pipe(Effect.asVoid));
+        return yield* Deferred.await(done);
+      }),
+    );
 
   const reader = Effect.gen(function* () {
     const signIn = new VncSignIn(Redacted.value(options.password));
@@ -220,12 +231,11 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
     }
   });
 
-  const consumer = yield* Effect.forkScoped(Effect.forever(Effect.flatten(Queue.take(tasks))));
-  yield* Effect.forkScoped(Deferred.into(reader, end));
+  yield* Effect.forkScoped(Effect.forever(Effect.flatten(Queue.take(tasks))));
+  yield* Effect.forkScoped(whileOpen(reader));
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       yield* Deferred.fail(end, ended("closed"));
-      yield* Fiber.interrupt(consumer);
       yield* Effect.suspend(() => press(releaseAll(held))).pipe(
         Effect.timeout(RELEASE_DEADLINE),
         Effect.ignore,
@@ -233,12 +243,13 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
       yield* bytes.close();
     }),
   );
-  yield* Deferred.await(ready).pipe(
-    Effect.raceFirst(Deferred.await(end)),
-    Effect.timeoutOrElse({
-      duration: SIGN_IN_DEADLINE,
-      orElse: () => Effect.fail(ended("sign-in-deadline")),
-    }),
+  yield* whileOpen(
+    Deferred.await(ready).pipe(
+      Effect.timeoutOrElse({
+        duration: SIGN_IN_DEADLINE,
+        orElse: () => Effect.fail(ended("sign-in-deadline")),
+      }),
+    ),
   );
 
   const act = (steps: ReadonlyArray<Step>, epoch: number) =>

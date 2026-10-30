@@ -18,6 +18,8 @@ import { type Hand, openHand } from "./hand.ts";
 import type { Input } from "./rfb-client.ts";
 import { SCREEN_WORKER, screenWorkersLayer } from "./screen-workers.ts";
 
+const EXITING_WORKER = new URL("../../test/screen-worker-exits.ts", import.meta.url);
+
 const scriptedDisplay = (...lines: ReadonlyArray<Uint8Array>): ForwardBytes => {
   const left = [...lines];
   return {
@@ -210,6 +212,20 @@ describe("a hand whose batch or stream runs long", () => {
       }).pipe(Effect.provideService(Clock.Clock, clock));
     }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
   );
+
+  it.live("ends when its decoder's thread has gone, once a look finds it", () =>
+    Effect.gen(function* () {
+      const display = yield* heldDisplay;
+      const hand = yield* openHand({
+        bytes: display.bytes,
+        password: Redacted.make(XVNC_PASSWORD),
+        currentEpoch: Effect.succeed(1),
+      });
+      yield* hand.look;
+      expect((yield* Effect.flip(hand.look)).reason).toBe("decoder-failed");
+      expect((yield* Effect.flip(hand.ended)).reason).toBe("decoder-failed");
+    }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(EXITING_WORKER))),
+  );
 });
 
 describe.skipIf(!dockerReady)("the hand, against TigerVNC Xvnc in a container", () => {
@@ -361,6 +377,46 @@ describe.skipIf(!dockerReady)("the hand, against TigerVNC Xvnc in a container", 
           }),
         );
       }),
+    { timeout: 30_000 },
+  );
+
+  it.live(
+    "sends nothing once it has ended: not the click left in its batch, a queued look or a new relay",
+    () =>
+      Effect.gen(function* () {
+        const connection = yield* Effect.promise(() => connect(xvnc.port));
+        const hand = yield* openHand({
+          bytes: connection.bytes,
+          password: Redacted.make(XVNC_PASSWORD),
+          currentEpoch: Effect.succeed(1),
+        });
+        yield* hand.look;
+        const before = pointer();
+        const act = yield* Effect.forkChild(
+          Effect.flip(
+            hand.act(
+              steps({ kind: "wait", ms: 1_200 }, { kind: "click", at: { x: 888, y: 555 } }),
+              1,
+            ),
+          ),
+        );
+        const look = yield* Effect.forkChild(Effect.flip(hand.look));
+        yield* Effect.sleep(100);
+        x("xsetroot -solid '#7799aa'");
+        const ending = yield* Effect.flip(hand.ended);
+        const sent = connection.written.length;
+        const relay = yield* Effect.flip(
+          hand.relay([{ _tag: "Pointer", buttons: 0, x: 888, y: 555 }], 1),
+        );
+        expect(
+          [ending, yield* Fiber.join(act), yield* Fiber.join(look), relay].map(
+            ({ reason }) => reason,
+          ),
+        ).toEqual(["decoder-failed", "decoder-failed", "decoder-failed", "decoder-failed"]);
+        yield* Effect.sleep(1_500);
+        expect(connection.written.slice(sent)).toEqual([]);
+        expect(pointer()).toEqual(before);
+      }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(EXITING_WORKER))),
     { timeout: 30_000 },
   );
 
