@@ -91,7 +91,7 @@ const screensLayer = ScreensLive.pipe(
 );
 
 type Needs = Screens | ScreensRepo | SqlClient.SqlClient;
-/** A fresh API process, with hands of its own. */
+/** A fresh API process: its own hands, and a boot over what the last one left. */
 const asProcess = <A, E>(effect: Effect.Effect<A, E, Needs>) =>
   effect.pipe(Effect.provide(screensLayer), Effect.scoped);
 
@@ -110,8 +110,13 @@ const seedSession = Effect.gen(function* () {
   return sessionId;
 }).pipe(Effect.orDie);
 
-/** A session whose project has a screen, reserved and not yet started. */
+/**
+ * A session whose project has a screen, reserved and not yet started. Earlier tests' screens are
+ * released first, so a boot finds only this test's.
+ */
 const sessionWithScreen = Effect.gen(function* () {
+  yield* (yield* SqlClient.SqlClient)`UPDATE screens SET released_at = now()
+    WHERE released_at IS NULL`;
   const sessionId = yield* seedSession;
   const screen = yield* (yield* ScreensRepo).reserve({
     sessionId,
@@ -633,6 +638,77 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
           ).toBe(false);
         }),
       ),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "boots a claim stored without its outcome into outcome_unknown, sending its input never again",
+    () =>
+      Effect.gen(function* () {
+        const crashed = yield* asProcess(
+          Effect.gen(function* () {
+            const screens = yield* Screens;
+            const { sessionId, screen } = yield* sessionWithScreen;
+            const agent = agentOf(sessionId);
+            yield* screens.look(agent.call());
+            const params = { actions: [movedTo({ x: 222, y: 111 })] };
+            yield* (yield* ScreensRepo).claim({
+              screenId: screen.id,
+              callKey: "crashed",
+              args: { tool: "screen_act", params },
+            });
+            return { sessionId, screen, agent, params };
+          }),
+        );
+        yield* asProcess(
+          Effect.gen(function* () {
+            const screens = yield* Screens;
+            x("xdotool mousemove 7 7");
+            expect(yield* screens.act(crashed.agent.call("crashed"), crashed.params)).toEqual({
+              _tag: "NoEntry",
+              outcome: "outcome_unknown",
+            });
+            expect(pointer()).toEqual([7, 7]);
+            expect((yield* rowOf(crashed.screen.id)).input._tag).toBe("AwaitingAgent");
+            expect(
+              yield* screens.act(crashed.agent.call(), { actions: [movedTo({ x: 1, y: 1 })] }),
+            ).toEqual({ _tag: "Refused", refusal: "look_first" });
+            expect(world.starts.filter((started) => started === crashed.sessionId).length).toBe(1);
+          }),
+        );
+      }),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "boots a fence committed without its acknowledgement into Paused",
+    () =>
+      Effect.gen(function* () {
+        const fenced = yield* asProcess(
+          Effect.gen(function* () {
+            const { sessionId, screen } = yield* sessionWithScreen;
+            yield* (yield* Screens).look(agentOf(sessionId).call());
+            yield* (yield* ScreensRepo).control(
+              screen.id,
+              { _tag: "Take", by: OWNER, connection: CONNECTION },
+              OWNER,
+            );
+            expect((yield* rowOf(screen.id)).input._tag).toBe("Fencing");
+            return screen;
+          }),
+        );
+        yield* asProcess(
+          Effect.gen(function* () {
+            yield* Screens;
+            const row = yield* rowOf(fenced.id);
+            expect(row.input).toMatchObject({ _tag: "Paused", reason: "restart" });
+            expect(row.input.epoch).toBe(3);
+            const last = (yield* logOf(fenced.id)).at(-1);
+            expect(last?.body).toEqual({ _tag: "Paused", reason: "restart" });
+            expect(keysDown()).toBe(0);
+          }),
+        );
+      }),
     { timeout: 60_000 },
   );
 });

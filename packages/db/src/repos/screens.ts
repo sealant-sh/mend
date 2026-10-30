@@ -159,6 +159,8 @@ export class ScreensRepo extends Context.Service<
      * of life; null for no such screen. What a viewer does is none of these.
      */
     readonly lastActivityAt: (id: ScreenId) => Effect.Effect<Date | null>;
+    /** Every screen holding a display, whatever its life. */
+    readonly held: () => Effect.Effect<ReadonlyArray<Screen>>;
     /**
      * Applies `transitionInput` under the screen's lock and stores what it decided; an entry the
      * transition logs carries `frame`.
@@ -447,6 +449,15 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return row?.at ?? null;
     });
 
+    const held = Effect.fn("ScreensRepo.held")(function* () {
+      const rows = yield* db
+        .select()
+        .from(screens)
+        .where(isNull(screens.releasedAt))
+        .pipe(Effect.orDie);
+      return rows.map(toScreen);
+    });
+
     const control = Effect.fn("ScreensRepo.control")(function* (
       id: ScreenId,
       event: ScreenInputEvent,
@@ -601,6 +612,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       release,
       listHeld,
       lastActivityAt,
+      held,
       control,
       append,
       log,
@@ -695,6 +707,7 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
       }),
     listHeld: () => Effect.sync(() => rows.filter((row) => !row.released).map((row) => row.screen)),
     lastActivityAt: (id) => Effect.sync(() => rowOf(id)?.activeAt ?? null),
+    held: () => Effect.sync(() => rows.filter((row) => !row.released).map((row) => row.screen)),
     control: (id, event, owner, frame = null) =>
       Effect.suspend(() => {
         const row = rowOf(id);

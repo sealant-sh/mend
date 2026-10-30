@@ -28,6 +28,7 @@ export * from "./secret-files.ts";
 export * from "./forward.ts";
 export * from "./screen/screen-host.ts";
 export * from "./screen/screens.ts";
+export { screenWorkersLayer } from "./screen/screen-workers.ts";
 export * from "./forward-node.ts";
 export * from "./service-host.ts";
 export * from "./service-launch.ts";

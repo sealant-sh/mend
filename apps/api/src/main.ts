@@ -182,6 +182,9 @@ import {
   ResourcesChannelLive,
   ResourcesLive,
   ProtocolHostLive,
+  ScreenHostLive,
+  ScreensLive,
+  screenWorkersLayer,
   ServiceHostLive,
   sessionPagesLayer,
   SessionEngine,
@@ -408,6 +411,17 @@ const SessionChannelNetworkLayer = SessionChannelNetworkHostLive.pipe(
 const PAGE_CHECK_WORKER = new URL(
   `./page-check-worker${extname(new URL(import.meta.url).pathname)}`,
   import.meta.url,
+);
+// `src/screen-worker.ts` from source, `dist/screen-worker.js` once bundled.
+const SCREEN_WORKER = new URL(
+  `./screen-worker${extname(new URL(import.meta.url).pathname)}`,
+  import.meta.url,
+);
+// Every screen's input and its hand (ADR 0020). Building it boots what the last process left, so
+// only the process that serves HTTP builds it: one process holds every hand.
+const ScreensLayer = ScreensLive.pipe(
+  Layer.provide(ScreenHostLive),
+  Layer.provide(screenWorkersLayer(SCREEN_WORKER)),
 );
 const MendMcpLayer: Layer.Layer<MendMcp, never, SessionPagesRepo> = MendMcpLive.pipe(
   Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
@@ -877,12 +891,13 @@ const MainLive = Layer.unwrap(
       LandingLive.pipe(Layer.provide(TourRequestsLive)),
       LandingDescriptionsLive,
     ).pipe(Layer.provide(PullRequestsLayer), Layer.provideMerge(landingGit));
+    const screens = ScreensLayer.pipe(Layer.provide(captureStore));
     const parts =
       mode === "api"
-        ? ServerLive
+        ? Layer.merge(ServerLive, screens)
         : mode === "worker"
           ? WorkerLive
-          : Layer.merge(ServerLive, WorkerLive);
+          : Layer.mergeAll(ServerLive, WorkerLive, screens);
     return Layer.mergeAll(
       parts,
       SessionChannelNetworkLayer,

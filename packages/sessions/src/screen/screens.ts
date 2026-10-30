@@ -20,7 +20,7 @@ import {
   screenActionNote,
 } from "@mend/domain/workbench";
 import { BlobStore } from "@mend/store";
-import { Effect, Fiber, Layer, Scope } from "effect";
+import { Clock, Effect, Fiber, Layer, Scope } from "effect";
 import * as Context from "effect/Context";
 
 import { ForwardAdapter } from "../forward.ts";
@@ -354,6 +354,17 @@ export const ScreensLive: Layer.Layer<
           }
         }
       }).pipe(Effect.catchTag("ScreenNotFoundError", () => Effect.succeed(refused("no_screen"))));
+
+    yield* screens.boot();
+    const at = new Date(yield* Clock.currentTimeMillis);
+    for (const screen of yield* screens.held()) {
+      const booted = yield* screens
+        .control(screen.id, { _tag: "Boot", at }, null)
+        .pipe(Effect.orElseSucceed(() => null));
+      yield* control.arm(screen, booted?._tag === "Changed" ? booted.next : screen.input);
+      // A fresh hand lets go of whatever the last process's hand left held before anything else.
+      yield* Effect.forkIn(hands.of(screen), scope);
+    }
 
     return {
       look: (caller) => call(caller, { tool: "screen_look" }, look),
