@@ -9,7 +9,7 @@ import {
   ResourceStale,
 } from "@mend/api-contracts";
 import type { ProjectId, WorktreeId } from "@mend/domain";
-import { resourceRuntimeRefusal } from "@mend/domain/workbench";
+import { resourceRefusalWords, resourceRuntimeRefusal } from "@mend/domain/workbench";
 import { type ResourceImageRefusedError, Resources } from "@mend/sessions";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -32,7 +32,7 @@ const rejected = (name: string, refusals: ReadonlyArray<{ key: string; message: 
   new ResourceRejected({
     name,
     refusals,
-    message: refusals.map((refusal) => `@${name} · ${refusal.key} ${refusal.message}`).join("\n"),
+    message: refusals.map((refusal) => `@${name} · ${resourceRefusalWords(refusal)}`).join("\n"),
   });
 
 /** `NotFound` for a worktree that is not one of the project's. */

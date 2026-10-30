@@ -5,8 +5,9 @@ import {
   type ResourceApprovalRequest,
   type ResourceApproved,
   type ResourceDefinitionInput,
-  resourceProposalNotices,
   type ResourcePreset,
+  resourceProposalNotices,
+  resourceRefusalWords,
   resourceReviewRows,
   type ResourceSelectionEntry,
   type ResourcesPage,
@@ -269,7 +270,9 @@ type Reviewed = {
 
 export type ApprovalTarget =
   | { readonly ok: true; readonly reviewed: Reviewed; readonly request: ResourceApprovalRequest }
-  | { readonly ok: false; readonly message: string };
+  | { readonly ok: false; readonly message: string }
+  /** Already approved as read: nothing to do, and not a failure. */
+  | { readonly ok: "approved"; readonly message: string };
 
 /** The offer's request when it is ready, else why there is none, as the approve route says it. */
 const offered = (
@@ -287,11 +290,11 @@ const offered = (
       return {
         ok: false,
         message: offer.refusals
-          .map((refusal) => `${name} · ${printable(refusal.key)} ${printable(refusal.message)}`)
+          .map((refusal) => `${name} · ${printable(resourceRefusalWords(refusal))}`)
           .join("\n"),
       };
     case "approved":
-      return { ok: false, message: `${name} is approved ${target} already · nothing was approved` };
+      return { ok: "approved", message: `${name} is approved ${target} already` };
   }
 };
 
@@ -452,6 +455,7 @@ export const resourceCommand = async (
         worktree,
         forProject: rest.includes("--for-project"),
       });
+      if (target.ok === "approved") return say(target.message);
       if (!target.ok) return fail(target.message);
       const forWorktree = target.request.worktreeId === null ? null : (worktree?.label ?? null);
       for (const line of reviewLines(target.reviewed, forWorktree)) say(line);

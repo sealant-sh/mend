@@ -465,8 +465,8 @@ describe("mend resource approve", () => {
 
   it("says a target that approves the spec already, and approves nothing again", () => {
     expect(approvalTarget(page, "db", unnamed)).toEqual({
-      ok: false,
-      message: "@db is approved for the project already · nothing was approved",
+      ok: "approved",
+      message: "@db is approved for the project already",
     });
   });
 
@@ -687,6 +687,17 @@ describe("approving, choosing and starting against a server", () => {
       expect(posted(mend.calls), args.join(" ")).toEqual([]);
       vi.restoreAllMocks();
     }
+  });
+
+  it("says an approval already made and exits 0, posting nothing", async () => {
+    const out = stdout();
+    const err = stderr();
+    exits();
+    const mend = server({ ...answers, "GET /projects/p_shop/resources": page });
+    await resourceCommand(mend.api, async () => shop, ["approve", "db"]);
+    expect(out).toEqual(["@db is approved for the project already\n"]);
+    expect(err).toEqual([]);
+    expect(posted(mend.calls)).toEqual([]);
   });
 
   it("approves the digest passed, and prints the line and the image pinned", async () => {

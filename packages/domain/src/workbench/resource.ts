@@ -264,6 +264,10 @@ export const ResourceRefusal = Schema.Struct({
 });
 export type ResourceRefusal = typeof ResourceRefusal.Type;
 
+/** A refusal in words: its key, then why. An empty key is the resource itself, so only why. */
+export const resourceRefusalWords = (refusal: ResourceRefusal): string =>
+  refusal.key === "" ? refusal.message : `${refusal.key} ${refusal.message}`;
+
 const duplicates = (values: ReadonlyArray<string>): ReadonlyArray<string> => [
   ...new Set(values.filter((value, index) => values.indexOf(value) !== index)),
 ];

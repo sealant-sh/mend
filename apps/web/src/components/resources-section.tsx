@@ -5,8 +5,9 @@ import {
   type ResourceApprovalOffers,
   type ResourceApprovalRequest,
   type ResourceDefinitionInput,
-  type ResourceRefusal,
   resourceProposalNotices,
+  type ResourceRefusal,
+  resourceRefusalWords,
   resourceReviewRows,
   resourceRuntimeRefusal,
   type WorktreeChoice,
@@ -595,7 +596,7 @@ const withheldReasons = (
 ): ReadonlyArray<string> => {
   switch (offer?.kind) {
     case "rejected":
-      return offer.refusals.map((refusal) => `${refusal.key} ${refusal.message}`);
+      return offer.refusals.map(resourceRefusalWords);
     case "denied":
       return target === "worktree" ? [offer.message] : [];
     case "ready":
