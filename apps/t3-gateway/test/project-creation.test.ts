@@ -359,11 +359,17 @@ describe("project creation through the gateway", () => {
         expect(f.writes.map((w) => w.kind)).toEqual(["named", "scratch"]);
       }),
     ));
-  it("does not create with a refused or read-only device", async () =>
+  it("does not create with a refused or read-only device, and offers New project only to one that can", async () =>
     run(
       Effect.gen(function* () {
         const f = yield* fixture();
         const readOnly = handlers(f.hub, { ...testBearerSession, scopes: ["orchestration:read"] });
+        const readOnlyConfig = yield* readOnly[WS_METHODS.serverGetConfig]();
+        expect(readOnlyConfig.newProjectsRoot).toBeUndefined();
+        // Kept: it is how the client recognises an existing scratch project as No project.
+        expect(readOnlyConfig.scratchWorkspaceRoot).toBe(
+          personProjectPaths(person.id).scratchWorkspaceRoot,
+        );
         expect(
           Exit.isFailure(yield* readOnly[WS_METHODS.projectsEnsureScratch]().pipe(Effect.exit)),
         ).toBe(true);

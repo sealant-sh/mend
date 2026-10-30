@@ -375,8 +375,13 @@ export const makeServerConfig = (input: {
   readonly settings: ServerSettings;
   readonly findInThread: boolean;
   readonly personId: string;
+  /** Whether the device may create projects: New project shows only then. */
+  readonly createsProjects: boolean;
 }): ServerConfig => ({
-  ...personProjectPaths(input.personId),
+  scratchWorkspaceRoot: personProjectPaths(input.personId).scratchWorkspaceRoot,
+  ...(input.createsProjects
+    ? { newProjectsRoot: personProjectPaths(input.personId).newProjectsRoot }
+    : {}),
   environment: input.environment,
   auth: input.auth,
   cwd: input.paths.directory,

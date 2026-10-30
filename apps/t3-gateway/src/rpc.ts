@@ -512,6 +512,7 @@ export const makeGatewayRpcHandlers = ({
       settings,
       findInThread: findsInThread(clientAppVersion),
       personId: session.mendUser.id,
+      createsProjects: session.scopes.includes("orchestration:operate"),
     });
     return readable(encodeServerConfig(config), config);
   };
