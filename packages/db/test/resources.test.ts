@@ -600,6 +600,45 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       expect(await withRepo((repo) => repo.currentApproval(box.id, theirs))).toEqual(forProject);
     });
 
+    it("lists each definition with the approval of the spec it holds, for the project or the worktree read", async () => {
+      const project = await newProject();
+      const mine = await newWorktree(project);
+      const theirs = await newWorktree(project);
+      const mail = await withRepo((repo) => repo.declare(project, mailpit("project"), "maria"));
+      const box = await withRepo((repo) =>
+        repo.declare(project, mailpit("worktree", "box"), "alice"),
+      );
+      await withRepo((repo) => repo.approve(approval(mail)));
+      const forMine = await withRepo((repo) =>
+        repo.approve(approval(box, { worktreeId: mine, approvedBy: "alice" })),
+      );
+      const approvals = (worktree: WorktreeId | null) =>
+        withRepo((repo) => repo.listWithApprovals(project, worktree)).then((listed) =>
+          listed.map((each) => [each.definition.spec.name, each.approval?.id ?? null]),
+        );
+      expect(await approvals(mine)).toEqual([
+        ["box", forMine.id],
+        ["mail", expect.any(String)],
+      ]);
+      expect(await approvals(theirs)).toEqual([
+        ["box", null],
+        ["mail", expect.any(String)],
+      ]);
+      expect(await approvals(null)).toEqual([
+        ["box", null],
+        ["mail", expect.any(String)],
+      ]);
+
+      // Declared again with another spec, the listed spec has no approval of its own.
+      await withRepo((repo) =>
+        repo.declare(project, { ...mailpit("project"), image: "axllent/mailpit:v1.28" }, "maria"),
+      );
+      expect(await approvals(null)).toEqual([
+        ["box", null],
+        ["mail", null],
+      ]);
+    });
+
     it("refuses a worktree approval of a project resource, or for another project's worktree", async () => {
       const project = await newProject();
       const elsewhere = await newWorktree(await newProject());
@@ -909,9 +948,120 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         }),
       );
     expect(await deleteProject()).toBe("refused");
-    await withRepo((repo) => repo.remove(project, "db"));
+    await withRepo((repo) => repo.removeIfCurrent(project, { id: db.id, digest: db.specDigest }));
     expect(await count("resource_selections", db.id)).toBe(0);
     expect(await count("resource_approvals", db.id)).toBe(0);
     expect(await deleteProject()).toBe("deleted");
+  });
+
+  describe("proposals beside the project's definitions", () => {
+    it("keeps two members' proposals of one name, apart from settings, across a restart", async () => {
+      const project = await newProject();
+      const maria = await withRepo((repo) => repo.propose(project, postgresDb(), "maria"));
+      const tom = await withRepo((repo) =>
+        repo.propose(project, postgresDb({ image: "postgres:18" }), "tom"),
+      );
+      expect(maria.id).not.toBe(tom.id);
+
+      // Each run opens its own pool, as a restarted Mend does.
+      const after = await withRepo((repo) => repo.proposals(project));
+      expect(after.map((proposal) => [proposal.proposedBy, proposal.spec.image])).toEqual([
+        ["maria", "postgres:17"],
+        ["tom", "postgres:18"],
+      ]);
+      expect(await withRepo((repo) => repo.listForProject(project))).toEqual([]);
+      expect(await withRepo((repo) => repo.byName(project, "db"))).toBeNull();
+    });
+
+    it("keeps one row when an author proposes the same spec again", async () => {
+      const project = await newProject();
+      const first = await withRepo((repo) => repo.propose(project, postgresDb(), "maria"));
+      const again = await withRepo((repo) => repo.propose(project, postgresDb(), "maria"));
+      expect(again.id).toBe(first.id);
+      expect(await withRepo((repo) => repo.proposals(project))).toHaveLength(1);
+    });
+
+    it("answers a repeated proposal with its row though a withdrawal commits while it is stored", async () => {
+      const project = await newProject();
+      const first = await withRepo((repo) => repo.propose(project, postgresDb(), "maria"));
+      // Holds every later insert's statement open after it met the author's row, until released.
+      await execute(`CREATE FUNCTION hold_proposal_insert() RETURNS trigger LANGUAGE plpgsql AS
+        $$ BEGIN PERFORM pg_advisory_xact_lock(4101); RETURN NULL; END $$`);
+      await execute(`CREATE TRIGGER hold_proposal_insert AFTER INSERT ON resource_proposals
+        FOR EACH STATEMENT EXECUTE FUNCTION hold_proposal_insert()`);
+      try {
+        const release = await hold("SELECT pg_advisory_xact_lock(4101)");
+        const proposing = failureOf((repo) => repo.propose(project, postgresDb(), "maria"));
+        await untilWaiting(1, proposing);
+        const withdrawing = withRepo((repo) => repo.withdrawProposal(project, first.id));
+        await untilWaiting(2, withdrawing);
+        await release();
+        expect(await proposing).toBe("accepted");
+        expect(await withdrawing).toBe(true);
+        expect(await withRepo((repo) => repo.proposals(project))).toEqual([]);
+      } finally {
+        await execute("DROP TRIGGER hold_proposal_insert ON resource_proposals");
+        await execute("DROP FUNCTION hold_proposal_insert()");
+      }
+    });
+
+    it("refuses a proposal the definition rules refuse, keyed by field", async () => {
+      const project = await newProject();
+      const refused = await failureOf((repo) =>
+        repo.propose(project, postgresDb({ ports: [] }), "maria"),
+      );
+      expect(refused).toMatchObject({
+        _tag: "ResourceDefinitionRefusedError",
+        refusals: [{ key: "ports" }],
+      });
+    });
+
+    it("withdraws a proposal once, in its own project only", async () => {
+      const project = await newProject();
+      const other = await newProject();
+      const proposal = await withRepo((repo) => repo.propose(project, postgresDb(), "maria"));
+      expect(await withRepo((repo) => repo.withdrawProposal(other, proposal.id))).toBe(false);
+      expect(await withRepo((repo) => repo.withdrawProposal(project, proposal.id))).toBe(true);
+      expect(await withRepo((repo) => repo.withdrawProposal(project, proposal.id))).toBe(false);
+    });
+
+    it("goes with its project", async () => {
+      const project = await newProject();
+      await withRepo((repo) => repo.propose(project, postgresDb(), "maria"));
+      await execute("DELETE FROM projects WHERE id = $1", [project]);
+      expect(await withRepo((repo) => repo.proposals(project))).toEqual([]);
+    });
+  });
+
+  describe("removing a definition as its remover read it", () => {
+    it("removes it while it holds the spec read, and refuses once it changed", async () => {
+      const project = await newProject();
+      const read = await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
+      const changed = await withRepo((repo) =>
+        repo.declare(project, postgresDb({ image: "postgres:18" }), "alice"),
+      );
+      expect(
+        await failureOf((repo) =>
+          repo.removeIfCurrent(project, { id: read.id, digest: read.specDigest }),
+        ),
+      ).toMatchObject({ _tag: "ResourceDefinitionStaleError", current: changed.specDigest });
+      expect(await withRepo((repo) => repo.byName(project, "db"))).not.toBeNull();
+
+      await withRepo((repo) =>
+        repo.removeIfCurrent(project, { id: changed.id, digest: changed.specDigest }),
+      );
+      expect(await withRepo((repo) => repo.byName(project, "db"))).toBeNull();
+    });
+
+    it("does not reach another project's definition", async () => {
+      const project = await newProject();
+      const other = await newProject();
+      const db = await withRepo((repo) => repo.declare(project, postgresDb(), "alice"));
+      expect(
+        await failureOf((repo) =>
+          repo.removeIfCurrent(other, { id: db.id, digest: db.specDigest }),
+        ),
+      ).toMatchObject({ _tag: "ResourceDefinitionNotFoundError" });
+    });
   });
 });

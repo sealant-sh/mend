@@ -50,6 +50,8 @@ type Rule =
   | "project-read"
   /** Owners and the project's creator. */
   | "project-manage"
+  /** Owners and the project's creator; others who can see it get 403 with whose act it is. */
+  | "project-manage-visible"
   /** Owners, or the creator of a private project. */
   | "project-remove"
   /** Owners only. */
@@ -501,6 +503,18 @@ const CASES: ReadonlyArray<AccessCase> = [
     port: 3000,
   })("projectRecipes.add"),
   project("project-manage", "DELETE", "/service-recipes/web")("projectRecipes.remove"),
+  project("project-read", "GET", "/resources?timeZone=UTC")("resources.list"),
+  project("project-read", "POST", "/resource-proposals?timeZone=UTC", {
+    kind: "preset",
+    name: "db",
+    preset: "postgres",
+    version: "17",
+    scope: "project",
+  })("resources.propose"),
+  project("project-read", "DELETE", "/resource-proposals/rprop_1")("resources.withdraw"),
+  project("project-manage-visible", "DELETE", "/resources/rdef_1", {
+    expectedDigest: "a".repeat(64),
+  })("resources.remove"),
 
   // ── Sessions ──
   project("project-read", "POST", "/sessions", { harness: "shell", label: null, base: null })(
@@ -866,6 +880,11 @@ const ADMITTED: Readonly<
   "projectRecipes.list": { status: 500, calls: ["recipes.listForProject"] },
   "projectRecipes.add": { status: 500, calls: ["recipes.create"] },
   "projectRecipes.remove": { status: 500, calls: ["recipes.remove"] },
+  "resources.list": { status: 500, calls: ["resources.listWithApprovals"] },
+  "resources.propose": { status: 500, calls: ["resources.propose"] },
+  // The proposal's author decides who may remove it, so it is read first.
+  "resources.withdraw": { status: 500, calls: ["resources.proposalById"] },
+  "resources.remove": { status: 500, calls: ["resources.removeIfCurrent"] },
   "sessions.create": { status: 500, calls: ["engine.provision"] },
   // Refresh-capture helper defects before detail reads.
   "sessions.detail": {
@@ -1002,6 +1021,16 @@ const MATRIX: Readonly<Record<Rule, ReadonlyArray<readonly [HarnessUser, Target,
     ["carol", "shared-a", "refused"],
     ["carol", "private-alice", "refused"],
     ["alice", "private-carol", "refused"],
+    ["alice", "shared-a", "admitted"],
+    ["carol", "private-carol", "admitted"],
+    ["bob", "shared-b", "admitted"],
+  ],
+  "project-manage-visible": [
+    ["bob", "shared-a", "refused"],
+    ["dave", "shared-a", "refused"],
+    ["carol", "private-alice", "refused"],
+    ["alice", "private-carol", "refused"],
+    ["carol", "shared-a", "forbidden"],
     ["alice", "shared-a", "admitted"],
     ["carol", "private-carol", "admitted"],
     ["bob", "shared-b", "admitted"],

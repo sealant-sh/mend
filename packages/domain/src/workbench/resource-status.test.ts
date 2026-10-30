@@ -350,3 +350,46 @@ describe("clock times in the status line", () => {
     expect(resourceStatusLine(ownCopy, { now })).toContain("@db");
   });
 });
+
+describe("a resource only declared", () => {
+  const declared = (
+    definition: ResourceStatusView["definition"],
+    source: Extract<ResourceStatusView, { kind: "declared" }>["source"],
+  ) => resourceStatusLine({ kind: "declared", definition, source }, at);
+
+  it("says who proposed it and that it waits", () => {
+    expect(declared(db, { kind: "proposal", by: "Maria", sameAsSettings: false })).toBe(
+      "@db · postgres 17 · project · proposed by Maria · waiting for approval",
+    );
+  });
+
+  it("says a file proposed it", () => {
+    expect(declared(mail, { kind: "file", sameAsSettings: false })).toBe(
+      "@mail · mailpit · worktree · proposed in mend.toml · waiting for approval",
+    );
+  });
+
+  it("says a proposal settings already hold is the same, not waiting", () => {
+    expect(declared(db, { kind: "proposal", by: "Maria", sameAsSettings: true })).toBe(
+      "@db · postgres 17 · project · proposed by Maria · same as settings",
+    );
+    expect(declared(mail, { kind: "file", sameAsSettings: true })).toBe(
+      "@mail · mailpit · worktree · proposed in mend.toml · same as settings",
+    );
+  });
+
+  it("says whether settings hold it approved, and that nothing started", () => {
+    expect(declared(cache, { kind: "settings", approval: null })).toBe(
+      "@cache · redis 8 · project · waiting for approval",
+    );
+    expect(declared(cache, { kind: "settings", approval: { by: "Maria", for: "project" } })).toBe(
+      "@cache · redis 8 · project · approved by Maria · not started",
+    );
+  });
+
+  it("keeps a worktree's approval apart from the project's", () => {
+    expect(declared(mail, { kind: "settings", approval: { by: "Tom", for: "worktree" } })).toBe(
+      "@mail · mailpit · worktree · approved by Tom for this worktree · not started",
+    );
+  });
+});

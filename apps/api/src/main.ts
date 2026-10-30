@@ -176,6 +176,8 @@ import {
   FollowUpLauncherLive,
   type MendMcp,
   MendMcpLive,
+  ResourcesChannelLive,
+  ResourcesLive,
   ProtocolHostLive,
   ServiceHostLive,
   sessionPagesLayer,
@@ -867,14 +869,21 @@ const MainLive = Layer.unwrap(
         : mode === "worker"
           ? WorkerLive
           : Layer.merge(ServerLive, WorkerLive);
-    return Layer.mergeAll(parts, SessionChannelNetworkLayer, MendMcpLayer).pipe(
-      // Session steering, landing (docs/adr/0007-landing.md) for the landing routes, and
-      // receiving a handoff (docs/specs/mend-handoff.md) for the handoff routes.
+    return Layer.mergeAll(
+      parts,
+      SessionChannelNetworkLayer,
+      MendMcpLayer,
+      ResourcesChannelLive.pipe(Layer.provide(SessionChannelRegistryLayer)),
+    ).pipe(
+      // Session steering, landing (docs/adr/0007-landing.md) for the landing routes, receiving a
+      // handoff (docs/specs/mend-handoff.md) for the handoff routes, and a project's resources
+      // (docs/adr/0019) for their routes and every session's channel.
       Layer.provide(
         Layer.mergeAll(
           SessionSteeringLive,
           landing,
           HandoffStartLive.pipe(Layer.provide(captureStore)),
+          ResourcesLive,
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.

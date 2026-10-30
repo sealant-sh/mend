@@ -72,6 +72,7 @@ import {
   DotfilesCloner,
   FollowUpDelivery,
   ForwardAdapter,
+  ResourcesLive,
   ServiceHost,
   SessionEngine,
   WorkspaceCaller,
@@ -277,6 +278,7 @@ export const createTenancyApi = async (
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
       readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
+      readonly users?: Layer.PartialEffectful<UsersRepo["Service"]>;
       readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
       readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
       readonly hotWorkspaces?: Layer.PartialEffectful<HotWorkspacesRepo["Service"]>;
@@ -406,7 +408,7 @@ export const createTenancyApi = async (
       recording(UserEvents, "userEvents", {}, calls),
       recording(UserGitAccessRepo, "gitAccess", {}, calls),
       recording(UserGitAuthorRepo, "gitAuthor", {}, calls),
-      recording(UsersRepo, "users", {}, calls),
+      recording(UsersRepo, "users", options.implement?.users ?? {}, calls),
       recording(JobRunner, "jobs", options.implement?.jobs ?? {}, calls),
       recording(SealantClient, "sealant", {}, calls),
       recording(ForwardAdapter, "forwards", {}, calls),
@@ -559,6 +561,7 @@ export const createTenancyApi = async (
     GithubIdentityLive,
     MemberRemovalLive,
     HandoffStartLive,
+    ResourcesLive,
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),

@@ -49,6 +49,33 @@ export type ResourceScope = typeof ResourceScope.Type;
 /** A volume's name: a label too. */
 const VolumeName = Schema.String.check(Schema.isPattern(RESOURCE_NAME));
 
+/**
+ * An image reference in the OCI distribution grammar: `[host[:port]/]path[:tag][@digest]`, such as
+ * `postgres:17` or `ghcr.io/acme/mail:v1@sha256:…`. Anything else, a control character among it,
+ * is not one.
+ */
+const IMAGE_REFERENCE = (() => {
+  const alphaNumeric = "[a-z0-9]+";
+  const pathComponent = `${alphaNumeric}(?:(?:[_.]|__|-+)${alphaNumeric})*`;
+  const domainComponent = "(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])";
+  const domain = `(?:${domainComponent}(?:\\.${domainComponent})*|\\[[a-fA-F0-9:]+\\])(?::[0-9]+)?`;
+  const tag = "[\\w][\\w.-]{0,127}";
+  const digest = "[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*:[0-9a-fA-F]{32,}";
+  return new RegExp(
+    `^(?:${domain}/)?${pathComponent}(?:/${pathComponent})*(?::${tag})?(?:@${digest})?$`,
+  );
+})();
+
+export const isImageReference = (value: string): boolean => IMAGE_REFERENCE.test(value);
+
+const ImageReference = Schema.String.check(
+  Schema.makeFilter((value: string) =>
+    isImageReference(value)
+      ? undefined
+      : "is not an image reference, such as postgres:17 or ghcr.io/acme/mail:v1",
+  ),
+);
+
 /** An IANA service name, as a Kubernetes port name must be; `_PORT_<NAME>` is an env name. */
 const PortName = Schema.String.check(
   Schema.isPattern(/^[a-z](-?[a-z0-9])*$/),
@@ -89,7 +116,11 @@ export const ResourceVolume = Schema.Struct({
 export type ResourceVolume = typeof ResourceVolume.Type;
 
 /** Decision G3's per-instance defaults; a manager may raise them. */
-export const RESOURCE_LIMIT_DEFAULTS = { cpu: 1, memoryMiB: 1024, diskGiB: 10 } as const;
+export const RESOURCE_LIMIT_DEFAULTS = {
+  cpu: 1,
+  memoryMiB: 1024,
+  diskGiB: 10,
+} as const;
 
 const Positive = Schema.Finite.check(Schema.isGreaterThan(0));
 const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0));
@@ -134,7 +165,7 @@ export const RESOURCE_EXPORT_NAME = /^[A-Z][A-Z0-9_]*$/;
 const definitionFields = {
   name: ResourceName,
   preset: Schema.NullOr(ResourcePreset),
-  image: Schema.String.check(Schema.isMinLength(1)),
+  image: ImageReference,
   /** Null keeps the image's entrypoint. */
   command: Schema.NullOr(Argv),
   ports: Schema.Array(ResourcePort),
@@ -224,7 +255,10 @@ export const pinImage = (image: string, digest: ImageDigest): string | null => {
 };
 
 /** Why a definition cannot be approved: the key it names (`ports.http`, `exports.URL`) and why. */
-export const ResourceRefusal = Schema.Struct({ key: Schema.String, message: Schema.String });
+export const ResourceRefusal = Schema.Struct({
+  key: Schema.String,
+  message: Schema.String,
+});
 export type ResourceRefusal = typeof ResourceRefusal.Type;
 
 const duplicates = (values: ReadonlyArray<string>): ReadonlyArray<string> => [
@@ -251,7 +285,10 @@ const parseTemplate = (template: string): TemplateParse => {
   for (let at = 0; at < template.length; at++) {
     if (template[at] === "{") {
       if (open !== null) {
-        return { ok: false, issue: `opens a { at ${at} inside the placeholder at ${open}` };
+        return {
+          ok: false,
+          issue: `opens a { at ${at} inside the placeholder at ${open}`,
+        };
       }
       open = at;
     } else if (template[at] === "}") {
@@ -272,7 +309,12 @@ const exportRefusals = (
 ): ReadonlyArray<ResourceRefusal> => {
   const key = `exports.${name}`;
   if (!RESOURCE_EXPORT_NAME.test(name)) {
-    return [{ key, message: "is not an export name (an upper-case letter, then A-Z, 0-9 or _)" }];
+    return [
+      {
+        key,
+        message: "is not an export name (an upper-case letter, then A-Z, 0-9 or _)",
+      },
+    ];
   }
   if (addressSuffixes(def).includes(name)) {
     return [{ key, message: "is set by Mend for every resource" }];
@@ -312,7 +354,12 @@ export const RESOURCE_PRESETS: {
   postgres: {
     images: ["postgres", "pgvector/pgvector", "postgis/postgis"],
     database: true,
-    exports: { URL: "secret", DATABASE: "plain", USERNAME: "plain", PASSWORD: "secret" },
+    exports: {
+      URL: "secret",
+      DATABASE: "plain",
+      USERNAME: "plain",
+      PASSWORD: "secret",
+    },
     conventional: {
       DATABASE_URL: "secret",
       PGHOST: "plain",
@@ -325,7 +372,12 @@ export const RESOURCE_PRESETS: {
   mysql: {
     images: ["mysql", "mariadb"],
     database: true,
-    exports: { URL: "secret", DATABASE: "plain", USERNAME: "plain", PASSWORD: "secret" },
+    exports: {
+      URL: "secret",
+      DATABASE: "plain",
+      USERNAME: "plain",
+      PASSWORD: "secret",
+    },
     conventional: {},
   },
   redis: {
@@ -334,6 +386,69 @@ export const RESOURCE_PRESETS: {
     exports: { URL: "secret" },
     conventional: { REDIS_URL: "secret" },
   },
+};
+
+/** The port and data directory a preset's own image uses, by its major version. */
+const PRESET_LAYOUT: {
+  readonly [P in ResourcePreset]: {
+    readonly port: number;
+    readonly data: (major: number) => string;
+  };
+} = {
+  postgres: {
+    port: 5432,
+    data: (major) => (major >= 18 ? "/var/lib/postgresql" : "/var/lib/postgresql/data"),
+  },
+  mysql: { port: 3306, data: () => "/var/lib/mysql" },
+  redis: { port: 6379, data: () => "/data" },
+};
+
+export const PRESET_VERSION_RULE =
+  "is not an image tag that starts with its major version, such as 17 or 16.4-bookworm";
+
+/**
+ * A preset's version: an image tag that leads with its major version, which picks the data layout
+ * and makes a major upgrade an operation (ADR 0019, "Versions"). `latest` names no major.
+ */
+export const PresetVersion = Schema.String.check(
+  Schema.makeFilter((value: string) =>
+    /^[0-9][\w.-]{0,127}$/.test(value) ? undefined : PRESET_VERSION_RULE,
+  ),
+).pipe(Schema.brand("PresetVersion"));
+export type PresetVersion = typeof PresetVersion.Type;
+
+/**
+ * The definition `--preset postgres --version 17` names: the preset's own image at that tag, its
+ * port, one data volume and its own ready check. Built in one place so every client proposes the
+ * same spec.
+ */
+export const presetDefinition = (input: {
+  readonly name: ResourceName;
+  readonly preset: ResourcePreset;
+  readonly version: PresetVersion;
+  readonly scope: ResourceScope;
+}): ResourceDefinitionInput => {
+  const layout = PRESET_LAYOUT[input.preset];
+  const fields = {
+    name: input.name,
+    preset: input.preset,
+    image: `${RESOURCE_PRESETS[input.preset].images[0] ?? input.preset}:${input.version}`,
+    command: null,
+    ports: [{ name: input.preset, port: layout.port, protocol: "tcp" as const }],
+    env: {},
+    volumes: [
+      {
+        name: "data",
+        mountPath: layout.data(Number.parseInt(input.version, 10)),
+      },
+    ],
+    limits: RESOURCE_LIMIT_DEFAULTS,
+    ready: { kind: "preset" as const },
+    exports: {},
+  };
+  return input.scope === "project"
+    ? { ...fields, scope: input.scope }
+    : { ...fields, scope: input.scope };
 };
 
 /** Whether `own` is a database on the project instance rather than an instance of its own. */
@@ -354,7 +469,10 @@ export const imageReference = (image: string): { repository: string; tag: string
     rest.length > 0 && (first.includes(".") || first.includes(":") || first === "localhost");
   const path = isHost ? rest : segments;
   const repository = path.length === 2 && path[0] === "library" ? path.slice(1) : path;
-  return { repository: repository.join("/"), tag: tagged ? named.slice(tagAt + 1) : "" };
+  return {
+    repository: repository.join("/"),
+    tag: tagged ? named.slice(tagAt + 1) : "",
+  };
 };
 
 const envRefusals = (name: string, value: ResourceEnvValue): ReadonlyArray<ResourceRefusal> => {
@@ -376,10 +494,20 @@ const envRefusals = (name: string, value: ResourceEnvValue): ReadonlyArray<Resou
 const readyRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> => {
   const hasTcp = def.ports.some((port) => port.protocol === "tcp");
   if (def.ready.kind === "tcp" && def.ports.length > 0 && !hasTcp) {
-    return [{ key: "ready", message: "is a TCP accept, and this resource has no TCP port" }];
+    return [
+      {
+        key: "ready",
+        message: "is a TCP accept, and this resource has no TCP port",
+      },
+    ];
   }
   if (def.ready.kind === "none" && hasTcp) {
-    return [{ key: "ready", message: "is none, and this resource has a TCP port to check" }];
+    return [
+      {
+        key: "ready",
+        message: "is none, and this resource has a TCP port to check",
+      },
+    ];
   }
   return [];
 };
@@ -387,11 +515,16 @@ const readyRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefu
 const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> => {
   if (def.preset === null) {
     return def.ready.kind === "preset"
-      ? [{ key: "ready", message: "is a preset's own check, and this resource has no preset" }]
+      ? [
+          {
+            key: "ready",
+            message: "is a preset's own check, and this resource has no preset",
+          },
+        ]
       : [];
   }
   const preset = RESOURCE_PRESETS[def.preset];
-  const { repository } = imageReference(def.image);
+  const { repository, tag } = imageReference(def.image);
   return [
     ...(preset.images.includes(repository)
       ? []
@@ -401,9 +534,23 @@ const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRef
             message: `is ${repository}, and the ${def.preset} preset runs ${preset.images.join(", ")}`,
           },
         ]),
+    // A preset runs the version its image names (ADR 0019, "Versions"); `latest` would move.
+    ...(tag !== "" || def.image.includes("@")
+      ? []
+      : [
+          {
+            key: "image",
+            message: `has no tag or digest, and the ${def.preset} preset runs the version its image names, such as "${def.image}:<tag>"`,
+          },
+        ]),
     ...(def.ready.kind === "preset"
       ? []
-      : [{ key: "ready", message: `is fixed by the ${def.preset} preset to its own check` }]),
+      : [
+          {
+            key: "ready",
+            message: `is fixed by the ${def.preset} preset to its own check`,
+          },
+        ]),
     ...(Object.keys(def.exports).length > 0
       ? [{ key: "exports", message: `are fixed by the ${def.preset} preset` }]
       : []),
@@ -415,8 +562,14 @@ export const resourceEnvPrefix = (name: ResourceName): string => `MEND_RESOURCE_
 
 /** How a worktree reaches a resource it uses. A project resource on `off` is not bound. */
 export type ResourceBinding =
-  | { readonly definition: ProjectResourceDefinition; readonly mode: "shared" | "own" }
-  | { readonly definition: WorktreeResourceDefinition; readonly mode: "worktree" };
+  | {
+      readonly definition: ProjectResourceDefinition;
+      readonly mode: "shared" | "own";
+    }
+  | {
+      readonly definition: WorktreeResourceDefinition;
+      readonly mode: "worktree";
+    };
 
 /** Whether `def` is the one of its preset among `bound`; an image Mend does not know is no engine. */
 export const onlyOfItsEngine = (
@@ -502,7 +655,10 @@ export interface ResourceEnvCollision {
 const widestBinding = (def: ResourceDefinitionInput): ResourceBinding =>
   def.scope === "worktree"
     ? { definition: def, mode: "worktree" }
-    : { definition: def, mode: choicesFor(def).includes("own") ? "own" : "shared" };
+    : {
+        definition: def,
+        mode: choicesFor(def).includes("own") ? "own" : "shared",
+      };
 
 /** Env names two resources in use together would both set (`db`'s `MAIN_URL`, `db-main`'s `URL`). */
 export const envNameCollisions = (
@@ -527,7 +683,10 @@ const collisionKey = (def: ResourceDefinitionInput, env: string): string => {
 /** Each of `defs` in an env name collision, with its refusal keyed by the export that sets the name. */
 export const envCollisionRefusals = (
   defs: ReadonlyArray<ResourceDefinitionInput>,
-): ReadonlyArray<{ readonly resource: ResourceName; readonly refusal: ResourceRefusal }> =>
+): ReadonlyArray<{
+  readonly resource: ResourceName;
+  readonly refusal: ResourceRefusal;
+}> =>
   envNameCollisions(defs).flatMap((collision) =>
     defs
       .filter((def) => collision.resources.includes(def.name))
@@ -568,13 +727,19 @@ const PER_WORKTREE: ResourceScopePolicy = { kind: "own-instance" };
 
 /** ADR 0019, "Two scopes, and what each worktree gets": the one policy (S1, S10, G11, G12). */
 export const RESOURCE_SCOPE_POLICY: {
-  readonly [S in ResourceScope]: { readonly [K in ResourceKind]: ResourceScopePolicy };
+  readonly [S in ResourceScope]: {
+    readonly [K in ResourceKind]: ResourceScopePolicy;
+  };
 } = {
   project: {
     postgres: DATABASE_POLICY,
     mysql: DATABASE_POLICY,
     redis: { kind: "choose", choices: ["shared", "off"], default: "shared" },
-    other: { kind: "choose", choices: ["shared", "own", "off"], default: "shared" },
+    other: {
+      kind: "choose",
+      choices: ["shared", "own", "off"],
+      default: "shared",
+    },
   },
   worktree: {
     postgres: PER_WORKTREE,
@@ -613,16 +778,29 @@ export type SelectionRevision = typeof SelectionRevision.Type;
 
 /** What `own` names: a database on the project instance for a database preset, else an instance. */
 export const OwnTarget = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("database"), database: ResourceDatabaseId }),
-  Schema.Struct({ kind: Schema.Literal("instance"), instance: ResourceInstanceId }),
+  Schema.Struct({
+    kind: Schema.Literal("database"),
+    database: ResourceDatabaseId,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("instance"),
+    instance: ResourceInstanceId,
+  }),
 ]);
 export type OwnTarget = typeof OwnTarget.Type;
 
 /** A project resource's choice for one worktree. A worktree resource has no selection. */
 export const WorktreeSelection = Schema.Union([
   Schema.Struct({ mode: Schema.Literal("off"), revision: SelectionRevision }),
-  Schema.Struct({ mode: Schema.Literal("shared"), revision: SelectionRevision }),
-  Schema.Struct({ mode: Schema.Literal("own"), revision: SelectionRevision, target: OwnTarget }),
+  Schema.Struct({
+    mode: Schema.Literal("shared"),
+    revision: SelectionRevision,
+  }),
+  Schema.Struct({
+    mode: Schema.Literal("own"),
+    revision: SelectionRevision,
+    target: OwnTarget,
+  }),
 ]);
 export type WorktreeSelection = typeof WorktreeSelection.Type;
 
@@ -656,6 +834,32 @@ export const selectionRefusal = (
   };
 };
 
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Every free-text field a definition stores, keyed: a control character in one would reach a
+ * reader's terminal before anyone approved it.
+ */
+const controlRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> =>
+  [
+    ...(def.command === null ? [] : [["command", def.command] as const]),
+    ...(def.ready.kind === "command" ? [["ready.command", def.ready.argv] as const] : []),
+    // A secret's name is checked as one, by `envRefusals`.
+    ...Object.entries(def.env).flatMap(([name, value]) =>
+      typeof value === "string" ? [[`env.${name}`, [value]] as const] : [],
+    ),
+    ...def.volumes.map((volume) => [`volumes.${volume.name}`, [volume.mountPath]] as const),
+    ...Object.entries(def.exports).map(
+      ([name, template]) => [`exports.${name}`, [template]] as const,
+    ),
+  ]
+    .filter(([, texts]) => texts.some((text) => CONTROL.test(text)))
+    .map(([key]) => ({
+      key,
+      message: "has a control character, such as an escape or a newline",
+    }));
+
 /** Every rule across fields of a definition, each refusal naming its key. Empty when it may run. */
 export const resourceDefinitionRefusals = (
   def: ResourceDefinitionInput,
@@ -666,7 +870,12 @@ export const resourceDefinitionRefusals = (
     ...(nameIssue === null ? [] : [{ key: "name", message: nameIssue }]),
     ...(policy.kind === "refused" ? [{ key: "scope", message: policy.message }] : []),
     ...(def.ports.length === 0
-      ? [{ key: "ports", message: "names no port, and a resource is reached on one" }]
+      ? [
+          {
+            key: "ports",
+            message: "names no port, and a resource is reached on one",
+          },
+        ]
       : []),
     ...duplicates(def.ports.map((port) => port.name)).map((name) => ({
       key: `ports.${name}`,
@@ -686,6 +895,7 @@ export const resourceDefinitionRefusals = (
     ...Object.entries(def.exports).flatMap(([name, template]) =>
       exportRefusals(def, name, template),
     ),
+    ...controlRefusals(def),
   ];
 };
 
@@ -702,7 +912,10 @@ export const RESOURCE_PROPOSALS_HEADING =
  * `resource.db.ports.pg · must be a port in 1..65535`. Empty when there is none.
  */
 export const resourceProposalNotices = (declared: {
-  readonly refused: ReadonlyArray<{ readonly key: string; readonly message: string }>;
+  readonly refused: ReadonlyArray<{
+    readonly key: string;
+    readonly message: string;
+  }>;
   readonly ignored: ReadonlyArray<{ readonly key: string }>;
 }): ReadonlyArray<string> => [
   ...declared.refused.flatMap((refusal) =>

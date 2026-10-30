@@ -27,6 +27,7 @@ import {
   projectLinksGroup,
 } from "./projects.ts";
 import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
+import { resourcesGroup } from "./resources.ts";
 import { secretFilesGroup } from "./secret-files.ts";
 import { sessionsGroup } from "./sessions.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
@@ -72,6 +73,7 @@ export const MendApi = HttpApi.make("mend")
   .add(projectMountsGroup)
   .add(projectLinksGroup)
   .add(projectRecipesGroup)
+  .add(resourcesGroup)
   .add(referencesGroup)
   .add(sessionsGroup)
   .add(pagesGroup)

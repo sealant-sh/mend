@@ -5,8 +5,21 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { SessionChannelTokensRepo, SessionChannelTokensRepoMemory } from "@mend/db";
-import { ProjectId, SessionId, SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
-import { SessionRepository } from "@mend/domain/workbench";
+import {
+  OrganizationId,
+  ProjectId,
+  SessionId,
+  SessionRepositoryId,
+  Sha,
+  WorktreeId,
+} from "@mend/domain";
+import {
+  type ProjectTenancy,
+  resourceActRefusal,
+  type ResourcesStatus,
+  SessionRepository,
+  WORKSPACE_RESOURCE_REFUSAL,
+} from "@mend/domain/workbench";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Effect, Layer, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -37,6 +50,11 @@ import type { WorkspaceLandOutcome } from "../src/workspace-git-hooks.ts";
 const storeRoot = path.join(os.tmpdir(), `mend-channel-test-${process.pid}`);
 const SESSION = SessionId.make("sess-channel-1");
 const OTHER = SessionId.make("sess-channel-2");
+const PROJECT_TENANCY: ProjectTenancy = {
+  organizationId: OrganizationId.make("org-1"),
+  visibility: "shared",
+  createdByUserId: "maria",
+};
 
 const api = (seen: unknown[]): SessionSocketApi => ({
   recipes: () => Effect.succeed([{ name: "web", command: "pnpm dev", port: 3000 }]),
@@ -107,6 +125,7 @@ const api = (seen: unknown[]): SessionSocketApi => ({
   land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
   agentHook: () => Effect.succeed("ignored"),
   mcpCaller: () => Effect.die("not in this test"),
+  resourceSession: () => Effect.succeed(SESSION),
   listRepositories: () => Effect.succeed([]),
   addableProjects: () => Effect.succeed([]),
   addRepository: () => Effect.die("not in this test"),
@@ -885,6 +904,85 @@ describe("SessionChannelNetworkHost", () => {
           expect(again.code).toBe(1);
           expect(again.stderr).toContain("no screen of this session is waiting");
           expect(held.of(SESSION)).toBe(passwords);
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("mend resource list reads the session's status; every change is asked of the server and refused", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const registry = yield* SessionChannelRegistry;
+          const address = network.address ?? "";
+          const asked: unknown[] = [];
+          registry.serveResources((sessionId, act, clock) =>
+            Effect.gen(function* () {
+              asked.push({ sessionId, act: act.kind, timeZone: clock.timeZone });
+              const refusal = resourceActRefusal(PROJECT_TENANCY, { kind: "workspace" }, act);
+              if (refusal !== null) return yield* Effect.fail({ message: refusal });
+              return {
+                statusLines: [
+                  "@mail · mailpit · project · proposed by \u001b[2JTom · waiting for approval",
+                ],
+                file: {
+                  kind: "read",
+                  observed: "observed on the worktree",
+                  statusLines: [],
+                  notices: ["resource.mail.device · is ignored: this Mend does not read it"],
+                },
+              } satisfies ResourcesStatus;
+            }),
+          );
+          const dir = yield* sockets.start(SESSION, api([]));
+          const token = yield* tokens.issue(SESSION, SESSION);
+          const env = {
+            MEND_SESSION_ENDPOINT: `http://${address}`,
+            MEND_SESSION_ID: SESSION,
+            MEND_SESSION_TOKEN: token,
+            TZ: "Europe/Athens",
+          };
+          const helper = (args: string[]) =>
+            Effect.promise(() => runScript(path.join(dir, "bin", "mend"), args, env));
+
+          expect(yield* helper(["resource", "list"])).toEqual({
+            code: 0,
+            stdout:
+              "@mail · mailpit · project · proposed by \\x1b[2JTom · waiting for approval\n" +
+              "mend.toml · observed on the worktree\n" +
+              "  resource.mail.device · is ignored: this Mend does not read it\n",
+            stderr: "",
+          });
+          expect(yield* helper(["resource", "add", "db", "--preset", "postgres"])).toEqual({
+            code: 1,
+            stdout: "",
+            stderr: `mend: ${WORKSPACE_RESOURCE_REFUSAL}\n`,
+          });
+          expect((yield* helper(["resource", "remove", "db"])).stderr).toBe(
+            `mend: ${WORKSPACE_RESOURCE_REFUSAL}\n`,
+          );
+          const headers = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
+          expect(
+            yield* Effect.promise(() => call(address, "PUT", "/resources/db", headers, {})),
+          ).toMatchObject({ status: 404 });
+          expect(asked).toEqual([
+            { sessionId: SESSION, act: "read", timeZone: "Europe/Athens" },
+            { sessionId: SESSION, act: "propose", timeZone: "Europe/Athens" },
+            { sessionId: SESSION, act: "remove-definition", timeZone: "Europe/Athens" },
+          ]);
+
+          registry.serveResources(() => Effect.die(new Error("the database is down")));
+          expect(yield* Effect.promise(() => call(address, "GET", "/resources", headers))).toEqual({
+            status: 503,
+            json: { message: "resources could not be read now" },
+          });
         }).pipe(
           Effect.provide(
             layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),

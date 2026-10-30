@@ -1,6 +1,5 @@
 import {
   envCollisionRefusals,
-  imageReference,
   isResourceProposalKey,
   ProjectResourceDefinition,
   recipeRefusalLine,
@@ -312,17 +311,6 @@ const READS: Readonly<Record<string, ReadonlyArray<Field>>> = {
 /** Stands in for a refused name or image, which `READS` then keeps out of every report. */
 const STAND_IN = "refused";
 
-/** A preset runs the version its image names (ADR 0019, "Versions"); `latest` would move under it. */
-const untaggedPreset = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> =>
-  def.preset === null || def.image.includes("@") || imageReference(def.image).tag !== ""
-    ? []
-    : [
-        {
-          key: "image",
-          message: `has no tag or digest, and the ${def.preset} preset runs the version its image names, such as "${def.image}:<tag>"`,
-        },
-      ];
-
 /** Relative keys (`ports.amqp`, or "" for the table itself); the caller prefixes them. */
 const readResource = (
   name: string,
@@ -379,10 +367,7 @@ const readResource = (
     context.refuse("", "is not a resource definition Mend can read");
     return null;
   }
-  const reported = [
-    ...resourceDefinitionRefusals(decoded.value),
-    ...untaggedPreset(decoded.value),
-  ].filter((refusal) => {
+  const reported = resourceDefinitionRefusals(decoded.value).filter((refusal) => {
     const reads = READS[refusal.key.split(".")[0] ?? refusal.key];
     return reads === undefined
       ? refusedFields.size === 0

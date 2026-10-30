@@ -3966,6 +3966,26 @@ const sessionMessagesMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX session_messages_session_idx ON session_messages(session_id)`;
 });
 
+/**
+ * 0161 (docs/adr/0019): resource definitions members propose in settings, apart from the ones the
+ * project declares. A proposal's spec never changes, and it goes with its project.
+ */
+const resourceProposalsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE resource_proposals (
+    id text PRIMARY KEY,
+    project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name text NOT NULL,
+    spec jsonb NOT NULL,
+    spec_digest text NOT NULL CHECK (spec_digest ~ '^[0-9a-f]{64}$'),
+    proposed_by text NOT NULL,
+    proposed_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT resource_proposals_author_spec_key UNIQUE (project_id, proposed_by, spec_digest),
+    CONSTRAINT resource_proposals_spec_name CHECK (name = spec->>'name')
+  )`;
+  yield* sql`CREATE INDEX resource_proposals_project_name_idx ON resource_proposals (project_id, name)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4117,4 +4137,5 @@ export const migrations = {
   "0155_setup_runs": setupRunsMigration,
   "0157_recipe_approvals": recipeApprovalsMigration,
   "0159_session_messages": sessionMessagesMigration,
+  "0161_resource_proposals": resourceProposalsMigration,
 };

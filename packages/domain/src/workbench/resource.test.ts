@@ -13,6 +13,8 @@ import {
   imageReference,
   onlyOfItsEngine,
   pinImage,
+  presetDefinition,
+  PresetVersion,
   type ResourceBinding,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
@@ -274,7 +276,7 @@ describe("rules across a definition's fields", () => {
     [postgres, "docker.io/library/postgres:17"],
     [postgres, "mirror.example:5000/postgres:17"],
     [postgres, "pgvector/pgvector:pg17"],
-    [postgres, "postgis/postgis:17-3.5@sha256:abc"],
+    [postgres, `postgis/postgis:17-3.5@sha256:${"a".repeat(64)}`],
     [mysql, "mysql:8.4"],
     [mysql, "mariadb:11.4"],
     [redis, "redis:8"],
@@ -681,5 +683,93 @@ describe("a definition's digest", () => {
     expect(resourceSpecDigest(define({ ports: two.toReversed() }))).not.toBe(
       resourceSpecDigest(define({ ports: two })),
     );
+  });
+});
+
+describe("a preset's definition", () => {
+  it("runs the preset's own image at the version named, with its port, data and ready check", () => {
+    const db = presetDefinition({
+      name: ResourceName.make("db"),
+      preset: "postgres",
+      version: PresetVersion.make("17"),
+      scope: "project",
+    });
+    expect(db).toMatchObject({
+      image: "postgres:17",
+      ports: [{ name: "postgres", port: 5432, protocol: "tcp" }],
+      volumes: [{ name: "data", mountPath: "/var/lib/postgresql/data" }],
+      ready: { kind: "preset" },
+    });
+    expect(resourceDefinitionRefusals(db)).toEqual([]);
+  });
+
+  it("keeps Postgres 18's data where its image does", () => {
+    const db = presetDefinition({
+      name: ResourceName.make("db"),
+      preset: "postgres",
+      version: PresetVersion.make("18"),
+      scope: "worktree",
+    });
+    expect(db.volumes).toEqual([{ name: "data", mountPath: "/var/lib/postgresql" }]);
+    expect(db.scope).toBe("worktree");
+  });
+});
+
+describe("a definition's free text and image", () => {
+  it.each([
+    ["an escape in the repository", "mail\u001b[2J\u001b[H:1"],
+    ["a space in the tag", "postgres:17 x"],
+    ["an upper-case repository", "Postgres:17"],
+    ["an empty tag", "postgres:"],
+  ])("refuses %s as no image reference", (_, image) => {
+    expect(() => define({ image })).toThrow(/is not an image reference/);
+  });
+
+  it.each([
+    "postgres:17",
+    "mirror.example:5000/library/postgres:17",
+    "[::1]:5000/mail:v1",
+    `ghcr.io/acme/mail@sha256:${"a".repeat(64)}`,
+  ])("reads %s as an image reference", (image) => {
+    expect(define({ image }).image).toBe(image);
+  });
+
+  it("refuses a control character in every free-text field, keyed", () => {
+    const def = define({
+      command: ["rabbitmq-server", "\u001b]0;owned\u0007"],
+      env: { MOTD: "hi\nthere", PASS: { secret: "RABBIT_PASS" } },
+      volumes: [{ name: "data", mountPath: "/var/lib/\u001b[2Jrabbit" }],
+      exports: { URL: "amqp://{host}\r" },
+      ready: { kind: "command", argv: ["ping\u009b"] },
+    });
+    expect(
+      resourceDefinitionRefusals(def).filter((refusal) => refusal.message.includes("control")),
+    ).toEqual(
+      ["command", "ready.command", "env.MOTD", "volumes.data", "exports.URL"].map((key) => ({
+        key,
+        message: "has a control character, such as an escape or a newline",
+      })),
+    );
+  });
+});
+
+describe("a preset's version", () => {
+  it("refuses a preset image with no tag or digest, wherever it was declared", () => {
+    expect(resourceDefinitionRefusals(postgres({ image: "postgres" }))).toEqual([
+      {
+        key: "image",
+        message:
+          'has no tag or digest, and the postgres preset runs the version its image names, such as "postgres:<tag>"',
+      },
+    ]);
+    expect(resourceDefinitionRefusals(define({ image: "axllent/mailpit" }))).toEqual([]);
+  });
+
+  it.each(["latest", "alpine", "pg17", "17 x", ""])("refuses %j, which names no major", (raw) => {
+    expect(Schema.is(PresetVersion)(raw)).toBe(false);
+  });
+
+  it.each(["17", "16.4-bookworm", "8.0"])("takes %j", (raw) => {
+    expect(Schema.is(PresetVersion)(raw)).toBe(true);
   });
 });

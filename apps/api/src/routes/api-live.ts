@@ -66,6 +66,7 @@ import { OperatorGroupLive } from "./operator.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
 import { PageViewGroupLive, PagesGroupLive } from "./pages.ts";
 import { PiProfileGroupLive } from "./pi-profile.ts";
+import { ResourcesGroupLive } from "./resources.ts";
 import { SecretFilesGroupLive } from "./secret-files.ts";
 import { SkillsGroupLive } from "./skills.ts";
 import { SlackGroupLive } from "./slack.ts";
@@ -681,7 +682,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(ProjectEnvironmentGroupLive),
   Layer.provide(Layer.mergeAll(ProjectSecretsGroupLive, ProjectClusterBindingsGroupLive)),
   Layer.provide(Layer.mergeAll(ProjectMountsGroupLive, ProjectLinksGroupLive)),
-  Layer.provide(ProjectRecipesGroupLive),
+  Layer.provide(Layer.mergeAll(ProjectRecipesGroupLive, ResourcesGroupLive)),
   Layer.provide(ReferencesGroupLive),
   Layer.provide(Layer.mergeAll(SessionsGroupLive, PagesGroupLive, PageViewGroupLive)),
   Layer.provide(WorktreesGroupLive),

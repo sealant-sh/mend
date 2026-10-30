@@ -3426,6 +3426,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         land: () => owned(sessionId)(api.land()),
         agentHook: (report) => owned(sessionId)(api.agentHook(report)),
         mcpCaller: api.mcpCaller,
+        resourceSession: api.resourceSession,
         listRepositories: () => owned(sessionId)(api.listRepositories()),
         addableProjects: () => owned(sessionId)(api.addableProjects()),
         addRepository: (input) => owned(sessionId)(api.addRepository(input)),
@@ -24528,6 +24529,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ...(actor === null
           ? {}
           : { screenSecret: () => Effect.sync(() => screenPasswords.fetch(sessionId, actor)) }),
+        resourceSession: () => Effect.succeed(sessionId),
         mcpCaller: (named) =>
           Effect.all({
             accountId:
