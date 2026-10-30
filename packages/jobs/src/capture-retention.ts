@@ -162,22 +162,24 @@ export const CaptureRetentionLive: Layer.Layer<
         report.chains += 1;
         guards.set(chain.worktreeId, chain.guard);
         const rows = yield* repo.listChain(chain.worktreeId);
-        const drop = thinningPlan(rows, chain.headCapture, now);
+        const drop = chain.retained ? [] : thinningPlan(rows, chain.headCapture, now);
+        const dropped = new Set<string>();
         if (drop.length > 0) {
           const removed = yield* repo.deleteCaptures(
             chain.worktreeId,
             drop.map((row) => row.id),
           );
-          report.capturesThinned += removed;
-          for (const row of drop) yield* remove(row.manifestKey);
+          report.capturesThinned += removed.length;
+          for (const id of removed) dropped.add(id);
+          for (const row of drop) if (dropped.has(row.id)) yield* remove(row.manifestKey);
         }
-        const dropped = new Set(drop.map((row) => row.id));
         for (const row of rows) {
           if (dropped.has(row.id)) continue;
           live.add(row.manifestKey);
           for (const key of keysOfSections(row.sections)) live.add(key);
           for (const prefix of treePrefixesOfSections(row.sections)) liveTreePrefixes.add(prefix);
         }
+        if (chain.retained) continue;
         headsByWorktree.set(
           chain.worktreeId,
           rows.find((row) => row.id === chain.headCapture) ?? null,

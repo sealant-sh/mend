@@ -630,14 +630,14 @@ export const makeMemoryCaptureStore = (
     deleteCaptures: (worktreeId, captureIds) =>
       Effect.sync(() => {
         const chain = chains.get(worktreeId);
-        let removed = 0;
+        const removed: Array<string> = [];
         for (const id of captureIds) {
           const row = captures.get(id);
           if (row === undefined || row.worktreeId !== worktreeId) continue;
           if (chain?.headCapture === id) continue;
           captures.delete(id);
           summaries.delete(id);
-          removed += 1;
+          removed.push(id);
         }
         return removed;
       }),
