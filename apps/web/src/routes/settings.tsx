@@ -5,6 +5,7 @@ import { useState } from "react";
 import { ConnectedAccountsPanel } from "#/components/connected-accounts";
 import { GitAccessPanel } from "#/components/git-access-panel";
 import { GitAuthorPanel } from "#/components/git-author-panel";
+import { MessageSettingsPanel } from "#/components/message-settings";
 import {
   InstanceDefaults,
   invalidateDefaults,
@@ -61,6 +62,7 @@ export const Route = createFileRoute("/settings")({
       queryClient.ensureQueryData(trpc.git.author.queryOptions()),
       queryClient.ensureQueryData(trpc.platform.sealantIdentity.queryOptions()),
       queryClient.ensureQueryData(trpc.platform.agentLogins.queryOptions()),
+      queryClient.ensureQueryData(trpc.platform.messageSettings.queryOptions()),
       queryClient.ensureQueryData(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })),
       // Who is looking decides which defaults render; an account in no organization reads none.
       queryClient.prefetchQuery(
@@ -102,6 +104,7 @@ function SettingsPage() {
         <GitAccessSettingsPanel />
         <GitAuthorPanel />
         <ConnectedAccountsPanel />
+        <MessageSettingsPanel />
         <DevicesPanel />
         <WorkspaceSshPanel />
         <OrganizationSettings />

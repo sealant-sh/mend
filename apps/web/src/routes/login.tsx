@@ -1,9 +1,10 @@
 import { Button } from "@mend/ui/components/ui/button";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { Field, PasswordField } from "#/components/auth-fields";
+import { noteSignedIn } from "#/components/session-message-input";
 import { SetupFrame } from "#/components/setup-frame";
 import { authClient } from "#/lib/auth-client";
 import {
@@ -33,6 +34,7 @@ export const Route = createFileRoute("/login")({
  */
 function LoginPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const search = Route.useSearch();
   const next = continuationOf(window.location);
   const trpc = useTRPC();
@@ -75,6 +77,7 @@ function LoginPage() {
       setError(result.error.message ?? "That did not work — check the details and try again.");
       return;
     }
+    noteSignedIn(queryClient);
     if (mode === "sign-up") {
       // Step two: how this account reaches its repositories. Signed in already —
       // better-auth opens the session on sign-up.

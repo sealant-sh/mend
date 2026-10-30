@@ -28,11 +28,20 @@ export const viewerOf = (view: OrganizationViewDto | undefined): Viewer | null =
  * knows, instead of drawing the not-the-owner view for a moment.
  */
 export const useViewerState = (): Viewer | null | undefined => {
-  const trpc = useTRPC();
-  const current = useQuery(
-    trpc.organization.current.queryOptions(undefined, { retry: false, staleTime: 60_000 }),
-  );
+  const current = useSignedInQuery();
   return current.isPending ? undefined : viewerOf(current.data);
+};
+
+/** The read of who is signed in behind `useViewerState`, read again whenever the tab is used. */
+export const useSignedInQuery = () => {
+  const trpc = useTRPC();
+  return useQuery(
+    trpc.organization.current.queryOptions(undefined, {
+      retry: false,
+      staleTime: 60_000,
+      refetchOnWindowFocus: "always",
+    }),
+  );
 };
 
 export const useViewer = (): Viewer | null => useViewerState() ?? null;

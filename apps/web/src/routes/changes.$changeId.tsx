@@ -29,6 +29,7 @@ import {
   type SessionChangeDto,
 } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
+import { uuidV4 } from "#/lib/uuid";
 import { useOwnerName } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
@@ -48,7 +49,7 @@ const reviewOpenKey = (changeId: string): string => {
   const storageKey = `mend.review.${changeId}.open-key`;
   const current = sessionStorage.getItem(storageKey);
   if (current !== null) return current;
-  const created = crypto.randomUUID();
+  const created = uuidV4();
   sessionStorage.setItem(storageKey, created);
   return created;
 };
@@ -958,7 +959,7 @@ function SendReviewDialog({
   );
   const [instruction, setInstruction] = useState(() => assembleInstruction(change, comments));
   const [idempotencyKey, setIdempotencyKey] = useState(
-    () => `web-follow-up:${change.id}:${crypto.randomUUID()}`,
+    () => `web-follow-up:${change.id}:${uuidV4()}`,
   );
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<
@@ -967,7 +968,7 @@ function SendReviewDialog({
   const [error, setError] = useState<string | null>(null);
 
   const resetDeliveryKey = () => {
-    setIdempotencyKey(`web-follow-up:${change.id}:${crypto.randomUUID()}`);
+    setIdempotencyKey(`web-follow-up:${change.id}:${uuidV4()}`);
     setResult(null);
     setError(null);
   };

@@ -1,11 +1,12 @@
 import { INVITATION_HEADER } from "@mend/network";
 import { Button } from "@mend/ui/components/ui/button";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { Field, PasswordField } from "#/components/auth-fields";
 import { formatDay } from "#/components/pairing-qr";
+import { forgetSignedInPerson, noteSignedIn } from "#/components/session-message-input";
 import { SetupFrame } from "#/components/setup-frame";
 import { authClient } from "#/lib/auth-client";
 import { useFragmentSecret } from "#/lib/handed-links";
@@ -34,6 +35,7 @@ function NotAnInvitation() {
 
 function Invitation({ token }: { readonly token: string }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const trpc = useTRPC();
   const session = authClient.useSession();
   const signedIn = session.data !== null && session.data !== undefined;
@@ -89,7 +91,12 @@ function Invitation({ token }: { readonly token: string }) {
             variant="outline"
             size="lg"
             className="mt-4 w-full"
-            onClick={() => void authClient.signOut().then(() => window.location.reload())}
+            onClick={() =>
+              void authClient
+                .signOut()
+                .then(() => forgetSignedInPerson(queryClient))
+                .then(() => window.location.reload())
+            }
           >
             Sign out
           </Button>
@@ -101,6 +108,7 @@ function Invitation({ token }: { readonly token: string }) {
 
 function JoinForm({ token }: { readonly token: string }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -128,6 +136,7 @@ function JoinForm({ token }: { readonly token: string }) {
       setError(result.error.message ?? "That did not work. Check the details and try again.");
       return;
     }
+    noteSignedIn(queryClient);
     void navigate({ to: "/welcome" });
   };
 

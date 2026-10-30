@@ -8,11 +8,14 @@ import {
   PastedImageUpload,
   ReplaceWorkspaceRequest,
   ResumeRequest,
+  SendSessionMessageRequest,
   SharedControlRequest,
 } from "@mend/api-contracts";
 import { ProjectId, SessionId } from "@mend/domain";
+import { TRPCError } from "@trpc/server";
 import { Schema } from "effect";
 
+import { ApiRefusal } from "../api/errors.ts";
 import { run } from "../api/index.ts";
 import { input, procedure, router } from "./trpc.ts";
 
@@ -48,6 +51,35 @@ export const sessionsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.pasteImage({ params: { id: i.id }, payload: i.upload })),
     ),
+  // Never `queue`: Send steers or starts a turn as the sender's message setting says. The browser
+  // cannot know which account its cookie now names, so the words go only if it is still the one
+  // they were written as (`expectedUserId`), read with this request's own credentials.
+  sendMessage: procedure
+    .input(
+      input(
+        Schema.Struct({
+          id: SessionId,
+          input: SendSessionMessageRequest.fields.input,
+          clientMessageId: SendSessionMessageRequest.fields.clientMessageId,
+          expectedUserId: Schema.String,
+        }),
+      ),
+    )
+    .mutation(async ({ ctx, input: { id, expectedUserId, ...message } }) => {
+      const signedIn = await run(ctx, (api) => api.organization.current());
+      if (signedIn.userId !== expectedUserId)
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "another account is signed in now · this message was not sent",
+          cause: new ApiRefusal("MessageAuthorChanged"),
+        });
+      return run(ctx, (api) =>
+        api.sessions.sendMessage({
+          params: { id },
+          payload: new SendSessionMessageRequest(message),
+        }),
+      );
+    }),
   setSharedControl: procedure
     .input(input(Schema.Struct({ id: SessionId, enabled: Schema.Boolean })))
     .mutation(({ ctx, input: i }) =>

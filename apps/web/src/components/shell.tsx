@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
 import { WorkspacesRefusedLine } from "#/components/host-user-namespaces";
+import { forgetSignedInPerson } from "#/components/session-message-input";
 import { authClient } from "#/lib/auth-client";
 import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
@@ -202,12 +203,16 @@ function MachineBlock() {
 
 function SignOut() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   return (
     <button
       type="button"
       className="self-start font-sans text-xs font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground"
       onClick={() => {
-        void authClient.signOut().then(() => navigate({ to: "/login" }));
+        void authClient
+          .signOut()
+          .then(() => forgetSignedInPerson(queryClient))
+          .then(() => navigate({ to: "/login" }));
       }}
     >
       Sign out

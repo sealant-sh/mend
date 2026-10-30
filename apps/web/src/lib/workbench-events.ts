@@ -231,6 +231,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             void queryClient.invalidateQueries(trpc.platform.sealantIdentity.pathFilter());
             // `mend agent-logins` in a terminal lands on the page too.
             void queryClient.invalidateQueries(trpc.platform.agentLogins.pathFilter());
+            void queryClient.invalidateQueries(trpc.platform.messageSettings.pathFilter());
           } else if (event.facet === "devices") {
             void queryClient.invalidateQueries(trpc.devices.pathFilter());
           } else if (event.facet === "git-access") {

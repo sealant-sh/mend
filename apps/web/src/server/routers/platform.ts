@@ -1,5 +1,5 @@
 import { ConnectAccountInput } from "@mend/api-contracts";
-import { AgentLogins } from "@mend/domain/workbench";
+import { AgentLogins, MessageSettings } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -27,6 +27,13 @@ export const platformRouter = router({
     .input(input(AgentLogins))
     .mutation(({ ctx, input: payload }) =>
       run(ctx, (api) => api.accounts.setAgentLogins({ payload })),
+    ),
+  /** Whether the caller's Send steers their own running turn. */
+  messageSettings: procedure.query(({ ctx }) => run(ctx, (api) => api.accounts.messageSettings())),
+  setMessageSettings: procedure
+    .input(input(MessageSettings))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.accounts.setMessageSettings({ payload })),
     ),
   /** The gateway and the caller's own workspace SSH keys (docs/WORKSPACE-SSH.md). */
   workspaceSsh: procedure.query(({ ctx }) => run(ctx, (api) => api.workspaceSsh.get())),
