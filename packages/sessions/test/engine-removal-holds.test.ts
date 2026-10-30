@@ -116,31 +116,32 @@ describe("new work in a session a removal has marked", () => {
   });
 });
 
-describe("a launch admitted before the platform runs anything", () => {
-  const holdingCreate = () => {
-    const reached = Effect.runSync(Deferred.make<void>());
-    const proceed = Effect.runSync(Deferred.make<void>());
-    const created: Array<CreateOptions> = [];
-    const layer = sealantLaunchLayer(
-      created,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      {
-        beforeCreate: () =>
-          Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
-      },
-    );
-    return { reached, proceed, created, layer };
-  };
+/** A platform that holds every workspace create until `proceed`, saying when one is `reached`. */
+const holdingCreate = () => {
+  const reached = Effect.runSync(Deferred.make<void>());
+  const proceed = Effect.runSync(Deferred.make<void>());
+  const created: Array<CreateOptions> = [];
+  const layer = sealantLaunchLayer(
+    created,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      beforeCreate: () =>
+        Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+    },
+  );
+  return { reached, proceed, created, layer };
+};
 
+describe("a launch admitted before the platform runs anything", () => {
   it(
     "holds its admission while the platform creates the workspace, before any process row",
     { timeout: 20_000 },
