@@ -550,13 +550,24 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           const sql = yield* SqlClient.SqlClient;
           const id = yield* seed("long-history");
           yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES ('w-long', ${id}, 'work', 'work', 'work', 'abc')`;
-          yield* sql`INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id, status)
-          SELECT 's-long-' || n, ${id}, 'w-long', 'claude', 'work', 'work', 'abc', 'anna', 'stopped'
-          FROM generate_series(1, 70000) n`;
+          // One more session than a statement takes parameters (65,535). The per-row session
+          // triggers only cost time here, so the seed pauses them inside its own transaction.
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`ALTER TABLE agent_sessions DISABLE TRIGGER USER`;
+              yield* sql`INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id, status)
+              SELECT 's-long-' || n, ${id}, 'w-long', 'claude', 'work', 'work', 'abc', 'anna', 'stopped'
+              FROM generate_series(1, 65536) n`;
+              yield* sql`ALTER TABLE agent_sessions ENABLE TRIGGER USER`;
+            }),
+          );
+          expect(
+            yield* sql`SELECT count(*)::int AS n FROM agent_sessions WHERE project_id = ${id}`,
+          ).toEqual([{ n: 65536 }]);
           expect(yield* removeAs(id, "anna")).toBe("kept");
         }),
       ),
-    120_000,
+    30_000,
   );
 
   it("answers Restore, purge and removal by what the person may do when they commit", async () =>
