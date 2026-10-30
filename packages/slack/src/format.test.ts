@@ -187,7 +187,7 @@ describe("the status message", () => {
   it("builds links from the install's web origin", () => {
     expect(sessionUrl("https://mend.example/", "s 1")).toBe("https://mend.example/sessions/s%201");
     expect(linkUrl("http://100.64.0.1:3000", "msl_abc")).toBe(
-      "http://100.64.0.1:3000/slack/link/msl_abc",
+      "http://100.64.0.1:3000/slack/link#msl_abc",
     );
   });
 });

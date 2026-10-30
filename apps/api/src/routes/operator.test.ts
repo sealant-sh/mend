@@ -308,7 +308,7 @@ describe("operator recovery (docs/adr/0003)", () => {
         );
         expect(response.status).toBe(200);
         expect(yield* Effect.promise(() => response.json())).toEqual({
-          path: "/join/operator-invite-token",
+          path: "/join#operator-invite-token",
           expiresAt: "2026-10-17T10:00:00.000Z",
         });
         expect(minted).toEqual([
@@ -367,7 +367,7 @@ describe("operator recovery (docs/adr/0003)", () => {
       email: "sam@example.invalid",
     });
     expect(issued.status).toBe(200);
-    await expect(issued.json()).resolves.toMatchObject({ path: "/reset/tok-sam" });
+    await expect(issued.json()).resolves.toMatchObject({ path: "/reset#tok-sam" });
     expect(writes).toEqual(["reset:sam"]);
     expect(audited.map((event) => [event.organizationId, event.action])).toEqual([
       [ACME, "recovery.password_reset_issued"],

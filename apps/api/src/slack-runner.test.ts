@@ -1331,7 +1331,7 @@ describe("the Slack runner, before anything starts", () => {
     ]);
     const [prompt] = posts(w, "postEphemeral");
     expect(prompt).toMatchObject({ user: "U-bob", threadTs: "1700000200.000100" });
-    expect(JSON.stringify(prompt?.blocks)).toContain("https://mend.acme.test/slack/link/msl_code");
+    expect(JSON.stringify(prompt?.blocks)).toContain("https://mend.acme.test/slack/link#msl_code");
     expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);
   });
 
