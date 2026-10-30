@@ -2,14 +2,14 @@ import { PgClient } from "@effect/sql-pg";
 import {
   MendDBLive,
   migrations,
-  ProjectHasResourcesError,
   ProjectsRepo,
   ProjectsRepoLive,
+  RemovalFencesRepo,
+  RemovalFencesRepoLive,
   ResourcesRepo,
   ResourcesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { ProjectRemovalFenceId } from "@mend/domain";
 import { ResourceDefinitionInput } from "@mend/domain/workbench";
 import { WORKTREE_STAMP } from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Redacted, Result, Schema } from "effect";
@@ -47,29 +47,19 @@ describe("removing a project that has resources", () => {
   });
 
   const removeWith = async (names: ReadonlyArray<string>, changed: ReadonlyArray<string> = []) => {
-    const lifted: Array<ProjectRemovalFenceId> = [];
     api = await createTenancyApi(undefined, {
       implement: {
         ...quietWorktree(changed),
-        resources: {
-          fenceProjectRemoval: (projectId) =>
-            names.length === 0
-              ? Effect.succeed(ProjectRemovalFenceId.make("rfen_this-removal"))
-              : Effect.fail(new ProjectHasResourcesError({ projectId, names })),
-          liftProjectRemovalFence: (fence) =>
-            Effect.sync(() => {
-              lifted.push(fence);
-            }),
-        },
+        resources: { declaredNames: () => Effect.succeed(names) },
         store: { removeProjectStore: () => Effect.succeed({ leftover: null }) },
       },
     });
     const response = await api.request("alice", "DELETE", `/api/projects/${project}`);
-    return { response, calls: [...api.world.calls], lifted };
+    return { response, calls: [...api.world.calls] };
   };
 
   it("is refused with the resources named beside every other blocker, and the store stays", async () => {
-    const { response, calls, lifted } = await removeWith(["db", "queue"], ["src/a.ts"]);
+    const { response, calls } = await removeWith(["db", "queue"], ["src/a.ts"]);
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
       _tag: "RemovalRefused",
@@ -80,14 +70,6 @@ describe("removing a project that has resources", () => {
       ],
     });
     expect(calls.filter((call) => call.startsWith("store."))).toEqual([]);
-    expect(lifted).toEqual([]);
-  });
-
-  it("lifts its own fence when the removal is refused before the project's row goes", async () => {
-    const { response, calls, lifted } = await removeWith([], ["src/a.ts"]);
-    expect(response.status).toBe(409);
-    expect(calls.filter((call) => call.startsWith("store."))).toEqual([]);
-    expect(lifted).toEqual(["rfen_this-removal"]);
   });
 });
 
@@ -107,7 +89,7 @@ const scratchDatabase = async () => {
     );
   await admin(`CREATE DATABASE ${name}`);
   const runtime = ManagedRuntime.make(
-    Layer.mergeAll(ResourcesRepoLive, ProjectsRepoLive).pipe(
+    Layer.mergeAll(ResourcesRepoLive, ProjectsRepoLive, RemovalFencesRepoLive).pipe(
       Layer.provideMerge(MendDBLive),
       Layer.provideMerge(pgLayer(url.toString())),
     ),
@@ -177,14 +159,19 @@ describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () =>
   it("refuses a second removal while one deletes; a failed deletion stays fenced, and the next removal finishes it", async () => {
     database = await scratchDatabase();
     const { runtime } = database;
-    const { resources, projects } = await runtime.runPromise(
-      Effect.all({ resources: ResourcesRepo, projects: ProjectsRepo }),
+    const { resources, projects, removalFences } = await runtime.runPromise(
+      Effect.all({
+        resources: ResourcesRepo,
+        projects: ProjectsRepo,
+        removalFences: RemovalFencesRepo,
+      }),
     );
     const store = heldStore();
     api = await createTenancyApi(undefined, {
       implement: {
         ...quietWorktree(),
         resources,
+        removalFences,
         projects: { remove: projects.remove },
         store: { removeProjectStore: store.removeProjectStore },
       },
@@ -227,11 +214,10 @@ describe.skipIf(postgres.skip)("two removals of one project, in Postgres", () =>
     const left = await runtime.runPromise(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        return yield* sql<{ readonly projects: number; readonly fences: number }>`
-          SELECT (SELECT count(*)::int FROM projects WHERE id = ${project}) AS projects,
-                 (SELECT count(*)::int FROM project_removal_fences) AS fences`;
+        return yield* sql<{ readonly projects: number }>`
+          SELECT count(*)::int AS projects FROM projects WHERE id = ${project}`;
       }),
     );
-    expect(left).toEqual([{ projects: 0, fences: 0 }]);
+    expect(left).toEqual([{ projects: 0 }]);
   }, 60_000);
 });

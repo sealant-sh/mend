@@ -9,6 +9,7 @@ import {
   SessionChannelTokensRepoMemory,
   harnessLayoutsRepoMemory,
   ScreensRepo,
+  RemovalFencesRepo,
 } from "@mend/db";
 import {
   ProjectId,
@@ -1025,10 +1026,13 @@ describe("SessionEngine", () => {
     );
     const engineLayer = SessionEngineLive.pipe(
       Layer.provide(
-        Layer.succeed(MessageSettingsRepo, {
-          forUser: () => Effect.succeed(DEFAULT_MESSAGE_SETTINGS),
-          set: (_, setting) => Effect.succeed(setting),
-        }),
+        Layer.mergeAll(
+          Layer.mock(RemovalFencesRepo, { admitsSessionWork: () => Effect.succeed(true) }),
+          Layer.succeed(MessageSettingsRepo, {
+            forUser: () => Effect.succeed(DEFAULT_MESSAGE_SETTINGS),
+            set: (_, setting) => Effect.succeed(setting),
+          }),
+        ),
       ),
       Layer.provide(testDrainPolicy()),
       Layer.provide(

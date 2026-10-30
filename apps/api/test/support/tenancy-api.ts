@@ -34,6 +34,7 @@ import {
   PreviewsRepo,
   PushDevice,
   PushDevicesRepo,
+  type FenceTaken,
   RemovalFenceId,
   RemovalFencesRepo,
   ReviewCommentsRepo,
@@ -270,6 +271,8 @@ export const createTenancyApi = async (
     readonly checkpointRequestLimit?: Duration.Duration;
     /** How long a raw body waits for its reader (`RawReadStallLimit`). */
     readonly rawReadStall?: Duration.Duration;
+    /** Runs as a removal takes its mark, before anything else it reads: for races. */
+    readonly beforeTake?: Effect.Effect<void>;
     readonly implement?: {
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
@@ -298,6 +301,8 @@ export const createTenancyApi = async (
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
       readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
+      /** Removal marks as Postgres keeps them, in place of the in-memory ones. */
+      readonly removalFences?: RemovalFencesRepo["Service"];
       readonly users?: Layer.PartialEffectful<UsersRepo["Service"]>;
       readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
       readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
@@ -342,21 +347,30 @@ export const createTenancyApi = async (
   };
   const removalFences: RemovalFencesRepo["Service"] = {
     take: (row) =>
-      Effect.sync(() => {
-        const exists =
-          row.kind === "worktree" ? world.worktrees.has(row.id) : world.projects.has(row.id);
-        if (!exists) return { _tag: "gone" } as const;
-        const key = `${row.kind}:${row.id}`;
-        const mark = removalMarks.get(key);
-        const step = fenceStep(mark ?? null, new Date());
-        if (step._tag === "underway") return { _tag: "underway" } as const;
-        if (step._tag === "finish" && mark !== undefined) {
-          return { _tag: "finish", id: RemovalFenceId.make(mark.id) } as const;
-        }
-        const id = RemovalFenceId.make(`rmv_${crypto.randomUUID()}`);
-        removalMarks.set(key, { phase: "checking", since: new Date(), id });
-        return { _tag: "held", id } as const;
-      }),
+      Effect.andThen(
+        options.beforeTake ?? Effect.void,
+        Effect.sync((): FenceTaken => {
+          const exists =
+            row.kind === "worktree" ? world.worktrees.has(row.id) : world.projects.has(row.id);
+          if (!exists) return { _tag: "gone" };
+          const key = `${row.kind}:${row.id}`;
+          const step = fenceStep(removalMarks.get(key) ?? null, new Date());
+          if (step._tag === "underway") return { _tag: "underway" } as const;
+          const projectId =
+            row.kind === "project" ? row.id : world.worktrees.get(row.id)?.projectId;
+          const relativeAtWork =
+            row.kind === "worktree"
+              ? marked(`project:${projectId}`)
+              : Array.from(world.worktrees.values()).some(
+                  (worktree) => worktree.projectId === row.id && marked(`worktree:${worktree.id}`),
+                );
+          if (relativeAtWork) return { _tag: "underway" } as const;
+          const id = RemovalFenceId.make(`rmv_${crypto.randomUUID()}`);
+          const phase = step._tag === "finish" ? "deleting" : "checking";
+          removalMarks.set(key, { phase, since: new Date(), id });
+          return step._tag === "finish" ? { _tag: "finish", id } : { _tag: "held", id };
+        }),
+      ),
     commit: (row, id) =>
       Effect.sync(() => {
         const key = `${row.kind}:${row.id}`;
@@ -377,6 +391,22 @@ export const createTenancyApi = async (
         if (mark?.id === id && mark.phase === "deleting") {
           removalMarks.set(key, { ...mark, since: new Date(0) });
         }
+      }),
+    renew: (row, id) =>
+      Effect.sync(() => {
+        const key = `${row.kind}:${row.id}`;
+        const mark = removalMarks.get(key);
+        if (mark?.id !== id || mark.phase !== "checking" || !marked(key)) return false;
+        removalMarks.set(key, { ...mark, since: new Date() });
+        return true;
+      }),
+    admitsSessionWork: (sessionId) =>
+      Effect.sync(() => {
+        const session = world.sessions.get(sessionId);
+        return (
+          session === undefined ||
+          (!marked(`project:${session.projectId}`) && !marked(`worktree:${session.worktreeId}`))
+        );
       }),
     admitsStart: (place) =>
       Effect.sync(
@@ -495,14 +525,23 @@ export const createTenancyApi = async (
           byId: (id) =>
             Effect.succeed(
               id in USER_NAMES
-                ? new UserFacts({ id, name: USER_NAMES[id] ?? id, email: `${id}@example.com` })
+                ? new UserFacts({
+                    id,
+                    name: USER_NAMES[id] ?? id,
+                    email: `${id}@example.com`,
+                  })
                 : null,
             ),
           ...options.implement?.users,
         },
         calls,
       ),
-      recording(RemovalFencesRepo, "removalFences", removalFences, calls),
+      recording(
+        RemovalFencesRepo,
+        "removalFences",
+        options.implement?.removalFences ?? removalFences,
+        calls,
+      ),
       recording(JobRunner, "jobs", options.implement?.jobs ?? {}, calls),
       recording(SealantClient, "sealant", {}, calls),
       recording(ForwardAdapter, "forwards", {}, calls),
@@ -610,7 +649,10 @@ export const createTenancyApi = async (
         sessionStore: options.sessionStore ?? "captured",
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
-      Layer.succeed(TenancyConfig, { mode: options.tenancy ?? "single", gate: Effect.succeed([]) }),
+      Layer.succeed(TenancyConfig, {
+        mode: options.tenancy ?? "single",
+        gate: Effect.succeed([]),
+      }),
       Layer.succeed(ExposureConfig, {
         exposure: options.exposure?.exposure ?? "loopback",
         gate: Effect.succeed(options.exposure?.gate ?? []),
@@ -709,9 +751,17 @@ export const createTenancyApi = async (
   const nodeOrigin = options.node
     ? await Effect.runPromise(
         Layer.buildWithScope(
-          HttpRouter.serve(apiLayer, { disableLogger: true, disableListenLog: true }).pipe(
+          HttpRouter.serve(apiLayer, {
+            disableLogger: true,
+            disableListenLog: true,
+          }).pipe(
             Layer.provide(Layer.succeedContext(context)),
-            Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+            Layer.provideMerge(
+              NodeHttpServer.layer(createServer, {
+                host: "127.0.0.1",
+                port: 0,
+              }),
+            ),
           ),
           nodeScope,
         ).pipe(

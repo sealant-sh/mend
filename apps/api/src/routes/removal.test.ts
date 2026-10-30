@@ -1,4 +1,4 @@
-import { ProjectRemovalFenceId, SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
+import { SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
 import {
   Project,
   Session,
@@ -7,6 +7,7 @@ import {
   Worktree,
 } from "@mend/domain/workbench";
 import { type CaptureHold, WORKTREE_STAMP } from "@mend/sessions";
+import { GitError } from "@mend/store";
 import { Deferred, Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -46,6 +47,10 @@ interface Scene {
   readonly repositories?: ReadonlyArray<SessionRepository>;
   /** Waits before the first read of a worktree's change, for races. */
   readonly beforeRead?: Effect.Effect<void>;
+  /** Runs as a removal takes its mark: for races with what the route read before. */
+  readonly beforeTake?: Effect.Effect<void>;
+  /** A worktree whose change cannot be read, with git's words. */
+  readonly unreadable?: ReadonlyMap<string, string>;
 }
 
 let api: TenancyApi | undefined;
@@ -62,6 +67,7 @@ const world = async (scene: Scene = {}) => {
     {
       ...(scene.sessions === undefined ? {} : { sessions: scene.sessions }),
       ...(scene.processes === undefined ? {} : { processes: scene.processes }),
+      ...(scene.beforeTake === undefined ? {} : { beforeTake: scene.beforeTake }),
       implement: {
         engine: {
           launchUnderWay: () => false,
@@ -77,7 +83,16 @@ const world = async (scene: Scene = {}) => {
           changedFiles: (_projectId, worktreeId) =>
             Effect.gen(function* () {
               reads += 1;
-              if (scene.beforeRead !== undefined) yield* scene.beforeRead;
+              if (reads === 1 && scene.beforeRead !== undefined) yield* scene.beforeRead;
+              const unreadable = scene.unreadable?.get(worktreeId);
+              if (unreadable !== undefined) {
+                return yield* new GitError({
+                  args: ["diff"],
+                  cwd: "/store",
+                  exitCode: 128,
+                  stderr: unreadable,
+                });
+              }
               return { value: scene.changed?.get(worktreeId) ?? [], stamp: WORKTREE_STAMP };
             }),
         },
@@ -91,13 +106,7 @@ const world = async (scene: Scene = {}) => {
           listForProject: (projectId) =>
             Effect.succeed((scene.repositories ?? []).filter((row) => row.projectId === projectId)),
         },
-        resources: {
-          fenceProjectRemoval: (projectId) =>
-            (scene.resources ?? []).length === 0
-              ? Effect.succeed(ProjectRemovalFenceId.make(`rfen_${projectId}`))
-              : Effect.die("resources are declared"),
-          liftProjectRemovalFence: () => Effect.void,
-        },
+        resources: { declaredNames: () => Effect.succeed(scene.resources ?? []) },
         hotWorkspaces: { listForProject: () => Effect.succeed([]) },
         projects: {
           byId: (id) =>
@@ -386,6 +395,111 @@ describe("DELETE /worktrees/:id", () => {
   });
 });
 
+describe("what a worktree removal reads under its mark", () => {
+  it("decides who may remove it from the owner recorded once the mark is taken", async () => {
+    let instance: TenancyApi | undefined;
+    const ownerless = WorktreeId.make("worktree-shared-a-ownerless");
+    // Carol's first session records her as the owner after the route read the worktree.
+    const carolStarts = Effect.sync(() => {
+      const row = instance?.world.worktrees.get(ownerless);
+      if (row === undefined || row.changeOwnerUserId !== null) return;
+      instance?.world.addWorktree(
+        new Worktree({ ...row, changeOwnerUserId: "carol", changeOwnerProven: true }),
+      );
+    });
+    instance = await world({ beforeTake: carolStarts });
+    const sharedWorktree = instance.world.worktrees.get(sharedA.worktree);
+    if (sharedWorktree === undefined) throw new Error("missing worktree fixture");
+    instance.world.addWorktree(
+      new Worktree({
+        ...sharedWorktree,
+        id: ownerless,
+        name: "ownerless",
+        directory: "ownerless",
+        changeOwnerUserId: null,
+        changeOwnerProven: false,
+      }),
+    );
+    const response = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/worktrees/${ownerless}?force=true`,
+    );
+    expect(response.status).toBe(403);
+    expect(await bodyOf(response)).toMatchObject({
+      _tag: "RemovalForbidden",
+      owner: { userId: "carol" },
+    });
+    expect(removedWorktrees).toEqual([]);
+    expect(instance.removalMarks.size).toBe(0);
+  });
+
+  it("lets whoever manages the project remove a worktree whose owner the history cannot prove", async () => {
+    const instance = await world();
+    const sharedWorktree = instance.world.worktrees.get(sharedA.worktree);
+    if (sharedWorktree === undefined) throw new Error("missing worktree fixture");
+    const unproven = WorktreeId.make("worktree-shared-a-unproven");
+    instance.world.addWorktree(
+      new Worktree({
+        ...sharedWorktree,
+        id: unproven,
+        name: "unproven",
+        directory: "unproven",
+        changeOwnerUserId: "carol",
+        changeOwnerProven: false,
+      }),
+    );
+    const response = await instance.request("alice", "DELETE", `/api/worktrees/${unproven}`);
+    expect(response.status).toBe(200);
+    expect(removedWorktrees).toEqual(["unproven"]);
+  });
+
+  it("answers a change it could not read with every other blocker, in one 409", async () => {
+    const session = await fixture((w) => w.sessions.get(privateAlice.session));
+    const instance = await world({
+      sessions: [live(session)],
+      unreadable: new Map([[privateAlice.worktree, "fatal: bad object HEAD"]]),
+    });
+    const response = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/worktrees/${privateAlice.worktree}`,
+    );
+    expect(response.status).toBe(409);
+    expect(await bodyOf(response)).toMatchObject({
+      _tag: "RemovalRefused",
+      forceWouldLift: false,
+      blockers: [
+        { _tag: "SessionLive" },
+        { _tag: "Unlanded", standing: { _tag: "unread", reason: "fatal: bad object HEAD" } },
+      ],
+    });
+  });
+
+  it("keeps a nested repository a blocker after the last session in the worktree is gone", async () => {
+    const instance = await world();
+    instance.world.nestedRepositories.set(privateAlice.worktree, [
+      { path: "repos/library", branch: "mend/library" },
+    ]);
+    const response = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/worktrees/${privateAlice.worktree}`,
+    );
+    expect(response.status).toBe(409);
+    expect(await bodyOf(response)).toMatchObject({
+      forceWouldLift: true,
+      blockers: [
+        {
+          _tag: "NestedRepositories",
+          repositories: [{ path: "repos/library", branch: "mend/library" }],
+        },
+      ],
+    });
+    expect(removedWorktrees).toEqual([]);
+  });
+});
+
 describe("a worktree removal against a session start, a second removal and a crash", () => {
   it("refuses a session start while the removal reads, and admits it once the removal is refused", async () => {
     const reading = Effect.runSync(Deferred.make<void>());
@@ -414,7 +528,7 @@ describe("a worktree removal against a session start, a second removal and a cra
     );
     expect(await bodyOf(second)).toMatchObject({
       _tag: "RemovalRefused",
-      blockers: [{ _tag: "RemovalUnderway" }],
+      blockers: [{ _tag: "RemovalUnderway" }, { _tag: "SessionLive", activity: "live" }],
     });
     await Effect.runPromise(Deferred.succeed(proceed, undefined));
     expect((await removal).status).toBe(409);

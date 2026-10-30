@@ -816,12 +816,17 @@ const ADMITTED: Readonly<
   "folders.selectForProject": { status: 500, calls: ["mounts.listForProject"] },
   // Unimplemented sessions.listForProject stops detail assembly.
   "projects.detail": { status: 500, calls: ["sessions.listForProject"] },
-  // The unimplemented resource fence stops removal before any stop/delete.
   // The removal marks the project, then its first unimplemented read fails and the mark is lifted
-  // (an unimplemented method records as it fails, after the release its failure ran).
+  // before any stop or delete (an unimplemented method records as it fails, after the release its
+  // failure ran).
   "projects.remove": {
     status: 500,
-    calls: ["removalFences.take", "removalFences.release", "resources.fenceProjectRemoval"],
+    calls: [
+      "removalFences.take",
+      "removalFences.release",
+      "worktrees.listForProject",
+      "forwards.listOpen",
+    ],
   },
   "projects.visibility": { status: 500, calls: ["projects.setVisibility"] },
   "projects.automation": { status: 500, calls: ["projects.setAutomation"] },

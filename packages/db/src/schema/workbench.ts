@@ -49,7 +49,6 @@ import type {
   ProjectSecretId,
   ProjectMountId,
   ReferenceId,
-  ProjectRemovalFenceId,
   ResourceApprovalId,
   ResourceDefinitionId,
   ResourceProposalId,
@@ -568,8 +567,11 @@ export const worktrees = pgTable(
     /** The base as the user named it; null only for rows migrated from pre-column sessions. */
     baseRef: text(),
     handoff: jsonbOf(WorktreeHandoff),
-    /** The owner of the worktree's first session (0164); written by the session insert trigger. */
+    /** The owner of the worktree's first session (0164), recorded once by its insert trigger. */
     changeOwnerUserId: text(),
+    changeOwnerRecorded: boolean().notNull().default(false),
+    /** Whether the history proves `changeOwnerUserId` was the first session's owner (0164). */
+    changeOwnerProven: boolean().notNull().default(false),
     // A removal's mark (0164, RemovalFencesRepo): all three set, or none.
     removalPhase: text().$type<RemovalPhase>(),
     removalId: text(),
@@ -717,23 +719,6 @@ export const resourceProposals = pgTable(
     ),
     index("resource_proposals_project_name_idx").on(table.projectId, table.name),
   ],
-);
-
-/**
- * One removal of a project in flight: no resource is declared in the project while any stands. Each
- * removal holds its own row and lifts only that one; a finished removal's goes with the project.
- */
-export const projectRemovalFences = pgTable(
-  "project_removal_fences",
-  {
-    id: text().$type<ProjectRemovalFenceId>().primaryKey(),
-    projectId: text()
-      .$type<ProjectId>()
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    fencedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [index("project_removal_fences_project_idx").on(table.projectId)],
 );
 
 /**

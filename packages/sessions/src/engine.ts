@@ -7,6 +7,8 @@ import { pipeline } from "node:stream/promises";
 
 import {
   InstanceRolesRepo,
+  RemovalFenced,
+  RemovalFencesRepo,
   AgentConversationRepo,
   MessageSettingsRepo,
   AgentTurnNotFoundError,
@@ -3264,6 +3266,7 @@ export class SessionEngine extends Context.Service<
 >()("@mend/sessions/SessionEngine") {}
 
 type SessionEngineRequirements =
+  | RemovalFencesRepo
   | SealantClient
   | WorkspaceCaller
   | AuditEventsRepo
@@ -7289,6 +7292,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (lookup.kind !== "gone") holds.push({ sessionId: member.id, kind: "executor" });
         }
         const lease = yield* capture.repo.leaseOf(worktreeId);
+        // Mend's own short claim is saving while it is live.
+        if (lease?.live === true && lease.executorId?.startsWith("mend:") === true) {
+          holds.push({ sessionId: null, kind: "lease" });
+        }
         if (
           lease !== null &&
           lease.executorId !== null &&
@@ -7298,17 +7305,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const holder = members.find((member) => member.id === lease.executorId) ?? null;
           // The lease's own executor (`leaseExecutorWorkspace`): none addressable, or a holder
           // with no workspace on its row (a launch cut short around its create,
-          // `launchUnresolved`), may exist and hold work — a hold, never an end.
+          // `launchUnresolved`), may exist and hold work — a hold, never an end. A live lease is
+          // never an end, even when its session's row is gone: something still renews it.
           const judged = lease.live ? null : yield* judgeLapsedLease(holder, lease, null);
           const workspaceId = judged?.workspaceId ?? null;
-          const ended = holder === null || judged?.state === "dead";
-          if (ended) {
-            if (!lease.live) {
-              if (workspaceId !== null) yield* owedBeforeRelease(workspaceId);
-              yield* capture.repo.release(worktreeId, lease.epoch);
-            }
+          if (judged?.state === "dead") {
+            if (workspaceId !== null) yield* owedBeforeRelease(workspaceId);
+            yield* capture.repo.release(worktreeId, lease.epoch);
           } else {
-            holds.push({ sessionId: holder.id, kind: "lease" });
+            holds.push({ sessionId: holder?.id ?? null, kind: "lease" });
           }
         }
         return holds;
@@ -8734,6 +8739,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const projects = yield* ProjectsRepo;
       const changes = yield* WorktreeChangesRepo;
       const worktreesRepo = yield* WorktreesRepo;
+      const removalFences = yield* RemovalFencesRepo;
       const checkpoints = yield* CheckpointsRepo;
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
@@ -22498,6 +22504,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
+        // A shell opens on the platform before its row is written, so a removal's mark is read
+        // first (0164); one taken in between refuses the row, and the shell is closed again.
+        if (!(yield* removalFences.admitsSessionWork(sessionId))) {
+          return yield* Effect.die(new RemovalFenced(`session ${sessionId} is being removed`));
+        }
         const workspace = yield* workspaceForSupportingProcess(session);
         // Nothing new starts in an executor being replaced; a shell is the launcher's or nobody's
         // while it is marked (docs/adr/0016, decision 14).
@@ -22535,17 +22546,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           shellArgv,
           startAs === null ? undefined : { user: startAs.user, env: startAs.env },
         );
-        const shellProcess = yield* processes.create({
-          sessionId,
-          sealantWorkspaceId: session.sealantWorkspaceId ?? SealantWorkspaceId.make(workspace.id),
-          sealantSessionId: pty.id,
-          sealantRunId: SealantRunId.make(pty.runId),
-          kind: "shell",
-          label: `shell ${shellNumber}`,
-          argv: shellArgv,
-          // Recorded as an agent's is (docs/adr/0016, decision 1): the person it runs as.
-          runsAs: startAs === null ? null : (openedBy ?? session.ownerUserId),
-        });
+        const shellWorkspaceId =
+          session.sealantWorkspaceId ?? SealantWorkspaceId.make(workspace.id);
+        const shellProcess = yield* processes
+          .create({
+            sessionId,
+            sealantWorkspaceId: shellWorkspaceId,
+            sealantSessionId: pty.id,
+            sealantRunId: SealantRunId.make(pty.runId),
+            kind: "shell",
+            label: `shell ${shellNumber}`,
+            argv: shellArgv,
+            // Recorded as an agent's is (docs/adr/0016, decision 1): the person it runs as.
+            runsAs: startAs === null ? null : (openedBy ?? session.ownerUserId),
+          })
+          .pipe(
+            Effect.onError(() => closeProcessPty(shellWorkspaceId, pty.id).pipe(Effect.ignore)),
+          );
         yield* renewWorkspaceLease(sessionId, shellProcess.sealantWorkspaceId);
         // A shell rejoining a settled session's retained workspace makes it idle again.
         yield* reconcileSession(sessionId, { sweep: false });

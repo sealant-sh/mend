@@ -251,6 +251,11 @@ export interface TenancyWorld {
   readonly setVisibility: (project: HarnessProject, visibility: ProjectVisibility) => void;
   readonly addWorktree: (worktree: Worktree) => void;
   readonly addProject: (project: Project) => void;
+  /** Repositories nested in a worktree, as migration 0164 keeps them past their session. */
+  readonly nestedRepositories: Map<
+    WorktreeId,
+    ReadonlyArray<{ readonly path: string; readonly branch: string }>
+  >;
   /** Tokens: each user's bearer is their name. */
   readonly authLayer: Layer.Layer<Auth>;
   /** The authorization reads over the world, recorded like everything else. */
@@ -380,6 +385,7 @@ export const createTenancyWorld = async (
 
   const projects = new Map<ProjectId, Project>();
   const worktrees = new Map<WorktreeId, Worktree>();
+  const nestedRepositories: TenancyWorld["nestedRepositories"] = new Map();
   const changes = new Map<ChangeId, Change>();
   const sessions = new Map<SessionId, Session>();
   const processes = new Map<SessionProcessId, SessionProcess>();
@@ -588,7 +594,11 @@ export const createTenancyWorld = async (
     if (first !== undefined) {
       worktrees.set(
         worktree.id,
-        new Worktree({ ...worktree, changeOwnerUserId: first.ownerUserId }),
+        new Worktree({
+          ...worktree,
+          changeOwnerUserId: first.ownerUserId,
+          changeOwnerProven: first.ownerUserId !== null,
+        }),
       );
     }
   }
@@ -875,6 +885,7 @@ export const createTenancyWorld = async (
             ) ?? null,
           ),
         changeOwnerOf: (id) => Effect.succeed(worktrees.get(id)?.changeOwnerUserId ?? null),
+        nestedRepositories: (id) => Effect.succeed(nestedRepositories.get(id) ?? []),
         // A removal deletes the row; its sessions, change and chain cascade in the database.
         remove: (id) =>
           Effect.sync(() => {
@@ -994,6 +1005,7 @@ export const createTenancyWorld = async (
     },
     sessions,
     worktrees,
+    nestedRepositories,
     changes,
     processes,
     services,

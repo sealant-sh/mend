@@ -1,6 +1,5 @@
 import {
   ProjectId,
-  ProjectRemovalFenceId,
   ResourceApprovalId,
   ResourceDatabaseId,
   ResourceDefinitionId,
@@ -32,7 +31,6 @@ import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
 import {
-  projectRemovalFences,
   projects,
   resourceApprovals,
   resourceDefinitions,
@@ -150,12 +148,6 @@ export class ResourceSelectionRefusedError extends Schema.TaggedError<ResourceSe
   { definitionId: ResourceDefinitionId, refusal: ResourceRefusal },
 ) {}
 
-/** Nothing archives a resource yet, so a project that has one is not removed (ADR 0019, step 4). */
-export class ProjectHasResourcesError extends Schema.TaggedError<ProjectHasResourcesError>()(
-  "ProjectHasResourcesError",
-  { projectId: ProjectId, names: Schema.Array(Schema.String) },
-) {}
-
 export class ResourcesRepo extends Context.Service<
   ResourcesRepo,
   {
@@ -214,15 +206,12 @@ export class ResourcesRepo extends Context.Service<
       name: string,
     ) => Effect.Effect<StoredResourceDefinition | null>;
     /**
-     * Fences the project against new definitions for one removal, unless it has one: then it names
-     * them and sets no fence. Each removal holds its own fence, so the project stays fenced while
-     * any removal is in flight. A fence goes with the project's row, or with
-     * `liftProjectRemovalFence` of the fence its removal was given.
+     * The names of the project's definitions, by name; a spec that no longer decodes is named too.
+     * Nothing archives a resource yet, so a project that has one is not removed (ADR 0019, step
+     * 4). A declaration made while the project's removal mark stands is refused, so a removal
+     * that took its mark first reads every name that will exist.
      */
-    readonly fenceProjectRemoval: (
-      projectId: ProjectId,
-    ) => Effect.Effect<ProjectRemovalFenceId, ProjectHasResourcesError>;
-    readonly liftProjectRemovalFence: (fence: ProjectRemovalFenceId) => Effect.Effect<void>;
+    readonly declaredNames: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
     /**
      * Approves the declared spec the approver read, pinned, as the current approval of that spec;
      * approving it again with the image it already pins is one row.
@@ -557,21 +546,20 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            // The project's row lock orders declarations and the removal fence: each sees the other.
+            // The project's row lock orders declarations and a removal taking its mark (0164):
+            // each sees the other. A mark that lapsed is a removal that stopped.
             const [project] = yield* tx
-              .select({ id: projects.id })
+              .select({
+                id: projects.id,
+                removing: sql<boolean>`removal_fence_marked(${projects.removalPhase}, ${projects.removalSince})`,
+              })
               .from(projects)
               .where(eq(projects.id, projectId))
               .for("no key update");
             if (project === undefined) {
               return yield* Effect.die(new Error(`project ${projectId} does not exist`));
             }
-            const [fence] = yield* tx
-              .select({ id: projectRemovalFences.id })
-              .from(projectRemovalFences)
-              .where(eq(projectRemovalFences.projectId, projectId))
-              .limit(1);
-            if (fence !== undefined) return yield* fenceRefusal(spec);
+            if (project.removing) return yield* fenceRefusal(spec);
 
             const others = yield* tx
               .select()
@@ -785,45 +773,16 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       );
     });
 
-    const fenceProjectRemoval = Effect.fn("ResourcesRepo.fenceProjectRemoval")(function* (
+    const declaredNames = Effect.fn("ResourcesRepo.declaredNames")(function* (
       projectId: ProjectId,
     ) {
-      return yield* db
-        .transaction((tx) =>
-          Effect.gen(function* () {
-            // Waits for a declaration in flight, then reads what it stored. Names only, so a spec
-            // that no longer decodes still refuses by name.
-            yield* tx
-              .select({ id: projects.id })
-              .from(projects)
-              .where(eq(projects.id, projectId))
-              .for("no key update");
-            const declared = yield* tx
-              .select({ name: resourceDefinitions.name })
-              .from(resourceDefinitions)
-              .where(eq(resourceDefinitions.projectId, projectId))
-              .orderBy(asc(resourceDefinitions.name));
-            if (declared.length > 0) {
-              return yield* new ProjectHasResourcesError({
-                projectId,
-                names: declared.map((row) => row.name),
-              });
-            }
-            const id = ProjectRemovalFenceId.make(`rfen_${crypto.randomUUID()}`);
-            yield* tx.insert(projectRemovalFences).values({ id, projectId });
-            return id;
-          }),
-        )
-        .pipe(Effect.catchTags(queryErrorsDie));
-    });
-
-    const liftProjectRemovalFence = Effect.fn("ResourcesRepo.liftProjectRemovalFence")(function* (
-      fence: ProjectRemovalFenceId,
-    ) {
-      yield* db
-        .delete(projectRemovalFences)
-        .where(eq(projectRemovalFences.id, fence))
+      const rows = yield* db
+        .select({ name: resourceDefinitions.name })
+        .from(resourceDefinitions)
+        .where(eq(resourceDefinitions.projectId, projectId))
+        .orderBy(asc(resourceDefinitions.name))
         .pipe(Effect.orDie);
+      return rows.map((row) => row.name);
     });
 
     const approve = Effect.fn("ResourcesRepo.approve")(function* (request: ApprovalRequest) {
@@ -1012,8 +971,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       listForProject,
       listWithApprovals,
       byName,
-      fenceProjectRemoval,
-      liftProjectRemovalFence,
+      declaredNames,
       approve,
       currentApproval,
       ensureSelection,

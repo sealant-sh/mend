@@ -40,6 +40,8 @@ export const UnlandedStanding = Schema.Union([
     remoteSha: Schema.NullOr(Schema.String),
   }),
   Schema.TaggedStruct("origin-unchecked", { landed: LandedAt, reason: Schema.String }),
+  /** The change could not be read at all: whether it is anywhere else is not known. */
+  Schema.TaggedStruct("unread", { reason: Schema.String }),
 ]);
 export type UnlandedStanding = typeof UnlandedStanding.Type;
 
@@ -290,6 +292,12 @@ export const decideRemoval = (target: RemovalTarget): RemovalDecision => {
 /** A refusal for a removal that met another one under way. */
 export const underway: NonEmptyBlockers = [{ _tag: "RemovalUnderway" }];
 
+/** A removal that met another one under way, with whatever else stands in the way. */
+export const underwayWith = (decision: RemovalDecision): NonEmptyBlockers => [
+  ...underway,
+  ...(decision._tag === "Refuse" ? decision.blockers : []),
+];
+
 // ─── Who removes a worktree (decisions Q4, Q7, Q8) ──────────────────────────
 
 export type WorktreeRemovalRight =
@@ -299,17 +307,19 @@ export type WorktreeRemovalRight =
   | { readonly _tag: "hidden" };
 
 /**
- * Only the change's owner removes a worktree that has one, whatever else the caller manages. A
- * worktree with no provable owner keeps the rule from before: whoever manages the project, or a
- * caller who owns every session in it. A client outside Mend refuses that case itself.
+ * Only the change's owner removes a worktree whose first owner is proven, whatever else the caller
+ * manages. A worktree with no owner, or one the history cannot prove, keeps the rule from before:
+ * whoever manages the project, or a caller who owns every session in it. A client outside Mend
+ * refuses that case itself (`hasProvenOwner`).
  */
 export const worktreeRemovalRight = (input: {
   readonly callerUserId: string;
   readonly changeOwner: Person | null;
+  readonly changeOwnerProven: boolean;
   readonly managesProject: boolean;
   readonly ownsEverySession: boolean;
 }): WorktreeRemovalRight => {
-  if (input.changeOwner !== null) {
+  if (input.changeOwner !== null && input.changeOwnerProven) {
     return input.changeOwner.userId === input.callerUserId
       ? { _tag: "allowed" }
       : { _tag: "not-change-owner", owner: input.changeOwner };
@@ -361,9 +371,19 @@ export type RefusalAudience = "in-mend" | "outside-mend";
 /** The tail an in-Mend refusal carries when force lifts it; CLIs before 0.37 look for it. */
 export const REMOVAL_FORCE_HINT = "or pass force=true to remove it anyway";
 
+/** What a session start, a shell, a Service or a forward refused by a removal's mark reads. */
+export const REMOVAL_START_REFUSED =
+  "not started · a removal of this worktree or its project is under way · start again once it is refused";
+
 /** Decision Q3's sentence, verbatim. */
 export const NO_REMOTE_OUTSIDE_MEND =
   "This worktree has work that is not on any remote. Remove it from Mend if you mean to discard it.";
+
+/** Decision Q8: whether a client outside Mend may ask to remove the worktree at all. */
+export const hasProvenOwner = (worktree: {
+  readonly changeOwnerUserId: string | null;
+  readonly changeOwnerProven: boolean;
+}): boolean => worktree.changeOwnerUserId !== null && worktree.changeOwnerProven;
 
 /** Decision Q8: a worktree with no provable change owner is not removed from outside Mend. */
 export const OWNERLESS_OUTSIDE_MEND =
@@ -431,6 +451,8 @@ const unlandedInMend = (standing: UnlandedStanding): string => {
       return `origin's ${standing.landed.remoteBranch} no longer holds the landed commit ${short(standing.landed.sha)} · ${standing.remoteSha === null ? "the branch is gone" : `it is at ${short(standing.remoteSha)}`}. Land it again before removal`;
     case "origin-unchecked":
       return `origin could not be checked for the last landing (${landedWords(standing.landed)}) · ${trimStop(standing.reason)}. Try again`;
+    case "unread":
+      return `Mend could not read this worktree's change · ${trimStop(standing.reason)}. Try again`;
   }
 };
 
@@ -445,6 +467,8 @@ const unlandedOutside = (standing: UnlandedStanding): string => {
       return `origin's ${standing.landed.remoteBranch} no longer holds this worktree's last landing. Land it again from Mend, or remove it from Mend if you mean to discard it.`;
     case "origin-unchecked":
       return `Mend could not check origin for this worktree's last landing · ${trimStop(standing.reason)}. Mend keeps the worktree; try again from Mend.`;
+    case "unread":
+      return `Mend could not read this worktree's change · ${trimStop(standing.reason)}. Mend keeps the worktree; try again from Mend.`;
   }
 };
 
@@ -500,12 +524,20 @@ export const worktreeRefusalWords = (
   return refusal.blockers.map((blocker) => worktreeSentence(blocker, audience, hint)).join(" ");
 };
 
-const unlandedClause = (standing: UnlandedStanding) =>
-  standing._tag === "no-remote"
-    ? "which is not on any remote"
-    : standing._tag === "origin-unchecked"
-      ? "whose landing Mend could not check on origin"
-      : "which is not on origin";
+const unlandedClause = (standing: UnlandedStanding) => {
+  switch (standing._tag) {
+    case "no-remote":
+      return "which is not on any remote";
+    case "origin-unchecked":
+      return "whose landing Mend could not check on origin";
+    case "unread":
+      return "which Mend could not read";
+    case "never-landed":
+    case "changed-since-landing":
+    case "origin-moved":
+      return "which is not on origin";
+  }
+};
 
 /** One clause per blocker, for a refused project removal: whose work, and in which worktree. */
 const projectClause = (blocker: RemovalBlocker): string => {

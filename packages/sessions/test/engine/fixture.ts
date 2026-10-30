@@ -72,6 +72,7 @@ import {
   type AgentMemoryHomes,
   makeScreensMemory,
   ScreensRepo,
+  RemovalFencesRepo,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -1480,6 +1481,8 @@ export interface World {
   readonly serviceForwards: Map<string, ServiceForward>;
   readonly serviceObservations: Map<string, ServiceObservation>;
   readonly reachedAttempts: Set<string>;
+  /** Sessions a removal's mark covers (`RemovalFencesRepo.admitsSessionWork`). */
+  readonly removalMarkedSessions: Set<string>;
   /** Each Service attempt's recorded launch (`launch_cwd`, `launch_env`, `launch_ready`). */
   readonly launches: Map<string, ServiceLaunch>;
   readonly setupRuns: Array<WorldSetupRun>;
@@ -1588,6 +1591,7 @@ export const makeWorld = (): World => ({
   serviceForwards: new Map(),
   serviceObservations: new Map(),
   reachedAttempts: new Set(),
+  removalMarkedSessions: new Set(),
   launches: new Map(),
   setupRuns: [],
   setupFinishing: undefined,
@@ -3180,6 +3184,7 @@ export const worktreesLayer = (world: World) =>
         world.worktrees.delete(id);
       }),
     changeOwnerOf: (id) => Effect.succeed(world.worktrees.get(id)?.changeOwnerUserId ?? null),
+    nestedRepositories: () => Effect.succeed([]),
     newestLiveSessionId: (id) =>
       Effect.succeed(
         [...world.sessions.values()]
@@ -3923,6 +3928,11 @@ export const withPreparedEngineEffect = <B, A, E>(
           });
     const preferences = options.messageSettings ?? new Map<string, MessageSettings>();
     const engineLayer = SessionEngineLive.pipe(
+      Layer.provide(
+        Layer.mock(RemovalFencesRepo, {
+          admitsSessionWork: (id) => Effect.sync(() => !world.removalMarkedSessions.has(id)),
+        }),
+      ),
       Layer.provide(
         Layer.succeed(MessageSettingsRepo, {
           forUser: (id) => Effect.sync(() => preferences.get(id) ?? DEFAULT_MESSAGE_SETTINGS),

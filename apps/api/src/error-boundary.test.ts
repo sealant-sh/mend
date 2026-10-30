@@ -11,6 +11,7 @@ import {
   hostUserNamespacesRefusal,
   hostUserNamespacesRefusalParts,
 } from "@mend/domain/host-user-namespaces";
+import { REMOVAL_START_REFUSED } from "@mend/domain/workbench";
 import { Cause, Effect, Layer, Logger, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -70,6 +71,16 @@ const serve = (mode: "redacted" | "verbose", logs: string[] = []) => {
                 cause: Cause.fail(new Error("admission refused by the test")),
               }),
             ),
+          }),
+        ),
+      );
+      // A resumed session, a shell or a forward a removal's mark refused in the database (0164).
+      yield* router.add("GET", "/api/removal-fenced", () =>
+        Effect.die(
+          failedQuery({
+            query: 'update "agent_sessions" set "status" = $1',
+            params: ["running"],
+            cause: { message: "worktree w-1 is being removed", cause: { code: "MRFEN" } },
           }),
         ),
       );
@@ -136,6 +147,15 @@ describe("the error boundary", () => {
     const body: unknown = JSON.parse(text);
     expect(body).toMatchObject({ _tag: "InternalError" });
     expect(body).toHaveProperty("reference", expect.stringMatching(/^[0-9a-f]{16}$/));
+  });
+
+  it("answers a start a removal's mark refused as RemovalInProgress, on any route", async () => {
+    const response = await serve("redacted")("/api/removal-fenced");
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      _tag: "RemovalInProgress",
+      message: REMOVAL_START_REFUSED,
+    });
   });
 
   it("replaces a 5xx body nobody declared", async () => {

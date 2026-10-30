@@ -69,6 +69,13 @@ export class WorktreesRepo extends Context.Service<
      */
     readonly changeOwnerOf: (id: WorktreeId) => Effect.Effect<string | null>;
     /**
+     * Repositories added with `mend repo add` whose files are saved only with this worktree, kept
+     * after the session that added them is deleted (0164).
+     */
+    readonly nestedRepositories: (
+      id: WorktreeId,
+    ) => Effect.Effect<ReadonlyArray<{ readonly path: string; readonly branch: string }>>;
+    /**
      * The follow-up target resolver: the newest live conversation in the
      * worktree, or null when none is live.
      */
@@ -82,16 +89,18 @@ const toWorktree = ({
   removalPhase: _phase,
   removalId: _id,
   removalSince: _since,
+  changeOwnerRecorded: _recorded,
   ...row
 }: typeof worktrees.$inferSelect): Worktree =>
   new Worktree({ ...row, handoff: row.handoff === null ? null : decodeHandoff(row.handoff) });
 
 // Compile-time seam tripwire (same discipline as SessionsRepo): a column added
-// to `worktrees` must land in @mend/domain's Worktree in the same change. A removal's mark is the
-// one exception: only RemovalFencesRepo reads it.
+// to `worktrees` must land in @mend/domain's Worktree in the same change. A removal's mark and
+// whether the change owner is recorded are the exceptions: only the database's triggers and
+// RemovalFencesRepo read them.
 type WorktreeRowShape = Omit<
   typeof worktrees.$inferSelect,
-  "removalPhase" | "removalId" | "removalSince"
+  "removalPhase" | "removalId" | "removalSince" | "changeOwnerRecorded"
 >;
 type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] extends [never]
   ? true
@@ -242,6 +251,14 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return row?.owner ?? null;
       });
 
+      const nestedRepositories = Effect.fn("WorktreesRepo.nestedRepositories")(function* (
+        id: WorktreeId,
+      ) {
+        return yield* pg<{ readonly path: string; readonly branch: string }>`
+          SELECT path, branch FROM worktree_nested_repositories
+          WHERE worktree_id = ${id} ORDER BY path`.pipe(Effect.orDie);
+      });
+
       const newestLiveSessionId = Effect.fn("WorktreesRepo.newestLiveSessionId")(function* (
         id: WorktreeId,
       ) {
@@ -272,6 +289,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         rename,
         remove,
         changeOwnerOf,
+        nestedRepositories,
         newestLiveSessionId,
       };
     }),

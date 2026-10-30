@@ -14,6 +14,11 @@ import { ids } from "../../test/support/tenancy-harness.ts";
  * and `force=true` is the override.
  */
 
+/** What migration 0164 keeps of a repository nested in the worktree. */
+const nestedOf = (row: { readonly path: string; readonly branch: string }) => ({
+  path: row.path,
+  branch: row.branch,
+});
 const privateAlice = ids("private-alice");
 const NOW = new Date("2026-10-05T09:00:00.000Z");
 
@@ -90,6 +95,7 @@ describe("DELETE /worktrees/:id with repositories added by its sessions", () => 
 
   it("refuses while a session here holds a repository nested inside the worktree, and offers the override", async () => {
     held = [repository("core"), repository("sealantd", { state: "failed" })];
+    api.world.nestedRepositories.set(privateAlice.worktree, held.map(nestedOf));
     const response = await remove();
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
@@ -139,6 +145,7 @@ describe("DELETE /worktrees/:id with repositories added by its sessions", () => 
       },
     );
     try {
+      unlanded.world.nestedRepositories.set(privateAlice.worktree, held.map(nestedOf));
       const response = await unlanded.request(
         "alice",
         "DELETE",

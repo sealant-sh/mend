@@ -53,6 +53,7 @@ import { ProjectAccessLive } from "../access.ts";
 import { errorBoundary } from "../error-boundary.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { ProjectCreationLive } from "../project-creation.ts";
+import { Removal } from "../removal.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { Gh } from "./github.ts";
@@ -145,6 +146,7 @@ const unused = Layer.mergeAll(
   Layer.mock(Gh, {}),
   Layer.mock(GithubIdentity, {}),
   Layer.mock(SessionRepositoriesRepo, { listForProject: () => Effect.succeed([]) }),
+  Layer.mock(Removal, {}),
   Layer.succeed(DeploymentConfig, {
     mode: "local",
     sessionEndpoint: undefined,

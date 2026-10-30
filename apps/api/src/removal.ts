@@ -9,6 +9,7 @@ import {
 } from "@mend/api-contracts";
 import {
   type FencedRow,
+  type RemovalFenceId,
   HotWorkspacesRepo,
   isRemovalFenced,
   ProjectsRepo,
@@ -25,7 +26,10 @@ import {
 } from "@mend/db";
 import type { ProjectId, WorktreeId } from "@mend/domain";
 import {
+  type ChangeStanding,
   decideRemoval,
+  REMOVAL_START_REFUSED,
+  REMOVAL_FENCE_LEASE_SECONDS,
   type ForeignHolderFact,
   type HoldFact,
   type NonEmptyBlockers,
@@ -43,11 +47,12 @@ import {
   type WorktreeHolds,
   worktreeRefusalWords,
   worktreeRemovalRight,
+  underwayWith,
 } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Store } from "@mend/store";
-import { Effect, Layer, Ref } from "effect";
+import { Effect, Fiber, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { changeStandingOf } from "./landing-state.ts";
@@ -87,8 +92,8 @@ export class Removal extends Context.Service<
   }
 >()("@mend/api/Removal") {}
 
-const START_REFUSED =
-  "not started · a removal of this worktree or its project is under way · start again once it is refused";
+/** How often a removal renews its `checking` mark: well inside the lease. */
+const RENEW_EVERY = `${Math.floor(REMOVAL_FENCE_LEASE_SECONDS / 4)} seconds` as const;
 
 /** A session start in a worktree or project a removal has marked, refused before anything runs. */
 export const refuseStartWhileRemoving = Effect.fn("refuseStartWhileRemoving")(function* (place: {
@@ -96,7 +101,7 @@ export const refuseStartWhileRemoving = Effect.fn("refuseStartWhileRemoving")(fu
   readonly worktreeId: WorktreeId | null;
 }) {
   if (!(yield* (yield* RemovalFencesRepo).admitsStart(place))) {
-    return yield* new RemovalInProgress({ message: START_REFUSED });
+    return yield* new RemovalInProgress({ message: REMOVAL_START_REFUSED });
   }
 });
 
@@ -111,7 +116,7 @@ export const refusedWhileRemoving = <A, E, R>(
     Effect.catchCause(
       (cause): Effect.Effect<never, E | RemovalInProgress> =>
         isRemovalFenced(cause)
-          ? Effect.fail(new RemovalInProgress({ message: START_REFUSED }))
+          ? Effect.fail(new RemovalInProgress({ message: REMOVAL_START_REFUSED }))
           : Effect.failCause(cause),
     ),
   );
@@ -273,14 +278,15 @@ export const RemovalLive: Layer.Layer<
 
     /**
      * Everything a removal without force reads about one worktree: its holds, where its change
-     * stands, and the repositories nested inside it (docs/adr/0011).
+     * stands, and the repositories nested inside it (docs/adr/0011), kept after the session that
+     * added them is gone. A change that cannot be read stands in the way with the rest.
      */
     const worktreeFacts = Effect.fn("Removal.worktreeFacts")(function* (
       project: Project,
       worktree: Worktree,
       callerUserId: string,
     ) {
-      const { facts, inhabitants } = yield* worktreeHolds(worktree);
+      const { facts } = yield* worktreeHolds(worktree);
       const standing = yield* changeStandingOf({
         change: yield* changes.byWorktree(worktree.id),
         project,
@@ -288,22 +294,18 @@ export const RemovalLive: Layer.Layer<
         userId: callerUserId,
       }).pipe(
         Effect.provideContext(standingServices),
-        Effect.mapError(
-          (error) =>
-            new StoreFailure({
-              message:
+        Effect.catch(
+          (error): Effect.Effect<ChangeStanding> =>
+            Effect.succeed({
+              _tag: "unread",
+              reason:
                 error._tag === "GitError" && error.stderr !== ""
                   ? error.stderr
                   : `the change in ${worktree.name} could not be read`,
             }),
         ),
       );
-      const nested = (yield* Effect.forEach(inhabitants, (session) =>
-        repositories.listForSession(session.id),
-      ))
-        .flat()
-        .filter((repository) => repository.capture === "nested")
-        .map((repository) => ({ path: repository.path, branch: repository.branch }));
+      const nested = yield* worktrees.nestedRepositories(worktree.id);
       return { ...facts, standing, nestedRepositories: nested } satisfies WorktreeFacts;
     });
 
@@ -325,41 +327,62 @@ export const RemovalLive: Layer.Layer<
       return facts;
     });
 
+    /** Keeps this removal's `checking` mark fresh for as long as `checks` runs. */
+    const renewing = <A, E>(row: FencedRow, id: RemovalFenceId, checks: Effect.Effect<A, E>) =>
+      Effect.gen(function* () {
+        const renew = Effect.gen(function* () {
+          while (true) {
+            yield* Effect.sleep(RENEW_EVERY);
+            if (!(yield* fences.renew(row, id))) return;
+          }
+        });
+        const renewal = yield* Effect.forkChild(renew);
+        return yield* checks.pipe(Effect.ensuring(Fiber.interrupt(renewal)));
+      });
+
     /**
-     * Marks `row`, decides, and either releases the mark and refuses, or commits it and deletes.
-     * `released` runs whenever this removal gives its mark back. `finish` skips the decision: an
-     * earlier removal passed it and stopped while deleting. A deletion that fails keeps the mark,
-     * open for the next removal to finish at once.
+     * Marks `row`, then reads who may remove it and what stands in the way under that mark, and
+     * either gives the mark back and refuses, or commits it and deletes. `finish` skips the
+     * decision: an earlier removal passed it and stopped while deleting. A deletion that fails
+     * keeps the mark, open for the next removal to finish at once. A removal that meets another
+     * under way reports that with every other blocker, read without a mark.
      */
-    const underFence = <E, Gone>(
+    const underFence = <Target, Denied, E, Gone>(
       row: FencedRow,
       scope: "worktree" | "project",
       steps: {
-        readonly decide: Effect.Effect<RemovalDecision, E>;
-        readonly remove: Effect.Effect<RemovalReport>;
+        readonly authorize: Effect.Effect<Target, Denied>;
+        readonly decide: (target: Target) => Effect.Effect<RemovalDecision, E>;
+        readonly remove: (target: Target) => Effect.Effect<RemovalReport>;
         readonly gone: Gone;
-        readonly released?: Effect.Effect<void>;
       },
-    ): Effect.Effect<RemovalReport, E | Gone | RemovalRefused> =>
+    ): Effect.Effect<RemovalReport, Denied | E | Gone | RemovalRefused> =>
       Effect.gen(function* () {
         const taken = yield* fences.take(row);
         if (taken._tag === "gone") return yield* Effect.fail(steps.gone);
-        if (taken._tag === "underway") return yield* refused(scope, underway, false);
-        const release = fences
-          .release(row, taken.id)
-          .pipe(Effect.andThen(steps.released ?? Effect.void));
+        if (taken._tag === "underway") {
+          const decision = yield* steps.decide(yield* steps.authorize);
+          return yield* refused(scope, underwayWith(decision), false);
+        }
+        const giveBack =
+          taken._tag === "held" ? fences.release(row, taken.id) : fences.handOver(row, taken.id);
+        const target = yield* steps.authorize.pipe(Effect.onError(() => giveBack));
         if (taken._tag === "held") {
-          const decision = yield* steps.decide.pipe(Effect.onError(() => release));
+          const decision = yield* renewing(row, taken.id, steps.decide(target)).pipe(
+            Effect.onError(() => giveBack),
+          );
           if (decision._tag === "Refuse") {
-            yield* release;
+            yield* giveBack;
             return yield* refused(scope, decision.blockers, decision.forceWouldLift);
           }
           if (!(yield* fences.commit(row, taken.id))) {
-            yield* release;
+            yield* giveBack;
             return yield* refused(scope, underway, false);
           }
         }
-        return yield* steps.remove.pipe(Effect.onError(() => fences.handOver(row, taken.id)));
+        return yield* steps
+          .remove(target)
+          .pipe(Effect.onError(() => fences.handOver(row, taken.id)));
       });
 
     const removeWorktree = Effect.fn("Removal.worktree")(function* (
@@ -368,44 +391,57 @@ export const RemovalLive: Layer.Layer<
       force: boolean,
     ) {
       const notFound = new WorktreeNotFound({ id: target.id });
-      const { inhabitants, holders } = yield* membersOf(target);
-      const right = worktreeRemovalRight({
-        callerUserId: caller.userId,
-        changeOwner: yield* personOf(target.changeOwnerUserId),
-        managesProject: caller.managesProject,
-        ownsEverySession: [...inhabitants, ...holders].every(
-          (session) => session.ownerUserId === caller.userId,
-        ),
-      });
-      if (right._tag === "hidden") return yield* notFound;
-      if (right._tag === "not-change-owner") {
-        return yield* new RemovalForbidden({
-          owner: right.owner,
-          message: notChangeOwnerWords(right.owner, "in-mend"),
-        });
-      }
       const project = yield* projects
         .byId(target.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.fail(notFound)));
+      // The owner a first session records while the route reads decides, so this reads afresh.
+      const authorize = Effect.gen(function* () {
+        const current = yield* worktrees
+          .byId(target.id)
+          .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.fail(notFound)));
+        const { inhabitants, holders } = yield* membersOf(current);
+        const right = worktreeRemovalRight({
+          callerUserId: caller.userId,
+          changeOwner: yield* personOf(current.changeOwnerUserId),
+          changeOwnerProven: current.changeOwnerProven,
+          managesProject: caller.managesProject,
+          ownsEverySession: [...inhabitants, ...holders].every(
+            (session) => session.ownerUserId === caller.userId,
+          ),
+        });
+        if (right._tag === "hidden") return yield* notFound;
+        if (right._tag === "not-change-owner") {
+          return yield* new RemovalForbidden({
+            owner: right.owner,
+            message: notChangeOwnerWords(right.owner, "in-mend"),
+          });
+        }
+        return current;
+      });
+      // Refused before any mark is taken; asked again under it, where the answer holds.
+      yield* authorize;
       return yield* underFence({ kind: "worktree", id: target.id }, "worktree", {
-        decide: force
-          ? worktreeHolds(target).pipe(
-              Effect.map(({ facts }) =>
-                decideRemoval({ kind: "worktree", force, worktree: facts }),
+        authorize,
+        decide: (current) =>
+          force
+            ? worktreeHolds(current).pipe(
+                Effect.map(({ facts }) =>
+                  decideRemoval({ kind: "worktree", force, worktree: facts }),
+                ),
+              )
+            : worktreeFacts(project, current, caller.userId).pipe(
+                Effect.map((facts) => decideRemoval({ kind: "worktree", force, worktree: facts })),
               ),
-            )
-          : worktreeFacts(project, target, caller.userId).pipe(
-              Effect.map((facts) => decideRemoval({ kind: "worktree", force, worktree: facts })),
-            ),
-        remove: Effect.gen(function* () {
-          const { leftover } = yield* store.removeWorktreeForce(
-            project.storePath,
-            target.directory,
-          );
-          // Sessions, change, chain, and review artifacts cascade with the row.
-          yield* worktrees.remove(target.id);
-          return new RemovalReport({ removed: true, leftover });
-        }),
+        remove: (current) =>
+          Effect.gen(function* () {
+            const { leftover } = yield* store.removeWorktreeForce(
+              project.storePath,
+              current.directory,
+            );
+            // Sessions, change, chain, and review artifacts cascade with the row.
+            yield* worktrees.remove(current.id);
+            return new RemovalReport({ removed: true, leftover });
+          }),
         gone: notFound,
       });
     });
@@ -414,52 +450,47 @@ export const RemovalLive: Layer.Layer<
       target: Project,
       caller: RemovalCaller,
     ) {
-      // Resources keep their data only in their volumes (docs/adr/0019, "Durability"): their own
-      // fence keeps a declaration from landing while this removal reads and deletes. It goes with
-      // the project's row, or is lifted with this removal's mark.
-      const resourceFence = yield* Ref.make<Effect.Effect<void>>(Effect.void);
-      const decide = Effect.gen(function* () {
-        const declared = yield* resources.fenceProjectRemoval(target.id).pipe(
-          Effect.tap((fence) => Ref.set(resourceFence, resources.liftProjectRemovalFence(fence))),
-          Effect.as<ReadonlyArray<string>>([]),
-          Effect.catchTag("ProjectHasResourcesError", ({ names }) => Effect.succeed(names)),
-        );
-        const facts = yield* Effect.forEach(
-          yield* worktrees.listForProject(target.id),
-          (worktree) => worktreeFacts(target, worktree, caller.userId),
-          { concurrency: 4 },
-        );
-        return decideRemoval({
-          kind: "project",
-          project: {
-            worktrees: facts,
-            foreignHolders: yield* foreignHolders(target),
-            resources: declared,
-          },
-        });
-      });
       return yield* underFence({ kind: "project", id: target.id }, "project", {
-        decide,
-        released: Effect.flatten(Ref.get(resourceFence)),
-        remove: Effect.gen(function* () {
-          // Hot workspaces hold nobody's work: their rows cascade with the project, but the
-          // containers would otherwise run until the platform's TTL.
-          yield* Effect.forEach(
-            yield* hotWorkspaces.listForProject(target.id),
-            (entry) =>
-              entry.sealantWorkspaceId === null
-                ? Effect.void
-                : sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
-                    Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
-                    Effect.ignore,
-                    asSealantUser(entry.ownerUserId),
-                  ),
-            { concurrency: 4 },
-          );
-          const { leftover } = yield* store.removeProjectStore(target.storePath);
-          yield* projects.remove(target.id);
-          return new RemovalReport({ removed: true, leftover });
-        }),
+        authorize: Effect.succeed(target),
+        // Resources keep their data only in their volumes (docs/adr/0019, "Durability"): a
+        // declaration made while this removal's mark stands is refused, so the names read here
+        // are every one there will be.
+        decide: () =>
+          Effect.gen(function* () {
+            const facts = yield* Effect.forEach(
+              yield* worktrees.listForProject(target.id),
+              (worktree) => worktreeFacts(target, worktree, caller.userId),
+              { concurrency: 4 },
+            );
+            return decideRemoval({
+              kind: "project",
+              project: {
+                worktrees: facts,
+                foreignHolders: yield* foreignHolders(target),
+                resources: yield* resources.declaredNames(target.id),
+              },
+            });
+          }),
+        remove: () =>
+          Effect.gen(function* () {
+            // Hot workspaces hold nobody's work: their rows cascade with the project, but the
+            // containers would otherwise run until the platform's TTL.
+            yield* Effect.forEach(
+              yield* hotWorkspaces.listForProject(target.id),
+              (entry) =>
+                entry.sealantWorkspaceId === null
+                  ? Effect.void
+                  : sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
+                      Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
+                      Effect.ignore,
+                      asSealantUser(entry.ownerUserId),
+                    ),
+              { concurrency: 4 },
+            );
+            const { leftover } = yield* store.removeProjectStore(target.storePath);
+            yield* projects.remove(target.id);
+            return new RemovalReport({ removed: true, leftover });
+          }),
         gone: new NotFound({ id: target.id }),
       });
     });

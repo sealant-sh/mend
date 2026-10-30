@@ -19,6 +19,7 @@ import {
   type WorktreeFacts,
   worktreeRefusalWords,
   worktreeRemovalRight,
+  hasProvenOwner,
 } from "./removal.ts";
 
 const file = (path: string, additions: number, deletions: number) => ({
@@ -150,6 +151,39 @@ describe("decideRemoval, a worktree", () => {
   });
 });
 
+describe("a change Mend could not read", () => {
+  const unread: UnlandedStanding = { _tag: "unread", reason: "git diff failed." };
+
+  it("is refused beside every other blocker, and the owner's force lifts it", () => {
+    const facts = worktree({ sessions: [liveSession("s-1")], standing: unread });
+    const decision = decideRemoval({ kind: "worktree", force: false, worktree: facts });
+    expect(refusedBlockers(decision)).toEqual(["SessionLive", "Unlanded"]);
+    const alone = worktree({ standing: unread });
+    expect(decideRemoval({ kind: "worktree", force: true, worktree: alone })._tag).toBe("Remove");
+  });
+
+  it("says so in Mend and outside it", () => {
+    const blockers = [
+      {
+        _tag: "Unlanded" as const,
+        worktreeId: WorktreeId.make("w-1"),
+        worktreeName: "fix-auth",
+        owner: anna,
+        standing: unread,
+      },
+    ];
+    expect(worktreeRefusalWords(refuse(blockers, true), "in-mend")).toBe(
+      `Mend could not read this worktree's change · git diff failed. Try again, ${REMOVAL_FORCE_HINT}.`,
+    );
+    expect(worktreeRefusalWords(refuse(blockers), "outside-mend")).toBe(
+      "Mend could not read this worktree's change · git diff failed. Mend keeps the worktree; try again from Mend.",
+    );
+    expect(projectRefusalWords(blockers, "in-mend")).toContain(
+      "fix-auth holds Anna's change, which Mend could not read",
+    );
+  });
+});
+
 describe("decideRemoval, a project", () => {
   it("removes a project whose every worktree is kept and idle", () => {
     expect(
@@ -218,11 +252,12 @@ describe("LIFTED_BY_FORCE", () => {
 });
 
 describe("worktreeRemovalRight (decisions Q4, Q7, Q8)", () => {
-  it("lets only the change's owner remove a worktree with an owner", () => {
+  it("lets only the change's proven owner remove the worktree", () => {
     expect(
       worktreeRemovalRight({
         callerUserId: "u-anna",
         changeOwner: anna,
+        changeOwnerProven: true,
         managesProject: false,
         ownsEverySession: false,
       }),
@@ -231,23 +266,36 @@ describe("worktreeRemovalRight (decisions Q4, Q7, Q8)", () => {
       worktreeRemovalRight({
         callerUserId: "u-kostas",
         changeOwner: anna,
+        changeOwnerProven: true,
         managesProject: true,
         ownsEverySession: true,
       }),
     ).toEqual({ _tag: "not-change-owner", owner: anna });
   });
 
-  it("keeps today's rule for a worktree with no provable owner", () => {
-    const ownerless = { callerUserId: "u-kostas", changeOwner: null } as const;
-    expect(
-      worktreeRemovalRight({ ...ownerless, managesProject: true, ownsEverySession: false }),
-    ).toEqual({ _tag: "allowed" });
-    expect(
-      worktreeRemovalRight({ ...ownerless, managesProject: false, ownsEverySession: true }),
-    ).toEqual({ _tag: "allowed" });
-    expect(
-      worktreeRemovalRight({ ...ownerless, managesProject: false, ownsEverySession: false }),
-    ).toEqual({ _tag: "hidden" });
+  it("keeps today's rule for a worktree with no owner, or one the history cannot prove", () => {
+    for (const unproven of [
+      { callerUserId: "u-kostas", changeOwner: null, changeOwnerProven: false },
+      { callerUserId: "u-kostas", changeOwner: anna, changeOwnerProven: false },
+    ]) {
+      expect(
+        worktreeRemovalRight({ ...unproven, managesProject: true, ownsEverySession: false }),
+      ).toEqual({ _tag: "allowed" });
+      expect(
+        worktreeRemovalRight({ ...unproven, managesProject: false, ownsEverySession: true }),
+      ).toEqual({ _tag: "allowed" });
+      expect(
+        worktreeRemovalRight({ ...unproven, managesProject: false, ownsEverySession: false }),
+      ).toEqual({ _tag: "hidden" });
+    }
+  });
+});
+
+describe("hasProvenOwner (decision Q8)", () => {
+  it("lets a client outside Mend ask only for a worktree whose first owner is proven", () => {
+    expect(hasProvenOwner({ changeOwnerUserId: "u-anna", changeOwnerProven: true })).toBe(true);
+    expect(hasProvenOwner({ changeOwnerUserId: "u-anna", changeOwnerProven: false })).toBe(false);
+    expect(hasProvenOwner({ changeOwnerUserId: null, changeOwnerProven: false })).toBe(false);
   });
 });
 
