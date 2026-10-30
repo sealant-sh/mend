@@ -98,13 +98,23 @@ export const ScreenActionNote = Schema.Struct({
 });
 export type ScreenActionNote = typeof ScreenActionNote.Type;
 
+/** A `type` action keeps its text's length only, wherever Mend stores or hashes it. */
+export const withoutTypedText = (action: ScreenAction): ScreenActionNote["action"] =>
+  action.kind === "type" ? { kind: "type", length: action.text.length } : action;
+
 export const screenActionNote = (
   action: ScreenAction,
   result: ScreenActionResult,
-): ScreenActionNote => ({
-  action: action.kind === "type" ? { kind: "type", length: action.text.length } : action,
-  result,
-});
+): ScreenActionNote => ({ action: withoutTypedText(action), result });
+
+/** What a screen tool call did, as its durable claim records it. */
+export const ScreenCallOutcome = Schema.Literals([
+  "applied",
+  "interrupted",
+  "refused",
+  "outcome_unknown",
+]);
+export type ScreenCallOutcome = typeof ScreenCallOutcome.Type;
 
 export const ScreenLapse = Schema.Literals(["lease-lapsed", "disconnected", "revoked", "restart"]);
 export type ScreenLapse = typeof ScreenLapse.Type;

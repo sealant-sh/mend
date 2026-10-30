@@ -3865,6 +3865,42 @@ const screensMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX screens_session_created_idx ON screens (session_id, created_at)`;
 });
 
+/**
+ * 0152 (docs/adr/0020, "The screen log, its frames and the record", "Durable call claims"): each
+ * screen's log, numbered from its row's `last_seq` under the row's lock, and each tool call's
+ * claim. A claim stores its arguments' hash, never a `type` action's text.
+ */
+const screenLogMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE screens ADD COLUMN last_seq integer NOT NULL DEFAULT 0`;
+  yield* sql`CREATE TABLE screen_log (
+    screen_id text NOT NULL REFERENCES screens (id) ON DELETE CASCADE,
+    seq integer NOT NULL,
+    at timestamptz NOT NULL,
+    actor jsonb NOT NULL,
+    body jsonb NOT NULL,
+    frame_id text,
+    frame_digest text,
+    frame_state text CHECK (frame_state IN ('stored', 'expired', 'missing')),
+    checkpoint_id text REFERENCES checkpoints (id) ON DELETE SET NULL,
+    PRIMARY KEY (screen_id, seq),
+    CHECK ((frame_id IS NULL) = (frame_digest IS NULL) AND (frame_id IS NULL) = (frame_state IS NULL))
+  )`;
+  yield* sql`CREATE TABLE screen_calls (
+    screen_id text NOT NULL REFERENCES screens (id) ON DELETE CASCADE,
+    call_key text NOT NULL,
+    args_sha256 text NOT NULL,
+    outcome text CHECK (outcome IN ('applied', 'interrupted', 'refused', 'outcome_unknown')),
+    log_seq integer,
+    claimed_at timestamptz NOT NULL DEFAULT now(),
+    settled_at timestamptz,
+    PRIMARY KEY (screen_id, call_key),
+    FOREIGN KEY (screen_id, log_seq) REFERENCES screen_log (screen_id, seq),
+    CHECK ((outcome IS NULL) = (settled_at IS NULL))
+  )`;
+  yield* sql`CREATE INDEX screen_calls_open_idx ON screen_calls (screen_id) WHERE outcome IS NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4012,4 +4048,5 @@ export const migrations = {
   "0143_recipe_launch": recipeLaunchMigration,
   "0148_resources": resourcesMigration,
   "0151_screens": screensMigration,
+  "0152_screen_log": screenLogMigration,
 };

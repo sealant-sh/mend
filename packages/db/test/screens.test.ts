@@ -2,19 +2,29 @@ import { randomUUID } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
 import {
+  ScreenFrameId,
   ScreenId,
   SealantWorkspaceId,
   SessionId,
   SessionProcessId,
   ViewerConnectionId,
 } from "@mend/domain";
+import { FrameDigest, type ScreenAction, screenActionNote } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
-import { makeScreensMemory, ScreensRepo, ScreensRepoLive } from "../src/repos/screens.ts";
+import {
+  makeScreensMemory,
+  type NewScreenLogEntry,
+  type ScreenAgentAnswer,
+  type ScreenCallArguments,
+  screenCallDigest,
+  ScreensRepo,
+  ScreensRepoLive,
+} from "../src/repos/screens.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 interface ScreenFixture {
@@ -27,6 +37,22 @@ type RunFixture = (work: (fixture: ScreenFixture) => Effect.Effect<void, unknown
 
 const workspace = () => SealantWorkspaceId.make(`ws-${randomUUID()}`);
 const OWNER = "alice";
+const TYPED = "correct horse battery staple";
+const typing: ScreenAction = { kind: "type", text: TYPED };
+const act = (...actions: [ScreenAction, ...Array<ScreenAction>]): ScreenCallArguments => ({
+  tool: "screen_act",
+  params: { actions },
+});
+const frame = (n: number) => ({
+  id: ScreenFrameId.make(`frame-${n}`),
+  digest: FrameDigest.make(n.toString(16).padStart(64, "0")),
+});
+const acted = (processId: SessionProcessId, n: number): ScreenAgentAnswer => ({
+  processId,
+  turnId: null,
+  body: { _tag: "Acted", notes: [screenActionNote(typing, "done")] },
+  frame: frame(n),
+});
 
 const screenContract = (runFixture: RunFixture) => {
   it("gives two sessions in one workspace two displays, kept across an idle stop", async () =>
@@ -140,7 +166,138 @@ const screenContract = (runFixture: RunFixture) => {
         expect(missing).toMatchObject({ _tag: "ScreenNotFoundError" });
       }),
     ));
+
+  it("numbers a screen's log from one, the machine's entries among them", async () =>
+    runFixture(({ screens, session }) =>
+      Effect.gen(function* () {
+        const screen = yield* screens.reserve({
+          sessionId: yield* session(),
+          workspaceId: workspace(),
+        });
+        const connection = ViewerConnectionId.make("c-1");
+        yield* screens.append({
+          screenId: screen.id,
+          actor: { _tag: "Mend" },
+          body: { _tag: "Started" },
+          frame: null,
+        });
+        yield* screens.control(screen.id, { _tag: "Take", by: OWNER, connection }, OWNER);
+        yield* screens.control(screen.id, { _tag: "Fenced", epoch: 1 }, OWNER);
+        yield* screens.append({
+          screenId: screen.id,
+          actor: { _tag: "Person", userId: OWNER },
+          body: { _tag: "PersonInput", clicks: 2, keys: 5, pastes: 0 },
+          frame: frame(1),
+        });
+        const log = yield* screens.log(screen.id);
+        expect(log.map((entry) => [entry.seq, entry.actor._tag, entry.body._tag])).toEqual([
+          [1, "Mend", "Started"],
+          [2, "Person", "Taken"],
+          [3, "Person", "PersonInput"],
+        ]);
+        expect(log[2]?.frame).toEqual({ ...frame(1), state: "stored" });
+        const missing = yield* Effect.flip(
+          screens.append({
+            screenId: ScreenId.make("missing"),
+            actor: { _tag: "Mend" },
+            body: { _tag: "Started" },
+            frame: null,
+          }),
+        );
+        expect(missing).toMatchObject({ _tag: "ScreenNotFoundError" });
+      }),
+    ));
+
+  it("answers a replayed call from its claim and refuses its key with other arguments", async () =>
+    runFixture(({ screens, session, agentProcess }) =>
+      Effect.gen(function* () {
+        const sessionId = yield* session();
+        const process = yield* agentProcess(sessionId);
+        const screen = yield* screens.reserve({ sessionId, workspaceId: workspace() });
+        const call = { screenId: screen.id, callKey: "call-1", args: act(typing) };
+        expect(yield* screens.claim(call)).toEqual({ _tag: "Claimed" });
+        expect(yield* screens.claim(call)).toEqual({ _tag: "Open" });
+        const settled = yield* screens.settle({
+          screenId: screen.id,
+          callKey: "call-1",
+          outcome: "applied",
+          answer: acted(process, 1),
+        });
+        expect(settled).toEqual({ outcome: "applied", seq: 1 });
+        expect(
+          yield* screens.settle({
+            screenId: screen.id,
+            callKey: "call-1",
+            outcome: "interrupted",
+            answer: acted(process, 2),
+          }),
+        ).toEqual(settled);
+        expect(yield* screens.claim(call)).toEqual({ _tag: "Settled", call: settled });
+        expect(
+          yield* screens.claim({ ...call, args: act({ kind: "key", combo: "ctrl+l" }) }),
+        ).toEqual({ _tag: "CallReused" });
+        const [entry, ...rest] = yield* screens.log(screen.id);
+        expect(rest).toEqual([]);
+        expect(entry?.actor).toEqual({
+          _tag: "Agent",
+          processId: process,
+          turnId: null,
+          callKey: "call-1",
+          toolCall: { _tag: "Pending" },
+        });
+        const missing = yield* Effect.flip(
+          screens.claim({ ...call, screenId: ScreenId.make("missing") }),
+        );
+        expect(missing).toMatchObject({ _tag: "ScreenNotFoundError" });
+      }),
+    ));
+
+  it("turns every open claim into outcome_unknown at boot", async () =>
+    runFixture(({ screens, session }) =>
+      Effect.gen(function* () {
+        const screen = yield* screens.reserve({
+          sessionId: yield* session(),
+          workspaceId: workspace(),
+        });
+        const look = (callKey: string) =>
+          screens.claim({ screenId: screen.id, callKey, args: { tool: "screen_look" } });
+        yield* look("open");
+        yield* look("refused");
+        yield* screens.settle({
+          screenId: screen.id,
+          callKey: "refused",
+          outcome: "refused",
+          answer: null,
+        });
+        expect(yield* screens.boot()).toBeGreaterThanOrEqual(1);
+        expect(yield* look("open")).toEqual({
+          _tag: "Settled",
+          call: { outcome: "outcome_unknown", seq: null },
+        });
+        expect(yield* look("refused")).toEqual({
+          _tag: "Settled",
+          call: { outcome: "refused", seq: null },
+        });
+        expect(yield* screens.boot()).toBe(0);
+      }),
+    ));
 };
+
+describe("a screen call's digest", () => {
+  it("keeps a typed text's length and never its content", () => {
+    const digest = screenCallDigest(act(typing));
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(screenCallDigest(act({ kind: "type", text: "x".repeat(TYPED.length) }))).toBe(digest);
+    expect(screenCallDigest(act({ kind: "type", text: `${TYPED}!` }))).not.toBe(digest);
+    expect(screenCallDigest({ tool: "screen_look" })).not.toBe(digest);
+  });
+
+  it("reads the same arguments the same whatever their key order", () => {
+    expect(
+      screenCallDigest(act({ kind: "click", at: { x: 1, y: 2 }, button: "left", count: 2 })),
+    ).toBe(screenCallDigest(act({ count: 2, button: "left", at: { y: 2, x: 1 }, kind: "click" })));
+  });
+});
 
 const runMemoryContract: RunFixture = (work) =>
   Effect.runPromise(
@@ -286,6 +443,141 @@ describe.skipIf(postgres.skip)("screens in Postgres", () => {
         expect((yield* screens.byId(screen.id))?.input).toEqual(
           last?._tag === "Changed" ? last.next : null,
         );
+      }),
+    ));
+
+  it("numbers concurrent appends and input changes without a gap or a repeat", async () =>
+    runPostgresContract(({ screens, session }) =>
+      Effect.gen(function* () {
+        const screen = yield* screens.reserve({
+          sessionId: yield* session(),
+          workspaceId: workspace(),
+        });
+        const appends = Array.from({ length: 30 }, () =>
+          screens.append({
+            screenId: screen.id,
+            actor: { _tag: "Mend" },
+            body: { _tag: "Started" },
+            frame: null,
+          }),
+        );
+        const takes = Array.from({ length: 10 }, (_, n) =>
+          screens.control(
+            screen.id,
+            n % 2 === 0
+              ? { _tag: "Take", by: OWNER, connection: ViewerConnectionId.make(`c-${n}`) }
+              : { _tag: "Fenced", epoch: n },
+            OWNER,
+          ),
+        );
+        yield* Effect.all([...appends, ...takes], { concurrency: "unbounded" });
+        const seqs = (yield* screens.log(screen.id)).map((entry) => entry.seq);
+        expect(seqs).toEqual(Array.from({ length: seqs.length }, (_, n) => n + 1));
+        expect(seqs.length).toBeGreaterThanOrEqual(30);
+      }),
+    ));
+
+  it("writes one entry for a call settled concurrently", async () =>
+    runPostgresContract(({ screens, session, agentProcess }) =>
+      Effect.gen(function* () {
+        const sessionId = yield* session();
+        const process = yield* agentProcess(sessionId);
+        const screen = yield* screens.reserve({ sessionId, workspaceId: workspace() });
+        yield* screens.claim({ screenId: screen.id, callKey: "race", args: act(typing) });
+        const settled = yield* Effect.all(
+          Array.from({ length: 6 }, (_, n) =>
+            screens.settle({
+              screenId: screen.id,
+              callKey: "race",
+              outcome: "applied",
+              answer: acted(process, n),
+            }),
+          ),
+          { concurrency: "unbounded" },
+        );
+        expect(new Set(settled.map((call) => call.seq))).toEqual(new Set([1]));
+        expect(yield* screens.log(screen.id)).toHaveLength(1);
+      }),
+    ));
+
+  it("links an entry to the worktree's latest checkpoint as observed after", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const screens = yield* ScreensRepo;
+        const sessionId = SessionId.make(`s-${randomUUID()}`);
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-checkpoints', 'p-screens', 'checkpoints', 'checkpoints', 'mend/checkpoints',
+                  ${"a".repeat(40)})`;
+        yield* sql`INSERT INTO agent_sessions
+            (id, project_id, worktree_id, owner_user_id, harness, worktree, branch, base_sha, status)
+          VALUES (${sessionId}, 'p-screens', 'wt-checkpoints', ${OWNER}, 'claude', 'checkpoints',
+                  'mend/checkpoints', ${"a".repeat(40)}, 'running')`;
+        const screen = yield* screens.reserve({ sessionId, workspaceId: workspace() });
+        const started: NewScreenLogEntry = {
+          screenId: screen.id,
+          actor: { _tag: "Mend" },
+          body: { _tag: "Started" },
+          frame: null,
+        };
+        expect((yield* screens.append(started)).checkpoint).toBeNull();
+        for (const ordinal of [0, 1]) {
+          yield* sql`INSERT INTO checkpoints (id, worktree_id, session_id, ordinal, ref, sha, trigger)
+            VALUES (${`cp-${ordinal}`}, 'wt-checkpoints', ${sessionId}, ${ordinal},
+                    ${`refs/mend/checkpoints/wt-checkpoints/${ordinal}`}, ${"b".repeat(40)},
+                    'turn-boundary')`;
+        }
+        expect((yield* screens.append(started)).checkpoint).toEqual({
+          _tag: "ObservedAfter",
+          checkpointId: "cp-1",
+        });
+      }),
+    ));
+
+  it("stores no typed text in any screen row", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fixture = yield* postgresFixture;
+        const sessionId = yield* fixture.session();
+        const process = yield* fixture.agentProcess(sessionId);
+        const screen = yield* fixture.screens.reserve({ sessionId, workspaceId: workspace() });
+        yield* fixture.screens.claim({ screenId: screen.id, callKey: "typed", args: act(typing) });
+        yield* fixture.screens.settle({
+          screenId: screen.id,
+          callKey: "typed",
+          outcome: "applied",
+          answer: acted(process, 1),
+        });
+        const widened: { kind: "type"; length: number; text: string } = {
+          kind: "type",
+          length: TYPED.length,
+          text: TYPED,
+        };
+        yield* fixture.screens.claim({
+          screenId: screen.id,
+          callKey: "widened",
+          args: act(typing),
+        });
+        yield* fixture.screens.settle({
+          screenId: screen.id,
+          callKey: "widened",
+          outcome: "applied",
+          answer: {
+            processId: process,
+            turnId: null,
+            body: { _tag: "Acted", notes: [{ action: widened, result: "done" }] },
+            frame: null,
+          },
+        });
+        const stored = yield* sql<{ readonly row: string }>`
+          SELECT row_to_json(screens)::text AS row FROM screens
+          UNION ALL SELECT row_to_json(screen_log)::text FROM screen_log
+          UNION ALL SELECT row_to_json(screen_calls)::text FROM screen_calls`;
+        expect(
+          stored.some((row) => new RegExp(`"length": ?${TYPED.length}\\b`).test(row.row)),
+        ).toBe(true);
+        expect(stored.filter((row) => row.row.includes(TYPED))).toEqual([]);
       }),
     ));
 });
