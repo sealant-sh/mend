@@ -3765,7 +3765,7 @@ const recipeLaunchMigration = Effect.gen(function* () {
 });
 
 /**
- * 0146 (docs/adr/0019): resource definitions a project declares, each approved revision of one
+ * 0144 (docs/adr/0019): resource definitions a project declares, each approved revision of one
  * (immutable, one per digest), and each worktree's selection of a project resource. A project
  * with definitions is not deleted: removal archives them first (ADR 0019, "Durability").
  */
@@ -3963,5 +3963,5 @@ export const migrations = {
   "0141_preview_ports": previewPortsMigration,
   "0142_turn_steers": turnSteersMigration,
   "0143_recipe_launch": recipeLaunchMigration,
-  "0146_resources": resourcesMigration,
+  "0144_resources": resourcesMigration,
 };

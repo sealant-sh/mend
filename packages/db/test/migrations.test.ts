@@ -3016,7 +3016,21 @@ describe.skipIf(postgres.skip)("0140 session pages", () => {
   });
 });
 
-describe.skipIf(postgres.skip)("0146 resources", () => {
+describe("migration ids", () => {
+  // Shipped before the rule; a migration below the latest applied id never runs, so a new gap
+  // would hide whichever migration later took that number.
+  const SHIPPED_GAPS = [74, 121, 124];
+
+  it("leave no gap but the shipped ones", () => {
+    const numbers = Object.keys(migrations).map((id) => Number(id.slice(0, 4)));
+    const expected = Array.from({ length: Math.max(...numbers) }, (_, at) => at + 1).filter(
+      (number) => !SHIPPED_GAPS.includes(number),
+    );
+    expect(numbers).toEqual(expected);
+  });
+});
+
+describe.skipIf(postgres.skip)("0144 resources", () => {
   const DB = `${SCRATCH_DB}_resources`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);
@@ -3048,7 +3062,7 @@ describe.skipIf(postgres.skip)("0146 resources", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* upTo("0143_recipe_launch");
-        yield* migrations["0146_resources"];
+        yield* migrations["0144_resources"];
         const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
         yield* sql`
           INSERT INTO projects (id, name, store_path, default_branch, organization_id)
