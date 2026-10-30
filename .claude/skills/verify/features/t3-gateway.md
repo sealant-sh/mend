@@ -759,3 +759,65 @@ show that it never reaches Mend. Keep the trace outside `$P` and scan it with al
 | Member removes their change; owner removes project in T3 Code; reload and open project picker.               | Mend detail returns 404. Client picker omits the project before and after reload.                                                                    | `t3-client/project-success/project-absent-after-reload.aria.yml`, `steps.log`; `api/teammate-explicit-force-remove.json`                                  |
 | Start a session while removal holds its fence.                                                               | Typed HTTP 409 `RemovalInProgress`; removal returns 200.                                                                                             | `api/race2-session-start.json`, `api/race2-removal.json`                                                                                                  |
 | Inspect gateway's outgoing DELETE requests for the client paths.                                             | Session, worktree and project DELETE paths have no query and no force.                                                                               | `gateway-delete.jsonl`                                                                                                                                    |
+
+### Restorable project removal
+
+Observed on **2026-10-30**, hosted `v0.1.2` client from `/var/tmp/t3s1/t3code/apps/web/dist`, built
+with `VITE_HOSTED_APP_CHANNEL=latest`. Mend tree `c4769d026780` was served by the local outer as
+`9303e81eee70`; the gateway used that checkout. The stack used pinned Sealant releases and the
+skill's fake Claude login. Evidence: `/var/tmp/t3s1-retention-verify.3CxTpp/evidence/`.
+
+Prepare a shared project as the organization owner. In this run, `verify-fixture` held the stack
+check and three completed `mend run` sessions. `retention-one` wrote `RETENTION.md`; landing it with
+`mend land retention-one --project verify-fixture --no-pr` pushed `f4ba646` to this run's local
+origin. The disposable Git fixture was configured to serve receive-pack as well as upload-pack. Save
+the project's API detail with `?deadEnds=include`, its settings, session record, and its
+authoritative store directory's file list and SHA-256 checksums before removing it. Use the API's
+`storePath` parent, not `_cache/runner/<id>`.
+
+1. Drive `MEND_VERIFY_T3_REMOVAL=project-remove` as above. Keep its confirmation and Mend's 404
+   detail answer. Drive `MEND_VERIFY_T3_RETENTION=absent` in a fresh client to capture the picker.
+   Keep another disposable listed project in the environment.
+2. Read Mend's Projects page and expand Removed projects. Run `mend projects --json`,
+   `mend projects removed --json` and `mend doctor` through `steps.mjs`. Read
+   `GET /api/removed-projects/disk` and checksum the same store directory again.
+3. Against the removed id, POST a session to `/api/projects/:id/sessions`, POST a preset resource
+   proposal to `/api/projects/:id/resource-proposals?timeZone=Etc%2FUTC`, and DELETE one retained
+   session at `/api/sessions/:id`. Keep each status and body.
+4. In Mend's Projects → Removed projects, scope an `article` by its project heading and click
+   Restore. Reload Projects. Compare detail, sessions and settings with the saved answers; compare
+   `updatedAt` separately from settings. Read the retained session record again. Drive
+   `MEND_VERIFY_T3_RETENTION=restored` to capture the client picker.
+5. Remove A again, create a new project with A's name through `/api/projects/new`, and POST
+   `/api/removed-projects/:id/restore` first with `{}`, then with `{"name":"<new name>"}`.
+6. Invite a member through the organization invitation and email sign-up routes. Register the
+   invitation, password and returned token before saving evidence. As the member, attempt restore
+   and purge of the removed shared project. Create a separate private project as that member, remove
+   it, restore it, remove it again and request its purge.
+7. Remove the renamed shared project. Through `steps.mjs`, run `mend projects purge <id>` with no
+   confirmation, with `--confirm wrong-name`, and with `--confirm <exact name>`. Repeat the exact
+   confirmation after any reported upload expiry, then repeat once more. Read the removed list,
+   store directory, project/session rows and `/api/organization/audit?limit=100`.
+8. Drive `MEND_VERIFY_T3_RETENTION=scratch` to remove the person's No project from the client's
+   project settings and request No project again. Drive `scratch-restore` with
+   `MEND_VERIFY_T3_RETENTION_PROJECT=scratch-verifier`. It supplies a new name because the new
+   scratch reused the old name. The old project is restored through Mend's API, then read in the
+   client's picker.
+
+Each client pass uses the existing `drive-web.mjs` command with `recipes/t3-client.mjs`, an empty
+browser and this run's private account. The focused retention modes pair the real client first. For
+a different project, set `MEND_VERIFY_T3_RETENTION_PROJECT`. Stop the gateway and client server by
+their recorded PIDs after the client evidence is saved.
+
+| Drive                                                                           | Observed end state on 2026-10-30                                                                                                                                         | Evidence relative to this run                                                                                                                                         |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Remove the shared project in T3 Code; read all three clients.                   | Mend detail answers 404; T3's fresh picker and web/CLI listed-project views omit it. Removed-project views retain it.                                                    | `t3/remove/steps.log`, `t3/absent-fresh/retention-absent-picker.png`, `web/removed/projects-removed.png`, `cli/removed-projects.stdout`, `cli/removed-removed.stdout` |
+| Compare the authoritative directory before and after removal.                   | All eight files and their SHA-256 checksums are identical; directory remains.                                                                                            | `disk/before2-store.stdout`, `disk/removed2-store.stdout`                                                                                                             |
+| Read retained disk usage.                                                       | Disk API reports 104,475 bytes; doctor reports 102.0 kB kept indefinitely. The removed row and removed-list JSON contain no per-project size.                            | `api/removed/steps.log`, `cli/removed-doctor.stdout`, `web/removed/projects-removed.aria.yml`, `cli/removed-removed.stdout`                                           |
+| Attempt session creation, a resource proposal and session DELETE while removed. | All three return 404 NotFound; none includes restore wording.                                                                                                            | `api/removed-all/steps.log`                                                                                                                                           |
+| Restore in Mend's web; compare retained data.                                   | Project is listed again. Sessions, worktrees, annotations, capabilities and settings match; only project updatedAt changes. Zero sessions live. T3 lists it again.       | `web/restore2/restored.aria.yml`, `api/restored/steps.log`, `web/restore-current/current.aria.yml`, `t3/restored/steps.log`                                           |
+| Reuse the name and restore with a new name.                                     | Same-name restore returns 409 ProjectNameConflict; explicit new-name restore returns 200.                                                                                | `api/collision/steps.log`                                                                                                                                             |
+| Attempt shared retention actions as a member; restore their private project.    | Shared restore/purge return 403 ProjectRetentionForbidden. Private creator restore and the purge retried after upload expiry return 200.                                 | `api/removed-all/steps.log`                                                                                                                                           |
+| Confirm purge through the CLI.                                                  | Missing and wrong confirmation are refused. Exact confirmation reports the outstanding upload expiry; an immediate repeat gives the same expiry.                         | `cli/purge-missing-confirm.stderr`, `cli/purge-wrong-confirm.stderr`, `cli/purge-confirmed.stderr`, `cli/purge-repeat.stderr`                                         |
+| Retry confirmed purge after the upload expiry; read rows, files and audit.      | CLI exits 0; project and session rows and the authoritative store directory are absent. Audit data names verify-fixture-restored. The next purge exits 1 with Not found. | `cli/purge-after-expiry.stdout`, `cli/purge-after-expiry-repeat.stderr`, `db/purged-rows.stdout`, `disk/purged-directory.stdout`, `purge-audit.json`                  |
+| Remove No project, request it again, restore the predecessor under a new name.  | New scratch has a different id; predecessor restores with private visibility and null scratchOwnerUserId, and appears as a normal project in T3.                         | `t3/scratch2/steps.log`, `t3/scratch-restored/steps.log`, `t3/scratch-restored/retention-scratch-restored-plain-project.png`                                          |

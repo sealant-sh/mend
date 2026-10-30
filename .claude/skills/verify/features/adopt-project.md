@@ -199,3 +199,14 @@ Preconditions:
   `GitHub discovery is unavailable on the server` and only the typed URL path remains.
 - Phone handles that are only text can match more than one element. When one does, add
   `.filter({ visible: true })` rather than picking by position.
+
+## Removed projects
+
+Drive retention from
+[T3 gateway → Restorable project removal](./t3-gateway.md#restorable-project-removal). Observed on
+2026-10-30: removing `verify-fixture` through T3 Code omitted it from the web Projects list and
+`mend projects --json`, while Projects → Removed projects and `mend projects removed --json`
+retained it. `mend doctor` reported 102.0 kB kept indefinitely. Web Restore returned it to the
+listed directory with zero live sessions. Evidence:
+`/var/tmp/t3s1-retention-verify.3CxTpp/evidence/web/removed/`, `web/restore2/`,
+`cli/removed-projects.stdout`, `cli/removed-removed.stdout` and `cli/removed-doctor.stdout`.
