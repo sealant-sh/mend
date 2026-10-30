@@ -276,7 +276,7 @@ const Reader = () => {
   return null;
 };
 const Reachability = () => {
-  latest.unreachable = useUnreachable(usePairing().key);
+  latest.unreachable = useUnreachable(usePairing().machine.key);
   return null;
 };
 const Grab = () => {

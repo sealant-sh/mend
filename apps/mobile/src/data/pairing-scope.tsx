@@ -9,7 +9,6 @@ import { pairingKeyOf, type PairingKey } from "@/data/pairing-key";
 
 export interface Pairing {
   readonly config: MendConfig;
-  readonly key: PairingKey;
   readonly asker: Asker;
   readonly machine: Machine;
 }
@@ -35,7 +34,6 @@ export const PairingBoundary = ({ children }: { readonly children: ReactNode }):
 
 // A pairing outlives the screens under it: a web history step can mount the root layout afresh.
 interface Held {
-  readonly key: PairingKey;
   readonly client: QueryClient;
   readonly asker: Asker;
   readonly machine: Machine;
@@ -44,11 +42,10 @@ interface Held {
 let held: Held | null = null;
 
 const heldFor = (key: PairingKey, config: MendConfig): Held => {
-  if (held?.key !== key) {
+  if (held?.machine.key !== key) {
     held?.client.clear();
     held?.end();
     held = {
-      key,
       client: new QueryClient({
         defaultOptions: {
           queries: { retry: 1 },
@@ -75,7 +72,7 @@ const PairingScope = ({
 }): ReactNode => {
   const [{ client, asker, machine }] = useState(() => heldFor(pairingKey, config));
   return (
-    <PairingContext.Provider value={{ config, key: pairingKey, asker, machine }}>
+    <PairingContext.Provider value={{ config, asker, machine }}>
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     </PairingContext.Provider>
   );
