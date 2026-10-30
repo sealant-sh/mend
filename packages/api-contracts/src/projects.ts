@@ -28,6 +28,7 @@ import {
   ProjectRestoreUnavailable,
   PurgeNotConfirmed,
   ProjectPurgeIncomplete,
+  RemovedProjectsDisk,
 } from "./project-retention.ts";
 import { ProjectFileListing, ProjectPullRequests } from "./settings.ts";
 import {
@@ -73,7 +74,7 @@ export class ProjectBranch extends Schema.Class<ProjectBranch>("ProjectBranch")(
 export const projectsGroup = HttpApiGroup.make("projects")
   .add(
     HttpApiEndpoint.get("removedDisk", "/removed-projects/disk", {
-      success: Schema.Struct({ projects: Schema.Number, bytes: Schema.NullOr(Schema.Number) }),
+      success: RemovedProjectsDisk,
     }),
   )
   .add(

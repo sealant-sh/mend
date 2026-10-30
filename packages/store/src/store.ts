@@ -1052,6 +1052,9 @@ const capListing = (paths: ReadonlyArray<string>, limit: number): FileListing =>
   return { files: sorted.slice(0, limit), truncated: sorted.length > limit };
 };
 
+/** File system lookups a disk measurement keeps in flight at once. */
+const DISK_WALK_IN_FLIGHT = 64;
+
 /** Only a lookup that answers ENOENT proves a path is gone: a refused one says nothing. */
 const confirmedAbsent = (target: string): boolean => {
   try {
@@ -1974,28 +1977,35 @@ export class Store extends Context.Service<
         );
       });
 
+      // Off the event loop: a kept project's worktrees can hold hundreds of thousands of files.
       const projectDiskUsage = Effect.fn("Store.projectDiskUsage")(function* (storePath: string) {
-        return yield* Effect.sync(() => {
-          const parent = path.dirname(storePath);
-          if (!withinStore(parent)) return null;
+        const parent = path.dirname(storePath);
+        if (!withinStore(parent)) return null;
+        return yield* Effect.promise(async () => {
           try {
             if (!linkFreeBelowRoot(parent)) return null;
             const seen = new Set<string>();
-            const bytes = (entry: string): number => {
-              const stat = fs.lstatSync(entry);
-              const identity = `${stat.dev}:${stat.ino}`;
-              if (seen.has(identity)) return 0;
-              seen.add(identity);
-              return (
-                stat.blocks * 512 +
-                (stat.isDirectory()
-                  ? fs
-                      .readdirSync(entry)
-                      .reduce((total, child) => total + bytes(path.join(entry, child)), 0)
-                  : 0)
-              );
-            };
-            return bytes(parent);
+            let total = 0;
+            let pending = [parent];
+            while (pending.length > 0) {
+              const level = pending;
+              pending = [];
+              for (let start = 0; start < level.length; start += DISK_WALK_IN_FLIGHT) {
+                await Promise.all(
+                  level.slice(start, start + DISK_WALK_IN_FLIGHT).map(async (entry) => {
+                    const stat = await fs.promises.lstat(entry);
+                    const identity = `${stat.dev}:${stat.ino}`;
+                    if (seen.has(identity)) return;
+                    seen.add(identity);
+                    total += stat.blocks * 512;
+                    if (stat.isDirectory())
+                      for (const child of await fs.promises.readdir(entry))
+                        pending.push(path.join(entry, child));
+                  }),
+                );
+              }
+            }
+            return total;
           } catch {
             return null;
           }

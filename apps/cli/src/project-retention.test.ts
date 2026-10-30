@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { removedDiskWords } from "./doctor.ts";
 import { parseProjectRetentionArgs } from "./project-retention.ts";
 
 describe("mend projects retention commands", () => {
@@ -24,5 +25,12 @@ describe("mend projects retention commands", () => {
     expect(parseProjectRetentionArgs(["rm", "p1", "--force"])).toEqual({
       error: "Unknown argument --force.",
     });
+  });
+  it("says what removed projects keep on disk in sizes a person reads, and what purge would keep", () => {
+    expect(removedDiskWords({ bytes: 3 * 1024 * 1024, sharedBytes: 1536 })).toBe(
+      "3.0 MB on disk, 1.5 kB of it shared with other projects and kept by purge",
+    );
+    expect(removedDiskWords({ bytes: 512, sharedBytes: 0 })).toBe("512 B on disk");
+    expect(removedDiskWords({ bytes: null, sharedBytes: null })).toBe("disk usage unread");
   });
 });

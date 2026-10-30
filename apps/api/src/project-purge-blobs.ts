@@ -126,3 +126,31 @@ export const purgeProjectBlobs = <E>(
       );
     }
   });
+
+/**
+ * The bytes of the stored objects under a kept project's prefixes, and of those, the bytes
+ * another worktree's captures still name: a purge keeps those. Null when the store cannot list
+ * them.
+ */
+export const keptObjectBytes = (
+  capture: PurgeStores,
+  projectId: ProjectId,
+  worktrees: ReadonlyArray<WorktreeId>,
+): Effect.Effect<{ readonly own: number; readonly shared: number } | null> =>
+  Effect.gen(function* () {
+    const prefixes = [
+      `projects/${projectId}/`,
+      ...worktrees.flatMap((tree) => [`captures/${tree}/`, `changes/${tree}/`]),
+    ];
+    const entries = (yield* Effect.forEach(prefixes, (prefix) =>
+      capture.blobs.list(prefix),
+    )).flat();
+    const shared = yield* capture.repo.referencedElsewhere({
+      projectId,
+      own: worktrees,
+      keys: entries.map((entry) => entry.key),
+    });
+    const bytesOf = (counted: (key: string) => boolean) =>
+      entries.reduce((total, entry) => total + (counted(entry.key) ? entry.size : 0), 0);
+    return { own: bytesOf(() => true), shared: bytesOf((key) => shared.has(key)) };
+  }).pipe(Effect.catchTag("BlobStoreError", () => Effect.succeed(null)));

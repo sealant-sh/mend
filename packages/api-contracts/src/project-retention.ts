@@ -44,3 +44,14 @@ export class ProjectRemovalReport extends Schema.Class<ProjectRemovalReport>(
   retained: Schema.Literal(true),
   message: Schema.String,
 }) {}
+
+/**
+ * What removed projects keep on disk: their store directories and stored objects (`bytes`), and
+ * of those, the objects another project's captures still name, which a purge keeps
+ * (`sharedBytes`). Null when some of it could not be measured.
+ */
+export class RemovedProjectsDisk extends Schema.Class<RemovedProjectsDisk>("RemovedProjectsDisk")({
+  projects: Schema.Number,
+  bytes: Schema.NullOr(Schema.Number),
+  sharedBytes: Schema.NullOr(Schema.Number),
+}) {}

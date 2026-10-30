@@ -9,7 +9,7 @@ import { makeFsBlobStore } from "@mend/store";
 import { Data, Effect, Exit } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { purgeProjectBlobs } from "./project-purge-blobs.ts";
+import { keptObjectBytes, purgeProjectBlobs } from "./project-purge-blobs.ts";
 
 const project = ProjectId.make("purged");
 const own = WorktreeId.make("w-purged");
@@ -155,6 +155,14 @@ describe("purging a removed project's stored objects", () => {
     const exit = await purge();
     expect(Exit.isFailure(exit) && String(exit.cause)).toContain("PurgeBlobFailure");
     expect(await keys()).toEqual(before);
+  });
+
+  it("measures what a kept project's objects take, and how much of it another project shares", async () => {
+    const { repo } = await world();
+    const blobs = makeFsBlobStore(root ?? "");
+    const kept = await Effect.runPromise(keptObjectBytes({ repo, blobs }, project, [own]));
+    // Five objects of five bytes each; the inherited pack and its index are shared.
+    expect(kept).toEqual({ own: 25, shared: 10 });
   });
 
   it("stops deleting once the purge no longer holds its mark", async () => {

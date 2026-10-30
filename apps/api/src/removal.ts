@@ -10,6 +10,7 @@ import {
   RemovalForbidden,
   RemovalRefused,
   RemovalReport,
+  RemovedProjectsDisk,
   WorktreeNotFound,
 } from "@mend/api-contracts";
 import {
@@ -67,6 +68,7 @@ import * as Context from "effect/Context";
 import { changeStandingOf } from "./landing-state.ts";
 import { LIVE_STATES } from "./live-states.ts";
 import {
+  keptObjectBytes,
   purgeProjectBlobs,
   type UploadAuthorityOpen,
   uploadsLanded,
@@ -100,9 +102,7 @@ export class Removal extends Context.Service<
       project: Project,
       caller: RemovalCaller,
     ) => Effect.Effect<ProjectRemovalReport, NotFound | RemovalRefused>;
-    readonly disk: (
-      viewer: Viewer,
-    ) => Effect.Effect<{ readonly projects: number; readonly bytes: number | null }>;
+    readonly disk: (viewer: Viewer) => Effect.Effect<RemovedProjectsDisk>;
     readonly removed: (viewer: Viewer) => Effect.Effect<ReadonlyArray<RemovedProject>>;
     readonly restore: (
       id: ProjectId,
@@ -148,6 +148,12 @@ const uploadOpen = ({ until }: UploadAuthorityOpen) =>
   new ProjectPurgeIncomplete({
     message: `An upload this project started may still land until ${until.toISOString()}. Purge again after then to finish.`,
   });
+
+/** A total, or null when any part of it could not be measured. */
+const sumOrNull = (values: ReadonlyArray<number | null>) =>
+  values.some((value) => value === null)
+    ? null
+    : values.reduce<number>((total, value) => total + (value ?? 0), 0);
 
 /** This removal's mark went to another removal while it deleted: it stops where it is. */
 class MarkLost extends Data.TaggedError("MarkLost") {}
@@ -575,15 +581,28 @@ export const RemovalLive: Layer.Layer<
       );
       const sizes = yield* Effect.forEach(
         kept,
-        ({ project }) => store.projectDiskUsage(project.storePath),
+        ({ project }) =>
+          Effect.all({
+            files: store.projectDiskUsage(project.storePath),
+            objects: capture.enabled
+              ? worktrees.listForProject(project.id).pipe(
+                  Effect.flatMap((trees) =>
+                    keptObjectBytes(
+                      capture,
+                      project.id,
+                      trees.map((tree) => tree.id),
+                    ),
+                  ),
+                )
+              : Effect.succeed({ own: 0, shared: 0 }),
+          }),
         { concurrency: 4 },
       );
-      return {
+      return new RemovedProjectsDisk({
         projects: kept.length,
-        bytes: sizes.some((size) => size === null)
-          ? null
-          : sizes.reduce<number>((total, size) => total + (size ?? 0), 0),
-      };
+        bytes: sumOrNull(sizes.flatMap(({ files, objects }) => [files, objects?.own ?? null])),
+        sharedBytes: sumOrNull(sizes.map(({ objects }) => objects?.shared ?? null)),
+      });
     });
 
     const removed = Effect.fn("Removal.removed")(function* (viewer: Viewer) {

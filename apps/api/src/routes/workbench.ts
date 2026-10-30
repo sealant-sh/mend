@@ -70,6 +70,7 @@ import {
   SessionTranscript,
   TranscriptEvent,
   WorkspacePackageResolutionView,
+  RemovedProjectsDisk,
 } from "@mend/api-contracts";
 import {
   ProjectLinksRepo,
@@ -520,7 +521,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     .handle("removedDisk", () =>
       Effect.gen(function* () {
         const viewer = yield* (yield* ProjectAccess).viewer();
-        return viewer === null ? { projects: 0, bytes: 0 } : yield* (yield* Removal).disk(viewer);
+        return viewer === null
+          ? new RemovedProjectsDisk({ projects: 0, bytes: 0, sharedBytes: 0 })
+          : yield* (yield* Removal).disk(viewer);
       }),
     )
     .handle("removed", () =>
