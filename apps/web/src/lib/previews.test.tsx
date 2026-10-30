@@ -96,8 +96,9 @@ function Probe({ id }: { readonly id: WorktreeId }) {
 
 const mount = (answer: (id: string) => WorktreePreviewsDto, worktreeId = WORKTREE) => {
   const asked: Array<string> = [];
-  const fetch = (url: URL | RequestInfo) => {
-    const id = /"id":"([^"]+)"/.exec(decodeURIComponent(String(url)))?.[1] ?? "";
+  // The client sends queries as POST (`methodOverride` in trpcLinks), so the input is in the body.
+  const fetch = (_url: URL | RequestInfo, init?: { readonly body?: unknown }) => {
+    const id = /"id":"([^"]+)"/.exec(typeof init?.body === "string" ? init.body : "")?.[1] ?? "";
     asked.push(id);
     return Promise.resolve(
       new Response(JSON.stringify([{ result: { data: serialize(answer(id)) } }]), {
