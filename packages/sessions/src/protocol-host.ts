@@ -16,7 +16,7 @@ import {
   SessionProcessesRepo,
   SessionsRepo,
 } from "@mend/db";
-import type { AgentTurnId, SessionId, SessionProcessId } from "@mend/domain";
+import { type AgentTurnId, failureName, type SessionId, type SessionProcessId } from "@mend/domain";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -47,7 +47,6 @@ import * as Semaphore from "effect/Semaphore";
 
 import { HAND_OVER_NOT_NOW } from "./conversation-steps.ts";
 import {
-  failureName,
   makeTurnSteering,
   openSteerGate,
   type InvalidTurnSteerError,

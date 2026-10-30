@@ -1,6 +1,6 @@
 import type { AgentSession } from "@mend/agent-protocol";
 import { type AgentConversationRepo, AgentTurnNotFoundError } from "@mend/db";
-import type { AgentTurnId, SessionProcessId } from "@mend/domain";
+import { type AgentTurnId, failureName, type SessionProcessId } from "@mend/domain";
 import {
   turnSteerSender,
   TurnSteerForbiddenError,
@@ -72,15 +72,6 @@ export const openSteerGate = (
     }
     yield* Deferred.succeed(gate, undefined);
   });
-
-/** A failure named for a log, never quoted: a query error's message carries a person's words. */
-export const failureName = (cause: Cause.Cause<unknown>): string => {
-  const failure = Cause.squash(cause);
-  if (typeof failure !== "object" || failure === null) return typeof failure;
-  if ("_tag" in failure && typeof failure._tag === "string") return failure._tag;
-  if ("name" in failure && typeof failure.name === "string") return failure.name;
-  return "unknown";
-};
 
 export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeringHost<P, E>) => {
   const { conversations } = host;
