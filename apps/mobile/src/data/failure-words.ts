@@ -42,6 +42,8 @@ const TAG_WORDS: Readonly<Record<string, string>> = {
   PairingCodeNotFound: "That pairing code is not known here — check it against the machine.",
   PairingCodeSpent: "That pairing code has expired or was already used — make a new one.",
   PairingRateLimited: "Too many attempts — wait a minute, then try again.",
+  PushNeedsPairedDevice:
+    "Notifications need a paired phone — pair this phone from Settings → Devices on the machine, then turn them on again.",
   CliAuthNotFound: "That sign-in request is not open — sign in again.",
   CliAuthSpent: "That sign-in request expired or was already used — sign in again.",
   CliAuthDenied: "Denied in the browser. Nothing was granted.",
