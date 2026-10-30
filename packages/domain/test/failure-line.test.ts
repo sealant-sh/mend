@@ -99,24 +99,22 @@ describe("a failure on a line (SLNT-385)", () => {
     }),
   );
 
-  it.effect("reads the failure Cause.squash would: the first failure before any defect", () =>
-    Effect.gen(function* () {
-      const cause = Cause.combine(
-        Cause.die(new Error(WORDS)),
-        Cause.fail(new Refused({ message: "no login" })),
-      );
-      expect(lineFailureOf(cause)).toMatchObject({ _tag: "Said", words: "no login" });
-      expect(lineFailureOf(Cause.die(new Error(WORDS)))).toEqual({
-        _tag: "Withheld",
-        name: "Error",
-      });
-      expect(lineFailureOf(Cause.combine(Cause.interrupt(), Cause.die(WORDS)))).toEqual({
-        _tag: "Withheld",
-        name: "string",
-      });
-      expect(lineFailureOf(Cause.interrupt())).toEqual({ _tag: "Interrupted" });
-    }),
-  );
+  it("reads the failure Cause.squash would: the first failure before any defect", () => {
+    const cause = Cause.combine(
+      Cause.die(new Error(WORDS)),
+      Cause.fail(new Refused({ message: "no login" })),
+    );
+    expect(lineFailureOf(cause)).toMatchObject({ _tag: "Said", words: "no login" });
+    expect(lineFailureOf(Cause.die(new Error(WORDS)))).toEqual({
+      _tag: "Withheld",
+      name: "Error",
+    });
+    expect(lineFailureOf(Cause.combine(Cause.interrupt(), Cause.die(WORDS)))).toEqual({
+      _tag: "Withheld",
+      name: "string",
+    });
+    expect(lineFailureOf(Cause.interrupt())).toEqual({ _tag: "Interrupted" });
+  });
 
   it("names a failure for a log, never quoting it", () => {
     expect(failureName(Cause.fail(new Unreviewed({ message: WORDS })))).toBe("Unreviewed");

@@ -313,6 +313,73 @@ const coldJoinResume = (options: {
     return result;
   });
 
+/**
+ * A person launch whose layout decision dies with `defect`: the box's 500 (0.36.0-next.645),
+ * the operator's person launch with the flag unset and the SDK refusing the image question's
+ * options by throwing. Answers the session's line and the launch's defects once nothing was
+ * created; with `settleRefused`, the store refuses the settlement with it too.
+ */
+const launchWhoseLayoutDecisionDies = async (defect: unknown, settleRefused?: unknown) => {
+  const throwing = Layer.effect(
+    PersonLayoutPlatform,
+    Effect.map(PersonLayoutPlatform, (inner) => ({
+      ...inner,
+      imageReport: () => Effect.die(defect),
+    })),
+  ).pipe(Layer.provide(personPlatform([], { person: true })));
+  const created: Array<CreateOptions> = [];
+  const execCalls: Array<ReadonlyArray<string>> = [];
+  const outcome = await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const session = yield* engine.provision({
+          projectId: project.id,
+          harness: "claude",
+          label: null,
+          name: "pph",
+          ownerUserId: "user-fixture",
+          start: { kind: "base", base: null },
+          harnessLayout: "person",
+        });
+        if (settleRefused !== undefined) world.settleRefused = () => settleRefused;
+        const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
+        const row = world.sessions.get(session.id);
+        return {
+          status: row?.status,
+          summary: row?.summary ?? null,
+          defects: Exit.isFailure(launched)
+            ? launched.cause.reasons.filter(Cause.isDieReason).map((each) => each.defect)
+            : null,
+        };
+      }),
+    {
+      captured: makeMemoryCaptureStore(),
+      sealantLayer: sealantLaunchLayer(
+        created,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        execCalls,
+      ),
+      harnessLayout: {
+        flag: "shared",
+        state: makeHarnessLayoutsMemoryState(),
+        platform: throwing,
+      },
+    },
+  );
+  expect(created).toHaveLength(0);
+  expect(execCalls).toHaveLength(0);
+  return outcome;
+};
+
 describe("per-person harness homes (docs/adr/0016)", () => {
   // The shared layout's counts (main at 4ccbaa2cd, measured with this same scenario): what the
   // `MEND_HARNESS_LAYOUT=shared` opt-out must keep (Performance, CI guards). Its memory hand-over,
@@ -1464,73 +1531,6 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     );
     expect(refused._tag).toBe("HarnessLayoutNotAppliedError");
   });
-
-  /**
-   * A person launch whose layout decision dies with `defect`: the box's 500 (0.36.0-next.645),
-   * the operator's person launch with the flag unset and the SDK refusing the image question's
-   * options by throwing. Answers the session's line and the launch's defects once nothing was
-   * created; with `settleRefused`, the store refuses the settlement with it too.
-   */
-  const launchWhoseLayoutDecisionDies = async (defect: unknown, settleRefused?: unknown) => {
-    const throwing = Layer.effect(
-      PersonLayoutPlatform,
-      Effect.map(PersonLayoutPlatform, (inner) => ({
-        ...inner,
-        imageReport: () => Effect.die(defect),
-      })),
-    ).pipe(Layer.provide(personPlatform([], { person: true })));
-    const created: Array<CreateOptions> = [];
-    const execCalls: Array<ReadonlyArray<string>> = [];
-    const outcome = await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const project = yield* setup(tmp, world);
-          const engine = yield* SessionEngine;
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: "pph",
-            ownerUserId: "user-fixture",
-            start: { kind: "base", base: null },
-            harnessLayout: "person",
-          });
-          if (settleRefused !== undefined) world.settleRefused = () => settleRefused;
-          const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
-          const row = world.sessions.get(session.id);
-          return {
-            status: row?.status,
-            summary: row?.summary ?? null,
-            defects: Exit.isFailure(launched)
-              ? launched.cause.reasons.filter(Cause.isDieReason).map((each) => each.defect)
-              : null,
-          };
-        }),
-      {
-        captured: makeMemoryCaptureStore(),
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          execCalls,
-        ),
-        harnessLayout: {
-          flag: "shared",
-          state: makeHarnessLayoutsMemoryState(),
-          platform: throwing,
-        },
-      },
-    );
-    expect(created).toHaveLength(0);
-    expect(execCalls).toHaveLength(0);
-    return outcome;
-  };
 
   it("settles a launch whose layout decision throws the SDK's options refusal: failed, the refusal on the session line, nothing created (box, 0.36.0-next.645)", async () => {
     const words =

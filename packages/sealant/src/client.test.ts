@@ -74,6 +74,8 @@ describe("platformErrorCode", () => {
   });
 });
 
+const lineOf = (error: SealantPlatformError) => lineFailureOf(Cause.fail(error));
+
 /**
  * What a line other people read may say of a platform failure (SLNT-385): the words Mend wrote or
  * curated, never an SDK or Core message Mend did not, which can quote what a person sent.
@@ -82,7 +84,6 @@ describe("toPlatformError's words on a line", () => {
   const WORDS = "Anna is interviewing at Northwind on Friday, keep it quiet";
   const SOURCE_SELECTION =
     "workspaces.create requires exactly one of `repository` (a git remote to clone) or `source` (a caller-owned mount).";
-  const lineOf = (error: SealantPlatformError) => lineFailureOf(Cause.fail(error));
 
   it("says the SDK's fixed source-selection refusal, in Mend's own copy of it", () => {
     const line = lineOf(
