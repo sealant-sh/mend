@@ -53,7 +53,7 @@ const reportsMatchedRoute = HttpRouter.middleware((effect) =>
       ? effect
       : Effect.flatMap(HttpRouter.RouteContext, ({ route }) => {
           slot.value.matched(route.path);
-          return effect;
+          return Effect.annotateLogs(effect, "http.route", route.path);
         }),
   ),
 ).layer;
@@ -161,13 +161,6 @@ const observed = <E, R>(
       parent: Option.getOrUndefined(HttpTraceContext.fromHeaders(request.headers)),
     });
     return yield* app.pipe(
-      Effect.withParentSpan(span),
-      Effect.provideService(MatchedRoute, {
-        matched: (template) => {
-          route = template;
-        },
-        route: () => route,
-      }),
       Effect.onExit((exit) =>
         Effect.flatMap(Clock.currentTimeNanos, (endTime) => {
           const observation: HttpObservation = {
@@ -176,13 +169,21 @@ const observed = <E, R>(
             outcome: outcomeOf(exit),
             durationMillis: Number(endTime - startTime) / 1_000_000,
           };
-          endSpan(span, observation, endTime);
           const cause = Option.map(failedCause(exit, observation.outcome), (failed) =>
             withoutUrlOf(formatCause(failed), request, route),
           );
-          return logObservation(observation, cause);
+          return logObservation(observation, cause).pipe(
+            Effect.andThen(Effect.sync(() => endSpan(span, observation, endTime))),
+          );
         }),
       ),
+      Effect.withParentSpan(span),
+      Effect.provideService(MatchedRoute, {
+        matched: (template) => {
+          route = template;
+        },
+        route: () => route,
+      }),
     );
   });
 
