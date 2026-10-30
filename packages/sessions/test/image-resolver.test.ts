@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import * as http from "node:http";
 
+import { imageReference } from "@mend/domain/workbench";
 import { Effect, Result } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -96,6 +97,16 @@ describe("pinning a resource's image through the registry API", () => {
     expect(result).toEqual(Result.succeed({ digest: digestOf(bytes), resolvedBy: mirror.host }));
     expect(mirror.seen.map((each) => each.url)).toEqual(["/v2/library/postgres/manifests/17"]);
   });
+
+  it.each(["docker.io/postgres:17", "index.docker.io/library/postgres:17", "library/postgres:17"])(
+    "asks Docker Hub's mirror for %s as the repository the postgres preset reads",
+    async (image) => {
+      const mirror = await registry(serve(index("17")));
+      await resolveWith({ mirrors: [new URL(mirror.origin)] }, image);
+      expect(imageReference(image).repository).toBe("postgres");
+      expect(mirror.seen.map((each) => each.url)).toEqual(["/v2/library/postgres/manifests/17"]);
+    },
+  );
 
   it("answers an image pinned by digest with that digest, asking no registry", async () => {
     const mirror = await registry(serve(index("17")));

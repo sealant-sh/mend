@@ -4,7 +4,7 @@ import * as http from "node:http";
 import * as https from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 
-import { ImageDigest, imageDigestOf } from "@mend/domain/workbench";
+import { ImageDigest, imageDigestOf, parseImageReference } from "@mend/domain/workbench";
 import { classifyAddress } from "@mend/store";
 import { Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -90,20 +90,14 @@ interface Reference {
 
 /** `postgres:17` is Docker Hub's `library/postgres` at `17`; a reference with no tag is `latest`. */
 const referenceOf = (image: string): Reference | null => {
-  if (image.includes("@")) return null;
-  const slash = image.indexOf("/");
-  const first = slash === -1 ? "" : image.slice(0, slash);
-  const host = first.includes(".") || first.includes(":") || first === "localhost" ? first : null;
-  const path = host === null ? image : image.slice(slash + 1);
-  const tagAt = path.lastIndexOf(":");
-  const name = tagAt > path.lastIndexOf("/") ? path.slice(0, tagAt) : path;
-  const tag = name === path ? "latest" : path.slice(tagAt + 1);
+  const { host, repository, tag, digest } = parseImageReference(image);
+  if (digest !== null) return null;
   const hub = host === null || host === "docker.io" || host === "index.docker.io";
   return {
     hub,
     origin: hub ? DOCKER_HUB : `https://${host}`,
-    repository: hub && !name.includes("/") ? `library/${name}` : name,
-    tag,
+    repository: hub && !repository.includes("/") ? `library/${repository}` : repository,
+    tag: tag ?? "latest",
   };
 };
 

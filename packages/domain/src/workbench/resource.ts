@@ -485,22 +485,45 @@ export const isDatabasePreset = (def: PolicySubject): boolean =>
   def.preset !== null && RESOURCE_PRESETS[def.preset].database;
 
 /**
- * An image reference's repository and tag: `docker.io/library/postgres:17@sha256:…` is
+ * An image reference's parts, as written: `ghcr.io/acme/mail:v1@sha256:…` is host `ghcr.io`,
+ * repository `acme/mail`, tag `v1` and that digest. A first segment is a host when it has a `.` or
+ * a `:`, or is `localhost`; with none, the image is Docker Hub's. The one reading of the grammar,
+ * so a preset's check and the registry Mend asks name the same repository.
+ */
+export const parseImageReference = (
+  image: string,
+): {
+  readonly host: string | null;
+  readonly repository: string;
+  readonly tag: string | null;
+  readonly digest: string | null;
+} => {
+  const at = image.indexOf("@");
+  const named = at === -1 ? image : image.slice(0, at);
+  const tagAt = named.lastIndexOf(":");
+  const tagged = tagAt > named.lastIndexOf("/");
+  const path = tagged ? named.slice(0, tagAt) : named;
+  const slash = path.indexOf("/");
+  const first = slash === -1 ? "" : path.slice(0, slash);
+  const host = first.includes(".") || first.includes(":") || first === "localhost" ? first : null;
+  return {
+    host,
+    repository: host === null ? path : path.slice(slash + 1),
+    tag: tagged ? named.slice(tagAt + 1) : null,
+    digest: at === -1 ? null : image.slice(at + 1),
+  };
+};
+
+/**
+ * An image's repository and tag as a preset reads them: `docker.io/library/postgres:17@sha256:…` is
  * `postgres` and `17`. A registry host is dropped, so a mirror's `postgres` is still `postgres`.
  */
 export const imageReference = (image: string): { repository: string; tag: string } => {
-  const [named = image] = image.split("@");
-  const tagAt = named.lastIndexOf(":");
-  const tagged = tagAt > named.lastIndexOf("/");
-  const segments = (tagged ? named.slice(0, tagAt) : named).split("/");
-  const [first = "", ...rest] = segments;
-  const isHost =
-    rest.length > 0 && (first.includes(".") || first.includes(":") || first === "localhost");
-  const path = isHost ? rest : segments;
-  const repository = path.length === 2 && path[0] === "library" ? path.slice(1) : path;
+  const { repository, tag } = parseImageReference(image);
+  const path = repository.split("/");
   return {
-    repository: repository.join("/"),
-    tag: tagged ? named.slice(tagAt + 1) : "",
+    repository: path.length === 2 && path[0] === "library" ? (path[1] ?? "") : repository,
+    tag: tag ?? "",
   };
 };
 

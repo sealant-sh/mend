@@ -12,6 +12,7 @@ import {
   imageDigestOf,
   imageReference,
   onlyOfItsEngine,
+  parseImageReference,
   pinImage,
   presetDefinition,
   PresetVersion,
@@ -628,6 +629,29 @@ describe("an image pinned to its digest", () => {
     expect(imageDigestOf("postgres:17")).toBeNull();
     expect(imageDigestOf("postgres@sha256:ABC")).toBeNull();
     expect(imageReference(`postgres:17@${digest}`)).toEqual({ repository: "postgres", tag: "17" });
+  });
+});
+
+describe("an image reference's parts", () => {
+  it.each([
+    ["postgres:17", { host: null, repository: "postgres", tag: "17", digest: null }],
+    [
+      "docker.io/library/postgres:17",
+      { host: "docker.io", repository: "library/postgres", tag: "17", digest: null },
+    ],
+    [
+      "mirror.example:5000/library/postgres",
+      { host: "mirror.example:5000", repository: "library/postgres", tag: null, digest: null },
+    ],
+    ["localhost/acme/app:1", { host: "localhost", repository: "acme/app", tag: "1", digest: null }],
+    ["[::1]:5000/mail:v1", { host: "[::1]:5000", repository: "mail", tag: "v1", digest: null }],
+    ["localhost:5000", { host: null, repository: "localhost", tag: "5000", digest: null }],
+    [
+      `ghcr.io/acme/mail:v1@sha256:${"a".repeat(64)}`,
+      { host: "ghcr.io", repository: "acme/mail", tag: "v1", digest: `sha256:${"a".repeat(64)}` },
+    ],
+  ])("reads %s as its host, repository, tag and digest", (image, parts) => {
+    expect(parseImageReference(image)).toEqual(parts);
   });
 });
 
