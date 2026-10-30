@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { Keyboard } from "react-native";
 
 import { createAsker, type Asker } from "@/data/ask";
@@ -45,6 +45,8 @@ let held: Held | null = null;
 
 const heldFor = (key: PairingKey, config: MendConfig): Held => {
   if (held?.key !== key) {
+    held?.client.clear();
+    held?.end();
     held = {
       key,
       client: new QueryClient({ defaultOptions: { queries: { retry: 1 } } }),
@@ -64,16 +66,7 @@ const PairingScope = ({
   readonly config: MendConfig;
   readonly children: ReactNode;
 }): ReactNode => {
-  const [{ client, asker, machine, end }] = useState(() => heldFor(pairingKey, config));
-  useEffect(
-    () => () => {
-      if (held?.client !== client) {
-        client.clear();
-        end();
-      }
-    },
-    [client, end],
-  );
+  const [{ client, asker, machine }] = useState(() => heldFor(pairingKey, config));
   return (
     <PairingContext.Provider value={{ config, key: pairingKey, asker, machine }}>
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
