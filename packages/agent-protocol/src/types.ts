@@ -207,8 +207,11 @@ export interface AgentSession {
   ) => Effect.Effect<string, AgentProtocolError | AgentTurnBusyError>;
   readonly interrupt: () => Effect.Effect<void, AgentProtocolError>;
   /**
-   * Whether `steer` can deliver into a running turn, and whether doing so cancels the tools that
-   * turn is running (Claude's `priority: "now"` does; Codex queues the words for its next step).
+   * Whether `steer` can deliver into a running turn, and whether it asks the harness to cut that
+   * turn's running tools short (Claude's `priority: "now"` asks; Codex queues the words for its
+   * next step). Asking is not cutting: on Claude 2.1.292, `now` let a running Bash tool finish,
+   * then the running request ended with an empty result and a new request took the words
+   * (observed 2026-10-30).
    */
   readonly activeSteering: { readonly supported: boolean; readonly interruptsTools: boolean };
   /** Deliver words into the running turn `expectedTurnId` names, never starting another. */
