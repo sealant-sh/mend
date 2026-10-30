@@ -315,6 +315,44 @@ describe("the embed exchange", () => {
     expect(PAST_AUTH).not.toContain((await tty(api, sharedA.session, ticket)).status);
   });
 
+  it("trades a screen's embed ticket for a screen ticket and a screen renewal, and a terminal's for neither", async () => {
+    let now = 1_000_000;
+    api = await createTenancyApi({}, { clock: () => now });
+    const screenExchange = (ticket: string, session: string) =>
+      api?.request(null, "POST", "/api/upgrade-tickets/exchange", {
+        ticket,
+        session,
+        socket: "screen",
+      });
+    const terminalEmbed = ticketOf(
+      (await mint(api, "carol", { target: "tty-embed", session: sharedA.session })).minted,
+    );
+    expect((await screenExchange(terminalEmbed, sharedA.session))?.status).toBe(401);
+    expect(await mint(api, "carol", { target: "screen-embed" })).toMatchObject({ status: 400 });
+    const embed = ticketOf(
+      (await mint(api, "carol", { target: "screen-embed", session: sharedA.session })).minted,
+    );
+    // A screen's embed ticket is not a terminal's, and another session's parameters spend nothing.
+    expect((await exchange(api, embed, sharedA.session)).status).toBe(401);
+    expect((await screenExchange(embed, privateAlice.session))?.status).toBe(401);
+    const traded = await screenExchange(embed, sharedA.session);
+    expect(traded?.status).toBe(200);
+    const first: unknown = await traded?.json();
+    expect(first).toMatchObject({ expiresInSeconds: 30 });
+    expect((await screenExchange(embed, sharedA.session))?.status).toBe(401);
+    // The renewal reconnects the page long after, renews only a screen, and ends at twelve hours.
+    now += 60 * 60 * 1000;
+    expect((await exchange(api, renewOf(first), sharedA.session)).status).toBe(401);
+    const again = await screenExchange(renewOf(first), sharedA.session);
+    expect(again?.status).toBe(200);
+    expect(renewOf(await again?.json())).toBe(renewOf(first));
+    now = 1_000_000 + 12 * 60 * 60 * 1000;
+    expect((await screenExchange(renewOf(first), sharedA.session))?.status).toBe(401);
+    expect(
+      (await mint(api, "carol", { target: "screen-renew", session: sharedA.session })).status,
+    ).toBe(400);
+  });
+
   it("stops renewing after twelve hours, and a renewal ticket cannot be minted directly", async () => {
     let now = 1_000_000;
     api = await createTenancyApi({}, { clock: () => now });

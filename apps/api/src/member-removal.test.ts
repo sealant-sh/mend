@@ -683,6 +683,42 @@ describe("the connection registry", () => {
     expect(closed).toEqual(["carol:s1"]);
   });
 
+  it("turning shared control off leaves the session's screen viewers watching, and each counts on its screen", async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const source = yield* Queue.unbounded<string>();
+          const registry = yield* buildRegistry(
+            Stream.fromQueue(source),
+            new Set(["alice", "carol"]),
+          );
+          const log: Array<string> = [];
+          const note = (entry: string) => Effect.sync(() => void log.push(entry));
+          yield* registry.register("carol", note("carol:terminal"), "s1", "terminal");
+          yield* registry.register("carol", note("carol:screen"), "s1", "screen");
+          yield* registry.register("alice", note("alice:screen"), "s1", "screen");
+          yield* registry.register("carol", note("carol:screen:s2"), "s2", "screen");
+          yield* Queue.offer(
+            source,
+            JSON.stringify({
+              type: "shared-control-off",
+              sessionId: "s1",
+              projectId: "p1",
+              ownerUserId: "alice",
+            }),
+          );
+          yield* processed(registry, source);
+          return {
+            log,
+            onS1: yield* registry.countOnSession("s1", "screen"),
+            carols: yield* registry.countFor("carol", "screen"),
+          };
+        }),
+      ),
+    );
+    expect(result).toEqual({ log: ["carol:terminal"], onS1: 2, carols: 2 });
+  });
+
   it("a guarded socket drops input once revoked, and closes at once if the account is gone", async () => {
     const result = await Effect.runPromise(
       Effect.scoped(

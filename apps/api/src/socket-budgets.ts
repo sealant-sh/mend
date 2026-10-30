@@ -12,6 +12,7 @@ const BUDGET_OF: Readonly<Record<ConnectionKind, BudgetName>> = {
   tunnel: "accountTunnels",
   "key-bridge": "accountKeyBridges",
   preview: "accountPreviewConnections",
+  screen: "accountScreenViewers",
 };
 
 /**
@@ -31,6 +32,20 @@ export const connectionRefusal = (
     const name = BUDGET_OF[kind];
     const limit = budgets.limits[name];
     return limit > 0 && open >= limit ? budgetRefusal(429, name, limit, null) : null;
+  });
+
+/**
+ * The refusal for one more viewer of a session's screen, or null when the screen has room. Asked
+ * after the account's own budget, before the upgrade.
+ */
+export const screenViewerRefusal = (
+  budgets: Budgets["Service"],
+  connections: ConnectionRegistry["Service"],
+  sessionId: string,
+): Effect.Effect<HttpServerResponse.HttpServerResponse | null> =>
+  Effect.map(connections.countOnSession(sessionId, "screen"), (open) => {
+    const limit = budgets.limits.screenViewers;
+    return limit > 0 && open >= limit ? budgetRefusal(429, "screenViewers", limit, null) : null;
   });
 
 const frameSize = (data: string | Uint8Array): number =>

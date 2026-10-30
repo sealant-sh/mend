@@ -46,6 +46,10 @@ export interface BudgetLimits {
   readonly accountTerminals: number;
   readonly accountTunnels: number;
   readonly accountKeyBridges: number;
+  /** Open viewers of screens one account holds (ADR 0020). */
+  readonly accountScreenViewers: number;
+  /** Open viewers of one session's screen, whoever holds them. */
+  readonly screenViewers: number;
   /** Raw file reads one account may have open at once; each holds a descriptor until it ends. */
   readonly accountRawReads: number;
   /** Raw file reads open at once on this instance, whoever reads. */
@@ -85,6 +89,8 @@ export const DEFAULT_BUDGET_LIMITS: BudgetLimits = {
   accountTerminals: 24,
   accountTunnels: 24,
   accountKeyBridges: 4,
+  accountScreenViewers: 8,
+  screenViewers: 16,
   // Above all the t3code gateway reads at once (96), so a person meets its wait, never this.
   accountRawReads: 128,
   // Two descriptors each (the file and the socket): bounded well inside the process's table.
@@ -113,6 +119,8 @@ const ENV: Readonly<Record<BudgetName, string>> = {
   accountTerminals: "MEND_BUDGET_ACCOUNT_TERMINALS",
   accountTunnels: "MEND_BUDGET_ACCOUNT_TUNNELS",
   accountKeyBridges: "MEND_BUDGET_ACCOUNT_KEY_BRIDGES",
+  accountScreenViewers: "MEND_BUDGET_ACCOUNT_SCREEN_VIEWERS",
+  screenViewers: "MEND_BUDGET_SCREEN_VIEWERS",
   accountRawReads: "MEND_BUDGET_ACCOUNT_RAW_READS",
   rawReads: "MEND_BUDGET_RAW_READS",
   addressPreviewRequestsPerMinute: "MEND_BUDGET_ADDRESS_PREVIEW_REQUESTS_PER_MINUTE",
@@ -141,6 +149,8 @@ const WORDS: Readonly<Record<BudgetName, string>> = {
   accountTerminals: "open terminals for one account",
   accountTunnels: "open service tunnels for one account",
   accountKeyBridges: "open key bridges for one account",
+  accountScreenViewers: "open screen viewers for one account",
+  screenViewers: "open viewers of one screen",
   accountRawReads: "open raw file reads for one account",
   rawReads: "open raw file reads on this instance",
   addressPreviewRequestsPerMinute: "preview requests per minute from one address",
@@ -311,6 +321,8 @@ export const budgetLimitsConfig = Config.all({
   accountTerminals: limit("accountTerminals"),
   accountTunnels: limit("accountTunnels"),
   accountKeyBridges: limit("accountKeyBridges"),
+  accountScreenViewers: limit("accountScreenViewers"),
+  screenViewers: limit("screenViewers"),
   accountRawReads: limit("accountRawReads"),
   rawReads: limit("rawReads"),
   addressPreviewRequestsPerMinute: limit("addressPreviewRequestsPerMinute"),

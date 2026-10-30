@@ -1,5 +1,6 @@
 import {
   CurrentUser,
+  type EmbedSocket,
   EmbedTickets,
   MendApi,
   UpgradeTicket,
@@ -14,6 +15,7 @@ import {
   ProjectsRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  type TicketCredential,
   UPGRADE_RENEWAL_TTL_MS,
   UPGRADE_TICKET_TTL_MS,
   UpgradeTicketsRepo,
@@ -39,7 +41,25 @@ const SCOPE_KEYS: Readonly<Record<UpgradeTicketTarget, ReadonlyArray<string>>> =
   "tty-renew": ["process", "session"],
   "service-tunnel": ["service"],
   "keys-bridge": ["host"],
+  screen: ["session"],
+  "screen-embed": ["session"],
+  "screen-renew": ["session"],
   preview: ["preview", "origin"],
+};
+
+/** What each embed page trades its URL's ticket for, and what it renews with. */
+const EMBEDS: Readonly<
+  Record<
+    EmbedSocket,
+    {
+      readonly embed: UpgradeTicketTarget;
+      readonly socket: UpgradeTicketTarget;
+      readonly renew: UpgradeTicketTarget;
+    }
+  >
+> = {
+  tty: { embed: "tty-embed", socket: "tty", renew: "tty-renew" },
+  screen: { embed: "screen-embed", socket: "screen", renew: "screen-renew" },
 };
 
 export const scopeOf = (
@@ -56,6 +76,9 @@ const addressed = (request: UpgradeTicketRequest): boolean => {
     case "tty-embed":
       // Exactly one of the two address forms, as the terminal route reads them.
       return (request.process === undefined) !== (request.session === undefined);
+    case "screen":
+    case "screen-embed":
+      return request.session !== undefined && request.session !== "";
     case "service-tunnel":
       return request.service !== undefined && request.service !== "";
     case "keys-bridge":
@@ -143,7 +166,8 @@ export const UpgradeTicketExchangeGroupLive = HttpApiBuilder.group(
     handlers.handle("exchange", ({ payload }) =>
       Effect.gen(function* () {
         const tickets = yield* UpgradeTicketsRepo;
-        const scope = scopeOf("tty-embed", { process: payload.process, session: payload.session });
+        const kind = EMBEDS[payload.socket ?? "tty"];
+        const scope = scopeOf(kind.embed, { process: payload.process, session: payload.session });
         // The page's first trade spends the ticket from its URL and is handed a renewal ticket;
         // later trades show that renewal. It is kept, not spent: a reply lost on the way back
         // would otherwise leave the page holding a dead ticket. It lives in the page's memory,
@@ -151,14 +175,14 @@ export const UpgradeTicketExchangeGroupLive = HttpApiBuilder.group(
         // minted the URL or with the credential that minted it, whichever is first.
         const first = yield* tickets.consume({
           ticket: payload.ticket,
-          target: "tty-embed",
+          target: kind.embed,
           scope,
         });
         const shown =
           first ??
           (yield* tickets.consume({
             ticket: payload.ticket,
-            target: "tty-renew",
+            target: kind.renew,
             scope,
             keep: true,
           }));
@@ -168,14 +192,14 @@ export const UpgradeTicketExchangeGroupLive = HttpApiBuilder.group(
         // A removal that committed since the read above refuses each mint under the project's
         // row lock (migration 0167), so no ticket outlives it into a Restore.
         return yield* Effect.gen(function* () {
-          const minted = yield* tickets.mint({ userId, credential, target: "tty", scope });
+          const minted = yield* tickets.mint({ userId, credential, target: kind.socket, scope });
           const renew =
             first === null
               ? payload.ticket
               : (yield* tickets.mint({
                   userId,
                   credential,
-                  target: "tty-renew",
+                  target: kind.renew,
                   scope,
                   // The HTTP mint always gives an embed ticket thirty seconds. Recover that
                   // original mint time from its immutable expiry, without reading another clock.
@@ -218,6 +242,8 @@ export const UrlBearersLive: Layer.Layer<UrlBearers, Config.ConfigError> = Layer
 
 export interface UpgradeCaller {
   readonly userId: string;
+  /** The sign-in or paired device the caller proved; null for one with no row (the dev token). */
+  readonly credential: TicketCredential | null;
   /** Re-checked right after the socket registers, so a removal in between still closes it. */
   readonly stillAdmitted: Effect.Effect<boolean>;
 }
@@ -260,6 +286,7 @@ export const resolveUpgradeCaller = (input: {
       if (spent === null) return HttpServerResponse.empty({ status: 401 });
       return {
         userId: spent.userId,
+        credential: spent.credential,
         // A ticket carries no session to re-read: what is re-checked is what revocation and
         // removal take away, the credential that minted it and the membership.
         stillAdmitted: Effect.all([
@@ -285,6 +312,7 @@ export const resolveUpgradeCaller = (input: {
     if (Option.isNone(session)) return HttpServerResponse.empty({ status: 401 });
     return {
       userId: session.value.user.id,
+      credential: session.value.credential ?? null,
       stillAdmitted: auth.getSession(headers).pipe(Effect.map(Option.isSome)),
     };
   });
