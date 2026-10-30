@@ -319,10 +319,7 @@ export interface PersonHub {
   /** Publishes the created project into this person's shell before returning. */
   readonly createProject: (
     session: BearerSession,
-    name: string,
-  ) => Effect.Effect<MendProject, ThreadCommandFailure>;
-  readonly ensureScratchProject: (
-    session: BearerSession,
+    request: ProjectCreationRequest,
   ) => Effect.Effect<MendProject, ThreadCommandFailure>;
   /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
   readonly commands: ThreadCommands;
@@ -606,6 +603,11 @@ export interface ThreadCommands {
     readonly change: { readonly kind: "visit"; readonly at: string } | { readonly kind: "unread" };
   }) => Effect.Effect<number, ThreadCommandFailure>;
 }
+
+/** A project by name (`name`, then `name-2` on), or the person's scratch project. */
+export type ProjectCreationRequest =
+  | { readonly kind: "named"; readonly name: string }
+  | { readonly kind: "scratch" };
 
 /**
  * Where a launched thread works: a new worktree made and prepared as t3code's strategy asks
@@ -3315,9 +3317,9 @@ export const makePersonHub = (input: {
         }),
       );
 
-    const createdProject = Effect.fn("PersonHub.createdProject")(function* (
+    const createProject = Effect.fn("PersonHub.createProject")(function* (
       session: BearerSession,
-      name: string | null,
+      request: ProjectCreationRequest,
     ) {
       if (tokens.isRefused(session.deviceToken))
         return yield* new MendDeviceRefused({ operation: "project creation" });
@@ -3325,9 +3327,9 @@ export const makePersonHub = (input: {
         return yield* refused("Project creation requires the paired person's operate scope.", true);
       yield* ensureLoaded;
       const created = yield* asCommandRefusal(
-        name === null
+        request.kind === "scratch"
           ? mend.ensureScratchProject(session.deviceToken)
-          : mend.createProject(session.deviceToken, name),
+          : mend.createProject(session.deviceToken, request.name),
       );
       return yield* loadLock.withPermits(1)(
         Effect.gen(function* () {
@@ -3337,16 +3339,12 @@ export const makePersonHub = (input: {
             return yield* refused(
               "Mend created the project, but it could not be loaded into this environment. Refresh projects before trying again.",
             );
-          if (name === null && ready.scratchOwnerUserId !== session.mendUser.id)
+          if (request.kind === "scratch" && ready.scratchOwnerUserId !== session.mendUser.id)
             return yield* refused("Mend did not return this person's scratch project.");
           return ready;
         }),
       );
     });
-    const createProject: PersonHub["createProject"] = (session, name) =>
-      createdProject(session, name);
-    const ensureScratchProject: PersonHub["ensureScratchProject"] = (session) =>
-      createdProject(session, null);
 
     /**
      * `wanted` with a random suffix (`health-check-k3x9qa`) no worktree of the project has; null
@@ -4628,7 +4626,6 @@ export const makePersonHub = (input: {
       mend,
       commands,
       createProject,
-      ensureScratchProject,
       changeOfWorktree,
     };
   });

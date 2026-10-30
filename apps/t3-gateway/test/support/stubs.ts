@@ -82,7 +82,6 @@ const refused = Effect.fail(
 /** A hub with nothing in it. */
 export const emptyHub: PersonHub = {
   createProject: () => refused,
-  ensureScratchProject: () => refused,
   shellSnapshot: Effect.succeed(EMPTY_SHELL_SNAPSHOT),
   subscribeShell: () =>
     Effect.succeed({

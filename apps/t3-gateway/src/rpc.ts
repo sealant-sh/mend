@@ -62,7 +62,7 @@ import { AssetUrls } from "./assets.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { makeFileHandlers } from "./files.ts";
-import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
+import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
@@ -357,7 +357,7 @@ export const makeGatewayRpcHandlers = ({
   const authorize = (bearer: BearerSession) =>
     hub.isRefused(bearer.deviceToken) ? Effect.fail(deviceRefused(READ)) : Effect.void;
 
-  const projectCreation = (name: string | null) =>
+  const projectCreation = (request: ProjectCreationRequest) =>
     Effect.gen(function* () {
       yield* authorize(session);
       if (!session.scopes.includes("orchestration:operate"))
@@ -365,9 +365,7 @@ export const makeGatewayRpcHandlers = ({
           message: "The authenticated token is missing required scope: orchestration:operate.",
           requiredScope: "orchestration:operate",
         });
-      return yield* (
-        name === null ? hub.ensureScratchProject(session) : hub.createProject(session, name)
-      ).pipe(
+      return yield* hub.createProject(session, request).pipe(
         Effect.mapError((error) =>
           error._tag === "MendDeviceRefused" ||
           (error._tag === "ThreadCommandRefused" && error.authorization)
@@ -1075,11 +1073,11 @@ export const makeGatewayRpcHandlers = ({
       authorize(session).pipe(Effect.andThen(files.searchEntries(input))),
     [WS_METHODS.projectsWriteFile]: () => refuse(WS_METHODS.projectsWriteFile),
     [WS_METHODS.projectsEnsureScratch]: () =>
-      projectCreation(null).pipe(
+      projectCreation({ kind: "scratch" }).pipe(
         Effect.map((project) => ({ projectId: ProjectId.make(project.id) })),
       ),
     [WS_METHODS.projectsCreateNew]: (input) =>
-      projectCreation(projectNameFrom(input.name)).pipe(
+      projectCreation({ kind: "named", name: projectNameFrom(input.name) }).pipe(
         Effect.map((project) => ({
           projectId: ProjectId.make(project.id),
           workspaceRoot: projectWorkspaceRootOf(project, session.mendUser.id),
