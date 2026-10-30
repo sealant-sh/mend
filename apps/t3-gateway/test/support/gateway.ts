@@ -8,6 +8,7 @@ import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 
 import { AssetUrlsLive, gatewayObservation } from "../../src/assets.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
@@ -114,6 +115,8 @@ export const gatewayTestLayer = (
      * logged.
      */
     readonly logs?: Array<string>;
+    /** Collects every span the gateway's requests start, through a recording tracer. */
+    readonly spans?: Array<Tracer.Span>;
     /**
      * Find's parser, to share one worker pool across gateways. Without it the gateway starts its
      * own, as production does.
@@ -134,6 +137,7 @@ export const gatewayTestLayer = (
     ),
     Layer.provideMerge(NodeHttpServer.layerTest),
     Layer.provide(Logger.layer(options.logs === undefined ? [] : [collectingLogger(options.logs)])),
+    Layer.provide(options.spans === undefined ? Layer.empty : recordingTracer(options.spans)),
     Layer.provideMerge(
       Layer.succeed(GatewayConfig, {
         mendUrl,
@@ -150,6 +154,18 @@ export const gatewayTestLayer = (
   );
 
 export const t3Client = HttpApiClient.make(EnvironmentHttpApi);
+
+const recordingTracer = (spans: Array<Tracer.Span>) =>
+  Layer.succeed(
+    Tracer.Tracer,
+    Tracer.make({
+      span(options) {
+        const span = Tracer.nativeTracer.span(options);
+        spans.push(span);
+        return span;
+      },
+    }),
+  );
 
 /** A logger that keeps each line as `Logger.formatJson` writes it. */
 const collectingLogger = (lines: Array<string>) =>
