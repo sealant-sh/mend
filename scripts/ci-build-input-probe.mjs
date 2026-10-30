@@ -30,13 +30,13 @@ export const VOLATILE = [
     // Nitro's public-asset map: each entry's file mtime, and the entries' order.
     glob: "apps/web/.output/server/index.mjs",
     normalize: (text) =>
-      text.replace(/^const assets = \{\n([\s\S]*?)\n\};$/m, (_, body) => {
+      text.replace(/^var public_assets_data_default = \{\n([\s\S]*?)\n\};$/m, (_, body) => {
         const entries = body
-          .split(/\n(?=  ")/)
+          .split(/\n(?=\t")/)
           .map((entry) =>
             entry.replace(/,$/, "").replace(/("mtime": )"\d{4}-\d\d-\d\dT[\d:.]+Z"/, '$1"<mtime>"'),
           );
-        return `const assets = {\n${entries.toSorted().join(",\n")}\n};`;
+        return `var public_assets_data_default = {\n${entries.toSorted().join(",\n")}\n};`;
       }),
   },
   {
@@ -115,10 +115,15 @@ export const probe = (
     walk(root);
     return found.toSorted();
   };
+  const unmatched = new Set();
   const digest = (file) => {
     const bytes = readFileSync(path.join(repository, file));
     const rule = VOLATILE.find((candidate) => path.matchesGlob(file, candidate.glob));
-    const content = rule ? rule.normalize(bytes.toString("utf8")) : bytes;
+    if (!rule) return createHash("sha256").update(bytes).digest("hex");
+    const text = bytes.toString("utf8");
+    const content = rule.normalize(text);
+    if (content === text)
+      unmatched.add(`the volatile rule for ${rule.glob} matched nothing in ${file}`);
     return createHash("sha256").update(content).digest("hex");
   };
   // A run is read only from the one summary its own invocation wrote: a summary is never chosen by
@@ -186,6 +191,7 @@ export const probe = (
     ["second", secondRun],
   ])
     if (run.failure) violations.push(`the ${label} unchanged build: ${run.failure}`);
+  violations.push(...unmatched);
   if (violations.length)
     return { builds: builds.map((task) => task.taskId), probed: {}, violations };
   const first = firstRun.tasks;
