@@ -391,6 +391,9 @@ importers:
 
   apps/cli:
     dependencies:
+      '@mend/api-contracts':
+        specifier: workspace:*
+        version: link:../../packages/api-contracts
       '@opentui/core':
         specifier: 0.5.3
         version: 0.5.3(typescript@7.0.2)(web-tree-sitter@0.25.10(@types/emscripten@1.41.5))

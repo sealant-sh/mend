@@ -635,6 +635,19 @@ export const runChecks = async (
     }
   }
 
+  const retained = signedIn
+    ? await getJson<{ readonly projects: number; readonly bytes: number | null }>(
+        config,
+        "/removed-projects/disk",
+      )
+    : null;
+  if (retained?.value !== null && retained?.value !== undefined)
+    checks.push({
+      label: "removed projects",
+      state: "ok",
+      detail: `${retained.value.projects} kept · ${retained.value.bytes === null ? "disk usage unread" : `${retained.value.bytes} bytes on disk`} · kept indefinitely`,
+      fix: "mend projects removed",
+    });
   const adopted = projects === null ? null : projects.value;
   if (adopted === null) checks.push(notChecked("projects"));
   else if (adopted.length === 0) {
