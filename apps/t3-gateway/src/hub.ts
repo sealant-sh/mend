@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
-import { OWNERLESS_OUTSIDE_MEND } from "@mend/domain/workbench";
+import { hasProvenOwner, OWNERLESS_OUTSIDE_MEND } from "@mend/domain/workbench";
 import {
   EventId,
   OrchestrationProjectShell,
@@ -1435,6 +1435,8 @@ export const makePersonHub = (input: {
     const handledCommands = new Set<string>();
 
     const projects = new Map<string, ProjectEntry>();
+    /** Projects removed from here: a read that began before the removal never brings one back. */
+    const removedProjects = new Set<string>();
     const conversations = new Map<string, Conversation>();
     /**
      * Session id → the turns Mend answered `POST /turns` with that no read of Mend has shown yet. A
@@ -2218,7 +2220,9 @@ export const makePersonHub = (input: {
         { concurrency: 2 },
       );
       const facts = people ?? active;
-      const entries = details.filter((entry): entry is ProjectEntry => entry !== null);
+      const entries = details.filter(
+        (entry): entry is ProjectEntry => entry !== null && !removedProjects.has(entry.project.id),
+      );
       const sessionIds = entries.flatMap((entry) => projectableSessionIds(entry, launched));
       const [read, retired] = yield* Effect.all(
         [readConversations(sessionIds, facts), readRetirements(sessionIds, facts)],
@@ -2309,6 +2313,7 @@ export const makePersonHub = (input: {
         );
         yield* locked(
           Effect.gen(function* () {
+            if (removedProjects.has(projectId)) return;
             const previous = projects.get(projectId);
             if (entry === null) {
               projects.delete(projectId);
@@ -4620,7 +4625,8 @@ export const makePersonHub = (input: {
         // Gone already: removed, as t3code's own server answers for a path that is not there.
         if (worktree === undefined) return;
         if (others.length > 0) return yield* new RemovalKept({ reason: AMBIGUOUS_WORKTREE });
-        if (worktree.changeOwnerUserId === null) {
+        // Decision Q8: a recorded owner never changes, so one proven here is the one Mend checks.
+        if (!hasProvenOwner(worktree)) {
           return yield* new RemovalKept({ reason: OWNERLESS_OUTSIDE_MEND });
         }
         yield* settledRemovals(worktree.id);
@@ -4637,7 +4643,11 @@ export const makePersonHub = (input: {
             const entry = projects.get(request.projectId);
             return entry === undefined
               ? null
-              : projectShellOf(entry.project, projectScripts.get(entry.project.id) ?? []);
+              : projectShellOf(
+                  entry.project,
+                  projectScripts.get(entry.project.id) ?? [],
+                  keeper?.id ?? "",
+                );
           }),
         );
         if (shown === null) return yield* new RemovalKept({ reason: PROJECT_NOT_LISTED });
@@ -4645,10 +4655,30 @@ export const makePersonHub = (input: {
           yield* mend.removeProject(request.session.deviceToken, request.projectId),
         );
         if (refusal !== null) return yield* new RemovalKept({ reason: refusal });
-        // Read now, so the project and its threads leave the shell before t3code stops waiting.
-        yield* refreshProject(request.projectId).pipe(Effect.catch(() => requestRefresh("all")));
+        yield* projectRemoved(request.projectId);
         return { ...shown, deletedAt: DateTime.formatIso(yield* DateTime.now) };
       });
+
+    /**
+     * Mend removed the project: it and its threads leave the shell now, from Mend's answer alone,
+     * and no read that began before it puts them back.
+     */
+    const projectRemoved = (projectId: string) =>
+      locked(
+        Effect.gen(function* () {
+          removedProjects.add(projectId);
+          const previous = projects.get(projectId);
+          projects.delete(projectId);
+          const finished: Array<string> = [];
+          for (const session of previous?.sessions ?? []) {
+            conversations.delete(session.id);
+            adoptedTurns.delete(session.id);
+            if (removing.delete(session.id)) finished.push(session.id);
+          }
+          yield* removed(finished);
+          yield* publishAll;
+        }),
+      );
 
     const terminals = makeTerminals({
       mend,

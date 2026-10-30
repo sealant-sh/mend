@@ -255,10 +255,12 @@ export const MendWorktree = Schema.Struct({
   name: Schema.String,
   /** Its directory under the store's `worktrees/`: never renamed, unlike `name`. */
   directory: Schema.String,
-  /** Who started its change; null when Mend cannot prove it, and from a Mend before 0.37. */
+  /** Who started its change; null when nobody did, and from a Mend before 0.37. */
   changeOwnerUserId: Schema.NullOr(Schema.String).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
   ),
+  /** Whether Mend's history proves that owner started it; never from a Mend before 0.37. */
+  changeOwnerProven: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 });
 export type MendWorktree = typeof MendWorktree.Type;
 

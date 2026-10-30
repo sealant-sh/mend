@@ -114,7 +114,11 @@ describe("Removing a worktree from t3code", () => {
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         const { rpc } = yield* pairAndConnect(mend, "REMOVE");
         yield* deleteThread(rpc, "session-1");
 
@@ -136,7 +140,11 @@ describe("Removing a worktree from t3code", () => {
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         mend.workbench.worktreeRemovalAnswers.set(
           WORKTREE_ID,
           refused("worktree", [unlanded({ _tag: "no-remote", files: FILES })], true),
@@ -162,7 +170,11 @@ describe("Removing a worktree from t3code", () => {
       withGateway((mend) =>
         Effect.gen(function* () {
           mend.workbench.addProject("project-1", "mend");
-          mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+          mend.workbench.addSession({
+            id: "session-1",
+            projectId: "project-1",
+            live: false,
+          });
           mend.workbench.worktreeRemovalAnswers.set(
             WORKTREE_ID,
             refused("worktree", [unlanded({ _tag: "never-landed", files: FILES })], true),
@@ -183,7 +195,11 @@ describe("Removing a worktree from t3code", () => {
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         mend.workbench.worktreeRemovalAnswers.set(WORKTREE_ID, {
           status: 403,
           body: {
@@ -208,10 +224,38 @@ describe("Removing a worktree from t3code", () => {
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         const worktree = mend.workbench.worktrees.get(WORKTREE_ID);
         if (worktree !== undefined) worktree.changeOwnerUserId = null;
         const { rpc } = yield* pairAndConnect(mend, "OWNERLESS");
+
+        const error = failureOf(yield* Effect.exit(rpc[WS_METHODS.vcsRemoveWorktree](REMOVE)));
+
+        assert.strictEqual(
+          error.message,
+          "Mend cannot tell who started this worktree's change, so it keeps it. Remove it from Mend.",
+        );
+        assert.deepStrictEqual(worktreeDeletes(mend), []);
+      }),
+    ),
+  );
+
+  it.live("refuses a worktree whose owner Mend's history cannot prove, without asking Mend", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
+        const worktree = mend.workbench.worktrees.get(WORKTREE_ID);
+        if (worktree !== undefined) worktree.changeOwnerProven = false;
+        const { rpc } = yield* pairAndConnect(mend, "UNPROVEN");
 
         const error = failureOf(yield* Effect.exit(rpc[WS_METHODS.vcsRemoveWorktree](REMOVE)));
 
@@ -228,7 +272,11 @@ describe("Removing a worktree from t3code", () => {
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         const { rpc } = yield* pairAndConnect(mend, "GONE");
         mend.workbench.worktrees.delete(WORKTREE_ID);
 
@@ -244,12 +292,22 @@ describe("Removing a worktree from t3code", () => {
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
         mend.workbench.addProject("project-2", "other");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         const { rpc } = yield* pairAndConnect(mend, "NOTHERE");
 
         for (const input of [
-          { ...REMOVE, path: "/var/lib/mend/store/project-1/worktrees/../repo.git" },
-          { ...REMOVE, path: "/var/lib/mend/store/project-1/worktrees/wt-session-1/src" },
+          {
+            ...REMOVE,
+            path: "/var/lib/mend/store/project-1/worktrees/../repo.git",
+          },
+          {
+            ...REMOVE,
+            path: "/var/lib/mend/store/project-1/worktrees/wt-session-1/src",
+          },
           { ...REMOVE, path: "/var/lib/mend/store/project-1/worktrees/" },
           { ...REMOVE, cwd: "/var/lib/mend/store/project-2/repo.git" },
           { ...REMOVE, cwd: "/somewhere/else" },
@@ -267,7 +325,11 @@ describe("Removing a worktree from t3code", () => {
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         mend.workbench.worktreeRemovalAnswers.set(WORKTREE_ID, {
           status: 503,
           body: { _tag: "ServiceUnavailable" },
@@ -288,7 +350,11 @@ describe("Removing a worktree from t3code", () => {
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         mend.workbench.worktreeRemovalAnswers.set(WORKTREE_ID, {
           status: 409,
           body: {
@@ -316,7 +382,11 @@ describe("Removing a worktree from t3code", () => {
       Effect.gen(function* () {
         const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         mend.workbench.removalLeavesWorkspace = true;
         const { rpc } = yield* pairAndConnect(mend, "SETTLE");
         yield* deleteThread(rpc, "session-1");
@@ -343,7 +413,11 @@ describe("Removing a worktree from t3code", () => {
       Effect.gen(function* () {
         const timers = yield* GatewayTimers;
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         mend.workbench.removalLeavesWorkspace = true;
         const { rpc } = yield* pairAndConnect(mend, "OUTLAST");
         yield* deleteThread(rpc, "session-1");
@@ -383,7 +457,11 @@ describe("Removing a project from t3code", () => {
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         const { rpc } = yield* pairAndConnect(mend, "PROJECT");
         const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
         yield* shell.next(
@@ -415,11 +493,62 @@ describe("Removing a project from t3code", () => {
     ),
   );
 
+  it.live(
+    "keeps a removed project gone when a read that began before the removal lands after it",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          mend.workbench.addSession({
+            id: "session-1",
+            projectId: "project-1",
+            live: false,
+          });
+          const { rpc } = yield* pairAndConnect(mend, "STALE");
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          const release = Promise.withResolvers<void>();
+          const reached = Promise.withResolvers<void>();
+          mend.workbench.holdProjectDetail = {
+            until: release.promise,
+            reached: reached.resolve,
+          };
+          // A change in the project: the gateway reads it again, and that read is held.
+          mend.workbench.emit({ type: "project", projectId: "project-1" });
+          yield* Effect.promise(() => reached.promise);
+          // Later reads of the project fail, so only Mend's answer to the removal can publish it.
+          mend.workbench.projectDetailFailures = 10;
+
+          yield* remove(rpc, true);
+          yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "project.removed" }> =>
+              item.kind === "project.removed" && item.projectId === "project-1",
+            "4 seconds",
+          );
+          release.resolve();
+
+          assert.isTrue(
+            yield* shell.quiet(
+              (item) => item.kind === "project.updated" || item.kind === "thread.updated",
+              "1 second",
+            ),
+            "the read from before the removal brings nothing back",
+          );
+        }),
+      ),
+  );
+
   it.live("refuses in words naming every blocking worktree and whose work it is", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
-        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+        });
         mend.workbench.projectRemovalAnswers.set(
           "project-1",
           refused(
