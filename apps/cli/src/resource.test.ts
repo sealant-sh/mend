@@ -3,7 +3,14 @@ import { Schema } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiCall } from "./pair.ts";
-import { proposalOf, removalTarget, renderResources, resourceCommand } from "./resource.ts";
+import {
+  approvalTarget,
+  proposalOf,
+  removalTarget,
+  renderResources,
+  resourceCommand,
+  reviewLines,
+} from "./resource.ts";
 
 const shop = { id: "p_shop", name: "shop" };
 const digest = "a".repeat(64);
@@ -394,5 +401,162 @@ describe("what the terminal receives", () => {
     expect(JSON.parse(out.join(""))).toEqual(
       JSON.parse(JSON.stringify({ version: 1, ...withUrl })),
     );
+  });
+});
+
+describe("mend resource approve", () => {
+  const unnamed = { proposal: null, worktree: null, forProject: false };
+  const checkout = { id: "wt_1", label: "checkout" };
+  const withFile = (table: ReturnType<typeof spec>, scope: "project" | "worktree") =>
+    pageOf({
+      ...page,
+      file: {
+        ...page.file,
+        proposals: [
+          {
+            digest: "b".repeat(64),
+            spec: { ...table, scope },
+            statusLine: "@mail · mailpit · worktree · proposed in mend.toml · waiting for approval",
+          },
+        ],
+      },
+    });
+
+  it("approves the definition settings hold, by the digest read", () => {
+    expect(approvalTarget(page, "db", unnamed)).toMatchObject({
+      ok: true,
+      body: { source: { kind: "settings", id: "rdef_1", digest }, worktreeId: null },
+    });
+  });
+
+  it("adopts the proposal named, over nothing settings hold", () => {
+    expect(approvalTarget(page, "mail", { ...unnamed, proposal: "rprop_2" })).toMatchObject({
+      ok: true,
+      body: { source: { kind: "proposal", id: "rprop_2", digest, settings: null } },
+    });
+    expect(approvalTarget(page, "mail", unnamed)).toEqual({
+      ok: false,
+      message: "2 proposals of @mail · name one with --proposal rprop_1 | rprop_2",
+    });
+  });
+
+  it("approves a worktree's table for that worktree, or for the project when asked", () => {
+    const filed = withFile(spec("mail", "axllent/mailpit:v1.21"), "worktree");
+    expect(approvalTarget(filed, "mail", { ...unnamed, worktree: checkout })).toMatchObject({
+      ok: true,
+      body: {
+        source: { kind: "file", worktreeId: "wt_1", name: "mail", digest: "b".repeat(64) },
+        worktreeId: "wt_1",
+      },
+    });
+    expect(
+      approvalTarget(filed, "mail", { ...unnamed, worktree: checkout, forProject: true }),
+    ).toMatchObject({ ok: true, body: { worktreeId: null } });
+  });
+
+  it("prints every field that runs, the digest and whom it is for", () => {
+    const target = approvalTarget(page, "db", unnamed);
+    if (!target.ok) throw new Error(target.message);
+    expect(reviewLines(target.reviewed, null)).toEqual([
+      "@db · postgres 17 · project · approved by Maria · not started",
+      "  image postgres:17",
+      "  ports smtp=1025/tcp",
+      "  limits 1 CPU · 1024 MiB memory · 10 GiB disk",
+      "  ready tcp",
+      `  digest sha256:${digest}`,
+      "  for the project",
+    ]);
+  });
+});
+
+describe("approving, choosing and starting against a server", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const exits = () =>
+    vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`exit ${code}`);
+    });
+  const stderr = () => {
+    const err: Array<string> = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      err.push(String(chunk));
+      return true;
+    });
+    return err;
+  };
+
+  it("approves the digest passed, and prints the line and the image pinned", async () => {
+    const out = stdout();
+    const mend = server({
+      "GET /projects/p_shop/resources": page,
+      "POST /projects/p_shop/resources/approvals": {
+        definition: { statusLine: "@db · postgres 17 · project · approved by Maria · not started" },
+        image: `postgres:17@sha256:${"c".repeat(64)}`,
+        resolvedBy: "docker-mirror:5000",
+      },
+    });
+    await resourceCommand(mend.api, async () => shop, [
+      "approve",
+      "db",
+      "--digest",
+      `sha256:${"d".repeat(64)}`,
+    ]);
+    expect(mend.calls.at(-1)).toBe(
+      `POST /projects/p_shop/resources/approvals?timeZone=… {"source":{"kind":"settings","id":"rdef_1","digest":"${"d".repeat(64)}"},"worktreeId":null}`,
+    );
+    expect(out.join("").split("\n").slice(-3)).toEqual([
+      "@db · postgres 17 · project · approved by Maria · not started",
+      `image postgres:17@sha256:${"c".repeat(64)} · digest from docker-mirror:5000`,
+      "",
+    ]);
+  });
+
+  it("approves nothing without a terminal or a digest", async () => {
+    stdout();
+    const err = stderr();
+    exits();
+    const mend = server({ "GET /projects/p_shop/resources": page });
+    await expect(resourceCommand(mend.api, async () => shop, ["approve", "db"])).rejects.toThrow(
+      "exit 1",
+    );
+    expect(err.join("")).toBe(
+      "mend: approving without a terminal takes --digest sha256:… of the definition you read, as printed above · nothing was approved\n",
+    );
+    expect(mend.calls.filter((call) => call.startsWith("POST"))).toEqual([]);
+  });
+
+  it("stores a worktree's choice and prints the line written", async () => {
+    const out = stdout();
+    const mend = server({
+      "GET /projects/p_shop/worktrees": { worktrees: [{ id: "wt_1", name: "checkout" }] },
+      "GET /projects/p_shop/resources": page,
+      "PUT /projects/p_shop/worktrees/wt_1/resources/rdef_1/selection": {
+        statusLine:
+          "@db · postgres 17 · project · approved by Maria · its own database · not started",
+        revision: 2,
+      },
+    });
+    await resourceCommand(mend.api, async () => shop, [
+      "use",
+      "db",
+      "own",
+      "--worktree",
+      "checkout",
+    ]);
+    expect(mend.calls.at(-1)).toBe(
+      'PUT /projects/p_shop/worktrees/wt_1/resources/rdef_1/selection?timeZone=… {"mode":"own"}',
+    );
+    expect(out.join("")).toBe(
+      "@db · postgres 17 · project · approved by Maria · its own database · not started\n" +
+        "checkout · revision 2\n",
+    );
+  });
+
+  it("asks the server to start, which refuses every start", async () => {
+    const mend = server({});
+    await resourceCommand(mend.api, async () => shop, ["start", "db"]);
+    expect(mend.calls).toEqual(["POST /projects/p_shop/resources/db/start"]);
   });
 });

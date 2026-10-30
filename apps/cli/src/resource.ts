@@ -1,11 +1,18 @@
 import {
   RESOURCE_PRESETS,
+  type ResourceApprovalSource,
+  type ResourceApproved,
+  type ResourceDefinitionInput,
   resourceProposalNotices,
   type ResourcePreset,
+  type ResourceSelectionEntry,
   type ResourcesPage,
+  WorktreeChoice,
 } from "@mend/domain/workbench";
+import { Schema } from "effect";
 
 import type { ApiCall } from "./pair.ts";
+import { askYesNo } from "./shared-workspace.ts";
 import {
   jsonWithoutCredentials,
   paint,
@@ -15,10 +22,10 @@ import {
 } from "./shared.ts";
 
 /**
- * `mend resource add|list|remove` (docs/adr/0019-shared-services.md): a project's resources from a
- * person's terminal. Adding proposes; a manager approves in project settings. The server decides
- * every act; these commands print its status lines as they come. Anything a proposal stored is
- * someone else's text, so it reaches the terminal through `printable`.
+ * `mend resource add|list|remove|approve|use|start` (docs/adr/0019-shared-services.md): a
+ * project's resources from a person's terminal. Adding proposes; a manager approves. The server
+ * decides every act; these commands print its status lines as they come. Anything a proposal
+ * stored is someone else's text, so it reaches the terminal through `printable`.
  */
 
 const dim = paint("2");
@@ -56,6 +63,7 @@ const VALUE_FLAGS = [
   "--scope",
   "--proposal",
   "--definition",
+  "--digest",
 ];
 
 const positionals = (args: ReadonlyArray<string>) =>
@@ -249,6 +257,136 @@ export const removalTarget = (
   };
 };
 
+type Reviewed = { readonly spec: ResourceDefinitionInput; readonly digest: string };
+
+export type ApprovalTarget =
+  | {
+      readonly ok: true;
+      readonly reviewed: Reviewed & { readonly statusLine: string };
+      readonly body: {
+        readonly source: ResourceApprovalSource;
+        readonly worktreeId: string | null;
+      };
+    }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * What `mend resource approve` approves, from the page the caller just read: the definition
+ * settings hold under the name, the proposal `--proposal` names (or the only one of the name), or,
+ * with `--worktree`, that worktree's `mend.toml` table when it differs from settings. A worktree
+ * resource read with `--worktree` is approved for that worktree, unless `--for-project`.
+ */
+export const approvalTarget = (
+  page: ResourcesPage,
+  name: string,
+  named: {
+    readonly proposal: string | null;
+    readonly worktree: { readonly id: string; readonly label: string } | null;
+    readonly forProject: boolean;
+  },
+): ApprovalTarget => {
+  const held = page.settings.find((entry) => entry.spec.name === name);
+  const settings = held === undefined ? null : { id: held.id, digest: held.digest };
+  const target = (
+    reviewed: Reviewed & { readonly statusLine: string },
+    source: ResourceApprovalSource,
+  ): ApprovalTarget => ({
+    ok: true,
+    reviewed,
+    body: {
+      source,
+      worktreeId:
+        named.worktree !== null && reviewed.spec.scope === "worktree" && !named.forProject
+          ? named.worktree.id
+          : null,
+    },
+  });
+  const fromSettings = (): ApprovalTarget =>
+    held === undefined
+      ? { ok: false, message: `no @${printable(name)} in settings to approve` }
+      : target(held, { kind: "settings", id: held.id, digest: held.digest });
+  if (named.proposal !== null) {
+    const entry = page.proposals.find((each) => each.id === named.proposal);
+    if (entry?.spec.name !== name) {
+      return {
+        ok: false,
+        message: `no proposal ${printable(named.proposal)} of @${printable(name)}`,
+      };
+    }
+    return target(entry, { kind: "proposal", id: entry.id, digest: entry.digest, settings });
+  }
+  if (named.worktree !== null) {
+    const file = page.file;
+    const where = `mend.toml in ${printable(named.worktree.label)}`;
+    if (file.kind !== "read") {
+      return held === undefined
+        ? {
+            ok: false,
+            message: `${where} · ${"message" in file ? printable(file.message) : file.kind}`,
+          }
+        : fromSettings();
+    }
+    const table = file.proposals.find((each) => each.spec.name === name);
+    if (table === undefined || table.digest === held?.digest) return fromSettings();
+    return target(table, {
+      kind: "file",
+      worktreeId: file.worktreeId,
+      name: table.spec.name,
+      digest: table.digest,
+      settings,
+    });
+  }
+  if (held !== undefined) return fromSettings();
+  const proposals = page.proposals.filter((entry) => entry.spec.name === name);
+  const [only] = proposals;
+  if (only !== undefined && proposals.length === 1) {
+    return target(only, { kind: "proposal", id: only.id, digest: only.digest, settings: null });
+  }
+  return {
+    ok: false,
+    message:
+      proposals.length === 0
+        ? `no @${printable(name)} in settings or proposals · mend resource list shows what there is`
+        : `${proposals.length} proposals of @${printable(name)} · name one with --proposal ${idsOf(proposals)}`,
+  };
+};
+
+/** The definition as an approver reviews it: every field that runs, and the digest approved. */
+export const reviewLines = (
+  reviewed: Reviewed & { readonly statusLine: string },
+  forWorktree: string | null,
+): ReadonlyArray<string> => {
+  const { spec } = reviewed;
+  const env = Object.entries(spec.env).map(([key, value]) =>
+    typeof value === "string" ? `${key}=${value}` : `${key}={secret ${value.secret}}`,
+  );
+  const fields: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
+    ["image", [spec.image]],
+    ["command", spec.command === null ? [] : [spec.command.join(" ")]],
+    ["ports", spec.ports.map((port) => `${port.name}=${port.port}/${port.protocol}`)],
+    ["volumes", spec.volumes.map((volume) => `${volume.name}=${volume.mountPath}`)],
+    ["env", env],
+    [
+      "limits",
+      [
+        `${spec.limits.cpu} CPU · ${spec.limits.memoryMiB} MiB memory · ${spec.limits.diskGiB} GiB disk`,
+      ],
+    ],
+    ["ready", [spec.ready.kind === "command" ? spec.ready.argv.join(" ") : spec.ready.kind]],
+    ["exports", Object.entries(spec.exports).map(([key, value]) => `${key}=${value}`)],
+  ];
+  return [
+    printable(reviewed.statusLine),
+    ...fields.flatMap(([label, values]) =>
+      values.length === 0 ? [] : [`  ${label} ${values.map(printable).join(", ")}`],
+    ),
+    `  digest sha256:${reviewed.digest}`,
+    `  for ${forWorktree === null ? "the project" : `worktree ${printable(forWorktree)}`}`,
+  ];
+};
+
+const isChoice = Schema.is(WorktreeChoice);
+
 const readerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 export const resourceCommand = async (
@@ -266,25 +404,26 @@ export const resourceCommand = async (
       "GET",
       `/projects/${project.id}/resources?${zone}${worktreeId === null ? "" : `&worktreeId=${encodeURIComponent(worktreeId)}`}`,
     );
+  /** The `--worktree` named, by name or id; null when none is. */
+  const worktreeOf = async () => {
+    const named = takeFlagValue(rest, "--worktree");
+    if (named === null) return null;
+    const listing = await api<{
+      readonly worktrees: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+    }>("GET", `/projects/${project.id}/worktrees`);
+    const found = listing.worktrees.find((each) => each.name === named || each.id === named);
+    if (found === undefined) {
+      return fail(`no worktree named "${printable(named)}" in ${printable(project.name)}`);
+    }
+    return { id: found.id, label: named };
+  };
+  const [name = null] = positionals(rest);
   switch (verb) {
     case "list":
     case undefined: {
-      const worktreeName = takeFlagValue(rest, "--worktree");
-      let worktreeId: string | null = null;
-      if (worktreeName !== null) {
-        const listing = await api<{
-          readonly worktrees: ReadonlyArray<{ readonly id: string; readonly name: string }>;
-        }>("GET", `/projects/${project.id}/worktrees`);
-        const found = listing.worktrees.find(
-          (each) => each.name === worktreeName || each.id === worktreeName,
-        );
-        if (found === undefined)
-          return fail(
-            `no worktree named "${printable(worktreeName)}" in ${printable(project.name)}`,
-          );
-        worktreeId = found.id;
-      }
-      const page = await read(worktreeId);
+      const worktree = await worktreeOf();
+      const worktreeName = worktree?.label ?? null;
+      const page = await read(worktree?.id ?? null);
       // Each string redacted on its own, so a URL in a spec cannot swallow the JSON around it.
       if (rest.includes("--json")) {
         process.stdout.write(`${jsonWithoutCredentials({ version: 1, ...page })}\n`);
@@ -306,7 +445,6 @@ export const resourceCommand = async (
       return;
     }
     case "remove": {
-      const [name = null] = positionals(rest);
       const target = removalTarget(project, await read(null), name, {
         proposal: takeFlagValue(rest, "--proposal"),
         definition: takeFlagValue(rest, "--definition"),
@@ -320,7 +458,67 @@ export const resourceCommand = async (
       );
       return say(printable(removed.statusLine));
     }
+    case "approve": {
+      if (name === null) return fail("name the resource: mend resource approve db");
+      const worktree = await worktreeOf();
+      const target = approvalTarget(await read(worktree?.id ?? null), name, {
+        proposal: takeFlagValue(rest, "--proposal"),
+        worktree,
+        forProject: rest.includes("--for-project"),
+      });
+      if (!target.ok) return fail(target.message);
+      const forWorktree = target.body.worktreeId === null ? null : (worktree?.label ?? null);
+      for (const line of reviewLines(target.reviewed, forWorktree)) say(line);
+      // What is approved is the digest the approver read: the one they pass, or the one shown.
+      const passed = takeFlagValue(rest, "--digest");
+      if (passed !== null && !/^sha256:[0-9a-f]{64}$/.test(passed)) {
+        return fail("--digest is sha256: and 64 lower-case hex digits, as printed above");
+      }
+      if (passed === null && (process.stdin.isTTY !== true || process.stdout.isTTY !== true)) {
+        return fail(
+          "approving without a terminal takes --digest sha256:… of the definition you read, as printed above · nothing was approved",
+        );
+      }
+      if (passed === null && !(await askYesNo("Approve this definition?"))) {
+        return say("nothing was approved");
+      }
+      const digest = passed === null ? target.reviewed.digest : passed.slice("sha256:".length);
+      const approved = await api<ResourceApproved>(
+        "POST",
+        `/projects/${project.id}/resources/approvals?${zone}`,
+        { ...target.body, source: { ...target.body.source, digest } },
+      );
+      say(printable(approved.definition.statusLine));
+      const by =
+        approved.resolvedBy === null ? "" : ` · digest from ${printable(approved.resolvedBy)}`;
+      return say(dim(`image ${printable(approved.image)}${by}`));
+    }
+    case "use": {
+      const mode = positionals(rest)[1] ?? "";
+      if (name === null || !isChoice(mode)) {
+        return fail("name the resource and a choice: mend resource use db own --worktree checkout");
+      }
+      const worktree = await worktreeOf();
+      if (worktree === null) return fail("name the worktree that uses it: --worktree <w>");
+      const held = (await read(null)).settings.find((entry) => entry.spec.name === name);
+      if (held === undefined) return fail(`no @${printable(name)} in settings`);
+      const chosen = await api<ResourceSelectionEntry>(
+        "PUT",
+        `/projects/${project.id}/worktrees/${encodeURIComponent(worktree.id)}/resources/${encodeURIComponent(held.id)}/selection?${zone}`,
+        { mode },
+      );
+      say(printable(chosen.statusLine));
+      return say(dim(`${printable(worktree.label)} · revision ${chosen.revision}`));
+    }
+    case "start": {
+      if (name === null) return fail("name the resource: mend resource start db");
+      // The server refuses every start until a runtime runs resources, and says why.
+      await api("POST", `/projects/${project.id}/resources/${encodeURIComponent(name)}/start`);
+      return;
+    }
     default:
-      return fail(`unknown resource command "${printable(verb)}" · try: add, list, remove`);
+      return fail(
+        `unknown resource command "${printable(verb)}" · try: add, list, remove, approve, use, start`,
+      );
   }
 };
