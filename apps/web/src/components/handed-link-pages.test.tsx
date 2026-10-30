@@ -1,69 +1,103 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRouter,
-  RouterProvider,
-} from "@tanstack/react-router";
-import { createTRPCClient } from "@trpc/client";
-import { act, type ReactNode } from "react";
+import { RouterProvider } from "@tanstack/react-router";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { trpcLinks, TRPCProvider } from "#/lib/trpc";
-
-import type { AppRouter } from "../server/routers/index.ts";
-import { JoinPage } from "./join-page.tsx";
-import { ResetPage } from "./reset-page.tsx";
-import { SlackLinkPage } from "./slack-link-page.tsx";
+import { getRouter } from "#/router";
 
 interface Sent {
   readonly url: string;
   readonly body: string;
+  /** The page's path when the request left: a request from a legacy path went before its redirect. */
+  readonly from: string;
 }
 
-let sent: Sent[];
+// Before the app's modules load: the auth client keeps the fetch it finds then.
+const sent = vi.hoisted(() => {
+  const requests: Sent[] = [];
+  vi.stubGlobal("matchMedia", () => ({
+    matches: false,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  vi.stubGlobal("fetch", (input: unknown, init?: { readonly body?: unknown }) => {
+    requests.push({
+      url: input instanceof Request ? input.url : String(input),
+      body: typeof init?.body === "string" ? init.body : "",
+      from: window.location.pathname,
+    });
+    return Promise.resolve(Response.json({ message: "not answered" }, { status: 500 }));
+  });
+  return requests;
+});
+
+const PASSWORD = "a long enough password";
+
 let root: Root;
 let host: HTMLDivElement;
 
-const recordingFetch = (input: unknown, init?: { readonly body?: unknown }): Promise<Response> => {
-  const url = input instanceof Request ? input.url : String(input);
-  sent.push({ url, body: typeof init?.body === "string" ? init.body : "" });
-  return Promise.resolve(Response.json({ message: "not answered" }, { status: 500 }));
+const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+
+const open = async (href: string) => {
+  window.history.replaceState(null, "", href);
+  const router = getRouter();
+  await act(async () => root.render(<RouterProvider router={router} />));
+  await settle();
+  return router;
 };
 
-const visit = async (href: string, Page: () => ReactNode) => {
-  window.history.replaceState(null, "", href);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const client = createTRPCClient<AppRouter>({
-    links: trpcLinks("http://localhost:3000/trpc", recordingFetch),
-  });
-  const router = createRouter({
-    routeTree: createRootRoute({ component: Page }),
-    history: createMemoryHistory(),
-  });
+const text = () => host.textContent ?? "";
+
+const go = async (navigate: () => unknown) => {
   await act(async () => {
-    root.render(
-      <QueryClientProvider client={queryClient}>
-        <TRPCProvider trpcClient={client} queryClient={queryClient}>
-          <RouterProvider router={router} />
-        </TRPCProvider>
-      </QueryClientProvider>,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await navigate();
   });
-  return host.textContent ?? "";
+  await settle();
+};
+
+const field = (id: string): HTMLInputElement => {
+  const element = document.getElementById(id);
+  if (!(element instanceof HTMLInputElement)) throw new Error(`no field #${id}`);
+  return element;
+};
+
+const type = (id: string, value: string) => {
+  const input = field(id);
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+};
+
+const button = (name: string): HTMLButtonElement => {
+  const found = [...host.querySelectorAll("button")].find((b) => b.textContent === name);
+  if (found === undefined) throw new Error(`no button "${name}"`);
+  return found;
+};
+
+const resetTokensSent = () =>
+  sent
+    .filter((request) => request.url.includes("/api/auth/reset-password"))
+    .map((request): unknown => JSON.parse(request.body))
+    .map((body) => (typeof body === "object" && body !== null ? Reflect.get(body, "token") : null));
+
+/** Fill the reset form, submit it, and answer with the token the request carried. */
+const submitReset = async (): Promise<unknown> => {
+  const before = resetTokensSent().length;
+  await act(async () => {
+    type("reset-password", PASSWORD);
+    type("reset-confirm", PASSWORD);
+  });
+  await act(async () => button("Set password").click());
+  await vi.waitFor(() => expect(resetTokensSent().length).toBe(before + 1));
+  return resetTokensSent().at(-1);
 };
 
 const carriedInUrls = () => sent.filter((request) => request.url.includes("SYN_"));
-const carriedInBodies = () => sent.filter((request) => request.body.includes("SYN_"));
-const someBodyCarries = () => vi.waitFor(() => expect(carriedInBodies()).not.toEqual([]));
+const bodiesCarrying = (secret: string) => sent.filter((request) => request.body.includes(secret));
 
 beforeEach(() => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-  sent = [];
-  vi.stubGlobal("fetch", recordingFetch);
+  sent.length = 0;
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -72,48 +106,126 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
-  vi.unstubAllGlobals();
 });
 
 describe("an invitation link", () => {
   it("previews the invitation with its token in a request body", async () => {
-    await visit("/join#SYN_INVITATION", JoinPage);
-    await someBodyCarries();
+    await open("/join#SYN_INVITATION");
+    await vi.waitFor(() => expect(bodiesCarrying("SYN_INVITATION")).not.toEqual([]));
     expect(carriedInUrls()).toEqual([]);
   });
 
   it.each(["/join", "/join#", "/join#%E0%A4%A"])(
     "sends nothing when the fragment is missing or malformed (%s)",
     async (href) => {
-      expect(await visit(href, JoinPage)).toContain("This link is not an invitation");
+      await open(href);
+      expect(text()).toContain("This link is not an invitation");
       expect(sent).toEqual([]);
     },
   );
+
+  it("previews the new invitation when the fragment changes in place", async () => {
+    const router = await open("/join#SYN_INVITATION_A");
+    await go(() => router.navigate({ href: "/join#SYN_INVITATION_B" }));
+    await vi.waitFor(() => expect(bodiesCarrying("SYN_INVITATION_B")).not.toEqual([]));
+  });
 });
 
 describe("a Slack link", () => {
   it("previews the link with its code in a request body", async () => {
-    await visit("/slack/link#msl_SYN_SLACK_CODE", SlackLinkPage);
-    await someBodyCarries();
+    await open("/slack/link#msl_SYN_SLACK_CODE");
+    await vi.waitFor(() => expect(bodiesCarrying("msl_SYN_SLACK_CODE")).not.toEqual([]));
     expect(carriedInUrls()).toEqual([]);
   });
 
   it("sends nothing when the fragment is missing", async () => {
-    expect(await visit("/slack/link", SlackLinkPage)).toContain("This link does not work");
+    await open("/slack/link");
+    expect(text()).toContain("This link does not work");
     expect(sent).toEqual([]);
+  });
+
+  it("previews the new code when the fragment changes in place", async () => {
+    const router = await open("/slack/link#msl_SYN_SLACK_A");
+    await go(() => router.navigate({ href: "/slack/link#msl_SYN_SLACK_B" }));
+    await vi.waitFor(() => expect(bodiesCarrying("msl_SYN_SLACK_B")).not.toEqual([]));
   });
 });
 
 describe("a password reset link", () => {
-  it("offers the form for a link that carries its token", async () => {
-    expect(await visit("/reset#SYN_RESET", ResetPage)).toContain("Set a new password");
+  it("offers the form for a link that carries its token, and posts that token", async () => {
+    await open("/reset#SYN_RESET_A");
+    expect(text()).toContain("Set a new password");
     expect(sent).toEqual([]);
+    expect(await submitReset()).toBe("SYN_RESET_A");
+    expect(carriedInUrls()).toEqual([]);
   });
 
   it("says the link is incomplete, and offers no form, when the fragment is missing", async () => {
-    const text = await visit("/reset", ResetPage);
-    expect(text).toContain("This link is not complete");
-    expect(text).not.toContain("Set password");
+    await open("/reset");
+    expect(text()).toContain("This link is not complete");
+    expect(text()).not.toContain("Set password");
     expect(sent).toEqual([]);
   });
+
+  it("posts the new token, with an empty form, after the router changes the fragment", async () => {
+    const router = await open("/reset#SYN_RESET_A");
+    await act(async () => type("reset-password", PASSWORD));
+    await go(() => router.navigate({ href: "/reset#SYN_RESET_B" }));
+    expect(field("reset-password").value).toBe("");
+    expect(await submitReset()).toBe("SYN_RESET_B");
+  });
+
+  it("posts the new token after the address bar changes the fragment", async () => {
+    await open("/reset#SYN_RESET_A");
+    await go(() => {
+      window.location.hash = "SYN_RESET_B";
+    });
+    expect(await submitReset()).toBe("SYN_RESET_B");
+  });
+
+  it("offers no form once the fragment is gone", async () => {
+    const router = await open("/reset#SYN_RESET_A");
+    await go(() => router.navigate({ href: "/reset" }));
+    expect(text()).toContain("This link is not complete");
+    expect(text()).not.toContain("Set password");
+  });
+
+  it("offers the form once a missing fragment arrives", async () => {
+    const router = await open("/reset");
+    await go(() => router.navigate({ href: "/reset#SYN_RESET_A" }));
+    expect(await submitReset()).toBe("SYN_RESET_A");
+  });
+
+  it("posts the token of the entry Back and Forward land on", async () => {
+    const router = await open("/reset#SYN_RESET_A");
+    await go(() => router.navigate({ href: "/reset#SYN_RESET_B" }));
+    await go(() => window.history.back());
+    await vi.waitFor(() => expect(window.location.hash).toBe("#SYN_RESET_A"));
+    await settle();
+    expect(await submitReset()).toBe("SYN_RESET_A");
+    await go(() => window.history.forward());
+    await vi.waitFor(() => expect(window.location.hash).toBe("#SYN_RESET_B"));
+    await settle();
+    expect(await submitReset()).toBe("SYN_RESET_B");
+  });
+});
+
+describe("a link issued before the fragment", () => {
+  it.each([
+    ["/join/SYN_TOKEN_JOIN", "/join", "#SYN_TOKEN_JOIN"],
+    ["/reset/SYN_TOKEN_RESET", "/reset", "#SYN_TOKEN_RESET"],
+    ["/slack/link/msl_SYN_TOKEN_SLACK", "/slack/link", "#msl_SYN_TOKEN_SLACK"],
+  ])(
+    "%s replaces its history entry with the fragment form before anything is fetched",
+    async (legacy, pathname, hash) => {
+      window.history.replaceState(null, "", "/");
+      const entries = window.history.length;
+      await open(legacy);
+      expect(window.location.pathname).toBe(pathname);
+      expect(window.location.hash).toBe(hash);
+      expect(window.history.length).toBe(entries);
+      expect(sent.filter((request) => request.from !== pathname)).toEqual([]);
+      expect(carriedInUrls()).toEqual([]);
+    },
+  );
 });
