@@ -8,7 +8,7 @@ import {
   type PutAuthorityRecord,
   type WorktreeLease,
 } from "@mend/db";
-import { type ProjectId, WorktreeId } from "@mend/domain";
+import { failureLine, type ProjectId, WorktreeId } from "@mend/domain";
 import {
   BlobStore,
   bulkSectionFor,
@@ -1344,7 +1344,7 @@ export const CaptureChannelLive: Layer.Layer<
                   : {
                       problems: [],
                       unavailable: [
-                        `the seal checks ended without a verdict: ${Cause.pretty(exit.cause)}`,
+                        `the seal checks ended without a verdict: ${yield* failureLine(exit.cause)}`,
                       ],
                     };
                 if (verdictUnavailable(verdict)) yield* dropSealJob(job);
@@ -1410,7 +1410,7 @@ export const CaptureChannelLive: Layer.Layer<
                   ? exit.value
                   : {
                       problems: [],
-                      unavailable: [`the seal was not recorded: ${Cause.pretty(exit.cause)}`],
+                      unavailable: [`the seal was not recorded: ${yield* failureLine(exit.cause)}`],
                     };
                 if (Exit.isFailure(exit)) {
                   yield* Effect.logWarning(
@@ -2761,10 +2761,12 @@ export const CaptureChannelLive: Layer.Layer<
         ).pipe(
           againstStore,
           Effect.catchCause((cause) =>
-            Effect.succeed({
-              problems: [],
-              unavailable: [`the seal checks ended without a verdict: ${Cause.pretty(cause)}`],
-            }),
+            failureLine(cause).pipe(
+              Effect.map((words) => ({
+                problems: [],
+                unavailable: [`the seal checks ended without a verdict: ${words}`],
+              })),
+            ),
           ),
         );
 
