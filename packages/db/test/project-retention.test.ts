@@ -10,6 +10,7 @@ import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { CaptureStoreRepo, CaptureStoreRepoLive } from "../src/repos/capture-store.ts";
 import { HarnessLayoutsRepo, HarnessLayoutsRepoLive } from "../src/repos/harness-layouts.ts";
 import { HotWorkspacesRepo, HotWorkspacesRepoLive } from "../src/repos/hot-workspaces.ts";
+import { ProjectLinksRepo, ProjectLinksRepoLive } from "../src/repos/project-links.ts";
 import {
   ProjectServiceRecipesRepo,
   ProjectServiceRecipesRepoLive,
@@ -54,6 +55,7 @@ const repos = Layer.mergeAll(
   ServicesRepoLive,
   SessionProcessesRepoLive,
   SessionRunsRepoLive,
+  ProjectLinksRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(pool))));
 const run = <A, E>(
   effect: Effect.Effect<
@@ -71,6 +73,7 @@ const run = <A, E>(
     | ServicesRepo
     | SessionProcessesRepo
     | SessionRunsRepo
+    | ProjectLinksRepo
     | SqlClient.SqlClient
   >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(repos), Effect.scoped));
@@ -204,6 +207,36 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           updatedAt: expect.any(Date),
         });
         expect(yield* fences.restore(id, "anna")).toBe("listed");
+      }),
+    ));
+
+  it("keeps a link to a removed project holding its name, listed as such, and deletable", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const links = yield* ProjectLinksRepo;
+        const holder = yield* seed("link-holder");
+        const target = yield* seed("link-target");
+        const link = yield* links.create({
+          projectId: holder,
+          linkedProjectId: target,
+          name: "lib",
+          worktreeName: "main",
+        });
+        yield* keep(target);
+        const before = {
+          listed: yield* links.listForProject(holder),
+          all: (yield* links.listAllForProject(holder)).map((row) => [
+            row.link.name,
+            row.targetListed,
+          ]),
+          byId: (yield* links.byId(link.id)).name,
+        };
+        yield* links.remove(link.id);
+        expect({
+          ...before,
+          after: yield* sql`SELECT id FROM project_links WHERE project_id = ${holder}`,
+        }).toEqual({ listed: [], all: [["lib", false]], byId: "lib", after: [] });
       }),
     ));
 

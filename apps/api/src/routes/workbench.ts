@@ -143,6 +143,7 @@ import {
   ServiceView,
   canChangeVisibility,
   canManageProject,
+  canSeeProject,
   canToggleSharedControl,
   OPENCODE_NOT_STEERABLE,
   captureDiscardAuditData,
@@ -1498,13 +1499,25 @@ export const ProjectLinksGroupLive = HttpApiBuilder.group(MendApi, "projectLinks
             message: `"${payload.name}" is not a usable link name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
-        const existing = yield* links.listForProject(params.id);
-        const clash = existing.find(
-          (link) => link.name === payload.name || link.linkedProjectId === payload.linkedProjectId,
+        // A link to a removed project still holds its name and its target until it is deleted.
+        const clash = (yield* links.listAllForProject(params.id)).find(
+          ({ link }) =>
+            link.name === payload.name || link.linkedProjectId === payload.linkedProjectId,
         );
+        if (clash !== undefined && !clash.targetListed) {
+          const removed = yield* (yield* ProjectsRepo).removedById(clash.link.linkedProjectId);
+          const viewer = yield* access.viewer();
+          const target =
+            removed !== null && viewer !== null && canSeeProject(removed.project, viewer)
+              ? `the removed project ${removed.project.name}`
+              : "a removed project";
+          return yield* new StoreFailure({
+            message: `The link ${clash.link.name} on this project points at ${target}. Delete that link, or Restore the project, then link again.`,
+          });
+        }
         if (clash !== undefined) {
           return yield* new StoreFailure({
-            message: `Already linked on this project: ${clash.name} (${linked.name})`,
+            message: `Already linked on this project: ${clash.link.name} (${linked.name})`,
           });
         }
         // The worktree bound at launch: a named one must exist; none named picks the linked

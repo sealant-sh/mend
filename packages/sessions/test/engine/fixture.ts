@@ -2447,6 +2447,7 @@ export const projectLinksEmptyLayer = Layer.succeed(ProjectLinksRepo, {
   create: () => Effect.die("not in test"),
   byId: (id) => Effect.fail(new ProjectLinkNotFoundError({ linkId: id })),
   listForProject: () => Effect.succeed([]),
+  listAllForProject: () => Effect.succeed([]),
   remove: () => Effect.void,
 });
 

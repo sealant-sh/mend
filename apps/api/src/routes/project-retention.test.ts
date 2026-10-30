@@ -1,6 +1,6 @@
-import { ProjectNotFoundError } from "@mend/db";
-import { ProjectId } from "@mend/domain";
-import { Project } from "@mend/domain/workbench";
+import { ProjectLinkNotFoundError, ProjectNotFoundError } from "@mend/db";
+import { ProjectId, ProjectLinkId } from "@mend/domain";
+import { Project, ProjectLink } from "@mend/domain/workbench";
 import { WORKTREE_STAMP } from "@mend/sessions";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,12 +14,17 @@ import { ids } from "../../test/support/tenancy-harness.ts";
  */
 
 const privateAlice = ids("private-alice");
+const sharedA = ids("shared-a");
 
 let api: TenancyApi | undefined;
 let removedStores: Array<string> = [];
 
+/** Links declared on projects, held in memory: one to a removed project keeps its row. */
+let links: Array<ProjectLink> = [];
+
 const world = async (scene: { readonly failFirstPurge?: boolean } = {}) => {
   removedStores = [];
+  links = [];
   api = await createTenancyApi(
     {},
     {
@@ -42,6 +47,27 @@ const world = async (scene: { readonly failFirstPurge?: boolean } = {}) => {
           listForProject: () => Effect.succeed([]),
         },
         resources: { declaredNames: () => Effect.succeed([]) },
+        links: {
+          byId: (id) => {
+            const found = links.find((link) => link.id === id);
+            return found === undefined
+              ? Effect.fail(new ProjectLinkNotFoundError({ linkId: id }))
+              : Effect.succeed(found);
+          },
+          listAllForProject: (projectId) =>
+            Effect.sync(() =>
+              links
+                .filter((link) => link.projectId === projectId)
+                .map((link) => ({
+                  link,
+                  targetListed: api?.world.retainedProjects.has(link.linkedProjectId) !== true,
+                })),
+            ),
+          remove: (id) =>
+            Effect.sync(() => {
+              links = links.filter((link) => link.id !== id);
+            }),
+        },
         hotWorkspaces: { listForProject: () => Effect.succeed([]) },
         projects: {
           byId: (id) =>
@@ -307,6 +333,41 @@ describe("a removed project", () => {
       });
     },
   );
+
+  it("names a removed project whose link still holds a name, and lets the link be deleted", async () => {
+    const instance = await world();
+    const shared = instance.world.projects.get(ProjectId.make(sharedA.project));
+    if (shared === undefined) throw new Error("missing project");
+    instance.world.addProject(
+      new Project({ ...shared, id: ProjectId.make("third"), name: "third" }),
+    );
+    const held = new ProjectLink({
+      id: ProjectLinkId.make("link-lib"),
+      projectId: shared.id,
+      linkedProjectId: ProjectId.make(privateAlice.project),
+      name: "lib",
+      worktreeName: "main",
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    });
+    links = [held];
+    await instance.request("alice", "DELETE", `/api/projects/${privateAlice.project}`);
+    const clash = await instance.request("alice", "POST", `/api/projects/${shared.id}/links`, {
+      linkedProjectId: "third",
+      name: "lib",
+      worktreeName: null,
+    });
+    expect(clash.status).toBe(422);
+    expect(await bodyOf(clash)).toMatchObject({
+      message: expect.stringContaining("the removed project private-alice"),
+    });
+    const deleted = await instance.request(
+      "alice",
+      "DELETE",
+      `/api/projects/${shared.id}/links/${held.id}`,
+    );
+    expect({ status: deleted.status, links }).toEqual({ status: 204, links: [] });
+  });
 
   it("counts every kept project of the organization on an owner's disk report, a teammate's private one too", async () => {
     const instance = await world();

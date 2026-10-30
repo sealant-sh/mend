@@ -292,6 +292,7 @@ describe("SessionEngine", () => {
                   create: () => Effect.die("not in test"),
                   byId: (id) => Effect.fail(new ProjectLinkNotFoundError({ linkId: id })),
                   listForProject: () => broken,
+                  listAllForProject: () => broken,
                   remove: () => Effect.void,
                 }),
               }),

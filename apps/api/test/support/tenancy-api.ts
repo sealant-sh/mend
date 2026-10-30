@@ -323,6 +323,7 @@ export const createTenancyApi = async (
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
       readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
+      readonly links?: Layer.PartialEffectful<ProjectLinksRepo["Service"]>;
       /** In place of the in-memory removal marks: Postgres's (`removal-postgres.ts`), or a part. */
       readonly removalFences?: Partial<RemovalFencesRepo["Service"]>;
       readonly setupRuns?: Layer.PartialEffectful<SetupRunsRepo["Service"]>;
@@ -584,7 +585,7 @@ export const createTenancyApi = async (
       recording(OrganizationSettingsRepo, "organizationSettings", {}, calls),
       recording(ProjectClusterBindingsRepo, "clusterBindings", {}, calls),
       recording(ProjectEnvironmentRepo, "environment", options.implement?.environment ?? {}, calls),
-      recording(ProjectLinksRepo, "links", {}, calls),
+      recording(ProjectLinksRepo, "links", options.implement?.links ?? {}, calls),
       // A session's repositories (docs/adr/0010): none in these worlds, so the detail lists none.
       recording(
         SessionRepositoriesRepo,
