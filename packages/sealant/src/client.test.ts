@@ -1,5 +1,6 @@
-import { type RunChanges, SealantApiError } from "@sealant/sdk";
-import { Effect } from "effect";
+import { lineFailureOf } from "@mend/domain";
+import { type RunChanges, SealantApiError, SealantError } from "@sealant/sdk";
+import { Cause, Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -70,6 +71,89 @@ describe("platformErrorCode", () => {
     expect(error.status).toBe(404);
     // Anything without a provider carries none.
     expect(toPlatformError(new Error("plain")).provider).toBeUndefined();
+  });
+});
+
+/**
+ * What a line other people read may say of a platform failure (SLNT-385): the words Mend wrote or
+ * curated, never an SDK or Core message Mend did not, which can quote what a person sent.
+ */
+describe("toPlatformError's words on a line", () => {
+  const WORDS = "Anna is interviewing at Northwind on Friday, keep it quiet";
+  const SOURCE_SELECTION =
+    "workspaces.create requires exactly one of `repository` (a git remote to clone) or `source` (a caller-owned mount).";
+  const lineOf = (error: SealantPlatformError) => lineFailureOf(Cause.fail(error));
+
+  it("says the SDK's fixed source-selection refusal, in Mend's own copy of it", () => {
+    const line = lineOf(
+      toPlatformError(new SealantError(SOURCE_SELECTION, { code: "invalid_create_options" })),
+    );
+    expect(line).toMatchObject({ _tag: "Said", words: SOURCE_SELECTION });
+  });
+
+  it("withholds every other message, the same code's included", () => {
+    for (const cause of [
+      new SealantError(`workspaces.create \`source.ownerMap\` was rejected: ${WORDS}`, {
+        code: "invalid_create_options",
+      }),
+      new SealantApiError(WORDS, { code: "WorkspaceConflictError", status: 409 }),
+      new SealantApiError(WORDS, { status: 500, reason: "home-held" }),
+      new Error(WORDS),
+      WORDS,
+    ]) {
+      const error = toPlatformError(cause);
+      expect(lineOf(error)).toEqual({ _tag: "Withheld", name: "SealantPlatformError" });
+      // The log keeps what the platform said.
+      expect(error.message).toContain(WORDS);
+    }
+  });
+
+  it("says the SDK's and Core's curated refusals: an image build given up on, a readiness bound, no Docker", () => {
+    for (const [code, message] of [
+      [
+        "workspace_image_build_timeout",
+        "The image build for workspace w-1 took longer than 20 min (imageBuildTimeoutMs); it was at step 3/7 (apt-get install).",
+      ],
+      [
+        "workspace_image_build_stalled",
+        "The image build for workspace w-1 reported no progress for 5 min; it was before its first step.",
+      ],
+      ["workspace_ready_timeout", "Timed out waiting for workspace w-1 to become ready."],
+    ] as const) {
+      expect(lineOf(toPlatformError(new SealantError(message, { code })))).toMatchObject({
+        _tag: "Said",
+        words: message,
+      });
+    }
+    const docker = new SealantApiError("this runtime cannot run Docker services", {
+      status: 422,
+      reason: "workspace-docker-unsupported",
+    });
+    expect(lineOf(toPlatformError(docker))).toMatchObject({ _tag: "Said" });
+  });
+
+  it("keeps a build given up on said once Mend leads it, and an uncurated message withheld", () => {
+    const stalled = toPlatformError(
+      new SealantError("The image build for workspace w-1 reported no progress for 5 min.", {
+        code: "workspace_image_build_stalled",
+      }),
+    );
+    expect(lineOf(imageBuildFailure(stalled))).toMatchObject({
+      _tag: "Said",
+      words: expect.stringMatching(/^the workspace image build stopped making progress/),
+    });
+    const withheld = toPlatformError(new SealantApiError(WORDS, { status: 500 }));
+    expect(lineOf(imageBuildFailure(withheld))._tag).toBe("Withheld");
+  });
+
+  it("says Mend's own words", () => {
+    const error = new SealantPlatformError({
+      code: "credentials_timeout",
+      status: null,
+      message: "Sealant did not answer within 30 s",
+      cause: null,
+    });
+    expect(lineOf(error)).toMatchObject({ _tag: "Said", words: error.message });
   });
 });
 
