@@ -195,7 +195,9 @@ it("a person's Stop serves the agent's own run while it lasts, then starts nothi
         const opens = opened.length;
         const stopped = yield* request().pipe(
           Effect.repeat({
-            until: (reply) => reply.status === 503,
+            // A request in flight when the gateway sees the run end is answered "the preview
+            // restarted", also with a 503. Only the Stop's own page ends the wait.
+            until: (reply) => reply.status === 503 && reply.body.includes("stopped the preview"),
             schedule: Schedule.spaced("100 millis"),
             times: 50,
           }),
