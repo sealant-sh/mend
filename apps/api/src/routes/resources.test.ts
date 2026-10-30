@@ -745,6 +745,25 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       ]);
     });
 
+    it("refuses a project resource for one worktree before it asks a registry", async () => {
+      await start();
+      const db = await declare();
+      expect(
+        await approveVia("carol", {
+          source: { kind: "settings", id: db.id, digest: db.specDigest },
+          worktreeId: CAROL_WORKTREE_IN_SHARED_A,
+        }),
+      ).toMatchObject({
+        status: 422,
+        body: {
+          _tag: "ResourceRejected",
+          message:
+            "@db · worktree is one worktree, and @db is a project resource, approved for the project",
+        },
+      });
+      expect(resolved).toEqual([]);
+    });
+
     it("refuses a manager another person's worktree, and a member the project", async () => {
       await start();
       const table = await fileTable("alice", CAROL_WORKTREE_IN_SHARED_A);

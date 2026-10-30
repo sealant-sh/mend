@@ -548,6 +548,18 @@ const projectApprovedImage = (tx: Tx, projectId: ProjectId, imageDigest: ImageDi
       Effect.map((specs) => specs.some((spec) => imageDigestOf(spec.image) === imageDigest)),
     );
 
+/** A project resource is approved for the project, never one worktree; null when `spec` may be. */
+export const approvalScopeRefusal = (
+  spec: ResourceDefinitionInput,
+  worktreeId: WorktreeId | null,
+): ResourceRefusal | null =>
+  worktreeId !== null && spec.scope !== "worktree"
+    ? {
+        key: "worktree",
+        message: `is one worktree, and @${spec.name} is a project resource, approved for the project`,
+      }
+    : null;
+
 /** Why `request` may not approve a worktree resource for its worktree, or null when it may. */
 const worktreeApprovalRefusal = Effect.fn("ResourcesRepo.worktreeApprovalRefusal")(function* (
   tx: Tx,
@@ -555,12 +567,8 @@ const worktreeApprovalRefusal = Effect.fn("ResourcesRepo.worktreeApprovalRefusal
   worktreeId: WorktreeId,
   imageDigest: ImageDigest,
 ) {
-  if (definition.spec.scope !== "worktree") {
-    return {
-      key: "worktree",
-      message: `is one worktree, and @${definition.spec.name} is a project resource, approved for the project`,
-    };
-  }
+  const scope = approvalScopeRefusal(definition.spec, worktreeId);
+  if (scope !== null) return scope;
   if ((yield* worktreeProject(tx, worktreeId)) !== definition.projectId) {
     return {
       key: "worktree",

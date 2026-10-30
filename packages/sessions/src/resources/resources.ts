@@ -1,4 +1,5 @@
 import {
+  approvalScopeRefusal,
   type DefinitionVersion,
   ProjectsRepo,
   type ResourceApproval,
@@ -26,6 +27,7 @@ import {
   type ProjectTenancy,
   type ResourceAct,
   resourceActRefusal,
+  resourceDefinitionRefusals,
   type ResourceActor,
   type ResourceApprovalFor,
   type ResourceApprovalRequest,
@@ -583,6 +585,12 @@ export const ResourcesLive: Layer.Layer<
         },
       );
       const spec = yield* sourceSpec(project, source, clock);
+      // Refusals that need no registry come before one is asked.
+      const scope = approvalScopeRefusal(spec, worktreeId);
+      const refusals = [...(scope === null ? [] : [scope]), ...resourceDefinitionRefusals(spec)];
+      if (refusals.length > 0) {
+        return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
+      }
       const settingsChanged = () => Effect.fail(changed(spec.name, "settings"));
       const lookup = { projectId: project.id, spec, settings, worktreeId };
       // An approval already made is the answer, and no registry is asked again.
