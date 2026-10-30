@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 import { ITEM_PAGE_SIZE } from "@mend/agent-conversation";
+import { onlineManager } from "@tanstack/react-query";
 import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TerminalPane } from "@/components/terminal-pane";
 import { useAgentConversation, useTurnSender, type TurnSender } from "@/data/agent-conversation";
+import { NO_ANSWER } from "@/data/failure-words";
 import { useComposerAttachments, type ComposerAttachments } from "@/data/image-attach";
 import { useAdoptProject, useSessionActions } from "@/data/live";
+import { PairingEnded, type Machine } from "@/data/machine";
 import { HttpPairingClient, type PairingDevice } from "@/data/pairing-client";
 import { clearConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary, usePairing } from "@/data/pairing-scope";
@@ -105,6 +108,7 @@ const release = (call: string, outcome: Outcome = "answer") => {
   for (const settle of waiting) settle(outcome);
 };
 const droppedCalls = new Set<string>();
+const abortedCalls: Array<string> = [];
 const offlineHosts = new Set<string>();
 
 const answerA = (method: string, url: URL, body: unknown): Response => {
@@ -157,9 +161,10 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
   const waiting = holds.get(call);
   if (waiting === undefined) return answerA(method, url, body);
   return new Promise((resolve, reject) => {
-    init?.signal?.addEventListener("abort", () =>
-      reject(new DOMException("The operation was aborted.", "AbortError")),
-    );
+    init?.signal?.addEventListener("abort", () => {
+      abortedCalls.push(call);
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    });
     waiting.push((outcome) => {
       if (outcome === "drop") reject(new TypeError("Network request failed"));
       else resolve(answerA(method, url, body));
@@ -206,6 +211,10 @@ class FakeXhr {
       machine: url.host,
       line: `${this.#method} ${url.pathname} with ${bearerOf(url.host, this.#headers.get("authorization") ?? null)} [${contents}]`,
     });
+    if (offlineHosts.has(url.host)) {
+      this.#listeners.get("error")?.();
+      return;
+    }
     const answer = () => {
       if (this.#aborted) return;
       this.status = url.host === "a.example" ? 200 : 404;
@@ -247,6 +256,7 @@ let latest: {
   adopt?: ReturnType<typeof useAdoptProject>;
   actions?: ReturnType<typeof useSessionActions>;
   unreachable?: boolean;
+  machine?: Machine;
 } = {};
 const Composer = () => {
   latest.sender = useTurnSender(SESSION);
@@ -269,6 +279,10 @@ const Reachability = () => {
   latest.unreachable = useUnreachable(usePairing().key);
   return null;
 };
+const Grab = () => {
+  latest.machine = usePairing().machine;
+  return null;
+};
 const OnlyUnderA = ({ children }: { readonly children: ReactElement }) =>
   usePairing().config.url === "https://a.example" ? children : null;
 const the = <K extends keyof typeof latest>(key: K): NonNullable<(typeof latest)[K]> => {
@@ -285,6 +299,7 @@ beforeEach(async () => {
   received = [];
   holds.clear();
   droppedCalls.clear();
+  abortedCalls.length = 0;
   offlineHosts.clear();
   heldUploads.length = 0;
   abortedUploads.length = 0;
@@ -299,6 +314,7 @@ afterEach(async () => {
   await act(() => clearConfig());
   act(() => root.unmount());
   host.remove();
+  onlineManager.setOnline(true);
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -467,7 +483,107 @@ describe("work pairing A started, after the phone pairs to B", () => {
   });
 });
 
+describe("work pairing A started, when its screens unmount before the phone pairs to B", () => {
+  it("calls off A's read, refuses A's next read, and leaves B's mark alone", async () => {
+    await pair("a.example");
+    hold(`GET /api/sessions/${SESSION}/items`);
+    mount(
+      <>
+        <Reader />
+        <Grab />
+      </>,
+    );
+    await settle();
+    const machineOfA = the("machine");
+    act(() => root.render(null));
+
+    offlineHosts.add("b.example");
+    await pair("b.example");
+    mount(
+      <>
+        <Reader />
+        <Reachability />
+      </>,
+    );
+    await settle();
+    expect(the("unreachable")).toBe(true);
+    expect(abortedCalls).toEqual([`GET /api/sessions/${SESSION}/items`]);
+
+    release(`GET /api/sessions/${SESSION}/items`, "drop");
+    let late = "pending";
+    act(
+      () =>
+        void machineOfA.read("/projects").then(
+          () => (late = "answered"),
+          (error: unknown) => (late = error instanceof PairingEnded ? "refused" : String(error)),
+        ),
+    );
+    await settle();
+
+    expect(late).toBe("refused");
+    expect(receivedBy("a.example").filter((line) => line.startsWith("GET /api/projects"))).toEqual(
+      [],
+    );
+    expect(the("unreachable")).toBe(true);
+  });
+});
+
+describe("an upload under pairing A", () => {
+  it("marks A out of reach when it gets no answer, and in reach once one lands", async () => {
+    await pair("a.example");
+    mount(
+      <>
+        <Composer />
+        <Reachability />
+      </>,
+    );
+    offlineHosts.add("a.example");
+    act(() => the("images").attach([{ uri: A_PHOTO, name: "march.jpg" }]));
+    await settle();
+    expect(the("unreachable")).toBe(true);
+
+    offlineHosts.delete("a.example");
+    act(() => the("images").attach([{ uri: A_SECOND_PHOTO, name: "april.jpg" }]));
+    await settle();
+    act(() => heldUploads.shift()?.());
+    await settle();
+    expect(the("unreachable")).toBe(false);
+  });
+});
+
 describe("work pairing A started, after the phone unpairs", () => {
+  it("settles a Stop asked for while offline, instead of dropping it", async () => {
+    await pair("a.example");
+    mount(
+      <OnlyUnderA>
+        <Starter />
+      </OnlyUnderA>,
+    );
+    offlineHosts.add("a.example");
+    act(() => onlineManager.setOnline(false));
+    let stopped = "pending";
+    act(
+      () =>
+        void the("actions")
+          .stop.mutateAsync(SESSION)
+          .then(
+            () => (stopped = "stopped"),
+            (error: unknown) => (stopped = error instanceof Error ? error.message : String(error)),
+          ),
+    );
+    await settle();
+
+    await act(() => clearConfig());
+    offlineHosts.delete("a.example");
+    act(() => onlineManager.setOnline(true));
+    await settle();
+
+    expect(stopped).toBe(NO_ANSWER);
+    expect(receivedBy("a.example")).toEqual([
+      `POST /api/sessions/${SESSION}/stop with A's bearer {}`,
+    ]);
+  });
+
   it("calls off A's photo upload in flight", async () => {
     await pair("a.example");
     mount(
