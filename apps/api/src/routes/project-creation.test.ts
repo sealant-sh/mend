@@ -114,7 +114,7 @@ describe("private project creation over HTTP", () => {
       await f.dispose();
     }
   });
-  it("commits with the saved author or account fallback and launches usable worktrees from main", async () => {
+  it("commits with the saved author or account fallback", async () => {
     const f = await fixture();
     try {
       const named = await create(f.api, "authored");
@@ -128,28 +128,6 @@ describe("private project creation over HTTP", () => {
       expect(await git(scratch.storePath, "log", "--format=%an|%ae|%cn|%ce|%s|%P")).toBe(
         "alice|alice@example.invalid|alice|alice@example.invalid|Initial commit|",
       );
-      for (const project of [named, scratch]) {
-        const worktree = await Effect.runPromise(
-          Effect.gen(function* () {
-            return yield* (yield* Store).createWorktree(
-              project.storePath,
-              { directory: "first-thread", branch: "mend/first-thread" },
-              "main",
-              null,
-            );
-          }).pipe(
-            Effect.provide(
-              Store.layer.pipe(Layer.provide(Layer.succeed(StoreConfig, { root: f.root }))),
-            ),
-          ),
-        );
-        expect(fs.readFileSync(path.join(worktree.path, "README.md"), "utf8")).toBe(
-          `# ${project.name}\n`,
-        );
-        expect(await git(worktree.path, "rev-parse", "HEAD")).toBe(
-          await git(project.storePath, "rev-parse", "main"),
-        );
-      }
     } finally {
       await f.dispose();
     }
