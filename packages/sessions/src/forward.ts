@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { failureLine, type SealantWorkspaceId } from "@mend/domain";
+import type { SealantWorkspaceId } from "@mend/domain";
 import {
   type ForwardBinding,
   type ForwardBytes,
@@ -370,10 +370,10 @@ const makeForwardAdapter = Effect.gen(function* () {
         });
       });
 
-      const unfinished = Effect.fnUntraced(function* (cause: Cause.Cause<unknown>) {
+      const unfinished = (cause: Cause.Cause<unknown>): ForwardRefused => {
         const reason: ForwardIssue = Cause.hasInterruptsOnly(cause)
           ? cancelled()
-          : { reason: "platform-failed", code: "defect", message: yield* failureLine(cause) };
+          : { reason: "platform-failed", code: "defect", message: Cause.pretty(cause) };
         if (progress.inFlightSince !== null) {
           const openMs = elapsedMs(progress.inFlightSince);
           progress.attempts =
@@ -382,7 +382,7 @@ const makeForwardAdapter = Effect.gen(function* () {
               : [progress.refusedLoopback, { route: "docker", openMs, outcome: reason.reason }];
         }
         return refused(reason);
-      });
+      };
 
       return yield* dial.pipe(
         Effect.map(({ bytes, arrival }): ForwardConnection => ({ bytes, record: ready(arrival) })),
@@ -390,7 +390,7 @@ const makeForwardAdapter = Effect.gen(function* () {
           Exit.isSuccess(exit)
             ? logDial(exit.value.record)
             : Option.match(Exit.findErrorOption(exit), {
-                onNone: () => unfinished(exit.cause).pipe(Effect.flatMap(logDial)),
+                onNone: () => logDial(unfinished(exit.cause)),
                 onSome: (failure) => logDial(failure.record),
               }),
         ),
