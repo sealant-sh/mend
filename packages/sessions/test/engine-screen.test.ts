@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
-import { DisplayNumber, type Screen } from "@mend/domain/workbench";
+import { DisplayNumber, type Screen, type Session } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { sessionStatePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
@@ -9,9 +10,10 @@ import { Effect, Redacted } from "effect";
 import { describe, expect } from "vitest";
 
 import { onScreenPath, screenArgv, screenReapArgv } from "../src/screen/script.ts";
-import type { World } from "./engine/fixture.ts";
+import { makeWorld, type World } from "./engine/fixture.ts";
 import {
   LAUNCHER,
+  launched,
   lostReap,
   lostStart,
   type Platform,
@@ -107,6 +109,138 @@ describe("the session's display on every launch (ADR 0020)", () => {
           }
         }),
       { screen: false },
+    ),
+  );
+});
+
+/** A session joining `worktreeId`'s executor, launched. */
+const joinedIn = (worktreeId: Session["worktreeId"]) =>
+  Effect.gen(function* () {
+    const engine = yield* SessionEngine;
+    const joined = yield* engine.provisionSessionIn(worktreeId, {
+      harness: "claude",
+      label: null,
+      ownerUserId: "user-fixture",
+    });
+    yield* engine.launch(joined.id, ["claude"]);
+    return joined;
+  });
+
+const heldDisplays = (world: World) =>
+  Effect.map(world.screens.listHeld(), (held) =>
+    held.map((screen) => ({ sessionId: screen.sessionId, display: screen.display })),
+  );
+
+describe("the session's display for its life (ADR 0020)", () => {
+  it.effect(
+    "goes back at each Stop, so a hundred joins one after another beside a live session never run out of its ninety displays",
+    () =>
+      withScreens((world, platform) =>
+        Effect.gen(function* () {
+          const { engine, session: keeper } = yield* launched(world);
+          for (let cycle = 0; cycle < 100; cycle++) {
+            const joined = yield* joinedIn(keeper.worktreeId);
+            expect(agentOpens(platform).at(-1)?.options?.env?.DISPLAY).toBe(":11");
+            yield* engine.stop(joined.id);
+            expect(yield* heldDisplays(world)).toEqual([{ sessionId: keeper.id, display: 10 }]);
+          }
+          expect(agentOpens(platform)).toHaveLength(101);
+          expect(agentOpens(platform)[0]?.options?.env?.DISPLAY).toBe(":10");
+        }),
+      ),
+  );
+
+  it.effect("stays with the session across an idle stop of its screen alone", () =>
+    withScreens((world, platform) =>
+      Effect.gen(function* () {
+        const { engine, session } = yield* launched(world);
+        const screen = yield* engine.startScreen(session.id);
+        yield* engine.stopScreen(session.id, "idle");
+        expect(yield* heldDisplays(world)).toEqual([{ sessionId: session.id, display: 10 }]);
+
+        yield* joinedIn(session.worktreeId);
+        expect(agentOpens(platform).at(-1)?.options?.env?.DISPLAY).toBe(":11");
+        const again = yield* engine.startScreen(session.id);
+        expect({ id: again.id, display: again.display }).toEqual({ id: screen.id, display: 10 });
+      }),
+    ),
+  );
+
+  it.effect("goes back once the session settles with its screen live, and the screen ends", () =>
+    withScreens((world) =>
+      Effect.gen(function* () {
+        const { engine, session: keeper } = yield* launched(world);
+        const joined = yield* joinedIn(keeper.worktreeId);
+        const screen = yield* engine.startScreen(joined.id);
+        yield* engine.stop(joined.id);
+        yield* engine.stop(joined.id);
+        expect(yield* heldDisplays(world)).toEqual([{ sessionId: keeper.id, display: 10 }]);
+        expect((yield* world.screens.byId(screen.id))?.life).toEqual({
+          _tag: "Ended",
+          reason: "session-stopped",
+        });
+        expect(world.processes.get(screen.processId ?? "")?.exitedAt).not.toBeNull();
+      }),
+    ),
+  );
+
+  it.effect("goes back at boot when its session ended without giving it back", () => {
+    const fixture = {
+      world: makeWorld(),
+      tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-screen-boot-")),
+    };
+    const { world } = fixture;
+    return Effect.gen(function* () {
+      const { keeper, joined } = yield* withScreens(
+        () =>
+          Effect.gen(function* () {
+            const first = yield* launched(world);
+            const second = yield* joinedIn(first.session.worktreeId);
+            yield* first.engine.stop(second.id);
+            const [kept] = yield* world.screens.listHeld();
+            if (kept === undefined) throw new Error("the keeper holds no display");
+            yield* world.screens.reserve({ sessionId: second.id, workspaceId: kept.workspaceId });
+            return { keeper: first.session, joined: second };
+          }),
+        { fixture },
+      );
+      expect(yield* heldDisplays(world)).toEqual([
+        { sessionId: keeper.id, display: 10 },
+        { sessionId: joined.id, display: 11 },
+      ]);
+
+      yield* withScreens(
+        () =>
+          Effect.andThen(
+            SessionEngine,
+            until(
+              () => Effect.map(world.screens.ofSession(joined.id), (screen) => screen === null),
+              "the ended session's display given back",
+            ),
+          ),
+        { fixture, restart: true },
+      );
+      expect(yield* heldDisplays(world)).toEqual([{ sessionId: keeper.id, display: 10 }]);
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => fs.rmSync(fixture.tmp, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("is never reserved for a session with no person of its own", () =>
+    withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          yield* launchJoinAndFollowUp(world);
+          const opens = agentOpens(platform);
+          expect(opens).toHaveLength(3);
+          for (const { argv, options } of opens) {
+            expect(argv).not.toContain("mend-screen-path");
+            expect(options?.env).not.toHaveProperty("DISPLAY");
+            expect(options?.env).not.toHaveProperty("XAUTHORITY");
+          }
+          expect(yield* world.screens.listHeld()).toEqual([]);
+        }),
+      { layout: "shared" },
     ),
   );
 });
@@ -403,7 +537,7 @@ describe("the session's screen (ADR 0020)", () => {
             message: "this workspace cannot give a screen its own person · no screen was started",
           });
           expect(screenRows(world)).toEqual([]);
-          expect(platform.spawned).not.toContainEqual(screenArgv(DisplayNumber.make(10), null));
+          expect(platform.spawned.filter((argv) => argv[3] === "mend-screen")).toEqual([]);
           expect(yield* engine.screenPasswords(session.id)).toBeNull();
         }),
       { layout: "shared" },

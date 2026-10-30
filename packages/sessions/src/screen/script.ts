@@ -62,15 +62,17 @@ exec Xvnc "$display" -geometry "$2" -depth 24 -localhost -nolisten tcp -rfbport 
   -SendCutText=0 -AcceptCutText=1 -AlwaysShared
 `;
 
-/** Who a screen runs as: a person by their uid, or null for root. */
-export type ScreenUser = { readonly uid: number } | null;
+/** Who a screen runs as: always a person (ADR 0020), by their uid. */
+export interface ScreenUser {
+  readonly uid: number;
+}
 
 /**
  * The screen's own directory, made afresh at each start, so its cookie's path is the same at
- * every start: in its person's private runtime directory, or `/tmp` as root.
+ * every start: in its person's private runtime directory.
  */
 export const screenDirOf = (display: DisplayNumber, user: ScreenUser): string =>
-  `${user === null ? "/tmp" : privateRuntimeOf(user.uid)}/mend-screen-${display}`;
+  `${privateRuntimeOf(user.uid)}/mend-screen-${display}`;
 
 /**
  * A process of the session started with the wrapper's directory first on its PATH. The PATH is

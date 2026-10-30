@@ -126,9 +126,13 @@ const screenContract = (runFixture: RunFixture) => {
         const ws = workspace();
         const ended = yield* session();
         const reserved = yield* screens.reserve({ sessionId: ended, workspaceId: ws });
+        const heldIds = () =>
+          Effect.map(screens.listHeld(), (held) => held.map((screen) => screen.id));
+        expect(yield* heldIds()).toContain(reserved.id);
         yield* screens.release(ended);
         yield* screens.release(ended);
         expect(yield* screens.ofSession(ended)).toBeNull();
+        expect(yield* heldIds()).not.toContain(reserved.id);
         expect((yield* screens.byId(reserved.id))?.life).toEqual({
           _tag: "Ended",
           reason: "session-stopped",

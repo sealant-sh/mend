@@ -146,8 +146,10 @@ export class ScreensRepo extends Context.Service<
       id: ScreenId,
       change: ScreenLifeChange,
     ) => Effect.Effect<Screen, ScreenNotFoundError>;
-    /** The session ended: its display goes back to the workspace. */
+    /** The session ended: its display goes back to the workspace. Once is enough. */
     readonly release: (sessionId: SessionId) => Effect.Effect<void>;
+    /** Every screen still holding a display, oldest first. */
+    readonly listHeld: () => Effect.Effect<ReadonlyArray<Screen>>;
     /**
      * The screen's last activity (ADR 0020, D7): its latest log entry, change of holder or change
      * of life; null for no such screen. What a viewer does is none of these.
@@ -406,6 +408,16 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
         .pipe(Effect.orDie);
     });
 
+    const listHeld = Effect.fn("ScreensRepo.listHeld")(function* () {
+      const rows = yield* db
+        .select()
+        .from(screens)
+        .where(isNull(screens.releasedAt))
+        .orderBy(asc(screens.createdAt))
+        .pipe(Effect.orDie);
+      return rows.map(toScreen);
+    });
+
     const lastActivityAt = Effect.fn("ScreensRepo.lastActivityAt")(function* (id: ScreenId) {
       const latestEntry = db
         .select({ at: sql`max(${screenLog.at})` })
@@ -575,6 +587,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       ofSession,
       setLife,
       release,
+      listHeld,
       lastActivityAt,
       control,
       append,
@@ -668,6 +681,7 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
         const row = held(sessionId);
         if (row !== null) release(row, ENDED_BY_SESSION);
       }),
+    listHeld: () => Effect.sync(() => rows.filter((row) => !row.released).map((row) => row.screen)),
     lastActivityAt: (id) => Effect.sync(() => rowOf(id)?.activeAt ?? null),
     control: (id, event, owner) =>
       Effect.suspend(() => {

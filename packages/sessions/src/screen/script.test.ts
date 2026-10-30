@@ -172,8 +172,10 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
     }
   }, 660_000);
 
+  // Removing both containers has taken longer than vitest's default 10 s hook timeout.
   afterAll(
     () => void execFileSync("docker", ["rm", "-f", container, confined], { stdio: "ignore" }),
+    60_000,
   );
 
   it.live(

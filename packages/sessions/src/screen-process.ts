@@ -74,6 +74,11 @@ export interface ScreenProcess<E> {
     E | SealantPlatformError | ScreenDisplaysFullError | ScreenNeedsPersonError
   >;
   readonly stop: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
+  /**
+   * The session ended: its screen stops and its display goes back to the workspace. A screen whose
+   * process would not end keeps it, so a later release (or the next boot) gives it back.
+   */
+  readonly release: (sessionId: SessionId) => Effect.Effect<void>;
   /** A screen row ended without a stop of ours: its process exited, or its workspace ended. */
   readonly ended: (
     rows: ReadonlyArray<SessionProcess>,
@@ -232,16 +237,26 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
       }),
     );
 
+  /** Ends the session's screen; false when its process would not end and still holds the display. */
+  const stopped = (sessionId: SessionId, reason: ScreenEndReason) =>
+    Effect.gen(function* () {
+      const screen = yield* screens.ofSession(sessionId);
+      if (screen === null || !STARTED.has(screen.life._tag)) return true;
+      const running = yield* live(screen.processId);
+      if (running !== null && !(yield* endedRow(running, screen.display))) return false;
+      passwords.forget(sessionId);
+      yield* setLife(screen, { life: { _tag: "Ended", reason } });
+      return true;
+    });
+
   const stop = (sessionId: SessionId, reason: ScreenEndReason) =>
+    locked(sessionId, Effect.asVoid(stopped(sessionId, reason)));
+
+  const release = (sessionId: SessionId) =>
     locked(
       sessionId,
       Effect.gen(function* () {
-        const screen = yield* screens.ofSession(sessionId);
-        if (screen === null || !STARTED.has(screen.life._tag)) return;
-        const running = yield* live(screen.processId);
-        if (running !== null && !(yield* endedRow(running, screen.display))) return;
-        passwords.forget(sessionId);
-        yield* setLife(screen, { life: { _tag: "Ended", reason } });
+        if (yield* stopped(sessionId, "session-stopped")) yield* screens.release(sessionId);
       }),
     );
 
@@ -261,5 +276,5 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
       { discard: true },
     );
 
-  return { start, stop, ended };
+  return { start, stop, release, ended };
 };

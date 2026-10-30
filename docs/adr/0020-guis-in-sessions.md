@@ -876,6 +876,10 @@ What the build changed against this text, with the PR that carries each. Yiannis
   expansion (#1209, with a platform feedback entry).
 - **A shared-control turn runs as the steerer and gets no display**; the owner's cookie and profile
   are 0700 (#1209). This follows D3.
+- **A display goes back when its session stops**, not only when the session is removed (#1209):
+  otherwise stopped sessions hold all ninety numbers. An idle stop of the screen alone keeps it, a
+  restart asks for the session's previous number first, and a boot gives back any number a stopped
+  session still holds. Only a launch that runs as a person gets a display.
 - **The hand** ends with a typed reason (`stream-stalled`, `decoder-failed`, `decode-deadline`, and
   the sign-in and size refusals); paced typing honors the batch limit, and nothing queued reaches
   Xvnc after the hand ends (#1189).
