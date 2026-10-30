@@ -1,0 +1,46 @@
+# The edge for a packaged Mend install (docs/adr/0004-access-without-a-private-network.md).
+# TLS ends here: Caddy obtains and renews a certificate for MEND_EDGE_HOST and redirects port 80.
+# Everything goes to Mend's web tier, which proxies /api, the event stream and every WebSocket on
+# this one origin. Nothing else is routed: not the API, not Sealant, not the session channel, not
+# the bucket.
+{$MEND_EDGE_HOST} {
+	encode zstd gzip
+
+	# Mend's web tier deletes inbound Forwarded, X-Forwarded-Host and X-Forwarded-Proto and appends
+	# the address it saw to X-Forwarded-For. Caddy sets X-Forwarded-For to the client it accepted;
+	# it does not trust one a client sent, since no trusted_proxies are configured above it.
+	reverse_proxy mend:3105 {
+		# Terminals and the event stream are long-lived: never buffer, never time them out.
+		flush_interval -1
+	}
+
+	log {
+		output stdout
+		# The terminal, tunnel and key bridge sockets and the phone's embed carry a single-use
+		# ticket in the query, and pairing carries a code. A log holds none of them. Caddy already
+		# redacts Authorization, Cookie and Set-Cookie.
+		format filter {
+			# Absolute-form request URLs can carry userinfo before the host. Filter that separately
+			# from query parameters, retaining the scheme, host, path and ordinary query values.
+			wrap filter {
+				wrap json
+				fields {
+					# The query filter forwards the selected uri as a leaf to this wrapped encoder.
+					uri regexp "^([A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*@" "${1}REDACTED@"
+				}
+			}
+			fields {
+				request>uri query {
+					replace ticket REDACTED
+					replace token REDACTED
+					replace code REDACTED
+				}
+				request>headers>Referer delete
+			}
+		}
+	}
+}
+
+# Sites beside Mend's own origin, one file each. `mend server setup --t3-gateway-origin <host>`
+# mounts the t3code gateway's here (docs/adr/0012); none is there unless one was asked for.
+import /etc/caddy/sites/*.caddy

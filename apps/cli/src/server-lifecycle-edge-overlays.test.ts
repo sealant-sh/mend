@@ -106,6 +106,24 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(f.state().edgeRunning).toBe(true);
   });
 
+  it("an upgrade from a generation with 0.36.0's Caddyfile writes the current one, and runs the edge from it", async () => {
+    const f = await fixture();
+    expect(await f.setupEdge(host, "--exposure", "private", "--tenancy", "single")).toEqual({
+      _tag: "ok",
+    });
+    const released = fs.readFileSync(
+      new URL("../test-fixtures/Caddyfile-0.36.0", import.meta.url),
+      "utf8",
+    );
+    expect(released).not.toBe(repositoryFile("Caddyfile"));
+    fs.writeFileSync(path.join(f.active(), "Caddyfile"), released);
+    const before = f.active();
+    expect(await f.upgrade()).toEqual({ _tag: "ok" });
+    expect(f.active()).not.toBe(before);
+    expect(f.files()["Caddyfile"]).toBe(repositoryFile("Caddyfile"));
+    expect(f.state()).toMatchObject({ edgeRunning: true, edgeDirectory: f.active() });
+  });
+
   it("the t3code gateway's overlay runs with every start, and status says what this machine observed at its port", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
