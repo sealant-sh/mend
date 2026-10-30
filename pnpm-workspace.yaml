@@ -114,8 +114,8 @@ peerDependencyRules:
     bun-ffi-structs>typescript: "7"
     tsconfck>typescript: "7"
 
-# SLNT-385: Drizzle's query error held a failed query's parameters, what a person wrote. The guard
-# is packages/db/test/query-error-words.test.ts, which also fails on any unpatched copy.
+# SLNT-385: Drizzle's query error held a failed query's parameters, what a person wrote. The db
+# package's query-error tests guard the patch and fail on any unpatched copy.
 patchedDependencies:
   drizzle-orm@1.0.0-rc.5-5935859: patches/drizzle-orm@1.0.0-rc.5-5935859.patch
 
