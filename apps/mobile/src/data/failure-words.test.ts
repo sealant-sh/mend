@@ -24,6 +24,13 @@ describe("failureWords", () => {
     expect(failure.tag).toBe("ProtocolSessionNotLive");
   });
 
+  it("tells a phone refused a push token to pair, never blaming the account", () => {
+    const failure = failureWords(403, { _tag: "PushNeedsPairedDevice" });
+    expect(failure.words).toBe(
+      "Notifications need a paired phone — pair this phone from Settings → Devices on the machine, then turn them on again.",
+    );
+  });
+
   it("words an unknown tag generically, never naming it", () => {
     const failure = failureWords(500, { _tag: "SomethingInternal" });
     expect(failure.words).toBe(GENERIC_FAILURE);

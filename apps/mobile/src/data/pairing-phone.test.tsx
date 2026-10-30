@@ -24,6 +24,7 @@ const phone = vi.hoisted(() => ({
   /** Notifications delivered and still in the OS tray. */
   tray: new Array<{ readonly id: string; readonly title: string }>(),
   permissionPrompts: 0,
+  appStateListeners: new Array<(state: string) => void>(),
 }));
 
 vi.mock("react-native", async (importActual) => {
@@ -39,6 +40,17 @@ vi.mock("react-native", async (importActual) => {
     Alert: {
       alert: (title: string, message?: string, buttons?: ReadonlyArray<AskButton>) => {
         phone.alerts.push({ title, message, buttons: buttons ?? [] });
+      },
+    },
+    AppState: {
+      currentState: "active",
+      addEventListener: (_type: "change", listener: (state: string) => void) => {
+        phone.appStateListeners.push(listener);
+        return {
+          remove: () => {
+            phone.appStateListeners = phone.appStateListeners.filter((held) => held !== listener);
+          },
+        };
       },
     },
   };
@@ -527,6 +539,7 @@ describe("push on a phone whose pairing ends", () => {
 
 describe("push on a phone the app opens already paired", () => {
   const launchPairedTo = async (machine: string) => {
+    phone.appStateListeners = [];
     vi.resetModules();
     const keychain = await import("expo-secure-store");
     await keychain.setItemAsync(
@@ -546,10 +559,37 @@ describe("push on a phone the app opens already paired", () => {
     expect(phone.permissionPrompts).toBe(0);
   });
 
+  const backToForeground = async () => {
+    for (const listener of phone.appStateListeners) listener("background");
+    for (const listener of phone.appStateListeners) listener("active");
+    await settle();
+  };
+
   it("asks nothing and sends nothing when notifications are not allowed", async () => {
     phone.notificationsAllowed = false;
 
     await launchPairedTo("a.example");
+
+    expect(deviceCallsTo("a.example")).toEqual([]);
+    expect(phone.permissionPrompts).toBe(0);
+  });
+
+  it("registers the phone again, without asking, when the app comes back to the foreground", async () => {
+    await launchPairedTo("a.example");
+    pushDevices.clear();
+
+    await backToForeground();
+
+    expect(deviceCallsTo("a.example")).toEqual(["POST /api/devices", "POST /api/devices"]);
+    expect(pushDevicesOf("a.example")).toEqual([PHONE_TOKEN]);
+    expect(phone.permissionPrompts).toBe(0);
+  });
+
+  it("asks nothing and sends nothing in the foreground when notifications are not allowed", async () => {
+    phone.notificationsAllowed = false;
+    await launchPairedTo("a.example");
+
+    await backToForeground();
 
     expect(deviceCallsTo("a.example")).toEqual([]);
     expect(phone.permissionPrompts).toBe(0);
