@@ -321,7 +321,7 @@ describe("Removing a worktree from t3code", () => {
     ),
   );
 
-  it.live("keeps the worktree when Mend does not answer, and says so", () =>
+  it.live("says Mend's answer is not known when Mend fails the removal itself", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
@@ -340,7 +340,7 @@ describe("Removing a worktree from t3code", () => {
 
         assert.strictEqual(
           error.message,
-          "Mend could not be reached, so the worktree is kept. Remove it from Mend.",
+          "Mend answered 503, so whether this worktree was removed is not known. Check it in Mend.",
         );
       }),
     ),
@@ -404,6 +404,45 @@ describe("Removing a worktree from t3code", () => {
         );
         yield* Fiber.join(removal);
         assert.isFalse(mend.workbench.worktrees.has(WORKTREE_ID));
+      }),
+    ).pipe(withGatewayTimers),
+  );
+
+  it.effect("asks Mend at once for a teammate's worktree, without waiting for a save", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          live: false,
+          ownerUserId: "user-2",
+        });
+        mend.workbench.addSession({
+          id: "session-2",
+          projectId: "project-1",
+          live: false,
+          joins: "session-1",
+        });
+        mend.workbench.removalLeavesWorkspace = true;
+        mend.workbench.worktreeRemovalAnswers.set(WORKTREE_ID, {
+          status: 403,
+          body: {
+            _tag: "RemovalForbidden",
+            owner: { userId: "user-2", name: "Grace" },
+            message: "not removed · only Grace, who started this worktree's change, removes it.",
+          },
+        });
+        const { rpc } = yield* pairAndConnect(mend, "NOWAIT");
+        yield* deleteThread(rpc, "session-2");
+
+        const error = failureOf(yield* Effect.exit(rpc[WS_METHODS.vcsRemoveWorktree](REMOVE)));
+
+        assert.strictEqual(
+          error.message,
+          "Only Grace, who started this worktree's change, can remove it. Mend keeps it.",
+        );
+        assert.strictEqual(worktreeDeletes(mend).length, 1);
       }),
     ).pipe(withGatewayTimers),
   );
@@ -540,6 +579,71 @@ describe("Removing a project from t3code", () => {
       ),
   );
 
+  it.live(
+    "keeps a removed project gone when a full read that began before the removal lands after it",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          mend.workbench.addSession({
+            id: "session-1",
+            projectId: "project-1",
+            live: false,
+          });
+          const { rpc } = yield* pairAndConnect(mend, "STALEALL");
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          const held = () => {
+            const release = Promise.withResolvers<void>();
+            const reached = Promise.withResolvers<void>();
+            return { release, reached };
+          };
+          const removal = held();
+          const read = held();
+          mend.workbench.holds.push(
+            {
+              method: "DELETE",
+              path: /^\/api\/projects\/project-1$/,
+              until: removal.release.promise,
+              reached: removal.reached.resolve,
+              before: true,
+            },
+            {
+              method: "GET",
+              path: /^\/api\/sessions\/session-1\/turns$/,
+              until: read.release.promise,
+              reached: read.reached.resolve,
+            },
+          );
+          // The removal is with Mend when a full read starts: it reads the project as it still
+          // is, then holds on the thread's turns.
+          const removing = yield* Effect.forkChild(remove(rpc, true));
+          yield* Effect.promise(() => removal.reached.promise);
+          mend.workbench.emit({ type: "resync" });
+          yield* Effect.promise(() => read.reached.promise);
+          mend.workbench.projectDetailFailures = 10;
+          removal.release.resolve();
+          yield* Fiber.join(removing);
+          yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "project.removed" }> =>
+              item.kind === "project.removed" && item.projectId === "project-1",
+            "4 seconds",
+          );
+          read.release.resolve();
+
+          assert.isTrue(
+            yield* shell.quiet(
+              (item) => item.kind === "project.updated" || item.kind === "thread.updated",
+              "1 second",
+            ),
+            "the full read from before the removal brings nothing back",
+          );
+        }),
+      ),
+  );
+
   it.live("refuses in words naming every blocking worktree and whose work it is", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
@@ -591,6 +695,27 @@ describe("Removing a project from t3code", () => {
           "nothing leaves the shell",
         );
         assertNeverForced(mend);
+      }),
+    ),
+  );
+
+  it.live("says what Mend answered, and never that the project was kept, when Mend fails it", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1", live: false });
+        mend.workbench.projectRemovalAnswers.set("project-1", {
+          status: 500,
+          body: { _tag: "InternalError", reference: "0123456789abcdef", message: "internal error" },
+        });
+        const { rpc } = yield* pairAndConnect(mend, "FAILED");
+
+        const error = failureOf(yield* Effect.exit(remove(rpc, true)));
+
+        assert.strictEqual(
+          error.message,
+          "Mend answered 500, so whether this project was removed is not known. Check it in Mend.",
+        );
       }),
     ),
   );

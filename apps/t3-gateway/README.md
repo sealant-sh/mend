@@ -384,8 +384,10 @@ t3code's own confirm dialogs ask, and Mend's removal decides (`src/removal.ts`).
 - A worktree refusal is t3code's `EnvironmentAuthorizationError`, whose message the toast shows as
   it is ("Could not remove <path>. …"); a project refusal is `ProjectMutationError`. A project Mend
   answers 404 for says that only an organization owner, or the creator of a private project, can
-  remove it. Any other answer, or a refusal whose body does not decode, says what Mend answered and
-  sends the person to Mend; one that never comes says Mend could not be reached.
+  remove it. A refusal whose body does not decode says what Mend answered and sends the person to
+  Mend. A removal Mend failed (5xx), or never answered, says that whether it was removed is not
+  known, and sends the person to Mend; it never says the worktree or project was kept. A teammate's
+  worktree is asked of Mend at once, without the wait for a deleted thread's save.
 
 ### Project files and `@`-mentions
 

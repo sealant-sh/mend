@@ -16,7 +16,7 @@ import type { MendProject } from "./mend-workbench.ts";
  * client outside Mend (`@mend/domain/workbench`), which send them to Mend and never offer force.
  */
 
-/** A removal neither the gateway nor Mend made, in the words t3code shows. */
+/** A removal the gateway cannot report as made, in the words t3code shows. */
 export class RemovalKept extends Schema.TaggedError<RemovalKept>()("RemovalKept", {
   reason: Schema.String,
 }) {
@@ -25,10 +25,21 @@ export class RemovalKept extends Schema.TaggedError<RemovalKept>()("RemovalKept"
   }
 }
 
+/** Mend could not be reached before the removal was asked for: nothing was asked, nothing went. */
 export const WORKTREE_UNREACHABLE =
   "Mend could not be reached, so the worktree is kept. Remove it from Mend.";
 export const PROJECT_UNREACHABLE =
   "Mend could not be reached, so the project is kept. Remove it from Mend.";
+
+/**
+ * Mend was asked to remove it and gave no answer the gateway could read (no response, a timeout,
+ * a 5xx): what it removed is not known, so the words say only what was observed.
+ */
+export const removalUnansweredWords = (
+  what: "worktree" | "project",
+  status: number | null,
+): string =>
+  `${status === null ? "Mend did not answer" : `Mend answered ${status}`}, so whether this ${what} was removed is not known. Check it in Mend.`;
 export const NOT_A_PROJECT = "This is not one of your projects in Mend, so nothing was removed.";
 export const NOT_A_WORKTREE =
   "This path is not one of the project's worktrees in Mend, so nothing was removed.";
@@ -53,6 +64,7 @@ export const worktreeDirectoryAt = (project: MendProject, path: string): string 
     : directory;
 };
 
+/** A refusal Mend gave that the gateway cannot read: a 4xx, so Mend did not act on it. */
 const unreadable = (what: "worktree" | "project", status: number, tag: string | null) =>
   `Mend did not remove this ${what} (${status}${tag === null ? "" : ` ${tag}`}). Check it in Mend.`;
 

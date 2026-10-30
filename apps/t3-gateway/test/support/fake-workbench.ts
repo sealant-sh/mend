@@ -273,6 +273,17 @@ export class FakeWorkbench {
     readonly until: Promise<void>;
     readonly reached: () => void;
   } | null = null;
+  /**
+   * The same, each for the next request of `method` whose path `path` matches. `before`: the
+   * request is not even handled until `until` settles (Mend busy before it acts).
+   */
+  readonly holds: Array<{
+    readonly method: string;
+    readonly path: RegExp;
+    readonly until: Promise<void>;
+    readonly reached: () => void;
+    readonly before?: boolean;
+  }> = [];
   /** Whether a launch brings the agent up at all (false: provisioning stalls, to fail it later). */
   launchBringsAgentUp = true;
   /** How long after a launch answers its new agent is running. */
@@ -685,12 +696,19 @@ export class FakeWorkbench {
     const path = url.pathname;
     const method = request.method ?? "GET";
     if (!path.startsWith("/api/")) return false;
-    const hold =
-      /^\/api\/projects\/[^/]+$/.test(path) && method === "GET" ? this.holdProjectDetail : null;
-    if (hold !== null) {
-      this.holdProjectDetail = null;
-      hold.reached();
+    const held = this.holds.findIndex(
+      (candidate) => candidate.method === method && candidate.path.test(path),
+    );
+    const matched = held === -1 ? null : (this.holds.splice(held, 1)[0] ?? null);
+    if (matched?.before === true) {
+      matched.reached();
+      return matched.until.then(() => this.route(request, response, body, accepted));
     }
+    const projectHold =
+      /^\/api\/projects\/[^/]+$/.test(path) && method === "GET" ? this.holdProjectDetail : null;
+    if (projectHold !== null) this.holdProjectDetail = null;
+    const hold = projectHold ?? matched;
+    hold?.reached();
     const json = (status: number, value: unknown): true => {
       const text = value === undefined ? "" : JSON.stringify(value);
       const write = () => {

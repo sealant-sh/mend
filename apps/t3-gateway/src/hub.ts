@@ -117,6 +117,7 @@ import {
   PROJECT_NOT_LISTED,
   projectRemovalWords,
   RemovalKept,
+  removalUnansweredWords,
   worktreeDirectoryAt,
   worktreeRemovalWords,
 } from "./removal.ts";
@@ -2220,11 +2221,11 @@ export const makePersonHub = (input: {
         { concurrency: 2 },
       );
       const facts = people ?? active;
-      const entries = details.filter(
+      const read = details.filter(
         (entry): entry is ProjectEntry => entry !== null && !removedProjects.has(entry.project.id),
       );
-      const sessionIds = entries.flatMap((entry) => projectableSessionIds(entry, launched));
-      const [read, retired] = yield* Effect.all(
+      const sessionIds = read.flatMap((entry) => projectableSessionIds(entry, launched));
+      const [conversationsRead, retiredRead] = yield* Effect.all(
         [readConversations(sessionIds, facts), readRetirements(sessionIds, facts)],
         { concurrency: 2 },
       );
@@ -2239,22 +2240,26 @@ export const makePersonHub = (input: {
       );
       yield* locked(
         Effect.gen(function* () {
+          // A project removed while the reads above ran stays removed, with its threads.
+          const entries = read.filter((entry) => !removedProjects.has(entry.project.id));
+          const present = new Set(entries.flatMap((entry) => entry.sessions.map((s) => s.id)));
+          const kept = <A>(rows: ReadonlyArray<readonly [string, A]>) =>
+            rows.filter(([sessionId]) => present.has(sessionId));
           projects.clear();
           for (const entry of entries) projects.set(entry.project.id, entry);
-          const present = new Set(entries.flatMap((entry) => entry.sessions.map((s) => s.id)));
           seen(present);
           const finished = Array.from(removing).filter((sessionId) => !present.has(sessionId));
           for (const sessionId of finished) removing.delete(sessionId);
           yield* removed(finished);
           active = facts;
-          applyRetirements(retired);
+          applyRetirements(kept(retiredRead));
           conversations.clear();
-          for (const [sessionId, conversation] of read) {
+          for (const [sessionId, conversation] of kept(conversationsRead)) {
             if (conversation !== null) {
               conversations.set(sessionId, withAdopted(sessionId, conversation));
             }
           }
-          for (const [sessionId, items] of caughtUp) {
+          for (const [sessionId, items] of kept(caughtUp)) {
             const watch = watches.get(sessionId);
             if (watch !== undefined) mergeItems(watch, items);
           }
@@ -4598,6 +4603,10 @@ export const makePersonHub = (input: {
         while (yield* removalsUnderWay(worktreeId)) yield* Effect.sleep(REMOVAL_SETTLE_LOOK);
       }).pipe(Effect.timeoutOrElse({ duration: REMOVAL_SETTLE_WAIT, orElse: () => Effect.void }));
 
+    /** Mend took the removal and gave no answer to read: whether it removed anything is open. */
+    const unanswered = (what: "worktree" | "project", error: MendUnavailable) =>
+      Effect.fail(new RemovalKept({ reason: removalUnansweredWords(what, error.status) }));
+
     const removeWorktree: PersonHub["removeWorktree"] = (request) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
@@ -4629,8 +4638,14 @@ export const makePersonHub = (input: {
         if (!hasProvenOwner(worktree)) {
           return yield* new RemovalKept({ reason: OWNERLESS_OUTSIDE_MEND });
         }
-        yield* settledRemovals(worktree.id);
-        const refusal = worktreeRemovalWords(yield* mend.removeWorktree(token, worktree.id));
+        // Only the change's owner waits for a save: Mend refuses anyone else at once, by name.
+        if (worktree.changeOwnerUserId === request.session.mendUser.id) {
+          yield* settledRemovals(worktree.id);
+        }
+        const answer = yield* mend
+          .removeWorktree(token, worktree.id)
+          .pipe(Effect.catchTag("MendUnavailable", (error) => unanswered("worktree", error)));
+        const refusal = worktreeRemovalWords(answer);
         if (refusal !== null) return yield* new RemovalKept({ reason: refusal });
         yield* requestRefresh(`project:${project.id}`);
       });
@@ -4652,7 +4667,9 @@ export const makePersonHub = (input: {
         );
         if (shown === null) return yield* new RemovalKept({ reason: PROJECT_NOT_LISTED });
         const refusal = projectRemovalWords(
-          yield* mend.removeProject(request.session.deviceToken, request.projectId),
+          yield* mend
+            .removeProject(request.session.deviceToken, request.projectId)
+            .pipe(Effect.catchTag("MendUnavailable", (error) => unanswered("project", error))),
         );
         if (refusal !== null) return yield* new RemovalKept({ reason: refusal });
         yield* projectRemoved(request.projectId);
