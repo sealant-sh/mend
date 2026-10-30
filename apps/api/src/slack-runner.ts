@@ -84,6 +84,7 @@ import {
   skippedImage,
   SLACK_ACTIONS,
   slackToPlain,
+  NO_PREVIEWS,
   statusKey,
   statusMessage,
   switchOffered,
@@ -1424,6 +1425,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           change: null,
           url: sessionUrl(install.webOrigin, current.id),
           switchSession: switchOffered(state, []) ? current.id : null,
+          previews: NO_PREVIEWS,
         });
       const shown = status("starting", session);
       const posted = yield* say(token, mention, shown).pipe(

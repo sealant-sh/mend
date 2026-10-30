@@ -34,38 +34,44 @@ const requested = (signals: ReadonlyArray<BusSignal>, count: number) =>
     ),
   );
 
+const of = (payload: Extract<BusSignal, { readonly kind: "event" }>["event"]) =>
+  event({ kind: "event", event: payload, payload: "{}" });
+
 describe("the Slack reporter on the events bus", () => {
-  it("asks for a report of the session each session event names, and for a resync after a gap", async () => {
+  it("asks for a report of every thread a change reaches, and for a resync after a gap", async () => {
     const asked = await requested(
       [
-        event({
-          kind: "event",
-          event: { type: "session", sessionId: "s-1", projectId: "p-1" },
-          payload: "{}",
+        of({ type: "agent-conversation", sessionId: "s-2", projectId: "p-1" }),
+        // A Service in a sibling session serves the worktree's previews: its worktree is reached.
+        of({ type: "session-process", sessionId: "s-service", projectId: "p-1" }),
+        of({ type: "session", sessionId: "s-1", projectId: "p-1" }),
+        of({ type: "worktree", worktreeId: "wt-1", projectId: "p-1" }),
+        of({
+          type: "session-change",
+          changeId: "c-1",
+          worktreeId: "wt-1",
+          sessionId: "s-1",
+          projectId: "p-1",
         }),
-        event({
-          kind: "event",
-          event: { type: "agent-conversation", sessionId: "s-2", projectId: "p-1" },
-          payload: "{}",
-        }),
-        event({
-          kind: "event",
-          event: {
-            type: "review-comment",
-            commentId: "c",
-            changeId: "x",
-            worktreeId: "w",
-            projectId: "p",
-          },
-          payload: "{}",
+        of({ type: "project", projectId: "p-1" }),
+        of({
+          type: "review-comment",
+          commentId: "c",
+          changeId: "x",
+          worktreeId: "w",
+          projectId: "p",
         }),
         { kind: "resync" },
       ],
-      3,
+      7,
     );
     expect(asked).toEqual([
-      { _tag: "Session", id: "s-1" },
       { _tag: "Session", id: "s-2" },
+      { _tag: "SessionWorktree", id: "s-service" },
+      { _tag: "SessionWorktree", id: "s-1" },
+      { _tag: "Worktree", id: "wt-1" },
+      { _tag: "Worktree", id: "wt-1" },
+      { _tag: "Project", id: "p-1" },
       { _tag: "Resync" },
     ]);
   });

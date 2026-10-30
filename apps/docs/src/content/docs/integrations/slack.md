@@ -202,6 +202,13 @@ Mend posts only into the thread the request came from.
 - One status message, edited in place, with an **Open in Mend** button. It reads, for example,
   `billing-api · from the thread · claude · running · mend/flaky-login-test`, and later
   `billing-api · from the thread · claude · completed · observed · mend/flaky-login-test · 4 files · +120 −30`.
+- Under the status line, the worktree's previews, when the preview gateway is on: one line each,
+  such as `preview · web · starting · setup`, `preview · web · answered HTTP 200 · observed`,
+  `preview · web · stopped by Maria` or `preview not prepared · web · setup exited 1`, and an **Open
+  preview** button for each preview Mend can open. The button names its Service
+  (`Open preview · docs`) when the worktree has more than one. It opens Mend's sign-in for the
+  preview, which checks that you can see the project before it opens it. The link holds no
+  credential. The message moves as a preview prepares, starts, fails or stops.
 - The agent's plan when its first message is one, and each turn's closing message, as replies cut at
   3,000 characters with a link to the rest. A plan with no text of its own, such as Claude's todo
   list, is posted as a checklist.
@@ -210,13 +217,14 @@ Mend posts only into the thread the request came from.
 - One end-of-session reply once Mend has read the change: the summary and approach from the change's
   review tour, the count of draft comments and suggested edits, and a **Review in Mend** button. The
   summary is labelled
-  `summary · written by Mend using inference on the diff and the session record`. A session started
-  from Slack always gets a review tour when it settles with a change, even where the project's
-  automatic tour is off.
+  `summary · written by Mend using inference on the diff and the session record`. The reply ends
+  with the previews as they read when it was posted; the status message is the one that stays
+  current. A session started from Slack always gets a review tour when it settles with a change,
+  even where the project's automatic tour is off.
 
 The status message states what was observed and gives no verdict. When a channel thread's project is
-made private while its session runs, Mend edits the status message to
-`not shown · the project is private` and posts nothing more there.
+made private, Mend edits the status message to `not shown · the project is private`, which names no
+project and no preview, and posts nothing more there.
 
 Replies meant for one person (the link prompt, most refusals, `help`, `list`, and notes about
 skipped images) are ephemeral: only that person sees them. A refused session start is said in the
@@ -232,7 +240,7 @@ An owner sets how much reaches Slack in **Settings → Slack**:
 | ---------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Agent messages         | Status, reactions and links only                                      | Also the plan, closing messages, questions and the summary. The default    |
 | Diffs                  | Changed files and line counts only. The default                       | Also the diff of each changed file, up to 3,000 characters, once           |
-| Slack Connect channels | Only status and links there. The default                              | The two settings above apply there too                                     |
+| Slack Connect channels | Only status and links there, without previews. The default            | The two settings above apply there too, and the previews show              |
 | Land automatically     | A completed turn pushes nothing; the thread offers the owner a button | A request that asked for a change lands when a turn completes. The default |
 
 ## Automatic landing from Slack

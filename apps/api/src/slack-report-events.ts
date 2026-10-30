@@ -1,4 +1,4 @@
-import { SessionId } from "@mend/domain";
+import { ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import { SlackReports, type SlackReportTarget } from "@mend/jobs";
 import { Cause, Effect, Layer, Stream } from "effect";
 
@@ -9,11 +9,18 @@ export const slackReportTargetOf = (signal: BusSignal): SlackReportTarget | null
   if (signal.kind === "resync") return { _tag: "Resync" };
   const { event } = signal;
   switch (event.type) {
+    case "agent-conversation":
+      return { _tag: "Session", id: SessionId.make(event.sessionId) };
+    // A Service of any session in a worktree can serve its previews, so its moves (readiness
+    // checks included) reach every thread of the worktree, not only the session's own.
     case "session":
     case "session-process":
-    case "agent-conversation":
+      return { _tag: "SessionWorktree", id: SessionId.make(event.sessionId) };
+    case "worktree":
     case "session-change":
-      return { _tag: "Session", id: SessionId.make(event.sessionId) };
+      return { _tag: "Worktree", id: WorktreeId.make(event.worktreeId) };
+    case "project":
+      return { _tag: "Project", id: ProjectId.make(event.projectId) };
     default:
       return null;
   }

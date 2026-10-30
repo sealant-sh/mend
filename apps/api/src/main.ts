@@ -250,6 +250,7 @@ import { PageViewTokensLive } from "./page-view-tokens.ts";
 import { PreviewSetupConfig, PreviewSetupConfigLive } from "./preview-config.ts";
 import { PreviewIdentityLive } from "./preview-identity.ts";
 import { PreviewPreparationLive } from "./preview-preparation.ts";
+import { SlackPreviewReadsLive } from "./preview-reads.ts";
 import { servePreviews } from "./preview-serving.ts";
 import { PreviewUrlsLive } from "./preview-urls.ts";
 import { ProjectCreationLive, UnsettledRepositorySweepLive } from "./project-creation.ts";
@@ -802,7 +803,7 @@ const WorkerLive = Layer.mergeAll(
   Layer.provide(TourComposer.layer),
   Layer.provide(ChangeSuggesterLive),
   // The Slack reporter, which the bus subscription and the Slack runner both ask to report.
-  Layer.provide(SlackReportsLive),
+  Layer.provide(SlackReportsLive.pipe(Layer.provide(SlackPreviewReadsLive))),
   // The session namer, the Slack runner's reading of a thread for its project, and the reading
   // of a request's intent that automatic landing asks for.
   Layer.provide(Layer.mergeAll(SessionNamerLive, ThreadProjectReaderLive, RequestIntentReaderLive)),

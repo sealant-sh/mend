@@ -59,7 +59,7 @@ export const previewRowsOf = (
         : facts.flatMap((fact, index) =>
             Option.match(decodeStatus(fact), {
               onNone: () => status.slice(index, index + 1),
-              onSome: (decoded) => [previewStatusLine(decoded, now)],
+              onSome: (decoded) => [previewStatusLine(decoded, { now })],
             }),
           );
     return lines.length === 0 ? [] : [{ key: preview.id, serviceName: preview.serviceName, lines }];

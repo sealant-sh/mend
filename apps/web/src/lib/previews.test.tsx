@@ -36,7 +36,7 @@ const shown = (
     state: "kept",
   },
   binding: { _tag: "Unbound", reason: "no-live-attempt" },
-  status: facts.map((status) => previewStatusLine(status, now)),
+  status: facts.map((status) => previewStatusLine(status, { now })),
   facts,
   open: null,
   boundTo: null,

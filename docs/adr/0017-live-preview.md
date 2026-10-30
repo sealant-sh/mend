@@ -403,11 +403,19 @@ One function builds the status line for every surface, so they all say the same 
 `preview · web · answered HTTP 200 · observed 4 s ago`, `preview · web · starting · setup`,
 `preview · web · stopped after 30 min idle`. None is a verdict.
 
-- **Slack.** An **Open preview** button on the status message beside **Open in Mend**
-  (`packages/slack/src/format.ts:151-259`), and a line on the review reply (`format.ts:730`). The
-  reporter's existing private-project check still hides a project that was made private
-  (`packages/jobs/src/slack-reporter.ts:727-743`). Unfurls are off for preview links, and a crawler
-  never gets a grant.
+- **Slack.** The status message carries a line per preview of the worktree, worded by
+  `previewStatusLine(status, { stable: true })` (no age, so a repeated readiness check edits
+  nothing), and an **Open preview** button beside **Open in Mend** for each preview `previewOpenOf`
+  would open (`statusMessage`, `packages/slack/src/format.ts`). The end-of-session reply carries the
+  same lines and buttons as they read when it was posted (`reviewMessage`). The button is
+  `<APP_URL>/preview-auth?preview=<id>&path=%2F`: no credential, no preview host. Everyone in the
+  thread sees it, as with **Open in Mend**; a Slack Connect channel sees it only when the owner
+  turned on external channels (`disclosureFor`). The reporter's private-project check hides a
+  project that was made private (`packages/jobs/src/slack-reporter.ts`, `observe`), and a project's
+  change reaches its threads at once. The reporter reads the worktree's previews through
+  `SlackPreviewReads` (`apps/api/src/preview-reads.ts`), the web's own fact assembly without its
+  allocation, and hears the events bus, not a LISTEN of its own. Unfurls are off for preview links,
+  and a crawler never gets a grant.
 - **Phone.** A **Preview** button on the session screen, and the session's Services.
 - **Web.** The Services card's **Open** goes to the preview on every instance where the gateway is
   on.

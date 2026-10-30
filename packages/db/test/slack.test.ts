@@ -531,6 +531,18 @@ describe.skipIf(postgres.skip)("slack in Postgres", () => {
         expect(yield* threads.ownsRequestReaction(second.id)).toBe(true);
         expect(yield* threads.ownsRequestReaction(fromWeb.id)).toBe(false);
 
+        // A change to the worktree reaches every thread of it, from a session with none too.
+        const all = [first.id, second.id, switched.id];
+        expect(yield* threads.sessionsReached({ worktreeOf: fromWeb.id })).toEqual(all);
+        expect(yield* threads.sessionsReached({ worktreeId: WORKTREE })).toEqual(all);
+        expect(yield* threads.sessionsReached({ projectId: PROJECT })).toEqual(all);
+        expect(yield* threads.sessionsReached({ worktreeId: WorktreeId.make("wt-none") })).toEqual(
+          [],
+        );
+        expect(yield* threads.sessionsReached({ worktreeOf: SessionId.make("s-gone") })).toEqual(
+          [],
+        );
+
         const twice = yield* threads
           .record({
             ...thread,

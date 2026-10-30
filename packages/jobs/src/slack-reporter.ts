@@ -13,7 +13,7 @@ import {
   type SealedSlackInstall,
   type SlackThreadSession,
 } from "@mend/db";
-import type { SessionId } from "@mend/domain";
+import type { ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import {
   agentWaitLine,
   captureStatusLine,
@@ -42,6 +42,7 @@ import {
   landingStatusLines,
   landOfferMessage,
   landOfferOf,
+  NO_PREVIEWS,
   planText,
   privateProjectStatusMessage,
   questionMessage,
@@ -59,11 +60,14 @@ import {
   type LandOffer,
   type SlackMessage,
   type SlackSessionState,
+  type WorktreePreviews,
 } from "@mend/slack";
 import { SlackApi, SlackApiError, updateRefusalOf } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
-import { Cause, Clock, Effect, Layer, Queue } from "effect";
+import { Cause, Clock, Effect, Layer, Queue, Result } from "effect";
 import * as Context from "effect/Context";
+
+import { SlackPreviewReads } from "./slack-preview-reads.ts";
 
 /**
  * The Slack thread reporter (docs/adr/0006-slack.md, "What Mend posts, and where"): the sibling of
@@ -78,6 +82,8 @@ import * as Context from "effect/Context";
  *   approach, what the review pass drafted, and "Review in Mend";
  * - on completion, the change's line counts in the status line; and when the owner turned diffs
  *   on, each file's diff, once, the first time the session settles with a change;
+ * - under the status line, the worktree's previews, whichever session runs them, and an Open
+ *   preview button for each the gateway would serve (docs/adr/0017-live-preview.md);
  * - the change's landing under the status line (docs/adr/0007-landing.md, "What the thread sees"):
  *   `pushed · mend/fix-login · pull request #412 · opened`, edited in place by each landing, or a
  *   refusal or failure in the remote's words; and when a completed turn's change did not land (a
@@ -116,6 +122,8 @@ const REPORT_FRESHNESS_MS = 2 * 60_000;
 export const STATUS_EDIT_EVERY_MS = 30_000;
 /** A change to a status message's previews alone edits it at most this often. */
 export const STATUS_PREVIEW_EVERY_MS = 10_000;
+/** How soon a look whose previews could not be read tries again. */
+const PREVIEW_READ_RETRY_MS = 5_000;
 /** How long one status edit may take, the Slack client's own retries and waits included. */
 export const STATUS_EDIT_DEADLINE_MS = 15_000;
 
@@ -272,6 +280,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const reads = yield* WorktreeReads;
     const cipher = yield* SecretCipher;
     const slack = yield* SlackApi;
+    const previewReads = yield* SlackPreviewReads;
     const clock = yield* Clock.Clock;
     const now = options.now ?? (() => clock.currentTimeMillisUnsafe());
     const scope = yield* Effect.scope;
@@ -517,6 +526,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       token: string,
       observed: Look,
       projectName: string | null,
+      previews: WorktreePreviews,
     ) {
       const { thread } = observed;
       if (thread.statusTs === null) return;
@@ -535,7 +545,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         look.change !== null && isSettledState(state)
           ? yield* countsOf(session, look.change)
           : null;
-      const message = statusMessage({
+      const status = {
         project: projectName,
         source: thread.projectSource,
         harness: session.harness,
@@ -551,8 +561,13 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         landing: landingStatusLines({ landings: look.landings, latestTurn: look.decided }),
         summary: session.summary,
         capture: captureStatusLine(session),
-      });
-      yield* moveStatus(token, look, message);
+      };
+      yield* moveStatus(
+        token,
+        look,
+        statusMessage({ ...status, previews }),
+        statusMessage({ ...status, previews: NO_PREVIEWS }),
+      );
     });
 
     /** Post a reply once, whichever worker gets there first. */
@@ -617,6 +632,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       showSummary: boolean,
       webOrigin: string,
       offer: LandOffer | null,
+      previews: WorktreePreviews,
     ) =>
       Effect.gen(function* () {
         const tour =
@@ -654,6 +670,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           drafts,
           url: changeUrl(webOrigin, change.id),
           offer: offered,
+          previews,
         });
         return message === null ? [] : [message];
       });
@@ -664,6 +681,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       token: string,
       look: Look,
       before: Seen,
+      previews: WorktreePreviews,
     ) {
       const { thread, session } = look;
       const shown = disclosureFor(install.settings, thread.external);
@@ -754,7 +772,15 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           token,
           thread,
           review.key,
-          reviewReply(thread, change, review, shown.agentMessages, install.webOrigin, offer),
+          reviewReply(
+            thread,
+            change,
+            review,
+            shown.agentMessages,
+            install.webOrigin,
+            offer,
+            previews,
+          ),
         );
       }
       // Otherwise the offer is a reply of its own: the end-of-session reply may come much later,
@@ -780,8 +806,8 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       }
       // A thread started in the last two minutes has no history to replay: everything in it is
       // news, even to a process that has not looked at it yet.
-      const before =
-        seen.get(sessionId) ?? (fresh(look.thread.createdAt) ? NOTHING_SEEN : undefined);
+      const previous = seen.get(sessionId);
+      const before = previous ?? (fresh(look.thread.createdAt) ? NOTHING_SEEN : undefined);
       seen.set(sessionId, seenOf(look, now()));
       const install = yield* installs.byTeam(look.thread.teamId);
       // The app was removed: the thread stays, and nothing can be written to it.
@@ -800,11 +826,24 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       if (token === null) return;
       // Everyone in a channel reads the thread: a project made private since is not shown there.
       if (!threadShowsReplies(look.thread.channelId, project.visibility)) {
-        return yield* reportStatus(install, token, look, null);
+        return yield* reportStatus(install, token, look, null, NO_PREVIEWS);
       }
-      yield* reportStatus(install, token, look, project.name);
+      // The worktree's previews, read only where the thread may show them. A read that failed is
+      // not "no previews": this look waits, as if it had not happened, and tries again.
+      const read = disclosureFor(install.settings, look.thread.external).previews
+        ? yield* previewReads.forWorktree(look.session.worktreeId).pipe(Effect.result)
+        : Result.succeed(NO_PREVIEWS);
+      if (Result.isFailure(read)) {
+        if (previous === undefined) seen.delete(sessionId);
+        else seen.set(sessionId, previous);
+        yield* Effect.logWarning("slack reporter: previews not read").pipe(
+          Effect.annotateLogs({ sessionId, cause: read.failure.cause }),
+        );
+        return yield* lookAgainIn(sessionId, PREVIEW_READ_RETRY_MS);
+      }
+      yield* reportStatus(install, token, look, project.name, read.success);
       if (before === undefined) return; // unknown baseline: record, never post
-      yield* reportReplies(install, token, look, before);
+      yield* reportReplies(install, token, look, before, read.success);
     });
 
     /**
@@ -832,7 +871,14 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
  * was heard (the events connection was lost): every active session is looked at again.
  */
 export type SlackReportTarget =
+  /** The session's own thread: its conversation moved. */
   | { readonly _tag: "Session"; readonly id: SessionId }
+  /** Every thread of the session's worktree: the session or one of its Services moved. */
+  | { readonly _tag: "SessionWorktree"; readonly id: SessionId }
+  /** Every thread of the worktree: its previews, its preparation or its change moved. */
+  | { readonly _tag: "Worktree"; readonly id: WorktreeId }
+  /** Every thread of the project, settled ones included: its visibility or its name moved. */
+  | { readonly _tag: "Project"; readonly id: ProjectId }
   | { readonly _tag: "Resync" };
 
 /**
@@ -861,6 +907,7 @@ export const SlackReportsLive: Layer.Layer<
   | SessionsRepo
   | SlackApi
   | SlackInstallsRepo
+  | SlackPreviewReads
   | SlackThreadsRepo
   | WorktreeChangesRepo
   | WorktreeReads
@@ -868,6 +915,7 @@ export const SlackReportsLive: Layer.Layer<
   SlackReports,
   Effect.gen(function* () {
     const sessions = yield* SessionsRepo;
+    const threads = yield* SlackThreadsRepo;
     const reporter = yield* makeSlackReporter();
     yield* reporter.baseline();
 
@@ -903,6 +951,12 @@ export const SlackReportsLive: Layer.Layer<
       switch (target._tag) {
         case "Session":
           return Effect.succeed([target.id]);
+        case "SessionWorktree":
+          return threads.sessionsReached({ worktreeOf: target.id });
+        case "Worktree":
+          return threads.sessionsReached({ worktreeId: target.id });
+        case "Project":
+          return threads.sessionsReached({ projectId: target.id });
         case "Resync":
           return Effect.map(sessions.listActive(), (active) => active.map((session) => session.id));
       }

@@ -629,14 +629,14 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const now = new Date(yield* Clock.currentTimeMillis);
         const described = previews.map(({ view, facts, open, boundTo }) => ({
           ...view,
-          status: facts.map((status) => previewStatusLine(status, now)),
+          status: facts.map((status) => previewStatusLine(status, { now })),
           facts,
           open: open._tag === "Open" ? open.target : null,
           boundTo,
         }));
         return {
           previews: described,
-          unprepared: unprepared === null ? null : previewStatusLine(unprepared, now),
+          unprepared: unprepared === null ? null : previewStatusLine(unprepared, { now }),
           starting: [...described.flatMap(({ facts }) => facts), unprepared].some(
             (status) => status?._tag === "Starting",
           ),

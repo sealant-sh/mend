@@ -1,4 +1,4 @@
-import type { ProjectId, SessionId } from "@mend/domain";
+import type { ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import {
   SlackStatusKey,
   type SessionStatus,
@@ -6,7 +6,8 @@ import {
   type SlackSessionState,
   type SlackStatusShown,
 } from "@mend/domain/workbench";
-import { and, desc, eq, getTableColumns, isNotNull, isNull, type SQL } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNotNull, isNull, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -136,6 +137,17 @@ export class SlackThreadsRepo extends Context.Service<
      * and message): the one whose reaction the request carries. A switch reuses the request.
      */
     readonly ownsRequestReaction: (sessionId: SessionId) => Effect.Effect<boolean>;
+    /**
+     * The sessions with a thread that a change reaches, settled ones included: every session of a
+     * worktree (its previews are the worktree's, and a Service can run in a sibling session), of
+     * the worktree a session is in, or of a project.
+     */
+    readonly sessionsReached: (
+      by:
+        | { readonly worktreeId: WorktreeId }
+        | { readonly worktreeOf: SessionId }
+        | { readonly projectId: ProjectId },
+    ) => Effect.Effect<ReadonlyArray<SessionId>>;
     /** Claim a reply by key before posting it: true for exactly one caller, ever. */
     readonly claimPost: (sessionId: SessionId, key: string) => Effect.Effect<boolean>;
     /**
@@ -265,6 +277,35 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       return latest?.sessionId === sessionId;
     });
 
+    const source = alias(agentSessions, "source");
+    const sessionsReached = Effect.fn("SlackThreadsRepo.sessionsReached")(function* (
+      by:
+        | { readonly worktreeId: WorktreeId }
+        | { readonly worktreeOf: SessionId }
+        | { readonly projectId: ProjectId },
+    ) {
+      const reached =
+        "worktreeId" in by
+          ? eq(agentSessions.worktreeId, by.worktreeId)
+          : "worktreeOf" in by
+            ? inArray(
+                agentSessions.worktreeId,
+                db
+                  .select({ worktreeId: source.worktreeId })
+                  .from(source)
+                  .where(eq(source.id, by.worktreeOf)),
+              )
+            : eq(agentSessions.projectId, by.projectId);
+      const rows = yield* db
+        .select({ sessionId: slackThreads.sessionId })
+        .from(slackThreads)
+        .innerJoin(agentSessions, eq(agentSessions.id, slackThreads.sessionId))
+        .where(reached)
+        .orderBy(slackThreads.sessionId)
+        .pipe(Effect.orDie);
+      return rows.map((row) => row.sessionId);
+    });
+
     const claimPost = Effect.fn("SlackThreadsRepo.claimPost")(function* (
       sessionId: SessionId,
       key: string,
@@ -314,6 +355,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       claimStatus,
       releaseStatus,
       ownsRequestReaction,
+      sessionsReached,
       claimPost,
       listForOwner,
     };
