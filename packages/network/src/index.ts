@@ -7,6 +7,7 @@ export * from "./session-cookie.ts";
 export * from "./public-network.ts";
 export * from "./redact.ts";
 export * from "./redact-detail.ts";
+export * from "./secret-segments.ts";
 export * from "./window-limiter.ts";
 export * from "./preview-domain.ts";
 export * from "./sibling-site.ts";

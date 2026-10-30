@@ -1,15 +1,16 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { serveObserved } from "@mend/network/http-observation";
 import { EnvironmentHttpApi } from "@mend/t3-contracts";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
-import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 
-import { AssetTracingDisabledLive, AssetUrlsLive } from "../../src/assets.ts";
+import { AssetUrlsLive } from "../../src/assets.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
 import { GatewayConfig } from "../../src/config.ts";
 import { GatewayEnvironmentLive } from "../../src/environment.ts";
@@ -92,7 +93,6 @@ const gatewayWithClientObservers = (observers: ClientObservers) => {
     Layer.provide(GatewayAuthLive),
     Layer.provide(ProjectionsLive),
     Layer.provideMerge(WebSocketTicketsLive),
-    Layer.provideMerge(AssetTracingDisabledLive),
     Layer.provideMerge(GatewayEnvironmentLive),
     Layer.provideMerge(client),
     Layer.provideMerge(GatewayStateLive),
@@ -110,11 +110,8 @@ export const gatewayTestLayer = (
   options: ClientObservers & {
     readonly hubIdleTimeToLive?: Duration.Input;
     readonly queueTimings?: Partial<QueueTimings>;
-    /**
-     * Serves with the request logger on, as production does, and collects every log line (JSON)
-     * here. Without it, nothing is logged.
-     */
     readonly logs?: Array<string>;
+    readonly spans?: Array<Tracer.Span>;
     /**
      * Find's parser, to share one worker pool across gateways. Without it the gateway starts its
      * own, as production does.
@@ -122,24 +119,20 @@ export const gatewayTestLayer = (
     readonly parser?: FindParser["Service"];
   } = {},
 ) =>
-  HttpRouter.serve(
+  serveObserved(
     options.launchObserver === undefined &&
       options.eventConsumed === undefined &&
       options.deviceCheckObserver === undefined
       ? GatewayAppLive
       : gatewayWithClientObservers(options),
-    {
-      disableLogger: options.logs === undefined,
-      disableListenLog: true,
-    },
+    { disableListenLog: true },
   ).pipe(
     Layer.provide(
       options.parser === undefined ? findParserLayer() : Layer.succeed(FindParser, options.parser),
     ),
     Layer.provideMerge(NodeHttpServer.layerTest),
-    Layer.provide(
-      options.logs === undefined ? Layer.empty : Logger.layer([collectingLogger(options.logs)]),
-    ),
+    Layer.provide(Logger.layer(options.logs === undefined ? [] : [collectingLogger(options.logs)])),
+    Layer.provide(options.spans === undefined ? Layer.empty : recordingTracer(options.spans)),
     Layer.provideMerge(
       Layer.succeed(GatewayConfig, {
         mendUrl,
@@ -156,6 +149,18 @@ export const gatewayTestLayer = (
   );
 
 export const t3Client = HttpApiClient.make(EnvironmentHttpApi);
+
+const recordingTracer = (spans: Array<Tracer.Span>) =>
+  Layer.succeed(
+    Tracer.Tracer,
+    Tracer.make({
+      span(options) {
+        const span = Tracer.nativeTracer.span(options);
+        spans.push(span);
+        return span;
+      },
+    }),
+  );
 
 /** A logger that keeps each line as `Logger.formatJson` writes it. */
 const collectingLogger = (lines: Array<string>) =>

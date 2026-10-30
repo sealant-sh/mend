@@ -16,7 +16,6 @@ import {
   upgradeTicketScope,
   type UpgradeTicketTarget,
 } from "@mend/db";
-import { redactUrl } from "@mend/network";
 import { Config, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpServerResponse } from "effect/http";
@@ -220,10 +219,7 @@ export const resolveUpgradeCaller = (input: {
       }
       yield* Effect.logWarning(
         "a bearer arrived in a URL; this client predates upgrade tickets",
-      ).pipe(
-        // The path with the bearer's value replaced: a log must never hold one.
-        Effect.annotateLogs({ target, url: redactUrl(`${url.pathname}${url.search}`) }),
-      );
+      ).pipe(Effect.annotateLogs({ target }));
       headers.set("authorization", `Bearer ${token}`);
     }
     const session = yield* auth.getSession(headers);

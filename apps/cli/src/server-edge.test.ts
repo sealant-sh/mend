@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 
-import { INVITATION_HEADER } from "@mend/network";
+import { INVITATION_HEADER, SECRET_SEGMENT_PREFIXES } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -534,12 +534,9 @@ describe("what the edge logs (ADR 0004)", () => {
     ["/api/projects", "/api/projects"],
     ["/api/projects?raw=1", "/api/projects?REDACTED"],
     ["/api/worktrees/w1/raw?path=private-dir%2Fprivate-name.png", "/api/worktrees/w1/raw?REDACTED"],
-    [
-      "/API//worktrees/w1/r%61w/;v=1?path=private-name.png",
-      "/API//worktrees/w1/r%61w/;v=1?REDACTED",
-    ],
-    ["/api/x/%2e%2e/pair?%63ode=SYN_CODE", "/api/x/%2e%2e/pair?REDACTED"],
-    ["/api/x/../../pair?code=SYN_CODE", "/api/x/../../pair?REDACTED"],
+    ["/API//worktrees/w1/r%61w/;v=1?path=private-name.png", "/REDACTED"],
+    ["/api/x/%2e%2e/pair?%63ode=SYN_CODE", "/REDACTED"],
+    ["/api/x/../../pair?code=SYN_CODE", "/REDACTED"],
     ["/?wsTicket=SYN_TICKET&token=SYN_TOKEN", "/?REDACTED"],
     ["/api/projects?raw=SYN_RAW#SYN_FRAGMENT", "/api/projects?REDACTED"],
     ["/api/projects#SYN_FRAGMENT?raw=SYN_RAW", "/api/projects#REDACTED"],
@@ -551,7 +548,7 @@ describe("what the edge logs (ADR 0004)", () => {
       "http://mend.example.com/path@ordinary?visible=a%40b",
       "http://mend.example.com/path@ordinary?REDACTED",
     ],
-    ["//ordinary:label@path/nested?visible=SYN_PLAIN", "//ordinary:label@path/nested?REDACTED"],
+    ["//ordinary:label@path/nested?visible=SYN_PLAIN", "//REDACTED"],
     // A CONNECT target, and an opaque one.
     ["SYN_USER:SYN_PASSWORD@mend.example.com:443", "REDACTED@mend.example.com:443"],
     ["http:SYN_OPAQUE@mend.example.com/x", "REDACTED@mend.example.com/x"],
@@ -580,6 +577,99 @@ describe("what the edge logs (ADR 0004)", () => {
       const filter = (uri: string) =>
         uri.replace(new RegExp(pattern, "g"), replacement.replaceAll(/\$\{(\d)\}/g, "$$$1"));
       expect(requests.map(([sent]) => filter(sent))).toEqual(requests.map(([, logged]) => logged));
+    }
+  });
+
+  it("redacts the segment after each path whose next segment is a secret, however it is spelled, the whole path when a dot segment, a `;`, a `\\` or a leading `//` makes it unclassifiable, and keeps every other path", () => {
+    const mend = EDGE_CADDYFILE.match(/^\tlog mend \{\n[\s\S]*?^\t\}$/m)?.[0] ?? "";
+    const filters = [...mend.matchAll(/^\t+(\S+) regexp "(.+)" "(.+)"$/gm)];
+    const secret = "SYN_SEGMENT";
+    const spellings = SECRET_SEGMENT_PREFIXES.flatMap((prefix) => [
+      `${prefix}/${secret}`,
+      `${prefix.toUpperCase()}/${secret}`,
+      `${prefix.replace(/^\/(.)/, (_, first: string) => `/${first.toUpperCase()}`)}/${secret}`,
+      `${prefix.replaceAll("/", "//")}//${secret}`,
+      `${prefix}/${secret}/`,
+      `${prefix}/${secret}/approve`,
+      `${prefix}/${secret}?callbackURL=%2Freset`,
+      `${prefix}/${secret}#more`,
+      `https://mend.example.com${prefix}/${secret}`,
+      `HTTPS://Mend.Example.com${prefix}/${secret}/deny`,
+      `https://SYN_USER:SYN_PASSWORD@mend.example.com${prefix}/${secret}`,
+    ]);
+    const ordinary = [
+      ...SECRET_SEGMENT_PREFIXES,
+      ...SECRET_SEGMENT_PREFIXES.map((prefix) => `${prefix}/`),
+      ...SECRET_SEGMENT_PREFIXES.map((prefix) => `${prefix}ed/visible`),
+      ...SECRET_SEGMENT_PREFIXES.map((prefix) => `/api/projects${prefix}/visible`),
+      "/api/projects/p1/sessions",
+      "/authorize",
+      "/joint/visible",
+      "/resetting/visible",
+      "/api/devicesx/visible",
+      "/.well-known/visible",
+      "/assets/app..js",
+      "https://mend.example.com/api/projects/p1",
+    ];
+    const unclassifiable = [
+      "/a/../join/SYN_SEGMENT",
+      "/./join/SYN_SEGMENT",
+      "/join/./SYN_SEGMENT",
+      "/join/SYN_SEGMENT/..",
+      "/a/%2e%2E/join/SYN_SEGMENT?next=SYN_NEXT",
+      "/a/.%2e/api/me/cli-auth/SYN_SEGMENT/approve",
+      "/join;x/SYN_SEGMENT",
+      "/api/devices;v=1/SYN_SEGMENT",
+      "/join\\SYN_SEGMENT",
+      "//mend.example.com/join/SYN_SEGMENT",
+      "//SYN_USER@mend.example.com/join/SYN_SEGMENT",
+      "https://mend.example.com/a/../join/SYN_SEGMENT",
+      "https://mend.example.com//api/devices/SYN_SEGMENT",
+      "https://mend.example.com/join%5CSYN_SEGMENT",
+      "https://SYN_USER:SYN_PASSWORD@mend.example.com/a/../join/SYN_SEGMENT",
+    ];
+    expect(filters).toHaveLength(2);
+    for (const [, field, pattern = "", replacement = ""] of filters) {
+      const filter = (uri: string) =>
+        uri.replace(new RegExp(pattern, "g"), replacement.replaceAll(/\$\{(\d)\}/g, "$$$1"));
+      expect(
+        spellings.filter((sent) => filter(sent).includes("SYN_")),
+        field,
+      ).toEqual([]);
+      expect(
+        spellings.filter((sent) => !filter(sent).includes("REDACTED")),
+        field,
+      ).toEqual([]);
+      expect(ordinary.map(filter), field).toEqual(ordinary);
+      expect(unclassifiable.map(filter), field).toEqual([
+        "/REDACTED",
+        "/REDACTED",
+        "/REDACTED",
+        "/REDACTED",
+        "/REDACTED",
+        "/REDACTED",
+        "/REDACTED",
+        "/REDACTED",
+        "/REDACTED",
+        "//REDACTED",
+        "//REDACTED",
+        "https://mend.example.com/REDACTED",
+        "https://mend.example.com/REDACTED",
+        "https://mend.example.com/REDACTED",
+        "https://REDACTED@mend.example.com/",
+      ]);
+      expect(
+        [
+          "/join/SYN_SEGMENT?x=1",
+          "/api//me//cli-auth//SYN_SEGMENT/approve",
+          "https://mend.example.com/Slack/Link/SYN_SEGMENT",
+        ].map(filter),
+        field,
+      ).toEqual([
+        "/join/REDACTED?REDACTED",
+        "/api//me//cli-auth//REDACTED/approve",
+        "https://mend.example.com/Slack/Link/REDACTED",
+      ]);
     }
   });
 

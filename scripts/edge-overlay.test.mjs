@@ -584,7 +584,7 @@ test(
       { target: `http://${host}/absolute?${credentials(4)}` },
       { target: `http://${host}/path@ordinary?visible=a%40b` },
       // HTTP treats this as an ordinary path, not as an absolute-form URL authority.
-      { target: "//ordinary:label@path/nested?visible=SYN_PLAIN" },
+      { target: "//ordinary:label@path/nested?visible=SYN_PLAIN", path: "//REDACTED", search: "" },
       {
         target: `http://SYN_USER:SYN_PASSWORD@${host}/userinfo?${credentials(5)}`,
         userinfo: true,
@@ -608,6 +608,16 @@ test(
       {
         target: `custom+audit.v1-test://SYN_CUSTOM_USER:SYN_CUSTOM_PASSWORD@${host}/custom-userinfo?${credentials(10)}`,
         userinfo: true,
+      },
+      { target: "/join/SYN_INVITATION", path: "/join/REDACTED" },
+      { target: "/Slack//Link/SYN_SLACK_CODE?next=SYN_NEXT", path: "/Slack//Link/REDACTED" },
+      {
+        target: `http://${host}/api//me/cli-auth/SYN_USER_CODE/approve`,
+        path: "/api//me/cli-auth/REDACTED/approve",
+      },
+      {
+        target: `http://${host}//api/me/cli-auth/SYN_NETWORK_PATH/approve`,
+        path: "/REDACTED",
       },
     ];
     const sites = [
@@ -666,16 +676,16 @@ test(
         assert.deepEqual([...new Set(access.map((entry) => entry.request.uri))], ["REDACTED"]);
         continue;
       }
-      for (const [index, { target, userinfo }] of cases.entries()) {
+      for (const [index, { target, userinfo, path: redacted, search }] of cases.entries()) {
         const sent = urlOf(target);
         const matches = access.filter((entry) => caseOf(entry) === `${site.name}-${index}`);
         assert.equal(matches.length, 1, target);
         const logged = urlOf(matches[0].request.uri);
-        assert.equal(logged.pathname, sent.pathname, target);
+        assert.equal(logged.pathname, redacted ?? sent.pathname, target);
         assert.equal(logged.hostname, sent.hostname);
         assert.equal(logged.username, userinfo ? "REDACTED" : "");
         assert.equal(logged.password, "");
-        assert.equal(logged.search, sent.search === "" ? "" : "?REDACTED", target);
+        assert.equal(logged.search, search ?? (sent.search === "" ? "" : "?REDACTED"), target);
       }
     }
     assert.doesNotMatch(logs.text, /SYN_|SYN%5F|hello%20world|a%40b/);
@@ -743,14 +753,33 @@ test(
       `/api/assets/${ASSET_TOKEN}/../../../../private-name.png`,
       `/api/assets/%61st_${rest}/%2E%2E/%2E%2E/%2E%2E/projects/private-name.png`,
     ];
-    const kept = ["/api/projects", "/api/worktrees/w1/contents?path=SYNQ_README"];
+    const kept = [
+      "/api/projects",
+      "/api/worktrees/w1/contents?path=SYNQ_README",
+      "/api/projects/p1/join/kept",
+    ];
+    const links = [
+      "/join/SYNQ_INVITATION",
+      "/RESET//SYNQ_RESET?callbackURL=%2F",
+      "//slack//link/SYNQ_SLACK_CODE",
+      "/api/me/CLI-AUTH/SYNQ_USER_CODE/deny",
+      "/api/devices/SYNQ_PUSH_TOKEN",
+      "/api/auth/reset-password/SYNQ_RESET_TOKEN?callbackURL=%2Freset",
+      "/a/../join/SYNQ_DOTS",
+      "/./join/SYNQ_DOT",
+      "/join/./SYNQ_DOT_AFTER",
+      "/a/%2e%2E/api/devices/SYNQ_ENCODED_DOTS",
+      "/join;x/SYNQ_SEMICOLON",
+      "/join\\SYNQ_BACKSLASH",
+      "//mend.internal/join/SYNQ_NETWORK_PATH",
+    ];
     const exchanges = [
       "/__mend/auth?ticket=mut_SYNQ_TICKET&path=%2Fprivate-dir%2Fprivate-name",
       "/__mend/signed-in?path=%2Fprivate-name",
       "/private-dir/private-name?SYNQ_APP=1",
     ];
     const sites = [
-      { name: "mend", host: MEND_HOST, targets: [...queries, ...kept] },
+      { name: "mend", host: MEND_HOST, targets: [...queries, ...kept, ...links] },
       { name: "gateway", host: GATEWAY_HOST, targets: [...queries, ...assets] },
       { name: "preview", host: PREVIEW_HOST, targets: [...queries, ...exchanges] },
     ];
@@ -832,7 +861,15 @@ test(
           .filter(predicate)
           .map((entry) => entry.request.uri),
       );
-    for (const uri of ["/api/projects", "/api/worktrees/w1/contents?REDACTED"]) {
+    for (const uri of [
+      "/api/projects",
+      "/api/worktrees/w1/contents?REDACTED",
+      "/api/projects/p1/join/kept",
+      "/join/REDACTED",
+      "/api/me/CLI-AUTH/REDACTED/deny",
+      "/REDACTED",
+      "//REDACTED",
+    ]) {
       assert.ok(logged((e) => e.logger === "http.log.access.mend").has(uri), uri);
       assert.ok(logged((e) => e.logger === "http.log.error.mend").has(uri), uri);
     }
@@ -866,7 +903,7 @@ test(
       ["/api/projects", "/api/projects"],
       ["/api/projects?raw=1", "/api/projects?REDACTED"],
       ["/api/projects#SYNU_FRAGMENT?raw=SYNU_RAW", "/api/projects#REDACTED"],
-      ["/api/x/../../pair?code=SYNU_CODE", "/api/x/../../pair?REDACTED"],
+      ["/api/x/../../pair?code=SYNU_CODE", "/REDACTED"],
       [
         `http://SYNU_USER:SYNU_PASSWORD@${MEND_HOST}/userinfo?ticket=SYNU_TICKET`,
         `http://REDACTED@${MEND_HOST}/userinfo?REDACTED`,
@@ -875,7 +912,7 @@ test(
         `http://${MEND_HOST}/path@ordinary?visible=a%40b`,
         `http://${MEND_HOST}/path@ordinary?REDACTED`,
       ],
-      ["//ordinary:label@path/nested?visible=SYNU_PLAIN", "//ordinary:label@path/nested?REDACTED"],
+      ["//ordinary:label@path/nested?visible=SYNU_PLAIN", "//REDACTED"],
       [`SYNU_USER:SYNU_PASSWORD@${MEND_HOST}:443`, `REDACTED@${MEND_HOST}:443`, "CONNECT"],
       [`http:SYNU_OPAQUE@${MEND_HOST}/opaque`, `REDACTED@${MEND_HOST}/opaque`],
     ];

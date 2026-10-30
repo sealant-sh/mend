@@ -14,6 +14,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import type * as Tracer from "effect/Tracer";
 
 import { EMPTY_SHELL_SNAPSHOT } from "../src/shell.ts";
 import { orchestrationProtocolCompatibilityError } from "./support/compatibility.ts";
@@ -425,6 +426,28 @@ describe("GET /ws", () => {
         assert.strictEqual((yield* decode(yield* none.json)).reason, "missing_credential");
       }),
     ),
+  );
+
+  it.live("keeps a socket's ticket out of every span, spent or not", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      const spans: Array<Tracer.Span> = [];
+      const ticket = yield* Effect.gen(function* () {
+        const paired = yield* pairAndTicket(mend, "TRACEDTICKET");
+        const rpc = yield* connectWsRpc(paired.url);
+        assert.deepStrictEqual(yield* rpc[WS_METHODS.serverProbe]({}), {});
+        // Replayed over plain fetch: the layer's own client would record a client span of its own.
+        const replay = yield* Effect.promise(() => fetch(paired.url.replace(/^ws/, "http")));
+        assert.strictEqual(replay.status, 401);
+        return paired.ticket;
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, ":memory:", { spans })));
+      const recorded = JSON.stringify(spans.map((span) => [span.name, [...span.attributes]]));
+      assert.notInclude(recorded, ticket);
+      const sockets = spans.filter(
+        (span) => span.kind === "server" && span.attributes.get("http.route") === "/ws",
+      );
+      assert.strictEqual(sockets.length, 2);
+    }),
   );
 
   it.live("refuses the config with t3code's typed errors when Mend cannot answer", () =>

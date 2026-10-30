@@ -429,7 +429,6 @@ export const GatewayCorsLive: Layer.Layer<never, never, HttpRouter.HttpRouter> =
   maxAge: 600,
 });
 
-/** Every gateway route, ready for `HttpRouter.serve` or `HttpRouter.toWebHandler`. */
 export const GatewayRoutesLive = Layer.mergeAll(
   HttpApiBuilder.layer(GatewayHttpApi).pipe(
     Layer.provide(MetadataGroupLive),

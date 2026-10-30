@@ -868,6 +868,9 @@ importers:
       '@mend/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@mend/network':
+        specifier: workspace:*
+        version: link:../../packages/network
       '@mend/t3-contracts':
         specifier: workspace:*
         version: link:../../packages/t3-contracts

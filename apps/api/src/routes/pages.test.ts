@@ -5,6 +5,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import { PageFrame } from "@mend/api-contracts";
 import { PAGE_FRAME_TTL_MS, PageRef } from "@mend/domain/workbench";
 import { PAGE_VIEW_PATH } from "@mend/network";
+import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import {
   Effect,
   Layer,
@@ -23,7 +24,6 @@ import { type HarnessProject, type HarnessUser, ids } from "../../test/support/t
 import { pageDocument } from "../page-document.ts";
 import { pageViewKeyOf, pageViewTokensOf } from "../page-view-tokens.ts";
 import { API_RESPONSE_HEADERS, responseHeadersFor } from "../response-headers.ts";
-import { UntracedRequestsLive } from "../untraced-requests.ts";
 
 const KEY = pageViewKeyOf("pages-test-secret");
 const decodeFrame = Schema.decodeUnknownSync(PageFrame);
@@ -263,7 +263,7 @@ describe("a page by URL (docs/adr/0004, Agent pages)", () => {
 });
 
 describe("the page-view token never reaches the API's log", () => {
-  it("logs the route's path and never its query", async () => {
+  it("logs a page view by its route's template, never its token", async () => {
     const lines: Array<string> = [];
     const routes = HttpRouter.use((router) =>
       router.add("GET", PAGE_VIEW_PATH, () => Effect.succeed(HttpServerResponse.text("page"))),
@@ -275,7 +275,7 @@ describe("the page-view token never reaches the API's log", () => {
         );
       }),
     ]);
-    const { handler, dispose } = HttpRouter.toWebHandler(
+    const { handler, dispose } = observedWebHandler(
       Layer.mergeAll(routes, capture).pipe(Layer.provide(HttpServer.layerServices)),
     );
     try {
@@ -286,13 +286,23 @@ describe("the page-view token never reaches the API's log", () => {
     } finally {
       await dispose();
     }
-    expect(lines.join("\n")).toContain(PAGE_VIEW_PATH);
-    expect(lines.join("\n")).not.toContain("secret-token-value");
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      {
+        message: ["Sent HTTP response"],
+        annotations: expect.objectContaining({ "http.route": PAGE_VIEW_PATH, "http.status": 200 }),
+      },
+    ]);
+    expect(lines.filter((line) => line.includes("secret-token-value"))).toEqual([]);
   });
 });
 
+const getSpan = (route: string, status: number) => [
+  "GET",
+  { "http.request.method": "GET", "http.route": route, "http.response.status_code": status },
+];
+
 describe("the page-view token never reaches a trace", () => {
-  it("records no span for a page view on any spelling or a raw read, and the usual span for every other route", async () => {
+  it("records a page view on any spelling and a raw read by their routes' templates, never a token or a file name", async () => {
     const spans: Array<{ readonly name: string; readonly attributes: Map<string, unknown> }> = [];
     class RecordedSpan extends Tracer.NativeSpan {
       readonly recorded = new Map<string, unknown>();
@@ -319,9 +329,9 @@ describe("the page-view token never reaches a trace", () => {
     );
     const server = createServer();
     const runtime = ManagedRuntime.make(
-      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+      serveObserved(routes, { disableListenLog: true }).pipe(
         Layer.provide(NodeHttpServer.layer(() => server, { port: 0, host: "127.0.0.1" })),
-        Layer.provide(UntracedRequestsLive),
+        Layer.provide(Logger.layer([])),
         Layer.provide(Layer.succeed(Tracer.Tracer)(tracer)),
       ),
     );
@@ -353,20 +363,12 @@ describe("the page-view token never reaches a trace", () => {
     expect(JSON.stringify(recorded)).not.toContain("secret-token-value");
     expect(JSON.stringify(recorded)).not.toContain("secret-file-name");
     expect(JSON.stringify(recorded)).not.toContain("secret-ticket-value");
-    expect(recorded).toContainEqual([
-      expect.any(String),
-      expect.objectContaining({ "url.path": "/api/health", "url.query": "view=REDACTED" }),
-    ]);
-    expect(
-      recorded.filter(([, attributes]) => JSON.stringify(attributes).includes(PAGE_VIEW_PATH)),
-    ).toEqual([
-      [
-        expect.any(String),
-        expect.objectContaining({
-          "http.response.status_code": 404,
-          "url.query": "view=REDACTED",
-        }),
-      ],
+    expect(recorded).toEqual([
+      ...Array.from({ length: 6 }, () => getSpan(PAGE_VIEW_PATH, 200)),
+      getSpan("unrouted", 404),
+      getSpan("/api/worktrees/:id/raw", 200),
+      getSpan("/api/health", 200),
+      getSpan("/api/health", 200),
     ]);
   });
 });

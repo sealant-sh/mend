@@ -305,14 +305,67 @@ web tier, the operator's own included, could log them.
 - **The edge drops `X-Mend-Invitation` from its logs.** A sign-up from an invitation carries the
   token in that header, and Caddy logs request headers.
 - **Better Auth's `GET /api/auth/reset-password/<token>` answers 404** before Better Auth reads it,
-  and stays out of the request log and traces. No Mend client sends it; the reset form posts the
-  token. Better Auth's `disabledPaths` cannot do this, because it compares the concrete path.
+  and its token stays out of the request log and traces. No Mend client sends it; the reset form
+  posts the token. Better Auth's `disabledPaths` cannot do this, because it compares the concrete
+  path.
 - **Rollout.** The web tier ships before the issuers, because an older web tier has no page at a
   fragment link's path.
 
-Still open: a CLI sign-in's user code in `/api/me/cli-auth/<code>` reaches the request log, and an
-old path link reaches the edge's log once. Keeping concrete URLs out of logs and spans is a separate
-decision.
+The next amendment covers the two left: a CLI sign-in's user code in `/api/me/cli-auth/<code>`, and
+an old path link at the edge.
+
+### What a log line and a span hold, amendment 2026-10-30
+
+A rule that names the URLs carrying a secret protects only the URLs it names, and every new route is
+one more to remember. So the API and the t3code gateway record no concrete URL at all, and the edge,
+which an operator debugs from, keeps its paths and redacts the few that carry a secret.
+
+- **A request is observed by its route's template.** Each request the API or the gateway serves
+  leaves one log line and one server span: the method, the template the router registered
+  (`/api/me/cli-auth/:code`), its status or `aborted`, and its duration. A request no route
+  answered, unmatched or refused by a middleware first, reads `unrouted`. The template comes from
+  the router, never from cleaning the request string. One adapter, `@mend/network/http-observation`
+  (`serveObserved`, `observedWebHandler`), serves both, and replaces Effect's request logger and
+  server tracer, which record the path a client sent.
+- **A span records no URL, header or cause.** It keeps its parent from `traceparent` and parents the
+  handler's spans. It fails only for a 5xx or an abort, with a bounded reason (`status 500`,
+  `aborted`): an `HttpServerError`'s message names the URL. The gateway's `?wsTicket=` no longer
+  reaches a span.
+- **Every request is observed**, a page view, a device's unpairing, a raw file read and a gateway
+  asset included: their templates hold no token and no file name.
+- **A 5xx's line is written at error level with its cause**, and the API's error boundary writes its
+  diagnostic the same way: the request's URL, in every spelling Effect writes it, reads as the
+  route's template. A body that could not be read, and a URL a Web `Request` cannot hold, name the
+  URL in their message.
+- **The request's line is written inside its span**, so it carries the request's trace and span ids,
+  and every line a handler writes names `http.route`.
+- **A request is `aborted` when its client went away before the response.** The observation ends
+  when the response starts: a client that leaves while a body streams is logged with the status it
+  was sent, and the duration does not count the body.
+- **Mend's credential names stay redacted inside a handler.** Effect redacts `token`, `ticket`,
+  `code`, `wsTicket` and `view` in a URL, and `X-Mend-Invitation` in headers, in what a handler logs
+  and in the spans of the calls it makes.
+- **Two lines that wrote a URL now write less.** A bearer in a socket's URL, from a client that
+  predates upgrade tickets, is logged by its target alone. Better Auth's own console lines keep the
+  words before the first colon and an error's name: it writes a rejected `callbackURL` whole.
+- **The web tier logs a failed API call by operation, failure and status**
+  (`userDevices.cliAuthRequest StatusCodeError 404`), never `HttpClientError.message`, which names
+  the API URL it called.
+- **The edge keeps paths, and redacts the segment after a path whose next segment is a secret.**
+  `SECRET_SEGMENT_PREFIXES` in `@mend/network` names them: `/join`, `/reset` and `/slack/link` for a
+  link issued in the path form (read from the handed-link definitions), `/api/me/cli-auth`,
+  `/api/devices` and `/api/auth/reset-password`. Mend's log writes `/join/REDACTED` in any case and
+  with any number of slashes, in the uri and in a `Location`. A path the edge cannot classify, one
+  with a dot segment, a `;`, a backslash or a leading `//`, keeps only its first `/`
+  (`/a/../join/<token>` is logged as `/REDACTED`), or its `//` for a leading `//`. A test holds the
+  Caddyfile to that list in every spelling, and the contract test allows a secret-named path
+  parameter only as the segment right after one of the `/api/` paths, each with its reason.
+- **The CLI approval contract is unchanged.** Its routes keep their paths; their log lines show the
+  template.
+
+The cost: a log line names `/api/sessions/:id`, not the session. A handler that needs an id in the
+log writes it on purpose. A percent-encoded spelling of a prefix (`/j%6Fin/<token>`) passes the edge
+unredacted; no Mend client sends one.
 
 ### Upgrade tickets (MEND-08)
 
@@ -619,3 +672,6 @@ Decisions that are the owner's. Work proceeds on the default stated with each.
    Default: left as released; changing it is a contract change for `mend doctor`.
 6. **A private object store behind a private CA.** sealantd takes a second CA bundle for object
    URLs; whether Mend's chart should carry one is undecided. Default: not in this stack.
+7. **Route templates in Mend's logs and spans, prefix redaction at the edge** (amendment
+   2026-10-30). The alternatives were a registry of secret-bearing URL shapes everywhere, or no URI
+   in any edge log. Decided overnight by recommendation; Yiannis to confirm. Default: as built.

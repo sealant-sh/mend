@@ -18,6 +18,7 @@
     "@effect/platform-node": "catalog:",
     "@mend/agent-conversation": "workspace:*",
     "@mend/domain": "workspace:*",
+    "@mend/network": "workspace:*",
     "@mend/t3-contracts": "workspace:*",
     "effect": "catalog:"
   },

@@ -75,6 +75,7 @@ import {
 import { JobRunner } from "@mend/jobs";
 import { Landing, LandingGit } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
+import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
 import {
   CaptureRuntime,
@@ -156,8 +157,6 @@ import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
-import { unloggedRequests } from "../../src/unlogged-requests.ts";
-import { UntracedRequestsLive } from "../../src/untraced-requests.ts";
 import { createTenancyWorld, type HarnessUser, type TenancyWorld } from "./tenancy-harness.ts";
 import { recording } from "./tenancy-harness.ts";
 
@@ -320,6 +319,7 @@ export const createTenancyApi = async (
       readonly removalFences?: Partial<RemovalFencesRepo["Service"]>;
       readonly setupRuns?: Layer.PartialEffectful<SetupRunsRepo["Service"]>;
       readonly users?: Layer.PartialEffectful<UsersRepo["Service"]>;
+      readonly devices?: Layer.PartialEffectful<DevicesRepo["Service"]>;
       readonly images?: Layer.PartialEffectful<ResourceImageResolver["Service"]>;
       readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
       readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
@@ -479,7 +479,7 @@ export const createTenancyApi = async (
       recording(SessionGitOpsRepo, "gitOps", options.implement?.gitOps ?? {}, calls),
       recording(ChangeToursRepo, "changeTours", {}, calls),
       recording(CheckpointsRepo, "checkpoints", options.implement?.checkpoints ?? {}, calls),
-      recording(DevicesRepo, "devices", {}, calls),
+      recording(DevicesRepo, "devices", options.implement?.devices ?? {}, calls),
       recording(FollowUpsRepo, "followUps", {}, calls),
       recording(HotWorkspacesRepo, "hotWorkspaces", options.implement?.hotWorkspaces ?? {}, calls),
       recording(IssuesRepo, "issues", {}, calls),
@@ -749,21 +749,21 @@ export const createTenancyApi = async (
   );
   const apiLayer = Layer.mergeAll(
     MendApiLive,
-    unloggedRequests,
     options.browserHeaders ? apiResponseHeaders : Layer.empty,
     options.errorDetail === undefined ? Layer.empty : errorBoundary(options.errorDetail),
-  ).pipe(
-    Layer.provideMerge(UntracedRequestsLive),
-    Layer.provide(authorization),
-    Layer.provide(HttpServer.layerServices),
-  );
+  ).pipe(Layer.provide(authorization), Layer.provide(HttpServer.layerServices));
   const runtime = ManagedRuntime.make(authorization);
   const services = await runtime.runPromise(Effect.context<Layer.Success<typeof authorization>>());
   const context =
     options.effectClock === undefined
       ? services
       : Context.add(services, Clock.Clock, options.effectClock);
-  const { handler, dispose } = HttpRouter.toWebHandler(
+  const logs = Logger.layer(
+    options.logs === undefined
+      ? []
+      : [Logger.make((entry) => options.logs?.push(String(Logger.formatJson.log(entry))))],
+  );
+  const { handler, dispose } = observedWebHandler(
     apiLayer.pipe(
       Layer.provideMerge(
         Layer.succeed(
@@ -777,25 +777,16 @@ export const createTenancyApi = async (
           }),
         ),
       ),
-      Layer.provideMerge(
-        options.logs === undefined
-          ? Layer.empty
-          : Logger.layer([
-              Logger.make((entry) => options.logs?.push(String(Logger.formatJson.log(entry)))),
-            ]),
-      ),
+      Layer.provideMerge(logs),
     ),
-    { disableLogger: options.logs === undefined },
   );
   const nodeScope = Effect.runSync(Scope.make());
   const nodeOrigin = options.node
     ? await Effect.runPromise(
         Layer.buildWithScope(
-          HttpRouter.serve(apiLayer, {
-            disableLogger: true,
-            disableListenLog: true,
-          }).pipe(
+          serveObserved(apiLayer, { disableListenLog: true }).pipe(
             Layer.provide(Layer.succeedContext(context)),
+            Layer.provide(logs),
             Layer.provideMerge(
               NodeHttpServer.layer(createServer, {
                 host: "127.0.0.1",

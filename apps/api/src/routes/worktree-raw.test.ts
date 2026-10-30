@@ -294,7 +294,7 @@ it("returns the selected capture observation and checks access again on warm req
   }
 });
 
-it("does not log or trace raw paths, in any spelling the router accepts, even when query decoding fails", async () => {
+it("logs and traces a raw read by its route's template, never its path, in any spelling the router accepts, even when query decoding fails", async () => {
   const logs: string[] = [];
   const spans: Tracer.Span[] = [];
   fs.writeFileSync(join(root, "private-file-needle.png"), bytes);
@@ -348,15 +348,22 @@ it("does not log or trace raw paths, in any spelling the router accepts, even wh
     const traces = JSON.stringify(spans.map((span) => [span.name, [...span.attributes]]));
     expect(traces).not.toContain("private-file-needle");
     expect(traces).not.toContain("private-directory-needle");
-    expect(traces.toLowerCase()).not.toMatch(/\/r(aw|%61w)/);
+    expect(traces).not.toMatch(/r%61w|RAW|\/\/worktrees/);
     expect(
       logs.filter(
         (line) =>
           line.includes("private-file-needle") ||
           line.includes("private-directory-needle") ||
-          /\/r(aw|%61w)/i.test(line),
+          /r%61w|RAW|\/\/worktrees/.test(line),
       ),
     ).toEqual([]);
+    expect(
+      logs.filter(
+        (line) =>
+          line.includes("Sent HTTP response") &&
+          line.includes(`"http.route":"/api/worktrees/:id/raw"`),
+      ),
+    ).toHaveLength(12);
   } finally {
     await logged.dispose();
     fs.rmSync(join(root, "private-file-needle.png"));

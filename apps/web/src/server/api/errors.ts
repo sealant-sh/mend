@@ -1,6 +1,7 @@
-import { errorStatusByTag } from "@mend/api-contracts";
+import { errorStatusByTag, MendApi } from "@mend/api-contracts";
 import { TRPCError } from "@trpc/server";
-import { HttpClientError } from "effect/http";
+import { FindMyWay, HttpClientError, type HttpClientRequest, type HttpRouter } from "effect/http";
+import { HttpApi } from "effect/http-api";
 
 import { NOT_DONE, type Refusal, refusalWords } from "./refusal-words.ts";
 
@@ -25,6 +26,24 @@ const codeForStatus = (status: number): TrpcCode => {
     default:
       return status < 500 ? "BAD_REQUEST" : "INTERNAL_SERVER_ERROR";
   }
+};
+
+const isRoutePath = (path: string): path is HttpRouter.PathInput => path.startsWith("/");
+
+const operations = FindMyWay.make<string>();
+HttpApi.reflect(MendApi, {
+  onGroup: () => {},
+  onEndpoint: ({ group, endpoint }) => {
+    if (isRoutePath(endpoint.path))
+      operations.on(endpoint.method, endpoint.path, `${group.identifier}.${endpoint.identifier}`);
+  },
+});
+
+const operationOf = (request: HttpClientRequest.HttpClientRequest, apiUrl: string): string => {
+  const base = URL.parse(apiUrl)?.pathname.replace(/\/+$/, "") ?? "";
+  const path = URL.parse(request.url)?.pathname ?? "";
+  const routed = base !== "" && path.startsWith(`${base}/`) ? path.slice(base.length) : path;
+  return operations.find(request.method, routed)?.handler ?? "unknown operation";
 };
 
 const hasTag = (error: unknown): error is Refusal =>
@@ -67,7 +86,7 @@ const removalOf = (refusal: Refusal): unknown =>
  * is contract drift and stays a loud 500. Anything else is logged server-side and crosses as a
  * generic failure.
  */
-export const toTRPCError = (error: unknown): TRPCError => {
+export const toTRPCError = (error: unknown, apiUrl = ""): TRPCError => {
   if (error instanceof TRPCError) return error;
   const message = error instanceof Error ? error.message : String(error);
   if (hasTag(error)) {
@@ -83,18 +102,21 @@ export const toTRPCError = (error: unknown): TRPCError => {
   }
   if (HttpClientError.isHttpClientError(error)) {
     const reason = error.reason._tag;
+    const operation = operationOf(error.request, apiUrl);
     if (reason === "TransportError" || reason === "InvalidUrlError" || reason === "EncodeError") {
-      console.warn(`[trpc] api unreachable: ${reason}`);
+      console.warn(`[trpc] api unreachable: ${operation} ${reason}`);
       return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: API_UNREACHABLE });
     }
+    const responseStatus = error.response?.status;
     if (reason === "StatusCodeError") {
       // A status the contract DECLARES arrived, but its body failed the
       // contract's decode — drift between tiers must stay loud.
-      console.error("[trpc] contract drift decoding API response:", message);
+      console.error(
+        `[trpc] contract drift decoding API response: ${operation} ${reason} ${responseStatus}`,
+      );
       return new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: API_DRIFT });
     }
-    const responseStatus = error.response?.status;
-    console.warn(`[trpc] api responded ${responseStatus ?? "with no status"}`);
+    console.warn(`[trpc] api responded ${responseStatus ?? "with no status"}: ${operation}`);
     return new TRPCError({ code: codeForStatus(responseStatus ?? 502), message: NOT_DONE });
   }
   // Unmapped failure or defect: keep the detail on the server, not the wire.

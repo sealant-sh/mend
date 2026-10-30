@@ -1,12 +1,12 @@
 import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { serveObserved } from "@mend/network/http-observation";
 import * as Effect from "effect/Effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
-import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
 
-import { AssetTracingDisabledLive, AssetUrlsLive } from "./assets.ts";
+import { AssetUrlsLive } from "./assets.ts";
 import { GatewayAuthLive } from "./auth.ts";
 import { GatewayConfig } from "./config.ts";
 import { GatewayEnvironmentLive } from "./environment.ts";
@@ -29,7 +29,6 @@ export const GatewayAppLive = GatewayRoutesLive.pipe(
   Layer.provide(GatewayAuthLive),
   Layer.provide(ProjectionsLive),
   Layer.provideMerge(WebSocketTicketsLive),
-  Layer.provideMerge(AssetTracingDisabledLive),
   Layer.provideMerge(GatewayEnvironmentLive),
   Layer.provideMerge(MendClientFetchLive),
   Layer.provideMerge(GatewayStateLive),
@@ -39,7 +38,7 @@ export const GatewayAppLive = GatewayRoutesLive.pipe(
 export const GatewayServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* GatewayConfig;
-    return HttpRouter.serve(GatewayAppLive).pipe(
+    return serveObserved(GatewayAppLive).pipe(
       Layer.provide(findParserLayer()),
       Layer.provide(NodeHttpServer.layer(createServer, { host: config.host, port: config.port })),
     );
