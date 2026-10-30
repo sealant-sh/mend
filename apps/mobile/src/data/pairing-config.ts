@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 
 import { NO_ANSWER } from "@/data/failure-words";
 import {
@@ -233,8 +233,11 @@ export const useConfig = (): Connection | null =>
     () => null,
   );
 
-const registerPushOnLaunch = (): void => {
+const registerPushOnLaunchAndForeground = (): void => {
   if (current !== null && current.token !== "") void registerPushIfAllowed(current);
 };
 
-void hydrated.then(registerPushOnLaunch);
+void hydrated.then(registerPushOnLaunchAndForeground);
+AppState.addEventListener("change", (state) => {
+  if (state === "active") registerPushOnLaunchAndForeground();
+});
