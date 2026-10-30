@@ -1,4 +1,4 @@
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -3422,72 +3422,47 @@ export const checkpointsLayer = (world: World) =>
     withWorktreeLock: (_worktreeId, effect) => effect,
   });
 
-const reserveGitPort = async () => {
-  const server = net.createServer();
-  try {
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const address = server.address();
-    if (address === null || typeof address === "string") {
-      throw new Error("No Git fixture port available.");
-    }
-    return address.port;
-  } finally {
-    if (server.listening) {
-      const closed = once(server, "close");
-      server.close();
-      await closed;
-    }
-  }
-};
-
-/** Keep the real network origin alive until the engine and its test scope close. */
 const serveGitOrigin = (tmp: string) =>
   Effect.gen(function* () {
-    const port = yield* Effect.promise(reserveGitPort);
-    const server = yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        const daemon = spawn(
-          "git",
-          [
-            "daemon",
-            "--reuseaddr",
-            "--export-all",
-            "--verbose",
-            `--base-path=${tmp}`,
-            "--listen=127.0.0.1",
-            `--port=${port}`,
-            tmp,
-          ],
-          { stdio: ["ignore", "ignore", "pipe"] },
-        );
-        const closed = new Promise<void>((resolve) => daemon.once("close", () => resolve()));
-        const ready = new Promise<void>((resolve, reject) => {
-          let stderr = "";
-          daemon.once("error", reject);
-          daemon.once("exit", (code, signal) => {
-            reject(new Error(`Git fixture exited before readiness: ${code ?? signal}\n${stderr}`));
+    const daemons = new Set<ChildProcess>();
+    const listener = yield* Effect.acquireRelease(
+      Effect.promise(async () => {
+        const server = net.createServer({ pauseOnConnect: true }, (socket) => {
+          const daemon = spawn(
+            "git",
+            ["daemon", "--inetd", "--export-all", `--base-path=${tmp}`, tmp],
+            { stdio: [socket, socket, "ignore"] },
+          );
+          socket.destroy();
+          daemons.add(daemon);
+          daemon.once("error", (error) => {
+            process.stderr.write(`Git fixture could not start: ${error.message}\n`);
           });
-          daemon.stderr.setEncoding("utf8");
-          daemon.stderr.on("data", (chunk: string) => {
-            stderr += chunk;
-            if (stderr.includes("Ready to rumble")) resolve();
-          });
+          daemon.once("close", () => daemons.delete(daemon));
         });
-        return { daemon, closed, ready };
+        server.listen(0, "127.0.0.1");
+        await once(server, "listening");
+        return server;
       }),
-      ({ daemon, closed }) =>
+      (server) =>
         Effect.promise(async () => {
-          daemon.kill();
+          const closed = once(server, "close");
+          server.close();
+          await Promise.all(
+            [...daemons].map((daemon) => {
+              const exited = once(daemon, "close");
+              daemon.kill();
+              return exited;
+            }),
+          );
           await closed;
         }),
     );
-    // Git readiness is native I/O. Its watchdog stays live in both live and virtual suites.
-    yield* Effect.promise(() => server.ready).pipe(
-      Effect.timeout("5 seconds"),
-      Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
-    );
-    return RepositoryCloneUrl.make(`git://127.0.0.1:${port}/origin`);
+    const address = listener.address();
+    if (address === null || typeof address === "string") {
+      return yield* Effect.die(new Error("Git fixture has no TCP address."));
+    }
+    return RepositoryCloneUrl.make(`git://127.0.0.1:${address.port}/origin`);
   });
 
 /** A throwaway origin repo with one commit, adopted over Git into a tmp store. */

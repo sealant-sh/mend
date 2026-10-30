@@ -1,9 +1,10 @@
 import * as fs from "node:fs";
+import * as net from "node:net";
 
 import { SessionEngine } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Clock, Effect, Exit } from "effect";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 
 import { setup, withEngineEffect } from "./engine/fixture.ts";
 
@@ -57,5 +58,39 @@ it.effect(
       expect(directory).toBeDefined();
       if (directory === undefined) throw new Error("fixture did not acquire its directory");
       expect(fs.existsSync(directory)).toBe(false);
+    }),
+);
+
+it.effect(
+  "engine fixture's Git origin serves even when another process takes each port the fixture lets go of",
+  () =>
+    Effect.gen(function* () {
+      const thieves: Array<net.Server> = [];
+      const close = net.Server.prototype.close;
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi
+            .spyOn(net.Server.prototype, "close")
+            .mockImplementation(function (this: net.Server, callback) {
+              const address = this.address();
+              if (address !== null && typeof address !== "string") {
+                this.prependOnceListener("close", () => {
+                  const thief = net.createServer();
+                  thief.on("error", () => {});
+                  thief.listen(address.port, address.address);
+                  thieves.push(thief);
+                });
+              }
+              return close.call(this, callback);
+            }),
+        ),
+        (spy) =>
+          Effect.sync(() => {
+            spy.mockRestore();
+            for (const thief of thieves) thief.close();
+          }),
+      );
+      const project = yield* withEngineEffect((world, directory) => setup(directory, world));
+      expect(project.adoptedSha).toMatch(/^[0-9a-f]{40}$/);
     }),
 );
