@@ -20,13 +20,13 @@ import {
 } from "@mend/domain/workbench";
 import {
   CONTROL_PLANE_UNREADABLE,
-  curationOf,
   type HeldHome,
   type HomeLogins,
   type LoginProvider,
   type LoginSkip,
   PersonLayoutPlatform,
   type ProcessUser,
+  restated,
   SealantPlatformError,
   type SealantClientShape,
   workspaceProcessUserObstacleOf,
@@ -1670,13 +1670,11 @@ export const makeHarnessLayoutSteps = (deps: {
       if (refusedWhole !== null) {
         return yield* loginRefused(loginRefusal(refusedWhole.provider, refusedWhole.reason));
       }
-      return yield* new SealantPlatformError({
-        code: "person_login_not_written",
-        status: error.status,
-        message: `${identity.name}'s logins could not be written into this workspace: ${error.message}`,
-        ...curationOf(error),
-        cause: error,
-      });
+      return yield* restated(
+        error,
+        `${identity.name}'s logins could not be written into this workspace: ${error.message}`,
+        { code: "person_login_not_written" },
+      );
     }
     keepHeldFor(input.workspace.id, input.launchId, identity);
     return yield* new SealantPlatformError({
@@ -1868,13 +1866,10 @@ export const makeHarnessLayoutSteps = (deps: {
                         Effect.andThen(write),
                         Effect.mapError((again) =>
                           again.code === "person_login_not_written"
-                            ? new SealantPlatformError({
-                                code: again.code,
-                                status: again.status,
-                                message: `${again.message} Asked twice; nothing was started for ${identity.name}.`,
-                                ...curationOf(again),
-                                cause: again,
-                              })
+                            ? restated(
+                                again,
+                                `${again.message} Asked twice; nothing was started for ${identity.name}.`,
+                              )
                             : again,
                         ),
                       ),

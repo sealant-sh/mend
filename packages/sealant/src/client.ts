@@ -49,7 +49,7 @@ import * as Context from "effect/Context";
 import { ConnectedAccount, type ConnectAccountInput } from "./accounts.ts";
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
-import { curationOf, SealantPlatformError } from "./errors.ts";
+import { restated, SealantPlatformError } from "./errors.ts";
 import { type ForwardDestination, type OpenedForward, openWorkspaceForward } from "./forward.ts";
 import { SealantIdentityStore } from "./identity.ts";
 import {
@@ -1918,15 +1918,7 @@ export const imageBuildFailure = (error: SealantPlatformError): SealantPlatformE
       : error.code === "workspace_image_build_timeout"
         ? "the workspace image build ran past its time limit, so nothing was started"
         : null;
-  return lead === null
-    ? error
-    : new SealantPlatformError({
-        code: error.code,
-        status: error.status,
-        message: `${lead}: ${error.message}`,
-        ...curationOf(error),
-        cause: error,
-      });
+  return lead === null ? error : restated(error, `${lead}: ${error.message}`);
 };
 
 /**

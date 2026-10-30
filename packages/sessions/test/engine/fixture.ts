@@ -1510,8 +1510,7 @@ export interface World {
   setupFinishing: (() => Effect.Effect<void>) | undefined;
   /** Runs after a setup stamp is written, before its answer, so a test can hold the reply. */
   setupFinished: (() => Effect.Effect<void>) | undefined;
-  /** When set, `SessionsRepo.settle` dies with what it answers: a database that refuses it. */
-  settleRefused: ((id: string) => unknown) | undefined;
+  settleDiesWith: ((id: string) => unknown) | undefined;
   readonly recipeApprovals: Map<WorktreeId, Map<string, Map<string, RecipeApproval>>>;
   /** Screens and their displays (ADR 0020), as the store keeps them. */
   readonly screens: ScreensRepo["Service"];
@@ -1619,7 +1618,7 @@ export const makeWorld = (): World => ({
   launches: new Map(),
   setupRuns: [],
   setupFinishing: undefined,
-  settleRefused: undefined,
+  settleDiesWith: undefined,
   setupFinished: undefined,
   recipeApprovals: new Map(),
   screens: makeScreensMemory(),
@@ -2863,7 +2862,7 @@ export const sessionsLayer = (world: World) => {
     notifyProgress: () => Effect.void,
     settle: (id, outcome, summary) =>
       Effect.suspend(() => {
-        const refused = world.settleRefused?.(id);
+        const refused = world.settleDiesWith?.(id);
         if (refused !== undefined) return Effect.die(refused);
         const current = world.sessions.get(id);
         // As SessionsRepo.settle: the first settle wins, until `reopen` clears it.

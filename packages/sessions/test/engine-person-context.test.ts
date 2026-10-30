@@ -313,13 +313,7 @@ const coldJoinResume = (options: {
     return result;
   });
 
-/**
- * A person launch whose layout decision dies with `defect`: the box's 500 (0.36.0-next.645),
- * the operator's person launch with the flag unset and the SDK refusing the image question's
- * options by throwing. Answers the session's line and the launch's defects once nothing was
- * created; with `settleRefused`, the store refuses the settlement with it too.
- */
-const launchWhoseLayoutDecisionDies = async (defect: unknown, settleRefused?: unknown) => {
+const launchWhoseLayoutDecisionDies = async (defect: unknown, settleDiesWith?: unknown) => {
   const throwing = Layer.effect(
     PersonLayoutPlatform,
     Effect.map(PersonLayoutPlatform, (inner) => ({
@@ -343,7 +337,7 @@ const launchWhoseLayoutDecisionDies = async (defect: unknown, settleRefused?: un
           start: { kind: "base", base: null },
           harnessLayout: "person",
         });
-        if (settleRefused !== undefined) world.settleRefused = () => settleRefused;
+        if (settleDiesWith !== undefined) world.settleDiesWith = () => settleDiesWith;
         const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
         const row = world.sessions.get(session.id);
         return {

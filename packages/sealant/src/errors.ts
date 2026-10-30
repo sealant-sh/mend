@@ -32,6 +32,16 @@ export class SealantPlatformError
   }
 }
 
-/** A message built from `error`'s words keeps its curation: withheld words stay withheld. */
-export const curationOf = (error: SealantPlatformError): { readonly uncurated?: boolean } =>
-  error.uncurated === true ? { uncurated: true } : {};
+/** `error` said again in `message`, which holds its words: withheld words stay withheld. */
+export const restated = (
+  error: SealantPlatformError,
+  message: string,
+  fields: { readonly code?: string; readonly cause?: unknown } = {},
+): SealantPlatformError =>
+  new SealantPlatformError({
+    code: fields.code ?? error.code,
+    status: error.status,
+    message,
+    ...(error.uncurated === true ? { uncurated: true } : {}),
+    cause: "cause" in fields ? fields.cause : error,
+  });

@@ -36,7 +36,6 @@ class EffectDrizzleQueryError extends Schema.TaggedError<EffectDrizzleQueryError
   { query: Schema.String },
 ) {}
 
-/** The line, and every Error entry logged while it was made. */
 const lineOf = (cause: Cause.Cause<unknown>) =>
   Effect.gen(function* () {
     const errors: Array<Record<string, unknown>> = [];

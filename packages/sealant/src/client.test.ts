@@ -76,10 +76,6 @@ describe("platformErrorCode", () => {
 
 const lineOf = (error: SealantPlatformError) => lineFailureOf(Cause.fail(error));
 
-/**
- * What a line other people read may say of a platform failure (SLNT-385): the words Mend wrote or
- * curated, never an SDK or Core message Mend did not, which can quote what a person sent.
- */
 describe("toPlatformError's words on a line", () => {
   const WORDS = "Anna is interviewing at Northwind on Friday, keep it quiet";
   const SOURCE_SELECTION =
@@ -104,7 +100,6 @@ describe("toPlatformError's words on a line", () => {
     ]) {
       const error = toPlatformError(cause);
       expect(lineOf(error)).toEqual({ _tag: "Withheld", name: "SealantPlatformError" });
-      // The log keeps what the platform said.
       expect(error.message).toContain(WORDS);
     }
   });

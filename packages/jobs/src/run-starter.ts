@@ -284,7 +284,6 @@ export const runStarterLayer = Layer.effect(
       });
     });
 
-    /** A run that failed with `cause`: its line, after `lead`, in approved words or a reference. */
     const failRunWith = (run: Run, issueId: IssueId, cause: Cause.Cause<unknown>, lead: string) =>
       failureLine(cause).pipe(Effect.flatMap((words) => failRun(run, issueId, `${lead}${words}`)));
 

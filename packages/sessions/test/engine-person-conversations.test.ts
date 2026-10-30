@@ -2054,8 +2054,6 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             onBehalfOf === MARIA && home.startsWith("/run/mend/conv/"),
           again: true,
         });
-        // The next sender reads when and where to look, never the words the last sender's
-        // hand-over failed with (SLNT-385).
         expect(backoff.second?.message).toMatch(
           /^The last hand-over of this conversation failed less than a minute ago(?: \(reference [0-9a-f]{16}\))?, so this turn was not started and nothing was stopped\. Send it again in a minute\.$/,
         );

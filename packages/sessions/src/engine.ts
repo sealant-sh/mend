@@ -264,7 +264,6 @@ import { makeWindowLimiter } from "@mend/network";
 import {
   asSealantUser,
   captureDrainOf,
-  curationOf,
   type CaptureFlushKind,
   type CaptureOwnerMap,
   type DotfilesApplied,
@@ -273,6 +272,7 @@ import {
   PersonLayoutPlatform,
   type PersonSessionOptions,
   type ProcessUser,
+  restated,
   SealantClient,
   SealantPlatformError,
   type WorkspaceStopOptions,
@@ -1256,7 +1256,6 @@ const launchEndLine = (cause: Cause.Cause<unknown>): Effect.Effect<string> => {
     : failureLine(cause).pipe(Effect.map((words) => `launch failed: ${words}`));
 };
 
-/** A launch's own words when nothing failed with a cause, else its failure's line. */
 const launchEndOf = (message: string, failure: unknown): Effect.Effect<string> =>
   failure === undefined
     ? Effect.succeed(`launch failed: ${message}`)
@@ -2434,7 +2433,6 @@ export class WorkspaceReplaceRefusedError extends Schema.TaggedError<WorkspaceRe
   { sessionId: Schema.String, message: Schema.String },
 ) {}
 
-/** A replacement whose executor's final flush was not saved: kept retiring, asked again. */
 class ReplacementKeptError extends Schema.TaggedError<ReplacementKeptError>()(
   "ReplacementKeptError",
   { message: Schema.String },
@@ -8760,10 +8758,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.asVoid(Effect.forkIn(launchGate.runBetween(sessionId)(effect), scope)),
         )(effect);
 
-      /**
-       * A launch that failed settles `failed` with `line`. A settlement the database refuses too
-       * is logged, and the launch keeps its own failure: the leftover sweep settles the session.
-       */
       const settleFailedLaunch = (sessionId: SessionId, line: Effect.Effect<string>) =>
         line.pipe(
           Effect.flatMap((summary) => settleSession(sessionId, "failed", summary)),
@@ -13045,12 +13039,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               });
             }
             if (error.code === "workspace-docker-unsupported") {
-              return new SealantPlatformError({
-                code: error.code,
-                status: error.status,
+              return restated(error, `launch refused · Docker · ${error.message}`, {
                 cause: error.cause,
-                message: `launch refused · Docker · ${error.message}`,
-                ...curationOf(error),
               });
             }
             return error;

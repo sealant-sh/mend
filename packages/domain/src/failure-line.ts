@@ -20,10 +20,8 @@ export type LineFailure =
   | { readonly _tag: "Interrupted" }
   | { readonly _tag: "Withheld"; readonly name: string };
 
-/** A withheld failure's line, for tests: its category, then the reference its log entry holds. */
 export const WITHHELD = /(?:internal error|database operation failed) · reference [0-9a-f]{16}$/;
 
-/** Failures a line may name as the database's, still without their words. */
 const DATABASE_FAILURES: ReadonlySet<string> = new Set(["EffectDrizzleQueryError", "SqlError"]);
 
 const nameOf = (failure: unknown): string => {
@@ -53,7 +51,6 @@ export const lineFailureOf = (cause: Cause.Cause<unknown>): LineFailure => {
     : { _tag: "Said", error: failure, words };
 };
 
-/** A failure named for a log, never quoted. */
 export const failureName = (cause: Cause.Cause<unknown>): string => nameOf(Cause.squash(cause));
 
 const newReference = Effect.sync(() =>
