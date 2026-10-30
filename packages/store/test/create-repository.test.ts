@@ -27,7 +27,6 @@ const withStore = async (
       ),
     );
   } finally {
-    fs.readdirSync(root);
     fs.rmSync(root, { recursive: true, force: true });
   }
 };
@@ -96,6 +95,25 @@ describe("Store.createRepository", () => {
           if (previous === undefined) delete process.env["GIT_CONFIG_GLOBAL"];
           else process.env["GIT_CONFIG_GLOBAL"] = previous;
         }
+      }),
+    ));
+  it("holds a created repository unsettled until its project is registered", async () =>
+    withStore((store) =>
+      Effect.gen(function* () {
+        const kept = yield* store.createRepository("kept", firstCommit);
+        const claimed = yield* store.createRepository("claimed", firstCommit);
+        const unsettled = yield* store.unsettledRepositories();
+        expect(unsettled.map((repository) => repository.storePath).toSorted()).toEqual(
+          [claimed.storePath, kept.storePath].toSorted(),
+        );
+        for (const repository of unsettled)
+          expect(Date.now() - repository.markedAtMs).toBeLessThan(60_000);
+        yield* store.settleCreatedRepository(claimed.storePath);
+        yield* store.settleCreatedRepository(claimed.storePath);
+        expect((yield* store.unsettledRepositories()).map((r) => r.storePath)).toEqual([
+          kept.storePath,
+        ]);
+        expect(yield* git(claimed.storePath, "rev-parse", "main")).toBe(claimed.headSha);
       }),
     ));
   it("never removes a preexisting directory or returns a repository after commit failure", async () =>

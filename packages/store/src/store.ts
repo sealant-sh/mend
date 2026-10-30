@@ -189,6 +189,19 @@ export class CreateRepositoryError extends Schema.TaggedError<CreateRepositoryEr
   },
 ) {}
 
+/**
+ * The file `createRepository` leaves in a project directory until `settleCreatedRepository`: a
+ * repository still marked after a crash, or after a publication Mend could not confirm, is one no
+ * project row may have claimed, and the API's startup sweep decides it.
+ */
+export const UNSETTLED_REPOSITORY_MARKER = ".mend-creating";
+
+export interface UnsettledRepository {
+  readonly storePath: string;
+  /** When `createRepository` marked it, from the marker's mtime. */
+  readonly markedAtMs: number;
+}
+
 export interface AdoptedRepo {
   /** Absolute path of the bare repo: `<root>/<name>/repo.git`. */
   readonly storePath: string;
@@ -1103,6 +1116,10 @@ export class Store extends Context.Service<
       directory: string,
       firstCommit: FirstCommit,
     ) => Effect.Effect<AdoptedRepo, CreateRepositoryError>;
+    /** Its project row exists: the created repository is no longer the sweep's to decide. */
+    readonly settleCreatedRepository: (storePath: string) => Effect.Effect<void>;
+    /** Created repositories not yet settled, oldest first. */
+    readonly unsettledRepositories: () => Effect.Effect<ReadonlyArray<UnsettledRepository>>;
     /**
      * Clone a parsed network Git `source` into the store as a bare repo.
      * `remoteEnv` carries the resolved auth (`GIT_SSH_COMMAND`, prompt policy)
@@ -1434,6 +1451,9 @@ export class Store extends Context.Service<
               fs.mkdirSync(config.root, { recursive: true });
               fs.mkdirSync(projectDir);
               claimed = true;
+              fs.writeFileSync(path.join(projectDir, UNSETTLED_REPOSITORY_MARKER), "", {
+                flag: "wx",
+              });
             },
             catch: (cause) =>
               new CreateRepositoryError({
@@ -1515,6 +1535,47 @@ export class Store extends Context.Service<
               : Effect.sync(() => fs.rmSync(projectDir, { recursive: true, force: true })),
           ),
         );
+      });
+
+      const settleCreatedRepository = Effect.fn("Store.settleCreatedRepository")(function* (
+        storePath: string,
+      ) {
+        const marker = path.join(path.dirname(storePath), UNSETTLED_REPOSITORY_MARKER);
+        yield* Effect.try(() => fs.rmSync(marker, { force: true })).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("store: a created repository's marker was not removed").pipe(
+              Effect.annotateLogs({ marker, error: String(error) }),
+            ),
+          ),
+        );
+      });
+
+      const unsettledRepositories = Effect.fn("Store.unsettledRepositories")(function* () {
+        const entries = yield* Effect.try(() =>
+          fs.existsSync(config.root) ? fs.readdirSync(config.root) : [],
+        ).pipe(
+          Effect.catch((error) =>
+            Effect.as(
+              Effect.logWarning("store: the store root could not be listed").pipe(
+                Effect.annotateLogs({ root: config.root, error: String(error) }),
+              ),
+              [],
+            ),
+          ),
+        );
+        const unsettled: Array<UnsettledRepository> = [];
+        for (const entry of entries) {
+          const marker = path.join(config.root, entry, UNSETTLED_REPOSITORY_MARKER);
+          const stat = yield* Effect.sync(() =>
+            fs.statSync(marker, { throwIfNoEntry: false }),
+          ).pipe(Effect.catchDefect(() => Effect.succeed(undefined)));
+          if (stat?.isFile() === true)
+            unsettled.push({
+              storePath: path.join(config.root, entry, "repo.git"),
+              markedAtMs: stat.mtimeMs,
+            });
+        }
+        return unsettled.toSorted((a, b) => a.markedAtMs - b.markedAtMs);
       });
 
       const adopt = Effect.fn("Store.adopt")(function* (
@@ -2389,6 +2450,8 @@ export class Store extends Context.Service<
         refreshReference,
         removeReference,
         createRepository,
+        settleCreatedRepository,
+        unsettledRepositories,
         adopt,
         createWorktree,
         resolveBase,
