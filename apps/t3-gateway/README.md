@@ -901,3 +901,16 @@ and drives it with `HttpApiClient` over the vendored `EnvironmentHttpApi`, as a 
 - `test/rpc-surface.test.ts` checks that the registered handlers are exactly the vendored group's
   methods, then calls every method not served over a bare socket with a payload generated from its
   own schema: each answers a typed failure its contract decodes, or stays silent if it is a feed.
+
+## Removed projects
+
+T3 Code's Remove project action removes the project from its sidebar and threads. Mend keeps the
+project's files and history indefinitely, even though T3 Code v0.1.2's confirmation says removal
+cannot be undone. Restore it in Mend under Projects → Removed projects, or run
+`mend projects restore <id>`. A name reused meanwhile requires `--name <new-name>`. A refreshed
+gateway brings the same project and sessions back; Restore starts nothing.
+
+To delete the retained project for good, use Mend's purge dialog or
+`mend projects purge <id> --confirm <exact-name>`. Purge is restricted to the people who may remove
+the project. It deletes exclusive content, keeps assets other projects reference, and leaves
+instance audit and backups unchanged. Retry purge to finish an interrupted deletion.
