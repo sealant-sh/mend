@@ -39,7 +39,7 @@ import {
   type AgentTurnSteer,
   type TurnSteerQueueReason,
 } from "@mend/domain/workbench";
-import { SealantPlatformError } from "@mend/sealant";
+import { curationOf, SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Cause, Clock, Deferred, Effect, Exit, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
@@ -343,6 +343,7 @@ const toPlatformError = (operation: string, cause: unknown): SealantPlatformErro
     code: "agent_protocol_failed",
     status: null,
     message: `Agent protocol ${operation} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+    ...(cause instanceof SealantPlatformError ? curationOf(cause) : { uncurated: true }),
     cause,
   });
 

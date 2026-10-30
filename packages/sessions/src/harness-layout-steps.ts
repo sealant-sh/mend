@@ -20,6 +20,7 @@ import {
 } from "@mend/domain/workbench";
 import {
   CONTROL_PLANE_UNREADABLE,
+  curationOf,
   type HeldHome,
   type HomeLogins,
   type LoginProvider,
@@ -1673,6 +1674,7 @@ export const makeHarnessLayoutSteps = (deps: {
         code: "person_login_not_written",
         status: error.status,
         message: `${identity.name}'s logins could not be written into this workspace: ${error.message}`,
+        ...curationOf(error),
         cause: error,
       });
     }
@@ -1870,6 +1872,7 @@ export const makeHarnessLayoutSteps = (deps: {
                                 code: again.code,
                                 status: again.status,
                                 message: `${again.message} Asked twice; nothing was started for ${identity.name}.`,
+                                ...curationOf(again),
                                 cause: again,
                               })
                             : again,

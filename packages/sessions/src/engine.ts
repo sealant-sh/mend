@@ -79,7 +79,11 @@ import {
   SessionId,
   SessionProcessId,
   type ProjectId,
+  failureLine,
+  failureReport,
   imageHasScreen,
+  lineFailureOf,
+  ReaderWords,
   type WorkspaceImage,
   workspaceImagePackages,
   WorktreeId,
@@ -260,6 +264,7 @@ import { makeWindowLimiter } from "@mend/network";
 import {
   asSealantUser,
   captureDrainOf,
+  curationOf,
   type CaptureFlushKind,
   type CaptureOwnerMap,
   type DotfilesApplied,
@@ -1090,6 +1095,7 @@ const savedStateUnreadable = (error: HarnessStateIOError) =>
     code: "mode_switch_state_unreadable",
     status: null,
     message: `Mend could not read the conversation's saved state (${error.message.replace(/\.+$/, "")}) · nothing was stopped · try again`,
+    uncurated: true,
     cause: error,
   });
 
@@ -1236,21 +1242,25 @@ const AGENT_HOOK_NO_OPS_PER_MINUTE = 600;
  */
 const AGENT_WAIT_MOVE_ATTEMPTS = 3;
 
-/** A failure's own words, for a session line. */
-const causeWords = (cause: Cause.Cause<unknown>): string => {
-  const squashed = Cause.squash(cause);
-  return squashed instanceof Error ? squashed.message : String(squashed);
-};
-
 /**
  * A launch that did not start, for its session line: refused before anything ran (a login the
  * person has not connected, a layout Mend cannot run), in a join's words, or failed.
  */
-const launchEndWords = (error: unknown): string =>
-  error instanceof SealantPlatformError &&
-  (error.code === "person_login_refused" || error.code === "harness_layout_refused")
-    ? `launch refused · ${error.message}`
-    : `launch failed: ${error instanceof Error ? error.message : String(error)}`;
+const launchEndLine = (cause: Cause.Cause<unknown>): Effect.Effect<string> => {
+  const failure = lineFailureOf(cause);
+  return failure._tag === "Said" &&
+    failure.error instanceof SealantPlatformError &&
+    (failure.error.code === "person_login_refused" ||
+      failure.error.code === "harness_layout_refused")
+    ? Effect.succeed(`launch refused · ${failure.words}`)
+    : failureLine(cause).pipe(Effect.map((words) => `launch failed: ${words}`));
+};
+
+/** A launch's own words when nothing failed with a cause, else its failure's line. */
+const launchEndOf = (message: string, failure: unknown): Effect.Effect<string> =>
+  failure === undefined
+    ? Effect.succeed(`launch failed: ${message}`)
+    : launchEndLine(Cause.fail(failure));
 
 /** A steerer's refusal, in a steerer's words ("Connect Claude to steer this session."). */
 const steerWords = (message: string) =>
@@ -1969,7 +1979,7 @@ type WorkspaceLookup =
   | { readonly kind: "found"; readonly workspace: Workspace; readonly status: string }
   | { readonly kind: "kept"; readonly workspace: Workspace; readonly status: string }
   | { readonly kind: "gone"; readonly status: string }
-  | { readonly kind: "unknown"; readonly error: string };
+  | { readonly kind: "unknown"; readonly cause: Cause.Cause<unknown> };
 
 /**
  * The drain states Core records once a capture executor's drain is over and nothing of it is kept
@@ -2423,6 +2433,16 @@ export class WorkspaceReplaceRefusedError extends Schema.TaggedError<WorkspaceRe
   "WorkspaceReplaceRefusedError",
   { sessionId: Schema.String, message: Schema.String },
 ) {}
+
+/** A replacement whose executor's final flush was not saved: kept retiring, asked again. */
+class ReplacementKeptError extends Schema.TaggedError<ReplacementKeptError>()(
+  "ReplacementKeptError",
+  { message: Schema.String },
+) {
+  get [ReaderWords](): string {
+    return this.message;
+  }
+}
 
 /** The migration of an old shared home could not read what it needed; nothing was recorded. */
 export class PreReleaseMigrationError extends Schema.TaggedError<PreReleaseMigrationError>()(
@@ -4866,11 +4886,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.succeed(
               workspaceMissing(error)
                 ? ({ kind: "gone", status: "missing" } as const)
-                : ({ kind: "unknown", error: String(error) } as const),
+                : ({ kind: "unknown", cause: Cause.fail(error) } as const),
             ),
           ),
           Effect.catchDefect((defect) =>
-            Effect.succeed({ kind: "unknown", error: String(defect) } as const),
+            Effect.succeed({ kind: "unknown", cause: Cause.die(defect) } as const),
           ),
         );
 
@@ -7214,7 +7234,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return yield* new SealantPlatformError({
               code: "workspace_unknown",
               status: null,
-              message: `the platform did not answer for the workspace · nothing stopped · ${lookup.error}`,
+              message: `the platform did not answer for the workspace · nothing stopped · ${yield* failureLine(lookup.cause)}`,
               cause: null,
             });
           }
@@ -8590,14 +8610,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               // reading as a theft.
               Effect.catchCause((cause) =>
                 Effect.sync(() => pickups.restore(ticket, entry)).pipe(
-                  Effect.andThen(
-                    Effect.fail(
-                      new Error(
-                        `Mend could not make this identity now: ${
-                          Cause.pretty(cause).split("\n")[0] ?? "the store failed"
-                        }`,
-                      ),
-                    ),
+                  Effect.andThen(failureLine(cause)),
+                  Effect.flatMap((words) =>
+                    Effect.fail(new Error(`Mend could not make this identity now: ${words}`)),
                   ),
                 ),
               ),
@@ -8744,6 +8759,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           sessionId,
           Effect.asVoid(Effect.forkIn(launchGate.runBetween(sessionId)(effect), scope)),
         )(effect);
+
+      /**
+       * A launch that failed settles `failed` with `line`. A settlement the database refuses too
+       * is logged, and the launch keeps its own failure: the leftover sweep settles the session.
+       */
+      const settleFailedLaunch = (sessionId: SessionId, line: Effect.Effect<string>) =>
+        line.pipe(
+          Effect.flatMap((summary) => settleSession(sessionId, "failed", summary)),
+          Effect.asVoid,
+          Effect.catchCause((cause) =>
+            Effect.logError(
+              "session engine: a failed launch was not settled · the leftover sweep settles it",
+            ).pipe(Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) })),
+          ),
+        );
 
       /**
        * Runs left `running` under sessions that settled, each settled with its session's outcome
@@ -9348,11 +9378,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             schedule: SUPERVISE_RETRY,
           }),
           Effect.catchTag("SealantPlatformError", (error) =>
-            failRun(sessionId, sealantRunId, error.message),
+            failureLine(Cause.fail(error)).pipe(
+              Effect.flatMap((words) => failRun(sessionId, sealantRunId, words)),
+            ),
           ),
           Effect.catchTag("SessionNotFoundError", () => Effect.void),
           Effect.catchDefect((defect) =>
-            failRun(sessionId, sealantRunId, `supervision died: ${String(defect)}`),
+            failureLine(Cause.die(defect)).pipe(
+              Effect.flatMap((words) =>
+                failRun(sessionId, sealantRunId, `supervision died: ${words}`),
+              ),
+            ),
           ),
         );
 
@@ -13014,6 +13050,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 status: error.status,
                 cause: error.cause,
                 message: `launch refused · Docker · ${error.message}`,
+                ...curationOf(error),
               });
             }
             return error;
@@ -16676,9 +16713,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const outcome = yield* drainThenTerminate(holder.id, workspaceId, "replacement", true);
         if (outcome !== "terminated" && outcome !== "stop-requested" && outcome !== "gone") {
           // Kept, never lost: the drain's own intent asks again, and nothing new starts in it.
-          return yield* Effect.fail(
-            new Error(`not replaced yet · the final flush was not saved (${outcome})`),
-          );
+          return yield* new ReplacementKeptError({
+            message: `not replaced yet · the final flush was not saved (${outcome})`,
+          });
         }
         yield* Effect.logInfo(
           "session engine: pre-release executor · saved · replaced · the next launch runs each person as themselves",
@@ -16732,11 +16769,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           new WorkspaceReplaceRefusedError({ sessionId: holder.id, message });
         const checked = yield* retirementStopsFor(holder, workspaceId, true).pipe(
           Effect.catchCause((cause) =>
-            unmark(
-              [],
-              `not replaced · what would stop could not be read (${Cause.pretty(cause)})`,
-              null,
-            ).pipe(
+            failureLine(cause).pipe(
+              Effect.flatMap((words) =>
+                unmark([], `not replaced · what would stop could not be read (${words})`, null),
+              ),
               Effect.andThen(Effect.sync(() => replacing.delete(holder.id))),
               Effect.andThen(Effect.succeed(null)),
             ),
@@ -16795,19 +16831,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               replacing.delete(holder.id);
               stoppedDuringReplacement.delete(holder.id);
               if (Exit.isSuccess(exit)) return Effect.void;
-              const why = Cause.squash(exit.cause);
+              const failure = lineFailureOf(exit.cause);
               // Its final flush was sent: the executor admits nothing new and its drain asks
               // again, so it stays `retiring`, with why, as it would after a restart.
-              if (why instanceof Error && why.message.startsWith("not replaced yet")) {
+              if (failure._tag === "Said" && failure.error instanceof ReplacementKeptError) {
                 return harnessLayouts
-                  .noteRetiring(workspaceId, { reason: why.message })
+                  .noteRetiring(workspaceId, { reason: failure.words })
                   .pipe(Effect.ignore);
               }
-              return unmark(
-                [],
-                `not replaced · the replacement did not finish (${Cause.pretty(exit.cause)})`,
-                null,
-              ).pipe(Effect.ignore);
+              return failureLine(exit.cause).pipe(
+                Effect.flatMap((words) =>
+                  unmark([], `not replaced · the replacement did not finish (${words})`, null),
+                ),
+                Effect.ignore,
+              );
             }),
           ),
           Effect.catchCause(() => Effect.void),
@@ -17791,9 +17828,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.tapCause((cause) =>
               Cause.hasInterruptsOnly(cause)
                 ? Effect.void
-                : settleSession(sessionId, "failed", launchEndWords(Cause.squash(cause))).pipe(
-                    Effect.ignore,
-                  ),
+                : settleFailedLaunch(sessionId, launchEndLine(cause)),
             ),
           );
         // Everything runs as the OWNER: the account stamped at provision. A session with no owner
@@ -18192,11 +18227,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             onFailure: (message, failure) =>
               stoppedDuringLaunch.has(sessionId)
                 ? Effect.void
-                : settleSession(
-                    sessionId,
-                    "failed",
-                    launchEndWords(failure === undefined ? message : failure),
-                  ).pipe(Effect.ignore),
+                : settleFailedLaunch(sessionId, launchEndOf(message, failure)),
             onCreated: (workspace) => acceptExecutor(workspace, key),
             abandon: abandonExecutor,
             launchId: key,
@@ -18368,11 +18399,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               captured: true,
               restoredFrom: replanned.restoredFrom,
               onFailure: (message, failure) =>
-                settleSession(
-                  sessionId,
-                  "failed",
-                  launchEndWords(failure === undefined ? message : failure),
-                ).pipe(Effect.ignore),
+                settleFailedLaunch(sessionId, launchEndOf(message, failure)),
               abandon: abandonExecutor,
               warmHarness: session.harness,
               ...(launchLayout.layout === "person" ||
@@ -19560,7 +19587,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * takes the conversation's queued turns.
        */
       /** A hand-over that failed after its stop, per session and sender (review 2, P3-3). */
-      const failedHandOvers = new Map<string, { readonly at: number; readonly words: string }>();
+      const failedHandOvers = new Map<
+        string,
+        { readonly at: number; readonly reference: string | null }
+      >();
 
       /**
        * In the launch gate, start to end, its fallback included (SLNT-167): between its stop and
@@ -19588,7 +19618,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* new SealantPlatformError({
                 code: "conversation_not_handed_over",
                 status: 409,
-                message: `The last hand-over of this conversation failed less than a minute ago (${failedBefore.words}), so this turn was not started and nothing was stopped. Send it again in a minute.`,
+                message: `The last hand-over of this conversation failed less than a minute ago${failedBefore.reference === null ? "" : ` (reference ${failedBefore.reference})`}, so this turn was not started and nothing was stopped. Send it again in a minute.`,
                 cause: null,
               });
             }
@@ -19667,7 +19697,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         // The old process stopped and the new one could not start: the waiting turn fails
                         // with the words, and the conversation goes on in a process of the person who ran
                         // it before, on their own login, taking the turns queued behind (P2-2).
-                        const words = steerWords(error.message);
+                        const report = yield* failureReport(Cause.fail(error));
+                        const words = steerWords(report.words);
                         if (
                           !(
                             error instanceof SealantPlatformError &&
@@ -19676,7 +19707,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         ) {
                           failedHandOvers.set(backoffKey, {
                             at: yield* Clock.currentTimeMillis,
-                            words,
+                            reference: report.reference,
                           });
                         }
                         yield* conversations.failTurn(turnId, words).pipe(Effect.ignore);
@@ -19702,9 +19733,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                                   Effect.ignore,
                                 );
                                 // Said on the session line, not only in a log (review 2, P3-2).
+                                const again = (yield* failureLine(cause)).replace(/\.+$/, "");
                                 yield* noteLaunchWords(
                                   session.id,
-                                  `stopped · ${nameOf(sender)}'s turn could not start (${words}), and ${nameOf(previous)}'s agent could not be started again: ${causeWords(cause).replace(/\.+$/, "")}. Resume the session to continue.`,
+                                  `stopped · ${nameOf(sender)}'s turn could not start (${words}), and ${nameOf(previous)}'s agent could not be started again: ${again}. Resume the session to continue.`,
                                 ).pipe(Effect.ignore);
                                 yield* Effect.logWarning(
                                   "session engine: the conversation could not be started again after a failed hand-over",
@@ -21907,9 +21939,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.tapCause((cause) =>
               Cause.hasInterruptsOnly(cause)
                 ? Effect.void
-                : settleSession(sessionId, "failed", launchEndWords(Cause.squash(cause))).pipe(
-                    Effect.ignore,
-                  ),
+                : settleFailedLaunch(sessionId, launchEndLine(cause)),
             ),
           );
         if (held !== null) return held;
@@ -22189,6 +22219,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               code: "session_status_failed",
               status: null,
               message: `protocol pipe status failed: ${String(cause)}`,
+              uncurated: true,
               cause,
             }),
         });
@@ -22424,7 +22455,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (stoppedDuringLaunch.has(session.id) || live || as === null) {
             return yield* Effect.failCause(cause);
           }
-          const words = causeWords(cause).replace(/\.+$/, "");
+          const words = (yield* failureLine(cause)).replace(/\.+$/, "");
           const restarted = yield* Effect.gen(function* () {
             const workspace = yield* sealant.getWorkspace(conversation.sealantWorkspaceId);
             const next = yield* conversationStartOf(session, conversation, providerSessionId);
@@ -22439,12 +22470,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               code: "mode_switch_terminal_not_opened",
               status: null,
               message: `The terminal did not open (${words}) · the conversation goes on`,
-              cause: Cause.squash(cause),
+              cause,
             });
           }
           yield* endOwnership.release(continuation);
           yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
-          const again = causeWords(restarted.cause).replace(/\.+$/, "");
+          const again = (yield* failureLine(restarted.cause)).replace(/\.+$/, "");
           yield* noteLaunchWords(
             session.id,
             `stopped · the terminal did not open (${words}), and the conversation could not be started again: ${again}. Resume the session to continue.`,
@@ -22458,7 +22489,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             code: "mode_switch_terminal_not_opened",
             status: null,
             message: `The terminal did not open (${words}), and the conversation could not be started again (${again}) · resume the session to continue`,
-            cause: Cause.squash(cause),
+            cause,
           });
         });
 
@@ -23055,6 +23086,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   code: "pty_close_failed",
                   status: workspaceMissing(cause) ? 404 : null,
                   message: cause instanceof Error ? cause.message : String(cause),
+                  uncurated: true,
                   cause,
                 }),
             }),
@@ -26423,6 +26455,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     code: "session_status_failed",
                     status: null,
                     message: `protocol pipe status failed: ${String(cause)}`,
+                    uncurated: true,
                     cause,
                   }),
               }),
