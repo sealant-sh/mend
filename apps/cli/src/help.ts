@@ -787,6 +787,82 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
 
   // ── project setup ──────────────────────────────────────────────────────
   {
+    name: "resource list",
+    section: "project setup",
+    summary: "a project's resources: settings, proposals, mend.toml",
+    synopsis: ["[--project <p>] [--worktree <w>] [--json]"],
+    description: [
+      "One status line per resource, then the image it would run and its id: the definitions project settings hold, the proposals members made beside them, and, with --worktree, the [resource.*] proposals in that worktree's mend.toml with the keys it refuses or ignores. A proposal runs nothing until a manager approves it in project settings.",
+      "Inside a session's workspace, mend resource list reads the session's own project and worktree. Proposing and removing are a person's: run them from the web app, VS Code, the phone or mend on your machine.",
+    ],
+    options: [
+      project(),
+      { flag: "--worktree <w>", text: "also read this worktree's mend.toml, by name" },
+      { flag: "--json", text: "print the page as JSON" },
+    ],
+    see: ["resource add", "resource remove"],
+  },
+  {
+    name: "resource add",
+    section: "project setup",
+    summary: "propose a resource for the project",
+    synopsis: [
+      "<name> --preset <postgres|redis|mysql> --version <v> [--scope <s>] [--project <p>]",
+      "<name> --image <ref> --port <port>... [--scope <s>] [--project <p>]",
+    ],
+    description: [
+      "Any member who can see the project proposes. A proposal sits beside the project's settings and changes none of them; a manager approves it there. Two people may propose the same name, and each keeps their own.",
+      "A preset runs its own image at the version named, which starts with its major version (17, 16.4-bookworm), with its port, a data volume and its own ready check. An image is any image reference, such as axllent/mailpit:v1.21; approving it pins the digest it resolves to. Each --port names one port.",
+    ],
+    options: [
+      { flag: "--preset <p>", text: "postgres, redis or mysql" },
+      { flag: "--version <v>", text: "the preset's version, such as 17" },
+      { flag: "--image <ref>", text: "an image, such as axllent/mailpit:v1.21" },
+      {
+        flag: "--port <port>",
+        text: "a port the image listens on, as name=port: smtp=1025, or dns=53/udp",
+      },
+      {
+        flag: "--scope <s>",
+        text: "project (one instance) or worktree (one per worktree). Default: project",
+      },
+      project(),
+    ],
+    examples: [
+      {
+        command: "mend resource add db --preset postgres --version 17",
+        text: "propose a Postgres 17",
+      },
+      {
+        command:
+          "mend resource add mail --image axllent/mailpit:v1.21 --port smtp=1025 --scope worktree",
+        text: "propose a mail catcher for each worktree",
+      },
+    ],
+    see: ["resource list", "resource remove"],
+  },
+  {
+    name: "resource remove",
+    section: "project setup",
+    summary: "remove a definition, or a proposal",
+    synopsis: [
+      "<name> [--project <p>]",
+      "[<name>] --proposal <id> [--project <p>]",
+      "[<name>] --definition <id> [--project <p>]",
+    ],
+    description: [
+      "Removes what you may remove under that name: the definition project settings hold, which is a manager's act, or the one proposal of that name. A manager may remove anyone's proposal; a member only their own. When the name matches both, or several proposals, nothing is removed and each id is listed: name one with --definition or --proposal, by the id mend resource list prints. With a name too, the id must be of that name.",
+      "The line being removed prints first. A definition changed since it was read is not removed. Nothing runs yet, so removing deletes no data.",
+    ],
+    options: [
+      { flag: "--proposal <id>", text: "the proposal to remove" },
+      { flag: "--definition <id>", text: "the definition to remove" },
+      project(),
+    ],
+    see: ["resource list"],
+  },
+
+  {
     name: "env show",
     section: "project setup",
     summary: "what the project store holds: names only, never values",
