@@ -106,6 +106,7 @@ import {
   type ModelPreferencesTooLarge,
 } from "./model-preferences.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
+import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
 import * as Queueing from "./queue.ts";
 import {
   makeReplayLog,
@@ -315,6 +316,14 @@ export interface PersonHub {
     threadId: string,
     afterSequence?: number,
   ) => Effect.Effect<ThreadSubscription | null, HubReadError, Scope.Scope>;
+  /**
+   * Publishes the created project into this person's shell before returning; fails, naming the
+   * project Mend created, when the shell cannot hold it in time.
+   */
+  readonly createProject: (
+    session: BearerSession,
+    request: ProjectCreationRequest,
+  ) => Effect.Effect<MendProject, ThreadCommandFailure>;
   /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
   readonly commands: ThreadCommands;
   /**
@@ -598,6 +607,11 @@ export interface ThreadCommands {
   }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
+/** A project by name (`name`, then `name-2` on), or the person's scratch project. */
+export type ProjectCreationRequest =
+  | { readonly kind: "named"; readonly name: string }
+  | { readonly kind: "scratch" };
+
 /**
  * Where a launched thread works: a new worktree made and prepared as t3code's strategy asks
  * (`worktree-setup.ts`), or an existing one it joins.
@@ -608,7 +622,8 @@ export type ThreadWorkspace =
       readonly strategy: Queueing.WorkspacePreparation;
       readonly name: string | null;
     }
-  | { readonly kind: "join"; readonly worktreePath: string };
+  | { readonly kind: "join"; readonly worktreePath: string }
+  | { readonly kind: "root" };
 
 export interface ThreadLaunch {
   readonly session: BearerSession;
@@ -1662,7 +1677,11 @@ export const makePersonHub = (input: {
       const sizes: Array<number> = [];
       const nextProjects = new Map<string, Printed<OrchestrationProjectShell>>();
       for (const entry of projects.values()) {
-        const value = projectShellOf(entry.project, projectScripts.get(entry.project.id) ?? []);
+        const value = projectShellOf(
+          entry.project,
+          projectScripts.get(entry.project.id) ?? [],
+          keeper?.id ?? "",
+        );
         const print = printProject(value);
         if (print instanceof Error) {
           yield* Effect.logError("t3 gateway could not encode a project", {
@@ -3301,6 +3320,52 @@ export const makePersonHub = (input: {
         }),
       );
 
+    const createProject = Effect.fn("PersonHub.createProject")(function* (
+      session: BearerSession,
+      request: ProjectCreationRequest,
+    ) {
+      if (tokens.isRefused(session.deviceToken))
+        return yield* new MendDeviceRefused({ operation: "project creation" });
+      if (session.mendUser.id !== keeper?.id || !session.scopes.includes("orchestration:operate"))
+        return yield* refused("Project creation requires the paired person's operate scope.", true);
+      yield* ensureLoaded;
+      const created = yield* asCommandRefusal(
+        request.kind === "scratch"
+          ? mend.ensureScratchProject(session.deviceToken)
+          : mend.createProject(session.deviceToken, request.name),
+      );
+      if (request.kind === "scratch" && created.scratchOwnerUserId !== session.mendUser.id)
+        return yield* refused("Mend did not return this person's scratch project.");
+      const shown = yield* loadLock
+        .withPermits(1)(
+          refreshProject(created.id).pipe(
+            Effect.map(() => projects.get(created.id)?.project ?? null),
+          ),
+        )
+        .pipe(
+          Effect.catch((error) =>
+            Effect.as(
+              Effect.logWarning("t3 gateway could not read a created project", {
+                cause: error.message,
+              }),
+              null,
+            ),
+          ),
+          Effect.repeat({
+            until: (project) => project !== null,
+            schedule: Schedule.spaced(CREATED_READ_RETRY).pipe(
+              Schedule.upTo({ duration: CREATED_SHOWN_WITHIN }),
+            ),
+          }),
+        );
+      if (shown !== null) return shown;
+      // The full read is tried again until Mend answers, which brings the project into the shell.
+      yield* requestRefresh("all");
+      return yield* refused(
+        `Mend created the project ${created.name}, but this window cannot show it yet. It appears when the window refreshes, so there is no need to create it again.`,
+      );
+    });
+
     /**
      * `wanted` with a random suffix (`health-check-k3x9qa`) no worktree of the project has; null
      * when unsure, and Mend names it. Mend joins an existing worktree of the same name, and a
@@ -3411,12 +3476,19 @@ export const makePersonHub = (input: {
             }
             const entry = projects.get(request.projectId);
             if (entry === undefined) return { kind: "no-project" as const };
-            const { workspace } = request;
+            const workspace = launchWorkspaceOf(
+              entry.project,
+              request.session.mendUser.id,
+              request.workspace,
+            );
+            if (workspace.kind === "refused")
+              return { kind: "refused" as const, reason: workspace.reason };
             if (workspace.kind === "new") {
               return {
                 kind: "new" as const,
                 name: workspace.name,
                 base: workspace.strategy.baseRef,
+                strategy: workspace.strategy,
                 hasOrigin: (entry.project.originUrl ?? null) !== null,
               };
             }
@@ -3435,6 +3507,7 @@ export const makePersonHub = (input: {
         if (target.kind === "no-project") {
           return yield* refused(`Project ${request.projectId} is not in this environment.`);
         }
+        if (target.kind === "refused") return yield* refused(target.reason);
         if (target.kind === "no-worktree") {
           return yield* refused(
             request.workspace.kind === "join"
@@ -3442,7 +3515,7 @@ export const makePersonHub = (input: {
               : "No such worktree.",
           );
         }
-        const strategy = request.workspace.kind === "new" ? request.workspace.strategy : null;
+        const strategy = target.kind === "new" ? target.strategy : null;
         // The setup card is the client's, keyed by the thread id it subscribes with from the moment
         // it sends; a launch that names no thread has none, and its worktree is prepared all the same.
         const card = strategy === null ? null : request.threadId;
@@ -4441,7 +4514,7 @@ export const makePersonHub = (input: {
               };
             }
             const project = Array.from(projects.values()).find(
-              (entry) => entry.project.storePath === cwd,
+              (entry) => projectWorkspaceRootOf(entry.project, keeper?.id ?? "") === cwd,
             )?.project;
             return project === undefined
               ? null
@@ -4572,6 +4645,7 @@ export const makePersonHub = (input: {
       refusal: tokens.refusal,
       mend,
       commands,
+      createProject,
       changeOfWorktree,
     };
   });
@@ -4593,6 +4667,15 @@ export class Projections extends Context.Service<
     readonly isDeviceRefused: (deviceToken: string) => boolean;
   }
 >()("@mend/t3-gateway/Projections") {}
+
+/** How often project creation reads the created project before it answers. */
+const CREATED_READ_RETRY = "250 millis";
+/**
+ * How long a creation waits for the shell to hold the project before answering. t3code waits 10 s
+ * for the project after the answer, and drops a socket silent for 15 s; half the first leaves room
+ * for Mend's own creation call.
+ */
+const CREATED_SHOWN_WITHIN = "5 seconds";
 
 /** How a launch reads its new session's project before it answers, and then in the background. */
 const OPENING_READ_RETRY = "500 millis";

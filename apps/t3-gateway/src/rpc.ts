@@ -1,3 +1,5 @@
+import { projectNameFrom } from "@mend/domain/workbench";
+import { ProjectId } from "@mend/t3-contracts";
 import {
   AcpRegistryOperationError,
   AgentSessionImportProjectNotFoundError,
@@ -60,9 +62,10 @@ import { AssetUrls } from "./assets.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { makeFileHandlers } from "./files.ts";
-import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
+import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
+import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { projectActionsPatchOf, refusalOf } from "./rpc-scopes.ts";
 import {
@@ -130,6 +133,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.assetsCreateUrl,
   WS_METHODS.assetsPersistChatAttachments,
   WS_METHODS.projectsSearchEntries,
+  WS_METHODS.projectsCreateNew,
+  WS_METHODS.projectsEnsureScratch,
   WS_METHODS.projectsListEntries,
   WS_METHODS.projectsReadFile,
   WS_METHODS.projectsSearchContents,
@@ -352,6 +357,27 @@ export const makeGatewayRpcHandlers = ({
   const authorize = (bearer: BearerSession) =>
     hub.isRefused(bearer.deviceToken) ? Effect.fail(deviceRefused(READ)) : Effect.void;
 
+  const projectCreation = (request: ProjectCreationRequest) =>
+    Effect.gen(function* () {
+      yield* authorize(session);
+      if (!session.scopes.includes("orchestration:operate"))
+        return yield* new EnvironmentAuthorizationError({
+          message: "The authenticated token is missing required scope: orchestration:operate.",
+          requiredScope: "orchestration:operate",
+        });
+      return yield* hub.createProject(session, request).pipe(
+        Effect.mapError((error) =>
+          error._tag === "MendDeviceRefused" ||
+          (error._tag === "ThreadCommandRefused" && error.authorization)
+            ? new EnvironmentAuthorizationError({
+                message: error.message,
+                requiredScope: "orchestration:operate",
+              })
+            : new OrchestrationDispatchCommandError({ message: error.message }),
+        ),
+      );
+    });
+
   const threadToFind = (search: OrchestrationV2SearchThreadInput) =>
     Effect.gen(function* () {
       yield* authorize(session);
@@ -485,6 +511,8 @@ export const makeGatewayRpcHandlers = ({
       providers,
       settings,
       findInThread: findsInThread(clientAppVersion),
+      personId: session.mendUser.id,
+      createsProjects: session.scopes.includes("orchestration:operate"),
     });
     return readable(encodeServerConfig(config), config);
   };
@@ -1046,18 +1074,16 @@ export const makeGatewayRpcHandlers = ({
       authorize(session).pipe(Effect.andThen(files.searchEntries(input))),
     [WS_METHODS.projectsWriteFile]: () => refuse(WS_METHODS.projectsWriteFile),
     [WS_METHODS.projectsEnsureScratch]: () =>
-      Effect.fail(
-        new OrchestrationDispatchCommandError({
-          message: notOfferedText(WS_METHODS.projectsEnsureScratch),
-        }),
+      projectCreation({ kind: "scratch" }).pipe(
+        Effect.map((project) => ({ projectId: ProjectId.make(project.id) })),
       ),
-    [WS_METHODS.projectsCreateNew]: () =>
-      Effect.fail(
-        new OrchestrationDispatchCommandError({
-          message: notOfferedText(WS_METHODS.projectsCreateNew),
-        }),
+    [WS_METHODS.projectsCreateNew]: (input) =>
+      projectCreation({ kind: "named", name: projectNameFrom(input.name) }).pipe(
+        Effect.map((project) => ({
+          projectId: ProjectId.make(project.id),
+          workspaceRoot: projectWorkspaceRootOf(project, session.mendUser.id),
+        })),
       ),
-    // Projects are adopted into Mend's store from Mend, never created or edited here.
     [WS_METHODS.projectsMutate]: (mutation) =>
       Effect.fail(
         new ProjectMutationError({

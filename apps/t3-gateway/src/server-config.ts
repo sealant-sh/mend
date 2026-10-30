@@ -21,6 +21,7 @@ import {
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 
 import type { MendConnectedAccount, MendHarnessCatalog } from "./mend-client.ts";
+import { personProjectPaths } from "./project-paths.ts";
 import { workspaceSnapshotOf, type WorkspaceSkills } from "./skills.ts";
 
 /**
@@ -373,7 +374,14 @@ export const makeServerConfig = (input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly settings: ServerSettings;
   readonly findInThread: boolean;
+  readonly personId: string;
+  /** Whether the device may create projects: New project shows only then. */
+  readonly createsProjects: boolean;
 }): ServerConfig => ({
+  scratchWorkspaceRoot: personProjectPaths(input.personId).scratchWorkspaceRoot,
+  ...(input.createsProjects
+    ? { newProjectsRoot: personProjectPaths(input.personId).newProjectsRoot }
+    : {}),
   environment: input.environment,
   auth: input.auth,
   cwd: input.paths.directory,

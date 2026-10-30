@@ -3986,6 +3986,15 @@ const resourceProposalsMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX resource_proposals_project_name_idx ON resource_proposals (project_id, name)`;
 });
 
+const scratchProjectsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE projects ADD COLUMN scratch_owner_user_id text REFERENCES "user" (id) ON DELETE RESTRICT`;
+  yield* sql`CREATE UNIQUE INDEX projects_scratch_owner_key ON projects (scratch_owner_user_id) WHERE scratch_owner_user_id IS NOT NULL`;
+  yield* sql`ALTER TABLE projects ADD CONSTRAINT projects_scratch_private_creator_check CHECK (
+    scratch_owner_user_id IS NULL OR (created_by_user_id IS NOT NULL AND scratch_owner_user_id = created_by_user_id AND visibility = 'private')
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4138,4 +4147,5 @@ export const migrations = {
   "0157_recipe_approvals": recipeApprovalsMigration,
   "0159_session_messages": sessionMessagesMigration,
   "0161_resource_proposals": resourceProposalsMigration,
+  "0162_scratch_projects": scratchProjectsMigration,
 };

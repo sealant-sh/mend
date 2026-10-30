@@ -492,6 +492,8 @@ export const projects = pgTable(
     visibility: text().$type<ProjectVisibility>().notNull().default("private"),
     // FK to "user"(id) ON DELETE RESTRICT, declared in the migration. Null only when unknown.
     createdByUserId: text(),
+    // FK to "user"(id) and a CHECK that it is the private creator, declared in the migration.
+    scratchOwnerUserId: text(),
     originUrl: text(),
     storePath: text().notNull().unique(),
     defaultBranch: text().notNull(),
@@ -532,6 +534,9 @@ export const projects = pgTable(
   },
   (table) => [
     unique("projects_organization_name_key").on(table.organizationId, table.name),
+    uniqueIndex("projects_scratch_owner_key")
+      .on(table.scratchOwnerUserId)
+      .where(sql`${table.scratchOwnerUserId} IS NOT NULL`),
     index("projects_organization_visibility_idx").on(table.organizationId, table.visibility),
   ],
 );

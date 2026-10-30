@@ -201,6 +201,8 @@ export const projectFor = (storePath: string, baseSha: string) =>
 
 export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
   Layer.succeed(ProjectsRepo, {
+    byScratchOwner: () => Effect.succeed(null),
+    publishInitialized: () => Effect.die("not in test"),
     create: () => Effect.die("not in test"),
     setGitAuthMode: () => Effect.die("not in test"),
     listForOrganization: () => Effect.die("not in test"),

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Auth } from "@mend/auth";
+import { ProjectNameTakenError, ScratchProjectExistsError } from "@mend/db";
 import {
   AgentConversationRepo,
   FolderNotFoundError,
@@ -241,6 +242,7 @@ export interface TenancyWorld {
   /** Flip a project's visibility, as an owner's `PUT /projects/:id/visibility` would. */
   readonly setVisibility: (project: HarnessProject, visibility: ProjectVisibility) => void;
   readonly addWorktree: (worktree: Worktree) => void;
+  readonly addProject: (project: Project) => void;
   /** Tokens: each user's bearer is their name. */
   readonly authLayer: Layer.Layer<Auth>;
   /** The authorization reads over the world, recorded like everything else. */
@@ -350,6 +352,7 @@ export const createTenancyWorld = async (
     readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
     readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
   } = {},
+  profiles: Partial<Record<HarnessUser, { readonly name: string; readonly email: string }>> = {},
 ): Promise<TenancyWorld> => {
   const root = await mkdtemp(join(tmpdir(), "mend-tenancy-harness-"));
   const calls: Array<string> = [];
@@ -671,7 +674,12 @@ export const createTenancyWorld = async (
       return Effect.succeed(
         known
           ? Option.some({
-              user: { id: token, email: `${token}@example.invalid`, name: token },
+              user: {
+                id: token,
+                email: `${token}@example.invalid`,
+                name: token,
+                ...profiles[token],
+              },
               expiresAt: new Date("2026-09-18T10:00:00.000Z"),
               // One sign-in per account, so a test can strike it (`session:<account>`).
               credential: `session:${token}` as const,
@@ -720,6 +728,39 @@ export const createTenancyWorld = async (
       ProjectsRepo,
       "projects",
       {
+        byName: (org, name) =>
+          Effect.sync(
+            () =>
+              [...projects.values()].find((p) => p.organizationId === org && p.name === name) ??
+              null,
+          ),
+        byScratchOwner: (userId) =>
+          Effect.sync(
+            () => [...projects.values()].find((p) => p.scratchOwnerUserId === userId) ?? null,
+          ),
+        publishInitialized: (input) =>
+          Effect.gen(function* () {
+            if (
+              [...projects.values()].some(
+                (p) => p.organizationId === input.organizationId && p.name === input.name,
+              )
+            )
+              return yield* new ProjectNameTakenError({ name: input.name });
+            if (
+              input.purpose === "scratch" &&
+              [...projects.values()].some((p) => p.scratchOwnerUserId === input.createdByUserId)
+            )
+              return yield* new ScratchProjectExistsError({ userId: input.createdByUserId });
+            const { headSha, purpose, ...row } = input;
+            const created = new Project({
+              ...makeProject({ ...row, visibility: "private" }),
+              ...row,
+              adoptedSha: headSha,
+              scratchOwnerUserId: purpose === "scratch" ? input.createdByUserId : null,
+            });
+            projects.set(created.id, created);
+            return created;
+          }),
         byId: (id) => found(projects, id, () => new ProjectNotFoundError({ projectId: id })),
         listForOrganization: (organizationId) =>
           Effect.succeed(
@@ -923,6 +964,9 @@ export const createTenancyWorld = async (
     root,
     calls,
     projects,
+    addProject: (project) => {
+      projects.set(project.id, project);
+    },
     sessions,
     worktrees,
     changes,

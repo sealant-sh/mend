@@ -244,6 +244,7 @@ import { PreviewSetupConfig, PreviewSetupConfigLive } from "./preview-config.ts"
 import { PreviewIdentityLive } from "./preview-identity.ts";
 import { servePreviews } from "./preview-serving.ts";
 import { PreviewUrlsLive } from "./preview-urls.ts";
+import { ProjectCreationLive, UnsettledRepositorySweepLive } from "./project-creation.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
@@ -487,10 +488,11 @@ const ServerLive = Layer.unwrap(
         }),
       ),
     ).pipe(
+      Layer.provide(ProjectCreationLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
       Layer.provide(UntracedRequestsLive),
     );
-    return servePreviews(router, {
+    const served = servePreviews(router, {
       setup: previews,
       appUrl: network.appUrl,
       trustedProxies,
@@ -507,6 +509,8 @@ const ServerLive = Layer.unwrap(
       // One LISTEN per process, fanned out to every SSE stream; the worker needs none.
       Layer.provide(EventBusLive),
     );
+    // The process that creates projects decides the repositories a crash left unclaimed.
+    return Layer.merge(served, UnsettledRepositorySweepLive);
   }),
 );
 

@@ -129,6 +129,7 @@ import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { PageViewTokens } from "../../src/page-view-tokens.ts";
+import { ProjectCreationLive } from "../../src/project-creation.ts";
 import { rawFilePrivacy } from "../../src/raw-file-privacy.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
@@ -211,6 +212,9 @@ export const createTenancyApi = async (
   limits: Partial<BudgetLimits> = {},
   options: {
     readonly logs?: string[];
+    readonly profiles?: Partial<
+      Record<HarnessUser, { readonly name: string; readonly email: string }>
+    >;
     readonly spans?: Tracer.Span[];
     readonly browserHeaders?: boolean;
     /** The production error boundary, in this mode; none unless stated. */
@@ -253,6 +257,8 @@ export const createTenancyApi = async (
     /** How long a raw body waits for its reader (`RawReadStallLimit`). */
     readonly rawReadStall?: Duration.Duration;
     readonly implement?: {
+      readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
+      readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
       readonly previews?: Layer.PartialEffectful<PreviewsRepo["Service"]>;
       readonly storeRefs?: Layer.PartialEffectful<StoreRefsRepo["Service"]>;
       readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
@@ -290,10 +296,19 @@ export const createTenancyApi = async (
     };
   } = {},
 ): Promise<TenancyApi> => {
-  const world = await createTenancyWorld(options.sessions, options.processes, {
-    ...(options.implement?.projects === undefined ? {} : { projects: options.implement.projects }),
-    ...(options.implement?.sessions === undefined ? {} : { sessions: options.implement.sessions }),
-  });
+  const world = await createTenancyWorld(
+    options.sessions,
+    options.processes,
+    {
+      ...(options.implement?.projects === undefined
+        ? {}
+        : { projects: options.implement.projects }),
+      ...(options.implement?.sessions === undefined
+        ? {}
+        : { sessions: options.implement.sessions }),
+    },
+    options.profiles,
+  );
   const ticketsLayer = Layer.mergeAll(
     Layer.succeed(
       UpgradeTicketsRepo,
@@ -406,8 +421,8 @@ export const createTenancyApi = async (
       recording(ServiceObservationsRepo, "observations", {}, calls),
       recording(SettingsRepo, "settings", {}, calls),
       recording(UserEvents, "userEvents", {}, calls),
-      recording(UserGitAccessRepo, "gitAccess", {}, calls),
-      recording(UserGitAuthorRepo, "gitAuthor", {}, calls),
+      recording(UserGitAccessRepo, "gitAccess", options.implement?.gitAccess ?? {}, calls),
+      recording(UserGitAuthorRepo, "gitAuthor", options.implement?.gitAuthor ?? {}, calls),
       recording(UsersRepo, "users", options.implement?.users ?? {}, calls),
       recording(JobRunner, "jobs", options.implement?.jobs ?? {}, calls),
       recording(SealantClient, "sealant", {}, calls),
@@ -562,6 +577,7 @@ export const createTenancyApi = async (
     MemberRemovalLive,
     HandoffStartLive,
     ResourcesLive,
+    ProjectCreationLive,
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),

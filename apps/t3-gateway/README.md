@@ -729,6 +729,32 @@ A claim Mend refuses for the limit answers `429 Too Many Requests` with Mend's `
 rate-limit error, so its clients report "returned undeclared status 429", as a transient failure,
 not as a wrong code. The code is not spent.
 
+## Create a project
+
+T3 Code's **New project** creates a private Mend project by name. Mend allocates the first free
+name, trying suffixes `-2` through `-100` when needed, and returns the allocated name in the
+sidebar. The repository has one `Initial commit` on `main`, a README naming the project, your Mend
+Git author, and no origin. Mend writes the author name as git would store it; a name git keeps
+nothing of, such as `:`, becomes your email's local part, then `person`. The existing client toast
+still uses the name you typed.
+
+**No project** uses your private scratch project, made on first use and reused across devices and
+gateway restarts. Each new scratch thread starts a session in its own worktree from `main`. Mend
+names this project from your display name, falling back to your email's local part and then
+`scratch-person`. Renaming your account keeps the original project and name.
+
+The gateway calls `POST /api/projects/new` or `POST /api/projects/scratch` with your device token
+and publishes the project's shell before answering. When the shell cannot hold the project within
+five seconds, the gateway answers a failure that names the project Mend created and says it appears
+when the window refreshes, so a retry does not create `name-2`. The gateway reads Mend again every
+three seconds until the shell shows the project. Five seconds is half the 10 s t3code waits for the
+project after the answer, which leaves room for Mend's own creation call. Config advertises
+`newProjectsRoot` as `Mend` to a device with `orchestration:operate` only, and a fixed per-person
+`scratchWorkspaceRoot` to every device, which is how T3 Code recognises the scratch project. These
+are presentation labels. Every path sent back is looked up in the person's visible projects and
+sessions. A client path is never opened as a repository source. Folder adoption, clone and
+`projects.mutate` remain refused.
+
 ## State
 
 One `node:sqlite` file the gateway owns: the environment id, bearer sessions (the bearer's sha256

@@ -4,8 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
-import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench";
-import { Clock, Effect, Fiber, Layer, Result, Schema, type Scope } from "effect";
+import { type FirstCommit, RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench";
+import { Clock, Effect, Exit, Fiber, Layer, Result, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
 
 import { noSignerGitEnv } from "./git-auth.ts";
@@ -178,6 +178,28 @@ export interface ReferenceClone {
   /** Absolute path of the working clone: `<root>/_organizations/<org>/references/<id>`. */
   readonly path: string;
   readonly headSha: Sha;
+}
+
+export class CreateRepositoryError extends Schema.TaggedError<CreateRepositoryError>()(
+  "CreateRepositoryError",
+  {
+    directory: Schema.String,
+    message: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
+
+/**
+ * The file `createRepository` leaves in a project directory until `settleCreatedRepository`: a
+ * repository still marked after a crash, or after a publication Mend could not confirm, is one no
+ * project row may have claimed, and the API's startup sweep decides it.
+ */
+export const UNSETTLED_REPOSITORY_MARKER = ".mend-creating";
+
+export interface UnsettledRepository {
+  readonly storePath: string;
+  /** When `createRepository` marked it, from the marker's mtime. */
+  readonly markedAtMs: number;
 }
 
 export interface AdoptedRepo {
@@ -1087,6 +1109,18 @@ export class Store extends Context.Service<
   Store,
   {
     /**
+     * Create a bare repository at the store path segment `directory` holding only `firstCommit` on
+     * `main`, with no origin.
+     */
+    readonly createRepository: (
+      directory: string,
+      firstCommit: FirstCommit,
+    ) => Effect.Effect<AdoptedRepo, CreateRepositoryError>;
+    /** Its project row exists: the created repository is no longer the sweep's to decide. */
+    readonly settleCreatedRepository: (storePath: string) => Effect.Effect<void>;
+    /** Created repositories not yet settled, oldest first. */
+    readonly unsettledRepositories: () => Effect.Effect<ReadonlyArray<UnsettledRepository>>;
+    /**
      * Clone a parsed network Git `source` into the store as a bare repo.
      * `remoteEnv` carries the resolved auth (`GIT_SSH_COMMAND`, prompt policy)
      * from the git-auth seam — the store itself never decides credentials. `directory` is the
@@ -1400,6 +1434,148 @@ export class Store extends Context.Service<
         if (current === "group") return;
         yield* git(["config", "core.sharedRepository", "group"], storePath);
         yield* Effect.sync(() => shareTree(storePath));
+      });
+
+      const createRepository = Effect.fn("Store.createRepository")(function* (
+        directory: string,
+        firstCommit: FirstCommit,
+      ) {
+        const projectDir = path.join(config.root, directory);
+        const storePath = path.join(projectDir, "repo.git");
+        let claimed = false;
+        const attempt = Effect.gen(function* () {
+          yield* Effect.try({
+            try: () => {
+              if (directory === "." || directory === ".." || path.basename(directory) !== directory)
+                throw new Error("Invalid store directory");
+              fs.mkdirSync(config.root, { recursive: true });
+              fs.mkdirSync(projectDir);
+              claimed = true;
+              fs.writeFileSync(path.join(projectDir, UNSETTLED_REPOSITORY_MARKER), "", {
+                flag: "wx",
+              });
+            },
+            catch: (cause) =>
+              new CreateRepositoryError({
+                directory,
+                message: "Could not create the project directory.",
+                cause,
+              }),
+          });
+          const at = yield* Effect.try({
+            try: () => firstCommit.at.toISOString(),
+            catch: (cause) =>
+              new CreateRepositoryError({
+                directory,
+                message: "Invalid first commit date.",
+                cause,
+              }),
+          });
+          // The host's global and system git config (hooks, templates, identity) never reach it.
+          const env = {
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_SYSTEM: "/dev/null",
+            GIT_CONFIG_COUNT: "0",
+            GIT_AUTHOR_NAME: firstCommit.author.name,
+            GIT_AUTHOR_EMAIL: firstCommit.author.email,
+            GIT_AUTHOR_DATE: at,
+            GIT_COMMITTER_NAME: firstCommit.author.name,
+            GIT_COMMITTER_EMAIL: firstCommit.author.email,
+            GIT_COMMITTER_DATE: at,
+          };
+          yield* git(
+            [
+              "init",
+              "--bare",
+              "--initial-branch=main",
+              "--object-format=sha1",
+              "--template=",
+              storePath,
+            ],
+            config.root,
+            env,
+          );
+          const blob = yield* git(
+            ["hash-object", "-w", "--stdin"],
+            storePath,
+            env,
+            undefined,
+            firstCommit.readme,
+          );
+          const tree = yield* git(
+            ["mktree"],
+            storePath,
+            env,
+            undefined,
+            `100644 blob ${blob}\tREADME.md\n`,
+          );
+          const head = yield* git(
+            ["-c", "commit.gpgSign=false", "commit-tree", tree, "-m", "Initial commit"],
+            storePath,
+            env,
+          );
+          yield* git(["update-ref", "refs/heads/main", head, "0".repeat(40)], storePath, env);
+          yield* ensureExcludes(storePath);
+          yield* ensureSharedGroup(storePath);
+          return { storePath, defaultBranch: "main", headSha: Sha.make(head) };
+        });
+        return yield* attempt.pipe(
+          Effect.mapError((cause) =>
+            cause instanceof CreateRepositoryError
+              ? cause
+              : new CreateRepositoryError({
+                  directory,
+                  message: "Could not initialize the project repository.",
+                  cause,
+                }),
+          ),
+          Effect.onExit((exit) =>
+            Exit.isSuccess(exit) || !claimed
+              ? Effect.void
+              : Effect.sync(() => fs.rmSync(projectDir, { recursive: true, force: true })),
+          ),
+        );
+      });
+
+      const settleCreatedRepository = Effect.fn("Store.settleCreatedRepository")(function* (
+        storePath: string,
+      ) {
+        const marker = path.join(path.dirname(storePath), UNSETTLED_REPOSITORY_MARKER);
+        yield* Effect.try(() => fs.rmSync(marker, { force: true })).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("store: a created repository's marker was not removed").pipe(
+              Effect.annotateLogs({ marker, error: String(error) }),
+            ),
+          ),
+        );
+      });
+
+      const unsettledRepositories = Effect.fn("Store.unsettledRepositories")(function* () {
+        const entries = yield* Effect.try(() =>
+          fs.existsSync(config.root) ? fs.readdirSync(config.root) : [],
+        ).pipe(
+          Effect.catch((error) =>
+            Effect.as(
+              Effect.logWarning("store: the store root could not be listed").pipe(
+                Effect.annotateLogs({ root: config.root, error: String(error) }),
+              ),
+              [],
+            ),
+          ),
+        );
+        const unsettled: Array<UnsettledRepository> = [];
+        for (const entry of entries) {
+          const marker = path.join(config.root, entry, UNSETTLED_REPOSITORY_MARKER);
+          const stat = yield* Effect.sync(() =>
+            fs.statSync(marker, { throwIfNoEntry: false }),
+          ).pipe(Effect.catchDefect(() => Effect.succeed(undefined)));
+          if (stat?.isFile() === true)
+            unsettled.push({
+              storePath: path.join(config.root, entry, "repo.git"),
+              markedAtMs: stat.mtimeMs,
+            });
+        }
+        return unsettled.toSorted((a, b) => a.markedAtMs - b.markedAtMs);
       });
 
       const adopt = Effect.fn("Store.adopt")(function* (
@@ -2273,6 +2449,9 @@ export class Store extends Context.Service<
         cloneReference,
         refreshReference,
         removeReference,
+        createRepository,
+        settleCreatedRepository,
+        unsettledRepositories,
         adopt,
         createWorktree,
         resolveBase,

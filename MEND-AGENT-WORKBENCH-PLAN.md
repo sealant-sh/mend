@@ -223,12 +223,17 @@ mode gate passes.
 
 ### 5.2 Project
 
-A project is a repository adopted into Mend's central store on a machine, owned by one organization.
-Its name is unique within that organization, and it is `private` (visible to its creator) or
-`shared` (visible to the organization). Adoption clones the repository into the store —
+A project is a repository in Mend's central store on a machine, owned by one organization. Its name
+is unique within that organization, and it is `private` (visible to its creator) or `shared`
+(visible to the organization). Adoption clones the repository into the store —
 `<store>/<project id>/repo.git` bare (older projects keep `<store>/<name>/`), plus one git worktree
 per session. The store copy is canonical for Mend; the user's pre-existing checkout, if any, is a
 peer that syncs through git, never an execution target.
+
+Projects may also be created by name without a source repository. They start private, with one
+README commit on `main` authored as their creator and no origin. Each person has one private scratch
+project, made on first use. In T3 Code it appears as "No project"; each new scratch thread starts a
+session in a separate worktree of that project.
 
 A project owns:
 

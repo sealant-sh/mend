@@ -36,6 +36,7 @@ import type {
 } from "./mend-workbench.ts";
 import { modelOptionsOf, shownModelOf, type ThreadModelOptions } from "./model-options.ts";
 import type { ThreadNotices } from "./notices.ts";
+import { projectWorkspaceRootOf } from "./project-paths.ts";
 import type { WorkspacePreparation } from "./queue.ts";
 import { harnessOwnModelOf, harnessProvider } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
@@ -331,10 +332,16 @@ export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions =
 export const projectShellOf = (
   project: MendProject,
   scripts: ReadonlyArray<ProjectScript>,
+  viewerId: string,
 ): OrchestrationProjectShell => ({
   id: ProjectId.make(project.id),
-  title: project.name.trim().length > 0 ? project.name : project.id,
-  workspaceRoot: project.storePath,
+  title:
+    project.scratchOwnerUserId === viewerId
+      ? "No project"
+      : project.name.trim().length > 0
+        ? project.name
+        : project.id,
+  workspaceRoot: projectWorkspaceRootOf(project, viewerId),
   // Each session keeps the model it was started with; a project has no default of its own here.
   defaultModelSelection: null,
   // Every Mend session works in a worktree of its own: a new thread starts in a new worktree, as
