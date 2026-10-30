@@ -227,14 +227,15 @@ describe.skipIf(postgres.skip)("setup_runs: the claim and stamp of a site's setu
   });
 
   it("keeps a renewed lease held, counts it in its workspace, and frees the site on release with no stamp", async () => {
-    const site = request({ leaseMs: 200, workspaceId: "ws-counted" });
+    const site = request({ leaseMs: 2_000, workspaceId: "ws-counted" });
     const result = await run(
       Effect.gen(function* () {
         const repo = yield* SetupRunsRepo;
         const claimId = claimed(yield* repo.claim(site));
-        yield* Effect.sleep("150 millis");
+        // Renewed well inside the first lease, then read past it: a slow runner cannot let it
+        // lapse before the renewal, and the read shows the renewal, not the first lease.
         const renewed = yield* repo.renew(claimId, 60_000);
-        yield* Effect.sleep("100 millis");
+        yield* Effect.sleep("2500 millis");
         const whileHeld = {
           claim: (yield* repo.claim(site))._tag,
           busy: yield* repo.busy(site.siteKey),
