@@ -1,3 +1,5 @@
+import { EffectDrizzleQueryError } from "drizzle-orm/effect-core/errors";
+
 /**
  * PostgreSQL tests are required by default and use isolated throwaway databases.
  * Set MEND_TEST_DATABASE_URL to a server whose account can create databases, or use the dev
@@ -26,3 +28,7 @@ export function postgresTestConfig(): { readonly adminUrl: string; readonly skip
   }
   return { adminUrl, skip: skip === "1" };
 }
+
+/** A failed query as Drizzle raises it, for a test in a package that does not depend on Drizzle. */
+export const failedQuery = (input: ConstructorParameters<typeof EffectDrizzleQueryError>[0]) =>
+  new EffectDrizzleQueryError(input);

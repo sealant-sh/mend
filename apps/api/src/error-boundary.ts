@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 
+import { prettyCause } from "@mend/db";
 import {
   HOST_USER_NAMESPACE_FIXES,
   hostUserNamespacesRefusalParts,
@@ -21,7 +22,8 @@ import { HttpApiSchemaError } from "effect/http-api/HttpApiError";
  *   raises it as a defect) is the client's: `400 BadRequest`, naming which part (e2e run 6: a
  *   discard without its confirmation answered 500).
  * - A defect, or any 5xx nobody declared, crosses as `InternalError` and a reference. The detail
- *   goes to the log under that reference, which is what an operator searches for.
+ *   goes to the log under that reference, which is what an operator searches for, in either mode;
+ *   a failed query's parameters are withheld from it, since they are what a person wrote.
  *
  * `MEND_ERROR_DETAIL=verbose` turns the scrubbing off for an operator debugging a private
  * instance. It is an open item of the public exposure gate.
@@ -190,7 +192,7 @@ export const errorBoundary = (
           if (part !== null) return Effect.succeed(badRequest(part));
           const reference = makeReference();
           return Effect.logError("an unhandled failure reached the error boundary").pipe(
-            Effect.annotateLogs({ reference, cause: Cause.pretty(cause) }),
+            Effect.annotateLogs({ reference, cause: prettyCause(cause) }),
             Effect.as(internalError(reference)),
           );
         }),

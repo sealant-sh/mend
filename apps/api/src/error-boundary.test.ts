@@ -4,13 +4,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { DiscardUnsavedRequest } from "@mend/api-contracts";
+import { failedQuery } from "@mend/db/testing";
 import {
   HOST_USER_NAMESPACE_SYSCTL_FILE,
   hostUserNamespacesFix,
   hostUserNamespacesRefusal,
   hostUserNamespacesRefusalParts,
 } from "@mend/domain/host-user-namespaces";
-import { Effect, Layer, Schema } from "effect";
+import { Cause, Effect, Layer, Logger, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,8 +26,10 @@ afterEach(async () => {
 
 const STORE_PATH = "/var/lib/mend/store/prj_9f2/repo.git";
 const USERNS_SETTING = "kernel.apparmor_restrict_unprivileged_userns = 0";
+const WORDS = "Rename the ledger helper before Friday 7c41";
+const STATEMENT = 'insert into "agent_turns" ("id", "input") values ($1, $2)';
 
-const serve = (mode: "redacted" | "verbose") => {
+const serve = (mode: "redacted" | "verbose", logs: string[] = []) => {
   const routes = HttpRouter.use((router) =>
     Effect.gen(function* () {
       yield* router.add("GET", "/api/declared", () =>
@@ -55,6 +58,21 @@ const serve = (mode: "redacted" | "verbose") => {
       yield* router.add("GET", "/api/defect", () =>
         Effect.die(new Error(`EACCES: permission denied, open '${STORE_PATH}/config'`)),
       );
+      yield* router.add("GET", "/api/nested-query", () =>
+        Effect.die(
+          failedQuery({
+            query: "commit",
+            params: [],
+            cause: Cause.fail(
+              failedQuery({
+                query: STATEMENT,
+                params: ["turn-1", WORDS],
+                cause: Cause.fail(new Error("admission refused by the test")),
+              }),
+            ),
+          }),
+        ),
+      );
       yield* router.add("GET", "/api/undeclared", () =>
         Effect.succeed(
           HttpServerResponse.jsonUnsafe({ stack: `Error\n    at ${STORE_PATH}` }, { status: 500 }),
@@ -76,6 +94,9 @@ const serve = (mode: "redacted" | "verbose") => {
   );
   const app = Layer.mergeAll(routes, errorBoundary({ mode })).pipe(
     Layer.provide(HttpServer.layerServices),
+    Layer.provideMerge(
+      Logger.layer([Logger.make((entry) => logs.push(String(Logger.formatJson.log(entry))))]),
+    ),
   );
   const { handler, dispose } = HttpRouter.toWebHandler(app, { disableLogger: true });
   disposers.push(dispose);
@@ -139,6 +160,20 @@ describe("the error boundary", () => {
     // A defect has no body written for anyone: it is a reference in either mode.
     expect(await (await api("/api/defect")).json()).toMatchObject({ _tag: "InternalError" });
   });
+
+  it.each(["redacted", "verbose"] as const)(
+    "logs a failed query beneath another without either one's parameters (%s)",
+    async (mode) => {
+      const logs: string[] = [];
+      const response = await serve(mode, logs)("/api/nested-query");
+      expect(await response.json()).toMatchObject({ _tag: "InternalError" });
+      const logged = logs.join("\n");
+      expect(logged).toContain('insert into \\"agent_turns\\"');
+      expect(logged).toContain("params: 2 withheld");
+      expect(logged).toContain("admission refused by the test");
+      expect(logged).not.toContain(WORDS);
+    },
+  );
 
   it("keeps the host refusal's command whole, so the line the CLI prints runs when pasted (RC 761)", async () => {
     const response = await serve("redacted")("/api/host-refusal");
