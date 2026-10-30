@@ -12,6 +12,7 @@ import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
+import { useMessageSettings, useSetMessageSettings } from "@/data/message-settings";
 import {
   type NotificationSettingsDto,
   useNotificationSettings,
@@ -147,6 +148,61 @@ function NotificationSwitches() {
       )}
       <MonoText size={11} tone="faint">
         A push about the session on screen stays silent.
+      </MonoText>
+    </View>
+  );
+}
+
+/** Where Send puts a message while the person's own turn runs. Every client of the account follows it. */
+function MessageSwitch() {
+  const settings = useMessageSettings(true);
+  const save = useSetMessageSettings();
+  const { colors } = useEvidenceTheme();
+  if (settings.data === undefined) {
+    return settings.isError ? (
+      <View style={{ gap: 8 }}>
+        <MonoText tone="danger">message settings · could not be read</MonoText>
+        <MonoText size={11} tone="ink2">
+          {settings.error.message}
+        </MonoText>
+        <View style={{ flexDirection: "row" }}>
+          <EvButton
+            size="sm"
+            variant="outline"
+            label={settings.isFetching ? "retrying…" : "Retry"}
+            disabled={settings.isFetching}
+            onPress={() => void settings.refetch()}
+          />
+        </View>
+      </View>
+    ) : (
+      <MonoText tone="faint">reading message settings</MonoText>
+    );
+  }
+  return (
+    <View style={{ gap: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <UiText>Send steers the running turn</UiText>
+          <MonoText size={11} tone="faint">
+            on · Send adds your message to your own running turn · off · Send starts your next turn
+          </MonoText>
+        </View>
+        <Switch
+          value={settings.data.sendSteersRunningTurn}
+          onValueChange={(on) => save.mutate({ sendSteersRunningTurn: on })}
+          trackColor={{ false: colors.rule, true: colors.accent }}
+          ios_backgroundColor={colors.rule}
+          accessibilityLabel="Send steers the running turn"
+        />
+      </View>
+      {save.isError && (
+        <MonoText size={11} tone="danger">
+          not saved · {save.error.message}
+        </MonoText>
+      )}
+      <MonoText size={11} tone="faint">
+        Another person&apos;s turn is never steered.
       </MonoText>
     </View>
   );
@@ -410,6 +466,14 @@ export default function SettingsScreen() {
           {paired && <NotificationSwitches />}
         </View>
       </Panel>
+      {paired && (
+        <Panel>
+          <View style={{ padding: 16, gap: 12 }}>
+            <UiText>Messages</UiText>
+            <MessageSwitch />
+          </View>
+        </Panel>
+      )}
       {paired && (
         <Panel>
           <View style={{ padding: 16, gap: 12 }}>

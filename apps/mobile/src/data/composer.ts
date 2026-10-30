@@ -85,14 +85,10 @@ export type AttachmentEvent =
     }
   | { readonly type: "prepared"; readonly id: string }
   | { readonly type: "progress"; readonly id: string; readonly sent: number }
-  | { readonly type: "stored"; readonly id: string; readonly path: string; readonly bytes: number }
   | { readonly type: "failed"; readonly id: string; readonly message: string }
   | { readonly type: "retried"; readonly id: string }
-  | { readonly type: "removed"; readonly id: string }
-  /** A message that did not send, put back into the composer with its stored images. */
-  | { readonly type: "restored"; readonly attachments: ReadonlyArray<Attachment> }
-  /** The message was sent: its images go with it. */
-  | { readonly type: "cleared" };
+  /** Removed, or stored: a stored image belongs to the draft from then on. */
+  | { readonly type: "removed"; readonly id: string };
 
 const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
 
@@ -113,10 +109,11 @@ const update = (
 };
 
 /**
- * One image's way to the session: preparing → uploading → stored, or failed from either and back
- * to preparing on a retry. An event that does not fit the image's phase is ignored — a late
- * progress report after the image was stored, or an upload that finishes after it was removed —
- * so the order callbacks land in cannot put an image in a phase it has left.
+ * One image's way to the session: preparing → uploading, or failed from either and back to
+ * preparing on a retry, until it is stored (and leaves for the draft) or removed. An event that
+ * does not fit the image's phase is ignored — a late progress report after a failure, or one for
+ * an image already gone — so the order callbacks land in cannot put an image in a phase it has
+ * left.
  */
 export const attachmentsReducer = (
   attachments: ReadonlyArray<Attachment>,
@@ -144,12 +141,6 @@ export const attachmentsReducer = (
         const sent = clamp01(event.sent);
         return sent > phase.sent ? { kind: "uploading", sent } : null;
       });
-    case "stored":
-      return update(attachments, event.id, ({ phase }) =>
-        phase.kind === "uploading"
-          ? { kind: "stored", path: event.path, bytes: event.bytes }
-          : null,
-      );
     case "failed":
       return update(attachments, event.id, ({ phase }) =>
         phase.kind === "preparing" || phase.kind === "uploading"
@@ -164,28 +155,8 @@ export const attachmentsReducer = (
       const kept = attachments.filter((attachment) => attachment.id !== event.id);
       return kept.length === attachments.length ? attachments : kept;
     }
-    case "restored": {
-      const held = new Set(attachments.map((attachment) => attachment.id));
-      const room = MAX_IMAGES_PER_MESSAGE - attachments.length;
-      const back = event.attachments.filter((attachment) => !held.has(attachment.id));
-      return back.length === 0
-        ? attachments
-        : [...attachments, ...back.slice(0, Math.max(0, room))];
-    }
-    case "cleared":
-      return attachments.length === 0 ? attachments : [];
   }
 };
-
-/** The images a message sends, in the order they were attached. */
-export const storedImages = (
-  attachments: ReadonlyArray<Attachment>,
-): ReadonlyArray<{ readonly name: string; readonly path: string; readonly uri: string }> =>
-  attachments.flatMap((attachment) =>
-    attachment.phase.kind === "stored"
-      ? [{ name: attachment.name, path: attachment.phase.path, uri: attachment.uri }]
-      : [],
-  );
 
 // ─── can it send ────────────────────────────────────────────────────────────
 

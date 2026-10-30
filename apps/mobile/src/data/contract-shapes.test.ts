@@ -9,12 +9,14 @@ import type {
   OpenReviewResult,
   ReplaceWorkspaceRequest,
   ReviewDiffView,
+  SendSessionMessageRequest,
   SessionAnnotation,
   SessionDetail,
 } from "@mend/api-contracts";
 import type {
   ConversationWait,
   HarnessModelCatalog,
+  MessageSettings,
   NotificationSettings,
   ReviewComment,
   WorkspaceRetirement,
@@ -22,10 +24,12 @@ import type {
 import { describe, expect, it } from "vitest";
 
 import type { HarnessModelCatalogDto, SessionAnnotationDto, SessionDto } from "./live";
+import type { MessageSettingsDto } from "./message-settings";
 import type { NotificationSettingsDto } from "./notification-settings";
 import type { ChangeLandingDto, SessionLandingsDto } from "./pull-requests";
 import type { OpenReviewDto, ReviewCommentDto, ReviewDiffDto } from "./review";
 import type { CheckpointDto } from "./review-state";
+import type { SendMessageBody } from "./session-message";
 import type {
   ConversationWaitDto,
   ReplaceWorkspaceBody,
@@ -57,6 +61,9 @@ const pins: {
     Wire<typeof NotificationSettings.Encoded>,
     NotificationSettingsDto
   >;
+  /** Read and saved whole: the phone sends back the shape it reads. */
+  readonly messageSettings: Fits<Wire<typeof MessageSettings.Encoded>, MessageSettingsDto>;
+  readonly messageSettingsSaved: Fits<MessageSettingsDto, Wire<typeof MessageSettings.Encoded>>;
   /** The picker's list, and the model a session reports: the phone hardcodes neither. */
   readonly harnessModels: Fits<Wire<typeof HarnessModelCatalog.Encoded>, HarnessModelCatalogDto>;
   readonly sessionModel: Fits<
@@ -88,12 +95,15 @@ const pins: {
     ReplaceWorkspaceBody,
     Wire<typeof ReplaceWorkspaceRequest.Encoded>
   >;
+  readonly sendMessage: Fits<SendMessageBody, Wire<typeof SendSessionMessageRequest.Encoded>>;
 } = {
   open: true,
   diff: true,
   comment: true,
   checkpoint: true,
   notificationSettings: true,
+  messageSettings: true,
+  messageSettingsSaved: true,
   harnessModels: true,
   sessionModel: true,
   sessionLandings: true,
@@ -103,6 +113,7 @@ const pins: {
   conversationWait: true,
   workspaceRetirement: true,
   replaceWorkspace: true,
+  sendMessage: true,
 };
 
 describe("review and settings payloads", () => {

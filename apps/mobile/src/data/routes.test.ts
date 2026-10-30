@@ -37,7 +37,6 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["GET", "/organization"],
   ["GET", "/sessions/:id/items"],
   ["GET", "/sessions/:id/turns"],
-  ["POST", "/sessions/:id/turns"],
   ["POST", "/sessions/:id/messages"],
   ["GET", "/me/message-settings"],
   ["PUT", "/me/message-settings"],

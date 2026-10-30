@@ -6,7 +6,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TerminalPane } from "@/components/terminal-pane";
-import { useAgentConversation, useTurnSender, type TurnSender } from "@/data/agent-conversation";
+import {
+  useAgentConversation,
+  useMessageSender,
+  type MessageSender,
+} from "@/data/agent-conversation";
 import { NO_ANSWER } from "@/data/failure-words";
 import { useComposerAttachments, type ComposerAttachments } from "@/data/image-attach";
 import { useAdoptProject, useSessionActions } from "@/data/live";
@@ -61,7 +65,6 @@ vi.mock("expo-image-manipulator", () => ({
 const SESSION = "session-a";
 const OWNER_CODE = "ABCD2345";
 const FIRST_WORDS = "rotate the payroll keys";
-const SECOND_WORDS = "and mail March's payroll export to the auditors";
 const A_PHOTO = "file:///photos/payroll-march.jpg";
 const A_SECOND_PHOTO = "file:///photos/payroll-april.jpg";
 
@@ -74,6 +77,7 @@ const turn = (id: string, input: string) => ({
   status: "queued",
   error: null,
   createdAt: at,
+  startedAt: null,
 });
 const item = (seq: number) => ({
   id: `item-a-${seq}`,
@@ -115,10 +119,15 @@ const abortedCalls: Array<string> = [];
 const offlineHosts = new Set<string>();
 
 const answerA = (method: string, url: URL, body: unknown): Response => {
-  if (method === "POST" && url.pathname === `/api/sessions/${SESSION}/turns`) {
+  if (method === "POST" && url.pathname === `/api/sessions/${SESSION}/messages`) {
     const input =
       typeof body === "object" && body !== null && "input" in body ? String(body.input) : "";
-    return json(turn(`turn-${input.length}`, input));
+    return json({
+      _tag: "Turn",
+      messageId: "message-1",
+      turn: turn(`turn-${input.length}`, input),
+      explanation: "sent as your next turn · you had no running turn in this session",
+    });
   }
   if (method === "POST" && url.pathname === "/api/projects/project-a/sessions") {
     return json({ id: SESSION, projectId: "project-a", status: "created" });
@@ -254,7 +263,7 @@ const mount = (node: ReactNode) =>
   act(() => root.render(<PairingBoundary>{node}</PairingBoundary>));
 
 let latest: {
-  sender?: TurnSender;
+  sender?: MessageSender;
   images?: ComposerAttachments;
   adopt?: ReturnType<typeof useAdoptProject>;
   actions?: ReturnType<typeof useSessionActions>;
@@ -262,8 +271,13 @@ let latest: {
   machine?: Machine;
 } = {};
 const Composer = () => {
-  latest.sender = useTurnSender(SESSION);
-  latest.images = useComposerAttachments(SESSION);
+  const sender = useMessageSender(SESSION);
+  latest.sender = sender;
+  latest.images = useComposerAttachments(SESSION, {
+    images: sender.draft.images,
+    add: sender.addImage,
+    remove: sender.removeImage,
+  });
   return null;
 };
 const Adopter = () => {
@@ -323,31 +337,31 @@ afterEach(async () => {
 });
 
 describe("work pairing A started, after the phone pairs to B", () => {
-  it("sends A's queued second message to A with A's bearer, and nothing to B", async () => {
+  it("sends A's message to A with A's bearer, and nothing to B", async () => {
     await pair("a.example");
     mount(
       <OnlyUnderA>
         <Composer />
       </OnlyUnderA>,
     );
-    hold(`POST /api/sessions/${SESSION}/turns`);
-    act(() => {
-      the("sender").send(FIRST_WORDS, []);
-      the("sender").send(SECOND_WORDS, []);
-    });
+    hold(`POST /api/sessions/${SESSION}/messages`);
+    act(() => the("sender").setText(FIRST_WORDS));
+    act(() => void the("sender").send());
     await settle();
-    expect(workReceivedBy("a.example")).toEqual([
-      `POST /api/sessions/${SESSION}/turns with A's bearer {"input":"${FIRST_WORDS}"}`,
-    ]);
+    const sent = [
+      expect.stringMatching(
+        new RegExp(
+          `^POST /api/sessions/${SESSION}/messages with A's bearer \\{"input":"${FIRST_WORDS}","clientMessageId":"[0-9a-f-]{36}"\\}$`,
+        ),
+      ),
+    ];
+    expect(workReceivedBy("a.example")).toEqual(sent);
 
     await pair("b.example");
-    release(`POST /api/sessions/${SESSION}/turns`);
+    release(`POST /api/sessions/${SESSION}/messages`);
     await settle();
 
-    expect(workReceivedBy("a.example")).toEqual([
-      `POST /api/sessions/${SESSION}/turns with A's bearer {"input":"${FIRST_WORDS}"}`,
-      `POST /api/sessions/${SESSION}/turns with A's bearer {"input":"${SECOND_WORDS}"}`,
-    ]);
+    expect(workReceivedBy("a.example")).toEqual(sent);
     expect(workReceivedBy("b.example")).toEqual([]);
   });
 
@@ -449,17 +463,23 @@ describe("work pairing A started, after the phone pairs to B", () => {
         <Reachability />
       </>,
     );
-    hold(`POST /api/sessions/${SESSION}/turns`);
-    act(() => void the("sender").send(FIRST_WORDS, []));
+    hold(`POST /api/sessions/${SESSION}/messages`);
+    act(() => the("sender").setText(FIRST_WORDS));
+    act(() => void the("sender").send());
     await settle();
 
     offlineHosts.add("b.example");
     await pair("b.example");
-    act(() => void the("sender").send(SECOND_WORDS, []));
+    mount(
+      <>
+        <Reader />
+        <Reachability />
+      </>,
+    );
     await settle();
     expect(the("unreachable")).toBe(true);
 
-    release(`POST /api/sessions/${SESSION}/turns`, "drop");
+    release(`POST /api/sessions/${SESSION}/messages`, "drop");
     await settle();
 
     expect(the("unreachable")).toBe(true);

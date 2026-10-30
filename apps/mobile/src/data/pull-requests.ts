@@ -6,7 +6,7 @@
  * device; the queries are in pull-request-queries.ts.
  */
 import type { StatusTone } from "@/components/status";
-import type { ConversationRow } from "@/data/pending-turns";
+import type { ConversationRow } from "@/data/conversation-rows";
 
 export type PullRequestStateDto = "open" | "closed" | "merged";
 
@@ -103,13 +103,13 @@ export type ConversationRowWithPullRequests =
   | ConversationRow
   | { readonly kind: "pull-request"; readonly key: string; readonly card: PullRequestCard };
 
-/** When a row happened; a send not recorded yet is newer than anything recorded. */
+/** When a row happened. */
 const rowTime = (row: ConversationRow): number => {
   switch (row.kind) {
     case "turn":
-      return row.view.turn === null
-        ? Number.POSITIVE_INFINITY
-        : Date.parse(row.view.turn.createdAt);
+      return Date.parse(row.view.turn.createdAt);
+    case "steer":
+      return Date.parse(row.view.steer.createdAt);
     case "item":
       return Date.parse(row.item.createdAt);
     case "request":

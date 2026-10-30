@@ -46,7 +46,16 @@ export interface Machine {
   readonly key: PairingKey;
   readonly connection: { readonly url: string; readonly token: string };
   readonly read: <T>(route: string) => Promise<T>;
-  readonly write: <T>(method: WriteMethod, route: string, body?: unknown) => Promise<T>;
+  /**
+   * With `deadlineMs`, a write not answered in time is called off as one with no answer, and one
+   * in flight when the pairing ends is called off with `PairingEnded`.
+   */
+  readonly write: <T>(
+    method: WriteMethod,
+    route: string,
+    body?: unknown,
+    deadlineMs?: number,
+  ) => Promise<T>;
   readonly writeNoContent: (method: WriteMethod, route: string, body?: unknown) => Promise<void>;
   /**
    * POSTs over XMLHttpRequest, so a caller can show how much has gone up: fetch reports no upload
@@ -110,8 +119,27 @@ export const openMachine = (
     return response;
   };
 
-  const write = async <T>(method: WriteMethod, route: string, body?: unknown): Promise<T> =>
-    (await send(method, route, body, undefined)).json();
+  const write = async <T>(
+    method: WriteMethod,
+    route: string,
+    body?: unknown,
+    deadlineMs?: number,
+  ): Promise<T> => {
+    if (deadlineMs === undefined) return (await send(method, route, body, undefined)).json();
+    if (ended.aborted) throw new PairingEnded();
+    const call = new AbortController();
+    const callOff = () => call.abort();
+    const timer = setTimeout(callOff, deadlineMs);
+    ended.addEventListener("abort", callOff);
+    try {
+      return await (await send(method, route, body, call.signal)).json();
+    } catch (error) {
+      throw ended.aborted ? new PairingEnded() : error;
+    } finally {
+      clearTimeout(timer);
+      ended.removeEventListener("abort", callOff);
+    }
+  };
 
   const read = async <T>(route: string): Promise<T> => {
     if (ended.aborted) throw new PairingEnded();

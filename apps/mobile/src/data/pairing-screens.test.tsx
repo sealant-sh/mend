@@ -53,6 +53,10 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 const notFound = () => json({ _tag: "NotFound", message: "session not found" }, 404);
 
 const network = { down: false, pairClaims: 0 };
+const messageSettings = {
+  saved: { sendSteersRunningTurn: true },
+  puts: [] as Array<unknown>,
+};
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(String(input));
   if (network.down) throw new TypeError("Network request failed");
@@ -71,6 +75,21 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
   const bearer = new Headers(init?.headers).get("authorization");
   if (url.host !== "a.example" || bearer !== `Bearer ${OWNER_TOKEN}`) return notFound();
   if (url.pathname === `/api/sessions/${SESSION}/pages`) return json([PAGE_WIRE]);
+  if (url.pathname === "/api/me/message-settings") {
+    if (init?.method === "PUT") {
+      const body: unknown = JSON.parse(String(init.body));
+      messageSettings.puts.push(body);
+      if (
+        typeof body === "object" &&
+        body !== null &&
+        "sendSteersRunningTurn" in body &&
+        typeof body.sendSteersRunningTurn === "boolean"
+      ) {
+        messageSettings.saved = { sendSteersRunningTurn: body.sendSteersRunningTurn };
+      }
+    }
+    return json(messageSettings.saved);
+  }
   if (url.pathname === "/api/pages/page-1/frame") return json({ url: "/api/page-view?view=a" });
   return notFound();
 };
@@ -107,6 +126,7 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.stubGlobal("fetch", vi.fn(serve));
   Object.assign(network, { down: false, pairClaims: 0 });
+  Object.assign(messageSettings, { saved: { sendSteersRunningTurn: true }, puts: [] });
   route.params = {};
   navigation.replaced = [];
   await clearConfig();
@@ -193,5 +213,28 @@ describe("the hand-typed connection in Settings", () => {
     await settle();
     expect(text()).toContain("token entered by hand");
     expect(text()).toContain("Saved");
+  });
+});
+
+describe("the message setting in Settings", () => {
+  const toggle = () => {
+    const element = host.querySelector<HTMLInputElement>(
+      'input[aria-label="Send steers the running turn"]',
+    );
+    if (element === null) throw new Error("no Send steers the running turn switch on screen");
+    return element;
+  };
+
+  it("reads the person's setting and saves the other way when switched", async () => {
+    await pair("a.example");
+    show(<SettingsScreen />);
+    await settle();
+    expect(toggle().checked).toBe(true);
+
+    act(() => toggle().click());
+    await settle();
+
+    expect(messageSettings.puts).toEqual([{ sendSteersRunningTurn: false }]);
+    expect(toggle().checked).toBe(false);
   });
 });
