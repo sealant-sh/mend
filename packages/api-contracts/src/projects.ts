@@ -14,13 +14,15 @@ import {
   Reference,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 import { ProjectFileListing, ProjectPullRequests } from "./settings.ts";
 import {
   AdoptProject,
+  CreateProjectByName,
+  EnsureScratchProject,
   GitAccessView,
   GitAuthorView,
   GitBridgeStatusView,
@@ -66,6 +68,20 @@ export const projectsGroup = HttpApiGroup.make("projects")
     }),
   )
   .add(
+    HttpApiEndpoint.post("createNew", "/projects/new", {
+      payload: CreateProjectByName,
+      success: Project,
+      error: StoreFailure,
+    }).annotate(HttpApi.PayloadParseOptions, { onExcessProperty: "error" }),
+  )
+  .add(
+    HttpApiEndpoint.post("ensureScratch", "/projects/scratch", {
+      payload: EnsureScratchProject,
+      success: Project,
+      error: StoreFailure,
+    }).annotate(HttpApi.PayloadParseOptions, { onExcessProperty: "error" }),
+  )
+  .add(
     // Settled sessions without a captured transcript are left out unless asked for.
     // ProjectDetail reports how many this response omitted, so the capture gap stays visible.
     HttpApiEndpoint.get("detail", "/projects/:id", {
@@ -91,7 +107,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       payload: ProjectVisibilityRequest,
       success: Project,
-      error: NotFound,
+      error: [NotFound, StoreFailure],
     }),
   )
   .add(

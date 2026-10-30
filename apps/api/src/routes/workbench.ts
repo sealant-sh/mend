@@ -125,6 +125,8 @@ import {
   type WorktreeId,
 } from "@mend/domain";
 import {
+  PROJECT_NAME_PATTERN,
+  ProjectName,
   DiffDigest,
   ReviewCommentAnchor,
   reviewTargetExists,
@@ -201,6 +203,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
+import { ProjectCreation } from "../project-creation.ts";
 import { HostEnvironment } from "../services/host-environment.ts";
 import {
   resolveWorkspaceEnvironmentWithSealant,
@@ -226,7 +229,7 @@ import { digestReviewPatch, parseReviewDiff } from "./review-diff.ts";
  * both become store directories); the leading [a-z0-9] also keeps the store's
  * `_references/` dir collision-free.
  */
-const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const STORE_NAME = PROJECT_NAME_PATTERN;
 
 /** A file listing answers at most this many paths; `truncated` says when it bit. */
 const FILE_LISTING_LIMIT = 20_000;
@@ -599,6 +602,24 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           );
       }),
     )
+    .handle("createNew", ({ payload }) =>
+      Effect.gen(function* () {
+        if (!PROJECT_NAME_PATTERN.test(payload.name))
+          return yield* new StoreFailure({
+            message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
+          });
+        return yield* (yield* ProjectCreation)
+          .createNew(ProjectName.make(payload.name))
+          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
+      }),
+    )
+    .handle("ensureScratch", () =>
+      Effect.gen(function* () {
+        return yield* (yield* ProjectCreation)
+          .ensureScratch()
+          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
+      }),
+    )
     .handle("detail", ({ params, query }) =>
       Effect.gen(function* () {
         const access = yield* ProjectAccess;
@@ -809,9 +830,13 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
         yield* (yield* ProjectAccess).changeVisibility(params.id);
-        const project = yield* projects
-          .setVisibility(params.id, payload.visibility)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const project = yield* projects.setVisibility(params.id, payload.visibility).pipe(
+          Effect.catchTags({
+            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+            ScratchProjectPrivate: () =>
+              Effect.fail(new StoreFailure({ message: "Scratch projects are private." })),
+          }),
+        );
         yield* (yield* AuditEventsRepo).record({
           organizationId: project.organizationId,
           actorUserId: (yield* CurrentUser).user.id,

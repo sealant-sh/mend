@@ -75,6 +75,13 @@ export class SettingsFailure extends Schema.TaggedError<SettingsFailure>()(
   { httpApiStatus: 422 },
 ) {}
 
+/** A private project with no source; the response names the first available candidate. */
+export class CreateProjectByName extends Schema.Class<CreateProjectByName>("CreateProjectByName")({
+  name: Schema.String,
+}) {}
+/** Scratch ownership comes entirely from authentication. */
+export const EnsureScratchProject = Schema.Record(Schema.String, Schema.Never);
+
 /**
  * Adoption: clone one network Git URL into the store under `name`.
  * Omitted `gitAuthMode` means the caller's own default (`mend keys mode`), else `mend-key`.

@@ -244,6 +244,7 @@ import { PreviewSetupConfig, PreviewSetupConfigLive } from "./preview-config.ts"
 import { PreviewIdentityLive } from "./preview-identity.ts";
 import { servePreviews } from "./preview-serving.ts";
 import { PreviewUrlsLive } from "./preview-urls.ts";
+import { ProjectCreationLive } from "./project-creation.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
@@ -487,6 +488,7 @@ const ServerLive = Layer.unwrap(
         }),
       ),
     ).pipe(
+      Layer.provide(ProjectCreationLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
       Layer.provide(UntracedRequestsLive),
     );

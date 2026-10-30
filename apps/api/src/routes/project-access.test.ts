@@ -171,6 +171,9 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // Filtered lists, adoption and skills: tested below with their own expectations.
   "projects.list",
   "projects.adopt",
+  // Creation is scoped to the authenticated person's membership: project-creation.test.ts.
+  "projects.createNew",
+  "projects.ensureScratch",
   "sessions.listActive",
   "sessions.listServices",
   "references.list",

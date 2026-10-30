@@ -57,6 +57,7 @@ import { describe, expect, it } from "vitest";
 import { ProjectAccess, ProjectAccessLive } from "../access.ts";
 import { errorBoundary } from "../error-boundary.ts";
 import { GithubIdentity } from "../github-identity.ts";
+import { ProjectCreation } from "../project-creation.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { Gh } from "./github.ts";
@@ -282,6 +283,7 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
 });
 
 type ProjectRouteServices =
+  | ProjectCreation
   | AuditEventsRepo
   | SourcePolicy
   | ProjectsRepo
@@ -322,6 +324,7 @@ type UnusedProjectRouteServices = Exclude<
 >;
 
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
+  Layer.mock(ProjectCreation, {}),
   Layer.mock(AuditEventsRepo, {}),
   Layer.succeed(
     SourcePolicy,

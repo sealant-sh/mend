@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   HandoffUnsupported,
+  CreateProjectByName,
+  EnsureScratchProject,
   MendApi,
   NewWorktree,
   ProcessLogPage,
@@ -32,6 +34,31 @@ const typedEndpointNames = new Set([
 ]);
 
 describe("typed HTTP error contracts", () => {
+  it("offers two source-free project creation endpoints alongside unchanged adoption", () => {
+    const routes = new Map<string, string>();
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint, errors }) => {
+        if (group.identifier !== "projects") return;
+        routes.set(endpoint.identifier, `${endpoint.method} ${endpoint.path}`);
+        if (endpoint.identifier === "createNew" || endpoint.identifier === "ensureScratch") {
+          expect(errors.has(422)).toBe(true);
+        }
+      },
+    });
+    expect(routes.get("createNew")).toBe("POST /api/projects/new");
+    expect(routes.get("ensureScratch")).toBe("POST /api/projects/scratch");
+    expect(routes.get("adopt")).toBe("POST /api/projects");
+    expect(Schema.decodeUnknownSync(CreateProjectByName)({ name: "notes" }).name).toBe("notes");
+    expect(() =>
+      Schema.decodeUnknownSync(CreateProjectByName, { onExcessProperty: "error" })({
+        name: "notes",
+        source: "/etc",
+      }),
+    ).toThrow();
+    expect(Schema.decodeUnknownSync(EnsureScratchProject)({})).toEqual({});
+    expect(() => Schema.decodeUnknownSync(EnsureScratchProject)({ owner: "other" })).toThrow();
+  });
   it("preserves not-found and validation status codes as separate schemas", () => {
     const statuses = new Map<string, ReadonlySet<number>>();
 
