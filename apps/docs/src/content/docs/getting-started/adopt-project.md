@@ -159,3 +159,40 @@ name. Use `--project <name>` when you need to select one explicitly.
 
 Read [Start a session](/getting-started/first-session/) for launch, detach, reattach, and resume
 behavior.
+
+## Remove, Restore and purge
+
+Remove takes a project out of Mend's ordinary lists and T3 Code. Its files, branches, checkpoints,
+sessions, records, reviews, settings and secrets are kept indefinitely. Removal still refuses when
+work is live, unsaved, not on origin, or blocked by declared resources. There is no project force.
+
+Open **Projects → Removed projects** to Restore it. You see the same project and history again;
+nothing starts automatically. If its name has been reused, supply a new name. Preview definitions
+come back, but old grants, tickets and routes do not: open a preview again for fresh access.
+
+```sh
+mend projects rm <id>
+mend projects removed
+mend projects restore <id>
+mend projects restore <id> --name new-name
+mend doctor
+```
+
+Anyone who could see a shared project can see its removed metadata. Only an organization owner can
+Restore or purge a shared project. A private project's creator can Restore or purge theirs. An
+operator has no additional right. A removed scratch project frees your “No project” slot; Restore
+makes it your scratch again only if that slot is still empty.
+
+**Purge** deletes retained content for good. Type the exact project name in the purge dialog, or
+run:
+
+```sh
+mend projects purge <id> --confirm exact-name
+```
+
+Assets another project still references are kept. Instance audit and existing backups are unchanged.
+If purge stops partway, purge again to finish. A project left mid-deletion by an older Mend is
+listed here too; Restore refuses when completeness cannot be proved.
+
+T3 Code's confirmation currently says project removal cannot be undone. Mend still keeps it; use
+Mend's Restore to bring it back. `mend doctor` reports local disk held by removed projects.

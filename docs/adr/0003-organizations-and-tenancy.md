@@ -276,3 +276,22 @@ One ready-for-review PR per step, stacked:
    check.
 
 Budgets follow after the private beta opens.
+
+### Removed projects (2026-10-30)
+
+Decided by recommendation; Yiannis to confirm: removal keeps the same project, its files, settings,
+secrets, sessions, records and review history indefinitely. Removed projects are absent from
+ordinary lists and access checks. Their metadata appears in Projects → Removed projects to people
+who could see them: a private project's creator, or the shared project's organization. Only the
+people who may remove the project may Restore or purge it: the private creator or an organization
+owner for a shared project. A shared member-creator cannot purge it; operator status adds no access.
+
+Restore preserves the id and starts nothing. Listed names are unique; if someone reused the name,
+Restore asks for a new one. Removal frees the scratch slot. Restore reclaims an empty slot, or
+brings the former scratch project back as a plain private project when another scratch exists.
+Preview definitions remain, but grants, tickets and route generations are revoked. Fresh preview
+access is required after Restore.
+
+Purge requires the exact project name and deletes its content and exclusively referenced assets.
+Shared context snapshots remain by inverse session reference. Instance-wide audit and backups are
+unchanged. A purge that stopped partway is finished by purging again.

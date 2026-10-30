@@ -577,3 +577,21 @@ it. After PR 6, sessions land themselves. PR 9 is the Cursor experience end to e
    requests opened outside Mend").
 5. **Commit message by inference.** The tour summary is written for a reviewer, not as a commit
    message. A dedicated one-line subject is cheap, but it is a new claim Mend makes.
+
+### Project retention (2026-10-30)
+
+Decided by recommendation; Yiannis to confirm: project removal keeps the project indefinitely. The
+worktree and project refusals above still apply, including declared resources and the absence of
+project force. Worktree removal keeps its existing behavior. Project removal now commits a permanent
+`removed` mark and touches no project files. Every new start is fenced until Restore; restore clears
+the mark without starting sessions, Services, previews or landing.
+
+`DELETE /api/projects/:id` retains `removed: true` and `leftover: null` and adds `retained: true`
+and explanatory words. `/api/removed-projects` lists retained metadata; POST to `/:id/restore`
+accepts an optional `name`, and POST to `/:id/purge` requires `confirm` equal to the project name.
+Purge takes the deletion mark and can be retried after an interrupted deletion. Audit records
+remove, restore and purge. `mend doctor` reports local disk held by removed projects.
+
+Migration 0167 hides pre-existing project `deleting` marks and never resumes them automatically.
+Those deletions recorded no inventory of deleted files or records, so completeness cannot be proved:
+Restore explains that missing evidence and refuses; explicit purge remains available.
