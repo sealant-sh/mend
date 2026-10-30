@@ -22,7 +22,36 @@ import { describe, expect, it } from "vitest";
 
 import { createTenancyApi } from "../../test/support/tenancy-api.ts";
 import { ids } from "../../test/support/tenancy-harness.ts";
+import type { PreviewSetup } from "../preview-config.ts";
 import { PREVIEW_GATEWAY_DEFAULTS } from "../preview-gateway-settings.ts";
+
+const GATEWAY = { bind: "127.0.0.1", port: 3200, ...PREVIEW_GATEWAY_DEFAULTS };
+const routingOf = async (previews: PreviewSetup | undefined): Promise<string | null> => {
+  const api = await createTenancyApi(
+    {},
+    {
+      ...(previews === undefined ? {} : { previews }),
+      implement: {
+        previews: {
+          ensureForWorktree: () => Effect.succeed([]),
+          gatewaySnapshots: () => Effect.succeed(new Map()),
+        },
+        preparations: { latestForWorktree: () => Effect.succeed(null) },
+      },
+    },
+  );
+  try {
+    const response = await api.request(
+      "alice",
+      "GET",
+      `/api/worktrees/${ids("shared-a").worktree}/previews`,
+    );
+    const body: { routing: string | null } = await response.json();
+    return body.routing;
+  } finally {
+    await api.dispose();
+  }
+};
 
 describe("GET /worktrees/:id/previews", () => {
   it("anyone who sees the project reads its previews, including unbound ones", async () => {
@@ -91,6 +120,7 @@ describe("GET /worktrees/:id/previews", () => {
           ],
           unprepared: null,
           starting: false,
+          routing: null,
         });
       }
       expect(seen).toEqual([target.worktree, target.worktree]);
@@ -173,7 +203,12 @@ describe("GET /worktrees/:id/previews", () => {
         `/api/worktrees/${ids("shared-a").worktree}/previews`,
       );
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ previews: [], unprepared: null, starting: false });
+      expect(await response.json()).toEqual({
+        previews: [],
+        unprepared: null,
+        starting: false,
+        routing: null,
+      });
     } finally {
       await api.dispose();
     }
@@ -285,6 +320,7 @@ describe("GET /worktrees/:id/previews", () => {
         ],
         unprepared: "preview not prepared · change not captured",
         starting: false,
+        routing: null,
       });
     } finally {
       await api.dispose();
@@ -529,5 +565,30 @@ describe("GET /worktrees/:id/previews", () => {
     expect((await read(false)).map(([name, open]) => [name, open])).toEqual(
       views.map(({ preview }) => [preview.serviceName, null]),
     );
+  });
+
+  it("says how the gateway routes previews, so a phone can tell whether it reaches them", async () => {
+    expect(await routingOf(undefined)).toBeNull();
+    expect(
+      await routingOf({
+        _tag: "On",
+        routing: { mode: "loopback-http", port: 3200 },
+        gateway: GATEWAY,
+      }),
+    ).toBe("loopback-http");
+    expect(
+      await routingOf({
+        _tag: "On",
+        routing: { mode: "domain-https", domain: "previews.example.net", port: 443 },
+        gateway: GATEWAY,
+      }),
+    ).toBe("domain-https");
+    expect(
+      await routingOf({
+        _tag: "On",
+        routing: { mode: "tailnet-https", hostname: "box.tail1.ts.net", ports: [8443] },
+        gateway: GATEWAY,
+      }),
+    ).toBe("tailnet-https");
   });
 });

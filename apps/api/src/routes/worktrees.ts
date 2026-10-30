@@ -687,6 +687,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           starting: [...described.flatMap(({ facts }) => facts), unprepared].some(
             (status) => status?._tag === "Starting",
           ),
+          routing: setup._tag === "On" ? setup.routing.mode : null,
         };
       }),
     )
