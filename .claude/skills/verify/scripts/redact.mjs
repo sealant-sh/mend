@@ -10,11 +10,28 @@
 // With --secrets, every value in the run's registry is redacted too, before the shapes. With
 // --register-minted, every code the text shows (mintedCodes: `mend login`'s authorization code and
 // its /authorize?code= link, a pairing code) joins the registry by value first.
+//
+// Sources: invitation, reset and Slack links in their fragment and older path forms
+// (packages/network handed-links.ts), device tokens `mdt_` and pairing secrets `mdc_` (apps/api
+// routes/devices.ts), the `mend://pair?…&c=…` payload and its grouped `XXXX-XXXX` code, printed by
+// `mend pair` or standing alone in a snapshot node (apps/cli pair.ts, apps/web pairing-qr.tsx),
+// `mend login`'s authorization code (`code  XXXX-XXXX`) and its `/authorize?code=` link (apps/cli
+// login.ts, apps/api routes/devices.ts), bearer headers, signed upload URLs, PEM private keys,
+// Anthropic, OpenAI, GitHub, Slack and AWS key shapes, and token, password, secret and API key
+// fields in JSON or key=value text.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { HANDED_LINK_SECRET_SHAPE } from "../../../../packages/network/src/handed-links.ts";
 import { loadSecrets, redactValues, register } from "./secrets.mjs";
+
+/** A link Mend hands to a person, in its fragment form or the path form issued before it. */
+const handedLink = (kind, page, placeholder) => ({
+  kind,
+  pattern: new RegExp(`${page.replaceAll("/", "\\/")}([/#])${HANDED_LINK_SECRET_SHAPE}`, "g"),
+  replace: `${page}$1${placeholder}`,
+});
 
 /** Each shape, the text that replaces it, and its kind (scan-evidence.mjs names hits by kind). */
 export const CREDENTIAL_PATTERNS = [
@@ -23,21 +40,9 @@ export const CREDENTIAL_PATTERNS = [
     pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
     replace: "<private key>",
   },
-  {
-    kind: "invitation link",
-    pattern: /\/join([/#])[A-Za-z0-9_-]{8,}/g,
-    replace: "/join$1<token>",
-  },
-  {
-    kind: "password reset link",
-    pattern: /\/reset([/#])[A-Za-z0-9_-]{8,}/g,
-    replace: "/reset$1<token>",
-  },
-  {
-    kind: "Slack link",
-    pattern: /\/slack\/link([/#])[A-Za-z0-9_-]{8,}/g,
-    replace: "/slack/link$1<code>",
-  },
+  handedLink("invitation link", "/join", "<token>"),
+  handedLink("password reset link", "/reset", "<token>"),
+  handedLink("Slack link", "/slack/link", "<code>"),
   {
     kind: "pairing link",
     pattern: /mend:\/\/pair\?[^\s"'<>]+/g,

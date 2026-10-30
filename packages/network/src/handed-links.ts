@@ -8,14 +8,19 @@ const HANDED_LINK_PAGES = {
 
 export type HandedLinkKind = keyof typeof HANDED_LINK_PAGES;
 
-const MAX_ENCODED_SECRET = 512;
-const SECRET = /^[\x21-\x7e]{1,256}$/;
+/**
+ * What every issuer mints: 32 random bytes in base64url for an invitation or a reset, `msl_` and
+ * the same for a Slack code. The verify skill's redaction reads the same shape.
+ */
+export const HANDED_LINK_SECRET_SHAPE = "[A-Za-z0-9_-]{8,256}";
+const SECRET = new RegExp(`^${HANDED_LINK_SECRET_SHAPE}$`);
 
-export const handedLinkPath = (kind: HandedLinkKind, secret: string): string =>
-  `${HANDED_LINK_PAGES[kind]}#${encodeURIComponent(secret)}`;
+export const handedLinkPath = (kind: HandedLinkKind, secret: string): string => {
+  if (!SECRET.test(secret)) throw new Error(`A ${kind} link's secret is not ${SECRET.source}`);
+  return `${HANDED_LINK_PAGES[kind]}#${secret}`;
+};
 
 const decodedSecret = (encoded: string): string | null => {
-  if (encoded.length > MAX_ENCODED_SECRET) return null;
   try {
     const secret = decodeURIComponent(encoded);
     return SECRET.test(secret) ? secret : null;

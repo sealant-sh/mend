@@ -65,7 +65,7 @@ const authLayer = Layer.succeed(Auth, {
   issuePasswordReset: (userId) =>
     Effect.sync(() => {
       writes.push(`reset:${userId}`);
-      return { token: `tok-${userId}`, expiresAt: new Date("2026-09-18T10:00:00Z") };
+      return { token: `token-for-${userId}`, expiresAt: new Date("2026-09-18T10:00:00Z") };
     }),
 });
 
@@ -367,7 +367,7 @@ describe("operator recovery (docs/adr/0003)", () => {
       email: "sam@example.invalid",
     });
     expect(issued.status).toBe(200);
-    await expect(issued.json()).resolves.toMatchObject({ path: "/reset#tok-sam" });
+    await expect(issued.json()).resolves.toMatchObject({ path: "/reset#token-for-sam" });
     expect(writes).toEqual(["reset:sam"]);
     expect(audited.map((event) => [event.organizationId, event.action])).toEqual([
       [ACME, "recovery.password_reset_issued"],
