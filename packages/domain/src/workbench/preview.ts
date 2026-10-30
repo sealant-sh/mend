@@ -77,6 +77,9 @@ export type PreviewBinding = typeof PreviewBinding.Type;
 export const PreviewView = Schema.Struct({ preview: Preview, binding: PreviewBinding });
 export type PreviewView = typeof PreviewView.Type;
 
+export const previewAuthTarget = (previewId: PreviewId, path: string): string =>
+  `/preview-auth?preview=${encodeURIComponent(previewId)}&path=${encodeURIComponent(path)}`;
+
 export interface PreviewTarget {
   readonly service: Service;
   readonly liveAttempt: SessionProcess | null;

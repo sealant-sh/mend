@@ -1,5 +1,6 @@
 import { isUpgradeTicket } from "@mend/db";
 import type { PreviewId } from "@mend/domain";
+import { previewAuthTarget } from "@mend/domain/workbench";
 import { NO_SUCH_PREVIEW } from "@mend/network";
 import { Effect, Redacted, type Scope } from "effect";
 
@@ -53,7 +54,7 @@ const isRefusal = (
   error instanceof PreviewUnavailable;
 
 const signInAt = (appUrl: string, previewId: PreviewId, path: PreviewPath) =>
-  `${appUrl}/preview-auth?preview=${encodeURIComponent(previewId)}&path=${encodeURIComponent(path)}`;
+  `${appUrl}${previewAuthTarget(previewId, path)}`;
 
 const browserOf = (head: PreviewRequestHead): BrowserHead => ({
   method: head.method,

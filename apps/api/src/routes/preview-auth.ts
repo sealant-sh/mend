@@ -1,5 +1,6 @@
 import { Auth } from "@mend/auth";
 import { PreviewId } from "@mend/domain";
+import { previewAuthTarget } from "@mend/domain/workbench";
 import { Effect, Option, Redacted } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 
@@ -35,8 +36,7 @@ export const answerPreviewAuth = (input: {
     );
     const credential = Option.isSome(session) ? session.value.credential : undefined;
     if (Option.isNone(session) || credential === undefined) {
-      const back = `/preview-auth?preview=${encodeURIComponent(previewId)}&path=${encodeURIComponent(path)}`;
-      return redirect(302, `/login?next=${encodeURIComponent(back)}`);
+      return redirect(302, `/login?next=${encodeURIComponent(previewAuthTarget(previewId, path))}`);
     }
     const identity = yield* PreviewIdentity;
     return yield* identity
