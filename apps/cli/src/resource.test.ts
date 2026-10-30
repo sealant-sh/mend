@@ -270,6 +270,20 @@ const stdout = () => {
   return out;
 };
 
+const exits = () =>
+  vi.spyOn(process, "exit").mockImplementation((code) => {
+    throw new Error(`exit ${code}`);
+  });
+
+const stderr = () => {
+  const err: Array<string> = [];
+  vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    err.push(String(chunk));
+    return true;
+  });
+  return err;
+};
+
 const server = (answers: Record<string, unknown>) => {
   const calls: Array<string> = [];
   const api: ApiCall = async (method, route, body) => {
@@ -473,19 +487,6 @@ describe("approving, choosing and starting against a server", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
-
-  const exits = () =>
-    vi.spyOn(process, "exit").mockImplementation((code) => {
-      throw new Error(`exit ${code}`);
-    });
-  const stderr = () => {
-    const err: Array<string> = [];
-    vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
-      err.push(String(chunk));
-      return true;
-    });
-    return err;
-  };
 
   it("approves the digest passed, and prints the line and the image pinned", async () => {
     const out = stdout();
