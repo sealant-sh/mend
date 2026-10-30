@@ -69,7 +69,7 @@ export interface RegistryAccess {
   readonly resolve: (host: string) => Promise<ReadonlyArray<string>>;
   /** Whether an address is on the public internet; only an operator's mirror may dial another. */
   readonly isPublic: (address: string) => boolean;
-  /** For the whole resolution: every mirror, the token and the registry. */
+  /** For the whole resolution; each mirror, then the registry, has an even share of what is left. */
   readonly deadlineMs: number;
   readonly maxManifestBytes: number;
 }
@@ -131,6 +131,15 @@ const bearerChallenge = (value: string | undefined) => {
   return realm === undefined ? null : { realm, service: params.get("service") ?? null };
 };
 
+/** `promise`, or a rejection once `signal` aborts; a name lookup takes no signal of its own. */
+const untilAborted = <A>(promise: Promise<A>, signal: AbortSignal): Promise<A> =>
+  new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    if (signal.aborted) return abort();
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+
 /** One registry's requests: its manifest, its redirects and its token. */
 interface Attempt {
   readonly signal: AbortSignal;
@@ -152,7 +161,7 @@ const makeResolve = (access: RegistryAccess) => {
     if (!operator && url.protocol !== "https:") throw new Refused("not https");
     if (url.protocol !== "https:" && url.protocol !== "http:") throw new Refused("not http");
     const host = url.hostname.replace(/^\[|\]$/g, "");
-    const addresses = isIP(host) === 0 ? await access.resolve(host) : [host];
+    const addresses = isIP(host) === 0 ? await untilAborted(access.resolve(host), signal) : [host];
     const [address] = addresses;
     if (address === undefined) throw new Error(`${host} does not resolve`);
     if (!operator && !addresses.every((each) => access.isPublic(each))) {
@@ -286,11 +295,16 @@ const makeResolve = (access: RegistryAccess) => {
         : []),
       { origin: reference.origin, mirror: false },
     ];
+    const deadline = Date.now() + access.deadlineMs;
     let failure: ImageFailure = "unavailable";
-    // A mirror that does not answer hands over to the next, then to the registry; any other
-    // answer is final, since a pull-through mirror says what the registry would.
-    for (const base of bases) {
-      const attempt = { signal, fromMirror: base.mirror };
+    // A mirror that does not answer in its share hands over to the next, then to the registry; any
+    // other answer is final, since a pull-through mirror says what the registry would.
+    for (const [at, base] of bases.entries()) {
+      const share = Math.floor(Math.max(0, deadline - Date.now()) / (bases.length - at));
+      const attempt = {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(share)]),
+        fromMirror: base.mirror,
+      };
       const answer = await manifestAt(base.origin, reference, attempt).catch(
         (cause: unknown): ImageFailure =>
           cause instanceof Refused ? "registry-refused" : "unavailable",

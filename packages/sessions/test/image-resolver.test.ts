@@ -148,6 +148,36 @@ describe("pinning a resource's image through the registry API", () => {
     expect(result).toEqual(Result.succeed({ digest: digestOf(bytes), resolvedBy: up.host }));
   });
 
+  it.each([
+    ["never answers", async () => (await registry(() => {})).origin],
+    [
+      "stops partway through its manifest",
+      async () =>
+        (
+          await registry((_request, response) => {
+            response.writeHead(200, { "content-type": INDEX_TYPE, "content-length": "4096" });
+            response.write("{");
+          })
+        ).origin,
+    ],
+    ["has a name that never resolves", async () => "http://stalled.mirror:5000"],
+  ])("asks the next mirror in time when one %s", async (_, stalled) => {
+    const bytes = index("17");
+    const first = await stalled();
+    const up = await registry(serve(bytes));
+    const started = Date.now();
+    const result = await resolveWith(
+      {
+        mirrors: [new URL(first), new URL(up.origin)],
+        resolve: () => new Promise(() => {}),
+        deadlineMs: 1_500,
+      },
+      "postgres:17",
+    );
+    expect(result).toEqual(Result.succeed({ digest: digestOf(bytes), resolvedBy: up.host }));
+    expect(Date.now() - started).toBeLessThan(1_500);
+  });
+
   it("answers one anonymous token challenge, and sends the token only to the registry", async () => {
     const bytes = index("17");
     const mirror = await registry((request, response) => {
