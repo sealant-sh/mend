@@ -3,6 +3,7 @@ import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 import { TRPCClientError } from "@trpc/client";
 
+import { followOtherTabs } from "./components/session-message-input.tsx";
 import { loginWalk, makeTrpcProxy, trpcClient, TRPCProvider, type TrpcProxy } from "./lib/trpc.ts";
 import { routeTree } from "./routeTree.gen";
 
@@ -42,6 +43,7 @@ export function getRouter() {
     }),
   });
   const trpc = makeTrpcProxy(queryClient);
+  if (typeof window !== "undefined") followOtherTabs(queryClient);
 
   const router = createTanStackRouter({
     routeTree,

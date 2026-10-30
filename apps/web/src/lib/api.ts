@@ -69,6 +69,8 @@ export type SessionAnnotationDto = ProjectDetailDto["annotations"][number];
 export type ChangeStatsDto = Outputs["changes"]["stats"];
 export type RemovalReportDto = Outputs["projects"]["remove"];
 export type SessionDetailDto = Outputs["sessions"]["detail"];
+/** What Mend did with a sent message, with its own sentence for it (`explanation`). */
+export type SessionMessageReceiptDto = Outputs["sessions"]["sendMessage"];
 export type CheckpointDto = SessionDetailDto["checkpoints"][number];
 /** A repository the session holds beside its worktree (docs/adr/0010). */
 export type SessionRepositoryDto = SessionDetailDto["repositories"][number];

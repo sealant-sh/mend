@@ -30,7 +30,11 @@ export const viewerOf = (view: OrganizationViewDto | undefined): Viewer | null =
 export const useViewerState = (): Viewer | null | undefined => {
   const trpc = useTRPC();
   const current = useQuery(
-    trpc.organization.current.queryOptions(undefined, { retry: false, staleTime: 60_000 }),
+    trpc.organization.current.queryOptions(undefined, {
+      retry: false,
+      staleTime: 60_000,
+      refetchOnWindowFocus: "always",
+    }),
   );
   return current.isPending ? undefined : viewerOf(current.data);
 };

@@ -5,6 +5,7 @@ import {
   sessionModelLine,
   sharedControlLine,
   sharedWorkspaceLine,
+  startsInTerminal,
   terminalOwnerOnlyLine,
   terminalReadOnlyLine,
 } from "@mend/domain/workbench";
@@ -17,6 +18,7 @@ import { FollowUpBanner } from "#/components/follow-up";
 import { SummaryText } from "#/components/host-user-namespaces";
 import { SessionLandingLineView } from "#/components/land-panel";
 import { ServicesCard } from "#/components/services-card";
+import { SessionMessageInput } from "#/components/session-message-input";
 import { SessionPages } from "#/components/session-pages";
 import { TranscriptPane } from "#/components/session-transcript";
 import {
@@ -96,7 +98,10 @@ function SessionPage() {
   // `idle`, but the terminal, stop, and resume controls are about the AGENT.
   const agentLive = agentIsLive(session, currentAgent);
   const agentPty = currentAgent?.sealantSessionId ?? session.sealantSessionId;
-  const terminalShows = agentPty !== null && agentLive && control.steer;
+  // A live conversation (agent-protocol) has no terminal: its record shows, with the input when
+  // this viewer may send to it.
+  const conversationLive = agentLive && !startsInTerminal(currentAgent?.kind ?? null);
+  const terminalShows = !conversationLive && agentPty !== null && agentLive && control.steer;
   // A stop leaves Services running and they keep the workspace up: say so, with their own stop.
   const servicesHold = sessionServicesHold(session, currentAgent, liveServices);
   // A stop drains the executor before its workspace goes (docs/adr/0002): what it still holds.
@@ -404,7 +409,7 @@ function SessionPage() {
               viewerId={viewer?.userId ?? null}
               steer={control.steer}
             />
-            {agentPty === null && agentLive ? (
+            {agentPty === null && agentLive && !conversationLive ? (
               <>
                 <p className="text-xs font-medium text-label">Terminal</p>
                 <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
@@ -459,9 +464,11 @@ function SessionPage() {
                     <p className="font-mono text-[11.5px] text-muted-foreground">
                       {session.sealantRunId === null
                         ? noRunWords(session.status).header
-                        : agentLive
-                          ? `run ${session.sealantRunId} · the owner's terminal; the record updates as the session runs`
-                          : `run ${session.sealantRunId} · the durable record`}
+                        : conversationLive
+                          ? `run ${session.sealantRunId} · live conversation; the record updates as the session runs`
+                          : agentLive
+                            ? `run ${session.sealantRunId} · the owner's terminal; the record updates as the session runs`
+                            : `run ${session.sealantRunId} · the durable record`}
                     </p>
                   </div>
                   {session.sealantRunId === null ? (
@@ -470,6 +477,13 @@ function SessionPage() {
                     <TranscriptPane sessionId={sessionId} />
                   )}
                 </div>
+                {conversationLive && control.steer && viewer != null && (
+                  <SessionMessageInput
+                    key={sessionId}
+                    userId={viewer.userId}
+                    sessionId={sessionId}
+                  />
+                )}
               </>
             )}
           </section>

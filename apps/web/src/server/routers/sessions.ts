@@ -8,6 +8,7 @@ import {
   PastedImageUpload,
   ReplaceWorkspaceRequest,
   ResumeRequest,
+  SendSessionMessageRequest,
   SharedControlRequest,
 } from "@mend/api-contracts";
 import { ProjectId, SessionId } from "@mend/domain";
@@ -47,6 +48,25 @@ export const sessionsRouter = router({
     .input(input(Schema.Struct({ id: SessionId, upload: PastedImageUpload })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.pasteImage({ params: { id: i.id }, payload: i.upload })),
+    ),
+  // Never `queue`: Send steers or starts a turn as the sender's message setting says.
+  sendMessage: procedure
+    .input(
+      input(
+        Schema.Struct({
+          id: SessionId,
+          input: SendSessionMessageRequest.fields.input,
+          clientMessageId: SendSessionMessageRequest.fields.clientMessageId,
+        }),
+      ),
+    )
+    .mutation(({ ctx, input: { id, ...message } }) =>
+      run(ctx, (api) =>
+        api.sessions.sendMessage({
+          params: { id },
+          payload: new SendSessionMessageRequest(message),
+        }),
+      ),
     ),
   setSharedControl: procedure
     .input(input(Schema.Struct({ id: SessionId, enabled: Schema.Boolean })))
