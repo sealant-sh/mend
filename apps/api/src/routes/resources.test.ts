@@ -847,6 +847,28 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       });
     });
 
+    it("reads a worktree's stored choice back on its line, and the read writes none", async () => {
+      await start();
+      const db = await declare();
+      const forWorktree = `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`;
+      const settingsLines = async (query: string) =>
+        lines((await list("carol", query)).body.settings);
+      expect(await settingsLines(forWorktree)).toEqual([
+        "@db · postgres 17 · project · waiting for approval",
+      ]);
+      await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own");
+      expect(await settingsLines(forWorktree)).toEqual([
+        "@db · postgres 17 · project · waiting for approval · its own database",
+      ]);
+      expect(await settingsLines("")).toEqual([
+        "@db · postgres 17 · project · waiting for approval",
+      ]);
+      // The reads took no revision: the next choice is the first one after "own".
+      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "off")).body).toMatchObject({
+        revision: 1,
+      });
+    });
+
     it("answers another project's definition as not found, and never says its name", async () => {
       await start();
       const hidden = await approvedElsewhere(mailpit("secret-mail", "project"));

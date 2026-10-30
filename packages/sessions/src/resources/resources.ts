@@ -395,7 +395,7 @@ export const ResourcesLive: Layer.Layer<
       );
       const sameAsSettings = (spec: ResourceDefinitionInput, digest: ResourceSpecDigest) =>
         held.get(spec.name) === digest;
-      const settings = definitions.map(({ definition, approval }) => ({
+      const settings = definitions.map(({ definition, approval, choice }) => ({
         id: definition.id,
         digest: definition.specDigest,
         spec: definition.spec,
@@ -405,6 +405,7 @@ export const ResourcesLive: Layer.Layer<
           {
             kind: "settings",
             approval: declaredApproval(approval, nameOf),
+            ...(choice === null ? {} : { choice }),
           },
           clock,
         ),

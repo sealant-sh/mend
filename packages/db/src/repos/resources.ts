@@ -122,6 +122,8 @@ export interface StoredResourceProposal {
 export interface DefinitionWithApproval {
   readonly definition: StoredResourceDefinition;
   readonly approval: ResourceApproval | null;
+  /** The listed worktree's stored choice; null when it made none, or no worktree was listed. */
+  readonly choice: WorktreeChoice | null;
 }
 
 /** A definition as its reader saw it: removing or replacing it holds only while it still is. */
@@ -233,7 +235,8 @@ export class ResourcesRepo extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<StoredResourceDefinition>>;
     /**
      * Each definition with the latest approval of the spec it holds as read: a manager's for the
-     * project, or, for a worktree resource, `worktreeId`'s own (decision G4). Two queries.
+     * project, or, for a worktree resource, `worktreeId`'s own (decision G4); and `worktreeId`'s
+     * stored choice, read as it is, writing no default. Three queries.
      */
     readonly listWithApprovals: (
       projectId: ProjectId,
@@ -995,6 +998,18 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         )
         .orderBy(desc(resourceApprovals.revision))
         .pipe(Effect.orDie);
+      const choices = new Map(
+        worktreeId === null
+          ? []
+          : (yield* db
+              .select({
+                definitionId: resourceSelections.definitionId,
+                mode: resourceSelections.mode,
+              })
+              .from(resourceSelections)
+              .where(eq(resourceSelections.worktreeId, worktreeId))
+              .pipe(Effect.orDie)).map((row) => [row.definitionId, row.mode]),
+      );
       return yield* Effect.forEach(
         definitions,
         Effect.fnUntraced(function* (definition): Effect.fn.Return<DefinitionWithApproval> {
@@ -1005,7 +1020,11 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
               approval.definitionDigest === definition.specDigest &&
               (approval.worktreeId === null || definition.spec.scope === "worktree"),
           );
-          return { definition, approval: row === undefined ? null : yield* toApproval(row) };
+          return {
+            definition,
+            approval: row === undefined ? null : yield* toApproval(row),
+            choice: choices.get(definition.id) ?? null,
+          };
         }),
       );
     });
