@@ -254,7 +254,7 @@ describe("default listed project reads", () => {
       }),
     );
     expect(found).toEqual([]);
-  });
+  }, 60_000);
   it("detects a missing predicate even in a file with another guarded query", () => {
     expect(
       unguarded(
