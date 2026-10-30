@@ -306,6 +306,102 @@ describe("steer lifecycle", () => {
     );
   }
 
+  it.live("keeps a steer's key when a restart lands before its first POST is answered", () => {
+    const path = stateFile();
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      const turn = setup(mend);
+      const late = mend.workbench.holdNextSteer("admission");
+      const original = message("inflight", { type: "start_immediately" }, "steer");
+      yield* gateway(
+        mend,
+        path,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "INFLIGHT");
+          yield* rpc[methods.dispatchCommand](original).pipe(Effect.exit, Effect.forkScoped);
+          yield* Effect.promise(() => late.entered);
+        }),
+      );
+      mend.workbench.steerRefusal = { status: 403, tag: "SessionNotSteerable" };
+      yield* gateway(
+        mend,
+        path,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "INFLIGHTAFTER");
+          yield* projectionWhen(
+            rpc,
+            (current) => inputOf(current, "inflight")?.status === "failed",
+          );
+          mend.workbench.steerRefusal = null;
+          for (let replay = 0; replay < 2; replay++)
+            yield* rpc[methods.dispatchCommand]({ ...original, commandId: commandId() }).pipe(
+              Effect.exit,
+            );
+          late.release();
+          yield* eventually(() => turn.steers.length > 0);
+          yield* Effect.sleep("100 millis");
+          assert.lengthOf(turn.steers, 1);
+          assert.lengthOf(
+            new Set(posts(mend, "/steer").map((call) => JSON.stringify(call.body))),
+            1,
+          );
+        }),
+      ).pipe(Effect.ensuring(Effect.sync(() => late.release())));
+    });
+  });
+
+  it.live(
+    "never promotes a steer again when a restart lands before its first POST is answered",
+    () => {
+      const path = stateFile();
+      return Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        const turn = setup(mend);
+        const late = mend.workbench.holdNextSteer("admission");
+        const queuedId = yield* gateway(
+          mend,
+          path,
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "INFLIGHTPROMOTED");
+            yield* rpc[methods.dispatchCommand](
+              message("inflight", { type: "queue_after_active" }),
+            );
+            const queued = (yield* rpc[methods.getThreadProjection]({ threadId })).runs.find(
+              (run) => run.userMessageId === "inflight",
+            );
+            if (queued === undefined) return yield* Effect.die("Missing queued run");
+            yield* rpc[methods.dispatchCommand](promote(queued.id, turn.id)).pipe(
+              Effect.exit,
+              Effect.forkScoped,
+            );
+            yield* Effect.promise(() => late.entered);
+            return queued.id;
+          }),
+        );
+        mend.workbench.steerRefusal = { status: 403, tag: "SessionNotSteerable" };
+        yield* gateway(
+          mend,
+          path,
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "INFLIGHTPROMOTEDAFTER");
+            yield* eventually(() => posts(mend, "/steer").length === 2);
+            yield* Effect.sleep("100 millis");
+            mend.workbench.steerRefusal = null;
+            yield* rpc[methods.dispatchCommand](promote(queuedId, turn.id)).pipe(Effect.exit);
+            late.release();
+            yield* eventually(() => turn.steers.length > 0);
+            yield* Effect.sleep("100 millis");
+            assert.lengthOf(turn.steers, 1);
+            assert.lengthOf(
+              new Set(posts(mend, "/steer").map((call) => JSON.stringify(call.body))),
+              1,
+            );
+          }),
+        ).pipe(Effect.ensuring(Effect.sync(() => late.release())));
+      });
+    },
+  );
+
   it.live("shows a carried steer Mend withdraws once, failed under its input", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

@@ -52,7 +52,7 @@ export interface SteerRecord {
         readonly input: string;
         readonly images: ReadonlyArray<{ readonly imageId: string; readonly path: string }>;
         readonly processId: string | null;
-        /** How many of its POSTs went unanswered, or answered what cannot be its receipt. */
+        /** How many of its POSTs settled nothing, each counted before it is sent. */
         readonly unconfirmed: number;
       }
     | {
@@ -190,12 +190,12 @@ const MAX_UNCONFIRMED = 3;
 const UNCONFIRMED =
   "Mend never confirmed this message, so it may not have reached the agent. Look at the thread before sending it again.";
 
-/** One more POST that settled nothing: posted again after a later read, or failed at the bound. */
+/** A POST that settled nothing: a later read posts it again, or it fails at the bound. */
 const unconfirmed = (record: SteerRecord): SteerStep => {
   const phase = record.phase;
-  if (phase.kind !== "posting" && phase.kind !== "observed") return UNCHANGED;
-  const count = (phase.kind === "posting" ? phase.unconfirmed : 0) + 1;
-  if (count >= MAX_UNCONFIRMED) return failed(record, UNCONFIRMED, true);
+  if (phase.kind === "posting")
+    return phase.unconfirmed >= MAX_UNCONFIRMED ? failed(record, UNCONFIRMED, true) : UNCHANGED;
+  if (phase.kind !== "observed") return UNCHANGED;
   return {
     kind: "changed",
     record: {
@@ -205,7 +205,7 @@ const unconfirmed = (record: SteerRecord): SteerStep => {
         input: phase.input,
         images: phase.images,
         processId: phase.processId,
-        unconfirmed: count,
+        unconfirmed: 1,
       },
     },
   };
@@ -402,7 +402,7 @@ const answered = (record: SteerRecord, answer: SteerAnswer, facts: SteerFacts): 
       // A receipt already read is Mend's word; a refusal after it changes nothing.
       if (record.phase.kind !== "posting") return UNCHANGED;
       // It refuses this POST only: an earlier one it never answered may still be admitted.
-      if (record.phase.unconfirmed > 0) return failed(record, answer.reason, true);
+      if (record.phase.unconfirmed > 1) return failed(record, answer.reason, true);
       if (answer.notSender && record.promotion === null)
         return { kind: "settled", kept: null, requeue: true, refusal: null };
       return notSent(record, answer.reason, facts, false);
@@ -424,7 +424,12 @@ const read = (record: SteerRecord, checked: boolean, facts: SteerFacts): SteerSt
     return receiptMatches(record, facts.sessionId, phase.receipt, facts.turns)
       ? (startedTurn(record, facts) ?? UNCHANGED)
       : unconfirmed(record);
-  return checked ? { kind: "post", record } : UNCHANGED;
+  return checked
+    ? {
+        kind: "post",
+        record: { ...record, phase: { ...phase, unconfirmed: phase.unconfirmed + 1 } },
+      }
+    : UNCHANGED;
 };
 
 /** The one rule a steer moves by: every path through the hub asks it, and carries out its step. */
@@ -441,7 +446,7 @@ export const steerStep = (record: SteerRecord, event: SteerEvent, facts: SteerFa
             input: event.input,
             images: event.images,
             processId: event.processId,
-            unconfirmed: 0,
+            unconfirmed: 1,
           },
         },
       };
