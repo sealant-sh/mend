@@ -1,5 +1,5 @@
 import { SessionId, SessionProcessId, type AgentTurnId } from "@mend/domain";
-import { AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
+import { AgentTurn, type ServiceStartCause, Session, SessionProcess } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -356,4 +356,39 @@ describe("shared control", () => {
       }
     },
   );
+
+  it("a steerer's recipe start is refused, and a steerer's restart and the owner's start reach the engine as the person who asked", async () => {
+    const asked: Array<{ readonly method: string; readonly cause: ServiceStartCause }> = [];
+    const record = (method: string, cause: ServiceStartCause) =>
+      Effect.suspend(() => {
+        asked.push({ method, cause });
+        return Effect.die("recorded");
+      });
+    const world = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            runServiceRecipe: (_session, _name, cause) => record("runServiceRecipe", cause),
+            restartService: (_service, cause) => record("restartService", cause),
+          },
+        },
+      },
+    );
+    try {
+      expect((await world.request("alice", "PUT", toggle, { enabled: true })).status).toBe(200);
+      const recipe = `/api/sessions/${sharedA.session}/services/recipe`;
+      const refused = await world.request("carol", "POST", recipe, { name: "web" });
+      expect(refused.status).toBe(403);
+      await world.request("carol", "POST", `/api/services/${sharedA.service}/restart`);
+      await world.request("alice", "POST", recipe, { name: "web" });
+      expect(asked).toEqual([
+        { method: "restartService", cause: { kind: "person", userId: "carol" } },
+        { method: "runServiceRecipe", cause: { kind: "person", userId: "alice" } },
+      ]);
+    } finally {
+      await world.dispose();
+    }
+  });
 });

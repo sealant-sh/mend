@@ -66,6 +66,8 @@ import {
   type World,
 } from "./engine/fixture.ts";
 
+const ownerStart = { kind: "person", userId: "user-fixture" } as const;
+
 /**
  * What the TestClock cases wait on, beyond the shared clock's signals (`world.sessions`, the
  * lists a fake appends to, the PTY watcher's looks, the channel's checkpoint waits, each driven
@@ -749,7 +751,9 @@ describe("SessionEngine capture mode", () => {
 
           // No workspace yet: the file is unobservable, which is a typed refusal, never a defect.
           expect(yield* engine.listServiceRecipes(session.id)).toEqual([]);
-          const refused = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
+          const refused = yield* engine
+            .runServiceRecipe(session.id, "web", ownerStart)
+            .pipe(Effect.flip);
           expect(refused._tag).toBe("ServiceStartError");
           expect(refused.message).toContain("no live workspace");
           expect(execCalls.filter(readsToml)).toHaveLength(0);
@@ -776,7 +780,7 @@ describe("SessionEngine capture mode", () => {
             ["web", 5173, "http"],
           ]);
 
-          const service = yield* engine.runServiceRecipe(session.id, "web");
+          const service = yield* engine.runServiceRecipe(session.id, "web", ownerStart);
           expect(service.service.declarationSource).toBe("recipe-file");
           expect(service.service.browserScheme).toBe("http");
           expect(service.attempts[0]?.argv).toEqual(["sh", "-c", "pnpm dev --host"]);
@@ -804,7 +808,9 @@ describe("SessionEngine capture mode", () => {
 
           // A malformed file is a readable refusal naming the problem.
           workspaceToml = "[service.web\n";
-          const malformed = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
+          const malformed = yield* engine
+            .runServiceRecipe(session.id, "web", ownerStart)
+            .pipe(Effect.flip);
           expect(malformed._tag).toBe("ServiceStartError");
           expect(malformed.message).toContain("not valid TOML");
           const listFailure = yield* engine.listServiceRecipes(session.id).pipe(Effect.flip);
@@ -912,7 +918,7 @@ describe("SessionEngine capture mode", () => {
           });
           yield* engine.launch(session.id, ["codex"]);
           const starting = yield* engine
-            .runServiceRecipe(session.id, "web")
+            .runServiceRecipe(session.id, "web", ownerStart)
             .pipe(Effect.flip, Effect.forkChild);
           const reads = () => execCalls.filter((argv) => argv.includes("mend-setup-inputs"));
           while (reads().length === 0) yield* Effect.sleep("10 millis");
@@ -977,10 +983,10 @@ describe("SessionEngine capture mode", () => {
       (engine, _world, sessionId) =>
         Effect.gen(function* () {
           const stop = { kind: "person", userId: "user-fixture" } as const;
-          yield* engine.runServiceRecipe(sessionId, "web");
+          yield* engine.runServiceRecipe(sessionId, "web", ownerStart);
           yield* engine.stopServices(sessionId, stop);
           fs.writeFileSync(path.join(repository, "bun.lockb"), Uint8Array.of(0x62, 0x75, 0x81));
-          yield* engine.runServiceRecipe(sessionId, "web");
+          yield* engine.runServiceRecipe(sessionId, "web", ownerStart);
           expect(setupStepsIn(execCalls)).toEqual([
             "bun install --frozen-lockfile",
             "bun install --frozen-lockfile",
@@ -1018,7 +1024,9 @@ describe("SessionEngine capture mode", () => {
             start: { kind: "base", base: null },
           });
           yield* engine.launch(session.id, ["codex"]);
-          const error = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
+          const error = yield* engine
+            .runServiceRecipe(session.id, "web", ownerStart)
+            .pipe(Effect.flip);
           expect(error.message).toBe(
             "setup did not run · input pnpm-lock.yaml resolves outside the repository",
           );

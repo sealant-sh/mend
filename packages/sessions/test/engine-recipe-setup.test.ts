@@ -20,6 +20,7 @@ import {
 } from "./engine/fixture.ts";
 
 const ownerStart = { kind: "person", userId: "user-fixture" } as const;
+const automaticStart = { kind: "system", runsAs: null } as const;
 const ownerStop = { kind: "person", userId: "user-fixture" } as const;
 
 const worktreeOf = (tmp: string, worktree: string) =>
@@ -212,7 +213,9 @@ describe("[setup] in a recipe start", () => {
           expect(opensOf(spawned, "pnpm dev")).toEqual([]);
           expect(world.setupRuns).toMatchObject([{ state: "failed", exitCode: 1 }]);
 
-          const automatic = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
+          const automatic = yield* engine
+            .runServiceRecipe(session.id, "web", automaticStart)
+            .pipe(Effect.flip);
           expect(automatic.message).toContain("an automatic start does not run it again");
           expect(execs).toHaveLength(1);
 
@@ -266,12 +269,6 @@ describe("[setup] in a recipe start", () => {
             (yield* engine.listServiceRecipes(session.id)).map((recipe) => recipe.name),
           ).toEqual(["web"]);
 
-          const automatic = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
-          expect(automatic.message).toBe(
-            "mend.toml refuses [setup], so web is not started automatically: mend.toml · setup.run · must list at least one command",
-          );
-          expect(opensOf(spawned, "pnpm dev")).toEqual([]);
-
           const startId = "6c5b4a39-2817-4f6e-9d5c-4b3a29180f7e";
           yield* engine.runServiceRecipe(session.id, "web", ownerStart, startId);
           expect(opensOf(spawned, "pnpm dev")).toHaveLength(1);
@@ -282,6 +279,14 @@ describe("[setup] in a recipe start", () => {
               reason: "mend.toml · setup.run · must list at least one command",
             },
           });
+
+          const automatic = yield* engine
+            .runServiceRecipe(session.id, "web", automaticStart)
+            .pipe(Effect.flip);
+          expect(automatic.message).toBe(
+            "mend.toml refuses [setup], so web is not started automatically: mend.toml · setup.run · must list at least one command",
+          );
+          expect(opensOf(spawned, "pnpm dev")).toHaveLength(1);
         }),
       {
         sealantLayer: sealantLaunchLayer(
