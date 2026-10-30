@@ -20,6 +20,12 @@
 // as that member and checks isolation and their own No project. Start owner on a fresh stack.
 // Observed end states: 2026-10-30, features/t3-gateway.md, "Scratch projects and projects by name".
 //
+// Removal only: MEND_VERIFY_T3_REMOVAL=clean|no-origin|owner|live|project-blocked|project-remove|race.
+// MEND_VERIFY_T3_REMOVAL_THREAD names a prepared thread; MEND_VERIFY_T3_REMOVAL_PROJECT names the
+// project (default verify-fixture). See features/t3-gateway.md, "Worktree and project removal",
+// for the real API fixture setup, account selection, CLI force and DELETE request trace.
+// Observed end states: 2026-10-30.
+//
 // Needs the stack's account in $P/account.json (Launch, step 7) and a Claude login connected to the
 // stack: the skill's fake one (`mend connect claude --from-stdin` with FAKES.claude), on which each
 // turn starts and ends at once with Claude's own refusal. The browser starts empty: the client keeps
@@ -279,6 +285,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     .map((device) => device.label ?? device.name)
     .filter((label) => /^t3code/.test(label ?? ""));
   note(`observed · Mend's devices (via api, HTTP ${devices.status}): ${JSON.stringify(labels)}`);
+
+  if (process.env.MEND_VERIFY_T3_REMOVAL) {
+    await removalChecks({ page, web, capture, note, api, ok, until, rpc });
+    return;
+  }
 
   if (process.env.MEND_VERIFY_T3_SCRATCH) {
     await scratchProjects({ page, web, capture, note, api, ok, until, registerSecret, mend });
@@ -1620,4 +1631,180 @@ async function scratchProjects({ page, web, capture, note, api, ok, until, regis
   writeFileSync(join(P, "scratch-member.json"), JSON.stringify({ email, password, token }), {
     mode: 0o600,
   });
+}
+
+/** Removal dialogs in the hosted v0.1.2 client, driven on 2026-10-30. */
+async function removalChecks({ page, web, capture, note, api, ok, until, rpc }) {
+  const mode = process.env.MEND_VERIFY_T3_REMOVAL;
+  const projectName = process.env.MEND_VERIFY_T3_REMOVAL_PROJECT ?? "verify-fixture";
+  const home = async () => {
+    await page.goto(web);
+    await page.getByRole("textbox", { name: "Message" }).waitFor();
+  };
+  // These decorative paths trip the driver's QR heuristic. This is the same omission used by
+  // previewShot above; capture still checks the entire remaining document for credentials.
+  const shot = async (name) => {
+    const removed = await page
+      .locator('#t3code-pierre-file-icon-sprite svg, svg[viewBox="0 0 256 257"]')
+      .evaluateAll((nodes) => {
+        for (const node of nodes) node.remove();
+        return nodes.length;
+      });
+    note(`observed · omitted ${removed} decorative SVGs before ${name}`);
+    await capture(name);
+  };
+  const projects = async () => (await api("/api/projects")).body;
+
+  if (mode === "race") {
+    const project = (await projects()).find((item) => item.name === projectName);
+    ok(!!project, `race project ${projectName} exists`);
+    const created = await api(`/api/projects/${project.id}/worktrees`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: `removal-race-${randomBytes(4).toString("hex")}`, base: null }),
+    });
+    ok(created.status === 200, "race worktree created through Mend's API");
+    const id = created.body.id;
+    const removal = api(`/api/worktrees/${id}`, { method: "DELETE" });
+    await page.waitForTimeout(0);
+    const start = await api(`/api/worktrees/${id}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ harness: "run", label: "removal-race-session" }),
+    });
+    note(`race-start · ${JSON.stringify(start)}`);
+    note(`race-removal · ${JSON.stringify(await removal)}`);
+    ok(start.status !== 500, "racing start did not return 500");
+    note(
+      start.status === 409 && start.body._tag === "RemovalInProgress"
+        ? "observed · typed 409 RemovalInProgress"
+        : "not observed · the start missed the removal fence; retain both answers",
+    );
+    return;
+  }
+
+  if (mode === "project-blocked" || mode === "project-remove") {
+    const project = (await projects()).find((item) => item.name === projectName);
+    ok(!!project, `project ${projectName} exists before removal`);
+    await home();
+    await page.getByRole("combobox", { name: "Filter threads by project", exact: true }).click();
+    await page.getByRole("option", { name: projectName, exact: true }).click({ button: "right" });
+    await shot(`${mode}-before`);
+    await page.getByRole("button", { name: "Remove project", exact: true }).click();
+    await shot(`${mode}-confirm`);
+    await page.getByRole("button", { name: "Confirm", exact: true }).click();
+    if (mode === "project-blocked") {
+      await until("project mutation refusal", () =>
+        rpc.failures.some((failure) => failure.tag === "projects.mutate"),
+      );
+      await shot("project-refused");
+      note(`client-visible · ${await page.locator("body").innerText()}`);
+      const result = await api(`/api/projects/${project.id}`, { method: "DELETE" });
+      note(`project-refusal-api · ${JSON.stringify(result)}`);
+      ok(result.status === 409 && result.body._tag === "RemovalRefused", "project kept by Mend");
+      return;
+    }
+    await until(
+      "project removed in Mend",
+      async () => {
+        const result = await api(`/api/projects/${project.id}`);
+        note(`project-after · ${JSON.stringify(result)}`);
+        return result.status === 404;
+      },
+      120_000,
+    );
+    for (const name of ["project-absent", "project-absent-after-reload"]) {
+      if (name.endsWith("reload")) await page.reload();
+      else await home();
+      await page.getByRole("textbox", { name: "Message" }).waitFor();
+      await page.getByRole("combobox", { name: "Filter threads by project", exact: true }).click();
+      await shot(name);
+      ok(
+        (await page.getByRole("option", { name: projectName, exact: true }).count()) === 0,
+        `${name} · client picker omits ${projectName}`,
+      );
+      await page.keyboard.press("Escape");
+    }
+    note(`projects-after-reload · ${JSON.stringify(await projects())}`);
+    return;
+  }
+
+  ok(["clean", "no-origin", "owner", "live"].includes(mode), "known removal drive mode");
+  const label = process.env.MEND_VERIFY_T3_REMOVAL_THREAD ?? `removal-${mode}`;
+  await home();
+  if (mode === "clean") {
+    await page.waitForTimeout(3000);
+    await page.getByRole("textbox", { name: "Message" }).fill(label);
+    await shot("clean-before-launch");
+    await page.getByRole("button", { name: "Submit message", exact: true }).click();
+    await page.getByText("Failed to authenticate").first().waitFor({ timeout: 180_000 });
+  } else {
+    await page.getByRole("button", { name: new RegExp(`^${label},`) }).click();
+  }
+  const session = await until("Mend session for removal", async () =>
+    (await api("/api/sessions")).body.find((item) => item.label === label),
+  );
+  const id = session.worktreeId;
+  note(`removal-session · ${JSON.stringify(session)}`);
+  note(`worktree-before · ${JSON.stringify(await api(`/api/worktrees/${id}`))}`);
+  if (mode === "owner" || mode === "live") {
+    const refused = await api(`/api/worktrees/${id}`, { method: "DELETE" });
+    note(`worktree-refusal-api · ${JSON.stringify(refused)}`);
+    ok(
+      mode === "owner"
+        ? refused.status === 403 && refused.body._tag === "RemovalForbidden"
+        : refused.status === 409 && refused.body._tag === "RemovalRefused",
+      `${mode} refusal from Mend's API`,
+    );
+  }
+  await shot(`${mode}-before-delete`);
+  await page.getByRole("button", { name: /^Thread actions for/ }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm", exact: true }).click();
+  await page.getByRole("alertdialog", { name: "Delete the worktree too?" }).waitFor();
+  await shot(`${mode}-worktree-confirm`);
+  const since = Date.now();
+  await page.getByRole("button", { name: "Confirm", exact: true }).click();
+  if (mode === "clean") {
+    await until(
+      "clean worktree gone",
+      async () => {
+        const result = await api(`/api/projects/${session.projectId}/worktrees`);
+        note(`worktrees-after · ${JSON.stringify(result)}`);
+        return result.status === 200 && !result.body.worktrees.some((item) => item.id === id);
+      },
+      120_000,
+    );
+    note(`observed · worktree absent ${Date.now() - since} ms after confirmation`);
+    ok(
+      (await page.locator("li[data-thread-item]").filter({ hasText: label }).count()) === 0,
+      "clean thread absent from the client",
+    );
+    await shot("clean-removed");
+    return;
+  }
+  await until(
+    "worktree cleanup refusal",
+    () => rpc.failures.some((failure) => failure.tag === "vcs.removeWorktree"),
+    90_000,
+  );
+  await shot(`${mode}-refused`);
+  const visible = await page.locator("body").innerText();
+  note(`client-visible · ${visible}`);
+  note(`rpc-refusals · ${JSON.stringify(rpc.failures)}`);
+  note(`worktree-retained · ${JSON.stringify(await api(`/api/worktrees/${id}`))}`);
+  if (mode === "no-origin") {
+    const expected =
+      "This worktree has work that is not on any remote. Remove it from Mend if you mean to discard it.";
+    ok(
+      rpc.failures.some(
+        (failure) => failure.tag === "vcs.removeWorktree" && failure.message === expected,
+      ),
+      "no-origin refusal matches byte-for-byte",
+    );
+    ok(visible.includes(expected), "client visibly includes the exact no-origin sentence");
+    const file = await api(`/api/worktrees/${id}/contents?path=discard-proof.txt`);
+    note(`file-retained · ${JSON.stringify(file)}`);
+    ok(file.body.file.contents === "keep this work\n", "no-origin file retains its contents");
+  }
 }
