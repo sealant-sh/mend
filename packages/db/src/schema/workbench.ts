@@ -52,6 +52,7 @@ import type {
   ProjectRemovalFenceId,
   ResourceApprovalId,
   ResourceDefinitionId,
+  ResourceProposalId,
   RoutedAction,
   RunId,
   RunKind,
@@ -671,6 +672,35 @@ export const resourceDefinitions = pgTable(
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [unique("resource_definitions_project_name_key").on(table.projectId, table.name)],
+);
+
+/**
+ * A definition a member proposed in settings (ADR 0019, decision G1), kept apart from the one the
+ * project declares, so a proposal never replaces a definition. Its spec never changes: one author
+ * proposing one spec twice is one row, and two people's proposals of one name are two.
+ */
+export const resourceProposals = pgTable(
+  "resource_proposals",
+  {
+    id: text().$type<ResourceProposalId>().primaryKey(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    spec: jsonbOf(ResourceDefinitionInput).notNull(),
+    specDigest: text().$type<ResourceSpecDigest>().notNull(),
+    proposedBy: text().notNull(),
+    proposedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("resource_proposals_author_spec_key").on(
+      table.projectId,
+      table.proposedBy,
+      table.specDigest,
+    ),
+    index("resource_proposals_project_name_idx").on(table.projectId, table.name),
+  ],
 );
 
 /**

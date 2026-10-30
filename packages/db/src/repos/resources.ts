@@ -5,6 +5,7 @@ import {
   ResourceDatabaseId,
   ResourceDefinitionId,
   ResourceInstanceId,
+  ResourceProposalId,
   WorktreeId,
 } from "@mend/domain";
 import {
@@ -25,7 +26,7 @@ import {
   type WorktreeChoice,
   WorktreeSelection,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, isNull, max, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, max, or, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -35,6 +36,7 @@ import {
   projects,
   resourceApprovals,
   resourceDefinitions,
+  resourceProposals,
   resourceSelections,
   worktrees,
 } from "../schema/workbench.ts";
@@ -83,6 +85,27 @@ export interface ApprovalRequest {
 /** A selection as a person asks for it; the repo mints an `own` target and numbers the revision. */
 export type SelectionChoice = { readonly mode: WorktreeChoice };
 
+/** A definition a member proposed in settings: never the project's until a manager adopts it. */
+export interface StoredResourceProposal {
+  readonly id: ResourceProposalId;
+  readonly projectId: ProjectId;
+  readonly spec: ResourceDefinitionInput;
+  readonly specDigest: ResourceSpecDigest;
+  readonly proposedBy: string;
+  readonly proposedAt: Date;
+}
+
+export interface DefinitionWithApproval {
+  readonly definition: StoredResourceDefinition;
+  readonly approval: ResourceApproval | null;
+}
+
+/** A definition as its reader saw it: removing or replacing it holds only while it still is. */
+export interface DefinitionVersion {
+  readonly id: ResourceDefinitionId;
+  readonly digest: ResourceSpecDigest;
+}
+
 export interface StoredSelection {
   readonly worktreeId: WorktreeId;
   readonly definitionId: ResourceDefinitionId;
@@ -112,6 +135,16 @@ export class ResourceApprovalStaleError extends Schema.TaggedError<ResourceAppro
   },
 ) {}
 
+/** The definition changed after its reader saw it, so the write that assumed it did not happen. */
+export class ResourceDefinitionStaleError extends Schema.TaggedError<ResourceDefinitionStaleError>()(
+  "ResourceDefinitionStaleError",
+  {
+    definitionId: ResourceDefinitionId,
+    expected: ResourceSpecDigest,
+    current: ResourceSpecDigest,
+  },
+) {}
+
 export class ResourceSelectionRefusedError extends Schema.TaggedError<ResourceSelectionRefusedError>()(
   "ResourceSelectionRefusedError",
   { definitionId: ResourceDefinitionId, refusal: ResourceRefusal },
@@ -136,10 +169,46 @@ export class ResourcesRepo extends Context.Service<
       spec: ResourceDefinitionInput,
       declaredBy: string,
     ) => Effect.Effect<StoredResourceDefinition, ResourceDefinitionRefusedError>;
-    readonly remove: (projectId: ProjectId, name: string) => Effect.Effect<void>;
+    /** Removes the definition while it holds the spec its remover read, and answers it. */
+    readonly removeIfCurrent: (
+      projectId: ProjectId,
+      version: DefinitionVersion,
+    ) => Effect.Effect<
+      StoredResourceDefinition,
+      ResourceDefinitionNotFoundError | ResourceDefinitionStaleError
+    >;
+    /**
+     * Keeps `spec` as `proposedBy`'s proposal, apart from the project's definitions; the same
+     * author proposing the same spec again gets the row they have.
+     */
+    readonly propose: (
+      projectId: ProjectId,
+      spec: ResourceDefinitionInput,
+      proposedBy: string,
+    ) => Effect.Effect<StoredResourceProposal, ResourceDefinitionRefusedError>;
+    readonly proposals: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyArray<StoredResourceProposal>>;
+    readonly proposalById: (
+      projectId: ProjectId,
+      id: ResourceProposalId,
+    ) => Effect.Effect<StoredResourceProposal | null>;
+    /** Removes the proposal; false when the project holds none by that id. */
+    readonly withdrawProposal: (
+      projectId: ProjectId,
+      id: ResourceProposalId,
+    ) => Effect.Effect<boolean>;
     readonly listForProject: (
       projectId: ProjectId,
     ) => Effect.Effect<ReadonlyArray<StoredResourceDefinition>>;
+    /**
+     * Each definition with the latest approval of the spec it holds as read: a manager's for the
+     * project, or, for a worktree resource, `worktreeId`'s own (decision G4). Two queries.
+     */
+    readonly listWithApprovals: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId | null,
+    ) => Effect.Effect<ReadonlyArray<DefinitionWithApproval>>;
     readonly byName: (
       projectId: ProjectId,
       name: string,
@@ -215,6 +284,21 @@ const toDefinition = (row: DefinitionRow) =>
         declaredBy: row.declaredBy,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
+      }),
+    ),
+    Effect.orDie,
+  );
+
+const toProposal = (row: typeof resourceProposals.$inferSelect) =>
+  decodeSpec(row.spec).pipe(
+    Effect.map(
+      (spec): StoredResourceProposal => ({
+        id: row.id,
+        projectId: row.projectId,
+        spec,
+        specDigest: row.specDigest,
+        proposedBy: row.proposedBy,
+        proposedAt: row.proposedAt,
       }),
     ),
     Effect.orDie,
@@ -556,16 +640,99 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         .pipe(Effect.catchTags(queryErrorsDie));
     });
 
-    const remove = Effect.fn("ResourcesRepo.remove")(function* (
+    const removeIfCurrent = Effect.fn("ResourcesRepo.removeIfCurrent")(function* (
       projectId: ProjectId,
-      name: string,
+      version: DefinitionVersion,
     ) {
-      yield* db
-        .delete(resourceDefinitions)
-        .where(
-          and(eq(resourceDefinitions.projectId, projectId), eq(resourceDefinitions.name, name)),
+      return yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const definition = yield* lockDefinition(tx, version.id);
+            if (definition.projectId !== projectId) {
+              return yield* new ResourceDefinitionNotFoundError({ id: version.id });
+            }
+            if (definition.specDigest !== version.digest) {
+              return yield* new ResourceDefinitionStaleError({
+                definitionId: version.id,
+                expected: version.digest,
+                current: definition.specDigest,
+              });
+            }
+            yield* tx.delete(resourceDefinitions).where(eq(resourceDefinitions.id, version.id));
+            return definition;
+          }),
         )
+        .pipe(Effect.catchTags(queryErrorsDie));
+    });
+
+    const propose = Effect.fn("ResourcesRepo.propose")(function* (
+      projectId: ProjectId,
+      spec: ResourceDefinitionInput,
+      proposedBy: string,
+    ) {
+      const refusals = resourceDefinitionRefusals(spec);
+      if (refusals.length > 0) {
+        return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
+      }
+      const specDigest = resourceSpecDigest(spec);
+      // One statement: the author's row for this spec is locked and answered, or a new one is
+      // stored, so a withdrawal committing meanwhile cannot leave the proposal unanswered.
+      const [stored] = yield* db
+        .insert(resourceProposals)
+        .values({
+          id: ResourceProposalId.make(`rprop_${crypto.randomUUID()}`),
+          projectId,
+          name: spec.name,
+          spec: yield* encodeSpec(spec).pipe(Effect.orDie),
+          specDigest,
+          proposedBy,
+        })
+        .onConflictDoUpdate({
+          target: [
+            resourceProposals.projectId,
+            resourceProposals.proposedBy,
+            resourceProposals.specDigest,
+          ],
+          set: { specDigest },
+        })
+        .returning()
         .pipe(Effect.orDie);
+      if (stored === undefined) return yield* Effect.die(new Error("a proposal was not stored"));
+      return yield* toProposal(stored);
+    });
+
+    const proposals = Effect.fn("ResourcesRepo.proposals")(function* (projectId: ProjectId) {
+      const rows = yield* db
+        .select()
+        .from(resourceProposals)
+        .where(eq(resourceProposals.projectId, projectId))
+        .orderBy(asc(resourceProposals.name), asc(resourceProposals.proposedAt))
+        .pipe(Effect.orDie);
+      return yield* Effect.forEach(rows, toProposal);
+    });
+
+    const proposalById = Effect.fn("ResourcesRepo.proposalById")(function* (
+      projectId: ProjectId,
+      id: ResourceProposalId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(resourceProposals)
+        .where(and(eq(resourceProposals.projectId, projectId), eq(resourceProposals.id, id)))
+        .pipe(Effect.orDie);
+      return row === undefined ? null : yield* toProposal(row);
+    });
+
+    const withdrawProposal = Effect.fn("ResourcesRepo.withdrawProposal")(function* (
+      projectId: ProjectId,
+      id: ResourceProposalId,
+    ) {
+      const removed = yield* db
+        .delete(resourceProposals)
+        .where(and(eq(resourceProposals.projectId, projectId), eq(resourceProposals.id, id)))
+        .returning({ id: resourceProposals.id })
+        .pipe(Effect.orDie);
+      return removed.length > 0;
     });
 
     const listForProject = Effect.fn("ResourcesRepo.listForProject")(function* (
@@ -578,6 +745,44 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         .orderBy(asc(resourceDefinitions.name))
         .pipe(Effect.orDie);
       return yield* Effect.forEach(rows, toDefinition);
+    });
+
+    const listWithApprovals = Effect.fn("ResourcesRepo.listWithApprovals")(function* (
+      projectId: ProjectId,
+      worktreeId: WorktreeId | null,
+    ) {
+      const definitions = yield* listForProject(projectId);
+      if (definitions.length === 0) return [];
+      const forProject = isNull(resourceApprovals.worktreeId);
+      const rows = yield* db
+        .select()
+        .from(resourceApprovals)
+        .where(
+          and(
+            inArray(
+              resourceApprovals.definitionId,
+              definitions.map((definition) => definition.id),
+            ),
+            worktreeId === null
+              ? forProject
+              : or(forProject, eq(resourceApprovals.worktreeId, worktreeId)),
+          ),
+        )
+        .orderBy(desc(resourceApprovals.revision))
+        .pipe(Effect.orDie);
+      return yield* Effect.forEach(
+        definitions,
+        Effect.fnUntraced(function* (definition): Effect.fn.Return<DefinitionWithApproval> {
+          // Bound to the digest listed, so a spec declared since cannot borrow its approval.
+          const row = rows.find(
+            (approval) =>
+              approval.definitionId === definition.id &&
+              approval.definitionDigest === definition.specDigest &&
+              (approval.worktreeId === null || definition.spec.scope === "worktree"),
+          );
+          return { definition, approval: row === undefined ? null : yield* toApproval(row) };
+        }),
+      );
     });
 
     const fenceProjectRemoval = Effect.fn("ResourcesRepo.fenceProjectRemoval")(function* (
@@ -799,8 +1004,13 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
 
     return {
       declare,
-      remove,
+      removeIfCurrent,
+      propose,
+      proposals,
+      proposalById,
+      withdrawProposal,
       listForProject,
+      listWithApprovals,
       byName,
       fenceProjectRemoval,
       liftProjectRemovalFence,

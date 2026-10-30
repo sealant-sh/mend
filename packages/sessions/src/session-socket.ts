@@ -109,6 +109,11 @@ export interface SessionSocketApi {
    * the fact (`agentHookTarget`).
    */
   readonly agentHook: (report: AgentHookReport) => Effect.Effect<AgentHookOutcome>;
+  /**
+   * `mend resource` (ADR 0019): the session whose project's resources a request asks about. A
+   * token that reaches no helper route refuses it, as it refuses the others.
+   */
+  readonly resourceSession: () => Effect.Effect<SessionId>;
   /** Who calls Mend's MCP server, with the session's agent process a request `named`, if any. */
   readonly mcpCaller: (
     named: SessionProcessId | null,
@@ -743,8 +748,43 @@ const main = async () => {
     }
     return;
   }
+  if (group === "resource") {
+    // The server decides: a workspace reads status, and Mend refuses its proposals and removals.
+    // Every line came from a proposal anyone could make, so its control characters print as text.
+    const printable = (text) =>
+      String(text).replace(/[\\u0000-\\u001f\\u007f-\\u009f]/g, (c) => "\\\\x" + c.charCodeAt(0).toString(16).padStart(2, "0"));
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const query = "?timeZone=" + encodeURIComponent(zone);
+    const asked =
+      verb === undefined || verb === "list"
+        ? ["GET", "/resources" + query]
+        : verb === "add"
+          ? ["POST", "/resources" + query]
+          : verb === "remove" && rest[0] !== undefined
+            ? ["DELETE", "/resources/" + encodeURIComponent(rest[0]) + query]
+            : null;
+    if (asked === null) fail("this workspace helper speaks: mend resource list · mend resource add · mend resource remove NAME");
+    let status;
+    try {
+      status = await request(asked[0], asked[1], asked[0] === "POST" ? {} : undefined, 30 * 1000);
+    } catch (error) {
+      fail(printable(error.message));
+    }
+    const lines = [...status.statusLines];
+    const file = status.file;
+    if (file.kind === "unavailable") lines.push("mend.toml · " + file.message);
+    if (file.kind === "unparsed") lines.push("mend.toml · " + file.observed + " · " + file.message);
+    if (file.kind === "read" && file.statusLines.length + file.notices.length > 0) {
+      lines.push("mend.toml · " + file.observed);
+      for (const line of file.statusLines) lines.push(line);
+      for (const notice of file.notices) lines.push("  " + notice);
+    }
+    if (lines.length === 0) lines.push("no resources declared or proposed");
+    for (const line of lines) console.log(printable(line));
+    return;
+  }
   if (group !== "service") {
-    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend land · mend stop · mend hook <claude|codex> · mend mcp");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend resource list · mend land · mend stop · mend hook <claude|codex> · mend mcp");
   }
   try {
     switch (verb) {
@@ -951,7 +991,7 @@ export const SessionSocketHostLive: Layer.Layer<
         // 2026-09-28 (4) #10).
         const local: SessionSocketApi = { ...api, capture: undefined, captureAs: undefined };
         const server = http.createServer((request, response) => {
-          void handleSessionRequest(local, request, response, registry.mcp);
+          void handleSessionRequest(local, request, response, registry);
         });
         server.on("connect", (request, socket, head) => {
           void handleGitConnect(local, request, socket as net.Socket, head);

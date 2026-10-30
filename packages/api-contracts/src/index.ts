@@ -6,6 +6,7 @@ export * from "./workbench-views.ts";
 export * from "./settings.ts";
 export * from "./projects.ts";
 export * from "./project-environment.ts";
+export * from "./resources.ts";
 export * from "./sessions.ts";
 export * from "./pages.ts";
 export * from "./skills.ts";

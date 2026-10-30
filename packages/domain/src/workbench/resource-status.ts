@@ -99,7 +99,52 @@ export type ResourceStatusView =
       readonly use: ProjectResourceUse;
       readonly restarted: ReadonlyArray<string>;
       readonly waitingFor: ReadonlyArray<string>;
+    }
+  /** A definition or proposal with no instance behind it: what was declared, where and by whom. */
+  | {
+      readonly kind: "declared";
+      readonly definition: ResourceDefinitionInput;
+      readonly source: ResourceDeclaration;
     };
+
+/**
+ * Where a declared resource stands: a person's proposal, a file's, or project settings. A
+ * proposal identical to the definition settings hold says so, since approving it changes nothing.
+ */
+export type ResourceDeclaration =
+  | { readonly kind: "proposal"; readonly by: string; readonly sameAsSettings: boolean }
+  | { readonly kind: "file"; readonly sameAsSettings: boolean }
+  | { readonly kind: "settings"; readonly approval: ResourceDeclaredApproval | null };
+
+/**
+ * The approval of the spec as listed: a manager's for the project, or a change owner's for the
+ * worktree read (decision G4), which the line keeps apart.
+ */
+export interface ResourceDeclaredApproval {
+  readonly by: string;
+  readonly for: "project" | "worktree";
+}
+
+const waits = (sameAsSettings: boolean) =>
+  sameAsSettings ? "same as settings" : "waiting for approval";
+
+const declarationParts = (source: ResourceDeclaration): ReadonlyArray<string> => {
+  switch (source.kind) {
+    case "proposal":
+      return [`proposed by ${source.by}`, waits(source.sameAsSettings)];
+    case "file":
+      return ["proposed in mend.toml", waits(source.sameAsSettings)];
+    case "settings":
+      return source.approval === null
+        ? ["waiting for approval"]
+        : [
+            source.approval.for === "project"
+              ? `approved by ${source.approval.by}`
+              : `approved by ${source.approval.by} for this worktree`,
+            "not started",
+          ];
+  }
+};
 
 /**
  * `postgres:17` → `postgres 17`, `rabbitmq:4-management` → `rabbitmq 4`, `axllent/mailpit:v1.21`
@@ -262,6 +307,8 @@ export const resourceStatusLine = (
     switch (view.kind) {
       case "launched-without":
         return launchParts(def, view.because);
+      case "declared":
+        return [engineOf(def), def.scope, ...declarationParts(view.source)];
       case "switched":
         return [
           ...choiceParts(def, view.use, clock),

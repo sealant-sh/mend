@@ -105,6 +105,7 @@ const sessionApi = (
   stopSession: refused,
   land: refused,
   agentHook: refused,
+  resourceSession: refused,
   listRepositories: refused,
   addableProjects: refused,
   addRepository: refused,

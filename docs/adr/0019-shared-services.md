@@ -335,15 +335,16 @@ settings, the ready check and the exports, and it adds what a generic image cann
 
 ### What a person writes and sees
 
-A manager declares a resource in project settings or with `mend resource`. The command is new,
-because `mend service <word>` already runs any word that is not a verb as a recipe name
+Any member who can see the project proposes a resource, in project settings or with
+`mend resource add`, and a manager approves it (decision G1). The command is new, because
+`mend service <word>` already runs any word that is not a verb as a recipe name
 (`apps/cli/src/main.ts`, `serviceCommand`).
 
 ```sh
 $ mend resource add db --preset postgres --version 17
-@db · postgres 17 · project · declared · new worktrees get their own database (empty while shared is empty)
+@db · postgres 17 · project · proposed by Maria · waiting for approval
 $ mend resource add mail --image axllent/mailpit:v1.21 --port smtp=1025 --port http=8025 --scope worktree
-@mail · axllent/mailpit · worktree · waiting for approval
+@mail · mailpit · worktree · proposed by Maria · waiting for approval
 ```
 
 A project can also propose definitions in `mend.toml`, which review like code. A file's table is a
@@ -373,9 +374,12 @@ Service:
 
 ```text
 $ mend resource list
-@db     postgres 17 · project · its own database · copied from shared 14:02 · observed 3 s ago
-@queue  rabbitmq 4 · project · shared · reached by 3 worktrees · observed 3 s ago
-@mail   mailpit · worktree · running · observed 3 s ago
+settings
+  @db · postgres 17 · project · its own database · copied from shared 14:02 · observed 3 s ago  postgres:17  rdef_4c1e
+  @queue · rabbitmq 4 · project · shared · reached by 3 worktrees · observed 3 s ago  rabbitmq:4-management  rdef_9a07
+  @mail · mailpit · worktree · running · observed 3 s ago  axllent/mailpit:v1.21  rdef_e2b3
+proposals
+  @cache · redis 8 · project · proposed by Tom · waiting for approval  redis:8  rprop_51d0
 ```
 
 ```sh
@@ -539,9 +543,11 @@ A resource's data lives in its volumes and nowhere else. It is never in a captur
 
 This is decision S12, restated for any resource. As in ADR 0017 decision log 6, only Mend's
 person-facing surfaces (the web app, the phone, VS Code, the CLI on a person's machine) decide a
-selection, a start, a stop or a reset. A `mend resource` call from inside a workspace, whichever
-token carries it, can only read status or make the agent's copy. The copy keeps the previous
-generation, so it cannot lose data.
+selection, a start, a stop or a reset. A `mend resource` call through the session's socket or
+channel, whichever token carries it there, can only read status or make the agent's copy. The copy
+keeps the previous generation, so it cannot lose data. A personal token copied into a workspace and
+used on the account API counts as the person, as ADR 0017's build accepts: Mend's authentication
+proves the account, not the device a call came from.
 
 A resource spends nobody's login, because no harness runs in it, so ADRs 0013, 0016 and 0018 have
 nothing to charge. Its compute and disk belong to the project-scoped principal (decision S7). The

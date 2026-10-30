@@ -9,6 +9,9 @@ import { SessionId } from "@mend/domain";
 import {
   AgentHookReport,
   PAGE_REQUEST_MAX_BYTES,
+  ReaderTimeZone,
+  type ResourceAct,
+  type ResourcesStatus,
   type ServiceBrowserScheme,
 } from "@mend/domain/workbench";
 import { DeploymentConfig } from "@mend/store";
@@ -45,6 +48,30 @@ import type { SessionSocketApi } from "./session-socket.ts";
 
 // ─── Registry ───────────────────────────────────────────────────────────────
 
+/**
+ * A workspace's request about its session's project's resources (`Resources.forSession`): a read
+ * answers status, and the permission function refuses any change with its words.
+ */
+export type SessionResources = (
+  sessionId: SessionId,
+  act: ResourceAct,
+  clock: { readonly now: Date; readonly timeZone: string },
+) => Effect.Effect<ResourcesStatus, { readonly message: string }>;
+
+/**
+ * The act a helper request asks: `GET /resources` reads, `POST /resources` proposes, and
+ * `DELETE /resources/<name>` removes. A workspace names no proposal's author, so a removal is
+ * asked as a definition's; the workspace's refusal is the same either way.
+ */
+const workspaceResourceAct = (route: string, pathname: string): ResourceAct | null => {
+  if (route === "GET /resources") return { kind: "read" };
+  if (route === "POST /resources") return { kind: "propose" };
+  if (route.startsWith("DELETE /resources/") && pathname.length > "/resources/".length) {
+    return { kind: "remove-definition" };
+  }
+  return null;
+};
+
 export class SessionChannelRegistry extends Context.Service<
   SessionChannelRegistry,
   {
@@ -54,6 +81,8 @@ export class SessionChannelRegistry extends Context.Service<
     readonly size: () => number;
     readonly serveMcp: (server: MendMcp["Service"] | undefined) => void;
     readonly mcp: () => MendMcp["Service"] | undefined;
+    readonly serveResources: (reader: SessionResources | undefined) => void;
+    readonly resources: () => SessionResources | undefined;
   }
 >()("@mend/sessions/SessionChannelRegistry") {}
 
@@ -62,6 +91,7 @@ export const SessionChannelRegistryLive: Layer.Layer<SessionChannelRegistry> = L
   () => {
     const live = new Map<SessionId, SessionSocketApi>();
     let mcp: MendMcp["Service"] | undefined;
+    let resources: SessionResources | undefined;
     return {
       register: (sessionId, api) => {
         live.set(sessionId, api);
@@ -75,6 +105,10 @@ export const SessionChannelRegistryLive: Layer.Layer<SessionChannelRegistry> = L
         mcp = server;
       },
       mcp: () => mcp,
+      serveResources: (reader) => {
+        resources = reader;
+      },
+      resources: () => resources,
     };
   },
 );
@@ -86,6 +120,7 @@ export const MAX_BODY_BYTES = 64 * 1024;
 
 const MAX_AGENT_HOOK_BODY_BYTES = 4 * 1024;
 const decodeAgentHookReport = Schema.decodeUnknownExit(AgentHookReport);
+const decodeTimeZone = Schema.decodeUnknownExit(ReaderTimeZone);
 
 const readBody = (
   request: http.IncomingMessage,
@@ -169,7 +204,10 @@ const relayMcp = async (
   const method = request.method ?? "GET";
   const body = method === "POST" ? await readBytes(request, PAGE_REQUEST_MAX_BYTES) : undefined;
   if (body === null) {
-    response.writeHead(413, { "content-type": "application/json", connection: "close" });
+    response.writeHead(413, {
+      "content-type": "application/json",
+      connection: "close",
+    });
     response.end(
       JSON.stringify({
         message: `an MCP request may be at most ${PAGE_REQUEST_MAX_BYTES} bytes`,
@@ -254,7 +292,7 @@ export const handleSessionRequest = async (
   api: SessionSocketApi,
   request: http.IncomingMessage,
   response: http.ServerResponse,
-  mcp: SessionChannelRegistry["Service"]["mcp"],
+  registry: Pick<SessionChannelRegistry["Service"], "mcp" | "resources">,
 ): Promise<void> => {
   const respond = (status: number, payload: unknown): void => {
     response.writeHead(status, { "content-type": "application/json" });
@@ -263,7 +301,9 @@ export const handleSessionRequest = async (
   const url = new URL(request.url ?? "/", "http://mend.sock");
   const route = `${request.method} ${url.pathname}`;
   try {
-    if (url.pathname === MEND_MCP_PATH) return await relayMcp(api, mcp(), request, response);
+    if (url.pathname === MEND_MCP_PATH) {
+      return await relayMcp(api, registry.mcp(), request, response);
+    }
     if (request.method === "POST" && CAPTURE_ROUTES.has(url.pathname)) {
       // sealantd's registrar (ADR-0002 "Session channel routes"): a manifest can run to
       // megabytes, so these read a larger body than the helper's tiny requests. Arrival is
@@ -357,6 +397,25 @@ export const handleSessionRequest = async (
         typeof body["worktree"] === "string" && body["worktree"] !== "" ? body["worktree"] : null;
       return respond(202, await Effect.runPromise(api.addRepository({ project, name, worktree })));
     }
+    // Resources (ADR 0019, "Who may do what"): `Resources.forSession` decides every request as
+    // the workspace's, so a read answers status and a change is refused there.
+    if (url.pathname === "/resources" || url.pathname.startsWith("/resources/")) {
+      const act = workspaceResourceAct(route, url.pathname);
+      if (act === null) return respond(404, { message: `no resources route ${route}` });
+      const serve = registry.resources();
+      if (serve === undefined) return respond(503, { message: "resources cannot be read now" });
+      const timeZone = decodeTimeZone(url.searchParams.get("timeZone") ?? "UTC");
+      if (Exit.isFailure(timeZone)) {
+        return respond(400, { message: "timeZone must be an IANA time zone" });
+      }
+      const sessionId = await Effect.runPromise(api.resourceSession());
+      const answer = await Effect.runPromise(
+        Effect.result(serve(sessionId, act, { now: new Date(), timeZone: timeZone.value })),
+      ).catch(() => null);
+      if (answer === null) return respond(503, { message: "resources could not be read now" });
+      if (answer._tag === "Failure") return respond(403, { message: answer.failure.message });
+      return respond(200, answer.success);
+    }
     if (route === "POST /session/land") {
       // The landing answers when it has pushed and its pull request step is done, or refused.
       return respond(200, await Effect.runPromise(api.land()));
@@ -370,7 +429,11 @@ export const handleSessionRequest = async (
           "content-type": "application/json",
           "retry-after": String(outcome.retryAfterSeconds),
         });
-        response.end(JSON.stringify({ message: "too many hook reports from this session" }));
+        response.end(
+          JSON.stringify({
+            message: "too many hook reports from this session",
+          }),
+        );
         return;
       }
       if (outcome === "no-live-agent") {
@@ -399,7 +462,9 @@ export const handleSessionRequest = async (
     }
     return respond(404, { message: `unknown route: ${route}` });
   } catch (error) {
-    return respond(422, { message: error instanceof Error ? error.message : String(error) });
+    return respond(422, {
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 };
 
@@ -586,7 +651,11 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           /** A one-off write's token: its pickups, and nothing else (mend#615 review 3). */
           readonly pickupOnly: boolean;
         }
-      | { readonly ok: false; readonly status: number; readonly message: string }
+      | {
+          readonly ok: false;
+          readonly status: number;
+          readonly message: string;
+        }
     > => {
       const credentials = parseChannelCredentials(headers);
       if (credentials === undefined) {
@@ -645,17 +714,24 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
       // Pickups likewise: a ticket redeemed here answers only for the launch the token names, and,
       // for a person's token, only for that person (`pickupChannelMatch`). The launch's own token
       // names nobody.
-      const pickup = api.pickupAs?.({ launchId: resolved.launchId, accountId: null });
+      const pickup = api.pickupAs?.({
+        launchId: resolved.launchId,
+        accountId: null,
+      });
       return { ok: true, api: { ...api, capture, pickup }, pickupOnly: false };
     };
     /** What a one-off write's token may ask: its pickup, nothing else. */
-    const pickupOnlyRefusal = { message: "session channel: this token redeems pickups only" };
+    const pickupOnlyRefusal = {
+      message: "session channel: this token redeems pickups only",
+    };
 
     const onRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {
       authenticate(request.headers)
         .then((auth) => {
           if (!auth.ok) {
-            response.writeHead(auth.status, { "content-type": "application/json" });
+            response.writeHead(auth.status, {
+              "content-type": "application/json",
+            });
             response.end(JSON.stringify({ message: auth.message }));
             return;
           }
@@ -668,7 +744,7 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
             response.end(JSON.stringify(pickupOnlyRefusal));
             return;
           }
-          return handleSessionRequest(auth.api, request, response, registry.mcp);
+          return handleSessionRequest(auth.api, request, response, registry);
         })
         .catch((cause: unknown) => {
           unanswered(cause);
@@ -771,5 +847,8 @@ const splitListen = (listen: string): readonly [string, string] => {
 /** The listener that serves nothing: local mode, or tests that only exercise the socket. */
 export const SessionChannelNetworkHostOff: Layer.Layer<SessionChannelNetworkHost> = Layer.succeed(
   SessionChannelNetworkHost,
-  { endpoint: undefined, address: undefined },
+  {
+    endpoint: undefined,
+    address: undefined,
+  },
 );

@@ -68,6 +68,10 @@ export type ResourceDatabaseId = typeof ResourceDatabaseId.Type;
 export const ResourceDefinitionId = Schema.String.pipe(Schema.brand("ResourceDefinitionId"));
 export type ResourceDefinitionId = typeof ResourceDefinitionId.Type;
 
+/** A member's proposed resource definition, kept apart from settings (ADR 0019, decision G1). */
+export const ResourceProposalId = Schema.String.pipe(Schema.brand("ResourceProposalId"));
+export type ResourceProposalId = typeof ResourceProposalId.Type;
+
 /** One approved revision of a resource definition (ADR 0019, "Approving a definition"). */
 export const ResourceApprovalId = Schema.String.pipe(Schema.brand("ResourceApprovalId"));
 export type ResourceApprovalId = typeof ResourceApprovalId.Type;

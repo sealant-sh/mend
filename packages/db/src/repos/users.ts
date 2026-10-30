@@ -22,6 +22,8 @@ export class UsersRepo extends Context.Service<
   {
     readonly count: () => Effect.Effect<number>;
     readonly byId: (id: string) => Effect.Effect<UserFacts | null>;
+    /** The accounts among `ids` that exist, in no order. */
+    readonly byIds: (ids: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<UserFacts>>;
     /** Case-insensitive email lookup. */
     readonly byEmail: (email: string) => Effect.Effect<UserFacts | null>;
     /** The earliest registered account, or null on an unclaimed instance. */
@@ -50,6 +52,14 @@ export const UsersRepoLive: Layer.Layer<UsersRepo, never, PgClient.PgClient> = L
       return rows[0] === undefined ? null : decodeFacts(rows[0]);
     });
 
+    const byIds = Effect.fn("UsersRepo.byIds")(function* (ids: ReadonlyArray<string>) {
+      if (ids.length === 0) return [];
+      const rows = yield* sql`SELECT id, name, email FROM "user" WHERE id IN ${sql.in([
+        ...new Set(ids),
+      ])}`.pipe(Effect.orDie);
+      return rows.map((row) => decodeFacts(row));
+    });
+
     const byEmail = Effect.fn("UsersRepo.byEmail")(function* (email: string) {
       const rows = yield* sql`
         SELECT id, name, email FROM "user" WHERE lower(email) = lower(${email.trim()}) LIMIT 1`.pipe(
@@ -76,6 +86,6 @@ export const UsersRepoLive: Layer.Layer<UsersRepo, never, PgClient.PgClient> = L
       yield* sql`DELETE FROM "session" WHERE "userId" = ${id}`.pipe(Effect.orDie);
     });
 
-    return { count, byId, byEmail, oldest, deactivate, revokeAuthSessions };
+    return { count, byId, byIds, byEmail, oldest, deactivate, revokeAuthSessions };
   }),
 );
