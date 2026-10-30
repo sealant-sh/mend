@@ -67,6 +67,7 @@ import {
   OS_LABELS,
   parsePackageDraft,
   resolutionIssue,
+  SCREEN_SWITCH_COPY,
   workspaceImageSummary,
 } from "#/lib/workspace-environment";
 
@@ -193,6 +194,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
   const [error, setError] = useState<string | null>(null);
   const [rejections, setRejections] = useState<ReadonlyArray<WorkspacePackageResolutionDto>>([]);
   const dockerLabelId = useId();
+  const screenLabelId = useId();
 
   const openEditor = () => {
     const from = effective;
@@ -274,6 +276,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
           <p className="mt-2.5 font-mono text-xs text-ink-2">
             {effective === null ? "inherited default" : workspaceImageSummary(effective)}
             {effective === null || effective.services.docker ? null : " · docker disabled"}
+            {effective?.mode === "family" && effective.screen ? " · screen" : null}
             {project.workspaceImage === null ? (
               <span className="text-faint"> · inherited</span>
             ) : (
@@ -348,6 +351,31 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
                     {shell}
                   </button>
                 ))}
+              </div>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p id={screenLabelId} className="font-sans text-xs font-medium text-foreground">
+                    Screen
+                  </p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                    {SCREEN_SWITCH_COPY}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={draft.screen}
+                  aria-labelledby={screenLabelId}
+                  disabled={busy}
+                  onClick={() => setDraft({ ...draft, screen: !draft.screen })}
+                  className={`shrink-0 rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                    draft.screen
+                      ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                      : "border-border bg-card text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {draft.screen ? "enabled" : "disabled"}
+                </button>
               </div>
             </>
           ) : (
