@@ -115,6 +115,16 @@ by an older gateway no longer reads files, which now need a permission of their 
 - A message you send goes as you, with your device, under shared control too: in a per-person
   workspace your turn spends your own login, and in a workspace that shares one home, the owner's
   (see [Per-person workspaces](/operate/per-person-workspaces/)).
+- In a Codex or Claude thread, a message you send while your own turn runs goes into that turn when
+  T3 Code sends it to steer: Ctrl/⌘+Enter, the steer follow-up setting, or Send now on a queued
+  message. It shows in the turn with T3 Code's Steer badge. A message for someone else's running
+  turn waits as your own next turn, and so does a `/goal`. When Mend refuses a steer, a message from
+  the composer comes back to your composer as a draft, and a queued message you sent now goes back
+  to its place in the queue. If nobody is waiting for the draft, for example after a gateway
+  restart, the message stays in the turn, marked failed, with your words. When Mend's answer does
+  not arrive, the message shows as pending and the gateway asks Mend again with the same key, so
+  Mend keeps one copy. If Mend still does not confirm it, the message stays in the turn, marked
+  failed, with your words.
 - Threads show Mend's own lines about a shared workspace, as its web app does: who else runs in it
   ("Shared workspace with Anna · each of you runs as yourself · either of you can read the other's
   files."), a turn that waits for the previous sender's work, and a workspace that started before
@@ -156,11 +166,10 @@ by an older gateway no longer reads files, which now need a permission of their 
 Some of t3code has no counterpart in Mend. The gateway does not grant the permissions behind it, so
 t3code shows those controls inert with its own wording, or it refuses them with t3code's own error:
 
-- **In a thread:** steering a running turn (Ctrl/⌘+Enter, or the steer follow-up setting; send the
-  message to run after it instead), holding a message back to send later, runtime modes between
-  asking and full access, switching the provider, the Fast service tier, plan mode, rollback and
-  forks, and attachments other than images. Provider slash commands are absent: `/` lists t3code's
-  own commands and the skills only. `/feedback` is refused.
+- **In a thread:** holding a message back to send later, runtime modes between asking and full
+  access, switching the provider, the Fast service tier, plan mode, rollback and forks, and
+  attachments other than images. Provider slash commands are absent: `/` lists t3code's own commands
+  and the skills only. `/feedback` is refused.
 - **Projects and git:** adding by path or URL, cloning, importing, renaming and removing projects
   (adopt and edit them in Mend), a thread in an ordinary project's root, since every Mend session
   has a worktree, open in editor, editing files, pull request views, publishing a repository, and

@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 
 import {
   CheckpointId,
+  CheckpointScopeId,
   MessageId,
   NodeId,
   ProjectId,
@@ -9,6 +10,9 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   RunId,
+  RunAttemptId,
+  ProviderTurnId,
+  type OrchestrationV2ThreadProjection,
   RuntimeRequestId,
   ThreadId,
   type ModelSelection,
@@ -38,8 +42,9 @@ import { modelOptionsOf, shownModelOf, type ThreadModelOptions } from "./model-o
 import type { ThreadNotices } from "./notices.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import type { WorkspacePreparation } from "./queue.ts";
-import { harnessOwnModelOf, harnessProvider } from "./server-config.ts";
+import { harnessOwnModelOf, harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
+import type { ShownSteer } from "./steering.ts";
 
 /**
  * Mend's projects and protocol sessions as t3code's shell (ADR 0012, "Concepts"): a project is a
@@ -93,6 +98,8 @@ export interface ThreadSource {
   readonly messageIds: ReadonlyMap<string, string>;
   /** Messages a t3code client sent that are not a Mend turn yet: the gateway's queue. */
   readonly pending: ReadonlyArray<PendingRun>;
+  /** The steers its clients sent, settled or on their way (`steering.ts`). */
+  readonly steers: ReadonlyArray<ShownSteer>;
   /**
    * For a watched thread, each ended turn's checkpoint and the files its turn changed
    * (`turn-checkpoints.ts`); empty for a thread nobody watches.
@@ -270,6 +277,113 @@ export const runIdOf = (source: ThreadSource, turn: MendTurn): RunId =>
 export const userMessageIdOf = (source: ThreadSource, turn: MendTurn): MessageId =>
   MessageId.make(source.messageIds.get(turn.id) ?? `message:${turn.id}`);
 
+export const turnNodeIdOf = (turnId: string): NodeId => NodeId.make(`node:turn:${turnId}`);
+/** A native steer joins the running turn, so a Mend turn never has a second attempt. */
+const ONLY_ATTEMPT = 1;
+const turnAttemptIdOf = (turnId: string): RunAttemptId =>
+  RunAttemptId.make(`attempt:${turnId}:${ONLY_ATTEMPT}`);
+export const providerTurnIdOf = (turn: MendTurn | undefined): ProviderTurnId | null =>
+  turn?.providerTurnId == null ? null : ProviderTurnId.make(`provider-turn:${turn.id}`);
+
+export const turnGraphOf = (
+  source: ThreadSource,
+): Pick<OrchestrationV2ThreadProjection, "attempts" | "nodes" | "providerTurns"> => {
+  const attempts: Array<OrchestrationV2ThreadProjection["attempts"][number]> = [];
+  const nodes: Array<OrchestrationV2ThreadProjection["nodes"][number]> = [];
+  const providerTurns: Array<OrchestrationV2ThreadProjection["providerTurns"][number]> = [];
+  const selection = modelSelectionOf(source);
+  const providerThreadId = providerThreadIdOf(source.session);
+  const pending = pendingTurnIds(source);
+  const provider = harnessProvider(source.session.harness);
+  const { exposesNativeTurnId } = harnessSteeringOf(source.session.harness);
+  source.turns.toSorted(byOrdinal).forEach((turn, index) => {
+    const runId = runIdOf(source, turn);
+    const rootNodeId = turnNodeIdOf(turn.id);
+    const attemptId = turnAttemptIdOf(turn.id);
+    const providerTurnId = providerTurnIdOf(turn);
+    const status =
+      turn.status === "queued"
+        ? "pending"
+        : turn.status === "running"
+          ? "running"
+          : turn.status === "completed"
+            ? "completed"
+            : turn.status === "interrupted"
+              ? "interrupted"
+              : turn.status === "cancelled"
+                ? "cancelled"
+                : "failed";
+    const startedAt = turn.startedAt === null ? null : utc(turn.startedAt);
+    const completedAt = turn.endedAt === null ? null : utc(turn.endedAt);
+    attempts.push({
+      id: attemptId,
+      runId,
+      attemptOrdinal: ONLY_ATTEMPT,
+      rootNodeId,
+      providerInstanceId: selection.instanceId,
+      providerThreadId,
+      providerTurnId,
+      reason: "initial",
+      status,
+      startedAt,
+      completedAt,
+    });
+    nodes.push({
+      id: rootNodeId,
+      rootNodeId,
+      threadId: threadIdOf(source),
+      runId,
+      parentNodeId: null,
+      kind: "root_turn",
+      status: status === "running" && pending.has(turn.id) ? "waiting" : status,
+      countsForRun: true,
+      providerThreadId,
+      providerTurnId,
+      nativeItemRef: null,
+      runtimeRequestId: null,
+      checkpointScopeId: null,
+      startedAt,
+      completedAt,
+    });
+    if (providerTurnId !== null)
+      providerTurns.push({
+        id: providerTurnId,
+        providerThreadId,
+        nodeId: rootNodeId,
+        runAttemptId: attemptId,
+        nativeTurnRef:
+          exposesNativeTurnId && provider !== null && turn.providerTurnId != null
+            ? { driver: provider.driver, nativeId: turn.providerTurnId, strength: "strong" }
+            : null,
+        ordinal: index + 1,
+        status,
+        startedAt,
+        completedAt,
+      });
+  });
+  if (source.turnCheckpoints.size > 0) {
+    const root = NodeId.make(`root:${source.threadId}`);
+    nodes.push({
+      id: root,
+      rootNodeId: root,
+      threadId: threadIdOf(source),
+      runId: null,
+      parentNodeId: null,
+      kind: "system",
+      status: "idle",
+      countsForRun: false,
+      providerThreadId,
+      providerTurnId: null,
+      nativeItemRef: null,
+      runtimeRequestId: null,
+      checkpointScopeId: CheckpointScopeId.make(`scope:${source.threadId}`),
+      startedAt: null,
+      completedAt: null,
+    });
+  }
+  return { attempts, nodes, providerTurns };
+};
+
 // ─── Entities ────────────────────────────────────────────────────────────────
 
 /** Mend's run statuses are t3code's; a running turn its agent is waiting on a person for is `waiting`. */
@@ -277,11 +391,13 @@ const runStatusOf = (
   turn: MendTurn,
   pending: boolean,
   sentByGateway: boolean,
+  behindRunning: boolean,
 ): OrchestrationV2RunStatus => {
   switch (turn.status) {
-    // A turn the gateway sent only when nothing was open is about to run, not waiting in line.
+    // A turn the gateway sent with nothing running is about to run; one behind a running turn
+    // (a steer Mend queued) waits in line.
     case "queued":
-      return sentByGateway ? "starting" : "queued";
+      return sentByGateway && !behindRunning ? "starting" : "queued";
     case "running":
       return pending ? "waiting" : "running";
     case "completed":
@@ -378,6 +494,8 @@ export const threadUpdatedAtOf = (source: ThreadSource): string =>
     ...source.turns.flatMap((turn) => [turn.createdAt, turn.startedAt, turn.endedAt]),
     ...source.requests.flatMap((request) => [request.createdAt, request.decidedAt]),
     ...source.pending.map((entry) => entry.requestedAt),
+    ...source.turns.flatMap((turn) => (turn.steers ?? []).map((steer) => steer.updatedAt)),
+    ...source.steers.map((steer) => steer.requestedAt),
   ]) ?? source.session.updatedAt;
 
 const utcOrNull = (iso: string | null): DateTime.Utc | null => (iso === null ? null : utc(iso));
@@ -442,9 +560,14 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
       modelSelection,
       providerThreadId,
       userMessageId: userMessageIdOf(source, turn),
-      rootNodeId: null,
-      activeAttemptId: null,
-      status: runStatusOf(turn, pending.has(turn.id), source.runIds.has(turn.id)),
+      rootNodeId: turnNodeIdOf(turn.id),
+      activeAttemptId: turnAttemptIdOf(turn.id),
+      status: runStatusOf(
+        turn,
+        pending.has(turn.id),
+        source.runIds.has(turn.id),
+        source.turns.some((other) => other.status === "running"),
+      ),
       requestedAt: utc(turn.createdAt),
       startedAt: turn.startedAt === null ? null : utc(turn.startedAt),
       completedAt: turn.endedAt === null ? null : utc(turn.endedAt),
@@ -537,8 +660,7 @@ const decisionOf = (decision: string | null): OrchestrationV2RuntimeRequest["dec
 };
 
 /** The execution node a request hangs from; requests have no turn tree in Mend. */
-export const requestNodeIdOf = (request: MendRequest): NodeId =>
-  NodeId.make(`request-node:${request.id}`);
+export const requestNodeIdOf = (request: MendRequest): NodeId => turnNodeIdOf(request.turnId);
 
 export const runtimeRequestsOf = (
   source: ThreadSource,
@@ -548,7 +670,7 @@ export const runtimeRequestsOf = (
     return {
       id: RuntimeRequestId.make(request.id),
       nodeId: requestNodeIdOf(request),
-      providerTurnId: null,
+      providerTurnId: providerTurnIdOf(source.turns.find((turn) => turn.id === request.turnId)),
       nativeRequestRef: null,
       kind: requestKindOf(request.kind),
       status: requestStatusOf(request.status),
@@ -625,6 +747,10 @@ export const threadShellOf = (
   // as a message the moment it is dispatched, and a launched thread's client waits for it.
   const latestUserMessage = latestOf([
     source.turns.toSorted(byOrdinal).findLast((t) => t.origin !== "harness")?.createdAt,
+    ...source.turns.flatMap((turn) => (turn.steers ?? []).map((steer) => steer.createdAt)),
+    ...source.steers
+      .filter((steer) => steer.outcome.kind !== "returned")
+      .map((steer) => steer.requestedAt),
     ...source.pending
       .filter((entry) => entry.state !== "cancelled")
       .map((entry) => entry.requestedAt),

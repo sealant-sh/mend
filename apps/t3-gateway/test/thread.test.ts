@@ -479,6 +479,7 @@ describe("Mend's items as turn items", () => {
       {
         threadId: ThreadId.make(session.id),
         imagesOf: () => [],
+        steers: [],
         turnCheckpoints: new Map(),
         sharedWorktree: false,
         nextMode: null,
@@ -687,6 +688,7 @@ describe("Mend's items as turn items", () => {
       {
         threadId: ThreadId.make(session.id),
         imagesOf: () => [],
+        steers: [],
         turnCheckpoints: new Map(),
         sharedWorktree: false,
         nextMode: null,

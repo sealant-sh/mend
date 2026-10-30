@@ -160,13 +160,7 @@ export const dispatchCommand = (
       if (command.attachments.some((attachment) => attachment.type !== "image")) {
         return refuse("Mend's t3code gateway sends images, not other files.");
       }
-      const mode = command.dispatchMode.type;
-      if (mode === "steer_active" || mode === "restart_active") {
-        return refuse(
-          "Mend cannot steer a turn while it runs. Send the message to run after it instead.",
-        );
-      }
-      if (mode === "defer_start") {
+      if (command.dispatchMode.type === "defer_start") {
         return refuse("Mend's t3code gateway does not hold a message back for later.");
       }
       if (command.text.trim().length === 0 && command.attachments.length === 0) {
@@ -181,9 +175,20 @@ export const dispatchCommand = (
           text: command.text,
           imageIds: command.attachments.map((attachment) => attachment.id),
           modelSelection: command.modelSelection,
+          dispatchMode: command.dispatchMode,
+          deliveryIntent: command.deliveryIntent,
         }),
       );
     }
+    case "queued-message.promote-to-steer":
+      return answered(
+        hub.commands.promote({
+          session,
+          threadId: command.threadId,
+          queuedRunId: command.queuedRunId,
+          targetRunId: command.targetRunId,
+        }),
+      );
     case "run.interrupt":
       return answered(
         hub.commands.interrupt({

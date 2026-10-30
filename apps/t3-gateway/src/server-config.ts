@@ -40,6 +40,8 @@ interface HarnessDriver {
   readonly displayName: string;
   /** The option id t3code's own driver uses for the effort select. */
   readonly effortOptionId: string;
+  readonly activeSteeringInterruptsTools: boolean;
+  readonly exposesNativeTurnId: boolean;
 }
 
 const HARNESS_DRIVERS: Readonly<Record<string, HarnessDriver>> = {
@@ -47,11 +49,17 @@ const HARNESS_DRIVERS: Readonly<Record<string, HarnessDriver>> = {
     driver: ProviderDriverKind.make("codex"),
     displayName: "Codex",
     effortOptionId: "reasoningEffort",
+    activeSteeringInterruptsTools: false,
+    exposesNativeTurnId: true,
   },
   claude: {
     driver: ProviderDriverKind.make("claudeAgent"),
     displayName: "Claude",
     effortOptionId: "effort",
+    // Matches t3code's own Claude adapter, which sets this true, though on Claude 2.1.292 a steer
+    // sent during a Bash tool landed only after the tool finished (observed 2026-10-30).
+    activeSteeringInterruptsTools: true,
+    exposesNativeTurnId: false,
   },
 };
 
@@ -91,6 +99,21 @@ export const harnessProvider = (
         driver: driver.driver,
         displayName: driver.displayName,
       };
+};
+
+export const harnessSteeringOf = (
+  harness: string,
+): {
+  readonly supportsActiveSteering: boolean;
+  readonly activeSteeringInterruptsTools: boolean;
+  readonly exposesNativeTurnId: boolean;
+} => {
+  const driver = HARNESS_DRIVERS[harness];
+  return {
+    supportsActiveSteering: driver !== undefined,
+    activeSteeringInterruptsTools: driver?.activeSteeringInterruptsTools ?? false,
+    exposesNativeTurnId: driver?.exposesNativeTurnId ?? false,
+  };
 };
 
 /** The Mend harness a t3code provider instance stands for, or null for one Mend does not run. */

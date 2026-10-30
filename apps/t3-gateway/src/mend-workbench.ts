@@ -84,10 +84,39 @@ export const MendProjectDetail = Schema.Struct({
 });
 export type MendProjectDetail = typeof MendProjectDetail.Type;
 
+export const MendTurnSteer = Schema.Struct({
+  id: Schema.String,
+  sessionId: Schema.String,
+  processId: Schema.String,
+  turnId: Schema.String,
+  author: Schema.String,
+  ordinal: Schema.Int,
+  input: Schema.String,
+  clientSteerId: Schema.NullOr(Schema.String),
+  queuedTurnId: Schema.NullOr(Schema.String),
+  delivery: Schema.Union([
+    Schema.Struct({ _tag: Schema.Literal("Sending") }),
+    Schema.Struct({
+      _tag: Schema.Literal("Accepted"),
+      evidence: Schema.Literals(["provider-acknowledged", "transport-written"]),
+    }),
+    Schema.Struct({ _tag: Schema.Literal("Queued"), turnId: Schema.String, reason: Schema.String }),
+    Schema.Struct({ _tag: Schema.Literal("Unknown"), reason: Schema.String }),
+    Schema.Struct({ _tag: Schema.Literal("NotSent"), reason: Schema.String }),
+  ]),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+});
+export type MendTurnSteer = typeof MendTurnSteer.Type;
+
 /** `AgentTurn` in @mend/domain/workbench, from `GET /api/sessions/:id/turns`. */
 export const MendTurn = Schema.Struct({
   id: Schema.String,
   sessionId: Schema.String,
+  steers: Schema.optional(Schema.Array(MendTurnSteer)),
+  steerSender: Schema.optional(Schema.NullOr(Schema.String)),
+  fromSteer: Schema.optional(Schema.NullOr(Schema.String)),
+  providerTurnId: Schema.optional(Schema.NullOr(Schema.String)),
   /** Position in the conversation, from 0. */
   ordinal: Schema.Number,
   author: Schema.NullOr(Schema.String),

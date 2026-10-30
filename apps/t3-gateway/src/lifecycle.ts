@@ -13,6 +13,7 @@ import {
   type ThreadSource,
 } from "./shell.ts";
 import type { ThreadLifecycle } from "./state.ts";
+import type { ShownSteer } from "./steering.ts";
 
 /**
  * Settle, snooze, pin and order (`thread.settle`, `thread.unsettle`, `thread.snooze`,
@@ -48,20 +49,27 @@ const isAfter = (later: string | null, earlier: string | null): boolean =>
   later !== null && earlier !== null && Date.parse(later) > Date.parse(earlier);
 
 /**
- * The person's settle, snooze, pin and order as they stand now. A turn opened, or a message
- * queued, after a settle or a snooze ends it, as a new run does on t3code's own server: the thread
- * is no longer settled (nor kept active by an unsettle) and is awake.
+ * The person's settle, snooze, pin and order as they stand now. A turn opened, a steer sent, or a
+ * message queued, after a settle or a snooze ends it, as a new run does on t3code's own server: the
+ * thread is no longer settled (nor kept active by an unsettle) and is awake.
  */
 export const lifecycleOf = (
   kept: ThreadLifecycle | undefined,
   thread: {
-    readonly turns: ReadonlyArray<Pick<MendTurn, "createdAt">>;
+    readonly turns: ReadonlyArray<Pick<MendTurn, "createdAt" | "steers">>;
+    readonly steers: ReadonlyArray<Pick<ShownSteer, "outcome" | "requestedAt">>;
     readonly pending: ReadonlyArray<Pick<PendingRun, "state" | "requestedAt">>;
   },
 ): ThreadLifecycle => {
   if (kept === undefined) return NO_LIFECYCLE;
   const asked = latestOf([
-    ...thread.turns.map((turn) => turn.createdAt),
+    ...thread.turns.flatMap((turn) => [
+      turn.createdAt,
+      ...(turn.steers ?? []).map((steer) => steer.createdAt),
+    ]),
+    ...thread.steers
+      .filter((steer) => steer.outcome.kind !== "returned")
+      .map((steer) => steer.requestedAt),
     ...thread.pending
       .filter((entry) => entry.state !== "cancelled")
       .map((entry) => entry.requestedAt),
