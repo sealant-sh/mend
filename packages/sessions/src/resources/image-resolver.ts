@@ -66,6 +66,8 @@ export interface RegistryAccess {
   readonly mirrors: ReadonlyArray<URL>;
   /** Every address a host name resolves to; a connection dials one of these and no other. */
   readonly resolve: (host: string) => Promise<ReadonlyArray<string>>;
+  /** Whether an address is on the public internet; only an operator's mirror may dial another. */
+  readonly isPublic: (address: string) => boolean;
   /** For the whole resolution: every mirror, the token and the registry. */
   readonly deadlineMs: number;
   readonly maxManifestBytes: number;
@@ -145,7 +147,7 @@ const makeResolve = (access: RegistryAccess) => {
     const addresses = isIP(host) === 0 ? await access.resolve(host) : [host];
     const [address] = addresses;
     if (address === undefined) throw new Error(`${host} does not resolve`);
-    if (!operator && addresses.some((each) => classifyAddress(each) !== "public")) {
+    if (!operator && !addresses.every((each) => access.isPublic(each))) {
       throw new Refused(`${host} is not a public address`);
     }
     const lookup: LookupFunction = (_name, options, callback) => {
@@ -339,6 +341,7 @@ export const ResourceImageResolverLive: Layer.Layer<ResourceImageResolver, Confi
         mirrors: mirrorsOf(mirrors),
         resolve: async (host) =>
           (await dnsLookup(host, { all: true, verbatim: true })).map((each) => each.address),
+        isPublic: (address) => classifyAddress(address) === "public",
         deadlineMs: 15_000,
         maxManifestBytes: 4 * 1024 * 1024,
       });

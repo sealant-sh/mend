@@ -1,9 +1,16 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import * as http from "node:http";
+import * as https from "node:https";
+import * as os from "node:os";
+import * as path from "node:path";
+import * as tls from "node:tls";
 
 import { imageReference } from "@mend/domain/workbench";
+import { classifyAddress } from "@mend/store";
 import { Effect, Result } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
   imageRefusalLine,
@@ -32,7 +39,7 @@ interface Seen {
 
 type Handler = (request: http.IncomingMessage, response: http.ServerResponse) => void;
 
-const servers: Array<http.Server> = [];
+const servers: Array<http.Server | https.Server> = [];
 afterEach(async () => {
   await Promise.all(
     servers.splice(0).map(
@@ -45,18 +52,25 @@ afterEach(async () => {
   );
 });
 
-/** A local registry: every request is recorded, then answered by `handle`. */
-const registry = async (handle: Handler) => {
-  const seen: Array<Seen> = [];
-  const server = http.createServer((request, response) => {
-    seen.push({ url: request.url ?? "", authorization: request.headers.authorization });
-    handle(request, response);
-  });
+const listening = async (server: http.Server | https.Server, seen: Array<Seen>) => {
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("no port");
-  const { port } = address;
+  return { port: address.port, seen };
+};
+
+const recording =
+  (seen: Array<Seen>, handle: Handler): Handler =>
+  (request, response) => {
+    seen.push({ url: request.url ?? "", authorization: request.headers.authorization });
+    handle(request, response);
+  };
+
+/** A local registry: every request is recorded, then answered by `handle`. */
+const registry = async (handle: Handler) => {
+  const seen: Array<Seen> = [];
+  const { port } = await listening(http.createServer(recording(seen, handle)), seen);
   return { origin: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, seen };
 };
 
@@ -75,6 +89,7 @@ const resolveWith = (access: Partial<RegistryAccess>, image: string) =>
         resourceImageResolverWith({
           mirrors: [],
           resolve: () => Promise.reject(new Error("no name resolves in this test")),
+          isPublic: (address) => classifyAddress(address) === "public",
           deadlineMs: 2_000,
           maxManifestBytes: 64 * 1024,
           ...access,
@@ -280,5 +295,137 @@ describe("pinning a resource's image through the registry API", () => {
     expect(refusalLine("unverifiable")).toBe(
       "@db · image postgres:17 · registry returned an unverifiable manifest · not approved",
     );
+  });
+});
+
+const hasOpenssl = spawnSync("openssl", ["version"]).status === 0;
+
+const challenge =
+  (realm: string): Handler =>
+  (_request, response) => {
+    response.writeHead(401, { "www-authenticate": `Bearer realm="${realm}",service="fixture"` });
+    response.end();
+  };
+
+/**
+ * A registry that is not a mirror: HTTPS under a name only this test resolves, on a loopback
+ * address the test calls public, with a certificate the process trusts for the test's length.
+ */
+describe.skipIf(!hasOpenssl)("a registry that is not a mirror, over HTTPS", () => {
+  const NAMES = ["registry.test", "other.test"];
+  const trusted = tls.getCACertificates("default");
+  const tlsFiles = { key: "", cert: "" };
+
+  beforeAll(() => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-registry-tls-"));
+    const key = path.join(dir, "key.pem");
+    const cert = path.join(dir, "cert.pem");
+    const made = spawnSync("openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=registry.test",
+      "-addext",
+      `subjectAltName=${NAMES.map((name) => `DNS:${name}`).join(",")}`,
+      "-keyout",
+      key,
+      "-out",
+      cert,
+    ]);
+    expect(made.status).toBe(0);
+    tlsFiles.key = fs.readFileSync(key, "utf8");
+    tlsFiles.cert = fs.readFileSync(cert, "utf8");
+    fs.rmSync(dir, { recursive: true, force: true });
+    tls.setDefaultCACertificates([...trusted, tlsFiles.cert]);
+  });
+
+  afterAll(() => {
+    tls.setDefaultCACertificates(trusted);
+  });
+
+  const secure = async (name: string, handle: Handler) => {
+    const seen: Array<Seen> = [];
+    const server = https.createServer(
+      { key: tlsFiles.key, cert: tlsFiles.cert },
+      recording(seen, handle),
+    );
+    const { port } = await listening(server, seen);
+    return { origin: `https://${name}:${port}`, host: `${name}:${port}`, seen };
+  };
+
+  /** Each test name resolves to loopback, which these tests call public; nothing else is. */
+  const publicLoopback = (addresses: Readonly<Record<string, ReadonlyArray<string>>> = {}) => {
+    const asked: Array<string> = [];
+    return {
+      asked,
+      access: {
+        resolve: async (host: string) => {
+          asked.push(host);
+          return addresses[host] ?? (NAMES.includes(host) ? ["127.0.0.1"] : []);
+        },
+        isPublic: (address: string) => address === "127.0.0.1",
+      },
+    };
+  };
+
+  it("dials the address it checked, for a name no other resolver knows", async () => {
+    const bytes = index("1");
+    const remote = await secure("registry.test", serve(bytes));
+    const names = publicLoopback();
+    const result = await resolveWith(names.access, `${remote.host}/acme/app:1`);
+    expect(result).toEqual(Result.succeed({ digest: digestOf(bytes), resolvedBy: remote.host }));
+    expect(names.asked).toEqual(["registry.test"]);
+    expect(remote.seen.map((each) => each.url)).toEqual(["/v2/acme/app/manifests/1"]);
+  });
+
+  it("sends its token to no origin a redirect names", async () => {
+    const bytes = index("1");
+    const other = await secure("other.test", serve(bytes));
+    const remote = await secure("registry.test", (request, response) => {
+      if (request.url?.startsWith("/token") === true) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ token: "pull-token" }));
+      } else if (request.headers.authorization === "Bearer pull-token") {
+        response.writeHead(307, { location: `${other.origin}/v2/acme/app/manifests/1` });
+        response.end();
+      } else {
+        challenge(`https://${request.headers.host}/token`)(request, response);
+      }
+    });
+    const result = await resolveWith(publicLoopback().access, `${remote.host}/acme/app:1`);
+    expect(result).toEqual(Result.succeed({ digest: digestOf(bytes), resolvedBy: remote.host }));
+    expect(remote.seen.map((each) => each.authorization)).toEqual([
+      undefined,
+      undefined,
+      "Bearer pull-token",
+    ]);
+    expect(other.seen).toEqual([{ url: "/v2/acme/app/manifests/1", authorization: undefined }]);
+  });
+
+  it.each([
+    ["on a private address", () => "https://10.0.0.5/token"],
+    ["over plain HTTP", (host: string) => `http://${host}/token`],
+  ])("refuses a token realm %s, asking it nothing", async (_, realm) => {
+    const remote = await secure("registry.test", (request, response) =>
+      challenge(realm(request.headers.host ?? ""))(request, response),
+    );
+    const result = await resolveWith(publicLoopback().access, `${remote.host}/acme/app:1`);
+    expect(failureOf(result)).toBe("registry-refused");
+    expect(remote.seen.map((each) => each.url)).toEqual(["/v2/acme/app/manifests/1"]);
+  });
+
+  it("refuses a name that resolves to a public address and a private one, dialing neither", async () => {
+    const remote = await secure("registry.test", serve(index("1")));
+    const names = publicLoopback({ "registry.test": ["127.0.0.1", "10.0.0.5"] });
+    const result = await resolveWith(names.access, `${remote.host}/acme/app:1`);
+    expect(failureOf(result)).toBe("registry-refused");
+    expect(remote.seen).toEqual([]);
   });
 });
