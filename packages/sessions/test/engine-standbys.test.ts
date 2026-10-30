@@ -140,11 +140,6 @@ interface DotfilesState {
   snapshot: { readonly sha: string; readonly data: string };
 }
 
-const savedRepository = (state: DotfilesState): DotfilesRepository => {
-  if (state.repository === null) throw new Error("no repository to change");
-  return state.repository;
-};
-
 /** A capture route's refusal reason, or `ok`. */
 const routeReason = <A>(effect: Effect.Effect<A, { readonly reason: string }>) =>
   effect.pipe(
@@ -461,175 +456,154 @@ describe("SessionEngine capture mode", () => {
       }),
   );
 
-  /**
-   * A standby is created with its owner's dotfiles and cannot take new ones, so it is claimable
-   * only while the owner's dotfiles resolve to what it was warmed with. A change sends the next
-   * session cold, and the next reconcile drains the stale standby and warms one with the change.
-   * One world walks every change in turn (a claim costs seconds here; a cold provision does not).
-   */
-  it.effect("a standby is claimed only while its owner's dotfiles are unchanged", () =>
-    Effect.gen(function* () {
-      // Nothing listens here: the clone fails fast and the standby records it as left out. The
-      // fingerprint is the saved repository, not the clone's outcome.
-      const warmedRepository: DotfilesRepository = {
-        url: "git://127.0.0.1:1/dots",
-        ref: null,
-        subdirectory: "dots",
-        manager: "stow",
-        bootstrap: true,
-      };
-      // Each change is made to the settings as the one before left them, so exactly one field moves.
-      const changes: ReadonlyArray<
-        readonly [string, (state: DotfilesState, world: World, project: Project) => void]
-      > = [
-        [
-          "a new snapshot",
-          (state) => {
-            state.snapshot = NEWER_SNAPSHOT;
-          },
-        ],
-        [
-          "another repository",
-          (state) => {
-            state.repository = { ...savedRepository(state), url: "git://127.0.0.1:1/other-dots" };
-          },
-        ],
-        [
-          "another branch",
-          (state) => {
-            state.repository = { ...savedRepository(state), ref: "laptop" };
-          },
-        ],
-        [
-          "another manager",
-          (state) => {
-            state.repository = { ...savedRepository(state), manager: "chezmoi" };
-          },
-        ],
-        [
-          "another subdirectory",
-          (state) => {
-            state.repository = { ...savedRepository(state), subdirectory: null };
-          },
-        ],
-        [
-          "install.sh off",
-          (state) => {
-            state.repository = { ...savedRepository(state), bootstrap: false };
-          },
-        ],
-        [
-          "no repository",
-          (state) => {
-            state.repository = null;
-          },
-        ],
-        [
-          "dotfiles turned off for the project",
-          (_state, world, project) => {
-            world.projects.set(project.id, new Project({ ...project, applyDotfiles: false }));
-          },
-        ],
-      ];
-      const created: Array<CreateOptions> = [];
-      const memory = makeMemoryCaptureStore();
-      const pool = memoryHotPool();
-      const clock = yield* makePoolClock(pool);
-      const state: DotfilesState = { repository: warmedRepository, snapshot: SNAPSHOT };
-      yield* withPreparedEngineEffect(
-        (world, tmp) => setup(tmp, world),
-        (world, tmp, adopted) =>
-          Effect.gen(function* () {
-            const project = new Project({ ...adopted, hotSessions: 1 });
-            world.projects.set(project.id, project);
-            const engine = yield* SessionEngine;
-            const provision = engine.provision({
-              projectId: project.id,
-              harness: "codex",
-              label: null,
-              name: null,
-              ownerUserId: "user-fixture",
-              start: { kind: "base", base: null },
-            });
-            yield* engine.reconcileHotSessions(project.id);
-            yield* clock.untilReady(
-              () => pool.entries.some((entry) => entry.status === "ready"),
-              "a standby",
-            );
-            expect(created[0]?.dotfiles).toEqual({
-              archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
-            });
+  /** Each case runs a real git origin and three provisions, which loaded two-core runners stretch past 5 s. */
+  const DOTFILES_CASE_BUDGET_MS = 15_000;
+  const unreachableDotfiles = "git://127.0.0.1:1";
+  const warmedRepository: DotfilesRepository = {
+    url: `${unreachableDotfiles}/dots`,
+    ref: null,
+    subdirectory: "dots",
+    manager: "stow",
+    bootstrap: true,
+  };
+  it.effect.each<{
+    readonly label: string;
+    readonly change: (state: DotfilesState, world: World, project: Project) => void;
+  }>([
+    {
+      label: "a new snapshot",
+      change: (state) => {
+        state.snapshot = NEWER_SNAPSHOT;
+      },
+    },
+    {
+      label: "another repository",
+      change: (state) => {
+        state.repository = { ...warmedRepository, url: `${unreachableDotfiles}/other-dots` };
+      },
+    },
+    {
+      label: "another branch",
+      change: (state) => {
+        state.repository = { ...warmedRepository, ref: "laptop" };
+      },
+    },
+    {
+      label: "another manager",
+      change: (state) => {
+        state.repository = { ...warmedRepository, manager: "chezmoi" };
+      },
+    },
+    {
+      label: "another subdirectory",
+      change: (state) => {
+        state.repository = { ...warmedRepository, subdirectory: null };
+      },
+    },
+    {
+      label: "install.sh off",
+      change: (state) => {
+        state.repository = { ...warmedRepository, bootstrap: false };
+      },
+    },
+    {
+      label: "no repository",
+      change: (state) => {
+        state.repository = null;
+      },
+    },
+    {
+      label: "dotfiles turned off for the project",
+      change: (_state, world, project) => {
+        world.projects.set(project.id, new Project({ ...project, applyDotfiles: false }));
+      },
+    },
+  ])(
+    "a standby is claimed only while its owner's dotfiles are unchanged: $label",
+    ({ change }) =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        const state: DotfilesState = { repository: warmedRepository, snapshot: SNAPSHOT };
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, adopted) =>
+            Effect.gen(function* () {
+              const project = new Project({ ...adopted, hotSessions: 1 });
+              world.projects.set(project.id, project);
+              const engine = yield* SessionEngine;
+              const provision = engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                start: { kind: "base", base: null },
+              });
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status === "ready"),
+                "a standby",
+              );
+              expect(created[0]?.dotfiles).toEqual({
+                archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
+              });
 
-            // Claim the unchanged baseline before applying the mutations. This drives the real
-            // registration deadline while its standby is ready, before the cold Git provisions.
-            const baseline = pool.entries.find((entry) => entry.status === "ready");
-            const baselineClaim = yield* clock.claim(provision);
-            expect(baselineClaim.id).toBe(baseline?.id);
-            yield* engine.reconcileHotSessions(project.id);
-            yield* clock.untilReady(
-              () => pool.entries.some((entry) => entry.status === "ready"),
-              "a replacement after the baseline claim",
-            );
-
-            for (const [label, change] of changes) {
               const stale = pool.entries.find((entry) => entry.status === "ready");
-              if (stale === undefined) throw new Error(`no standby before ${label}`);
+              if (stale === undefined) throw new Error("no standby before the change");
               change(state, world, project);
               const session = yield* provision;
-              expect(session.id, label).not.toBe(stale.id);
+              expect(session.id).not.toBe(stale.id);
 
-              // The stale standby drains; its replacement carries what the owner has now.
               yield* engine.reconcileHotSessions(project.id);
               yield* clock.untilReady(
                 () =>
                   pool.entries.every((entry) => entry.id !== stale.id) &&
                   pool.entries.some((entry) => entry.status === "ready"),
-                `the standby from before ${label} to drain and a fresh one to warm`,
+                "the stale standby to drain and a fresh one to warm",
               );
               const applies = world.projects.get(project.id)?.applyDotfiles === true;
-              expect(
-                pool.entries.find((entry) => entry.status === "ready")?.dotfiles,
-                label,
-              ).toMatchObject({
+              const fresh = pool.entries.find((entry) => entry.status === "ready");
+              expect(fresh?.dotfiles).toMatchObject({
                 repository:
                   !applies || state.repository === null
                     ? null
                     : { url: state.repository.url, ref: state.repository.ref },
                 snapshotSha: applies ? state.snapshot.sha : null,
               });
-            }
 
-            // Unchanged since it warmed: the owner's next session claims it.
-            const fresh = pool.entries.find((entry) => entry.status === "ready");
-            const claimed = yield* clock.claim(provision);
-            expect(claimed.id).toBe(fresh?.id);
-          }),
-        {
-          captured: memory,
-          sealantLayer: sealantLaunchLayer(created),
-          hotWorkspacesLayer: clock.poolLayer,
-          wrapCaptureChannel: clock.wrapCaptureChannel,
-          userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
-            repository: () => Effect.sync(() => state.repository),
-            setRepository: (_userId, value) => Effect.succeed(value),
-            startAgentsAfterInstall: () => Effect.succeed(false),
-            setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
-          }),
-          dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
-            snapshot: () => Effect.die("not in test"),
-            current: () =>
-              Effect.sync(() => ({
-                sha: state.snapshot.sha,
-                source: "laptop",
-                committedAt: new Date(0),
-                files: [],
-              })),
-            archive: () => Effect.sync(() => state.snapshot),
-            clear: () => Effect.void,
-          }),
-        },
-      );
-    }),
+              const claimed = yield* clock.claim(provision);
+              expect(claimed.id).toBe(fresh?.id);
+            }),
+          {
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(created),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
+              repository: () => Effect.sync(() => state.repository),
+              setRepository: (_userId, value) => Effect.succeed(value),
+              startAgentsAfterInstall: () => Effect.succeed(false),
+              setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
+            }),
+            dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
+              snapshot: () => Effect.die("not in test"),
+              current: () =>
+                Effect.sync(() => ({
+                  sha: state.snapshot.sha,
+                  source: "laptop",
+                  committedAt: new Date(0),
+                  files: [],
+                })),
+              archive: () => Effect.sync(() => state.snapshot),
+              clear: () => Effect.void,
+            }),
+          },
+        );
+      }),
+    DOTFILES_CASE_BUDGET_MS,
   );
 
   it.effect(
