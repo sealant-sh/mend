@@ -357,22 +357,50 @@ export const ScreensLive: Layer.Layer<
         }
       }).pipe(Effect.catchTag("ScreenNotFoundError", () => Effect.succeed(refused("no_screen"))));
 
+    /**
+     * A screen its rekey failed for, started over with fresh passwords: the old one stops, its
+     * apps with it, and the log says why. One whose process would not stop keeps no passwords
+     * here, so it gets no hand and is not said to have restarted.
+     */
+    const restarted = (screen: Screen) =>
+      Effect.gen(function* () {
+        const now = yield* started(screen);
+        if ((yield* host.passwords(now.sessionId)) === null) {
+          return yield* Effect.logWarning(
+            "screen: not started over · its process would not stop",
+          ).pipe(Effect.annotateLogs({ screenId: screen.id }));
+        }
+        yield* control.note(now, { _tag: "Restarted", reason: "rekey-failed" });
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("screen: not started over after its rekey failed").pipe(
+            Effect.annotateLogs({ screenId: screen.id, cause: error.message }),
+          ),
+        ),
+      );
+
+    /**
+     * A screen that outlived the last process keeps running: its person writes fresh passwords
+     * over the ones that process held, and Xvnc signs the next connection in with them. When that
+     * fails it is started over. The boot waits for that no longer than a start may take; a restart
+     * still running then goes on, and logs once it is done.
+     */
+    const recovered = (screen: Screen) =>
+      screen.life._tag !== "Live"
+        ? Effect.void
+        : Effect.gen(function* () {
+            if (yield* host.rekey(screen.sessionId)) return;
+            yield* Effect.logWarning(
+              "screen: not signed for again at boot · starting it over",
+            ).pipe(Effect.annotateLogs({ screenId: screen.id }));
+            const restart = yield* Effect.forkIn(restarted(screen), scope);
+            yield* Effect.asVoid(Effect.timeoutOption(Fiber.await(restart), STARTED_WITHIN_MS));
+          });
+
     yield* screens.boot();
     const at = new Date(yield* Clock.currentTimeMillis);
     for (const screen of yield* screens.held()) {
-      // A screen that outlived the last process keeps running: its person writes fresh passwords
-      // over the ones that process held, and Xvnc signs the next connection in with them.
-      const rekeyed =
-        screen.life._tag === "Live"
-          ? Effect.flatMap(host.rekey(screen.sessionId), (signed) =>
-              signed
-                ? Effect.void
-                : Effect.logWarning("screen: not signed for again at boot").pipe(
-                    Effect.annotateLogs({ screenId: screen.id }),
-                  ),
-            )
-          : Effect.void;
-      yield* control.boot(screen, at, rekeyed);
+      yield* control.boot(screen, at, recovered(screen));
     }
 
     return {

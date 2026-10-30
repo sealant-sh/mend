@@ -12,7 +12,7 @@ import {
   SessionProcessId,
   ViewerConnectionId,
 } from "@mend/domain";
-import type { Screen, ScreenAction } from "@mend/domain/workbench";
+import type { Screen, ScreenAction, ScreenInputEvent } from "@mend/domain/workbench";
 import { BlobStoreFsLive } from "@mend/store";
 import { TestClock, it } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Layer, Redacted } from "effect";
@@ -269,14 +269,36 @@ describe.skipIf(postgres.skip)("who may call, and on what", () => {
 });
 
 describe.skipIf(postgres.skip)("people's input on a screen with no hand", () => {
+  it.live("refuses a take over with no hand for the input, and never reports Person", () =>
+    asProcess(
+      Effect.gen(function* () {
+        const screens = yield* Screens;
+        const { sessionId, screen } = yield* sessionWithScreen;
+        expect(yield* screens.take(sessionId, "bob", CONNECTION)).toEqual({
+          _tag: "Refused",
+          why: "owner-only",
+        });
+        expect(yield* screens.take(sessionId, OWNER, CONNECTION)).toEqual({ _tag: "NoHand" });
+        expect((yield* rowOf(screen.id)).input).toEqual(screen.input);
+        expect(
+          yield* screens.input(sessionId, CONNECTION, [
+            { _tag: "Pointer", buttons: 0, x: 1, y: 1 },
+          ]),
+        ).toBe(false);
+        expect((yield* logOf(screen.id)).map((entry) => entry.body._tag)).not.toContain("Taken");
+      }),
+    ),
+  );
+
+  /** The row as a take over left it: the timers below run on the row alone, with no hand. */
   const takenByPerson = Effect.gen(function* () {
     const screens = yield* Screens;
+    const repo = yield* ScreensRepo;
     const { sessionId, screen } = yield* sessionWithScreen;
-    expect(yield* screens.take(sessionId, "bob", CONNECTION)).toEqual({
-      _tag: "Refused",
-      why: "owner-only",
-    });
-    yield* screens.take(sessionId, OWNER, CONNECTION);
+    const take: ScreenInputEvent = { _tag: "Take", by: OWNER, connection: CONNECTION };
+    const fencing = yield* repo.control(screen.id, take, OWNER);
+    if (fencing._tag !== "Changed") throw new Error("the take over was not taken");
+    yield* repo.control(screen.id, { _tag: "Fenced", epoch: fencing.next.epoch }, OWNER);
     expect((yield* rowOf(screen.id)).input).toMatchObject({
       _tag: "Person",
       connection: CONNECTION,
@@ -724,6 +746,56 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
           }),
         );
       }),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "starts a screen over when its rekey after Mend restarted fails: the log says why, with a frame, and a take over moves its pointer",
+    () =>
+      Effect.gen(function* () {
+        const before = yield* asProcess(
+          Effect.gen(function* () {
+            const { sessionId, screen } = yield* sessionWithScreen;
+            answered(yield* (yield* Screens).look(agentOf(sessionId).call()));
+            return { sessionId, screen };
+          }),
+        );
+        world.rekeyFails.add(before.sessionId);
+        x("xsetroot -solid '#3366cc'");
+        yield* asProcess(
+          Effect.gen(function* () {
+            const screens = yield* Screens;
+            const viewer = ViewerConnectionId.make("viewer-after-failed-rekey");
+            yield* screens.take(before.sessionId, OWNER, viewer);
+            expect((yield* rowOf(before.screen.id)).input).toMatchObject({
+              _tag: "Person",
+              connection: viewer,
+            });
+            const moved = yield* screens.input(before.sessionId, viewer, [
+              { _tag: "Pointer", buttons: 0, x: 555, y: 222 },
+            ]);
+            expect(moved).toBe(true);
+            expect(pointer()).toEqual([555, 222]);
+            expect(world.starts.filter((started) => started === before.sessionId)).toHaveLength(2);
+
+            const restarted = (yield* logOf(before.screen.id)).find(
+              (entry) => entry.body._tag === "Restarted",
+            );
+            expect(restarted).toMatchObject({
+              actor: { _tag: "Mend" },
+              body: { _tag: "Restarted", reason: "rekey-failed" },
+            });
+            if (restarted?.frame == null) throw new Error("the restart kept no frame");
+            const stored = path.join(
+              blobRoot,
+              "screen-frames",
+              before.screen.id,
+              `${restarted.frame.digest}.png`,
+            );
+            expect(decodePng(readFileSync(stored)).at(640, 400)).toEqual([0x33, 0x66, 0xcc]);
+          }),
+        );
+      }).pipe(Effect.ensuring(Effect.sync(() => world.rekeyFails.clear()))),
     { timeout: 60_000 },
   );
 

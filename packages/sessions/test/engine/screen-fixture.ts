@@ -30,6 +30,8 @@ export interface Platform {
   readonly execs: Array<ReadonlyArray<string>>;
   readonly execUsers: Array<string | null>;
   readonly listeners: Array<string>;
+  /** The argv of each process whose terminal Mend closed. */
+  readonly closed: Array<ReadonlyArray<string>>;
 }
 
 /** A person-layout launch of `claude` with a screen beside it, Xvnc's output scripted. */
@@ -49,6 +51,8 @@ export const withScreens = <A, E>(
     readonly printed?: ReadonlyArray<string>;
     /** What the rekey script prints; its own last line unless set. */
     readonly rekeyPrinted?: ReadonlyArray<string>;
+    /** The rekey script prints and then never ends. */
+    readonly rekeyKeepsRunning?: boolean;
     readonly layout?: HarnessLayout;
     /** The recorded layouts, kept across the engines that boot over one world. */
     readonly layoutState?: HarnessLayoutsMemoryState;
@@ -59,7 +63,14 @@ export const withScreens = <A, E>(
     readonly restart?: boolean;
   } = {},
 ) => {
-  const platform: Platform = { spawned: [], opened: [], execs: [], execUsers: [], listeners: [] };
+  const platform: Platform = {
+    spawned: [],
+    opened: [],
+    execs: [],
+    execUsers: [],
+    listeners: [],
+    closed: [],
+  };
   const created: Array<CreateOptions> = [];
   return withPreparedEngineEffect(
     (world, tmp) => (options.restart === true ? Effect.void : setup(tmp, world)),
@@ -83,6 +94,9 @@ export const withScreens = <A, E>(
         undefined,
         {
           execUsers: platform.execUsers,
+          closed: platform.closed,
+          ptyKeepsRunning: (argv) =>
+            argv[3] === "mend-screen-rekey" && options.rekeyKeepsRunning === true,
           exec: answerLayout(LAYOUT_READY),
           ptyOutput: (argv) => {
             if (argv[3] === "mend-screen") return options.printed ?? [];

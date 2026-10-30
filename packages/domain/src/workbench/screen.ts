@@ -21,6 +21,8 @@ export const SCREEN_LIMITS = {
   idleStopMs: 15 * 60_000,
   pausedTimeoutMs: 2 * 60_000,
   heartbeatMs: 10_000,
+  /** A rekey at boot, from preparing its terminal to the script's last line, then given up. */
+  rekeyMs: 15_000,
   batchActions: 20,
   typeChars: 2_000,
   waitMs: 5_000,
@@ -127,6 +129,9 @@ export const ScreenEndReason = Schema.Literals([
   "workspace-ended",
 ]);
 export type ScreenEndReason = typeof ScreenEndReason.Type;
+/** Why Mend started a screen over: its rekey after Mend restarted failed. */
+export const ScreenRestartReason = Schema.Literals(["rekey-failed"]);
+export type ScreenRestartReason = typeof ScreenRestartReason.Type;
 
 /** Who may put input on the screen. Every change of holder bumps `epoch`. */
 export const ScreenInput = Schema.Union([
@@ -203,6 +208,7 @@ export const ScreenLogBody = Schema.Union([
   Schema.TaggedStruct("FramesNotKept", { budget: Schema.Literals(["screen", "organization"]) }),
   Schema.TaggedStruct("Degraded", { reason: ScreenDegraded }),
   Schema.TaggedStruct("Ended", { reason: ScreenEndReason }),
+  Schema.TaggedStruct("Restarted", { reason: ScreenRestartReason }),
 ]);
 export type ScreenLogBody = typeof ScreenLogBody.Type;
 

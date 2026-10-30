@@ -33,6 +33,8 @@ export interface ScreenWorld {
   readonly dials: Array<Dial>;
   readonly starts: Array<SessionId>;
   readonly rekeys: Array<SessionId>;
+  /** Sessions whose screen's rekey fails, as when its person's helper never answers. */
+  readonly rekeyFails: Set<SessionId>;
   readonly screenProcess: Map<SessionId, SessionProcessId>;
   readonly sockets: Array<net.Socket>;
   /** False for a session whose screen this process holds no passwords for. */
@@ -53,6 +55,7 @@ export const makeScreenWorld = (
   dials: [],
   starts: [],
   rekeys: [],
+  rekeyFails: new Set(),
   screenProcess: new Map(),
   sockets: [],
   signable,
@@ -145,6 +148,7 @@ export const screenHostLayer = (world: ScreenWorld) =>
         rekey: (sessionId) =>
           Effect.sync(() => {
             world.rekeys.push(sessionId);
+            if (world.rekeyFails.has(sessionId)) return false;
             if (world.signWith === null) return world.signable(sessionId);
             issue(sessionId);
             return true;
