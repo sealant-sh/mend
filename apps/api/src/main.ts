@@ -260,7 +260,6 @@ import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { RemoteCredentialCheckLive } from "./remote-credential-check.ts";
 import { RemovalLive } from "./removal.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
-import { apiObservation } from "./request-observation.ts";
 import { type ReviewPassJob, runReviewPass } from "./review-pass-worker.ts";
 import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
@@ -510,7 +509,7 @@ const ServerLive = Layer.unwrap(
           sessionCookie: sessionCookiePolicy(network).name,
         }),
       ),
-      { ...apiObservation, formatCause: prettyCause },
+      { formatCause: prettyCause },
     ).pipe(
       Layer.provide(ProjectCreationLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),

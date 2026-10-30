@@ -14,7 +14,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTenancyApi } from "../test/support/tenancy-api.ts";
 import { errorBoundary } from "./error-boundary.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
-import { apiObservation } from "./request-observation.ts";
 
 const network = makePublicNetwork(PublicOrigin.make("http://localhost:3105"), []);
 
@@ -57,7 +56,6 @@ const betterAuthBoundary = () => {
         Logger.layer([Logger.make((entry) => logs.push(String(Logger.formatJson.log(entry))))]),
       ),
     ),
-    apiObservation,
   );
   const get = (path: string) => handler(new Request(`${network.appUrl}${path}`));
   const post = (path: string, headers: Record<string, string>, body: unknown) =>
@@ -284,7 +282,6 @@ describe("what the error boundary logs about a failed request", () => {
     const { app, observability, recorded, failures, printed } = withEffectLoggers();
     const { handler, dispose } = observedWebHandler(
       app.pipe(Layer.provide(HttpServer.layerServices), Layer.provideMerge(observability)),
-      apiObservation,
     );
     try {
       const answer = await handler(
@@ -310,7 +307,7 @@ describe("what the error boundary logs about a failed request", () => {
     try {
       const built = await Effect.runPromise(
         Layer.buildWithScope(
-          serveObserved(app, { ...apiObservation, disableListenLog: true }).pipe(
+          serveObserved(app, { disableListenLog: true }).pipe(
             Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
             Layer.provide(observability),
           ),

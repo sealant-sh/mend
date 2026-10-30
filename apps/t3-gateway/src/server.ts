@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Layer from "effect/Layer";
 
-import { AssetUrlsLive, gatewayObservation } from "./assets.ts";
+import { AssetUrlsLive } from "./assets.ts";
 import { GatewayAuthLive } from "./auth.ts";
 import { GatewayConfig } from "./config.ts";
 import { GatewayEnvironmentLive } from "./environment.ts";
@@ -38,7 +38,7 @@ export const GatewayAppLive = GatewayRoutesLive.pipe(
 export const GatewayServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* GatewayConfig;
-    return serveObserved(GatewayAppLive, gatewayObservation).pipe(
+    return serveObserved(GatewayAppLive).pipe(
       Layer.provide(findParserLayer()),
       Layer.provide(NodeHttpServer.layer(createServer, { host: config.host, port: config.port })),
     );

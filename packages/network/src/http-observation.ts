@@ -14,11 +14,6 @@ import { INVITATION_HEADER } from "./handed-links.ts";
 import { PAGE_VIEW_TOKEN_PARAM } from "./page-view.ts";
 import { CREDENTIAL_QUERY_PARAMETERS } from "./redact.ts";
 
-export interface ObservationPolicy {
-  /** Requests that leave no log line and no span. */
-  readonly unobserved: (request: HttpServerRequest.HttpServerRequest) => boolean;
-}
-
 /** The route of a request no route answered: none matched, or a middleware refused it first. */
 export const UNROUTED = "unrouted";
 
@@ -188,7 +183,7 @@ const observed = <E, R>(
     );
   });
 
-interface ObservationOptions extends ObservationPolicy {
+interface ObservationOptions {
   /** How a 5xx's cause is written, before its URL is taken out. `Cause.pretty` by default. */
   readonly formatCause?: (cause: Cause.Cause<unknown>) => string;
 }
@@ -203,9 +198,7 @@ const observeRequests =
     R | HttpServerRequest.HttpServerRequest
   > =>
     Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-      options.unobserved(request)
-        ? app
-        : observed(request, app, options.formatCause ?? Cause.pretty),
+      observed(request, app, options.formatCause ?? Cause.pretty),
     );
 
 /** Effect's own server tracer records the URL a client sent; the observation replaces it. */
@@ -235,7 +228,7 @@ const observationDefaults = Layer.merge(effectTracerOff, mendCredentialsRedacted
 /** `HttpRouter.serve`, logging and tracing each request by its route's template. */
 export const serveObserved = <A, E, R>(
   appLayer: Layer.Layer<A, E, R>,
-  options: ObservationOptions & { readonly disableListenLog?: boolean },
+  options: ObservationOptions & { readonly disableListenLog?: boolean } = {},
 ) =>
   HttpRouter.serve(Layer.provide(appLayer, reportsMatchedRoute), {
     disableLogger: true,
@@ -255,7 +248,7 @@ export const observedWebHandler = <
     | HttpRouter.Request<"GlobalError", unknown>,
 >(
   appLayer: Layer.Layer<A, E, R>,
-  options: ObservationOptions,
+  options: ObservationOptions = {},
 ) =>
   HttpRouter.toWebHandler(
     Layer.provide(appLayer, reportsMatchedRoute).pipe(Layer.provideMerge(observationDefaults)),

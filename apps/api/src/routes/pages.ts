@@ -1,12 +1,6 @@
 import { CurrentUser, MendApi, NotFound, PageFrame, PageViewRefused } from "@mend/api-contracts";
 import { SessionPagesRepo } from "@mend/db";
-import {
-  isPageViewTarget,
-  PAGE_VIEW_PATH,
-  PAGE_VIEW_TOKEN_PARAM,
-  requestPathOf,
-  routedPath,
-} from "@mend/network";
+import { isPageViewTarget, PAGE_VIEW_PATH, PAGE_VIEW_TOKEN_PARAM } from "@mend/network";
 import { Effect, Redacted } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -63,6 +57,3 @@ export const PageViewGroupLive = HttpApiBuilder.group(MendApi, "pageView", (hand
     }),
   ),
 );
-
-export const routesToPageView = (request: HttpServerRequest.HttpServerRequest): boolean =>
-  routedPath(requestPathOf(request.url)).replace(/\/+$/, "") === PAGE_VIEW_PATH;

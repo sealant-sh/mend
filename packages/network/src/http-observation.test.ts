@@ -67,7 +67,6 @@ const harness = () => {
           Effect.never,
         ),
       ),
-      router.add("GET", "/quiet/:id", HttpServerResponse.text("quiet")),
     ]),
   );
   const refusedBeforeRouting = HttpRouter.middleware(
@@ -97,7 +96,6 @@ const harness = () => {
         Logger.layer([Logger.make((entry) => logs.push(String(Logger.formatJson.log(entry))))]),
       ),
     ),
-    { unobserved: (request) => request.url.startsWith("/quiet/") },
   );
   const send = (method: string, path: string, init: RequestInit = {}) =>
     handler(new Request(`http://mend.internal${path}`, { method, ...init }));
@@ -275,17 +273,6 @@ describe("what a request leaves in the log and the trace", () => {
       await dispose();
     }
   });
-
-  it("leaves nothing for a request the policy leaves unobserved", async () => {
-    const { logs, spans, send, dispose } = harness();
-    try {
-      expect((await send("GET", `/quiet/${SENTINEL}`)).status).toBe(200);
-      expect(logs).toEqual([]);
-      expect(serverSpans(spans)).toEqual([]);
-    } finally {
-      await dispose();
-    }
-  });
 });
 
 /** Node takes a stream body only as a half-duplex one. */
@@ -377,7 +364,6 @@ const withEffectLoggers = () => {
         ),
       ),
     ),
-    { unobserved: () => false },
   );
   const send = (method: string, path: string, init: RequestInit = {}) =>
     handler(new Request(`http://mend.internal${path}`, { method, ...init }));

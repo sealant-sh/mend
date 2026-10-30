@@ -10,7 +10,7 @@ import * as Logger from "effect/Logger";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 
-import { AssetUrlsLive, gatewayObservation } from "../../src/assets.ts";
+import { AssetUrlsLive } from "../../src/assets.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
 import { GatewayConfig } from "../../src/config.ts";
 import { GatewayEnvironmentLive } from "../../src/environment.ts";
@@ -125,7 +125,7 @@ export const gatewayTestLayer = (
       options.deviceCheckObserver === undefined
       ? GatewayAppLive
       : gatewayWithClientObservers(options),
-    { ...gatewayObservation, disableListenLog: true },
+    { disableListenLog: true },
   ).pipe(
     Layer.provide(
       options.parser === undefined ? findParserLayer() : Layer.succeed(FindParser, options.parser),

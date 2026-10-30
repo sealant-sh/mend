@@ -23,7 +23,6 @@ import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-ap
 import { type HarnessProject, type HarnessUser, ids } from "../../test/support/tenancy-harness.ts";
 import { pageDocument } from "../page-document.ts";
 import { pageViewKeyOf, pageViewTokensOf } from "../page-view-tokens.ts";
-import { apiObservation } from "../request-observation.ts";
 import { API_RESPONSE_HEADERS, responseHeadersFor } from "../response-headers.ts";
 
 const KEY = pageViewKeyOf("pages-test-secret");
@@ -278,7 +277,6 @@ describe("the page-view token never reaches the API's log", () => {
     ]);
     const { handler, dispose } = observedWebHandler(
       Layer.mergeAll(routes, capture).pipe(Layer.provide(HttpServer.layerServices)),
-      apiObservation,
     );
     try {
       const answer = await handler(
@@ -331,7 +329,7 @@ describe("the page-view token never reaches a trace", () => {
     );
     const server = createServer();
     const runtime = ManagedRuntime.make(
-      serveObserved(routes, { ...apiObservation, disableListenLog: true }).pipe(
+      serveObserved(routes, { disableListenLog: true }).pipe(
         Layer.provide(NodeHttpServer.layer(() => server, { port: 0, host: "127.0.0.1" })),
         Layer.provide(Logger.layer([])),
         Layer.provide(Layer.succeed(Tracer.Tracer)(tracer)),

@@ -4,7 +4,6 @@ import { posix } from "node:path";
 
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import { PAGE_FRAME_TTL_MS } from "@mend/domain/workbench";
-import type { ObservationPolicy } from "@mend/network/http-observation";
 import type { AuthSessionId } from "@mend/t3-contracts";
 import {
   Cause,
@@ -670,21 +669,3 @@ export const AssetRouteLive: Layer.Layer<never, never, HttpRouter.HttpRouter | A
       return HttpRouter.add("GET", `${ASSET_ROUTE_PREFIX}/*`, handler);
     }),
   );
-
-/**
- * Match before URL parsing, including malformed targets and preflight requests, in every spelling
- * the router sends to the asset route: it drops an absolute URL's origin, ends the path at `?`, `;`
- * or `#`, and ignores case, escapes and repeated slashes.
- */
-export const isAssetRequest = (request: HttpServerRequest.HttpServerRequest): boolean => {
-  const target = request.url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "");
-  const path = target.split(/[?;#]/, 1)[0] ?? "";
-  let decoded = path;
-  try {
-    decoded = decodeURIComponent(path);
-  } catch {
-    // The router matches no route for invalid escapes; the raw spelling is checked instead.
-  }
-  return /^\/+api\/+assets(\/|$)/i.test(decoded) || path.startsWith(`${ASSET_ROUTE_PREFIX}/`);
-};
-export const gatewayObservation: ObservationPolicy = { unobserved: isAssetRequest };

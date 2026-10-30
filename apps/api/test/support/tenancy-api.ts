@@ -144,7 +144,6 @@ import { PageViewTokens } from "../../src/page-view-tokens.ts";
 import { type PreviewSetup, PreviewSetupConfig } from "../../src/preview-config.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
 import { RemovalLive } from "../../src/removal.ts";
-import { apiObservation } from "../../src/request-observation.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
@@ -780,13 +779,12 @@ export const createTenancyApi = async (
       ),
       Layer.provideMerge(logs),
     ),
-    apiObservation,
   );
   const nodeScope = Effect.runSync(Scope.make());
   const nodeOrigin = options.node
     ? await Effect.runPromise(
         Layer.buildWithScope(
-          serveObserved(apiLayer, { ...apiObservation, disableListenLog: true }).pipe(
+          serveObserved(apiLayer, { disableListenLog: true }).pipe(
             Layer.provide(Layer.succeedContext(context)),
             Layer.provide(logs),
             Layer.provideMerge(

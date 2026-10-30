@@ -12,7 +12,6 @@ import {
   DEFAULT_ASSET_LIMITS,
   AssetUrls,
   AssetUrlsLive,
-  gatewayObservation,
 } from "../../src/assets.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
 import { GatewayConfig } from "../../src/config.ts";
@@ -268,13 +267,10 @@ export const withAssetHarness = <A, E, R>(
           ]),
         ),
       );
-      const app = observedWebHandler(
-        routes.pipe(Layer.provide(HttpServer.layerServices)),
-        gatewayObservation,
-      );
+      const app = observedWebHandler(routes.pipe(Layer.provide(HttpServer.layerServices)));
       const served = node
         ? yield* Layer.build(
-            serveObserved(routes, { ...gatewayObservation, disableListenLog: true }).pipe(
+            serveObserved(routes, { disableListenLog: true }).pipe(
               Layer.provideMerge(
                 NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }),
               ),
