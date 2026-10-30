@@ -1088,7 +1088,7 @@ describe("native steering", () => {
   );
 
   it.live(
-    "settles a lost response on startup with no socket by posting it again, and releases the ordinary queue after its first read",
+    "settles a lost response on startup with no socket by posting it again, failed once refused, and releases the ordinary queue after its first read",
     () => {
       const path = stateFile();
       return Effect.gen(function* () {
@@ -1118,15 +1118,20 @@ describe("native steering", () => {
             const [sent] = posts(mend, "/turns");
             assert.deepInclude(sent?.body, { input: "later" });
             const db = new DatabaseSync(path);
-            yield* eventually(
-              () =>
-                db
-                  .prepare("SELECT message_id FROM queued_messages WHERE state = 'queued'")
-                  .all()
-                  .some((row) => row.message_id === "uncertain-without-receipt") &&
-                db.prepare("SELECT * FROM steer_messages").all().length === 0,
+            yield* eventually(() => db.prepare("SELECT * FROM steer_messages").all().length === 0);
+            assert.lengthOf(
+              db
+                .prepare("SELECT message_id FROM queued_messages WHERE message_id = ?")
+                .all("uncertain-without-receipt"),
+              0,
             );
+            const [kept] = db.prepare("SELECT record FROM sent_steers").all();
             db.close();
+            assert.deepInclude(JSON.parse(String(kept?.record)), {
+              messageId: "uncertain-without-receipt",
+              outcome: { kind: "failed", reason: "TurnSteerForbidden", uncertain: true },
+            });
+            assert.lengthOf(posts(mend, "/turns"), 1);
           }),
         );
       });

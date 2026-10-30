@@ -178,6 +178,134 @@ describe("steer lifecycle", () => {
     },
   );
 
+  it.live("keeps a steer Mend never confirmed, and its key, through replays and a restart", () => {
+    const path = stateFile();
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      setup(mend);
+      mend.workbench.steerOutages = 3;
+      const original = message("unconfirmed", { type: "start_immediately" }, "steer");
+      yield* gateway(
+        mend,
+        path,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "KEEPKEY");
+          yield* rpc[methods.dispatchCommand](original);
+          yield* projectionWhen(
+            rpc,
+            (current) => inputOf(current, "unconfirmed")?.status === "failed",
+          );
+          const replay = yield* rpc[methods.dispatchCommand]({
+            ...original,
+            commandId: commandId(),
+          }).pipe(Effect.exit);
+          assert.isTrue(Exit.isFailure(replay));
+        }),
+        { queueTimings: { retryBaseMs: 20, retryMaxMs: 40 } },
+      );
+      yield* gateway(
+        mend,
+        path,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "KEEPKEYAFTER");
+          yield* projectionWhen(
+            rpc,
+            (current) => inputOf(current, "unconfirmed")?.status === "failed",
+          );
+          const replay = yield* rpc[methods.dispatchCommand]({
+            ...original,
+            commandId: commandId(),
+          }).pipe(Effect.exit);
+          assert.isTrue(Exit.isFailure(replay));
+          const projection = yield* rpc[methods.getThreadProjection]({ threadId });
+          assert.strictEqual(inputOf(projection, "unconfirmed")?.status, "failed");
+          assert.lengthOf(messagesWithId(projection, "unconfirmed"), 1);
+        }),
+      );
+      assert.lengthOf(posts(mend, "/steer"), 3);
+    });
+  });
+
+  it.live("never sends a promotion Mend never confirmed again when its message is replayed", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      const turn = setup(mend);
+      yield* gateway(
+        mend,
+        ":memory:",
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "KEEPPROMOTED");
+          const original = message("promoted", { type: "queue_after_active" });
+          yield* rpc[methods.dispatchCommand](original);
+          const queued = (yield* rpc[methods.getThreadProjection]({ threadId })).runs.find(
+            (run) => run.userMessageId === "promoted",
+          );
+          if (queued === undefined) return yield* Effect.die("Missing queued run");
+          mend.workbench.steerOutages = 3;
+          yield* rpc[methods.dispatchCommand](promote(queued.id, turn.id));
+          yield* projectionWhen(
+            rpc,
+            (current) => inputOf(current, "promoted")?.status === "failed",
+          );
+          const replays = [
+            yield* rpc[methods.dispatchCommand](promote(queued.id, turn.id)).pipe(Effect.exit),
+            yield* rpc[methods.dispatchCommand]({ ...original, commandId: commandId() }).pipe(
+              Effect.exit,
+            ),
+          ];
+          assert.isTrue(replays.every(Exit.isFailure));
+          const projection = yield* rpc[methods.getThreadProjection]({ threadId });
+          assert.strictEqual(inputOf(projection, "promoted")?.status, "failed");
+          assert.isFalse(
+            projection.runs.some(
+              (run) => run.userMessageId === "promoted" && run.status === "queued",
+            ),
+          );
+          assert.lengthOf(posts(mend, "/steer"), 3);
+        }),
+        { queueTimings: { retryBaseMs: 20, retryMaxMs: 40 } },
+      );
+    }),
+  );
+
+  for (const retried of ["unavailable", "refused"] as const) {
+    it.live(`never admits a late steer twice when its retries come back ${retried}`, () =>
+      Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        const turn = setup(mend);
+        const late = mend.workbench.holdNextSteer("late");
+        if (retried === "unavailable") mend.workbench.steerOutages = 2;
+        else mend.workbench.steerRefusal = { status: 403, tag: "SessionNotSteerable" };
+        yield* gateway(
+          mend,
+          ":memory:",
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "LATE");
+            const original = message("late", { type: "start_immediately" }, "steer");
+            yield* rpc[methods.dispatchCommand](original);
+            yield* projectionWhen(rpc, (current) => inputOf(current, "late")?.status === "failed");
+            mend.workbench.steerRefusal = null;
+            for (let replay = 0; replay < 2; replay++)
+              yield* rpc[methods.dispatchCommand]({ ...original, commandId: commandId() }).pipe(
+                Effect.exit,
+              );
+            const bodies = posts(mend, "/steer").map((call) => JSON.stringify(call.body));
+            assert.lengthOf(new Set(bodies), 1);
+            late.release();
+            yield* eventually(() =>
+              turn.steers.some(
+                (steer) =>
+                  steer.clientSteerId !== null && bodies[0]?.includes(steer.clientSteerId) === true,
+              ),
+            );
+            assert.lengthOf(turn.steers, 1);
+          }),
+          { queueTimings: { retryBaseMs: 20, retryMaxMs: 40 } },
+        );
+      }),
+    );
+  }
+
   it.live("shows a carried steer Mend withdraws once, failed under its input", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

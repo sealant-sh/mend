@@ -3639,8 +3639,8 @@ export const makePersonHub = (input: {
 
     /**
      * A request for a message that is already a steer: it waits for the claim's outcome while one
-     * is on its way, takes back the words of one that failed with nobody to return them to, and is
-     * otherwise answered as sent.
+     * is on its way, is refused for one that failed, taking its words back when Mend cannot hold
+     * them, and is otherwise answered as sent.
      */
     const replaySteer = (
       sessionId: string,
@@ -3654,9 +3654,11 @@ export const makePersonHub = (input: {
         if (running !== undefined)
           return { kind: "wait" as const, clientSteerId: steer.clientSteerId, done: running.done };
         if (steer.kind === "settled" && steer.outcome.kind === "failed") {
-          sentChange(sessionId, steer.clientSteerId, null);
-          yield* keepUntilKept(sessionId);
-          yield* publishAll;
+          if (!steer.outcome.uncertain) {
+            sentChange(sessionId, steer.clientSteerId, null);
+            yield* keepUntilKept(sessionId);
+            yield* publishAll;
+          }
           return yield* refused(steer.outcome.reason);
         }
         return ANSWERED;

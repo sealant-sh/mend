@@ -22,12 +22,13 @@ import { runIdOf, runsOf, type ThreadSource } from "./shell.ts";
  * after it shows no receipt, the same input goes again under the same key: Mend answers the
  * receipt it already holds for that key, or admits the steer once. After `MAX_UNCONFIRMED`
  * such POSTs the steer fails where it stands, its words kept, and is never put back in the
- * queue, since Mend may have it.
+ * queue or claimed again, since Mend may have it.
  */
 export interface SteerRecord {
   /**
    * New for every claim of the message: Mend's idempotency key for its POST, and what a worker
-   * holds on to, so a worker whose claim was stopped never touches the claim after it.
+   * holds on to, so a worker whose claim was stopped never touches the claim after it. A message
+   * is claimed again only once Mend cannot hold its last claim's words.
    */
   readonly clientSteerId: string;
   readonly messageId: string;
@@ -68,12 +69,13 @@ export type SteerIntent = "steer" | "promoted_queued_to_steer";
 /**
  * Where a settled steer's words show: in the target turn as Mend's receipt says (`sent`), as
  * their own turn (`queued`), in the target turn failed with why (`failed`), or nowhere, since
- * they went back to the person (`returned`).
+ * they went back to the person (`returned`). A failed steer is `uncertain` when Mend may still
+ * hold its words under its key: its message then keeps that key for good.
  */
 export type SteerOutcome =
   | { readonly kind: "sent" }
   | { readonly kind: "queued"; readonly turnId: string }
-  | { readonly kind: "failed"; readonly reason: string }
+  | { readonly kind: "failed"; readonly reason: string; readonly uncertain: boolean }
   | { readonly kind: "returned" };
 
 /** A settled steer, as kept for readback: its key, its words and where they show. */
@@ -193,7 +195,7 @@ const unconfirmed = (record: SteerRecord): SteerStep => {
   const phase = record.phase;
   if (phase.kind !== "posting" && phase.kind !== "observed") return UNCHANGED;
   const count = (phase.kind === "posting" ? phase.unconfirmed : 0) + 1;
-  if (count >= MAX_UNCONFIRMED) return failed(record, UNCONFIRMED);
+  if (count >= MAX_UNCONFIRMED) return failed(record, UNCONFIRMED, true);
   return {
     kind: "changed",
     record: {
@@ -312,9 +314,9 @@ const UNCHANGED: SteerStep = { kind: "unchanged" };
 
 const NOT_SENT = "Mend did not send this message or queue a turn.";
 
-const failed = (record: SteerRecord, reason: string): SteerStep => ({
+const failed = (record: SteerRecord, reason: string, uncertain: boolean): SteerStep => ({
   kind: "settled",
-  kept: sentOf(record, { kind: "failed", reason }),
+  kept: sentOf(record, { kind: "failed", reason, uncertain }),
   requeue: false,
   refusal: null,
 });
@@ -330,7 +332,7 @@ const notSent = (
   facts: SteerFacts,
   stored: boolean,
 ): SteerStep => {
-  if (record.promotion === null && !facts.caller) return failed(record, reason);
+  if (record.promotion === null && !facts.caller) return failed(record, reason, false);
   return {
     kind: "settled",
     kept: stored ? sentOf(record, { kind: "returned" }) : null,
@@ -399,6 +401,8 @@ const answered = (record: SteerRecord, answer: SteerAnswer, facts: SteerFacts): 
     case "refused":
       // A receipt already read is Mend's word; a refusal after it changes nothing.
       if (record.phase.kind !== "posting") return UNCHANGED;
+      // It refuses this POST only: an earlier one it never answered may still be admitted.
+      if (record.phase.unconfirmed > 0) return failed(record, answer.reason, true);
       if (answer.notSender && record.promotion === null)
         return { kind: "settled", kept: null, requeue: true, refusal: null };
       return notSent(record, answer.reason, facts, false);
@@ -448,7 +452,7 @@ export const steerStep = (record: SteerRecord, event: SteerEvent, facts: SteerFa
       return read(record, event.checked, facts);
     case "stopped":
       if (record.phase.kind === "preparing") return notSent(record, event.reason, facts, false);
-      return record.phase.kind === "posting" ? failed(record, event.reason) : UNCHANGED;
+      return record.phase.kind === "posting" ? failed(record, event.reason, true) : UNCHANGED;
   }
 };
 

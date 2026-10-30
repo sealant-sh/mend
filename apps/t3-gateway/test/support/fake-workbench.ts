@@ -320,12 +320,13 @@ export class FakeWorkbench {
     return { entered: entered.promise, release: () => answer.resolve() };
   }
   private nextSteer: {
-    readonly stage: "admission" | "response";
+    readonly stage: "admission" | "response" | "late";
     readonly entered: () => void;
     readonly answer: Promise<void>;
   } | null = null;
 
-  holdNextSteer(stage: "admission" | "response"): {
+  /** `late`: the gateway loses the answer at once, and Mend admits the steer only on release. */
+  holdNextSteer(stage: "admission" | "response" | "late"): {
     readonly entered: Promise<void>;
     readonly release: () => void;
   } {
@@ -1378,7 +1379,8 @@ export class FakeWorkbench {
         record(value);
         const barrier = this.nextSteer;
         this.nextSteer = null;
-        if (barrier?.stage === "admission") {
+        if (barrier?.stage === "late") response.destroy();
+        if (barrier?.stage === "admission" || barrier?.stage === "late") {
           barrier.entered();
           await barrier.answer;
         }
@@ -1465,6 +1467,7 @@ export class FakeWorkbench {
           barrier.entered();
           await barrier.answer;
         }
+        if (barrier?.stage === "late") return true;
         switch (this.steerResponse) {
           case "lost":
             response.destroy();

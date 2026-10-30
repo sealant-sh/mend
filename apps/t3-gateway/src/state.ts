@@ -841,7 +841,11 @@ const SentSteerRecord = Schema.Struct({
   outcome: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("sent") }),
     Schema.Struct({ kind: Schema.Literal("queued"), turnId: Schema.String }),
-    Schema.Struct({ kind: Schema.Literal("failed"), reason: Schema.String }),
+    Schema.Struct({
+      kind: Schema.Literal("failed"),
+      reason: Schema.String,
+      uncertain: Schema.Boolean,
+    }),
     Schema.Struct({ kind: Schema.Literal("returned") }),
   ]),
 });
