@@ -93,6 +93,12 @@ export interface AdoptionRequest {
   readonly approvedBy: string;
 }
 
+/** An approval as its approver asks for it, before anything is resolved or written. */
+export type ApprovalLookup = Pick<
+  AdoptionRequest,
+  "projectId" | "spec" | "settings" | "worktreeId"
+>;
+
 export interface Adopted {
   readonly definition: StoredResourceDefinition;
   readonly approval: ResourceApproval;
@@ -269,12 +275,14 @@ export class ResourcesRepo extends Context.Service<
       | ResourceApprovalStaleError
       | ResourceDefinitionRefusedError
     >;
-    /** The latest approval of exactly this declared spec for exactly this target, or null. */
-    readonly exactApproval: (
-      definitionId: ResourceDefinitionId,
-      digest: ResourceSpecDigest,
-      worktreeId: WorktreeId | null,
-    ) => Effect.Effect<ResourceApproval | null>;
+    /**
+     * The approval already made of `spec` for exactly this target, while settings hold `spec` under
+     * its name and still hold what its approver read, checked as `adoptAndApprove` checks; null
+     * when there is none yet, so the caller resolves the image and adopts.
+     */
+    readonly approvalAsRead: (
+      lookup: ApprovalLookup,
+    ) => Effect.Effect<Adopted | null, ResourceSettingsStaleError>;
     /**
      * The latest approval of the definition's spec as declared now, for the project or for
      * `worktreeId`; null until that spec is approved.
@@ -751,19 +759,23 @@ const exactApprovalIn = (
     .limit(1)
     .pipe(Effect.flatMap(([row]) => (row === undefined ? Effect.succeed(null) : toApproval(row))));
 
-/** Adopts and approves as `adoptAndApprove` says: one transaction, settings checked under lock. */
-const adoptIn = Effect.fn("ResourcesRepo.adoptIn")(function* (tx: Tx, request: AdoptionRequest) {
-  const { projectId, spec, settings } = request;
+/**
+ * The definition settings hold under the spec's name, row-locked, while it is what the approver
+ * read; null when they hold none. The project's row lock orders this against every declaration.
+ */
+const heldAsRead = Effect.fn("ResourcesRepo.heldAsRead")(function* (
+  tx: Tx,
+  lookup: ApprovalLookup,
+) {
+  const { projectId, spec, settings } = lookup;
   const digest = resourceSpecDigest(spec);
-  // The project's row lock orders this against every declaration, so the name's row read here
-  // is the one the write replaces.
   yield* tx
     .select({ id: projects.id })
     .from(projects)
     .where(eq(projects.id, projectId))
     .for("no key update");
   const [held] = yield* tx
-    .select({ id: resourceDefinitions.id, specDigest: resourceDefinitions.specDigest })
+    .select()
     .from(resourceDefinitions)
     .where(
       and(eq(resourceDefinitions.projectId, projectId), eq(resourceDefinitions.name, spec.name)),
@@ -777,7 +789,15 @@ const adoptIn = Effect.fn("ResourcesRepo.adoptIn")(function* (tx: Tx, request: A
       : held?.id === settings.id &&
         (held.specDigest === settings.digest || held.specDigest === digest);
   if (!asRead) return yield* new ResourceSettingsStaleError({ name: spec.name });
+  return held === undefined ? null : yield* toDefinition(held);
+});
+
+/** Adopts and approves as `adoptAndApprove` says: one transaction, settings checked under lock. */
+const adoptIn = Effect.fn("ResourcesRepo.adoptIn")(function* (tx: Tx, request: AdoptionRequest) {
+  const { projectId, spec } = request;
+  yield* heldAsRead(tx, request);
   const definition = yield* declareIn(tx, projectId, spec, request.approvedBy);
+  const digest = definition.specDigest;
   const made = yield* exactApprovalIn(tx, definition.id, digest, request.worktreeId);
   const approval =
     made ??
@@ -789,6 +809,17 @@ const adoptIn = Effect.fn("ResourcesRepo.adoptIn")(function* (tx: Tx, request: A
       approvedBy: request.approvedBy,
     }));
   return { definition, approval };
+});
+
+/** `approvalAsRead`, under the locks `adoptIn` takes. */
+const approvalAsReadIn = Effect.fn("ResourcesRepo.approvalAsReadIn")(function* (
+  tx: Tx,
+  lookup: ApprovalLookup,
+) {
+  const held = yield* heldAsRead(tx, lookup);
+  if (held === null || held.specDigest !== resourceSpecDigest(lookup.spec)) return null;
+  const approval = yield* exactApprovalIn(tx, held.id, held.specDigest, lookup.worktreeId);
+  return approval === null ? null : { definition: held, approval };
 });
 
 export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Layer.effect(
@@ -1007,11 +1038,8 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
     const adoptAndApprove = (request: AdoptionRequest) =>
       db.transaction((tx) => adoptIn(tx, request)).pipe(Effect.catchTags(queryErrorsDie));
 
-    const exactApproval = (
-      definitionId: ResourceDefinitionId,
-      digest: ResourceSpecDigest,
-      worktreeId: WorktreeId | null,
-    ) => exactApprovalIn(db, definitionId, digest, worktreeId).pipe(Effect.orDie);
+    const approvalAsRead = (lookup: ApprovalLookup) =>
+      db.transaction((tx) => approvalAsReadIn(tx, lookup)).pipe(Effect.catchTags(queryErrorsDie));
 
     const currentApproval = Effect.fn("ResourcesRepo.currentApproval")(function* (
       definitionId: ResourceDefinitionId,
@@ -1125,7 +1153,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       liftProjectRemovalFence,
       approve,
       adoptAndApprove,
-      exactApproval,
+      approvalAsRead,
       currentApproval,
       ensureSelection,
       setSelection,

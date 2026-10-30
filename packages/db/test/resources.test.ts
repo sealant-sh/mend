@@ -1098,9 +1098,14 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       expect(await count("resource_approvals", first.definition.id)).toBe(1);
       expect(
         await withRepo((repo) =>
-          repo.exactApproval(first.definition.id, first.definition.specDigest, null),
+          repo.approvalAsRead({
+            projectId: project,
+            spec: postgresDb(),
+            settings: { id: first.definition.id, digest: first.definition.specDigest },
+            worktreeId: null,
+          }),
         ),
-      ).toMatchObject({ id: first.approval.id });
+      ).toMatchObject({ approval: { id: first.approval.id } });
     });
 
     it("refuses a read settings have moved on from, and writes nothing", async () => {
@@ -1154,6 +1159,36 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       expect(await count("resource_approvals", again.id)).toBe(0);
     });
 
+    it("answers an approval already made only while settings hold what was read", async () => {
+      const project = await newProject();
+      const elsewhere = await newProject();
+      const read = await withRepo((repo) => repo.adoptAndApprove(adoption(project, postgresDb())));
+      const foreign = await withRepo((repo) =>
+        repo.adoptAndApprove(adoption(elsewhere, postgresDb())),
+      );
+      const lookup = (settings: { id: ResourceDefinitionId; digest: ResourceSpecDigest }) =>
+        failureOf((repo) =>
+          repo.approvalAsRead({
+            projectId: project,
+            spec: postgresDb(),
+            settings,
+            worktreeId: null,
+          }),
+        );
+      // Another project's definition, named by its id, answers nothing of it.
+      expect(
+        await lookup({ id: foreign.definition.id, digest: foreign.definition.specDigest }),
+      ).toEqual(expect.objectContaining({ _tag: "ResourceSettingsStaleError", name: "db" }));
+
+      // Declared again with another spec: the approval made of the spec read is history.
+      await withRepo((repo) =>
+        repo.declare(project, postgresDb({ image: "postgres:17.6" }), "alice"),
+      );
+      expect(await lookup({ id: read.definition.id, digest: read.definition.specDigest })).toEqual(
+        expect.objectContaining({ _tag: "ResourceSettingsStaleError", name: "db" }),
+      );
+    });
+
     it("leaves settings as they were when the approval is refused", async () => {
       const project = await newProject();
       const worktree = await newWorktree(project);
@@ -1180,7 +1215,12 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       expect(mine.approval).toMatchObject({ worktreeId: worktree, approvedBy: "tom" });
       expect(
         await withRepo((repo) =>
-          repo.exactApproval(mine.definition.id, mine.definition.specDigest, null),
+          repo.approvalAsRead({
+            projectId: project,
+            spec: mailpit("worktree"),
+            settings: null,
+            worktreeId: null,
+          }),
         ),
       ).toBeNull();
     });

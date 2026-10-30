@@ -10,7 +10,7 @@ import {
   UserFacts,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { WorktreeId } from "@mend/domain";
+import { ProjectId, WorktreeId } from "@mend/domain";
 import {
   ImageDigest,
   presetDefinition,
@@ -627,6 +627,66 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
         },
       });
       expect(await approvals()).toEqual([]);
+    });
+
+    it("answers no approval of a definition settings moved on from, or of another project's", async () => {
+      await start();
+      const read = await declare();
+      const first = await approveVia("alice", {
+        source: { kind: "settings", id: read.id, digest: read.specDigest },
+        worktreeId: null,
+      });
+      expect(first.status).toBe(200);
+      const proposal = (await propose("carol", "17")).body;
+      const sameAsRead = {
+        source: {
+          kind: "proposal",
+          id: proposal.id,
+          digest: proposal.digest,
+          settings: { id: read.id, digest: read.specDigest },
+        },
+        worktreeId: null,
+      };
+      await declareSpec({ ...read.spec, image: "postgres:17.6" });
+      expect(await approveVia("alice", sameAsRead)).toEqual({
+        status: 409,
+        body: {
+          _tag: "ResourceStale",
+          message: "@db · settings changed since you read it · nothing was approved",
+        },
+      });
+
+      const elsewhere = ProjectId.make("p_resources_elsewhere");
+      await runtime.runPromise(
+        Effect.flatMap(
+          SqlClient.SqlClient,
+          (sql) => sql`INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+            VALUES (${elsewhere}, 'elsewhere', '/store/elsewhere', 'main', 'org-a')
+            ON CONFLICT (id) DO NOTHING`,
+        ),
+      );
+      const foreign = await runtime.runPromise(
+        Effect.flatMap(repoNow, (repo) =>
+          repo.adoptAndApprove({
+            projectId: elsewhere,
+            spec: read.spec,
+            settings: null,
+            imageDigest: ImageDigest.make(`sha256:${"f".repeat(64)}`),
+            worktreeId: null,
+            approvedBy: "bob",
+          }),
+        ),
+      );
+      const viaForeign = await approveVia("alice", {
+        source: {
+          ...sameAsRead.source,
+          settings: { id: foreign.definition.id, digest: read.specDigest },
+        },
+        worktreeId: null,
+      });
+      expect(viaForeign.status).toBe(409);
+      expect(JSON.stringify(viaForeign.body)).not.toContain("f".repeat(64));
+      expect(resolved).toEqual(["postgres:17"]);
     });
 
     it("lets a change owner approve a worktree resource only once a manager approved its image", async () => {

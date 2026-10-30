@@ -583,11 +583,16 @@ export const ResourcesLive: Layer.Layer<
         },
       );
       const spec = yield* sourceSpec(project, source, clock);
-      if (settings?.digest === source.digest) {
-        const made = yield* repo.exactApproval(settings.id, settings.digest, worktreeId);
-        if (made !== null) {
-          return yield* approved(project, viewer, { ...settings, spec }, made, null, clock);
-        }
+      const settingsChanged = () => Effect.fail(changed(spec.name, "settings"));
+      const lookup = { projectId: project.id, spec, settings, worktreeId };
+      // An approval already made is the answer, and no registry is asked again.
+      const found = yield* repo
+        .approvalAsRead(lookup)
+        .pipe(Effect.catchTag("ResourceSettingsStaleError", settingsChanged));
+      if (found !== null) {
+        const { definition, approval } = found;
+        const version = { id: definition.id, digest: definition.specDigest, spec: definition.spec };
+        return yield* approved(project, viewer, version, approval, null, clock);
       }
       const image = yield* images.resolve(spec.image).pipe(
         Effect.mapError(
@@ -599,17 +604,10 @@ export const ResourcesLive: Layer.Layer<
         ),
       );
       const adopted = yield* repo
-        .adoptAndApprove({
-          projectId: project.id,
-          spec,
-          settings,
-          imageDigest: image.digest,
-          worktreeId,
-          approvedBy: viewer.userId,
-        })
+        .adoptAndApprove({ ...lookup, imageDigest: image.digest, approvedBy: viewer.userId })
         .pipe(
           Effect.catchTags({
-            ResourceSettingsStaleError: () => Effect.fail(changed(spec.name, "settings")),
+            ResourceSettingsStaleError: settingsChanged,
             ResourceApprovalStaleError: () => Effect.fail(changed(spec.name, "the definition")),
           }),
         );
