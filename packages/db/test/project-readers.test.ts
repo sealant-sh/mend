@@ -14,7 +14,7 @@ const exceptions = new Map([
     "Lease admission explicitly checks permanent removal marks.",
   ],
   [
-    "packages/db/src/repos/capture-store.ts:recordPutAuthority",
+    "packages/db/src/repos/capture-store.ts:uploadAdmitted",
     "A removed project is read to refuse it new upload URLs.",
   ],
   [

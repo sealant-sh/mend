@@ -3165,6 +3165,26 @@ describeSeals(
       expect((await recordedSeal(at))?.reverifiedAt).toBeInstanceOf(Date);
     });
 
+    it("keeps a bound URL's lifetime on record for a purge, though no seal waits on it", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "bound bytes a purge waits out\n");
+      const before = Date.now();
+      await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      expect(authority(at)).toBeUndefined();
+      const landsUntil = await run(
+        Effect.flatMap(CaptureStoreRepo, (repo) => repo.putAuthorityUntilFor([at.worktreeId])),
+      );
+      expect(landsUntil?.getTime() ?? 0).toBeGreaterThan(before);
+    });
+
     it("keeps an index's URLs to one SHA-256, and refuses a declared SHA-256 its name contradicts", async () => {
       const at = await claimed();
       await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);

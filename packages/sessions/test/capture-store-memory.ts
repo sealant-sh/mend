@@ -2,6 +2,7 @@ import {
   CaptureConflictError,
   CaptureStoreRepo,
   type CaptureRow,
+  type LeaseHolder,
   type PackRow,
   type RegisterCapture,
   type WorktreeLease,
@@ -32,6 +33,8 @@ export interface MemoryCaptureStore {
   readonly seals: Map<string, SealedCompletion>;
   /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry (0089). */
   readonly putAuthority: Map<string, Date>;
+  /** `capture_upload_windows`: worktree → until when its byte-bound URLs could land (0167). */
+  readonly uploadWindows: Map<string, Date>;
   /** `capture_bound_indexes`: key → the digest its bound URLs name, and until when (0099). */
   readonly boundIndexes: Map<string, { sha256: string; until: Date }>;
   /** Worktrees that are gone: Mend no longer speaks for their scopes (`sealAuthorityOver`). */
@@ -92,6 +95,7 @@ export const makeMemoryCaptureStore = (
   const seals = new Map<string, SealedCompletion>();
   /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry. */
   const putAuthority = new Map<string, Date>();
+  const uploadWindows = new Map<string, Date>();
   const boundIndexes = new Map<string, { sha256: string; until: Date }>();
   const goneWorktrees = new Set<string>();
   const boundIndexCutover = { until: 0 };
@@ -107,6 +111,18 @@ export const makeMemoryCaptureStore = (
   const summaries = new Map<string, CaptureSummaryRow>();
   const live = (lease: { expiresAt: number | null }) =>
     lease.expiresAt !== null && lease.expiresAt > clock.now();
+  /** The lease as it is now (cross-repo decision 31): live, under `epoch`, the holder's. */
+  const leaseAdmits = (worktreeId: WorktreeId, epoch: number, holder?: LeaseHolder) => {
+    if (holder === undefined) return true;
+    const lease = leases.get(worktreeId);
+    return (
+      lease !== undefined &&
+      lease.epoch === epoch &&
+      live(lease) &&
+      lease.executorId !== null &&
+      holdsAs(lease, holder)
+    );
+  };
   const leaseView = (worktreeId: WorktreeId): WorktreeLease | null => {
     const lease = leases.get(worktreeId);
     return lease === undefined
@@ -401,20 +417,18 @@ export const makeMemoryCaptureStore = (
           }),
         ),
       ),
+    recordUploadWindow: (worktreeId, epoch, until, holder) =>
+      Effect.sync(() => {
+        if (!leaseAdmits(worktreeId, epoch, holder)) return false;
+        const kept = uploadWindows.get(worktreeId);
+        if (kept === undefined || kept.getTime() < until.getTime())
+          uploadWindows.set(worktreeId, until);
+        return true;
+      }),
     recordPutAuthority: (worktreeId, epoch, expiresAt, checkedSeals, holder) =>
       Effect.sync(() => {
-        // The lease as it is now (cross-repo decision 31): live, under `epoch`, the holder's.
-        if (holder !== undefined) {
-          const lease = leases.get(worktreeId);
-          if (
-            lease === undefined ||
-            lease.epoch !== epoch ||
-            !live(lease) ||
-            lease.executorId === null ||
-            !holdsAs(lease, holder)
-          ) {
-            return { recorded: false, reason: "lease" } as const;
-          }
+        if (!leaseAdmits(worktreeId, epoch, holder)) {
+          return { recorded: false, reason: "lease" } as const;
         }
         const key = `${worktreeId}:${epoch}`;
         // A recorded seal whose objects live under this prefix, any epoch's, that the caller did
@@ -445,11 +459,17 @@ export const makeMemoryCaptureStore = (
       Effect.sync(() => putAuthority.get(`${worktreeId}:${epoch}`) ?? null),
     putAuthorityUntilFor: (worktreeIds) =>
       Effect.sync(() => {
-        const times = [...putAuthority.entries()].flatMap(([key, until]) =>
-          worktreeIds.some((worktreeId) => key.startsWith(`${worktreeId}:`))
-            ? [until.getTime()]
-            : [],
-        );
+        const times = [
+          ...[...putAuthority.entries()].flatMap(([key, until]) =>
+            worktreeIds.some((worktreeId) => key.startsWith(`${worktreeId}:`))
+              ? [until.getTime()]
+              : [],
+          ),
+          ...worktreeIds.flatMap((worktreeId) => {
+            const until = uploadWindows.get(worktreeId);
+            return until === undefined ? [] : [until.getTime()];
+          }),
+        ];
         return times.length === 0 ? null : new Date(Math.max(...times));
       }),
     putAuthorityUntilOver: (scopes) =>
@@ -688,6 +708,7 @@ export const makeMemoryCaptureStore = (
     claims,
     seals,
     putAuthority,
+    uploadWindows,
     boundIndexes,
     goneWorktrees,
     boundIndexCutover,

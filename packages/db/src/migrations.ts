@@ -4604,6 +4604,12 @@ const projectRetentionMigration = Effect.gen(function* () {
   yield* sql`CREATE TRIGGER worktrees_retention_chain_cleanup AFTER DELETE ON worktrees
     FOR EACH ROW EXECUTE FUNCTION project_retention_chain_cleanup()`;
 
+  // URLs bound to their bytes carry no authority to replace an object, so no seal waits on them,
+  // but each can still land its bytes until it expires: purge waits for those too.
+  yield* sql`CREATE TABLE capture_upload_windows (
+    worktree_id text PRIMARY KEY REFERENCES worktrees(id) ON DELETE CASCADE,
+    until timestamptz NOT NULL)`;
+
   yield* sql.unsafe(`CREATE FUNCTION project_retention_preview_grant() RETURNS trigger
     LANGUAGE plpgsql AS $$
     BEGIN

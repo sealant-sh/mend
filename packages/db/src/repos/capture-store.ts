@@ -446,7 +446,21 @@ export class CaptureStoreRepo extends Context.Service<
       checkedSeals?: ReadonlyArray<string>,
       holder?: LeaseHolder,
     ) => Effect.Effect<PutAuthorityRecord>;
-    /** The latest expiry of an upload URL handed out under any epoch of these worktrees. */
+    /**
+     * Records until when URLs bound to their bytes, handed out under the epoch, could still land
+     * them: no authority to replace an object, so no seal waits on it, but purge does. False,
+     * and nothing handed out: the lease is not `holder`'s under `epoch`, or the project was removed.
+     */
+    readonly recordUploadWindow: (
+      worktreeId: WorktreeId,
+      epoch: number,
+      until: Date,
+      holder?: LeaseHolder,
+    ) => Effect.Effect<boolean>;
+    /**
+     * The latest expiry of an upload URL handed out under any epoch of these worktrees, write
+     * authority or bound to its bytes.
+     */
     readonly putAuthorityUntilFor: (
       worktreeIds: ReadonlyArray<WorktreeId>,
     ) => Effect.Effect<Date | null>;
@@ -1154,6 +1168,51 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return rows.length > 0;
     });
 
+    /**
+     * Whether an upload URL may leave under the epoch now. The lease first, held `FOR SHARE` (the
+     * order a register takes: lease, then the rest), and read as it is now: a claim or a release
+     * waits for this transaction, and one that committed while the request did its bucket reads is
+     * seen here. A removed project is issued no upload URL, its row held so a removal waits: purge
+     * refuses only while earlier ones are valid.
+     */
+    const uploadAdmitted = (worktreeId: WorktreeId, epoch: number, holder?: LeaseHolder) =>
+      Effect.gen(function* () {
+        if (holder !== undefined) {
+          const [lease] = yield* sql<{ readonly held: boolean }>`
+            SELECT (epoch = ${epoch} AND expires_at > now()
+                    AND executor_id = ${holder.executorId}
+                    AND (launch_id IS NULL OR launch_id = ${holder.launchId})) AS held
+              FROM worktree_leases WHERE worktree_id = ${worktreeId}
+               FOR SHARE`;
+          if (lease?.held !== true) return false;
+        }
+        const [parent] = yield* sql<{ readonly removed: boolean }>`
+          SELECT p.removed_at IS NOT NULL AS removed
+            FROM projects p JOIN worktrees w ON w.project_id = p.id
+           WHERE w.id = ${worktreeId} FOR SHARE OF p`;
+        return parent?.removed !== true;
+      });
+
+    const recordUploadWindow = Effect.fn("CaptureStoreRepo.recordUploadWindow")(function* (
+      worktreeId: WorktreeId,
+      epoch: number,
+      until: Date,
+      holder?: LeaseHolder,
+    ) {
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            if (!(yield* uploadAdmitted(worktreeId, epoch, holder))) return false;
+            yield* sql`
+              INSERT INTO capture_upload_windows (worktree_id, until) VALUES (${worktreeId}, ${until})
+              ON CONFLICT (worktree_id) DO UPDATE
+                SET until = GREATEST(capture_upload_windows.until, EXCLUDED.until)`;
+            return true;
+          }),
+        )
+        .pipe(Effect.orDie);
+    });
+
     const recordPutAuthority = Effect.fn("CaptureStoreRepo.recordPutAuthority")(function* (
       worktreeId: WorktreeId,
       epoch: number,
@@ -1164,24 +1223,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            // The lease first, held `FOR SHARE` (the order a register takes: lease, then the
-            // rest), and read as it is now: a claim or a release waits for this transaction, and
-            // one that committed while the request did its bucket reads is seen here.
-            if (holder !== undefined) {
-              const [lease] = yield* sql<{ readonly held: boolean }>`
-                SELECT (epoch = ${epoch} AND expires_at > now()
-                        AND executor_id = ${holder.executorId}
-                        AND (launch_id IS NULL OR launch_id = ${holder.launchId})) AS held
-                  FROM worktree_leases WHERE worktree_id = ${worktreeId}
-                   FOR SHARE`;
-              if (lease?.held !== true) return { recorded: false, reason: "lease" } as const;
-            }
-            // A removed project is issued no upload URL: purge refuses only while earlier ones are valid.
-            const [parent] = yield* sql<{ readonly removed: boolean }>`
-              SELECT p.removed_at IS NOT NULL AS removed
-                FROM projects p JOIN worktrees w ON w.project_id = p.id
-               WHERE w.id = ${worktreeId} FOR SHARE OF p`;
-            if (parent?.removed === true) return { recorded: false, reason: "lease" } as const;
+            if (!(yield* uploadAdmitted(worktreeId, epoch, holder)))
+              return { recorded: false, reason: "lease" } as const;
             yield* lockPutAuthority(worktreeId, epoch);
             // Read after the lock: a seal marked while this waited is seen. Every seal whose
             // objects live under this prefix, whatever epoch or worktree it seals (0092).
@@ -1225,8 +1268,11 @@ export const CaptureStoreRepoLive: Layer.Layer<
     ) {
       if (worktreeIds.length === 0) return null;
       const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
-        SELECT max(expires_at) AS expires_at FROM capture_put_authority
-         WHERE worktree_id IN ${sql.in([...worktreeIds])}`.pipe(Effect.orDie);
+        SELECT GREATEST(
+          (SELECT max(expires_at) FROM capture_put_authority
+            WHERE worktree_id IN ${sql.in([...worktreeIds])}),
+          (SELECT max(until) FROM capture_upload_windows
+            WHERE worktree_id IN ${sql.in([...worktreeIds])})) AS expires_at`.pipe(Effect.orDie);
       return row?.expiresAt ?? null;
     });
 
@@ -1736,6 +1782,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       sealedCompletion,
       recordSeal,
       recordPutAuthority,
+      recordUploadWindow,
       putAuthorityUntil,
       putAuthorityUntilFor,
       putAuthorityUntilOver,

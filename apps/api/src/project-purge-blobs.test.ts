@@ -103,6 +103,17 @@ describe("purging a removed project's stored objects", () => {
     expect(await keys()).toEqual(before);
   });
 
+  it("refuses while a URL bound to its bytes can still land them, though it replaces nothing", async () => {
+    const { repo, keys, purge } = await world();
+    const before = await keys();
+    expect(
+      await Effect.runPromise(repo.recordUploadWindow(own, 1, new Date(Date.now() + 10 * 60_000))),
+    ).toBe(true);
+    const exit = await purge();
+    expect(Exit.isFailure(exit) && String(exit.cause)).toContain("UploadAuthorityOpen");
+    expect(await keys()).toEqual(before);
+  });
+
   it("deletes the objects only it names, keeps an inherited pack and its index, and tombstones every deletion", async () => {
     const { repo, keys, purge } = await world();
     await Effect.runPromise(repo.recordPutAuthority(own, 1, new Date(Date.now() - 1000)));

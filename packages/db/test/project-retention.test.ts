@@ -545,8 +545,15 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         const tree = WorktreeId.make("w-condemned");
         yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES (${tree}, ${id}, ${tree}, ${tree}, ${tree}, ${"a".repeat(40)})`;
         yield* capture.init(tree);
+        const boundUntil = new Date(Date.now() + 300_000);
+        const boundBefore = yield* capture.recordUploadWindow(tree, 1, boundUntil);
         yield* keep(id);
         const authority = yield* capture.recordPutAuthority(
+          tree,
+          1,
+          new Date(Date.now() + 600_000),
+        );
+        const boundAfter = yield* capture.recordUploadWindow(
           tree,
           1,
           new Date(Date.now() + 600_000),
@@ -572,6 +579,8 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           fenceId: purge.id,
         });
         expect({
+          boundBefore,
+          boundAfter,
           authority: authority.recorded,
           until: yield* capture.putAuthorityUntilFor([tree]),
           byRetention,
@@ -579,8 +588,10 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           byPurge,
           tombstoned: (yield* capture.referenceState([tree], [key])).tombstones.map((t) => t.key),
         }).toEqual({
+          boundBefore: true,
+          boundAfter: false,
           authority: false,
-          until: null,
+          until: boundUntil,
           byRetention: false,
           byStaleMark: false,
           byPurge: true,
