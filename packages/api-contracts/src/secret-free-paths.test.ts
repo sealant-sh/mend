@@ -79,7 +79,7 @@ describe("endpoint URLs", () => {
     ).toEqual([]);
   });
 
-  it("count a secret however the router spells its parameter, in a query field, and past the segment the edge redacts", () => {
+  it("count a secret however the router spells its parameter, in a query field, past the segment the edge redacts, and after a page's path", () => {
     const spellings = HttpApi.make("spellings").add(
       HttpApiGroup.make("spellings")
         .add(HttpApiEndpoint.get("optional", "/optional/:token?"))
@@ -98,7 +98,9 @@ describe("endpoint URLs", () => {
           HttpApiEndpoint.get("redactedButQuery", "/api/devices/:token", {
             query: { code: Schema.String },
           }),
-        ),
+        )
+        .add(HttpApiEndpoint.get("repeated", "/api/devices/:token/:token"))
+        .add(HttpApiEndpoint.get("linkPage", "/join/:token")),
     );
     expect(secretsIn(spellings)).toEqual([
       "GET /optional/:token?",
@@ -111,6 +113,8 @@ describe("endpoint URLs", () => {
       "GET /query",
       "GET /api/devices/:id/:token",
       "GET /api/devices/:token",
+      "GET /api/devices/:token/:token",
+      "GET /join/:token",
     ]);
   });
 });
