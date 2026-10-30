@@ -19,6 +19,7 @@ import type { Input } from "./rfb-client.ts";
 import { SCREEN_WORKER, screenWorkersLayer } from "./screen-workers.ts";
 
 const EXITING_WORKER = new URL("../../test/screen-worker-exits.ts", import.meta.url);
+const QUITTING_WORKER = new URL("../../test/screen-worker-quits.ts", import.meta.url);
 
 const scriptedDisplay = (...lines: ReadonlyArray<Uint8Array>): ForwardBytes => {
   const left = [...lines];
@@ -264,6 +265,20 @@ describe("a hand whose batch or stream runs long", () => {
       expect((yield* Effect.flip(hand.look)).reason).toBe("decoder-failed");
       expect((yield* Effect.flip(hand.ended)).reason).toBe("decoder-failed");
     }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(EXITING_WORKER))),
+  );
+
+  it.live("ends when its decoder's thread goes while nothing is asked of it", () =>
+    Effect.gen(function* () {
+      const display = yield* heldDisplay;
+      const hand = yield* openHand({
+        bytes: display.bytes,
+        password: Redacted.make(XVNC_PASSWORD),
+        currentEpoch: Effect.succeed(1),
+      });
+      yield* hand.look;
+      const ending = yield* Effect.flip(hand.ended).pipe(Effect.timeout("5 seconds"));
+      expect(ending.reason).toBe("decoder-failed");
+    }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(QUITTING_WORKER))),
   );
 });
 

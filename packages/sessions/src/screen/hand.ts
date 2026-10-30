@@ -249,6 +249,7 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
 
   yield* Effect.forkScoped(Effect.forever(Effect.flatten(Queue.take(tasks))));
   yield* Effect.forkScoped(whileOpen(reader));
+  yield* Effect.forkScoped(whileOpen(decoder.stopped.pipe(Effect.mapError(decoderEnded))));
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       yield* Deferred.fail(end, ended("closed"));
