@@ -426,6 +426,24 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["sessions", "logs", "wait"],
   },
   {
+    name: "settings",
+    section: "sessions",
+    summary: "see or change your own messaging setting",
+    synopsis: ["[send-steers [on|off]] [--json]"],
+    description: [
+      "Prints your settings, one line each: the name, its value and what it does. Each person has their own.",
+      "send-steers is Send steers the running turn, on by default. On, a message you send while your own turn runs goes into that turn. Off, it always starts your next turn. A message during another person's turn starts a new turn either way, and mend message --queue does too.",
+      "With a name, prints that one value; with on or off, saves it and prints the saved value. Exit 0 means the value printed is the one the server holds. Exit 1 means a bad argument, which sends nothing, a refusal, or no usable answer; after a failed set, run mend settings to see the value the server holds.",
+    ],
+    options: [{ flag: "--json", text: "print the versioned settings or error as JSON" }],
+    examples: [
+      { command: "mend settings", text: "every setting and its value" },
+      { command: "mend settings send-steers off", text: "send always starts your next turn" },
+      { command: "mend settings send-steers --json", text: "the one setting as JSON" },
+    ],
+    see: ["message"],
+  },
+  {
     name: "logs",
     section: "sessions",
     summary: "print a session's recorded terminal output",

@@ -170,6 +170,7 @@ import {
   serverEvents,
   type ServiceTunnels,
 } from "./service-tunnels.ts";
+import { settingsCommand } from "./settings.ts";
 import {
   hasPersonFacts,
   sessionWorkspaceLines,
@@ -4676,6 +4677,7 @@ _mend() {
     'run:new session + arbitrary command'
     'logs:recorded terminal output of a session' 'wait:wait for the command of a session to end'
     'message:send words to a session'
+    'settings:see or change your own messaging setting'
     'attach:reattach to a running session' 'stop:stop the agent — record and review remain'
     'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
@@ -4716,6 +4718,15 @@ _mend() {
     handoff)
       compadd -- --with --project --yes
       ;;
+    settings)
+      if (( CURRENT == 3 )); then
+        compadd -- send-steers --json
+      elif (( CURRENT == 4 )) && [[ $words[3] == send-steers ]]; then
+        compadd -- on off --json
+      else
+        compadd -- --json
+      fi
+      ;;
     shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait|message)
       local -a sessions
       sessions=(\${(f)"$(command mend __complete session 2>/dev/null | tr '\\t' ':')"})
@@ -4729,7 +4740,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait message attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait message settings attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -4749,6 +4760,15 @@ const BASH_COMPLETIONS = `_mend() {
       ;;
     handoff)
       COMPREPLY=( $(compgen -W "--with --project --yes" -- "$cur") )
+      ;;
+    settings)
+      local options="--json"
+      if [ "$COMP_CWORD" -eq 2 ]; then
+        options="send-steers --json"
+      elif [ "$COMP_CWORD" -eq 3 ] && [ "\${COMP_WORDS[2]}" = send-steers ]; then
+        options="on off --json"
+      fi
+      COMPREPLY=( $(compgen -W "$options" -- "$cur") )
       ;;
     shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait|message)
       COMPREPLY=( $(compgen -W "$(command mend __complete session 2>/dev/null | cut -f1)" -- "$cur") )
@@ -6314,6 +6334,24 @@ const main = async () => {
       },
       readStdin: () => streamText(process.stdin),
       uuid: crypto.randomUUID,
+      stdout: (text) => {
+        process.stdout.write(text);
+      },
+      stderr: (text) => {
+        process.stderr.write(text);
+      },
+    });
+    return;
+  }
+  if (command === "settings") {
+    process.exitCode = await settingsCommand(rest, {
+      connect: () => {
+        const config = loadConfig();
+        return {
+          get: (route) => request<unknown>(config, "GET", route),
+          put: (route, body) => request<unknown>(config, "PUT", route, body),
+        };
+      },
       stdout: (text) => {
         process.stdout.write(text);
       },
