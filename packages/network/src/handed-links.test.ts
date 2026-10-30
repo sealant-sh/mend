@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  fragmentFormOf,
+  fragmentSecret,
   type HandedLinkKind,
   handedLinkPath,
   isHandedLinkPage,
-  readHandedLink,
-  canonicalHandedLinkPath,
+  legacyPathSecret,
 } from "./handed-links.ts";
 
 const KINDS: ReadonlyArray<readonly [HandedLinkKind, string, string]> = [
@@ -31,52 +32,40 @@ describe("a link Mend hands to a person", () => {
 
   it("reads back the secret it was built with", () => {
     for (const [kind, , secret] of KINDS) {
-      expect(readHandedLink(kind, at(handedLinkPath(kind, secret)))).toEqual({
-        _tag: "Fragment",
-        secret,
-      });
+      expect(fragmentSecret(at(handedLinkPath(kind, secret)).hash), kind).toBe(secret);
     }
   });
 
   it("reads a link issued before the fragment, and names its fragment form", () => {
     for (const [kind, page, secret] of KINDS) {
       const legacy = at(`${page}/${secret}`);
-      expect(readHandedLink(kind, legacy)).toEqual({ _tag: "Path", secret });
-      expect(canonicalHandedLinkPath(kind, legacy)).toBe(`${page}#${secret}`);
+      expect(legacyPathSecret(kind, legacy.pathname), kind).toBe(secret);
+      expect(fragmentFormOf(kind, legacy), kind).toBe(`${page}#${secret}`);
     }
   });
 
   it("decodes the secret once", () => {
-    expect(readHandedLink("invitation", { pathname: "/join", hash: "#tok%2541" })).toEqual({
-      _tag: "Fragment",
-      secret: "tok%41",
-    });
-    expect(readHandedLink("invitation", { pathname: "/join/tok%2541", hash: "" })).toEqual({
-      _tag: "Path",
-      secret: "tok%41",
-    });
+    expect(fragmentSecret("#tok%2541")).toBe("tok%41");
+    expect(legacyPathSecret("invitation", "/join/tok%2541")).toBe("tok%41");
   });
 
-  it("finds no secret in a missing, malformed, oversized or ambiguous link", () => {
+  it("finds no secret in a missing, malformed or oversized fragment", () => {
+    for (const hash of ["", "#", "#%E0%A4%A", "#tok%20en", "#tok%0A", `#${"a".repeat(513)}`]) {
+      expect(fragmentSecret(hash), hash).toBeNull();
+    }
+  });
+
+  it("moves an old link with no secret in its path, or with a fragment too, to the bare page", () => {
     for (const location of [
       { pathname: "/join", hash: "" },
-      { pathname: "/join", hash: "#" },
-      { pathname: "/join", hash: "#%E0%A4%A" },
-      { pathname: "/join", hash: "#tok%20en" },
-      { pathname: "/join", hash: "#tok%0A" },
-      { pathname: "/join", hash: `#${"a".repeat(513)}` },
       { pathname: "/join/", hash: "" },
       { pathname: "/join/tok/more", hash: "" },
+      { pathname: "/join/%E0%A4%A", hash: "" },
       { pathname: "/join/tok", hash: "#other" },
-      { pathname: "/reset", hash: "#tok" },
+      { pathname: "/reset/tok", hash: "" },
     ]) {
-      expect(readHandedLink("invitation", location), JSON.stringify(location)).toEqual({
-        _tag: "Incomplete",
-      });
+      expect(fragmentFormOf("invitation", location), JSON.stringify(location)).toBe("/join");
     }
-    expect(canonicalHandedLinkPath("invitation", { pathname: "/join/tok/more", hash: "" })).toBe(
-      "/join",
-    );
   });
 
   it("names every page that reads one, in either form and however the router spells it", () => {

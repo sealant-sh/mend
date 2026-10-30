@@ -1,4 +1,4 @@
-import { readHandedLink } from "@mend/network";
+import { fragmentSecret } from "@mend/network";
 import { Button } from "@mend/ui/components/ui/button";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -9,10 +9,8 @@ import { authClient } from "#/lib/auth-client";
 import { passwordProblem } from "#/lib/onboarding";
 
 export function ResetPage() {
-  const link = readHandedLink("passwordReset", window.location);
-  return link._tag === "Fragment" ? (
-    <ResetForm token={link.secret} />
-  ) : (
+  const secret = fragmentSecret(window.location.hash);
+  return secret === null ? (
     <SetupFrame>
       <p className="ev-eyebrow mb-2">password</p>
       <h1 className="font-display text-lg font-semibold tracking-[-0.01em]">
@@ -22,6 +20,8 @@ export function ResetPage() {
         Check that it was copied whole, or ask an owner or the operator for a new one.
       </p>
     </SetupFrame>
+  ) : (
+    <ResetForm token={secret} />
   );
 }
 

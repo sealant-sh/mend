@@ -1,4 +1,4 @@
-import { readHandedLink } from "@mend/network";
+import { fragmentSecret } from "@mend/network";
 import { Button } from "@mend/ui/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -15,8 +15,8 @@ import { useTRPC } from "#/lib/trpc";
 const INVITATION_HEADER = "x-mend-invitation";
 
 export function JoinPage() {
-  const link = readHandedLink("invitation", window.location);
-  return link._tag === "Fragment" ? <Invitation token={link.secret} /> : <NotAnInvitation />;
+  const secret = fragmentSecret(window.location.hash);
+  return secret === null ? <NotAnInvitation /> : <Invitation token={secret} />;
 }
 
 function NotAnInvitation() {

@@ -1,4 +1,4 @@
-import { readHandedLink } from "@mend/network";
+import { fragmentSecret } from "@mend/network";
 import { Button } from "@mend/ui/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -12,8 +12,8 @@ const formatTime = (at: Date): string =>
   at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
 export function SlackLinkPage() {
-  const link = readHandedLink("slackLink", window.location);
-  return link._tag === "Fragment" ? <SlackLink code={link.secret} /> : <LinkDoesNotWork />;
+  const secret = fragmentSecret(window.location.hash);
+  return secret === null ? <LinkDoesNotWork /> : <SlackLink code={secret} />;
 }
 
 function LinkDoesNotWork() {

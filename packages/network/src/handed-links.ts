@@ -8,19 +8,8 @@ const HANDED_LINK_PAGES = {
 
 export type HandedLinkKind = keyof typeof HANDED_LINK_PAGES;
 
-export type HandedLinkRead =
-  | { readonly _tag: "Fragment"; readonly secret: string }
-  | { readonly _tag: "Path"; readonly secret: string }
-  | { readonly _tag: "Incomplete" };
-
-export interface HandedLinkLocation {
-  readonly pathname: string;
-  readonly hash: string;
-}
-
 const MAX_ENCODED_SECRET = 512;
 const SECRET = /^[\x21-\x7e]{1,256}$/;
-const INCOMPLETE: HandedLinkRead = { _tag: "Incomplete" };
 
 export const handedLinkPath = (kind: HandedLinkKind, secret: string): string =>
   `${HANDED_LINK_PAGES[kind]}#${encodeURIComponent(secret)}`;
@@ -35,32 +24,29 @@ const decodedSecret = (encoded: string): string | null => {
   }
 };
 
-/** `location` as the browser holds it: the pathname and the hash still percent-encoded. */
-export const readHandedLink = (
-  kind: HandedLinkKind,
-  location: HandedLinkLocation,
-): HandedLinkRead => {
+/** `hash` as the browser holds it, still percent-encoded: a link page's secret, or none. */
+export const fragmentSecret = (hash: string): string | null =>
+  decodedSecret(hash.replace(/^#/, ""));
+
+/** The secret of a link issued before the fragment, `/join/<token>`, or none. */
+export const legacyPathSecret = (kind: HandedLinkKind, pathname: string): string | null => {
   const page = HANDED_LINK_PAGES[kind];
-  const pathname = location.pathname.replace(/\/$/, "");
-  const fragment = location.hash.replace(/^#/, "");
-  const secret = (encoded: string, _tag: "Fragment" | "Path"): HandedLinkRead => {
-    const decoded = decodedSecret(encoded);
-    return decoded === null ? INCOMPLETE : { _tag, secret: decoded };
-  };
-  const lowered = pathname.toLowerCase();
-  if (lowered === page) return secret(fragment, "Fragment");
-  if (!lowered.startsWith(`${page}/`) || fragment !== "") return INCOMPLETE;
-  const segment = pathname.slice(page.length + 1);
-  return segment.includes("/") ? INCOMPLETE : secret(segment, "Path");
+  const trimmed = pathname.replace(/\/$/, "");
+  if (!trimmed.toLowerCase().startsWith(`${page}/`)) return null;
+  const segment = trimmed.slice(page.length + 1);
+  return segment.includes("/") ? null : decodedSecret(segment);
 };
 
-/** Where a link's page belongs: its fragment form, or the bare page when it holds no secret. */
-export const canonicalHandedLinkPath = (
+/**
+ * Where a link issued before the fragment moves to: its fragment form, or the bare page when its
+ * path holds no secret or it carries a fragment as well, since then which one is meant is unknown.
+ */
+export const fragmentFormOf = (
   kind: HandedLinkKind,
-  location: HandedLinkLocation,
+  location: { readonly pathname: string; readonly hash: string },
 ): string => {
-  const read = readHandedLink(kind, location);
-  return read._tag === "Incomplete" ? HANDED_LINK_PAGES[kind] : handedLinkPath(kind, read.secret);
+  const secret = location.hash === "" ? legacyPathSecret(kind, location.pathname) : null;
+  return secret === null ? HANDED_LINK_PAGES[kind] : handedLinkPath(kind, secret);
 };
 
 export const isHandedLinkPage = (target: string): boolean => {
