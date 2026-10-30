@@ -1,11 +1,10 @@
-import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
+import { INVITATION_HEADER, makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { ConfigProvider, Effect, Layer, Result, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
   AuthLive,
   createAuthHandler,
-  INVITATION_HEADER,
   RegistrationPolicy,
   sessionCookiePolicy,
   type RegistrationDecision,
@@ -214,6 +213,34 @@ describe("the Better Auth origin policy", () => {
     );
     expect(Result.isFailure(result)).toBe(true);
     expect(String(result)).toContain("BETTER_AUTH_TRUSTED_ORIGINS");
+  });
+});
+
+describe("a handed-over reset link (docs/adr/0003, Recovery)", () => {
+  it("refuses Better Auth's GET for it before Better Auth reads the token, however it is spelled", async () => {
+    for (const path of [
+      "/api/auth/reset-password/reset-secret-needle?callbackURL=%2Freset",
+      "/api/auth/reset-password/reset-secret-needle",
+      "/api/auth/Reset-Password/reset-secret-needle?callbackURL=%2Freset",
+      "/api/auth//reset-password/reset-secret-needle?callbackURL=%2Freset",
+      "/api/auth/reset%2Dpassword/reset-secret-needle?callbackURL=%2Freset",
+    ]) {
+      const response = await handler(new Request(`http://localhost:3105${path}`));
+      expect(response.status, path).toBe(404);
+      expect(response.headers.get("location"), path).toBeNull();
+    }
+  });
+
+  it("still takes the token in the body of a POST", async () => {
+    const response = await handler(
+      new Request("http://localhost:3105/api/auth/reset-password", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://localhost:3105" },
+        body: JSON.stringify({ token: "reset-secret-needle", newPassword: "a-new-password-1" }),
+      }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: "INVALID_TOKEN" });
   });
 });
 

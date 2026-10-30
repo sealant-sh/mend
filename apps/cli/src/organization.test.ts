@@ -174,8 +174,8 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
         : {
             status: 200,
             body: {
-              path: "/join/tok",
-              token: "tok",
+              path: "/join#invitation-token",
+              token: "invitation-token",
               invitation: { expiresAt: "2026-09-24T10:00:00Z" },
             },
           },
@@ -189,7 +189,7 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
         "sam@acme.dev",
       ]);
       expect(owner.code).toBe(0);
-      expect(owner.stdout).toContain(`${fake.url}/join/tok`);
+      expect(owner.stdout).toContain(`${fake.url}/join#invitation-token`);
       expect(owner.stdout).toContain("works once · owner · for sam@acme.dev · expires 2026-09-24");
       expect(fake.recorded.at(-1)?.body).toEqual({ role: "owner", email: "sam@acme.dev" });
 
@@ -441,12 +441,12 @@ describe("operator", () => {
         ? operator
           ? { status: 200, body: [] }
           : { status: 404, body: { _tag: "NotFound", id: "operator" } }
-        : { status: 200, body: { path: "/reset/tok", expiresAt: "2026-09-18T10:00:00Z" } },
+        : { status: 200, body: { path: "/reset#reset-token", expiresAt: "2026-09-18T10:00:00Z" } },
     );
     try {
       const issued = await runCli(fake.url, ["operator", "reset-link", "sam@acme.dev"]);
       expect(issued.code).toBe(0);
-      expect(issued.stdout).toContain(`${fake.url}/reset/tok`);
+      expect(issued.stdout).toContain(`${fake.url}/reset#reset-token`);
       expect(fake.recorded.at(-1)).toEqual({
         method: "POST",
         url: "/api/operator/password-resets",

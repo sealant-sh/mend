@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import {
+  INVITATION_HEADER,
   NetworkConfig,
   type PublicNetwork,
+  routedPath,
   SESSION_COOKIE_BASE,
   type SessionCookieName,
   sessionCookieName,
@@ -34,9 +36,6 @@ export interface AuthSession {
    */
   readonly credential?: `session:${string}` | `device:${string}`;
 }
-
-/** The header a sign-up request carries its invitation token in. */
-export const INVITATION_HEADER = "x-mend-invitation";
 
 /** Whether an account may be created, decided before Better Auth inserts it. */
 export type RegistrationDecision =
@@ -185,10 +184,26 @@ const createBetterAuth = (options: AuthHandlerOptions) =>
     trustedOrigins: [...options.network.allowedOrigins],
   });
 
+/**
+ * Better Auth's `GET /reset-password/:token` checks a reset token named in its path and redirects
+ * with it in the query. Spelled the way the API's router matches it: case, repeated slashes and
+ * percent-escapes do not reach past this.
+ */
+export const isResetLinkCallback = (pathname: string): boolean =>
+  routedPath(pathname).startsWith("/api/auth/reset-password/");
+
+const refusingResetLinkCallback =
+  (handler: (request: Request) => Promise<Response>) =>
+  (request: Request): Promise<Response> =>
+    isResetLinkCallback(new URL(request.url).pathname)
+      ? Promise.resolve(new Response(null, { status: 404 }))
+      : handler(request);
+
 /** Construct the real Better Auth handler with Mend's fixed origin policy. */
 export const createAuthHandler = (
   options: AuthHandlerOptions,
-): ((request: Request) => Promise<Response>) => createBetterAuth(options).handler;
+): ((request: Request) => Promise<Response>) =>
+  refusingResetLinkCallback(createBetterAuth(options).handler);
 
 /**
  * better-auth mounted behind an Effect contract: cookie sessions for the web
@@ -267,6 +282,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         network,
         registration,
       });
+      const handle = refusingResetLinkCallback(auth.handler);
 
       // Better Auth logs a sign-in it failed to delete on sign-out and answers success anyway,
       // which would leave every grant and ticket of that sign-in standing (docs/adr/0017). So a
@@ -284,7 +300,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         const signingOut =
           request.method === "POST" && new URL(request.url).pathname === "/api/auth/sign-out";
         const signIn = signingOut ? yield* signInOf(request.headers) : null;
-        const response = yield* Effect.promise(() => auth.handler(request));
+        const response = yield* Effect.promise(() => handle(request));
         if (signIn === null || !response.ok) return response;
         const gone = yield* Effect.tryPromise(async () => {
           await pool.query(`DELETE FROM "session" WHERE id = $1 AND "userId" = $2`, [

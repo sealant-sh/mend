@@ -268,16 +268,20 @@ What the overlay does, and what it states on your behalf:
   the port-80 redirect's, is cut the same way. This holds for the access line and for Caddy's error
   line about a request, such as a failed dial. The cost is that an access line no longer shows an
   ordinary query.
+- The links Mend hands to people, `/join#<token>`, `/reset#<token>` and `/slack/link#<code>`, carry
+  their secret after the `#`, which no browser sends, so the logged path holds none. A link issued
+  by an older Mend, such as `/join/<token>`, still works, and its token is in the path the edge logs
+  when it is opened.
 - Every other line holds no URL and no `Location`. That covers the t3code gateway's origin
   (`--t3-gateway-origin`), where an image's URL path is its token and file name. It covers a request
   whose `Host` spells a site's name in another case or with a trailing dot, since Caddy names a
   line's log by the exact `Host`, and the port-80 redirect for one. It covers Caddy's line for a
   response cut short (`aborting with incomplete response`), which Caddy names for the proxy rather
   than the site; on Mend's origin the access line from the same `remote_port` holds the path.
-- The edge drops the `Referer` header, and Caddy redacts `Authorization`, `Cookie` and `Set-Cookie`.
-  The other request and response headers are logged as Caddy writes them, except the raw route's
-  `X-Mend-File-*` headers, which the edge strips: only the t3code gateway reads them, from Mend over
-  loopback.
+- The edge drops the `Referer` header and `X-Mend-Invitation`, which carries an invitation's token
+  on sign-up, and Caddy redacts `Authorization`, `Cookie` and `Set-Cookie`. The other request and
+  response headers are logged as Caddy writes them, except the raw route's `X-Mend-File-*` headers,
+  which the edge strips: only the t3code gateway reads them, from Mend over loopback.
 
 What was checked: the merged files render, and the Caddyfile validates with Caddy. What was not: a
 certificate issued and a browser session through it, end to end. Workspace SSH on port 2222 stays on
@@ -319,7 +323,7 @@ you. See [Deploy on Kubernetes](/operate/deploy-kubernetes/) for the rest of the
 
 ### Your own reverse proxy
 
-A proxy you run in place of either must do five things:
+A proxy you run in place of either must do six things:
 
 1. Terminate TLS for exactly the `APP_URL` origin.
 2. Forward to the web tier only, never to the API, Sealant, the session channel or the bucket.
@@ -327,6 +331,10 @@ A proxy you run in place of either must do five things:
 4. Append the client address to `X-Forwarded-For`, and be listed in `MEND_TRUSTED_PROXIES`.
 5. Keep the query strings of `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws`, `/tty-embed`
    and `/pair` out of its logs.
+6. Keep the `X-Mend-Invitation` request header out of its logs, and the paths under `/join/`,
+   `/reset/` and `/slack/link/` while links issued by an older Mend may still be opened: an
+   invitation lasts up to thirty days. New links carry their secret after the `#`, which reaches no
+   proxy.
 
 ### Previews
 

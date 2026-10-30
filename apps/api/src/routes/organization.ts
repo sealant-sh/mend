@@ -25,6 +25,7 @@ import {
   INVITATION_DEFAULT_DAYS,
   INVITATION_MAX_DAYS,
 } from "@mend/domain/workbench";
+import { handedLinkPath } from "@mend/network";
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
 import { Clock, Effect } from "effect";
@@ -37,9 +38,6 @@ import {
   saveOrganizationSettings,
   saveOrganizationWorkspaceEnvironment,
 } from "./organization-settings.ts";
-
-/** The path a browser opens to accept an invitation; the web app owns the route. */
-export const invitationJoinPath = (token: string) => `/join/${token}`;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -171,7 +169,7 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         return new InvitationCreated({
           invitation: minted.invitation,
           token: minted.token,
-          path: invitationJoinPath(minted.token),
+          path: handedLinkPath("invitation", minted.token),
         });
       }),
     )
@@ -268,7 +266,10 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
           subjectType: "member",
           subjectId: params.userId,
         });
-        return new OneTimeLink({ path: `/reset/${reset.token}`, expiresAt: reset.expiresAt });
+        return new OneTimeLink({
+          path: handedLinkPath("passwordReset", reset.token),
+          expiresAt: reset.expiresAt,
+        });
       }),
     )
     .handle("orphanedProjects", () =>

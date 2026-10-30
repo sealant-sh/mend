@@ -23,6 +23,8 @@ export const createTrpcHandler =
   }): ((request: Request) => Promise<Response>) =>
   async (request) => {
     const origin = request.headers.get("origin");
+    // The app sends its queries as POSTs. A cookie-bearing GET with no Origin still passes, for a
+    // tab that loaded the app before 0.37 and sends a query's input in `?input=`; 0.38 refuses it.
     if (
       origin === null
         ? request.method !== "GET" && request.headers.has("cookie")
@@ -51,6 +53,7 @@ export const createTrpcHandler =
       endpoint: "/trpc",
       req: request,
       router: appRouter,
+      allowMethodOverride: true,
       createContext: () => ({ headers: request.headers, apiUrl: options.apiUrl }),
     });
   };

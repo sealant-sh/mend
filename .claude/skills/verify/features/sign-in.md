@@ -18,7 +18,7 @@ a revocable device token, listed under Settings → Devices. Signing out revokes
 - `cli-login` signs a terminal in through the browser authorize page (`mend login [--url]`).
 - `authorize-page` shows the code, `Authorize` or `Deny`, and says when a code is spent or missing.
 - `cli-logout` revokes the terminal's device and forgets its token (`mend logout`).
-- `password-reset` sets a new password from a one-time `/reset/<token>` link an owner or the
+- `password-reset` sets a new password from a one-time `/reset#<token>` link an owner or the
   operator hands over.
 - `desktop-connect` signs the desktop app in through the same authorize walk, or with a pasted
   token, and signs it out.
@@ -29,9 +29,10 @@ a revocable device token, listed under Settings → Devices. Signing out revokes
   opens on `Create the first account`, then `/welcome` (`Git access`), then `/`.
 - Web: the shell's `Sign out` button, in the sidebar at wide widths and the top strip below them.
 - Web: `/authorize?code=<code>`, opened by `mend login` or the desktop app.
-- Web: `/reset/<token>`, from `mend operator reset-link <email>` or an owner's `Reset password` on a
-  member in Settings → Members.
-- Web: `/join/<token>` creates an account from an invitation; see [Organization](./organization.md).
+- Web: `/reset#<token>`, from `mend operator reset-link <email>` or an owner's `Reset password` on a
+  member in Settings → Members. An older `/reset/<token>` link opens the same page at
+  `/reset#<token>`.
+- Web: `/join#<token>` creates an account from an invitation; see [Organization](./organization.md).
 - CLI: `mend login [--url <server>]`, `mend logout`, and the sign-in line of `mend doctor`.
 - Desktop: the `/connect` screen (`Connect to your Mend server`), reached when signed out, from the
   title bar's `mend · not connected` / `mend · token rejected` link, or Settings → Connection →
@@ -120,7 +121,7 @@ Preconditions:
   in "CLI login", signed in to the browser as the operator `<email>`. `mend doctor` reports
   `signed in` again.
 - **Password reset.** Run `mend operator reset-link <email>`, naming the operator's own account.
-  Stdout prints `<web>/reset/<token>` and `password reset for <email> · works once · expires <day>`;
+  Stdout prints `<web>/reset#<token>` and `password reset for <email> · works once · expires <day>`;
   exit `0`. Run `await page.goto("<that URL>")`: the heading `Set a new password` is visible. Run
   `await page.getByLabel("New password", { exact: true }).fill("<new password>")`,
   `await page.getByLabel("New password, again").fill("<new password>")` and

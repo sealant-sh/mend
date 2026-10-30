@@ -800,7 +800,7 @@ success, 1 on a typed failure, 2 on no answer (`--timeout`, default 15 s).
   line (`● <name> → 127.0.0.1:<port>`) is still an observation of the CLI.
 - **Slack.** The map's Slack entry points have no driver here:
   `not drivable yet · no Slack driver in the verify skill`. Slack's pages on the web (Settings →
-  Slack, `/slack/link/<code>`) are web steps and run. (VS Code has one: **VS Code**, above.)
+  Slack, `/slack/link#<code>`) are web steps and run. (VS Code has one: **VS Code**, above.)
 - **A step that needs what the stack lacks:** a provider login (Claude, Codex, GitHub), a GitHub
   origin or one that accepts pushes (the fixture serves fetch only and refuses a push with 403), a
   Kubernetes server, an SSH git host, a restart of the inner server with other environment, or a

@@ -5,6 +5,7 @@
       "dependsOn": ["^typecheck", "build"]
     },
     "test": {
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_EXTENDS$",
         "$TURBO_ROOT$/scripts/ci-node-reporter.mjs",

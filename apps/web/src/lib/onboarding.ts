@@ -27,6 +27,18 @@ export const safeNextPath = (value: unknown): string => {
   }
 };
 
+export const continuationOf = (location: {
+  readonly search: string;
+  readonly hash: string;
+}): string => {
+  const walked = new URLSearchParams(location.hash.replace(/^#/, "")).get("next");
+  const sentByTheApi = new URLSearchParams(location.search).get("next");
+  return safeNextPath(walked ?? sentByTheApi);
+};
+
+export const withContinuation = (page: "/login" | "/welcome", next: string): string =>
+  next === "/" ? page : `${page}#${new URLSearchParams({ next }).toString()}`;
+
 /** A fresh instance opens on registration; one with accounts opens on sign-in. */
 export const defaultLoginMode = (
   instance: { readonly users: "none" | "some" } | undefined,

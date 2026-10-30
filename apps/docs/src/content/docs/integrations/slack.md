@@ -73,7 +73,7 @@ email addresses. A linked account is one Mend spends credentials for, so the per
 control it.
 
 The first time you mention `@mend`, Mend answers with a message only you see and a **Link your Mend
-account** button. The button opens `/slack/link/<code>` in Mend. Sign in if asked. The page names
+account** button. The button opens `/slack/link#<code>` in Mend. Sign in if asked. The page names
 the Slack user and the Slack workspace you are about to link, and shows the request you made. Choose
 **Link &lt;you&gt; to my account**. Mend then runs that request, so you do not have to ask twice.
 

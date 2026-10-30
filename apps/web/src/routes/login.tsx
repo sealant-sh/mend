@@ -6,24 +6,20 @@ import { useState } from "react";
 import { Field, PasswordField } from "#/components/auth-fields";
 import { SetupFrame } from "#/components/setup-frame";
 import { authClient } from "#/lib/auth-client";
-import { defaultLoginMode, passwordProblem, safeNextPath, type LoginMode } from "#/lib/onboarding";
+import {
+  continuationOf,
+  defaultLoginMode,
+  passwordProblem,
+  withContinuation,
+  type LoginMode,
+} from "#/lib/onboarding";
 import { useTRPC } from "#/lib/trpc";
-
-export { safeNextPath } from "#/lib/onboarding";
 
 export const Route = createFileRoute("/login")({
   ssr: false,
-  // `next` stays optional so every existing `navigate({ to: "/login" })` keeps
-  // compiling; absent means the workbench root.
-  validateSearch: (
-    search: Record<string, unknown>,
-  ): { readonly next?: string; readonly reason?: "access" | "reset" } => {
-    const next = safeNextPath(search["next"]);
+  validateSearch: (search: Record<string, unknown>): { readonly reason?: "access" | "reset" } => {
     const reason = search["reason"];
-    return {
-      ...(next === "/" ? {} : { next }),
-      ...(reason === "access" || reason === "reset" ? { reason } : {}),
-    };
+    return reason === "access" || reason === "reset" ? { reason } : {};
   },
   component: LoginPage,
 });
@@ -38,7 +34,7 @@ export const Route = createFileRoute("/login")({
 function LoginPage() {
   const navigate = useNavigate();
   const search = Route.useSearch();
-  const next = search.next ?? "/";
+  const next = continuationOf(window.location);
   const trpc = useTRPC();
   const instance = useQuery(trpc.platform.instance.queryOptions(undefined, { retry: false }));
   const [chosen, setChosen] = useState<LoginMode | null>(null);
@@ -82,7 +78,7 @@ function LoginPage() {
     if (mode === "sign-up") {
       // Step two: how this account reaches its repositories. Signed in already —
       // better-auth opens the session on sign-up.
-      void navigate({ to: "/welcome", search: next === "/" ? {} : { next } });
+      void navigate({ href: withContinuation("/welcome", next) });
       return;
     }
     // A plain string path (validated same-origin above) — assign like the 401

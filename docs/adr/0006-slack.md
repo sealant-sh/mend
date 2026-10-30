@@ -126,10 +126,11 @@ sessions came from.
 
 A mention from a Slack user who has not linked their account starts nothing. Mend answers with an
 ephemeral message (`chat.postEphemeral`, which only they can see) that has a "Link your Mend
-account" button. The button opens `/slack/link/<code>`. The code is single-use and valid for ten
-minutes, and Mend stores only its hash. The person opens the page while signed in to Mend, sees
-which Slack user and which Slack workspace they are linking, and confirms. Mend then runs the
-request they originally made, so linking does not mean asking twice.
+account" button. The button opens `/slack/link#<code>` (the code in the fragment, ADR 0004
+"Handed-over links"). The code is single-use and valid for ten minutes, and Mend stores only its
+hash. The person opens the page while signed in to Mend, sees which Slack user and which Slack
+workspace they are linking, and confirms. Mend then runs the request they originally made, so
+linking does not mean asking twice.
 
 The link joins one Slack user in one Slack workspace to one Mend account in the install's
 organization. Mend does not link by email address. An address match proves nothing about who

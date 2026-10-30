@@ -186,8 +186,8 @@ describe("the status message", () => {
 
   it("builds links from the install's web origin", () => {
     expect(sessionUrl("https://mend.example/", "s 1")).toBe("https://mend.example/sessions/s%201");
-    expect(linkUrl("http://100.64.0.1:3000", "msl_abc")).toBe(
-      "http://100.64.0.1:3000/slack/link/msl_abc",
+    expect(linkUrl("http://100.64.0.1:3000", "msl_abcdefgh")).toBe(
+      "http://100.64.0.1:3000/slack/link#msl_abcdefgh",
     );
   });
 });
@@ -313,7 +313,7 @@ describe("replies only the person sees", () => {
   });
 
   it("asks an unlinked person to link, with a button to the link page", () => {
-    const url = "https://mend.example/slack/link/msl_abc";
+    const url = "https://mend.example/slack/link#msl_abcdefgh";
     const message = linkPrompt(url);
     expect(message.blocks[1]).toEqual({
       type: "actions",

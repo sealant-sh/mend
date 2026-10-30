@@ -17,7 +17,7 @@ an organization lands in that organization's audit log, where its owners read it
 - `org-invite-owner` prints a one-time link that makes whoever opens it an owner.
 - `grant-owner` makes an existing member an owner.
 - `reset-link` prints a one-time password reset link for an active account that belongs to an
-  organization; its page is `/reset/<token>`.
+  organization; its page is `/reset#<token>`.
 - `operator-only` refuses every `mend operator` command for an account without the role.
 - `operator-audit` records each act in the organization's audit log.
 - `instance-defaults` shows the operator, and only the operator, the `instance · operator` defaults
@@ -30,8 +30,8 @@ an organization lands in that organization's audit log, where its owners read it
   `mend operator org invite-owner <org> [--email <address>]`,
   `mend operator grant-owner <org> <email>`, `mend operator reset-link <email>`.
 - CLI: `mend operator gate` and `mend operator exposure` are mapped in [exposure.md](./exposure.md).
-- Web: the links these commands print open `/join/<token>` ([organization.md](./organization.md))
-  and `/reset/<token>` ([sign-in.md](./sign-in.md)). The organization's owners read the operator's
+- Web: the links these commands print open `/join#<token>` ([organization.md](./organization.md))
+  and `/reset#<token>` ([sign-in.md](./sign-in.md)). The organization's owners read the operator's
   acts in Settings → `Audit log`.
 - Web: on `/settings`, the eyebrow `instance · operator` and the instance's `Workspace environment`,
   `Sessions`, `Review automation` and `Landing` panels render only for the operator (mapped in
@@ -62,7 +62,7 @@ Preconditions:
   `mend: no organization named "no-such-org"`.
 - **Owner invitation.** Run
   `mend operator org invite-owner <org> --email verify-owner@example.invalid`. Stdout line 1 is
-  `<web>/join/<token>`, line 2 is
+  `<web>/join#<token>`, line 2 is
   `owner of <org> · for verify-owner@example.invalid · works once · expires <YYYY-MM-DD>`. Opened in
   a signed-out browser, the join page's line reads `as owner · expires <day>`. Revoke it from
   Settings → Invitations afterwards.
@@ -71,7 +71,7 @@ Preconditions:
 - **Grant to a stranger.** Run `mend operator grant-owner <org> nobody@example.invalid`. Exit code
   `1`, stderr `mend: No member of <org> has that email. Invite an owner instead.`
 - **Reset link.** Run `mend operator reset-link <member-email>`. Stdout line 1 is
-  `<web>/reset/<token>`, line 2 is
+  `<web>/reset#<token>`, line 2 is
   `password reset for <member-email> · works once · expires <YYYY-MM-DD>`. Opening it in a
   signed-out browser shows the heading `Set a new password`; setting one there is mapped in
   [sign-in.md](./sign-in.md).

@@ -395,7 +395,7 @@ describe("organization routes (docs/adr/0003)", () => {
       yield* Effect.promise(() =>
         expect(response.json()).resolves.toMatchObject({
           token: "tok-secret",
-          path: "/join/tok-secret",
+          path: "/join#tok-secret",
         }),
       );
       expect(minted).toEqual([
@@ -439,7 +439,7 @@ describe("organization routes (docs/adr/0003)", () => {
       expect(yield* Effect.promise(() => response.json())).toMatchObject({
         invitation: { organizationId: globex.id, role: "owner", createdByUserId: "gina" },
         token: "tok-secret",
-        path: "/join/tok-secret",
+        path: "/join#tok-secret",
       });
       expect(minted).toEqual([
         {
@@ -618,7 +618,7 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
       method: "POST",
     });
     expect(issued.status).toBe(200);
-    await expect(issued.json()).resolves.toMatchObject({ path: "/reset/reset-carol" });
+    await expect(issued.json()).resolves.toMatchObject({ path: "/reset#reset-carol" });
     expect(resets).toEqual(["carol"]);
     expect(audited.map((event) => [event.action, event.subjectId])).toEqual([
       ["member.password_reset_issued", "carol"],

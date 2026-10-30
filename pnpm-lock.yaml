@@ -1600,6 +1600,9 @@ importers:
       '@mend/domain':
         specifier: workspace:*
         version: link:../domain
+      '@mend/network':
+        specifier: workspace:*
+        version: link:../network
       '@slack/socket-mode':
         specifier: 'catalog:'
         version: 3.0.1(undici@7.28.0)

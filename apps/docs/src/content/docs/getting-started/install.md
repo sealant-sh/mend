@@ -263,7 +263,7 @@ Compare its code with your terminal before approving. The CLI receives its own r
 token; it does not ask for your password in the terminal.
 
 Everyone else joins by invitation. An owner runs `mend invite` (or uses Settings on the web) and
-shares the printed one-time `/join/<token>` link; whoever opens it creates an account in the
+shares the printed one-time `/join#<token>` link; whoever opens it creates an account in the
 organization. Read [Organizations](/organizations/overview/).
 
 ## Connect providers

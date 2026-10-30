@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@mend/domain": "workspace:*",
+    "@mend/network": "workspace:*",
     "@slack/socket-mode": "catalog:",
     "@slack/web-api": "catalog:",
     "effect": "catalog:",

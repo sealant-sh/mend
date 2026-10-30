@@ -14,7 +14,7 @@ linking their Mend account through a one-time link. Review stays in Mend.
   tokens, `Check and connect`; replaces or removes it.
 - `slack-display` sets the app's `Default harness`, `Agent messages`, `Diffs`,
   `Slack Connect channels` and `Land automatically`.
-- `slack-link` links a Slack user to a Mend account through `/slack/link/<code>`; `Unlink`, and an
+- `slack-link` links a Slack user to a Mend account through `/slack/link#<code>`; `Unlink`, and an
   owner's `Links` list with `Remove…`.
 - `slack-default-project` sets `Your default project` for mentions that name none.
 - `slack-mention` starts a session from `@mend <request>` with inline (`key=value`) or plain
@@ -34,7 +34,7 @@ linking their Mend account through a one-time link. Review stays in Mend.
 - Web: Settings → Slack (`/settings#slack`). Owners see the app section (connect, display settings,
   `Links`); everyone in an organization sees `Your Slack link` and `Your default project`. Nothing
   renders for an account in no organization.
-- Web: `/slack/link/<code>`, opened from the `Link your Mend account` button Mend sends privately to
+- Web: `/slack/link#<code>`, opened from the `Link your Mend account` button Mend sends privately to
   an unlinked Slack user.
 - Web: a project's `Land when a turn completes` setting decides before anything Slack says (see
   [Land a change](./land-change.md) and [Project settings](./project-settings.md)).
@@ -85,7 +85,7 @@ Preconditions:
   `Slack is not connected to this organization.` and offers no `Unlink` and no
   `Your default project`.
 - **A link code that does not work (drivable).** Run
-  `await page.goto("<web>/slack/link/not-a-real-code")`. The heading reads `This link does not work`
+  `await page.goto("<web>/slack/link#not-a-real-code")`. The heading reads `This link does not work`
   (`page.getByRole("heading", { name: "This link does not work" })`), with
   `A link works once, for ten minutes, and only for members of the organization that connected that Slack workspace. …`.
 - **Connect the app.** `not drivable yet` (needs a Slack workspace). With real tokens,
@@ -101,7 +101,7 @@ Preconditions:
   the audit log records the change (`slack.settings_changed`).
 - **Mention and link.** `not drivable yet` (needs Slack). An unlinked user's
   `@mend fix the flaky login test` gets a reply only they see with `Link your Mend account`. End
-  state on the web: `/slack/link/<code>` shows the Slack person as the heading,
+  state on the web: `/slack/link#<code>` shows the Slack person as the heading,
   `<slack user id> · <team> · expires <time>`, `runs once linked` with the request, and the button
   `Link <person> to my account`; pressing it reads
   `Linked in <team>. Mend runs your request and answers in the thread.` with `Slack settings`.
@@ -140,7 +140,7 @@ Preconditions:
   `SlackRejected: The app-level token starts with xapp-. …` and
   `SlackRejected: Slack refused the bot token (invalid_auth).` (2026-10-10). Match the sentence
   inside the alert. A product gap: an internal error name shown to the person.
-- `/slack/link/<code>` has a `main` landmark since mend#663 (`SetupFrame`); the live pass saw none
+- `/slack/link#<code>` has a `main` landmark since mend#663 (`SetupFrame`); the live pass saw none
   before it. Scoping its checks to the heading holds either way.
 - Clicking `Check and connect` with well-formed tokens calls Slack from the server. A stack without
   outbound network answers `Slack did not answer …`; that is the server's honest report, not a

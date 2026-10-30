@@ -13,19 +13,17 @@ import { Auth } from "@mend/auth";
 import { AuditEventsRepo, OrganizationsRepo, UsersRepo } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
 import { organizationNameIssue } from "@mend/domain/workbench";
+import { handedLinkPath } from "@mend/network";
 import { Clock, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { ExposureConfig } from "../exposure.ts";
 import { TenancyConfig } from "../tenancy.ts";
-import { invitationDays, invitationEmail, invitationJoinPath } from "./organization.ts";
+import { invitationDays, invitationEmail } from "./organization.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const OPERATOR = "operator";
-
-/** The reset page a handed-over link opens; the web app owns the route. */
-export const passwordResetPath = (token: string) => `/reset/${token}`;
 
 const rejected = (message: string) => new OrganizationRejected({ message });
 
@@ -157,7 +155,7 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
           data: { role: "owner", emailBound: email.email !== null, byOperator: true },
         });
         return new OneTimeLink({
-          path: invitationJoinPath(minted.token),
+          path: handedLinkPath("invitation", minted.token),
           expiresAt: minted.invitation.expiresAt,
         });
       }),
@@ -214,7 +212,7 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
           subjectId: account.id,
         });
         return new OneTimeLink({
-          path: passwordResetPath(reset.token),
+          path: handedLinkPath("passwordReset", reset.token),
           expiresAt: reset.expiresAt,
         });
       }),

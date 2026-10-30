@@ -1,6 +1,10 @@
-import { CREDENTIAL_QUERY_PARAMETERS, PAGE_VIEW_TOKEN_PARAM } from "@mend/network";
+import {
+  CREDENTIAL_QUERY_PARAMETERS,
+  INVITATION_HEADER,
+  PAGE_VIEW_TOKEN_PARAM,
+} from "@mend/network";
 import { Effect, Layer } from "effect";
-import { HttpMiddleware, UrlParams } from "effect/http";
+import { Headers, HttpMiddleware, UrlParams } from "effect/http";
 
 import { routesToPageView } from "./routes/pages.ts";
 import { unloggedRequest } from "./unlogged-requests.ts";
@@ -22,6 +26,12 @@ export const UntracedRequestsLive: Layer.Layer<never> = Layer.mergeAll(
         ...CREDENTIAL_QUERY_PARAMETERS,
         PAGE_VIEW_TOKEN_PARAM,
       ];
+    }),
+  ),
+  Layer.effect(
+    Headers.CurrentRedactedNames,
+    Effect.gen(function* () {
+      return [...(yield* Headers.CurrentRedactedNames), INVITATION_HEADER];
     }),
   ),
 );

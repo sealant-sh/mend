@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 
+import { INVITATION_HEADER } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -580,6 +581,20 @@ describe("what the edge logs (ADR 0004)", () => {
         uri.replace(new RegExp(pattern, "g"), replacement.replaceAll(/\$\{(\d)\}/g, "$$$1"));
       expect(requests.map(([sent]) => filter(sent))).toEqual(requests.map(([, logged]) => logged));
     }
+  });
+
+  it("keeps the invitation token a sign-up carries in its header out of every log", () => {
+    const mend = EDGE_CADDYFILE.match(/^\tlog mend \{\n[\s\S]*?^\t\}$/m)?.[0] ?? "";
+    const uriFree = EDGE_CADDYFILE.match(/^\(uri-free\) \{\n([\s\S]*?)^\}$/m)?.[1] ?? "";
+    // The log holds Go's canonical header names, and a filter matches only that spelling.
+    const canonical = INVITATION_HEADER.replace(
+      /(^|-)([a-z])/g,
+      (_, dash: string, first: string) => `${dash}${first.toUpperCase()}`,
+    );
+    for (const filters of [mend, uriFree])
+      expect(filters.split("\n").map((line) => line.trim())).toContain(
+        `request>headers>${canonical} delete`,
+      );
   });
 
   it("strips the raw route's file headers from every response that leaves the edge", () => {

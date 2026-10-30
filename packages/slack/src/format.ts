@@ -12,6 +12,7 @@ import {
   type SlackProjectSource,
   type SlackSessionState,
 } from "@mend/domain/workbench";
+import { handedLinkPath } from "@mend/network";
 import { Option, Result, Schema } from "effect";
 
 import type {
@@ -83,7 +84,7 @@ export const sessionUrl = (webOrigin: string, sessionId: string): string =>
   `${origin(webOrigin)}/sessions/${encodeURIComponent(sessionId)}`;
 
 export const linkUrl = (webOrigin: string, code: string): string =>
-  `${origin(webOrigin)}/slack/link/${encodeURIComponent(code)}`;
+  `${origin(webOrigin)}${handedLinkPath("slackLink", code)}`;
 
 /** Settings → Slack, where a person sets their own default project and links their account. */
 export const settingsUrl = (webOrigin: string): string => `${origin(webOrigin)}/settings#slack`;
@@ -1209,7 +1210,7 @@ export const helpMessage = (input: {
 
 /**
  * The reply to a mention from someone who has not linked their account: a button to
- * `/slack/link/<code>`. Once they link, Mend runs the request they made.
+ * `/slack/link#<code>`. Once they link, Mend runs the request they made.
  */
 export const linkPrompt = (url: string): SlackMessage => {
   const text =

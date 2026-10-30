@@ -5,6 +5,7 @@ import {
   PAGE_VIEW_PATH,
   PAGE_VIEW_TOKEN_PARAM,
   requestPathOf,
+  routedPath,
 } from "@mend/network";
 import { Effect, Redacted } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -13,7 +14,6 @@ import { HttpApiBuilder } from "effect/http-api";
 import { ProjectAccess } from "../access.ts";
 import { pageDocument } from "../page-document.ts";
 import { PageViewTokens } from "../page-view-tokens.ts";
-import { routedPath } from "../request-budgets.ts";
 
 export const PagesGroupLive = HttpApiBuilder.group(MendApi, "pages", (handlers) =>
   handlers

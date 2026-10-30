@@ -11,13 +11,15 @@
 # token and file name), and every line Caddy does not name for Mend's site. Caddy names a line's
 # log by the exact Host, so a Host in another case or with a trailing dot, the port-80 redirect for
 # it, and a module's own lines (reverse_proxy's for a response cut short) fall to `default`.
-# Caddy already redacts Authorization, Cookie and Set-Cookie; Referer is dropped.
+# Caddy already redacts Authorization, Cookie and Set-Cookie; Referer is dropped, and so is
+# X-Mend-Invitation, the invitation token a sign-up from /join#<token> carries.
 (uri-free) {
 	format filter {
 		fields {
 			request>uri replace REDACTED
 			resp_headers>Location delete
 			request>headers>Referer delete
+			request>headers>X-Mend-Invitation delete
 		}
 	}
 }
@@ -35,6 +37,7 @@
 				request>uri regexp "(^|[A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*(@)|([?#])[\s\S]*" "${1}${3}REDACTED${2}"
 				resp_headers>Location regexp "(^|[A-Za-z][A-Za-z0-9+.-]*://)[^/?#]*(@)|([?#])[\s\S]*" "${1}${3}REDACTED${2}"
 				request>headers>Referer delete
+				request>headers>X-Mend-Invitation delete
 			}
 		}
 	}

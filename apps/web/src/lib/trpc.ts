@@ -12,6 +12,7 @@ import superjson from "superjson";
 
 import type { AppRouter } from "../server/routers/index.ts";
 import { makeLoginWalk } from "./login-walk.ts";
+import { withContinuation } from "./onboarding.ts";
 
 /**
  * The UI's one client of the web tier's tRPC surface. Same origin — the web
@@ -38,15 +39,19 @@ export const UNBATCHED_PATHS: ReadonlySet<string> = new Set(["sessions.recipes"]
 
 type TrpcFetch = NonNullable<Parameters<typeof httpLink>[0]["fetch"]>;
 
-/** The client's links: one request per unbatched call, one batch for everything else. */
 export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[] => {
-  const options = { url, transformer: superjson, ...(fetch === undefined ? {} : { fetch }) };
+  const options = {
+    url,
+    transformer: superjson,
+    methodOverride: "POST",
+    ...(fetch === undefined ? {} : { fetch }),
+  } satisfies Parameters<typeof httpLink<AppRouter>>[0];
   return [
     splitLink({
       condition: (op) => UNBATCHED_PATHS.has(op.path),
       true: httpLink(options),
-      // maxURLLength keeps big batched GETs (many ids on one screen) from
-      // overflowing URL limits — tRPC splits the batch instead.
+      // A batch's URL names every procedure in it; maxURLLength splits a big
+      // one instead of overflowing URL limits.
       false: httpBatchLink({ ...options, maxURLLength: 2083 }),
     }),
   ];
@@ -62,15 +67,11 @@ export const makeTrpcProxy = (queryClient: QueryClient) =>
   createTRPCOptionsProxy<AppRouter>({ client: trpcClient, queryClient });
 export type TrpcProxy = ReturnType<typeof makeTrpcProxy>;
 
-/**
- * The login walk, carrying where the user was: `/login?next=<here>` so signing
- * in returns them instead of dumping them at the workbench. The workbench root
- * itself needs no `next`.
- */
-export const loginWalkUrl = (): string => {
-  const here = `${window.location.pathname}${window.location.search}`;
-  return here === "/" ? "/login" : `/login?next=${encodeURIComponent(here)}`;
-};
+export const loginWalkUrl = (): string =>
+  withContinuation(
+    "/login",
+    `${window.location.pathname}${window.location.search}${window.location.hash}`,
+  );
 
 /** The page's one walk to sign-in (`makeLoginWalk`): refused requests and the access event. */
 export const loginWalk = makeLoginWalk({

@@ -281,6 +281,39 @@ directory: scripts, styles, fonts, images, PDF and HTML outside dot-directories.
 worktree root covers that much of the whole worktree. Image, audio and video URLs, and any
 `media-file` URL, name one file.
 
+### Handed-over links, amendment 2026-10-30
+
+The T3 asset amendment above keeps a path in the edge's log on Mend's origin, which holds only while
+no URL on that origin carries a secret in its path. Three did: the invitation link `/join/<token>`,
+the password reset link `/reset/<token>`, and the Slack link `/slack/link/<code>`. A person copies
+them into chats and terminals, and Mend posts the Slack one into Slack, so every hop in front of the
+web tier, the operator's own included, could log them.
+
+- **The secret rides the fragment.** New links are `/join#<token>`, `/reset#<token>` and
+  `/slack/link#<code>`. A browser never sends a fragment to a server or in a `Referer`. One
+  definition in `@mend/network` (`handed-links.ts`) builds and reads them, and the API and Slack
+  issue links only through it. `OneTimeLink.path` stays a string.
+- **Old links keep working until 0.39.** The path forms open a page that replaces its history entry
+  with the fragment form before it fetches anything. Such a link's path reaches the first server
+  once, when it is opened. Expiry and single use are unchanged. 0.39 removes the three routes, and
+  ships no sooner than thirty days after 0.37: the longest-lived link, an invitation, lasts thirty
+  days, so every link issued in the path form has expired by then.
+- **Nothing puts the secret back into a URL.** The web app's tRPC reads are POSTs, with their input
+  in the body, and the walk to sign-in carries its return path in the fragment (`/login#next=…`,
+  through `/welcome`). A `?next=` the API sends still works.
+- **The pages answer `Referrer-Policy: no-referrer` and `Cache-Control: no-store`**, in both forms.
+- **The edge drops `X-Mend-Invitation` from its logs.** A sign-up from an invitation carries the
+  token in that header, and Caddy logs request headers.
+- **Better Auth's `GET /api/auth/reset-password/<token>` answers 404** before Better Auth reads it,
+  and stays out of the request log and traces. No Mend client sends it; the reset form posts the
+  token. Better Auth's `disabledPaths` cannot do this, because it compares the concrete path.
+- **Rollout.** The web tier ships before the issuers, because an older web tier has no page at a
+  fragment link's path.
+
+Still open: a CLI sign-in's user code in `/api/me/cli-auth/<code>` reaches the request log, and an
+old path link reaches the edge's log once. Keeping concrete URLs out of logs and spans is a separate
+decision.
+
 ### Upgrade tickets (MEND-08)
 
 A browser cannot set headers on a WebSocket, and a WebView cannot set them on a page load. These
