@@ -172,6 +172,8 @@ export const connectInside = (container: string, port: number): Connection => {
     "STDIO",
     `TCP:127.0.0.1:${port}`,
   ]);
+  // A write after socat exits (a refused sign-in) fails with EPIPE; the close reports the end.
+  child.stdin.on("error", () => {});
   return connectionOver({
     onData: (deliver) => child.stdout.on("data", (chunk) => deliver(new Uint8Array(chunk))),
     onClose: (closed) => child.on("close", closed),
