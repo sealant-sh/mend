@@ -36,11 +36,14 @@ const fails = (run: () => unknown) => {
 };
 
 describe("screenReportOf", () => {
-  it("reads the script's two status lines and nothing else", () => {
+  it("reads the script's status lines and nothing else", () => {
     expect(screenReportOf("mend-screen ready\r")).toEqual({ _tag: "Ready" });
     expect(screenReportOf("mend-screen degraded openbox")).toEqual({
       _tag: "Degraded",
       reason: "client-failed",
+    });
+    expect(screenReportOf("mend-screen browser sandbox off")).toEqual({
+      _tag: "BrowserSandboxOff",
     });
     expect(screenReportOf(" vncext: Listening for VNC connections")).toBeNull();
   });
@@ -48,8 +51,9 @@ describe("screenReportOf", () => {
 
 describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a container", () => {
   const container = `mend-screen-script-${process.pid}-${Date.now()}`;
-  const inside = (command: string, user = "root") =>
-    docker("exec", "-u", user, container, "sh", "-c", command);
+  const confined = `${container}-confined`;
+  const inside = (command: string, user = "root", on = container) =>
+    docker("exec", "-u", user, on, "sh", "-c", command);
   const asPerson = (
     display: number,
     command: string,
@@ -70,7 +74,15 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
     );
   const processes = () =>
     docker("exec", container, "ps", "-e", "-o", "comm=").trim().split("\n").toSorted();
-  const xvncPid = (display: number) => inside(`tr -d ' ' < /tmp/.X${display}-lock`).trim();
+  const BASELINE = ["docker-init", "ps", "sleep"];
+  const settled = Effect.gen(function* () {
+    for (let tries = 0; processes().length > BASELINE.length && tries < 100; tries++) {
+      yield* Effect.sleep("100 millis");
+    }
+    return processes();
+  });
+  const xvncPid = (display: number, on = container) =>
+    inside(`tr -d ' ' < /tmp/.X${display}-lock`, "root", on).trim();
 
   interface Screen {
     readonly child: ChildProcess;
@@ -79,13 +91,13 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
     readonly exited: Promise<number | null>;
   }
 
-  const start = (display: number): Screen => {
+  const start = (display: number, on = container): Screen => {
     const [, , script, ...args] = screenArgv(DisplayNumber.make(display), PERSON);
     const child = spawn("docker", [
       "exec",
       "-u",
       "person",
-      container,
+      on,
       "setsid",
       "-w",
       "sh",
@@ -123,38 +135,46 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
 
   beforeAll(() => {
     const image = fixtureImage("screen");
-    docker(
-      "run",
-      "-d",
-      "--init",
-      "--network",
-      "none",
-      "--security-opt",
-      "seccomp=unconfined",
-      "--name",
-      container,
-      image,
-      "sleep",
-      "infinity",
-    );
-    inside(
-      `mkdir -p /run/mend/bin && printf '#!/bin/sh\\nprintf "%s\\\\n%s\\\\n"\\n' ${FULL} ${VIEW_ONLY} > /run/mend/bin/mend && chmod 755 /run/mend/bin/mend`,
-    );
-    execFileSync(
-      "docker",
-      [
-        "exec",
-        "-i",
-        container,
-        "sh",
-        "-c",
-        "cat > /run/mend/bin/chromium && chmod 755 /run/mend/bin/chromium",
-      ],
-      { input: CHROMIUM_WRAPPER_SCRIPT, timeout: 30_000 },
-    );
+    for (const [name, privileges] of [
+      [container, ["--security-opt", "seccomp=unconfined"]],
+      [confined, []],
+    ] as const) {
+      docker(
+        "run",
+        "-d",
+        "--init",
+        "--network",
+        "none",
+        ...privileges,
+        "--name",
+        name,
+        image,
+        "sleep",
+        "infinity",
+      );
+      inside(
+        `mkdir -p /run/mend/bin && printf '#!/bin/sh\\nprintf "%s\\\\n%s\\\\n"\\n' ${FULL} ${VIEW_ONLY} > /run/mend/bin/mend && chmod 755 /run/mend/bin/mend`,
+        "root",
+        name,
+      );
+      execFileSync(
+        "docker",
+        [
+          "exec",
+          "-i",
+          name,
+          "sh",
+          "-c",
+          "cat > /run/mend/bin/chromium && chmod 755 /run/mend/bin/chromium",
+        ],
+        { input: CHROMIUM_WRAPPER_SCRIPT, timeout: 30_000 },
+      );
+    }
   }, 660_000);
 
-  afterAll(() => void execFileSync("docker", ["rm", "-f", container], { stdio: "ignore" }));
+  afterAll(
+    () => void execFileSync("docker", ["rm", "-f", container, confined], { stdio: "ignore" }),
+  );
 
   it.live(
     "listens on loopback only, behind its passwords and its cookie, with neither in argv",
@@ -231,10 +251,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         inside(`kill ${xvncPid(12)}`);
         yield* Effect.promise(() => screen.exited);
         inside(`kill ${xvncPid(10)}`);
-        for (let tries = 0; processes().length > 3 && tries < 50; tries++) {
-          yield* Effect.sleep("100 millis");
-        }
-        expect(processes()).toEqual(["docker-init", "ps", "sleep"]);
+        expect(yield* settled).toEqual(BASELINE);
       }),
     { timeout: 60_000 },
   );
@@ -247,7 +264,7 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         yield* Effect.promise(() => screen.said("mend-screen ready"));
         inside(`kill -HUP -${xvncPid(11)}`);
         yield* Effect.promise(() => screen.exited);
-        expect(processes()).toEqual(["docker-init", "ps", "sleep"]);
+        expect(yield* settled).toEqual(BASELINE);
       }),
     { timeout: 60_000 },
   );
@@ -260,13 +277,13 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         yield* Effect.promise(() => screen.said("mend-screen ready"));
         docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
         yield* Effect.promise(() => screen.exited);
-        expect(processes()).toEqual(["docker-init", "ps", "sleep"]);
+        expect(yield* settled).toEqual(BASELINE);
         docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
       }),
     { timeout: 60_000 },
   );
 
-  const asSession = (display: number, argv: ReadonlyArray<string>) =>
+  const asSession = (display: number, argv: ReadonlyArray<string>, on = container) =>
     docker(
       "exec",
       "-u",
@@ -274,39 +291,41 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
       ...Object.entries(screenEnvOf(DisplayNumber.make(display), PERSON)).flatMap(
         ([name, value]) => ["-e", `${name}=${value}`],
       ),
-      container,
+      on,
       ...onScreenPath(argv),
     );
-  const windowsNamed = (display: number, name: string) => {
+  const windowsNamed = (display: number, name: string, on = container) => {
     try {
-      return asSession(display, ["xdotool", "search", "--name", name]).trim().split("\n");
+      return asSession(display, ["xdotool", "search", "--name", name], on).trim().split("\n");
     } catch {
       return [];
     }
   };
-  const shown = (display: number, name: string) =>
+  const shown = (display: number, name: string, on = container) =>
     Effect.gen(function* () {
-      for (let tries = 0; windowsNamed(display, name).length === 0; tries++) {
+      for (let tries = 0; windowsNamed(display, name, on).length === 0; tries++) {
         if (tries === 100) throw new Error(`no window "${name}" on :${display}`);
         yield* Effect.sleep("150 millis");
       }
     });
-  const browsersOf = (display: number) =>
-    inside("ps -eo args=")
+  const browsersOf = (display: number, on = container) =>
+    inside("ps -eo args=", "root", on)
       .split("\n")
       .filter(
         (args) =>
           args.includes(`--user-data-dir=${RUNTIME}/mend-screen-${display}/chromium`) &&
           !args.includes("--type="),
       );
-  const serve = (port: number, title: string) => {
+  const serve = (port: number, title: string, on = container) => {
     inside(
       `printf 'HTTP/1.0 200 OK\\r\\nContent-Type: text/html\\r\\n\\r\\n<title>${title}</title>' > /tmp/page-${port}`,
+      "root",
+      on,
     );
     docker(
       "exec",
       "-d",
-      container,
+      on,
       "socat",
       `TCP-LISTEN:${port},bind=127.0.0.1,fork,reuseaddr`,
       `EXEC:cat /tmp/page-${port}`,
@@ -342,15 +361,40 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
         expect(browsersOf(15)).toHaveLength(1);
         for (const display of [14, 15]) {
           expect(inside(`ls ${RUNTIME}/mend-screen-${display}/chromium`)).toContain("Default");
+          expect(inside(`cat ${RUNTIME}/mend-screen-${display}/browser-sandbox`).trim()).toBe("on");
+          expect(browsersOf(display)[0]).not.toContain("--no-sandbox");
         }
+        expect(screens.flatMap((screen) => screen.lines)).not.toContain(
+          "mend-screen browser sandbox off",
+        );
 
         for (const display of [14, 15]) inside(`kill ${xvncPid(display)}`);
         yield* Effect.promise(() => Promise.all(screens.map((screen) => screen.exited)));
         inside("pkill -x socat");
-        for (let tries = 0; processes().length > 3 && tries < 100; tries++) {
-          yield* Effect.sleep("100 millis");
-        }
-        expect(processes()).toEqual(["docker-init", "ps", "sleep"]);
+        expect(yield* settled).toEqual(BASELINE);
+      }),
+    { timeout: 120_000 },
+  );
+
+  it.live(
+    "falls back to --no-sandbox where Chromium's sandbox cannot start, and says so",
+    () =>
+      Effect.gen(function* () {
+        const screen = start(10, confined);
+        yield* Effect.promise(() => screen.said("mend-screen ready"));
+        yield* Effect.promise(() => screen.said("mend-screen browser sandbox off"));
+        expect(
+          inside(`cat ${RUNTIME}/mend-screen-10/browser-sandbox`, "root", confined).trim(),
+        ).toBe("off");
+        yield* shown(10, "about:blank", confined);
+        serve(8010, "page-unsandboxed", confined);
+        asSession(10, ["chromium", "http://127.0.0.1:8010/"], confined);
+        yield* shown(10, "page-unsandboxed", confined);
+        const [browser, ...others] = browsersOf(10, confined);
+        expect(others).toEqual([]);
+        expect(browser).toContain("--no-sandbox");
+        inside(`kill ${xvncPid(10, confined)}`, "root", confined);
+        yield* Effect.promise(() => screen.exited);
       }),
     { timeout: 120_000 },
   );

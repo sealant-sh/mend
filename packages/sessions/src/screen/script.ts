@@ -41,12 +41,17 @@ export DISPLAY="$display" XAUTHORITY="$dir/auth"
   wm=$!
   ${CHROMIUM_WRAPPER_PATH} about:blank >/dev/null 2>&1 &
   said=
+  sandbox=
   while sleep 0.5 && kill -0 $$ 2>/dev/null; do
     if kill -0 "$wm" 2>/dev/null; then
       [ -n "$said" ] || { said=ready; echo "mend-screen ready"; }
     elif [ "$said" != degraded ]; then
       said=degraded
       echo "mend-screen degraded openbox"
+    fi
+    if [ -z "$sandbox" ] && [ "$(cat "$dir/browser-sandbox" 2>/dev/null)" = off ]; then
+      sandbox=off
+      echo "mend-screen browser sandbox off"
     fi
   done
   trap "" TERM
@@ -121,13 +126,14 @@ export const screenReapArgv = (display: DisplayNumber): ReadonlyArray<string> =>
 export const screenPort = (display: DisplayNumber): number => 5900 + display;
 
 export type ScreenReport =
-  | { readonly _tag: "Ready" }
+  | { readonly _tag: "Ready" | "BrowserSandboxOff" }
   | { readonly _tag: "Degraded"; readonly reason: ScreenDegraded };
 
 /** One line of the screen's output: what the script says of its display, or nothing. */
 export const screenReportOf = (line: string): ScreenReport | null => {
   const said = line.trim();
   if (said === "mend-screen ready") return { _tag: "Ready" };
+  if (said === "mend-screen browser sandbox off") return { _tag: "BrowserSandboxOff" };
   return said.startsWith("mend-screen degraded ")
     ? { _tag: "Degraded", reason: "client-failed" }
     : null;

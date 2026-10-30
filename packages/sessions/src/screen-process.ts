@@ -89,10 +89,17 @@ const STARTED = new Set<Screen["life"]["_tag"]>(["Starting", "Live"]);
 type Live = Extract<Screen["life"], { readonly _tag: "Live" }>;
 
 const lifeAfter = (life: Screen["life"], report: ScreenReport): Live | null => {
-  if (report._tag === "Ready") {
-    return life._tag === "Starting" ? { _tag: "Live", degraded: null } : null;
+  if (!STARTED.has(life._tag)) return null;
+  const live: Live =
+    life._tag === "Live" ? life : { _tag: "Live", degraded: null, browserSandboxOff: false };
+  switch (report._tag) {
+    case "Ready":
+      return life._tag === "Starting" ? live : null;
+    case "Degraded":
+      return { ...live, degraded: report.reason };
+    case "BrowserSandboxOff":
+      return { ...live, browserSandboxOff: true };
   }
-  return STARTED.has(life._tag) ? { _tag: "Live", degraded: report.reason } : null;
 };
 
 /**

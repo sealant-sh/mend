@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   AgentItemId,
@@ -155,7 +155,11 @@ export const SCREEN_INPUT_INITIAL: ScreenInput = { _tag: "AwaitingAgent", epoch:
 export const ScreenLife = Schema.Union([
   Schema.TaggedStruct("NotStarted", {}),
   Schema.TaggedStruct("Starting", {}),
-  Schema.TaggedStruct("Live", { degraded: Schema.NullOr(ScreenDegraded) }),
+  Schema.TaggedStruct("Live", {
+    degraded: Schema.NullOr(ScreenDegraded),
+    /** Its browser runs with `--no-sandbox`: the workspace would not start Chromium's (D12). */
+    browserSandboxOff: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  }),
   Schema.TaggedStruct("Ended", { reason: ScreenEndReason }),
 ]);
 export type ScreenLife = typeof ScreenLife.Type;
@@ -441,6 +445,7 @@ export const screenStatusLine = (facts: ScreenStatusFacts): string => {
       ? "no frame yet"
       : `frame ${observedAgo(facts.lastFrameAt, facts.now)}`,
     ...(facts.life.degraded === null ? [] : [DEGRADED[facts.life.degraded]]),
+    ...(facts.life.browserSandboxOff ? ["browser sandbox off"] : []),
     ...(facts.viewers > 0 ? [`${facts.viewers} watching`] : []),
   ].join(" · ");
 };

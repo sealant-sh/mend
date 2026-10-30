@@ -167,36 +167,53 @@ describe("the session's screen (ADR 0020)", () => {
       ),
   );
 
-  it.effect("moves to Live on the script's ready line, and to degraded when its client fails", () =>
-    withScreens(
-      (world) =>
-        Effect.gen(function* () {
-          const engine = yield* SessionEngine;
-          const [project] = [...world.projects.values()];
-          if (project === undefined) throw new Error("no project");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: "screen",
-            ownerUserId: "user-fixture",
-            start: { kind: "base", base: null },
-          });
-          yield* engine.launch(session.id, ["claude"]);
-          const screen = yield* engine.startScreen(session.id);
-          const life = () =>
-            Effect.map(
-              world.screens.byId(screen.id),
-              (now): Screen["life"] | null => now?.life ?? null,
+  it.effect(
+    "moves to Live on the script's ready line, to degraded when its client fails, and keeps a browser without its sandbox",
+    () =>
+      withScreens(
+        (world) =>
+          Effect.gen(function* () {
+            const engine = yield* SessionEngine;
+            const [project] = [...world.projects.values()];
+            if (project === undefined) throw new Error("no project");
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "screen",
+              ownerUserId: "user-fixture",
+              start: { kind: "base", base: null },
+            });
+            yield* engine.launch(session.id, ["claude"]);
+            const screen = yield* engine.startScreen(session.id);
+            const life = () =>
+              Effect.map(
+                world.screens.byId(screen.id),
+                (now): Screen["life"] | null => now?.life ?? null,
+              );
+            yield* until(
+              () => Effect.map(life(), (now) => now?._tag === "Live" && now.degraded !== null),
+              "a degraded screen",
             );
-          yield* until(
-            () => Effect.map(life(), (now) => now?._tag === "Live" && now.degraded !== null),
-            "a degraded screen",
-          );
-          expect(yield* life()).toEqual({ _tag: "Live", degraded: "client-failed" });
-        }),
-      { printed: [" vncext: listening", "mend-screen ready", "mend-screen degraded openbox"] },
-    ),
+            yield* until(
+              () => Effect.map(life(), (now) => now?._tag === "Live" && now.browserSandboxOff),
+              "a browser without its sandbox",
+            );
+            expect(yield* life()).toEqual({
+              _tag: "Live",
+              degraded: "client-failed",
+              browserSandboxOff: true,
+            });
+          }),
+        {
+          printed: [
+            " vncext: listening",
+            "mend-screen ready",
+            "mend-screen degraded openbox",
+            "mend-screen browser sandbox off",
+          ],
+        },
+      ),
   );
 
   it.effect(

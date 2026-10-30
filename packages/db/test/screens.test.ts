@@ -70,7 +70,7 @@ const screenContract = (runFixture: RunFixture) => {
         const process = yield* agentProcess(a);
         yield* screens.setLife(first.id, { life: { _tag: "Starting" }, processId: process });
         const live = yield* screens.setLife(first.id, {
-          life: { _tag: "Live", degraded: null },
+          life: { _tag: "Live", degraded: null, browserSandboxOff: false },
           processId: process,
         });
         expect(live.processId).toBe(process);

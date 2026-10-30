@@ -228,7 +228,7 @@ const world = (options: WorldOptions = {}) => {
           workspaceId: SealantWorkspaceId.make("ws-1"),
         });
         yield* screens.setLife(screen.id, {
-          life: { _tag: "Live", degraded: null },
+          life: { _tag: "Live", degraded: null, browserSandboxOff: false },
           processId: SessionProcessId.make("screen-1"),
         });
         if (options.screen.held) {
