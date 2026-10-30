@@ -2,11 +2,13 @@ import * as FastCheck from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import {
+  continuationOf,
   defaultLoginMode,
   MIN_PASSWORD_LENGTH,
   passwordProblem,
   safeNextPath,
   splitDevices,
+  withContinuation,
 } from "./onboarding.ts";
 
 describe("defaultLoginMode", () => {
@@ -142,5 +144,31 @@ describe("splitDevices", () => {
     ];
     expect(splitDevices(devices).machines.map((d) => d.id)).toEqual(["a"]);
     expect(splitDevices(devices).paired.map((d) => d.id)).toEqual(["b", "c"]);
+  });
+});
+
+describe("where sign-in returns to", () => {
+  const SLACK_LINK = "/slack/link#msl_SYN_SLACK_CODE";
+
+  it("carries a handed-over link through sign-in and the next step in the fragment", () => {
+    const login = new URL(withContinuation("/login", SLACK_LINK), "https://mend.example");
+    expect(login.search).toBe("");
+    expect(continuationOf(login)).toBe(SLACK_LINK);
+    const welcome = new URL(withContinuation("/welcome", continuationOf(login)), login);
+    expect(welcome.pathname).toBe("/welcome");
+    expect(welcome.search).toBe("");
+    expect(continuationOf(welcome)).toBe(SLACK_LINK);
+  });
+
+  it("still reads the query a server-sent walk carries", () => {
+    expect(continuationOf({ search: "?next=%2Fpreview-auth%3Fpreview%3Dp1", hash: "" })).toBe(
+      "/preview-auth?preview=p1",
+    );
+  });
+
+  it("returns to the workbench from an unsafe continuation", () => {
+    expect(continuationOf({ search: "", hash: "#next=https%3A%2F%2Fevil.example%2F" })).toBe("/");
+    expect(continuationOf({ search: "?next=%2F%2Fevil.example", hash: "" })).toBe("/");
+    expect(withContinuation("/login", "/")).toBe("/login");
   });
 });

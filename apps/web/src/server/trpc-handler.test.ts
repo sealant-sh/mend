@@ -139,6 +139,23 @@ describe("tRPC source-request trust and API forwarding", () => {
     expect(api.requests[0]?.headers["origin"]).toBeUndefined();
     expect(api.requests[0]?.headers["cookie"]).toBeUndefined();
   });
+  it("answers a query sent as a POST from an allowed Origin, so its input can travel in the body", async () => {
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const response = await handle(
+      request({ origin: "http://localhost:3105", cookie: "test-cookie=credential" }, "git.key"),
+    );
+    expect(response.status).toBe(200);
+    expect(api.requests[0]).toMatchObject({ method: "GET" });
+    expect(api.exists()).toBe(false);
+  });
+
+  it("refuses a query sent as a cookie-bearing POST with no Origin", async () => {
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const response = await handle(request({ cookie: "test-cookie=credential" }, "git.key"));
+    expect(response.status).toBe(403);
+    expect(api.requests).toHaveLength(0);
+  });
+
   it("preserves cookie-authenticated GET queries with no Origin", async () => {
     const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
     const response = await handle(request({ cookie: "test-cookie=credential" }, "git.key", "GET"));

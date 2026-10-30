@@ -94,6 +94,26 @@ describe("the browser header policy (MEND-11)", () => {
       securityHeaders({ target: "/", network: at("https://mend.example") })["referrer-policy"],
     ).toBe("strict-origin-when-cross-origin");
   });
+
+  it("keeps a handed-over link's page out of every cache and every Referer, in either form", () => {
+    for (const target of [
+      "/join",
+      "/join/SYN_INVITATION",
+      "/reset",
+      "/reset/SYN_RESET",
+      "/slack/link",
+      "/slack/link/SYN_SLACK_CODE",
+    ]) {
+      const headers = securityHeaders({ target, network: at("https://mend.example") });
+      expect(headers["referrer-policy"], target).toBe("no-referrer");
+      expect(headers["cache-control"], target).toBe("no-store");
+    }
+    expect(
+      securityHeaders({ target: "/settings", network: at("https://mend.example") })[
+        "cache-control"
+      ],
+    ).toBeUndefined();
+  });
 });
 
 describe("an agent's page (docs/adr/0004, Agent pages)", () => {
