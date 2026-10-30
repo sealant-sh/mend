@@ -101,6 +101,15 @@ const render = (page: Partial<ResourcesPageView>, overrides: Partial<ResourcesVi
 const buttons = (markup: string) =>
   [...markup.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((match) => match[1]);
 
+/** Each reason under an item: the target it is for, then the route's words. */
+const reasons = (markup: string) =>
+  [
+    ...markup
+      .replaceAll("<!-- -->", "")
+      .replaceAll("&#x27;", "'")
+      .matchAll(/<span class="text-label">approve ([^<]*)<\/span> ([^<]*)<\/p>/g),
+  ].map((match) => `${match[1]} · ${match[2]}`);
+
 describe("the resources card", () => {
   it("says so when there are none", () => {
     expect(render({})).toContain("No resources yet.");
@@ -133,6 +142,122 @@ describe("the resources card", () => {
       ],
     });
     expect(buttons(markup)).toEqual(["approve for the project…", "approve for worktree checkout…"]);
+  });
+
+  describe("why a target has no approval", () => {
+    const collision = {
+      key: "exports.URL",
+      message: "sets MEND_RESOURCE_DB_MAIN_URL, as mail does too",
+    };
+    const waiting = {
+      key: "image",
+      message:
+        "is not one a manager approved for this project · a manager approves @mail for the project first",
+    };
+    const mail = { ...db, name: ResourceName.make("mail"), scope: "worktree" as const };
+
+    it("says each refusal by its key, for the target it refuses", () => {
+      const markup = render({
+        settings: [
+          setting({
+            approvals: none,
+            approve: { project: { kind: "rejected", refusals: [collision] }, worktree: null },
+          }),
+        ],
+        proposals: [
+          proposal({
+            spec: mail,
+            approve: {
+              project: { kind: "rejected", refusals: [collision] },
+              worktree: { kind: "rejected", refusals: [waiting, collision] },
+            },
+          }),
+        ],
+      });
+      expect(reasons(markup)).toEqual([
+        "for the project · exports.URL sets MEND_RESOURCE_DB_MAIN_URL, as mail does too",
+        "for the project · exports.URL sets MEND_RESOURCE_DB_MAIN_URL, as mail does too",
+        "for worktree checkout · image is not one a manager approved for this project · a manager approves @mail for the project first",
+        "for worktree checkout · exports.URL sets MEND_RESOURCE_DB_MAIN_URL, as mail does too",
+      ]);
+      expect(buttons(markup)).toEqual(["withdraw"]);
+    });
+
+    it("says what comes first for a worktree, beside the project's approval", () => {
+      const markup = render({
+        file: {
+          kind: "read",
+          worktreeId: worktree,
+          observed: "observed at capture 3 · seq 40",
+          proposals: [
+            {
+              digest,
+              spec: mail,
+              approvals: none,
+              approve: {
+                project: { kind: "ready", request: forProject },
+                worktree: { kind: "rejected", refusals: [waiting] },
+              },
+              statusLine: "@mail · postgres 17 · worktree · proposed in mend.toml",
+            },
+          ],
+          refused: [],
+          ignored: [],
+        },
+      });
+      expect(buttons(markup)).toEqual(["approve for the project…"]);
+      expect(reasons(markup)).toEqual([
+        "for worktree checkout · image is not one a manager approved for this project · a manager approves @mail for the project first",
+      ]);
+    });
+
+    it("says nothing beside a target that is ready or approved", () => {
+      const markup = render({
+        settings: [
+          setting(),
+          setting({
+            id: ResourceDefinitionId.make("rdef_mail"),
+            spec: mail,
+            approve: {
+              project: { kind: "ready", request: forProject },
+              worktree: { kind: "approved" },
+            },
+          }),
+        ],
+        proposals: [
+          proposal({
+            approve: { project: { kind: "approved" }, worktree: null },
+          }),
+        ],
+      });
+      expect(reasons(markup)).toEqual([]);
+    });
+
+    it("says a denial for the read worktree, never the project's, which the introduction says", () => {
+      const markup = render({
+        proposals: [
+          proposal({
+            spec: mail,
+            approve: {
+              project: {
+                kind: "denied",
+                message:
+                  "approving a resource for the project is a manager's: the project's creator or an organization owner",
+              },
+              worktree: {
+                kind: "denied",
+                message:
+                  "approving a worktree resource for this worktree is its change owner's: the owner of its first session",
+              },
+            },
+          }),
+        ],
+      });
+      expect(reasons(markup)).toEqual([
+        "for worktree checkout · approving a worktree resource for this worktree is its change owner's: the owner of its first session",
+      ]);
+      expect(markup).not.toContain("a manager&#x27;s");
+    });
   });
 
   it("names the mode in use to a reader who cannot change it, and offers no choice", () => {
