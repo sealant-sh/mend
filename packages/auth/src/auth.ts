@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   NetworkConfig,
   type PublicNetwork,
+  routedPath,
   SESSION_COOKIE_BASE,
   type SessionCookieName,
   sessionCookieName,
@@ -190,16 +191,8 @@ const createBetterAuth = (options: AuthHandlerOptions) =>
  * with it in the query. Spelled the way the API's router matches it: case, repeated slashes and
  * percent-escapes do not reach past this.
  */
-export const isResetLinkCallback = (pathname: string): boolean => {
-  let decoded = pathname;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {}
-  return decoded
-    .toLowerCase()
-    .replace(/\/{2,}/g, "/")
-    .startsWith("/api/auth/reset-password/");
-};
+export const isResetLinkCallback = (pathname: string): boolean =>
+  routedPath(pathname).startsWith("/api/auth/reset-password/");
 
 const refusingResetLinkCallback =
   (handler: (request: Request) => Promise<Response>) =>

@@ -1,4 +1,4 @@
-import { requestPathOf } from "./page-view.ts";
+import { requestPathOf, routedPath } from "./page-view.ts";
 
 const HANDED_LINK_PAGES = {
   invitation: "/join",
@@ -64,9 +64,7 @@ export const canonicalHandedLinkPath = (
 };
 
 export const isHandedLinkPage = (target: string): boolean => {
-  const pathname = requestPathOf(target)
-    .toLowerCase()
-    .replace(/\/{2,}/g, "/");
+  const pathname = routedPath(requestPathOf(target));
   return Object.values(HANDED_LINK_PAGES).some(
     (page) => pathname === page || pathname.startsWith(`${page}/`),
   );

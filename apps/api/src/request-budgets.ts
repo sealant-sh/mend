@@ -2,6 +2,7 @@ import {
   addressSubject,
   clientAddressOf,
   cookieValues,
+  routedPath,
   type SessionCookieName,
   type WindowLimiter,
 } from "@mend/network";
@@ -59,20 +60,6 @@ const BODY_ROUTES: ReadonlyArray<readonly [method: string, path: RegExp, budget:
   ["PUT", /^\/api\/projects\/[^/]+\/workspace-image$/, "uploadBodyBytes"],
   ["POST", /^\/api\/projects\/[^/]+\/handoffs$/, "bundleBytes"],
 ];
-
-/**
- * The path as the router will match it. The router ignores case and duplicate slashes and decodes
- * percent-escapes, so a spelling that still reaches a route must not slip past the rules here.
- */
-export const routedPath = (pathname: string): string => {
-  let decoded = pathname;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    // Not valid escapes: the router will not match it either.
-  }
-  return decoded.toLowerCase().replace(/\/{2,}/g, "/");
-};
 
 export const bodyBudgetFor = (method: string, pathname: string): BodyBudget => {
   const routed = routedPath(pathname);

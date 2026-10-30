@@ -1,9 +1,7 @@
 import { isResetLinkCallback } from "@mend/auth";
-import { requestPathOf } from "@mend/network";
+import { requestPathOf, routedPath } from "@mend/network";
 import { Effect, type Layer } from "effect";
 import { HttpMiddleware, HttpRouter, HttpServerRequest } from "effect/http";
-
-import { routedPath } from "./request-budgets.ts";
 
 const RAW_FILE_READ = /^\/api\/worktrees\/.+\/raw$/;
 const UNREGISTER_NAMING_PUSH_TOKEN = /^\/api\/devices\/./;
