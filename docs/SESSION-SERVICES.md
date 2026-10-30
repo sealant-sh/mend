@@ -644,6 +644,24 @@ also polls every 2 s, until the start settles, its facts stand still for 10 minu
 pass. With the gateway off, or no kept preview of the name, Open is the Service's own address, as
 above.
 
+**Preview on the phone.** The phone holds a device bearer, not Mend's cookie, so it cannot follow
+`/preview-auth`. It asks `POST /previews/:id/open` instead, behind the normal auth middleware, on
+every press. The server applies the same rules: the caller sees the project, signed in or paired (a
+token with neither is refused), and the preview gets an Open. One function (`previewOpenOf`) decides
+that Open for the previews read's `open` and for this route, so neither offers what the other
+refuses. It then mints the same thirty-second, single-use `preview` ticket with the caller's
+credential and answers `{ url: "<preview origin>/__mend/auth?ticket=…&path=/" }`, which the phone
+opens in the in-app browser (`expo-web-browser`). The phone's web build opens a blank tab in the
+press and sends it to the URL once the ticket is minted, because a browser blocks a tab opened after
+the press. A refusal, or a browser that does not open, shows as one line under the header, until the
+preview's Open changes. The grant it opens is the device's, so revoking the device ends it. Under
+`loopback-http` routing the route refuses, since previews served at `*.localhost` reach only the
+Mend machine; the previews read's `routing` says so ahead of time, and the phone shows no `Preview`
+there. The session screen's `Services` lists each preview's status lines, each fact worded with the
+phone's clock and the server's `status` line kept for a fact the phone does not know, in a strip
+that scrolls past about four lines. The phone reads the previews again by the web's rule while a
+start is under way, and every 10 s otherwise.
+
 The CLI tunnel is one authenticated WebSocket per connection (`service-tunnel`, an upgrade ticket
 each). `mend service connect` opens it on request. `mend attach`, `mend codex|claude|opencode`,
 `mend rejoin`, and the dashboard open it without being asked, when the server is not the machine the
