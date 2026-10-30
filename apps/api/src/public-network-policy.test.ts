@@ -146,6 +146,7 @@ const startServer = async () => {
     ConnectionRegistry,
     Effect.map(makeConnectionRegistry, (registry) => ({
       register: registry.register,
+      reserve: registry.reserve,
       closeForUser: registry.closeForUser,
       closeForSession: registry.closeForSession,
       countFor: registry.countFor,

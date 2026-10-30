@@ -13,7 +13,7 @@ import {
 import { Auth } from "@mend/auth";
 import { OrganizationsRepo, ScreensRepo, UpgradeTicketsRepo } from "@mend/db";
 import { SessionId, ViewerConnectionId } from "@mend/domain";
-import { SCREEN_LIMITS, type ScreenInput } from "@mend/domain/workbench";
+import { SCREEN_LIMITS, type ScreenInput, type ScreenLogBody } from "@mend/domain/workbench";
 import { type ScreenControlAnswer, Screens, type ViewerBytes, type WatchEnd } from "@mend/sessions";
 import { type Cause, Duration, Effect, Queue, Semaphore } from "effect";
 import { HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -22,9 +22,9 @@ import { Socket } from "effect/socket";
 
 import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";
-import { ConnectionRegistry, guardSocket } from "../connections.ts";
+import { ConnectionRegistry } from "../connections.ts";
 import { ScreenWatch } from "../screen-watch.ts";
-import { connectionRefusal, makeFrameGuard, screenViewerRefusal } from "../socket-budgets.ts";
+import { makeFrameGuard, reserveScreenViewer } from "../socket-budgets.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /** Who holds a screen's input, as watchers see it (ADR 0020, "How people watch and take over"). */
@@ -53,7 +53,13 @@ const NOT_WATCHING: ScreenControlResult = { _tag: "NotWatching" };
 const NO_SCREEN: ScreenRead = { _tag: "NoScreen" };
 
 /** The log entries that give the input to its holder. */
-const GIVES_INPUT = new Set(["Started", "Restarted", "Taken", "HandedBack", "Paused"]);
+const GIVES_INPUT: ReadonlyArray<ScreenLogBody["_tag"]> = [
+  "Started",
+  "Restarted",
+  "Taken",
+  "HandedBack",
+  "Paused",
+];
 
 export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handlers) =>
   handlers
@@ -63,9 +69,7 @@ export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handle
         const repo = yield* ScreensRepo;
         const screen = yield* repo.ofSession(session.id);
         if (screen === null) return NO_SCREEN;
-        const given = (yield* repo.log(screen.id)).findLast((entry) =>
-          GIVES_INPUT.has(entry.body._tag),
-        );
+        const given = yield* repo.lastLoggedAt(screen.id, GIVES_INPUT);
         const read: ScreenRead = {
           _tag: "Screen",
           display: screen.display,
@@ -73,7 +77,7 @@ export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handle
           height: SCREEN_LIMITS.height,
           life: screen.life,
           holder: holderOf(screen.input),
-          since: screen.input._tag === "Paused" ? screen.input.since : (given?.at ?? null),
+          since: screen.input._tag === "Paused" ? screen.input.since : given,
           ownerUserId: session.ownerUserId,
         };
         return read;
@@ -106,7 +110,10 @@ export interface ScreenSocketTiming {
   readonly pingEvery: Duration.Input;
 }
 
-/** Under the 10 s heartbeat lease, so a live holder's lease never runs out between pings. */
+/**
+ * Two pings span the 10 s heartbeat lease, and the route renews it at each ping until the client
+ * has missed two, so a silent holder lapses as `disconnected` a ping before its lease would end.
+ */
 export const SCREEN_SOCKET_TIMING: ScreenSocketTiming = { pingEvery: "5 seconds" };
 
 const MISSED_PINGS = 2;
@@ -180,14 +187,10 @@ export const makeScreenSocketRoutes = (timing: ScreenSocketTiming) =>
             return HttpServerResponse.text("missing ?session", { status: 400 });
           }
           const sessionId = SessionId.make(param);
-          // Before anything is dialled or upgraded (docs/adr/0004, "Budgets").
-          const overBudget =
-            (yield* connectionRefusal(budgets, connections, caller.userId, "screen")) ??
-            (yield* screenViewerRefusal(budgets, connections, sessionId));
-          if (overBudget !== null) return overBudget;
           const subject = { userId: caller.userId, credential: caller.credential };
           const viewer = yield* watch.admit(subject, sessionId).pipe(Effect.option);
-          // A session the caller cannot see answers exactly like a missing one.
+          // A session the caller cannot see answers exactly like a missing one, before any budget
+          // is counted, so a full screen says nothing of a session the caller cannot see.
           if (viewer._tag === "None") {
             return HttpServerResponse.text("unknown session", { status: 404 });
           }
@@ -199,8 +202,17 @@ export const makeScreenSocketRoutes = (timing: ScreenSocketTiming) =>
           }
           const mayTakeInput = viewer.value.ownerUserId === caller.userId;
 
-          yield* Effect.scoped(
+          return yield* Effect.scoped(
             Effect.gen(function* () {
+              // Before anything is dialled or upgraded (docs/adr/0004, "Budgets"), and held from
+              // the moment it is counted until the socket closes.
+              const held = yield* reserveScreenViewer(
+                budgets,
+                connections,
+                caller.userId,
+                sessionId,
+              );
+              if (held._tag === "Refused") return held.response;
               const socket = yield* request.upgrade;
               const { write } = yield* socket.writer;
               // Reading opens the socket for writing too, so the reader comes before any frame.
@@ -212,14 +224,8 @@ export const makeScreenSocketRoutes = (timing: ScreenSocketTiming) =>
                   return write(event).pipe(Effect.ignore);
                 });
               // Leaving the organization closes it; shared control going off does not (D2).
-              const guard = yield* guardSocket(
-                connections,
-                caller.userId,
-                (event) => closeWith(event),
-                caller.stillAdmitted,
-                sessionId,
-                "screen",
-              );
+              yield* held.opened(closeWith, caller.stillAdmitted);
+              const guard = held;
               const frames = makeFrameGuard(budgets.limits.frameBytes, closeWith);
               const connection = ViewerConnectionId.make(
                 `vc_${randomBytes(16).toString("base64url")}`,
@@ -260,15 +266,20 @@ export const makeScreenSocketRoutes = (timing: ScreenSocketTiming) =>
               };
               tcp.on("data", onData);
               yield* Effect.addFinalizer(() => Effect.sync(() => void tcp.off("data", onData)));
+              // The lease is renewed at every ping while the client still counts as answering,
+              // so it runs a ping past this loop: a silent holder lapses here, as disconnected,
+              // before its lease could lapse it.
               const stoppedAnswering = Effect.gen(function* () {
                 for (let missed = 0; missed < MISSED_PINGS; ) {
                   yield* Effect.sleep(timing.pingEvery);
                   if (heard) {
                     heard = false;
                     missed = 0;
-                    if (mayTakeInput) yield* screens.heartbeat(sessionId, connection);
                   } else {
                     missed += 1;
+                  }
+                  if (mayTakeInput && missed < MISSED_PINGS) {
+                    yield* screens.heartbeat(sessionId, connection);
                   }
                   if (!closing && tcp.writable) tcp.write(PING);
                 }
@@ -308,9 +319,9 @@ export const makeScreenSocketRoutes = (timing: ScreenSocketTiming) =>
                 yield* screens.lapse(sessionId, connection, revoked ? "revoked" : "disconnected");
               }
               if (ended !== null) yield* closeWith(ended);
+              return HttpServerResponse.empty();
             }),
           );
-          return HttpServerResponse.empty();
         }),
       );
     }),

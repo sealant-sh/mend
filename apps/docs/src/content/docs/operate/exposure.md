@@ -383,9 +383,9 @@ long-lived bearer.
   service, the bridge host), and to the sign-in or paired device that minted it. Only its hash is
   stored. A `screen` or `screen-embed` ticket is minted only for a session the caller can see;
   another session answers 404, as one that does not exist does.
-- The terminal socket (`/api/tty`), the service tunnel (`/api/service-tunnel`) and the key bridge
-  (`/api/keys/bridge/ws`) accept it as `?ticket=`. Signing out, revoking a device or removing a
-  member ends every ticket that credential minted.
+- The terminal socket (`/api/tty`), the service tunnel (`/api/service-tunnel`), the key bridge
+  (`/api/keys/bridge/ws`) and the screen socket (`/api/screen-socket`) accept it as `?ticket=`.
+  Signing out, revoking a device or removing a member ends every ticket that credential minted.
 - The terminal embed (`/tty-embed`, which the phone's WebView loads) trades its ticket for a socket
   ticket and a renewal ticket. The renewal ticket stays in the page's memory, travels only in a
   request body, and ends twelve hours after the app minted the URL, or with its credential.

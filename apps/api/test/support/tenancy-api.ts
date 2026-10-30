@@ -863,6 +863,7 @@ export const createTenancyApi = async (
   const registry = Effect.runSync(makeConnectionRegistry);
   const connections = Layer.succeed(ConnectionRegistry, {
     register: registry.register,
+    reserve: registry.reserve,
     closeForUser: registry.closeForUser,
     closeForSession: registry.closeForSession,
     countFor: registry.countFor,

@@ -274,6 +274,39 @@ const screenContract = (runFixture: RunFixture) => {
       }),
     ));
 
+  it("dates a screen's latest entry of the kinds asked for, and none for no such entry", async () =>
+    runFixture(({ screens, session }) =>
+      Effect.gen(function* () {
+        const screen = yield* screens.reserve({
+          sessionId: yield* session(),
+          workspaceId: workspace(),
+        });
+        expect(yield* screens.lastLoggedAt(screen.id, ["Started", "Taken"])).toBeNull();
+        const started = yield* screens.append({
+          screenId: screen.id,
+          actor: { _tag: "Mend" },
+          body: { _tag: "Started" },
+          frame: null,
+        });
+        const connection = ViewerConnectionId.make("c-1");
+        yield* screens.control(screen.id, { _tag: "Take", by: OWNER, connection }, OWNER);
+        yield* screens.control(screen.id, { _tag: "Fenced", epoch: 1 }, OWNER);
+        const taken = (yield* screens.log(screen.id)).at(-1);
+        yield* screens.append({
+          screenId: screen.id,
+          actor: { _tag: "Person", userId: OWNER },
+          body: { _tag: "PersonInput", clicks: 1, keys: 0, pastes: 0 },
+          frame: null,
+        });
+        expect(taken?.body._tag).toBe("Taken");
+        expect(yield* screens.lastLoggedAt(screen.id, ["Started", "Taken"])).toEqual(taken?.at);
+        expect(yield* screens.lastLoggedAt(screen.id, ["Started"])).toEqual(started.at);
+        expect(yield* screens.lastLoggedAt(screen.id, ["HandedBack"])).toBeNull();
+        expect(yield* screens.lastLoggedAt(screen.id, [])).toBeNull();
+        expect(yield* screens.lastLoggedAt(ScreenId.make("missing"), ["Started"])).toBeNull();
+      }),
+    ));
+
   it("answers a replayed call from its claim and refuses its key with other arguments", async () =>
     runFixture(({ screens, session, agentProcess }) =>
       Effect.gen(function* () {

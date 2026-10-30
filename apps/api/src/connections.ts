@@ -48,6 +48,19 @@ export class ConnectionRegistry extends Context.Service<
       sessionId?: string,
       kind?: ConnectionKind,
     ) => Effect.Effect<void, never, Scope.Scope>;
+    /**
+     * Holds a connection of `kind` on `sessionId` while the scope is open, as `register` does,
+     * when the account holds fewer than `limits.account` of that kind and the session fewer than
+     * `limits.session` (0: no ceiling). Counting and holding are one step, so connections that
+     * arrive together cannot all pass. Answers null once held, or the ceiling that refused it.
+     */
+    readonly reserve: (request: {
+      readonly userId: string;
+      readonly sessionId: string;
+      readonly kind: ConnectionKind;
+      readonly limits: { readonly account: number; readonly session: number };
+      readonly close: Effect.Effect<void>;
+    }) => Effect.Effect<"account" | "session" | null, never, Scope.Scope>;
     /** Connections of one kind this process holds for one account right now. */
     readonly countFor: (userId: string, kind: ConnectionKind) => Effect.Effect<number>;
     /** Connections of one kind this process holds on one session right now, whoever holds them. */
@@ -96,6 +109,43 @@ export const guardSocket = <E>(
     return { revoked: () => revoked };
   });
 
+/**
+ * `guardSocket` for a socket whose budget is taken before it upgrades (`reserve`). Until `opened`,
+ * a removal is remembered, and `opened` closes the socket at once when one came, or when the
+ * account no longer stands.
+ */
+export const reserveSocket = (
+  connections: ConnectionRegistry["Service"],
+  request: {
+    readonly userId: string;
+    readonly sessionId: string;
+    readonly kind: ConnectionKind;
+    readonly limits: { readonly account: number; readonly session: number };
+  },
+) =>
+  Effect.gen(function* () {
+    let revoked = false;
+    let write: ((event: Socket.CloseEvent) => Effect.Effect<void>) | null = null;
+    const close = Effect.suspend(() => {
+      revoked = true;
+      return write === null ? Effect.void : write(new Socket.CloseEvent(1008, "access revoked"));
+    });
+    const refused = yield* connections.reserve({ ...request, close });
+    if (refused !== null) return { _tag: "Refused", ceiling: refused } as const;
+    return {
+      _tag: "Held",
+      revoked: () => revoked,
+      opened: <E>(
+        writeClose: (event: Socket.CloseEvent) => Effect.Effect<void, E>,
+        stillSignedIn: Effect.Effect<boolean>,
+      ) =>
+        Effect.gen(function* () {
+          write = (event) => Effect.ignore(writeClose(event));
+          if (revoked || !(yield* stillSignedIn)) yield* close;
+        }),
+    } as const;
+  });
+
 const closeAll = (held: ReadonlyArray<Registration>) =>
   Effect.gen(function* () {
     // All at once, each bounded: one socket that never finishes opening must not hold up the
@@ -108,9 +158,28 @@ const closeAll = (held: ReadonlyArray<Registration>) =>
     return held.length;
   });
 
+const atCeiling = (limit: number, count: number) => limit > 0 && count >= limit;
+
 /** The in-memory registry, plus the accounts that hold connections right now. */
 export const makeConnectionRegistry = Effect.sync(() => {
   const open = new Map<string, Set<Registration>>();
+  const add = (userId: string, registration: Registration) => {
+    const held = open.get(userId) ?? new Set<Registration>();
+    held.add(registration);
+    open.set(userId, held);
+    return registration;
+  };
+  const remove = (userId: string, registration: Registration) => {
+    const held = open.get(userId);
+    held?.delete(registration);
+    if (held?.size === 0) open.delete(userId);
+  };
+  const countOf = (userId: string, kind: ConnectionKind) =>
+    [...(open.get(userId) ?? [])].filter((entry) => entry.kind === kind).length;
+  const countOnSessionOf = (sessionId: string, kind: ConnectionKind) =>
+    [...open.values()]
+      .flatMap((held) => [...held])
+      .filter((entry) => entry.sessionId === sessionId && entry.kind === kind).length;
 
   const register = (
     userId: string,
@@ -119,24 +188,27 @@ export const makeConnectionRegistry = Effect.sync(() => {
     kind?: ConnectionKind,
   ) =>
     Effect.acquireRelease(
-      Effect.sync(() => {
-        const registration: Registration = {
-          close,
-          sessionId: sessionId ?? null,
-          kind: kind ?? null,
-        };
-        const held = open.get(userId) ?? new Set<Registration>();
-        held.add(registration);
-        open.set(userId, held);
-        return registration;
-      }),
-      (registration) =>
-        Effect.sync(() => {
-          const held = open.get(userId);
-          held?.delete(registration);
-          if (held?.size === 0) open.delete(userId);
-        }),
+      Effect.sync(() => add(userId, { close, sessionId: sessionId ?? null, kind: kind ?? null })),
+      (registration) => Effect.sync(() => remove(userId, registration)),
     ).pipe(Effect.asVoid);
+
+  const reserve = (request: {
+    readonly userId: string;
+    readonly sessionId: string;
+    readonly kind: ConnectionKind;
+    readonly limits: { readonly account: number; readonly session: number };
+    readonly close: Effect.Effect<void>;
+  }) =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const { userId, sessionId, kind, limits } = request;
+        if (atCeiling(limits.account, countOf(userId, kind))) return "account" as const;
+        if (atCeiling(limits.session, countOnSessionOf(sessionId, kind))) return "session" as const;
+        return add(userId, { close: request.close, sessionId, kind });
+      }),
+      (held) =>
+        Effect.sync(() => (typeof held === "string" ? undefined : remove(request.userId, held))),
+    ).pipe(Effect.map((held) => (typeof held === "string" ? held : null)));
 
   const closeForUser = (userId: string) => closeAll([...(open.get(userId) ?? [])]);
 
@@ -152,18 +224,14 @@ export const makeConnectionRegistry = Effect.sync(() => {
     );
 
   const countFor = (userId: string, kind: ConnectionKind) =>
-    Effect.sync(() => [...(open.get(userId) ?? [])].filter((entry) => entry.kind === kind).length);
+    Effect.sync(() => countOf(userId, kind));
 
   const countOnSession = (sessionId: string, kind: ConnectionKind) =>
-    Effect.sync(
-      () =>
-        [...open.values()]
-          .flatMap((held) => [...held])
-          .filter((entry) => entry.sessionId === sessionId && entry.kind === kind).length,
-    );
+    Effect.sync(() => countOnSessionOf(sessionId, kind));
 
   return {
     register,
+    reserve,
     closeForUser,
     closeForSession,
     countFor,
@@ -229,6 +297,7 @@ export const ConnectionRegistryLive: Layer.Layer<
     );
     return {
       register: registry.register,
+      reserve: registry.reserve,
       closeForUser: registry.closeForUser,
       closeForSession: registry.closeForSession,
       countFor: registry.countFor,

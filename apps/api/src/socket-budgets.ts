@@ -3,7 +3,7 @@ import type { HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 
 import type { Budgets, BudgetName } from "./budgets.ts";
-import type { ConnectionKind, ConnectionRegistry } from "./connections.ts";
+import { type ConnectionKind, type ConnectionRegistry, reserveSocket } from "./connections.ts";
 import { budgetRefusal } from "./request-budgets.ts";
 
 const BUDGET_OF: Readonly<Record<ConnectionKind, BudgetName>> = {
@@ -35,18 +35,34 @@ export const connectionRefusal = (
   });
 
 /**
- * The refusal for one more viewer of a session's screen, or null when the screen has room. Asked
- * after the account's own budget, before the upgrade.
+ * Holds one more viewer of a session's screen while the scope is open, or answers the 429 for
+ * the account's budget or the screen's (docs/adr/0004, "Budgets"). Asked once the caller is known
+ * to see the session, before the upgrade. Counting and holding are one step, so viewers that
+ * arrive together cannot pass either ceiling; viewers already watching stay.
  */
-export const screenViewerRefusal = (
+export const reserveScreenViewer = (
   budgets: Budgets["Service"],
   connections: ConnectionRegistry["Service"],
+  userId: string,
   sessionId: string,
-): Effect.Effect<HttpServerResponse.HttpServerResponse | null> =>
-  Effect.map(connections.countOnSession(sessionId, "screen"), (open) => {
-    const limit = budgets.limits.screenViewers;
-    return limit > 0 && open >= limit ? budgetRefusal(429, "screenViewers", limit, null) : null;
-  });
+) =>
+  Effect.map(
+    reserveSocket(connections, {
+      userId,
+      sessionId,
+      kind: "screen",
+      limits: {
+        account: budgets.limits.accountScreenViewers,
+        session: budgets.limits.screenViewers,
+      },
+    }),
+    (held) => {
+      if (held._tag === "Held") return held;
+      const name = held.ceiling === "account" ? "accountScreenViewers" : "screenViewers";
+      const response = budgetRefusal(429, name, budgets.limits[name], null);
+      return { _tag: "Refused", response } as const;
+    },
+  );
 
 const frameSize = (data: string | Uint8Array): number =>
   typeof data === "string" ? Buffer.byteLength(data, "utf8") : data.byteLength;
