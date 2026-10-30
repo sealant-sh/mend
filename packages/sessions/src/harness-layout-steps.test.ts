@@ -126,7 +126,7 @@ const workspace: Workspace = {
   expire: async () => undefined,
   image: async () => null,
   dotfiles: { apply: never },
-  credentials: { put: never, release: never, list: async () => [] },
+  credentials: { put: never, release: never, list: async () => [], prune: never },
 };
 
 /** Every credentials call the platform was asked for, and how Core answers a POST. */
@@ -516,6 +516,9 @@ describe("the default against images and runtimes that cannot run per person (re
       personBinding: true,
       sshKeyRemovalEndsConnections: true,
       connectedAccountDefaults: false,
+      connectedAccountLoginClass: false,
+      credentialPlacements: false,
+      connectedAccountApiKeys: false,
     });
     for (const report of [k8s, { ...k8s, runtime: "docker", person: true }]) {
       const core = coreCalls();

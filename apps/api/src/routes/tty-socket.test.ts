@@ -109,7 +109,7 @@ const platformWorkspace = (id: string): Workspace => ({
   recover: unused,
   captureDrain: unused,
   restart: unused,
-  credentials: { put: unused, release: unused, list: unused },
+  credentials: { put: unused, release: unused, list: unused, prune: unused },
   dotfiles: { apply: unused },
   expire: unused,
   sshAsRoot: unused,

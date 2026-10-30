@@ -116,6 +116,10 @@ const workspaceRecording = (
         calls.push(`release:${home}`);
         return { released: true };
       },
+      prune: async (home) => {
+        calls.push(`prune:${home}`);
+        return undefined;
+      },
       list: async () => {
         calls.push("list");
         return [
@@ -169,6 +173,9 @@ const EVERY_FEATURE: SealantFeatures = {
   personBinding: false,
   sshKeyRemovalEndsConnections: false,
   connectedAccountDefaults: false,
+  connectedAccountLoginClass: false,
+  credentialPlacements: false,
+  connectedAccountApiKeys: false,
 };
 /** A control plane from before any of them (an older Core reports every flag false). */
 const NO_FEATURE: SealantFeatures = {
@@ -182,6 +189,9 @@ const NO_FEATURE: SealantFeatures = {
   personBinding: false,
   sshKeyRemovalEndsConnections: false,
   connectedAccountDefaults: false,
+  connectedAccountLoginClass: false,
+  credentialPlacements: false,
+  connectedAccountApiKeys: false,
 };
 
 const clientsLayer = (

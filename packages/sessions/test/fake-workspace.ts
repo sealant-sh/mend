@@ -69,6 +69,6 @@ export const fakeWorkspace = (id = "workspace-1"): Workspace => ({
   },
   expire: async () => undefined,
   image: async () => null,
-  credentials: { put: never, release: never, list: async () => [] },
+  credentials: { put: never, release: never, list: async () => [], prune: never },
   dotfiles: { apply: never },
 });
