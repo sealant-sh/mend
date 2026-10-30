@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { CaptureStoreRepo, RemovalFenceId } from "@mend/db";
 import type { ProjectId, WorktreeId } from "@mend/domain";
-import { type BlobStore, keysOfSections, packIdxKeyOf, treePrefixesOfSections } from "@mend/store";
+import { type BlobStore, packIdxKeyOf } from "@mend/store";
 import { Clock, Data, Effect } from "effect";
 
 /** An object of the project could not be listed, condemned or deleted: purge again to finish. */
@@ -37,15 +37,6 @@ export const uploadsLanded = (capture: PurgeStores, worktrees: ReadonlyArray<Wor
 /** Long enough for one group's deletes; renewed before each, like capture retention's. */
 const CLAIM_TTL_SECONDS = 60 * 60;
 
-const purgeKeys = (
-  keys: ReadonlyArray<string>,
-  referenced: ReadonlySet<string>,
-  trees: ReadonlySet<string>,
-): ReadonlyArray<string> =>
-  keys.filter(
-    (key) => !referenced.has(key) && ![...trees].some((prefix) => key.startsWith(prefix)),
-  );
-
 /**
  * Deletes the stored objects only the removed project names (docs/adr/0002, "Retention and
  * compaction"). Nothing goes while an upload URL issued before the removal may still land bytes.
@@ -65,23 +56,15 @@ export const purgeProjectBlobs = <E>(
     yield* uploadsLanded(capture, worktrees);
 
     const failed = (key: string) => () => new PurgeBlobFailure({ key });
-    const own = new Set(worktrees);
+    // Guards before references: a capture that names an object after this read moves its guard.
     const chains = yield* repo.listChains();
-    const referenced = new Set(foreignHandoffPacks.flatMap((key) => [key, packIdxKeyOf(key)]));
-    const trees = new Set<string>();
-    for (const chain of chains) {
-      if (own.has(chain.worktreeId)) continue;
-      for (const row of yield* repo.listChain(chain.worktreeId)) {
-        referenced.add(row.manifestKey);
-        for (const key of keysOfSections(row.sections)) {
-          referenced.add(key);
-          referenced.add(packIdxKeyOf(key));
-        }
-        for (const prefix of treePrefixesOfSections(row.sections)) trees.add(prefix);
-        const summary = yield* repo.summaryOf(row.id);
-        if (summary !== null) referenced.add(summary.key);
-      }
-    }
+    const handedOff = new Set(foreignHandoffPacks.flatMap((key) => [key, packIdxKeyOf(key)]));
+    /** What no other worktree's capture, summary or handoff still names. */
+    const unreferenced = (keys: ReadonlyArray<string>) =>
+      Effect.map(
+        repo.referencedElsewhere({ projectId: purge.projectId, own: worktrees, keys }),
+        (referenced) => keys.filter((key) => !referenced.has(key) && !handedOff.has(key)),
+      );
 
     // The project's own packs have no chain: they are tombstoned under its first worktree's.
     const groups: Array<{
@@ -103,11 +86,7 @@ export const purgeProjectBlobs = <E>(
       const listed = yield* Effect.forEach(group.prefixes, (prefix) =>
         blobs.list(prefix).pipe(Effect.mapError(failed(prefix))),
       );
-      const keys = purgeKeys(
-        listed.flat().map((entry) => entry.key),
-        referenced,
-        trees,
-      );
+      const keys = yield* unreferenced(listed.flat().map((entry) => entry.key));
       const guard = chains.find((chain) => chain.worktreeId === group.worktreeId)?.guard;
       const token = `${purge.mark}:${randomUUID()}`;
       const condemned =
@@ -135,7 +114,7 @@ export const purgeProjectBlobs = <E>(
           for (const upload of yield* blobs
             .listMultipart(prefix)
             .pipe(Effect.mapError(failed(prefix)))) {
-            if (purgeKeys([upload.key], referenced, trees).length === 0) continue;
+            if ((yield* unreferenced([upload.key])).length === 0) continue;
             yield* step;
             yield* blobs
               .abortMultipart(upload.key, upload.uploadId)

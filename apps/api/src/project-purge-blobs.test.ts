@@ -31,6 +31,7 @@ afterEach(() => {
 const world = async () => {
   root = mkdtempSync(join(tmpdir(), "mend-purge-blobs-"));
   const memory = makeMemoryCaptureStore();
+  memory.purgeMarks.set(project, "rmv_purge");
   const repo = await Effect.runPromise(
     Effect.provide(
       Effect.gen(function* () {
@@ -145,6 +146,15 @@ describe("purging a removed project's stored objects", () => {
       );
     expect(Exit.isFailure(await registerNaming(ownPack))).toBe(true);
     expect(Exit.isSuccess(await registerNaming(sharedPack))).toBe(true);
+  });
+
+  it("condemns and deletes nothing once its mark went to another purge", async () => {
+    const { memory, keys, purge } = await world();
+    const before = await keys();
+    memory.purgeMarks.set(project, "rmv_other");
+    const exit = await purge();
+    expect(Exit.isFailure(exit) && String(exit.cause)).toContain("PurgeBlobFailure");
+    expect(await keys()).toEqual(before);
   });
 
   it("stops deleting once the purge no longer holds its mark", async () => {

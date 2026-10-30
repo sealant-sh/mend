@@ -598,6 +598,18 @@ export class CaptureStoreRepo extends Context.Service<
       claim: DeletionClaim,
     ) => Effect.Effect<boolean>;
     /**
+     * Of `keys`, the stored objects of the worktrees `own` (and of project `projectId`'s own
+     * packs) that a capture or a summary of any other worktree still names, as a pack, its
+     * index, a tree under the same prefix, a manifest or a summary: what a purge keeps. Read in
+     * one statement over the names that fall under those prefixes; it may answer more than
+     * keysOfSections would, never less.
+     */
+    readonly referencedElsewhere: (input: {
+      readonly projectId: ProjectId;
+      readonly own: ReadonlyArray<WorktreeId>;
+      readonly keys: ReadonlyArray<string>;
+    }) => Effect.Effect<ReadonlySet<string>>;
+    /**
      * A purge's `condemn` of a removed project's chain: authorized only while the project's
      * `deleting` mark is `fenceId` and fresh, read under the project's lock.
      */
@@ -1670,6 +1682,41 @@ export const CaptureStoreRepoLive: Layer.Layer<
       );
     });
 
+    const referencedElsewhere = Effect.fn("CaptureStoreRepo.referencedElsewhere")(
+      function* (input: {
+        readonly projectId: ProjectId;
+        readonly own: ReadonlyArray<WorktreeId>;
+        readonly keys: ReadonlyArray<string>;
+      }) {
+        if (input.keys.length === 0) return new Set<string>();
+        // `_` in an id widens a pattern: more names read, never fewer.
+        const patterns = [
+          `projects/${input.projectId}/%`,
+          ...input.own.flatMap((id) => [`captures/${id}/%`, `changes/${id}/%`]),
+        ];
+        const own = [...input.own];
+        const rows = yield* sql<{ readonly key: string }>`
+        WITH names AS (
+          SELECT s #>> '{}' AS name
+            FROM captures c,
+                 jsonb_path_query(c.sections, 'strict $.** ? (@.type() == "string")') s
+           WHERE NOT (c.worktree_id = ANY(${own}::text[]))
+             AND (s #>> '{}') LIKE ANY(${patterns}::text[])
+          UNION SELECT c.manifest_key FROM captures c
+           WHERE NOT (c.worktree_id = ANY(${own}::text[])) AND c.manifest_key LIKE ANY(${patterns}::text[])
+          UNION SELECT k.key FROM capture_summaries k
+           WHERE NOT (k.worktree_id = ANY(${own}::text[])) AND k.key LIKE ANY(${patterns}::text[]))
+        SELECT key FROM unnest(${[...input.keys]}::text[]) AS key
+         WHERE EXISTS (SELECT 1 FROM names n WHERE n.name = key
+            OR (key LIKE '%.idx' AND n.name = left(key, -4))
+            OR (strpos(key, '/trees/') > 0
+                AND starts_with(n.name, left(key, strpos(key, '/trees/') + 6))))`.pipe(
+          Effect.orDie,
+        );
+        return new Set(rows.map((row) => row.key));
+      },
+    );
+
     const condemnForPurge = Effect.fn("CaptureStoreRepo.condemnForPurge")(function* (input: {
       readonly worktreeId: WorktreeId;
       readonly guard: number;
@@ -1809,6 +1856,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       referenceState,
       condemn,
       condemnForPurge,
+      referencedElsewhere,
       renewDeletion,
       finishDeletion,
       deleteCaptures,

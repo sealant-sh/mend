@@ -311,6 +311,14 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         expect(
           yield* sql`SELECT n FROM captures WHERE worktree_id = ${consumerTree} ORDER BY n`,
         ).toEqual([{ n: 0 }, { n: 1 }]);
+        // What a purge of the owner keeps: what the consumer names, and nothing else of the owner's.
+        const unnamed = `captures/${ownerTree}/1/packs/${"e".repeat(64)}`;
+        const kept = yield* capture.referencedElsewhere({
+          projectId: owner,
+          own: [ownerTree],
+          keys: [inherited, `${inherited}.idx`, base, unnamed, `${unnamed}.idx`],
+        });
+        expect([...kept].toSorted()).toEqual([inherited, `${inherited}.idx`, base].toSorted());
       }),
     ));
 

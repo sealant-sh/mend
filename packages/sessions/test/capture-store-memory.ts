@@ -14,6 +14,7 @@ import {
   captureScopesOf,
 } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
+import { keysOfSections, treePrefixesOfSections } from "@mend/store";
 import { Clock, Effect, Layer, Option } from "effect";
 
 /**
@@ -37,6 +38,8 @@ export interface MemoryCaptureStore {
   readonly uploadWindows: Map<string, Date>;
   /** Worktrees of a removed project: issued no write, published no summary (0167). */
   readonly removedWorktrees: Set<string>;
+  /** Project → the `deleting` mark its purge holds, as `condemnForPurge` reads it (0167). */
+  readonly purgeMarks: Map<string, string>;
   /** `capture_bound_indexes`: key → the digest its bound URLs name, and until when (0099). */
   readonly boundIndexes: Map<string, { sha256: string; until: Date }>;
   /** Worktrees that are gone: Mend no longer speaks for their scopes (`sealAuthorityOver`). */
@@ -99,6 +102,7 @@ export const makeMemoryCaptureStore = (
   const putAuthority = new Map<string, Date>();
   const uploadWindows = new Map<string, Date>();
   const removedWorktrees = new Set<string>();
+  const purgeMarks = new Map<string, string>();
   const boundIndexes = new Map<string, { sha256: string; until: Date }>();
   const goneWorktrees = new Set<string>();
   const boundIndexCutover = { until: 0 };
@@ -649,8 +653,35 @@ export const makeMemoryCaptureStore = (
     // No project rows here: the purge's mark is Postgres's to check.
     condemnForPurge: (input) =>
       Effect.suspend(() =>
-        repository.condemn(input.worktreeId, input.guard, input.keys, input.claim),
+        input.keys.length > 0 && purgeMarks.get(input.projectId) !== input.fenceId
+          ? Effect.succeed(false)
+          : repository.condemn(input.worktreeId, input.guard, input.keys, input.claim),
       ),
+    referencedElsewhere: ({ projectId, own, keys }) =>
+      Effect.sync(() => {
+        const names = new Set<string>();
+        const prefixes: Array<string> = [];
+        for (const row of captures.values()) {
+          if (own.includes(row.worktreeId)) continue;
+          names.add(row.manifestKey);
+          for (const key of keysOfSections(row.sections)) names.add(key);
+          prefixes.push(...treePrefixesOfSections(row.sections));
+          const summary = summaries.get(row.id);
+          if (summary !== undefined) names.add(summary.key);
+        }
+        const mine = (key: string) =>
+          key.startsWith(`projects/${projectId}/`) ||
+          own.some((id) => key.startsWith(`captures/${id}/`) || key.startsWith(`changes/${id}/`));
+        return new Set(
+          keys.filter(
+            (key) =>
+              mine(key) &&
+              (names.has(key) ||
+                (key.endsWith(".idx") && names.has(key.slice(0, -4))) ||
+                prefixes.some((prefix) => key.startsWith(prefix))),
+          ),
+        );
+      }),
     renewDeletion: (token, ttlSeconds) =>
       Effect.sync(() => {
         const held = [...claims.values()].filter((byToken) => byToken.has(token));
@@ -718,6 +749,7 @@ export const makeMemoryCaptureStore = (
     putAuthority,
     uploadWindows,
     removedWorktrees,
+    purgeMarks,
     boundIndexes,
     goneWorktrees,
     boundIndexCutover,
