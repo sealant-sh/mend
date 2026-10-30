@@ -1,15 +1,16 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { Keyboard } from "react-native";
 
 import { createAsker, type Asker } from "@/data/ask";
+import { openMachine, type Machine } from "@/data/machine";
 import { useConfig, type MendConfig } from "@/data/pairing-config";
 import { pairingKeyOf, type PairingKey } from "@/data/pairing-key";
 
 export interface Pairing {
   readonly config: MendConfig;
-  readonly key: PairingKey;
   readonly asker: Asker;
+  readonly machine: Machine;
 }
 
 const PairingContext = createContext<Pairing | null>(null);
@@ -33,18 +34,28 @@ export const PairingBoundary = ({ children }: { readonly children: ReactNode }):
 
 // A pairing outlives the screens under it: a web history step can mount the root layout afresh.
 interface Held {
-  readonly key: PairingKey;
   readonly client: QueryClient;
   readonly asker: Asker;
+  readonly machine: Machine;
+  readonly end: () => void;
 }
 let held: Held | null = null;
 
-const heldFor = (key: PairingKey): Held => {
-  if (held?.key !== key) {
+const heldFor = (key: PairingKey, config: MendConfig): Held => {
+  if (held?.machine.key !== key) {
+    held?.client.clear();
+    held?.end();
     held = {
-      key,
-      client: new QueryClient({ defaultOptions: { queries: { retry: 1 } } }),
+      client: new QueryClient({
+        defaultOptions: {
+          queries: { retry: 1 },
+          // A write the person asked for runs now against its pairing's machine, offline or not:
+          // a paused one would sit in this cache, which the next pairing clears.
+          mutations: { networkMode: "always" },
+        },
+      }),
       asker: createAsker({ beforeAsk: () => Keyboard.dismiss() }),
+      ...openMachine(config),
     };
   }
   return held;
@@ -59,16 +70,9 @@ const PairingScope = ({
   readonly config: MendConfig;
   readonly children: ReactNode;
 }): ReactNode => {
-  const [{ client, asker }] = useState(() => heldFor(pairingKey));
-  // Once another pairing holds the cache, cancels the ended one's fetches and pending retries.
-  useEffect(
-    () => () => {
-      if (held?.client !== client) client.clear();
-    },
-    [client],
-  );
+  const [{ client, asker, machine }] = useState(() => heldFor(pairingKey, config));
   return (
-    <PairingContext.Provider value={{ config, key: pairingKey, asker }}>
+    <PairingContext.Provider value={{ config, asker, machine }}>
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     </PairingContext.Provider>
   );

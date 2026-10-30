@@ -12,12 +12,12 @@ import { Panel } from "@/components/panel";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
-import { failureLogLine, failureWords } from "@/data/failure-words";
 import {
   type NotificationSettingsDto,
   useNotificationSettings,
   useSetNotificationSettings,
 } from "@/data/notification-settings";
+import { checkConnection, type ConnectionCheck } from "@/data/pairing-client";
 import { clearConfig, registerPush, saveConfig } from "@/data/pairing-config";
 import { serverUrlOf } from "@/data/pairing-key";
 import { usePairing } from "@/data/pairing-scope";
@@ -210,10 +210,7 @@ export default function SettingsScreen() {
     | { readonly state: "unavailable"; readonly reason: string }
   >({ state: "idle" });
   const [check, setCheck] = useState<
-    | { readonly state: "idle" }
-    | { readonly state: "testing" }
-    | { readonly state: "ok"; readonly detail: string }
-    | { readonly state: "bad"; readonly detail: string }
+    { readonly state: "idle" } | { readonly state: "testing" } | ConnectionCheck
   >({ state: "idle" });
 
   const url = draft?.url ?? config.url;
@@ -222,44 +219,9 @@ export default function SettingsScreen() {
   const saved = typed.url === config.url && typed.token === config.token;
   const paired = config.url !== "" && config.token !== "";
 
-  /** Test what's typed (not only what's saved): health first, then an authed call. */
   const testConnection = async () => {
     setCheck({ state: "testing" });
-    const base = url.trim().replace(/\/$/, "");
-    try {
-      const health = await fetch(`${base}/api/health`);
-      if (!health.ok) {
-        console.warn(failureLogLine("GET /api/health", health.status, null));
-        setCheck({
-          state: "bad",
-          detail: "reachable · health check failed — check the URL; the server log has the detail",
-        });
-        return;
-      }
-      const authed = await fetch(`${base}/api/projects`, {
-        headers: { authorization: `Bearer ${token.trim()}` },
-      });
-      if (authed.status === 401) {
-        setCheck({ state: "bad", detail: "reachable · token rejected" });
-        return;
-      }
-      if (!authed.ok) {
-        const body: unknown = await authed.json().catch(() => null);
-        console.warn(failureLogLine("GET /api/projects", authed.status, body));
-        setCheck({
-          state: "bad",
-          detail: `reachable · ${failureWords(authed.status, body).words}`,
-        });
-        return;
-      }
-      const projects = (await authed.json()) as ReadonlyArray<unknown>;
-      setCheck({
-        state: "ok",
-        detail: `connected · ${projects.length} project${projects.length === 1 ? "" : "s"}`,
-      });
-    } catch {
-      setCheck({ state: "bad", detail: "unreachable — check URL, port, firewall, same network" });
-    }
+    setCheck(await checkConnection({ url, token }));
   };
 
   const inputStyle = {

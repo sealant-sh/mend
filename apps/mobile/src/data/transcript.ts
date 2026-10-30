@@ -1,8 +1,8 @@
 import type { PageRef } from "@mend/domain/workbench";
 import { useQuery } from "@tanstack/react-query";
 
-import { api } from "@/data/live";
 import { transcriptPageOf } from "@/data/pages";
+import { usePairing } from "@/data/pairing-scope";
 
 export interface TranscriptEventDto {
   readonly kind: string;
@@ -27,10 +27,12 @@ export const readTranscript = (transcript: TranscriptWire) => ({
   ),
 });
 
-export const useTranscript = (sessionId: string, live: boolean) =>
-  useQuery({
+export const useTranscript = (sessionId: string, live: boolean) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["transcript", sessionId],
     queryFn: async () =>
-      readTranscript(await api<TranscriptWire>("GET", `/sessions/${sessionId}/transcript`)),
+      readTranscript(await machine.read<TranscriptWire>(`/sessions/${sessionId}/transcript`)),
     refetchInterval: live ? 1_500 : false,
   });
+};

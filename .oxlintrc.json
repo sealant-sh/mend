@@ -136,6 +136,38 @@
                 "allowTypeImports": true,
                 "message": "Server data lives in the pairing's client. Render under PairingBoundary (src/data/pairing-scope.tsx) and use useQueryClient(); never make a second client."
               }
+            ],
+            "patterns": [
+              {
+                "regex": "(^|/)machine(\\.[cm]?[jt]sx?)?$",
+                "importNames": ["openMachine"],
+                "message": "Only the pairing's slot (src/data/pairing-scope.tsx) opens a machine. Take `usePairing().machine` in a hook or component, or a `machine` parameter in a plain function, captured before any await."
+              },
+              {
+                "regex": "(^|/)pairing-config(\\.[cm]?[jt]sx?)?$",
+                "importNames": ["loadConfig", "useConfig"],
+                "message": "The current pairing is not the pairing that started your work. Take `usePairing().machine` (or `usePairing().config` for what the screen shows), or a `machine` parameter in a plain function."
+              }
+            ]
+          }
+        ],
+        "no-restricted-globals": [
+          "error",
+          {
+            "checkGlobalObject": true,
+            "globals": [
+              {
+                "name": "fetch",
+                "message": "Requests go through the pairing's machine, which carries its address and bearer: `usePairing().machine.read(…)` / `.write(…)`, or a `machine` parameter in a plain function."
+              },
+              {
+                "name": "XMLHttpRequest",
+                "message": "Uploads go through the pairing's machine: `usePairing().machine.upload(…)`, or a `machine` parameter in a plain function."
+              },
+              {
+                "name": "WebSocket",
+                "message": "The terminal socket is useTtySocket (src/data/tty-socket.ts): it takes its address and bearer from the pairing's machine."
+              }
             ]
           }
         ]
@@ -144,6 +176,52 @@
     {
       "files": ["apps/mobile/src/data/pairing-scope.tsx", "apps/mobile/src/**/*.test.{ts,tsx}"],
       "rules": { "no-restricted-imports": "off" }
+    },
+    {
+      "files": [
+        "apps/mobile/src/data/machine.ts",
+        "apps/mobile/src/data/pairing-client.ts",
+        "apps/mobile/src/data/notifications.ts"
+      ],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          {
+            "checkGlobalObject": true,
+            "globals": [
+              {
+                "name": "WebSocket",
+                "message": "The terminal socket is useTtySocket (src/data/tty-socket.ts): it takes its address and bearer from the pairing's machine."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["apps/mobile/src/data/tty-socket.ts"],
+      "rules": {
+        "no-restricted-globals": [
+          "error",
+          {
+            "checkGlobalObject": true,
+            "globals": [
+              {
+                "name": "fetch",
+                "message": "Requests go through the pairing's machine, which carries its address and bearer: `usePairing().machine.read(…)` / `.write(…)`, or a `machine` parameter in a plain function."
+              },
+              {
+                "name": "XMLHttpRequest",
+                "message": "Uploads go through the pairing's machine: `usePairing().machine.upload(…)`, or a `machine` parameter in a plain function."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["apps/mobile/src/**/*.test.{ts,tsx}"],
+      "rules": { "no-restricted-globals": "off" }
     },
     {
       "files": ["packages/ui/src/components/ui/**"],

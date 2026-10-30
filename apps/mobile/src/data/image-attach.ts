@@ -24,7 +24,9 @@ import {
   imageName,
   type Attachment,
 } from "@/data/composer";
-import { uploadSessionImage, type ImageUpload } from "@/data/live";
+import { uploadSessionImage, type PastedImageDto } from "@/data/live";
+import type { Upload } from "@/data/machine";
+import { usePairing } from "@/data/pairing-scope";
 
 /** An image the person chose, before it is prepared. */
 export interface ChosenImage {
@@ -142,11 +144,12 @@ export interface ComposerAttachments {
 
 export const useComposerAttachments = (sessionId: string): ComposerAttachments => {
   const [attachments, dispatch] = useReducer(attachmentsReducer, []);
+  const { machine } = usePairing();
   // Live ids, prepared bytes (a retry after a failed upload skips preparing again), the upload
   // in flight, and the one-at-a-time queue. Refs: the queue outlives the render that started it.
   const live = useRef(new Set<string>());
   const prepared = useRef(new Map<string, string>());
-  const uploads = useRef(new Map<string, ImageUpload>());
+  const uploads = useRef(new Map<string, Upload<PastedImageDto>>());
   const queue = useRef<Promise<void>>(Promise.resolve());
   const seq = useRef(0);
 
@@ -164,7 +167,7 @@ export const useComposerAttachments = (sessionId: string): ComposerAttachments =
       prepared.current.set(id, base64);
     }
     dispatch({ type: "prepared", id });
-    const upload = uploadSessionImage(sessionId, base64, (sent) =>
+    const upload = uploadSessionImage(machine, sessionId, base64, (sent) =>
       dispatch({ type: "progress", id, sent }),
     );
     uploads.current.set(id, upload);

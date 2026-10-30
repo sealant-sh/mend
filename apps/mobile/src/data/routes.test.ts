@@ -5,8 +5,8 @@
 // the phone kept posting into a 404 for weeks. Every (method, path template)
 // the data layer touches must exist in @mend/api-contracts.
 //
-// Keep this list in step with `grep -rn 'api(' src` — a route added to the
-// data layer without a row here is a route nobody checks.
+// Keep this list in step with `grep -rnE '\.(read|write|writeNoContent|upload)[<(]' src` — a
+// route added to the data layer without a row here is a route nobody checks.
 
 import * as contracts from "@mend/api-contracts";
 import { HttpApiSchema } from "effect/http-api";
@@ -72,16 +72,16 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
 ];
 
 /**
- * The routes the data layer reads with `apiNoContent`: their contract declares no success body, so
- * the server answers 204. `api` parses JSON, and an empty body fails it after the server already
- * did the work — Stop read "JSON Parse error" while the turn had stopped.
+ * The routes the data layer sends with `machine.writeNoContent`: their contract declares no success
+ * body, so the server answers 204. `write` parses JSON, and an empty body fails it after the server
+ * already did the work — Stop read "JSON Parse error" while the turn had stopped.
  */
 const NO_CONTENT_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/turns/:id/interrupt"],
   ["POST", "/sessions/:id/workspace-retirement/replace"],
 ];
 
-/** Reached with a raw fetch that reads the body itself, not with `api`. */
+/** Reached with a raw fetch that reads the body itself, not through the pairing's machine. */
 const RAW_FETCH_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/pair"],
   ["POST", "/devices"],
@@ -147,7 +147,7 @@ describe("mobile routes", () => {
   });
 
   it.each(MOBILE_ROUTES.filter(([method, path]) => !listed(RAW_FETCH_ROUTES, method, path)))(
-    "%s %s is read the way it answers: JSON with api, 204 with apiNoContent",
+    "%s %s is read the way it answers: JSON with read or write, 204 with writeNoContent",
     (method, path) => {
       expect(answersNoContent(method, path)).toBe(listed(NO_CONTENT_ROUTES, method, path));
     },

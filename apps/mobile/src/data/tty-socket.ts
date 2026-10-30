@@ -17,7 +17,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 
-import { api, ApiError } from "@/data/live";
+import { ApiError, PairingEnded, type Machine } from "@/data/machine";
+import { usePairing } from "@/data/pairing-scope";
 
 export type TtyPhase = "idle" | "connecting" | "connected" | "reconnecting" | "ended";
 
@@ -29,10 +30,13 @@ const LADDER_MS = [3_000, 4_000, 8_000, 16_000] as const;
  * that mints them says so, and then the 404 came from something in between: the bearer stays out
  * of URLs that every hop logs, and the connect fails with the reason.
  */
-export const legacyBearerAfterMint404 = async (token: string): Promise<string> => {
-  const health = await api<{ readonly upgradeTickets?: boolean }>("GET", "/health").catch(
-    () => null,
-  );
+export const legacyBearerAfterMint404 = async (machine: Machine): Promise<string> => {
+  const health = await machine
+    .read<{ readonly upgradeTickets?: boolean }>("/health")
+    .catch((error: unknown) => {
+      if (error instanceof PairingEnded) throw error;
+      return null;
+    });
   if (health?.upgradeTickets === true) {
     console.warn(
       "POST /api/upgrade-tickets responded 404 on a server that mints them: something between this phone and Mend is refusing it",
@@ -43,23 +47,23 @@ export const legacyBearerAfterMint404 = async (token: string): Promise<string> =
     );
   }
   console.warn("this server predates upgrade tickets: the device token rides the terminal URL");
-  return token;
+  return machine.connection.token;
 };
 
 /** What rides the socket's URL: a fresh upgrade ticket (or, on a server older than them, the bearer). */
 const socketCredential = async (
+  machine: Machine,
   target: { readonly kind: "session" | "process"; readonly id: string },
-  token: string,
 ): Promise<{ readonly name: "ticket" | "token"; readonly value: string }> => {
   try {
-    const minted = await api<{ readonly ticket: string }>("POST", "/upgrade-tickets", {
+    const minted = await machine.write<{ readonly ticket: string }>("POST", "/upgrade-tickets", {
       target: "tty",
       [target.kind]: target.id,
     });
     return { name: "ticket", value: minted.ticket };
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) {
-      return { name: "token", value: await legacyBearerAfterMint404(token) };
+      return { name: "token", value: await legacyBearerAfterMint404(machine) };
     }
     throw error;
   }
@@ -84,15 +88,11 @@ export interface TtySocket {
 }
 
 export function useTtySocket({
-  serverUrl,
-  token,
   target,
   enabled,
   onBinary,
   onEnd,
 }: {
-  readonly serverUrl: string | null;
-  readonly token: string | null;
   readonly target: TtyTarget | null;
   readonly enabled: boolean;
   /**
@@ -103,6 +103,7 @@ export function useTtySocket({
   readonly onBinary?: (data: ArrayBuffer, generation: number) => void;
   readonly onEnd?: () => void;
 }): TtySocket {
+  const { machine } = usePairing();
   const [phase, setPhase] = useState<TtyPhase>("idle");
   const wsRef = useRef<WebSocket | null>(null);
   const retryNowRef = useRef<() => void>(() => undefined);
@@ -113,7 +114,7 @@ export function useTtySocket({
   onEndRef.current = onEnd;
 
   useEffect(() => {
-    if (!enabled || serverUrl === null || token === null || target === null) {
+    if (!enabled || target === null) {
       setPhase("idle");
       return;
     }
@@ -132,7 +133,7 @@ export function useTtySocket({
       setPhase(attempt === 0 ? "connecting" : "reconnecting");
       let url: URL;
       try {
-        url = new URL(`${serverUrl}/api/tty`);
+        url = new URL(`${machine.connection.url}/api/tty`);
       } catch {
         setPhase("idle");
         return;
@@ -146,7 +147,7 @@ export function useTtySocket({
       // are single use, so every connect and reconnect mints one.
       connectSeq += 1;
       const seq = connectSeq;
-      void socketCredential(target, token).then(
+      void socketCredential(machine, target).then(
         (credential) => {
           if (disposed || ended || seq !== connectSeq) return undefined;
           url.searchParams.set(credential.name, credential.value);
@@ -258,7 +259,7 @@ export function useTtySocket({
       wsRef.current = null;
       current?.close();
     };
-  }, [serverUrl, token, target?.kind, target?.id, enabled]);
+  }, [machine, target?.kind, target?.id, enabled]);
 
   const send = useCallback((data: string): boolean => {
     const socket = wsRef.current;

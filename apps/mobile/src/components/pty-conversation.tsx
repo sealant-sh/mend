@@ -15,7 +15,6 @@ import { ComposerDock, usePaneEdges } from "@/components/pane";
 import { SessionPullRequest } from "@/components/pull-request-card";
 import { MonoText, UiText } from "@/components/typography";
 import { useSession } from "@/data/live";
-import { loadConfig } from "@/data/pairing-config";
 import { newestPullRequest } from "@/data/pull-requests";
 import { useTranscript, type TranscriptEventDto } from "@/data/transcript";
 import { useTtySocket, type TtyTarget } from "@/data/tty-socket";
@@ -144,19 +143,18 @@ export function PtyConversation({
   const [working, setWorking] = useState(false);
   const workingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastInvalidate = useRef(0);
-  const [base, setBase] = useState<{ url: string; token: string } | null>(null);
   const [composerHeight, setComposerHeight] = useState(64);
   const transcriptRef = useRef<(() => Promise<unknown>) | null>(null);
   transcriptRef.current = transcript.refetch;
 
-  useEffect(() => {
-    void loadConfig().then((config) => setBase({ url: config.url, token: config.token }));
-    return () => {
+  useEffect(
+    () => () => {
       if (workingTimer.current !== null) {
         clearTimeout(workingTimer.current);
       }
-    };
-  }, []);
+    },
+    [],
+  );
 
   const onBinary = useCallback(() => {
     setWorking(true);
@@ -172,8 +170,6 @@ export function PtyConversation({
   }, []);
   const ttyTarget = useMemo<TtyTarget>(() => ({ kind: "session", id: sessionId }), [sessionId]);
   const tty = useTtySocket({
-    serverUrl: base?.url ?? null,
-    token: base?.token ?? null,
     target: ttyTarget,
     enabled: active,
     onBinary,

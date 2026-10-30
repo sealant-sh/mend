@@ -7,10 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PageDocument } from "@/components/page-document";
 import { PageFrame } from "@/components/page-frame";
-import { api } from "@/data/live";
+import { openMachine } from "@/data/machine";
 import { pageHostThemeCall } from "@/data/page-host";
 import { pageOf } from "@/data/pages";
-import { clearConfig, saveConfig } from "@/data/pairing-config";
+import { clearConfig, loadConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 import { onlyWebView, resetWebViews, webViews } from "@/test/fake-webview";
 
@@ -169,7 +169,8 @@ describe("offline", () => {
     act(() => root.render(<PairingBoundary>{null}</PairingBoundary>));
 
     network.offline = true;
-    await act(() => api("GET", "/sessions/session-1/transcript").catch(() => undefined));
+    const { machine } = openMachine(await loadConfig());
+    await act(() => machine.read("/sessions/session-1/transcript").catch(() => undefined));
     show(<PageFrame page={page} />);
     await settle();
     expect(webViews.mounted).toEqual([]);

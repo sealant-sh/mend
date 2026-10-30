@@ -8,13 +8,13 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { useRef, useState } from "react";
 
 import {
-  api,
-  ApiError,
   requireFollowUpDelivery,
   useSession,
   type FollowUpDto,
   type SessionChangeDto,
 } from "@/data/live";
+import { ApiError } from "@/data/machine";
+import { usePairing } from "@/data/pairing-scope";
 import {
   advanceTarget,
   newerCheckpoint,
@@ -164,6 +164,7 @@ const newVisitKey = (changeId: string): string => {
  * dropped.
  */
 export const usePinnedReview = (changeId: string | null, hold: boolean) => {
+  const { machine } = usePairing();
   const queryClient = useQueryClient();
   const [visit, setVisit] = useState(() => newVisitKey(changeId ?? ""));
   const [advancedFor, setAdvancedFor] = useState<string | null>(null);
@@ -178,7 +179,7 @@ export const usePinnedReview = (changeId: string | null, hold: boolean) => {
     // Pinned for this key: a refetch with the same key answers the same slice.
     staleTime: Number.POSITIVE_INFINITY,
     queryFn: () =>
-      api<OpenReviewDto>("POST", `/changes/${changeId}/reviews/open`, { idempotencyKey }),
+      machine.write<OpenReviewDto>("POST", `/changes/${changeId}/reviews/open`, { idempotencyKey }),
   });
   const sliceId = open.data?.slice.id ?? null;
   const diff = useQuery({
@@ -192,7 +193,7 @@ export const usePinnedReview = (changeId: string | null, hold: boolean) => {
     refetchInterval: 30_000,
     // The slice on screen stays while the next one opens (or fails to).
     placeholderData: keepPreviousData,
-    queryFn: () => api<ReviewDiffDto>("GET", `/changes/${changeId}/reviews/${sliceId}/diff`),
+    queryFn: () => machine.read<ReviewDiffDto>(`/changes/${changeId}/reviews/${sliceId}/diff`),
   });
   const review = diff.data ?? null;
 
@@ -242,35 +243,41 @@ export const usePinnedReview = (changeId: string | null, hold: boolean) => {
   };
 };
 
-export const useChangeComments = (changeId: string | null) =>
-  useQuery({
+export const useChangeComments = (changeId: string | null) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["change", changeId, "comments"],
     enabled: changeId !== null,
-    queryFn: () => api<ReadonlyArray<ReviewCommentDto>>("GET", `/changes/${changeId}/comments`),
+    queryFn: () => machine.read<ReadonlyArray<ReviewCommentDto>>(`/changes/${changeId}/comments`),
     // Draft findings land asynchronously as passes complete.
     refetchInterval: 10_000,
   });
+};
 
-export const useChangeTour = (changeId: string | null) =>
-  useQuery({
+export const useChangeTour = (changeId: string | null) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["change", changeId, "tour"],
     enabled: changeId !== null,
-    queryFn: () => api<ChangeTourDto | null>("GET", `/changes/${changeId}/tour`),
+    queryFn: () => machine.read<ChangeTourDto | null>(`/changes/${changeId}/tour`),
     // Composed at settle by the automation cascade — it can arrive while
     // the screen is already open.
     refetchInterval: 15_000,
   });
+};
 
-export const useChangePasses = (changeId: string | null) =>
-  useQuery({
+export const useChangePasses = (changeId: string | null) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["change", changeId, "passes"],
     enabled: changeId !== null,
-    queryFn: () => api<ReadonlyArray<ChangePassDto>>("GET", `/changes/${changeId}/passes`),
+    queryFn: () => machine.read<ReadonlyArray<ChangePassDto>>(`/changes/${changeId}/passes`),
     refetchInterval: (query) =>
       (query.state.data ?? []).some((pass) => pass.status === "running" || pass.status === "queued")
         ? 2_500
         : 12_000,
   });
+};
 
 // ─── actions ────────────────────────────────────────────────────────────────
 
@@ -300,15 +307,20 @@ export interface NewCommentInput {
 }
 
 export const useReviewActions = (changeId: string) => {
+  const { machine } = usePairing();
   const queryClient = useQueryClient();
   // Prefix key: catches the diff (["change", id]) and every sub-query.
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["change", changeId] });
   const comment = useMutation({
     mutationFn: (input: NewCommentInput) =>
-      api<ReviewCommentDto>("POST", `/changes/${changeId}/reviews/${input.sliceId}/comments`, {
-        target: input.target,
-        body: input.body,
-      }),
+      machine.write<ReviewCommentDto>(
+        "POST",
+        `/changes/${changeId}/reviews/${input.sliceId}/comments`,
+        {
+          target: input.target,
+          body: input.body,
+        },
+      ),
     onSettled: invalidate,
   });
   const setState = useMutation({
@@ -316,16 +328,20 @@ export const useReviewActions = (changeId: string) => {
       readonly commentId: string;
       readonly state: "open" | "addressed" | "dismissed";
     }) =>
-      api<ReviewCommentDto>("POST", `/changes/${changeId}/comments/${input.commentId}/state`, {
-        state: input.state,
-      }),
+      machine.write<ReviewCommentDto>(
+        "POST",
+        `/changes/${changeId}/comments/${input.commentId}/state`,
+        {
+          state: input.state,
+        },
+      ),
     onSettled: invalidate,
   });
   // read | suggest | tour — the kind is the route; findings arrive as draft
   // comments (or the tour row) when the queued job completes.
   const queuePass = useMutation({
     mutationFn: (kind: "read" | "suggest" | "tour") =>
-      api<{ readonly queued: boolean }>("POST", `/changes/${changeId}/${kind}`, {}),
+      machine.write<{ readonly queued: boolean }>("POST", `/changes/${changeId}/${kind}`, {}),
     onSettled: invalidate,
   });
   return { comment, setState, queuePass };
@@ -350,6 +366,7 @@ export const useSendReview = (
   commentIds: ReadonlyArray<string>,
   slice: ReviewSliceDto,
 ) => {
+  const { machine } = usePairing();
   const queryClient = useQueryClient();
   const selectedCommentIds = useRef(commentIds);
   const idempotencyKey = useRef(nextReviewDeliveryKey(changeId));
@@ -358,15 +375,19 @@ export const useSendReview = (
       if (sessionId === null) {
         throw new ApiError("No conversation has inhabited this worktree yet.", 0);
       }
-      const followUp = await api<FollowUpDto>("POST", `/sessions/${sessionId}/follow-up/deliver`, {
-        reviewSliceId: slice.id,
-        checkpointAId: slice.checkpointAId,
-        checkpointBId: slice.checkpointBId,
-        diffDigest: slice.diffDigest,
-        commentIds: selectedCommentIds.current,
-        instruction,
-        idempotencyKey: idempotencyKey.current,
-      });
+      const followUp = await machine.write<FollowUpDto>(
+        "POST",
+        `/sessions/${sessionId}/follow-up/deliver`,
+        {
+          reviewSliceId: slice.id,
+          checkpointAId: slice.checkpointAId,
+          checkpointBId: slice.checkpointBId,
+          diffDigest: slice.diffDigest,
+          commentIds: selectedCommentIds.current,
+          instruction,
+          idempotencyKey: idempotencyKey.current,
+        },
+      );
       return requireFollowUpDelivery(followUp);
     },
     onSettled: () => queryClient.invalidateQueries(),

@@ -14,7 +14,8 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useReducer, useRef } from "react";
 
-import { ApiError, api, apiNoContent } from "@/data/live";
+import { ApiError, type Machine } from "@/data/machine";
+import { usePairing } from "@/data/pairing-scope";
 import { pendingTurnsReducer, type LocalImage, type PendingTurn } from "@/data/pending-turns";
 import { composeTurnInput } from "@/data/turn-input";
 
@@ -171,11 +172,11 @@ const parseArray = <T>(
   return value.map(parse);
 };
 
-const loadAgentItems = (sessionId: string, initialAfter: number) =>
+const loadAgentItems = (machine: Machine, sessionId: string, initialAfter: number) =>
   readAgentItemsAfter(
     async (after, limit) =>
       parseArray(
-        await api<unknown>("GET", `/sessions/${sessionId}/items?after=${after}&limit=${limit}`),
+        await machine.read<unknown>(`/sessions/${sessionId}/items?after=${after}&limit=${limit}`),
         "agent items",
         parseItem,
       ),
@@ -187,6 +188,7 @@ const loadAgentItems = (sessionId: string, initialAfter: number) =>
 const conversationKey = (sessionId: string) => ["session", sessionId, "conversation"] as const;
 
 export const useAgentConversation = (sessionId: string, enabled: boolean, live: boolean) => {
+  const { machine } = usePairing();
   const queryClient = useQueryClient();
   const queryKey = conversationKey(sessionId);
   return useQuery({
@@ -196,9 +198,9 @@ export const useAgentConversation = (sessionId: string, enabled: boolean, live: 
       const previous = queryClient.getQueryData<AgentConversationDto>(queryKey);
       const after = latestItemSeq(previous?.items ?? []);
       const [turns, updates, requests] = await Promise.all([
-        api<unknown>("GET", `/sessions/${sessionId}/turns`),
-        loadAgentItems(sessionId, after),
-        api<unknown>("GET", `/sessions/${sessionId}/requests`),
+        machine.read<unknown>(`/sessions/${sessionId}/turns`),
+        loadAgentItems(machine, sessionId, after),
+        machine.read<unknown>(`/sessions/${sessionId}/requests`),
       ]);
       return {
         turns: parseArray(turns, "agent turns", parseTurn),
@@ -211,6 +213,7 @@ export const useAgentConversation = (sessionId: string, enabled: boolean, live: 
 };
 
 export const useAgentConversationActions = (sessionId: string) => {
+  const { machine } = usePairing();
   const queryClient = useQueryClient();
   const invalidate = () =>
     Promise.all([
@@ -219,13 +222,14 @@ export const useAgentConversationActions = (sessionId: string) => {
     ]);
   const respond = useMutation({
     mutationFn: (input: { readonly requestId: string; readonly response: AgentRequestResponse }) =>
-      api<unknown>("POST", `/requests/${input.requestId}/respond`, input.response),
+      machine.write<unknown>("POST", `/requests/${input.requestId}/respond`, input.response),
     onSettled: invalidate,
   });
   // Steering: a queued turn is cancelled outright; a running one reaches the
   // harness's own interrupt. The process stays live for the next message.
   const interrupt = useMutation({
-    mutationFn: (turnId: string) => apiNoContent("POST", `/turns/${turnId}/interrupt`, {}),
+    mutationFn: (turnId: string) =>
+      machine.writeNoContent("POST", `/turns/${turnId}/interrupt`, {}),
     onSettled: invalidate,
   });
   return { respond, interrupt };
@@ -259,6 +263,7 @@ export interface TurnSender {
  * pending turn is matched to it by the turn id, never by its text.
  */
 export const useTurnSender = (sessionId: string): TurnSender => {
+  const { machine } = usePairing();
   const queryClient = useQueryClient();
   const [pending, dispatch] = useReducer(pendingTurnsReducer, []);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -277,7 +282,7 @@ export const useTurnSender = (sessionId: string): TurnSender => {
       await queryClient.cancelQueries({ queryKey: key });
       try {
         const turn = parseTurn(
-          await api<unknown>("POST", `/sessions/${sessionId}/turns`, { input }),
+          await machine.write<unknown>("POST", `/sessions/${sessionId}/turns`, { input }),
         );
         queryClient.setQueryData<AgentConversationDto>(key, (current) =>
           current === undefined || current.turns.some((existing) => existing.id === turn.id)

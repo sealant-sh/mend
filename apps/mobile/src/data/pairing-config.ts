@@ -58,11 +58,6 @@ const parseConfig = (raw: string): MendConfig | null => {
   }
 };
 
-// One store, read two ways: `loadConfig()` for the fetch path (awaits the
-// first read off disk) and `useConfig()` for the pairing boundary (re-renders
-// on save, no effect; screens read `usePairing()`). Hydrated once at import,
-// same pattern as preferences.ts.
-//
 // null is a third state, not a missing value: "the store has not answered
 // yet". The boundary renders nothing until it answers, or a phone that is
 // paired flashes the pairing panel on every cold start.

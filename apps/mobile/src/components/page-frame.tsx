@@ -8,28 +8,18 @@ import { StyleSheet, View } from "react-native";
 import { EvButton } from "@/components/button";
 import { PageDocument } from "@/components/page-document";
 import { MonoText, UiText } from "@/components/typography";
-import { ApiError, api } from "@/data/live";
-import {
-  PAGE_OFFLINE_RETRY_MS,
-  pageFrameKey,
-  pageFrameQuery,
-  resolvePageUrl,
-  type PageConnection,
-} from "@/data/pages";
+import { ApiError, type Machine } from "@/data/machine";
+import { PAGE_OFFLINE_RETRY_MS, pageFrameKey, pageFrameQuery, resolvePageUrl } from "@/data/pages";
 import { usePairing } from "@/data/pairing-scope";
 import { Unreachable, useUnreachable } from "@/data/reachability";
 import { radius, useEvidenceScheme, useEvidenceTheme } from "@/theme/evidence";
 
-const mintFrame = async (
-  connection: PageConnection,
-  pageId: string,
-  appearance: string,
-): Promise<string> => {
-  const frame = await api<{ readonly url?: unknown }>(
-    "GET",
+const mintFrame = async (machine: Machine, pageId: string, appearance: string): Promise<string> => {
+  const frame = await machine.read<{ readonly url?: unknown }>(
     `/pages/${encodeURIComponent(pageId)}/frame?appearance=${appearance}`,
   );
-  const url = typeof frame.url === "string" ? resolvePageUrl(connection.url, frame.url) : null;
+  const url =
+    typeof frame.url === "string" ? resolvePageUrl(machine.connection.url, frame.url) : null;
   if (url === null) throw new ApiError("The server sent a page address the phone cannot open.", 0);
   return url;
 };
@@ -41,19 +31,10 @@ export function PageFrame({
   readonly page: PageRef;
   readonly fill?: boolean;
 }) {
-  const { config: connection } = usePairing();
-  return <PageLifecycle key={page.id} page={page} connection={connection} fill={fill} />;
+  return <PageLifecycle key={page.id} page={page} fill={fill} />;
 }
 
-function PageLifecycle({
-  page,
-  connection,
-  fill,
-}: {
-  readonly page: PageRef;
-  readonly connection: PageConnection;
-  readonly fill: boolean;
-}) {
+function PageLifecycle({ page, fill }: { readonly page: PageRef; readonly fill: boolean }) {
   const queryClient = useQueryClient();
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
@@ -67,7 +48,6 @@ function PageLifecycle({
     <PageLoader
       key={attempt}
       page={page}
-      connection={connection}
       fill={fill}
       onRetry={retry}
       onLoadError={() => (attempt === 0 ? retry() : setFailed(true))}
@@ -77,13 +57,11 @@ function PageLifecycle({
 
 function PageLoader({
   page,
-  connection,
   fill,
   onRetry,
   onLoadError,
 }: {
   readonly page: PageRef;
-  readonly connection: PageConnection;
   readonly fill: boolean;
   readonly onRetry: () => void;
   readonly onLoadError: () => void;
@@ -91,10 +69,11 @@ function PageLoader({
   const theme = pageThemes[useEvidenceScheme()];
   const [appearance] = useState(theme.appearance);
   const [src, setSrc] = useState<string | null>(null);
-  const unreachable = useUnreachable(usePairing().key);
+  const { machine } = usePairing();
+  const unreachable = useUnreachable(machine.key);
   const frame = useQuery({
-    ...pageFrameQuery(page.id, () => mintFrame(connection, page.id, appearance)),
-    enabled: connection.url !== "",
+    ...pageFrameQuery(page.id, () => mintFrame(machine, page.id, appearance)),
+    enabled: machine.connection.url !== "",
     retry: false,
     // Mint even when the OS reports no network, so the answer decides what the reader sees.
     networkMode: "always",

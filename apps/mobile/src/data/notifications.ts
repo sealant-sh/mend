@@ -2,6 +2,7 @@ import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
 import { failureLogLine, failureWords } from "@/data/failure-words";
+import type { Connection } from "@/data/pairing-config";
 
 interface Unavailable {
   readonly state: "unavailable";
@@ -11,11 +12,6 @@ interface Unavailable {
 export type PushRegistration =
   | { readonly state: "registered"; readonly token: string }
   | Unavailable;
-
-interface Machine {
-  readonly url: string;
-  readonly token: string;
-}
 
 export const mintPushToken = async (): Promise<
   { readonly state: "minted"; readonly token: string } | Unavailable
@@ -46,15 +42,15 @@ export const grantedPushToken = async (): Promise<string | null> => {
 };
 
 export const postDevice = async (
-  machine: Machine,
+  connection: Pick<Connection, "url" | "token">,
   pushToken: string,
   signal: AbortSignal,
 ): Promise<PushRegistration> => {
-  const response = await fetch(`${machine.url}/api/devices`, {
+  const response = await fetch(`${connection.url}/api/devices`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${machine.token}`,
+      authorization: `Bearer ${connection.token}`,
     },
     body: JSON.stringify({ token: pushToken, platform: Platform.OS }),
     signal,
@@ -72,14 +68,14 @@ export const postDevice = async (
 };
 
 export const forgetDevice = async (
-  machine: Machine,
+  connection: Pick<Connection, "url" | "token">,
   pushToken: string,
   signal: AbortSignal,
 ): Promise<void> => {
   try {
-    const response = await fetch(`${machine.url}/api/devices/${encodeURIComponent(pushToken)}`, {
+    const response = await fetch(`${connection.url}/api/devices/${encodeURIComponent(pushToken)}`, {
       method: "DELETE",
-      headers: { authorization: `Bearer ${machine.token}` },
+      headers: { authorization: `Bearer ${connection.token}` },
       signal,
     });
     if (!response.ok) {

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
-import { saveConfig } from "@/data/pairing-config";
+import { clearConfig, saveConfig } from "@/data/pairing-config";
+import { PairingBoundary } from "@/data/pairing-scope";
 import { onlyWebView, resetWebViews, webViews } from "@/test/fake-webview";
 
 vi.mock("react-native-webview", () => import("@/test/fake-webview"));
@@ -45,7 +45,8 @@ beforeEach(async () => {
   await act(() => saveConfig({ url: SERVER, token: "token-a", deviceName: null, pairedAt: null }));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await act(() => clearConfig());
   act(() => root.unmount());
   host.remove();
   vi.unstubAllGlobals();
@@ -56,9 +57,9 @@ describe("the WebView terminal", () => {
   it("comes back in a new WebView with a fresh ticket when Android takes its renderer down", async () => {
     act(() =>
       root.render(
-        <QueryClientProvider client={new QueryClient()}>
-          <GhosttyTerminal serverUrl={SERVER} token="token-a" sessionId="session-1" />
-        </QueryClientProvider>,
+        <PairingBoundary>
+          <GhosttyTerminal sessionId="session-1" />
+        </PairingBoundary>,
       ),
     );
     await act(() => vi.advanceTimersByTimeAsync(10));

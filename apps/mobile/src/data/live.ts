@@ -5,14 +5,13 @@ import {
 } from "@mend/domain/workbench";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { failureLogLine, failureWords, NO_ANSWER } from "@/data/failure-words";
 import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
+import { ApiError, PairingEnded, type Machine, type Upload } from "@/data/machine";
 import { pageKey, pagesOf } from "@/data/pages";
-import { loadConfig } from "@/data/pairing-config";
-import { pairingKeyOf } from "@/data/pairing-key";
+import { usePairing } from "@/data/pairing-scope";
 import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
-import { heard, Unreachable } from "@/data/reachability";
+import { Unreachable } from "@/data/reachability";
 import type { CheckpointDto } from "@/data/review-state";
 import type {
   ConversationWaitDto,
@@ -155,77 +154,6 @@ export interface RemovalReportDto {
   readonly leftover: string | null;
 }
 
-/**
- * The server answered and said no (or did not answer: status 0). `message` is what a person reads
- * (`failureWords`): the server's own sentence when it gave one, else words for its tag or status.
- * The call and the status stay in the log.
- */
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    /** The refusal's `_tag`, when the body carried one: for code that branches on it. */
-    readonly tag: string | null = null,
-    /** True when `message` is the server's own sentence; false for words Mend chose. */
-    readonly serverWords: boolean = false,
-  ) {
-    super(message);
-  }
-}
-
-/** A refusal as an `ApiError` in words, its call, status and tag logged. */
-const refusal = (method: string, route: string, status: number, body: unknown): ApiError => {
-  console.warn(failureLogLine(`${method} ${route}`, status, body));
-  const failure = failureWords(status, body);
-  return new ApiError(failure.words, status, failure.tag, failure.serverWords !== null);
-};
-
-type Method = "GET" | "POST" | "PUT" | "DELETE";
-
-/** One transport, one error shape: a response that is not ok never comes back. */
-const send = async (method: Method, route: string, body?: unknown): Promise<Response> => {
-  const config = await loadConfig();
-  if (config.url === "") throw new ApiError("Set the server URL in Settings first.", 0);
-  const response = await fetch(`${config.url}/api${route}`, {
-    method,
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${config.token}`,
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  }).catch((cause: unknown) => {
-    heard(pairingKeyOf(config), false);
-    throw new Unreachable(NO_ANSWER, { cause });
-  });
-  heard(pairingKeyOf(config), true);
-  if (!response.ok) {
-    let parsed: unknown = null;
-    try {
-      parsed = await response.json();
-    } catch {
-      // Not JSON — words for the status stand.
-    }
-    throw refusal(method, route, response.status, parsed);
-  }
-  return response;
-};
-
-/** Shared by the review data module — a route that answers with a JSON body. */
-export const api = async <T>(method: Method, route: string, body?: unknown): Promise<T> =>
-  (await (await send(method, route, body)).json()) as T;
-
-/**
- * A route whose contract declares no success body: the server answers 204 and there is nothing
- * to parse. Reading it with `api` throws "JSON Parse error" after the server already did the work.
- */
-export const apiNoContent = async (
-  method: Method,
-  route: string,
-  body?: unknown,
-): Promise<void> => {
-  await send(method, route, body);
-};
-
 // ─── queries ────────────────────────────────────────────────────────────────
 
 /** An image stored beside the session; `path` is what the terminal pastes. */
@@ -235,116 +163,46 @@ export interface PastedImageDto {
   readonly bytes: number;
 }
 
-export const pasteSessionImage = (sessionId: string, contentsBase64: string) =>
-  api<PastedImageDto>("POST", `/sessions/${sessionId}/images`, { contentsBase64 });
+const pastedImageOf = (value: unknown): PastedImageDto | null =>
+  typeof value === "object" &&
+  value !== null &&
+  "path" in value &&
+  "mediaType" in value &&
+  "bytes" in value &&
+  typeof value.path === "string" &&
+  typeof value.mediaType === "string" &&
+  typeof value.bytes === "number"
+    ? { path: value.path, mediaType: value.mediaType, bytes: value.bytes }
+    : null;
 
-const parsePastedImage = (raw: string): PastedImageDto | null => {
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (
-      typeof value === "object" &&
-      value !== null &&
-      "path" in value &&
-      "mediaType" in value &&
-      "bytes" in value &&
-      typeof value.path === "string" &&
-      typeof value.mediaType === "string" &&
-      typeof value.bytes === "number"
-    ) {
-      return { path: value.path, mediaType: value.mediaType, bytes: value.bytes };
-    }
-  } catch {
-    // Not JSON: refused below.
-  }
-  return null;
-};
-
-const jsonOrNull = (raw: string): unknown => {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-};
-
-/** An upload in flight: its answer, and a way to call it off. */
-export interface ImageUpload {
-  readonly result: Promise<PastedImageDto>;
-  readonly abort: () => void;
-}
-
-/**
- * The same route as `pasteSessionImage`, over XMLHttpRequest so the composer can show how much
- * has gone up — fetch reports no upload progress. `onProgress` gets the fraction sent, 0 to 1.
- */
 export const uploadSessionImage = (
+  machine: Machine,
   sessionId: string,
   contentsBase64: string,
-  onProgress: (sent: number) => void,
-): ImageUpload => {
-  const request = new XMLHttpRequest();
-  let aborted = false;
-  const result = loadConfig().then(
-    (config) =>
-      new Promise<PastedImageDto>((resolve, reject) => {
-        if (config.url === "") {
-          reject(new ApiError("Set the server URL in Settings first.", 0));
-          return;
-        }
-        if (aborted) {
-          reject(new ApiError("The upload was cancelled.", 0));
-          return;
-        }
-        const route = `/sessions/${sessionId}/images`;
-        request.open("POST", `${config.url}/api${route}`);
-        request.setRequestHeader("content-type", "application/json");
-        request.setRequestHeader("authorization", `Bearer ${config.token}`);
-        request.timeout = 120_000;
-        request.upload.addEventListener("progress", (event) => {
-          if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total);
-        });
-        request.addEventListener("load", () => {
-          if (request.status >= 200 && request.status < 300) {
-            const stored = parsePastedImage(request.responseText);
-            if (stored === null) {
-              reject(new ApiError("The server returned malformed image data.", request.status));
-            } else {
-              resolve(stored);
-            }
-            return;
-          }
-          const refused = refusal("POST", route, request.status, jsonOrNull(request.responseText));
-          // A 409 without a sentence is "no live workspace" (capture mode stores into the running one).
-          reject(
-            request.status === 409 && !refused.serverWords
-              ? new ApiError(
-                  "The session has no live workspace to hold the image. Resume it, then retry.",
-                  409,
-                  refused.tag,
-                  false,
-                )
-              : refused,
-          );
-        });
-        request.addEventListener("error", () =>
-          reject(new ApiError("The image did not reach the machine.", 0)),
+  onProgress?: (fraction: number) => void,
+): Upload<PastedImageDto> => {
+  const upload = machine.upload(`/sessions/${sessionId}/images`, { contentsBase64 }, onProgress);
+  const stored = async (): Promise<PastedImageDto> => {
+    let answer: unknown;
+    try {
+      answer = await upload.result;
+    } catch (error) {
+      // A 409 without a sentence is "no live workspace" (capture mode stores into the running one).
+      if (error instanceof ApiError && error.status === 409 && !error.serverWords) {
+        throw new ApiError(
+          "The session has no live workspace to hold the image. Resume it, then retry.",
+          409,
+          error.tag,
+          false,
         );
-        request.addEventListener("timeout", () =>
-          reject(new ApiError("The machine did not answer the upload in time.", 0)),
-        );
-        request.addEventListener("abort", () =>
-          reject(new ApiError("The upload was cancelled.", 0)),
-        );
-        request.send(JSON.stringify({ contentsBase64 }));
-      }),
-  );
-  return {
-    result,
-    abort: () => {
-      aborted = true;
-      request.abort();
-    },
+      }
+      throw error;
+    }
+    const image = pastedImageOf(answer);
+    if (image === null) throw new ApiError("The server returned malformed image data.", 0);
+    return image;
   };
+  return { result: stored(), abort: upload.abort };
 };
 
 export const agentIsActive = (
@@ -385,12 +243,14 @@ export const toSession = (dto: SessionDto, projectName: string) => ({
   events: [],
 });
 
-export const useProjects = () =>
-  useQuery({
+export const useProjects = () => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["projects"],
-    queryFn: () => api<ReadonlyArray<ProjectDto>>("GET", "/projects"),
+    queryFn: () => machine.read<ReadonlyArray<ProjectDto>>("/projects"),
     refetchInterval: 15_000,
   });
+};
 
 /** List decoration for one session — DB-cheap review facts, no git involved. */
 export interface SessionAnnotationDto {
@@ -442,29 +302,36 @@ export type HarnessModelCatalogDto = HarnessModelCatalogView;
  * Every harness's models, from the server: the one list the phone's picker draws. Nothing on the
  * phone names a model of its own.
  */
-export const useHarnessModels = () =>
-  useQuery({
+export const useHarnessModels = () => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["harness-models"],
-    queryFn: () => api<ReadonlyArray<HarnessModelCatalogDto>>("GET", "/harnesses/models"),
+    queryFn: () => machine.read<ReadonlyArray<HarnessModelCatalogDto>>("/harnesses/models"),
     staleTime: 60_000,
   });
+};
 
-export const useProjectBranches = (projectId: string | null, enabled: boolean) =>
-  useQuery({
+export const useProjectBranches = (projectId: string | null, enabled: boolean) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["project-branches", projectId],
     enabled: enabled && projectId !== null,
-    queryFn: () => api<ReadonlyArray<ProjectBranchDto>>("GET", `/projects/${projectId}/branches`),
+    queryFn: () => machine.read<ReadonlyArray<ProjectBranchDto>>(`/projects/${projectId}/branches`),
   });
+};
 
-export const useProjectSessions = (projectId: string | null) =>
-  useQuery({
+export const useProjectSessions = (projectId: string | null) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["project", projectId],
     enabled: projectId !== null,
-    queryFn: () => api<ProjectDetailDto>("GET", `/projects/${projectId}`),
+    queryFn: () => machine.read<ProjectDetailDto>(`/projects/${projectId}`),
     refetchInterval: 10_000,
   });
+};
 
 export const useAllSessions = () => {
+  const { machine } = usePairing();
   const projects = useProjects();
   return useQuery({
     queryKey: ["all-sessions", projects.data?.map((p) => p.id).join(",")],
@@ -472,7 +339,7 @@ export const useAllSessions = () => {
     queryFn: async () => {
       const details = await Promise.all(
         (projects.data ?? []).map((project) =>
-          api<ProjectDetailDto>("GET", `/projects/${project.id}`).then((detail) =>
+          machine.read<ProjectDetailDto>(`/projects/${project.id}`).then((detail) =>
             detail.sessions.map((s) => ({
               session: s,
               project,
@@ -487,25 +354,27 @@ export const useAllSessions = () => {
   });
 };
 
-export const usePage = (route: { readonly id: string; readonly sessionId: string } | null) =>
-  useQuery({
+export const usePage = (route: { readonly id: string; readonly sessionId: string } | null) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: pageKey(route?.sessionId ?? "", route?.id ?? ""),
     enabled: route !== null,
     queryFn: async () => {
-      const pages = await api<unknown>(
-        "GET",
+      const pages = await machine.read<unknown>(
         `/sessions/${encodeURIComponent(route?.sessionId ?? "")}/pages`,
       );
       return pagesOf(pages).find((page) => page.id === route?.id) ?? null;
     },
   });
+};
 
-export const useSession = (id: string | null) =>
-  useQuery({
+export const useSession = (id: string | null) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["session", id],
     enabled: id !== null,
     queryFn: () =>
-      api<{
+      machine.read<{
         readonly session: SessionDto;
         /** The worktree's whole chain, every conversation's checkpoints in it. */
         readonly checkpoints: ReadonlyArray<CheckpointDto>;
@@ -523,9 +392,10 @@ export const useSession = (id: string | null) =>
           /** Type in its terminals, the owner's alone (docs/adr/0013); absent before it. */
           readonly terminalInput?: boolean;
         };
-      }>("GET", `/sessions/${id}`),
+      }>(`/sessions/${id}`),
     refetchInterval: 5_000,
   });
+};
 
 /**
  * Whether this account types in the session's terminals: the owner's alone, even while control is
@@ -536,17 +406,18 @@ export const terminalInputOf = (
 ): boolean => control?.terminalInput ?? true;
 
 /** The organization's members by name, for saying whose session it is. */
-export const useOrganizationMembers = () =>
-  useQuery({
+export const useOrganizationMembers = () => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["organization-members"],
     queryFn: () =>
-      api<ReadonlyArray<{ readonly userId: string; readonly name: string }>>(
-        "GET",
+      machine.read<ReadonlyArray<{ readonly userId: string; readonly name: string }>>(
         "/organization/members",
       ),
     staleTime: 60_000,
     retry: false,
   });
+};
 
 /** The session's owner by name, else the words every client falls back to. */
 export const useOwnerName = (session: SessionDto | undefined): string => {
@@ -556,13 +427,17 @@ export const useOwnerName = (session: SessionDto | undefined): string => {
 };
 
 /** Who is looking: their account id, for the lines that name everyone else. */
-export const useViewerId = (): string | null =>
-  useQuery({
-    queryKey: ["organization"],
-    queryFn: () => api<{ readonly userId: string }>("GET", "/organization"),
-    staleTime: 60_000,
-    retry: false,
-  }).data?.userId ?? null;
+export const useViewerId = (): string | null => {
+  const { machine } = usePairing();
+  return (
+    useQuery({
+      queryKey: ["organization"],
+      queryFn: () => machine.read<{ readonly userId: string }>("/organization"),
+      staleTime: 60_000,
+      retry: false,
+    }).data?.userId ?? null
+  );
+};
 
 /**
  * What holds the next sender's turn in a shared conversation, as both people see it (docs/adr/
@@ -571,29 +446,33 @@ export const useViewerId = (): string | null =>
  * timer while the composer is live as well. A server from before shared steering answers 404: no
  * line.
  */
-export const useConversationWait = (sessionId: string, live: boolean, enabled: boolean) =>
-  useQuery({
+export const useConversationWait = (sessionId: string, live: boolean, enabled: boolean) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["session", sessionId, "conversation", "waiting"],
-    queryFn: () => api<ConversationWaitDto | null>("GET", `/sessions/${sessionId}/waiting`),
+    queryFn: () => machine.read<ConversationWaitDto | null>(`/sessions/${sessionId}/waiting`),
     enabled,
     refetchInterval: live && enabled ? 4_000 : false,
     retry: false,
   });
+};
 
 /**
  * The session's executor, started before per-person homes, waiting to be replaced (docs/adr/0016,
  * decision 14). Read only while `enabled` (`readsRetirement`: the session's own view says so). A
  * server from before answers 404: no line.
  */
-export const useWorkspaceRetirement = (sessionId: string, enabled: boolean) =>
-  useQuery({
+export const useWorkspaceRetirement = (sessionId: string, enabled: boolean) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["session", sessionId, "workspace-retirement"],
     queryFn: () =>
-      api<WorkspaceRetirementDto | null>("GET", `/sessions/${sessionId}/workspace-retirement`),
+      machine.read<WorkspaceRetirementDto | null>(`/sessions/${sessionId}/workspace-retirement`),
     enabled,
     refetchInterval: enabled ? 10_000 : false,
     retry: false,
   });
+};
 
 // ─── github discovery (the server host's own gh CLI answers) ────────────────
 
@@ -615,26 +494,29 @@ export interface GhRepoDto {
   readonly url: string;
 }
 
-export const useGhStatus = () =>
-  useQuery({
+export const useGhStatus = () => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["github-status"],
-    queryFn: () => api<GhStatusDto>("GET", "/github/status"),
+    queryFn: () => machine.read<GhStatusDto>("/github/status"),
     staleTime: 30_000,
     retry: false,
   });
+};
 
-export const useGhRepos = (query: string, enabled: boolean) =>
-  useQuery({
+export const useGhRepos = (query: string, enabled: boolean) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["github-repos", query],
     enabled,
     queryFn: () =>
-      api<ReadonlyArray<GhRepoDto>>(
-        "GET",
+      machine.read<ReadonlyArray<GhRepoDto>>(
         query === "" ? "/github/repos" : `/github/repos?query=${encodeURIComponent(query)}`,
       ),
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });
+};
 
 // ─── actions ────────────────────────────────────────────────────────────────
 
@@ -643,11 +525,12 @@ const ADOPT_WATCH_MS = 180_000;
 const ADOPT_POLL_MS = 3_000;
 
 export const useAdoptProject = () => {
+  const { machine } = usePairing();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: { readonly name: string; readonly source: string }) => {
       try {
-        return await api<ProjectDto>("POST", "/projects", input);
+        return await machine.write<ProjectDto>("POST", "/projects", input);
       } catch (error) {
         // A big clone can outlive the phone's request while the server keeps
         // cloning. Only on a dropped connection (never on an answered
@@ -657,9 +540,12 @@ export const useAdoptProject = () => {
         const startedAt = Date.now();
         while (Date.now() - startedAt < ADOPT_WATCH_MS) {
           await new Promise((resolve) => setTimeout(resolve, ADOPT_POLL_MS));
-          const projects = await api<ReadonlyArray<ProjectDto>>("GET", "/projects").catch(
-            () => null,
-          );
+          const projects = await machine
+            .read<ReadonlyArray<ProjectDto>>("/projects")
+            .catch((failure: unknown) => {
+              if (failure instanceof PairingEnded) throw failure;
+              return null;
+            });
           const adopted = projects?.find((project) => project.name === input.name);
           if (adopted !== undefined) return adopted;
         }
@@ -702,15 +588,18 @@ export const canDeliverFollowUp = (followUp: FollowUpDto): boolean =>
   followUp.commentIds.length > 0 &&
   followUp.idempotencyKey !== null;
 
-export const usePendingFollowUp = (sessionId: string | undefined) =>
-  useQuery({
+export const usePendingFollowUp = (sessionId: string | undefined) => {
+  const { machine } = usePairing();
+  return useQuery({
     queryKey: ["session", sessionId, "follow-up"],
     enabled: sessionId !== undefined,
     refetchInterval: 10_000,
-    queryFn: () => api<FollowUpDto | null>("GET", `/sessions/${sessionId}/follow-up`),
+    queryFn: () => machine.read<FollowUpDto | null>(`/sessions/${sessionId}/follow-up`),
   });
+};
 
 export const useSessionActions = () => {
+  const { machine } = usePairing();
   const queryClient = useQueryClient();
   const invalidate = () => queryClient.invalidateQueries();
   const start = useMutation({
@@ -722,13 +611,17 @@ export const useSessionActions = () => {
       readonly name?: string | null;
       readonly options?: LaunchOptions;
     }) => {
-      const session = await api<SessionDto>("POST", `/projects/${input.projectId}/sessions`, {
-        harness: input.harness,
-        mode: "protocol",
-        label: null,
-        name: input.name ?? null,
-        base: input.base ?? null,
-      });
+      const session = await machine.write<SessionDto>(
+        "POST",
+        `/projects/${input.projectId}/sessions`,
+        {
+          harness: input.harness,
+          mode: "protocol",
+          label: null,
+          name: input.name ?? null,
+          base: input.base ?? null,
+        },
+      );
       // Fire-and-forget: the server settles the session if provisioning fails.
       // A null option means "the harness's own default" and stays off the wire.
       const launch: Record<string, unknown> = { mode: "protocol" };
@@ -737,20 +630,21 @@ export const useSessionActions = () => {
         if (input.options.effort !== null) launch.effort = input.options.effort;
         if (input.options.speed !== null) launch.speed = input.options.speed;
       }
-      void api("POST", `/sessions/${session.id}/launch`, launch).catch(() => undefined);
+      void machine.write("POST", `/sessions/${session.id}/launch`, launch).catch(() => undefined);
       return session;
     },
     onSettled: invalidate,
   });
   const resume = useMutation({
     mutationFn: (input: { readonly sessionId: string; readonly harness: string | null }) =>
-      api<SessionDto>("POST", `/sessions/${input.sessionId}/resume`, {
+      machine.write<SessionDto>("POST", `/sessions/${input.sessionId}/resume`, {
         harness: input.harness,
       }),
     onSettled: invalidate,
   });
   const stop = useMutation({
-    mutationFn: (sessionId: string) => api<SessionDto>("POST", `/sessions/${sessionId}/stop`, {}),
+    mutationFn: (sessionId: string) =>
+      machine.write<SessionDto>("POST", `/sessions/${sessionId}/stop`, {}),
     onSettled: invalidate,
   });
   // Mode switch: continue a PTY-born session here in structured mode — one round trip performs
@@ -761,7 +655,7 @@ export const useSessionActions = () => {
       readonly to: "protocol" | "pty";
       readonly prompt?: string;
     }) =>
-      api<SessionDto>("POST", `/sessions/${input.sessionId}/handoff`, {
+      machine.write<SessionDto>("POST", `/sessions/${input.sessionId}/handoff`, {
         to: input.to,
         ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
       }),
@@ -769,18 +663,22 @@ export const useSessionActions = () => {
   });
   const setLabel = useMutation({
     mutationFn: (input: { readonly sessionId: string; readonly label: string | null }) =>
-      api<SessionDto>("POST", `/sessions/${input.sessionId}/label`, { label: input.label }),
+      machine.write<SessionDto>("POST", `/sessions/${input.sessionId}/label`, {
+        label: input.label,
+      }),
     onSettled: invalidate,
   });
   // Settled sessions only — the server answers 409 for a live one. Removes
   // the conversation record only; the worktree stands (worktree-aware servers).
   const remove = useMutation({
-    mutationFn: (sessionId: string) => api<RemovalReportDto>("DELETE", `/sessions/${sessionId}`),
+    mutationFn: (sessionId: string) =>
+      machine.write<RemovalReportDto>("DELETE", `/sessions/${sessionId}`),
     onSettled: invalidate,
   });
   // The container's explicit removal — refused while any conversation is live.
   const removeWorktree = useMutation({
-    mutationFn: (worktreeId: string) => api<RemovalReportDto>("DELETE", `/worktrees/${worktreeId}`),
+    mutationFn: (worktreeId: string) =>
+      machine.write<RemovalReportDto>("DELETE", `/worktrees/${worktreeId}`),
     onSettled: invalidate,
   });
   // No bulk endpoint exists; mirror web's client-side sweep. Partial failure
@@ -788,7 +686,7 @@ export const useSessionActions = () => {
   const removeSettled = useMutation({
     mutationFn: async (sessionIds: ReadonlyArray<string>) => {
       const outcomes = await Promise.allSettled(
-        sessionIds.map((id) => api<RemovalReportDto>("DELETE", `/sessions/${id}`)),
+        sessionIds.map((id) => machine.write<RemovalReportDto>("DELETE", `/sessions/${id}`)),
       );
       return outcomes.filter((outcome) => outcome.status === "fulfilled").length;
     },
@@ -796,7 +694,7 @@ export const useSessionActions = () => {
   });
   const openShell = useMutation({
     mutationFn: (sessionId: string) =>
-      api<SessionProcessDto>("POST", `/sessions/${sessionId}/shell`, {}),
+      machine.write<SessionProcessDto>("POST", `/sessions/${sessionId}/shell`, {}),
     onSettled: invalidate,
   });
   // "Replace this workspace now" (docs/adr/0016, decision 14): the change's owner, with the
@@ -804,12 +702,16 @@ export const useSessionActions = () => {
   // sentence, which `failureWords` keeps as it is.
   const replaceWorkspace = useMutation({
     mutationFn: (input: { readonly sessionId: string; readonly body: ReplaceWorkspaceBody }) =>
-      apiNoContent("POST", `/sessions/${input.sessionId}/workspace-retirement/replace`, input.body),
+      machine.writeNoContent(
+        "POST",
+        `/sessions/${input.sessionId}/workspace-retirement/replace`,
+        input.body,
+      ),
     onSettled: invalidate,
   });
   const stopShell = useMutation({
     mutationFn: (processId: string) =>
-      api<SessionProcessDto>("POST", `/processes/${processId}/stop`, {}),
+      machine.write<SessionProcessDto>("POST", `/processes/${processId}/stop`, {}),
     onSettled: invalidate,
   });
   const deliverFollowUp = useMutation({
@@ -820,7 +722,7 @@ export const useSessionActions = () => {
           0,
         );
       }
-      const delivered = await api<FollowUpDto>(
+      const delivered = await machine.write<FollowUpDto>(
         "POST",
         `/sessions/${followUp.sessionId}/follow-up/deliver`,
         {

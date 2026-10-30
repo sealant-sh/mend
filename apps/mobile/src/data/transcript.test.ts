@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import { readTranscript } from "./transcript";
 
-vi.mock("@/data/live", () => ({ api: vi.fn() }));
+vi.mock("@react-native-async-storage/async-storage", async () => ({
+  default: (await import("@/test/memory-storage")).storage,
+}));
+vi.mock("expo-secure-store", async () => (await import("@/test/memory-storage")).secureStore);
+vi.mock("expo-notifications", () => ({}));
 
 const PAGE_WIRE = {
   id: "page-1",
