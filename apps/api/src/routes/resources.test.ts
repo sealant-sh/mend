@@ -592,6 +592,22 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       expect(await approvals()).toEqual([{ worktreeId: null, approvedBy: "alice" }]);
     });
 
+    it("names no registry for an approval another made while the image resolved", async () => {
+      const read = await declare();
+      const made = await approve(read, "alice", null);
+      // The lookup ran before that approval landed; the adoption finds it under its lock.
+      await start((repo) => ({ ...repo, approvalAsRead: () => Effect.succeed(null) }));
+      const answered = await approveVia("alice", {
+        source: { kind: "settings", id: read.id, digest: read.specDigest },
+        worktreeId: null,
+      });
+      expect(answered).toMatchObject({
+        status: 200,
+        body: { image: made.spec.image, resolvedBy: null },
+      });
+      expect(resolved).toEqual(["postgres:17"]);
+    });
+
     it("refuses a read settings moved on from with 409, and writes nothing", async () => {
       await start();
       const read = await declare();

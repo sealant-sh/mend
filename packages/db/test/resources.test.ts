@@ -1095,6 +1095,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         repo.adoptAndApprove(adoption(project, postgresDb(), { imageDigest: imageDigest("b") })),
       );
       expect(again.approval.id).toBe(first.approval.id);
+      expect([first.made, again.made]).toEqual([true, false]);
       expect(await count("resource_approvals", first.definition.id)).toBe(1);
       expect(
         await withRepo((repo) =>

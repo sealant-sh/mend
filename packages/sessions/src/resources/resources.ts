@@ -620,7 +620,7 @@ export const ResourcesLive: Layer.Layer<
           spec: adopted.definition.spec,
         },
         adopted.approval,
-        image.resolvedBy,
+        adopted.made ? image.resolvedBy : null,
         clock,
       );
     });

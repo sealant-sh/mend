@@ -102,6 +102,8 @@ export type ApprovalLookup = Pick<
 export interface Adopted {
   readonly definition: StoredResourceDefinition;
   readonly approval: ResourceApproval;
+  /** False when the approval was made before, so its image is not what was just resolved. */
+  readonly made: boolean;
 }
 
 /** A selection as a person asks for it; the repo mints an `own` target and numbers the revision. */
@@ -798,17 +800,16 @@ const adoptIn = Effect.fn("ResourcesRepo.adoptIn")(function* (tx: Tx, request: A
   yield* heldAsRead(tx, request);
   const definition = yield* declareIn(tx, projectId, spec, request.approvedBy);
   const digest = definition.specDigest;
-  const made = yield* exactApprovalIn(tx, definition.id, digest, request.worktreeId);
-  const approval =
-    made ??
-    (yield* approveIn(tx, {
-      definitionId: definition.id,
-      digest,
-      imageDigest: request.imageDigest,
-      worktreeId: request.worktreeId,
-      approvedBy: request.approvedBy,
-    }));
-  return { definition, approval };
+  const existing = yield* exactApprovalIn(tx, definition.id, digest, request.worktreeId);
+  if (existing !== null) return { definition, approval: existing, made: false };
+  const approval = yield* approveIn(tx, {
+    definitionId: definition.id,
+    digest,
+    imageDigest: request.imageDigest,
+    worktreeId: request.worktreeId,
+    approvedBy: request.approvedBy,
+  });
+  return { definition, approval, made: true };
 });
 
 /** `approvalAsRead`, under the locks `adoptIn` takes. */
@@ -819,7 +820,7 @@ const approvalAsReadIn = Effect.fn("ResourcesRepo.approvalAsReadIn")(function* (
   const held = yield* heldAsRead(tx, lookup);
   if (held === null || held.specDigest !== resourceSpecDigest(lookup.spec)) return null;
   const approval = yield* exactApprovalIn(tx, held.id, held.specDigest, lookup.worktreeId);
-  return approval === null ? null : { definition: held, approval };
+  return approval === null ? null : { definition: held, approval, made: false };
 });
 
 export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Layer.effect(
