@@ -28,6 +28,8 @@ import * as Context from "effect/Context";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { ProjectAccess } from "../access.ts";
+
 /**
  * Upgrade tickets (docs/adr/0004-access-without-a-private-network.md, "Upgrade tickets"; MEND-08).
  * Minting is an ordinary authenticated call. Spending happens in the three WebSocket routes and in
@@ -96,8 +98,14 @@ export const UpgradeTicketsGroupLive = HttpApiBuilder.group(MendApi, "upgradeTic
       }
       const caller = yield* CurrentUser;
       const tickets = yield* UpgradeTicketsRepo;
-      // Minting authorizes nothing: the target route authorizes the ticket's account against
-      // the session or service exactly as it would a header, when the ticket is spent.
+      // The target route authorizes the ticket's account against the session or service exactly
+      // as it would a header, when the ticket is spent. A screen ticket is also minted only for
+      // someone who can see the session (ADR 0020, D2); one they cannot see answers as a missing
+      // one, so the mint says nothing of what exists.
+      if (payload.target === "screen" || payload.target === "screen-embed") {
+        const session = SessionId.make(payload.session ?? "");
+        yield* (yield* ProjectAccess).sessionAs(caller.user.id, session);
+      }
       const minted = yield* tickets.mint({
         userId: caller.user.id,
         // Bound to the sign-in or device that asked: signing out, or revoking the device, ends

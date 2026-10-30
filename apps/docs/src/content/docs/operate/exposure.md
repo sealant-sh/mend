@@ -377,9 +377,11 @@ long-lived bearer.
 
 - A client mints one with `POST /api/upgrade-tickets`, authenticated by its cookie or its
   `Authorization` header. The ticket is single use and lives thirty seconds.
-- It is bound to the account, to one target (`tty`, `service-tunnel`, `keys-bridge` or `tty-embed`),
-  to that target's exact parameters (the process or session, the service, the bridge host), and to
-  the sign-in or paired device that minted it. Only its hash is stored.
+- It is bound to the account, to one target (`tty`, `service-tunnel`, `keys-bridge`, `tty-embed`,
+  `screen` or `screen-embed`), to that target's exact parameters (the process or session, the
+  service, the bridge host), and to the sign-in or paired device that minted it. Only its hash is
+  stored. A `screen` or `screen-embed` ticket is minted only for a session the caller can see;
+  another session answers 404, as one that does not exist does.
 - The terminal socket (`/api/tty`), the service tunnel (`/api/service-tunnel`) and the key bridge
   (`/api/keys/bridge/ws`) accept it as `?ticket=`. Signing out, revoking a device or removing a
   member ends every ticket that credential minted.

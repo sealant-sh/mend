@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
+import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 
 /**
@@ -58,7 +59,8 @@ export const upgradeTicketsGroup = HttpApiGroup.make("upgradeTickets")
     HttpApiEndpoint.post("mint", "/upgrade-tickets", {
       payload: UpgradeTicketRequest,
       success: UpgradeTicket,
-      error: UpgradeTicketInvalid,
+      // NotFound: a screen ticket for a session the caller cannot see, or that does not exist.
+      error: [UpgradeTicketInvalid, NotFound],
     }),
   )
   .middleware(AuthMiddleware);

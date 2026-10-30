@@ -111,6 +111,27 @@ describe("an upgrade ticket", () => {
     expect(api.world.calls).toEqual([]);
   });
 
+  it("is minted for a screen only to someone who can see the session, and a hidden session answers as a missing one", async () => {
+    api = await createTenancyApi();
+    for (const target of ["screen", "screen-embed"]) {
+      const seen = await mint(api, "carol", { target, session: sharedA.session });
+      expect(seen.status).toBe(200);
+      expect(seen.minted).toMatchObject({ expiresInSeconds: 30 });
+      const missing = await mint(api, "bob", { target, session: "s-missing" });
+      expect(missing).toEqual({ status: 404, minted: { _tag: "NotFound", id: "s-missing" } });
+      // Another organization's session, and a teammate's private one.
+      for (const [user, session] of [
+        ["bob", sharedA.session],
+        ["carol", privateAlice.session],
+      ] as const) {
+        expect(await mint(api, user, { target, session })).toEqual({
+          status: 404,
+          minted: { _tag: "NotFound", id: session },
+        });
+      }
+    }
+  });
+
   it("needs parameters that address its target", async () => {
     api = await createTenancyApi();
     expect((await mint(api, "carol", { target: "tty" })).status).toBe(400);
