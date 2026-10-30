@@ -8,6 +8,7 @@ const raw = (location: ParsedLocation): URL => new URL(location.publicHref, wind
 export const useFragmentSecret = (): string | null =>
   useLocation({ select: (location) => fragmentSecret(raw(location).hash) });
 
+/** The routes of links issued before 0.37 redirect with this; 0.39 removes them (ADR 0004). */
 export const toFragmentForm =
   (kind: HandedLinkKind) =>
   ({ location }: { readonly location: ParsedLocation }): never => {

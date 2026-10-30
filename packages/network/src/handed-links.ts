@@ -36,7 +36,7 @@ const decodedSecret = (encoded: string): string | null => {
 export const fragmentSecret = (hash: string): string | null =>
   decodedSecret(hash.replace(/^#/, ""));
 
-/** The secret of a link issued before the fragment, `/join/<token>`, or none. */
+/** The secret of a link issued before 0.37, `/join/<token>`, or none. Removed in 0.39. */
 export const legacyPathSecret = (kind: HandedLinkKind, pathname: string): string | null => {
   const page = HANDED_LINK_PAGES[kind];
   const trimmed = pathname.replace(/\/$/, "");

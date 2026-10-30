@@ -8,10 +8,11 @@ The links Mend hands to a person now carry their secret after a `#`: an invitati
 edge's or a proxy's access log, Mend's request log, or a `Referer`. Settings and `mend org` show the
 new links. Expiry and single use are unchanged.
 
-Links issued before this version keep working. `/join/<token>`, `/reset/<token>` and
-`/slack/link/<code>` open the same page, which moves the secret after the `#` before it fetches
-anything. An edge in front of Mend still sees such a link's path once, when it is opened. These
-pages, in both forms, answer `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+Links issued before this version keep working until 0.39, which removes the old forms.
+`/join/<token>`, `/reset/<token>` and `/slack/link/<code>` open the same page, which moves the
+secret after the `#` before it fetches anything. An edge in front of Mend still sees such a link's
+path once, when it is opened. These pages, in both forms, answer `Referrer-Policy: no-referrer` and
+`Cache-Control: no-store`.
 
 Two more places kept a secret in a URL:
 

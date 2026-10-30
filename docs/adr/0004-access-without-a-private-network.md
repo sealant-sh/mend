@@ -293,9 +293,11 @@ web tier, the operator's own included, could log them.
   `/slack/link#<code>`. A browser never sends a fragment to a server or in a `Referer`. One
   definition in `@mend/network` (`handed-links.ts`) builds and reads them, and the API and Slack
   issue links only through it. `OneTimeLink.path` stays a string.
-- **Old links keep working, permanently.** The path forms open a page that replaces its history
-  entry with the fragment form before it fetches anything. Such a link's path reaches the first
-  server once, when it is opened. Expiry and single use are unchanged.
+- **Old links keep working until 0.39.** The path forms open a page that replaces its history entry
+  with the fragment form before it fetches anything. Such a link's path reaches the first server
+  once, when it is opened. Expiry and single use are unchanged. 0.39 removes the three routes, and
+  ships no sooner than thirty days after 0.37: the longest-lived link, an invitation, lasts thirty
+  days, so every link issued in the path form has expired by then.
 - **Nothing puts the secret back into a URL.** The web app's tRPC reads are POSTs, with their input
   in the body, and the walk to sign-in carries its return path in the fragment (`/login#next=…`,
   through `/welcome`). A `?next=` the API sends still works.
