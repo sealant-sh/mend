@@ -509,6 +509,186 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
     expect(result.queued).toMatchObject({ status: "queued", error: null });
   });
 
+  it("moves a claimed, unsent turn only by the attempt that claimed it", async () => {
+    const result = await withConversation(
+      Effect.gen(function* () {
+        const conversation = yield* AgentConversationRepo;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        const claimOf = (attempt: ReturnType<typeof newAttempt>) => ({
+          sessionId,
+          processId,
+          attempt,
+        });
+        const words = yield* conversation.submitTurn(sessionId, processId, "words", "user-1");
+        const attempt = newAttempt();
+        yield* conversation.claimNextTurn(processId, attempt);
+        const stranger = claimOf(newAttempt());
+        const strangerMoves = {
+          bind: yield* conversation.bindOwnSend(stranger, "provider-stranger", NO_PAYER),
+          putBack: yield* conversation.putBackOwn(stranger),
+          fail: yield* conversation.failOwn(stranger, "stranger"),
+        };
+        const untouched = yield* conversation.byTurnId(words.id);
+        const payer = { userId: "u-payer", accountId: "acct-1", accountName: "work" };
+        const bound = yield* conversation.bindOwnSend(claimOf(attempt), "provider-own", payer);
+        const boundAgain = yield* conversation.bindOwnSend(claimOf(attempt), "provider-own", payer);
+        const otherId = yield* conversation.bindOwnSend(claimOf(attempt), "provider-other", payer);
+        const putBackBound = yield* conversation.putBackOwn(claimOf(attempt));
+        yield* conversation.completeTurn("provider-own", sessionId, "completed", null, null);
+        const endedAgain = yield* conversation.bindOwnSend(claimOf(attempt), "provider-own", payer);
+
+        // A Stop ended the claim first: its send binds nothing.
+        yield* conversation.submitTurn(sessionId, processId, "stopped", "user-1");
+        const stopped = newAttempt();
+        yield* conversation.claimNextTurn(processId, stopped);
+        yield* conversation.cancelOpenForProcess(processId);
+        const afterStop = yield* conversation.bindOwnSend(claimOf(stopped), "provider-late", payer);
+
+        // Codex's own turn started while the send was out, and Codex rejected the send.
+        yield* conversation.submitTurn(sessionId, processId, "rejected", "user-1");
+        const rejected = newAttempt();
+        yield* conversation.claimNextTurn(processId, rejected);
+        yield* conversation.bindOwnSend(claimOf(rejected), "autonomous", payer);
+        const failed = yield* conversation.failOwn(claimOf(rejected), "model unavailable", {
+          bound: "autonomous",
+        });
+
+        // Codex answered with another id than the one that started during the send.
+        yield* conversation.submitTurn(sessionId, processId, "answered", "user-1");
+        const answered = newAttempt();
+        yield* conversation.claimNextTurn(processId, answered);
+        yield* conversation.bindOwnSend(claimOf(answered), "started-meanwhile", payer);
+        const rebound = yield* conversation.bindOwnSend(
+          claimOf(answered),
+          "answered-id",
+          payer,
+          "started-meanwhile",
+        );
+        return {
+          strangerMoves,
+          untouched,
+          bound,
+          boundAgain,
+          otherId,
+          putBackBound,
+          endedAgain,
+          afterStop,
+          failed,
+          rebound,
+        };
+      }),
+    );
+    expect(result.strangerMoves).toEqual({ bind: null, putBack: null, fail: null });
+    expect(result.untouched).toMatchObject({ status: "running", providerTurnId: null });
+    expect(result.bound).toMatchObject({
+      status: "running",
+      providerTurnId: "provider-own",
+      billedUserId: "u-payer",
+      billedAccountName: "work",
+    });
+    expect(result.boundAgain?.id).toBe(result.bound?.id);
+    expect(result.otherId).toBeNull();
+    expect(result.putBackBound).toBeNull();
+    expect(result.endedAgain).toMatchObject({
+      status: "completed",
+      providerTurnId: "provider-own",
+    });
+    expect(result.afterStop).toBeNull();
+    expect(result.failed).toMatchObject({
+      status: "failed",
+      providerTurnId: null,
+      error: "model unavailable",
+    });
+    expect(result.rebound).toMatchObject({ status: "running", providerTurnId: "answered-id" });
+  });
+
+  it("never moves a claim when the harness opens its own turn, and records one that ended waiting", async () => {
+    const result = await withConversation(
+      Effect.gen(function* () {
+        const conversation = yield* AgentConversationRepo;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        const words = yield* conversation.submitTurn(sessionId, processId, "words", "user-1");
+        const attempt = newAttempt();
+        yield* conversation.claimNextTurn(processId, attempt);
+        const opening = yield* conversation.openHarnessTurn(
+          sessionId,
+          processId,
+          "autonomous",
+          "Codex started a turn on its own",
+          NO_PAYER,
+        );
+        const ended = yield* conversation.openHarnessTurn(
+          sessionId,
+          processId,
+          "autonomous",
+          "Codex started a turn on its own",
+          NO_PAYER,
+          { status: "completed", usage: null, error: null },
+        );
+        const claim = yield* conversation.byTurnId(words.id);
+        // The claim is failed: a harness turn that waits for the slot takes it in the same move.
+        const failed = yield* conversation.failOwn(
+          { sessionId, processId, attempt },
+          "model unavailable",
+          { harness: { providerTurnId: "waited", reason: "own turn", payer: NO_PAYER } },
+        );
+        const waited = yield* conversation.byProviderTurnId(sessionId, "waited");
+        return { opening, ended, claim, failed, waited };
+      }),
+    );
+    expect(result.opening).toEqual({ _tag: "SlotHeld" });
+    expect(result.ended).toMatchObject({
+      _tag: "Recorded",
+      turn: { origin: "harness", status: "completed", providerTurnId: "autonomous" },
+    });
+    expect(result.ended._tag === "Recorded" && result.ended.turn.endedAt).toBeInstanceOf(Date);
+    expect(result.claim).toMatchObject({ status: "running", providerTurnId: null });
+    expect(result.failed).toMatchObject({ status: "failed", error: "model unavailable" });
+    expect(result.waited).toMatchObject({ origin: "harness", status: "running" });
+  });
+
+  it("puts back a claim from before attempts were recorded by its empty attempt", async () => {
+    const result = await withConversation(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const conversation = yield* AgentConversationRepo;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        const words = yield* conversation.submitTurn(sessionId, processId, "words", "user-1");
+        const attempt = newAttempt();
+        yield* conversation.claimNextTurn(processId, attempt);
+        const [stamped] = yield* sql<{ readonly attempt: string | null }>`
+          SELECT dispatch_attempt_id::text AS attempt FROM agent_turns WHERE id = ${words.id}`;
+        const live = yield* conversation.unsentClaim(processId);
+        yield* sql`UPDATE agent_turns SET dispatch_attempt_id = NULL WHERE id = ${words.id}`;
+        const older = yield* conversation.unsentClaim(processId);
+        const byLiveAttempt = yield* conversation.putBackOwn({ sessionId, processId, attempt });
+        const byEmpty = yield* conversation.putBackOwn({ sessionId, processId, attempt: null });
+        return { stamped: stamped?.attempt, attempt, live, older, byLiveAttempt, byEmpty };
+      }),
+    );
+    expect(result.stamped).toBe(result.attempt);
+    expect(result.live?.attempt).toBe(result.attempt);
+    expect(result.older).toMatchObject({ attempt: null, turn: { status: "running" } });
+    expect(result.byLiveAttempt).toBeNull();
+    expect(result.byEmpty).toMatchObject({ status: "queued", startedAt: null });
+  });
+
+  it("adds each turn's dispatch attempt as a nullable uuid, once (0168)", async () => {
+    const columns = await withConversation(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* migrations["0168_turn_dispatch_attempt"];
+        return yield* sql<{ readonly type: string; readonly nullable: string }>`
+          SELECT data_type AS type, is_nullable AS nullable FROM information_schema.columns
+          WHERE table_name = 'agent_turns' AND column_name = 'dispatch_attempt_id'`;
+      }),
+    );
+    expect(columns).toEqual([{ type: "uuid", nullable: "YES" }]);
+  });
+
   it("keeps every admitted steer through completion and allocates ordinals once", async () => {
     await withConversation(
       Effect.gen(function* () {
