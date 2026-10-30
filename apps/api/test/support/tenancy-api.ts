@@ -41,6 +41,7 @@ import {
   RemovalFenced,
   RemovalFenceId,
   RemovalFencesRepo,
+  RemovedProjectRefused,
   SessionAdmissionId,
   SetupRunsRepo,
   ReviewCommentsRepo,
@@ -153,7 +154,7 @@ import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
 import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
-import { TerminalProjectsLive } from "../../src/routes/upgrade-tickets.ts";
+import { TerminalProjects, TerminalProjectsLive } from "../../src/routes/upgrade-tickets.ts";
 import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
 import { RawReadStallLimit } from "../../src/routes/worktrees.ts";
@@ -289,6 +290,8 @@ export const createTenancyApi = async (
     readonly rawReadStall?: Duration.Duration;
     /** Runs as a removal takes its mark, before anything else it reads: for races. */
     readonly beforeTake?: Effect.Effect<void>;
+    /** In place of the embed exchange's lifecycle read: for races after it answered. */
+    readonly terminalProjects?: TerminalProjects["Service"];
     readonly implement?: {
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
@@ -353,7 +356,20 @@ export const createTenancyApi = async (
   const ticketsLayer = Layer.mergeAll(
     Layer.succeed(
       UpgradeTicketsRepo,
-      makeUpgradeTicketsMemory(options.clock, options.revokedCredentials),
+      makeUpgradeTicketsMemory(options.clock, options.revokedCredentials, (scope) => {
+        const pairs = new Set(scope.split("&"));
+        const owners = [
+          ...[...world.sessions.values()].filter((session) => pairs.has(`session=${session.id}`)),
+          ...[...world.processes.values()].flatMap((process) =>
+            pairs.has(`process=${process.id}`) ? [world.sessions.get(process.sessionId)] : [],
+          ),
+        ];
+        return owners.some(
+          (session) => session !== undefined && world.retainedProjects.has(session.projectId),
+        )
+          ? Effect.die(new RemovedProjectRefused("the ticket's project was removed"))
+          : Effect.void;
+      }),
     ),
     Layer.succeed(UrlBearers, { mode: options.urlBearers ?? "accept" }),
     Layer.succeed(PageViewTokens, options.pageViewTokens ?? clearPageViewTokens),
@@ -815,7 +831,9 @@ export const createTenancyApi = async (
     ResourcesLive,
     ProjectCreationLive,
     RemovalLive,
-    TerminalProjectsLive,
+    options.terminalProjects === undefined
+      ? TerminalProjectsLive
+      : Layer.succeed(TerminalProjects, options.terminalProjects),
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),

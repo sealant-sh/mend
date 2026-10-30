@@ -1,4 +1,5 @@
 import { ProjectId } from "@mend/domain";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -239,6 +240,44 @@ describe("the embed exchange", () => {
       state: "removed",
     });
     expect((await exchange(api, renewOf(first), privateAlice.session)).status).toBe(401);
+  });
+
+  it("mints nothing for an exchange whose project was removed after it read the project listed", async () => {
+    const project = ProjectId.make(privateAlice.project);
+    let removeOnRead = false;
+    api = await createTenancyApi(
+      {},
+      {
+        terminalProjects: {
+          listed: () =>
+            Effect.sync(() => {
+              const listed = api?.world.projects.get(project);
+              if (removeOnRead && listed !== undefined)
+                api?.world.retainedProjects.set(project, {
+                  project: listed,
+                  removedAt: new Date(),
+                  removedByUserId: "alice",
+                  state: "removed",
+                });
+              return true;
+            }),
+        },
+      },
+    );
+    const embed = ticketOf(
+      (await mint(api, "alice", { target: "tty-embed", session: privateAlice.session })).minted,
+    );
+    removeOnRead = true;
+    const late = await exchange(api, embed, privateAlice.session);
+    const body: unknown = late.status === 200 ? await late.json() : null;
+    // Restored: no renewal minted under the removal may open the terminal again.
+    api.world.retainedProjects.delete(project);
+    removeOnRead = false;
+    expect({
+      exchange: late.status,
+      renewalAfterRestore:
+        body === null ? null : (await exchange(api, renewOf(body), privateAlice.session)).status,
+    }).toEqual({ exchange: 401, renewalAfterRestore: null });
   });
 
   it("ends with the sign-in that minted it: tickets, renewals and the terminal's own", async () => {

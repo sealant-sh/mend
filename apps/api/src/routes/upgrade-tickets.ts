@@ -9,6 +9,7 @@ import {
 } from "@mend/api-contracts";
 import type { Auth } from "@mend/auth";
 import {
+  isRemovedProject,
   OrganizationsRepo,
   ProjectsRepo,
   SessionProcessesRepo,
@@ -164,22 +165,32 @@ export const UpgradeTicketExchangeGroupLive = HttpApiBuilder.group(
         if (shown === null || !(yield* (yield* TerminalProjects).listed(payload)))
           return yield* new UpgradeTicketRefused();
         const { userId, credential } = shown;
-        const minted = yield* tickets.mint({ userId, credential, target: "tty", scope });
-        const renew =
-          first === null
-            ? payload.ticket
-            : (yield* tickets.mint({
-                userId,
-                credential,
-                target: "tty-renew",
-                scope,
-                // The HTTP mint always gives an embed ticket thirty seconds. Recover that
-                // original mint time from its immutable expiry, without reading another clock.
-                expiresAt: new Date(
-                  first.expiresAt.getTime() - UPGRADE_TICKET_TTL_MS + UPGRADE_RENEWAL_TTL_MS,
-                ),
-              })).ticket;
-        return new EmbedTickets({ ticket: minted.ticket, renew, expiresInSeconds });
+        // A removal that committed since the read above refuses each mint under the project's
+        // row lock (migration 0167), so no ticket outlives it into a Restore.
+        return yield* Effect.gen(function* () {
+          const minted = yield* tickets.mint({ userId, credential, target: "tty", scope });
+          const renew =
+            first === null
+              ? payload.ticket
+              : (yield* tickets.mint({
+                  userId,
+                  credential,
+                  target: "tty-renew",
+                  scope,
+                  // The HTTP mint always gives an embed ticket thirty seconds. Recover that
+                  // original mint time from its immutable expiry, without reading another clock.
+                  expiresAt: new Date(
+                    first.expiresAt.getTime() - UPGRADE_TICKET_TTL_MS + UPGRADE_RENEWAL_TTL_MS,
+                  ),
+                })).ticket;
+          return new EmbedTickets({ ticket: minted.ticket, renew, expiresInSeconds });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            isRemovedProject(cause)
+              ? Effect.fail(new UpgradeTicketRefused())
+              : Effect.failCause(cause),
+          ),
+        );
       }),
     ),
 );

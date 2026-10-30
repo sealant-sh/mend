@@ -58,6 +58,11 @@ export class RemovalFenced extends Error {
   readonly code = REMOVAL_FENCED_SQLSTATE;
 }
 
+/** A write into a removed project refused before it reached the database, as its triggers would. */
+export class RemovedProjectRefused extends Error {
+  readonly code = REMOVED_PROJECT_SQLSTATE;
+}
+
 /** Whether a failed query was new work refused by a removal's mark. */
 export const isRemovalFenced = (error: unknown): boolean =>
   isDriverError(error, REMOVAL_FENCED_SQLSTATE) ||

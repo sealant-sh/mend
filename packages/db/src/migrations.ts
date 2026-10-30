@@ -4618,15 +4618,36 @@ const projectRetentionMigration = Effect.gen(function* () {
     END $$`);
   yield* sql`CREATE TRIGGER preview_grants_retention BEFORE INSERT ON preview_grants
     FOR EACH ROW EXECUTE FUNCTION project_retention_preview_grant()`;
-  yield* sql.unsafe(`CREATE FUNCTION project_retention_preview_ticket() RETURNS trigger
+  // A ticket for a removed project's terminal, process or Service is refused under the project's
+  // row lock: one minted first is there for removal's revocation to delete, one minted after
+  // (an exchange that read the project listed before the removal) never exists.
+  yield* sql.unsafe(`CREATE FUNCTION project_retention_ticket() RETURNS trigger
     LANGUAGE plpgsql AS $$
+    DECLARE pairs text[]; owners text[]; marked text;
     BEGIN
-      PERFORM removal_fence_admit(ARRAY(SELECT project_id FROM previews
-        WHERE 'preview=' || id = ANY(string_to_array(NEW.scope, '&'))), '{}');
+      pairs := string_to_array(NEW.scope, '&');
+      IF NEW.target = 'preview' THEN
+        PERFORM removal_fence_admit(ARRAY(SELECT project_id FROM previews
+          WHERE 'preview=' || id = ANY(pairs)), '{}');
+        RETURN NEW;
+      END IF;
+      owners := ARRAY(
+        SELECT project_id FROM agent_sessions WHERE 'session=' || id = ANY(pairs)
+        UNION SELECT a.project_id FROM session_processes p JOIN agent_sessions a ON a.id = p.session_id
+          WHERE 'process=' || p.id = ANY(pairs)
+        UNION SELECT a.project_id FROM services v JOIN agent_sessions a ON a.id = v.session_id
+          WHERE 'service=' || v.id = ANY(pairs));
+      PERFORM 1 FROM projects WHERE id = ANY(owners) ORDER BY id FOR SHARE;
+      SELECT id INTO marked FROM projects WHERE id = ANY(owners) AND removed_at IS NOT NULL
+        ORDER BY id LIMIT 1;
+      IF marked IS NOT NULL THEN
+        RAISE EXCEPTION 'project % is unavailable; restore a removed project before opening it', marked
+          USING ERRCODE = 'MRFRM';
+      END IF;
       RETURN NEW;
     END $$`);
   yield* sql`CREATE TRIGGER upgrade_tickets_retention BEFORE INSERT ON upgrade_tickets
-    FOR EACH ROW WHEN (NEW.target = 'preview') EXECUTE FUNCTION project_retention_preview_ticket()`;
+    FOR EACH ROW EXECUTE FUNCTION project_retention_ticket()`;
   yield* sql.unsafe(`CREATE OR REPLACE FUNCTION removal_fence_admit_admission() RETURNS trigger
     LANGUAGE plpgsql AS $$
     BEGIN

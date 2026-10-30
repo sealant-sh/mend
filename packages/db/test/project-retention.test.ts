@@ -443,6 +443,15 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           Effect.map(tickets.consume({ ...ticket, keep: true }), (spent) => spent !== null),
         );
         expect(open).toEqual([false, false, false, true]);
+        // An exchange that read the project listed before the removal mints after it: refused.
+        const late = yield* Effect.forEach(minted, ({ target, scope }) =>
+          Effect.exit(tickets.mint({ userId: "anna", credential: null, target, scope })).pipe(
+            Effect.map((exit) =>
+              Exit.isFailure(exit) ? isRemovedProject(Cause.squash(exit.cause)) : "minted",
+            ),
+          ),
+        );
+        expect(late).toEqual([true, true, true, "minted"]);
       }),
     ));
 
