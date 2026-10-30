@@ -3015,3 +3015,133 @@ describe.skipIf(postgres.skip)("0140 session pages", () => {
     expect(tables).toEqual({ before: null, after: "session_pages", recorded: "session_pages" });
   });
 });
+
+const refused = (statement: Effect.Effect<unknown, SqlError>) =>
+  statement.pipe(
+    Effect.as("done"),
+    Effect.catch(() => Effect.succeed("refused")),
+  );
+
+describe.skipIf(postgres.skip)("0148 resources", () => {
+  const DB = `${SCRATCH_DB}_resources`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("holds a definition to its spec, keeps approvals and own targets apart, and keeps its project", async () => {
+    const digestA = "a".repeat(64);
+    const digestB = "b".repeat(64);
+    const outcome = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0143_recipe_launch");
+        yield* migrations["0148_resources"];
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc'),
+                 ('wt-2', 'p-1', 'two', 'two', 'mend/two', 'abc')`;
+        const spec = JSON.stringify({ name: "db", scope: "project", preset: "postgres" });
+        const misnamed = yield* attempt(sql`
+          INSERT INTO resource_definitions
+            (id, project_id, name, scope, preset, spec, spec_digest, declared_by)
+          VALUES ('rdef_2', 'p-1', 'cache', 'project', 'postgres', ${spec}::jsonb, ${digestA}, 'alice')`);
+        const unpreset = yield* attempt(sql`
+          INSERT INTO resource_definitions
+            (id, project_id, name, scope, preset, spec, spec_digest, declared_by)
+          VALUES ('rdef_2', 'p-1', 'db', 'project', NULL, ${spec}::jsonb, ${digestA}, 'alice')`);
+        yield* sql`
+          INSERT INTO resource_definitions
+            (id, project_id, name, scope, preset, spec, spec_digest, declared_by)
+          VALUES ('rdef_1', 'p-1', 'db', 'project', 'postgres', ${spec}::jsonb, ${digestA}, 'alice')`;
+        const approve = (id: string, revision: number, worktree: string | null) =>
+          sql`
+            INSERT INTO resource_approvals
+              (id, definition_id, worktree_id, revision, definition_digest, digest, spec, approved_by)
+            VALUES (${id}, 'rdef_1', ${worktree}, ${revision}, ${digestA}, ${digestB},
+                    ${spec}::jsonb, 'alice')`;
+        yield* approve("rapr_1", 1, null);
+        const sameRevision = yield* attempt(approve("rapr_2", 1, null));
+        yield* approve("rapr_3", 3, "wt-1");
+        const rewritten = yield* refused(
+          sql`UPDATE resource_approvals SET approved_by = 'mallory'`,
+        );
+        const deleted = yield* refused(sql`DELETE FROM resource_approvals WHERE id = 'rapr_1'`);
+        const ownWithoutTarget = yield* attempt(sql`
+          INSERT INTO resource_selections (worktree_id, definition_id, mode, revision)
+          VALUES ('wt-1', 'rdef_1', 'own', 0)`);
+        const target = JSON.stringify({ kind: "database", database: "rdb_1" });
+        yield* sql`
+          INSERT INTO resource_selections (worktree_id, definition_id, mode, revision, own_target)
+          VALUES ('wt-1', 'rdef_1', 'own', 0, ${target}::jsonb)`;
+        const sharedTarget = yield* attempt(sql`
+          INSERT INTO resource_selections (worktree_id, definition_id, mode, revision, own_target)
+          VALUES ('wt-2', 'rdef_1', 'own', 0, ${target}::jsonb)`);
+        yield* sql`INSERT INTO project_removal_fences (id, project_id) VALUES ('rfen_1', 'p-1')`;
+        const projectDeleted = yield* attempt(sql`DELETE FROM projects WHERE id = 'p-1'`);
+        // A worktree's approvals go with it, and the rest with their definition.
+        yield* sql`DELETE FROM worktrees WHERE id = 'wt-1'`;
+        const [afterWorktree] = yield* sql<{ readonly approvals: number }>`
+          SELECT count(*)::int AS approvals FROM resource_approvals`;
+        yield* sql`DELETE FROM resource_definitions WHERE id = 'rdef_1'`;
+        yield* sql`DELETE FROM projects WHERE id = 'p-1'`;
+        const [left] = yield* sql<{
+          readonly selections: number;
+          readonly approvals: number;
+          readonly fences: number;
+        }>`
+          SELECT (SELECT count(*)::int FROM resource_selections) AS selections,
+                 (SELECT count(*)::int FROM resource_approvals) AS approvals,
+                 (SELECT count(*)::int FROM project_removal_fences) AS fences`;
+        return {
+          misnamed,
+          unpreset,
+          sameRevision,
+          rewritten,
+          deleted,
+          ownWithoutTarget,
+          sharedTarget,
+          projectDeleted,
+          afterWorktree,
+          left,
+        };
+      }),
+    );
+    expect(outcome).toEqual({
+      misnamed: { code: "23514", constraint: "resource_definitions_spec_columns" },
+      unpreset: { code: "23514", constraint: "resource_definitions_spec_columns" },
+      sameRevision: { code: "23505", constraint: "resource_approvals_definition_revision_key" },
+      rewritten: "refused",
+      deleted: "refused",
+      ownWithoutTarget: { code: "23514", constraint: "resource_selections_own_target" },
+      sharedTarget: { code: "23505", constraint: "resource_selections_own_target_key" },
+      projectDeleted: { code: "23503", constraint: "resource_definitions_project_id_fkey" },
+      afterWorktree: { approvals: 1 },
+      left: { selections: 0, approvals: 0, fences: 0 },
+    });
+  }, 60_000);
+});

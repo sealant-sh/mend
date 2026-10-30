@@ -1,5 +1,5 @@
 import {
-  envNameCollisions,
+  envCollisionRefusals,
   imageReference,
   isResourceProposalKey,
   ProjectResourceDefinition,
@@ -8,7 +8,6 @@ import {
   RESOURCE_PROPOSALS_HEADING,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
-  resourceEnvPrefix,
   type ResourceEnvValue,
   ResourceLimits,
   resourceNameIssue,
@@ -394,12 +393,6 @@ const readResource = (
 };
 
 /** The key a collision refuses: the export that sets the name, else the table. */
-const collisionKey = (def: ResourceDefinitionInput, env: string): string => {
-  const prefix = resourceEnvPrefix(def.name);
-  const suffix = env.startsWith(prefix) ? env.slice(prefix.length) : "";
-  return Object.hasOwn(def.exports, suffix) ? `exports.${suffix}` : "";
-};
-
 /** `mend.toml`'s `resource` value, as parsed. Absent proposes nothing. */
 export const readResourceProposals = (value: unknown): ResourceProposals => {
   if (value === undefined) return { proposals: [], refused: [], ignored: [] };
@@ -432,15 +425,9 @@ export const readResourceProposals = (value: unknown): ResourceProposals => {
 
   // Two proposals that set one env name can never be in use together (ADR 0019, A1).
   const collided = new Set<string>();
-  for (const collision of envNameCollisions(read)) {
-    for (const def of read.filter((one) => collision.resources.includes(one.name))) {
-      collided.add(def.name);
-      const others = collision.resources.filter((other) => other !== def.name);
-      contextOf(def.name).refuse(
-        collisionKey(def, collision.name),
-        `sets ${collision.name}, as ${others.join(" and ")} does too`,
-      );
-    }
+  for (const { resource, refusal } of envCollisionRefusals(read)) {
+    collided.add(resource);
+    contextOf(resource).refuse(refusal.key, refusal.message);
   }
   return { proposals: read.filter((def) => !collided.has(def.name)), refused, ignored };
 };

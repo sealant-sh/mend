@@ -345,6 +345,11 @@ export const createTenancyWorld = async (
   extraSessions: ReadonlyArray<Session> = [],
   /** Processes a test adds, such as the terminal agent of one of those sessions. */
   extraProcesses: ReadonlyArray<SessionProcess> = [],
+  /** What the world's projects and sessions answer beyond its own reads, such as a removal. */
+  implement: {
+    readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
+    readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
+  } = {},
 ): Promise<TenancyWorld> => {
   const root = await mkdtemp(join(tmpdir(), "mend-tenancy-harness-"));
   const calls: Array<string> = [];
@@ -722,6 +727,7 @@ export const createTenancyWorld = async (
           ),
         // A dotfiles change rewarms every project that keeps hot workspaces.
         listAll: () => Effect.succeed([...projects.values()]),
+        ...implement.projects,
       },
       calls,
     ),
@@ -780,6 +786,7 @@ export const createTenancyWorld = async (
             sessions.set(id, updated);
             return updated;
           }),
+        ...implement.sessions,
       },
       calls,
     ),

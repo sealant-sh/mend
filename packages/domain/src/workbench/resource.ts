@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { Effect, Schema } from "effect";
 
 import { ResourceDatabaseId, ResourceInstanceId } from "../ids.ts";
@@ -167,6 +169,59 @@ export const ResourceDefinitionInput = Schema.Union([
   WorktreeResourceDefinition,
 ]);
 export type ResourceDefinitionInput = typeof ResourceDefinitionInput.Type;
+
+/** What an approval approves: a sha256, in lower-case hex, of a definition's canonical JSON. */
+export const ResourceSpecDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)).pipe(
+  Schema.brand("ResourceSpecDigest"),
+);
+export type ResourceSpecDigest = typeof ResourceSpecDigest.Type;
+
+/** JSON with every object's keys sorted and no whitespace, so equal values write equal bytes. */
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const fields = Object.entries(value)
+      .filter(([, field]) => field !== undefined)
+      .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, field]) => `${JSON.stringify(key)}:${canonicalJson(field)}`);
+    return `{${fields.join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const encodeDefinition = Schema.encodeSync(ResourceDefinitionInput);
+
+/**
+ * The digest over every field of `spec` as it is stored (ADR 0019, "Approving a definition").
+ * A worktree's selection is not in it (decision S9).
+ */
+export const resourceSpecDigest = (spec: ResourceDefinitionInput): ResourceSpecDigest =>
+  ResourceSpecDigest.make(bytesToHex(sha256(utf8ToBytes(canonicalJson(encodeDefinition(spec))))));
+
+/** An image's content digest, as a registry resolves a tag: `sha256:` and 64 lower-case hex. */
+export const ImageDigest = Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/)).pipe(
+  Schema.brand("ImageDigest"),
+);
+export type ImageDigest = typeof ImageDigest.Type;
+
+const isImageDigest = Schema.is(ImageDigest);
+
+/** The digest an image reference is pinned to (`postgres:17@sha256:…`), or null for a bare tag. */
+export const imageDigestOf = (image: string): ImageDigest | null => {
+  const at = image.lastIndexOf("@");
+  const pinned = at === -1 ? null : image.slice(at + 1);
+  return pinned !== null && isImageDigest(pinned) ? pinned : null;
+};
+
+/**
+ * `image` pinned to `digest`, its tag kept: `postgres:17` is `postgres:17@sha256:…`. Null when
+ * `image` already names another digest.
+ */
+export const pinImage = (image: string, digest: ImageDigest): string | null => {
+  const [named = image] = image.split("@");
+  const pinned = imageDigestOf(image);
+  return pinned === null || pinned === digest ? `${named}@${digest}` : null;
+};
 
 /** Why a definition cannot be approved: the key it names (`ports.http`, `exports.URL`) and why. */
 export const ResourceRefusal = Schema.Struct({ key: Schema.String, message: Schema.String });
@@ -461,6 +516,31 @@ export const envNameCollisions = (
     resources.length > 1 ? [{ name, resources }] : [],
   );
 };
+
+/** The export of `def` that sets `env`, or "" when Mend sets it for the resource itself. */
+const collisionKey = (def: ResourceDefinitionInput, env: string): string => {
+  const prefix = resourceEnvPrefix(def.name);
+  const suffix = env.startsWith(prefix) ? env.slice(prefix.length) : "";
+  return Object.hasOwn(def.exports, suffix) ? `exports.${suffix}` : "";
+};
+
+/** Each of `defs` in an env name collision, with its refusal keyed by the export that sets the name. */
+export const envCollisionRefusals = (
+  defs: ReadonlyArray<ResourceDefinitionInput>,
+): ReadonlyArray<{ readonly resource: ResourceName; readonly refusal: ResourceRefusal }> =>
+  envNameCollisions(defs).flatMap((collision) =>
+    defs
+      .filter((def) => collision.resources.includes(def.name))
+      .map((def) => ({
+        resource: def.name,
+        refusal: {
+          key: collisionKey(def, collision.name),
+          message: `sets ${collision.name}, as ${collision.resources
+            .filter((other) => other !== def.name)
+            .join(" and ")} does too`,
+        },
+      })),
+  );
 
 /** A project resource's choice for one worktree. */
 export const WorktreeChoice = Schema.Literals(["off", "shared", "own"]);

@@ -3764,6 +3764,81 @@ const recipeLaunchMigration = Effect.gen(function* () {
     ADD COLUMN address text NOT NULL DEFAULT 'loopback'`;
 });
 
+/**
+ * 0148 (docs/adr/0019): resource definitions a project declares, each approved spec of one (never
+ * updated), each worktree's selection of a project resource, and the fence each project removal in
+ * flight sets. A project with definitions is not deleted: removal is
+ * refused until step 8 archives them (ADR 0019, "Durability").
+ */
+const resourcesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE resource_definitions (
+    id text PRIMARY KEY,
+    project_id text NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+    name text NOT NULL,
+    scope text NOT NULL,
+    preset text,
+    spec jsonb NOT NULL,
+    spec_digest text NOT NULL CHECK (spec_digest ~ '^[0-9a-f]{64}$'),
+    declared_by text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT resource_definitions_project_name_key UNIQUE (project_id, name),
+    CONSTRAINT resource_definitions_spec_columns CHECK (
+      name = spec->>'name' AND scope = spec->>'scope'
+      AND preset IS NOT DISTINCT FROM spec->>'preset'
+    )
+  )`;
+  yield* sql`CREATE TABLE project_removal_fences (
+    id text PRIMARY KEY,
+    project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    fenced_at timestamptz NOT NULL DEFAULT now()
+  )`;
+  yield* sql`CREATE INDEX project_removal_fences_project_idx ON project_removal_fences (project_id)`;
+  yield* sql`CREATE TABLE resource_approvals (
+    id text PRIMARY KEY,
+    definition_id text NOT NULL REFERENCES resource_definitions(id) ON DELETE CASCADE,
+    worktree_id text REFERENCES worktrees(id) ON DELETE CASCADE,
+    revision integer NOT NULL CHECK (revision >= 1),
+    definition_digest text NOT NULL CHECK (definition_digest ~ '^[0-9a-f]{64}$'),
+    digest text NOT NULL CHECK (digest ~ '^[0-9a-f]{64}$'),
+    spec jsonb NOT NULL,
+    approved_by text NOT NULL,
+    approved_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT resource_approvals_definition_revision_key UNIQUE (definition_id, revision)
+  )`;
+  yield* sql`CREATE INDEX resource_approvals_definition_declared_idx
+    ON resource_approvals (definition_id, definition_digest)`;
+  yield* sql`CREATE FUNCTION resource_approvals_kept() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF TG_OP = 'DELETE'
+        AND (NOT EXISTS (SELECT 1 FROM resource_definitions WHERE id = OLD.definition_id)
+          OR (OLD.worktree_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM worktrees WHERE id = OLD.worktree_id)))
+      THEN
+        RETURN OLD;
+      END IF;
+      RAISE EXCEPTION 'a resource approval is kept until its definition or worktree goes'
+        USING ERRCODE = 'restrict_violation';
+    END $$`;
+  yield* sql`CREATE TRIGGER resource_approvals_kept BEFORE UPDATE OR DELETE ON resource_approvals
+    FOR EACH ROW EXECUTE FUNCTION resource_approvals_kept()`;
+  yield* sql`CREATE TABLE resource_selections (
+    worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+    definition_id text NOT NULL REFERENCES resource_definitions(id) ON DELETE CASCADE,
+    mode text NOT NULL CHECK (mode IN ('off', 'shared', 'own')),
+    revision integer NOT NULL CHECK (revision >= 0),
+    own_target jsonb,
+    chosen_by text,
+    chosen_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (worktree_id, definition_id),
+    CONSTRAINT resource_selections_own_target CHECK ((mode = 'own') = (own_target IS NOT NULL))
+  )`;
+  yield* sql`CREATE INDEX resource_selections_definition_idx ON resource_selections (definition_id)`;
+  yield* sql`CREATE UNIQUE INDEX resource_selections_own_target_key
+    ON resource_selections (definition_id, own_target) WHERE mode = 'own'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3909,4 +3984,5 @@ export const migrations = {
   "0141_preview_ports": previewPortsMigration,
   "0142_turn_steers": turnSteersMigration,
   "0143_recipe_launch": recipeLaunchMigration,
+  "0148_resources": resourcesMigration,
 };

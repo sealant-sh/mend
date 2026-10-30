@@ -54,6 +54,18 @@ export type PreviewId = typeof PreviewId.Type;
 export const ResourceDatabaseId = Schema.String.pipe(Schema.brand("ResourceDatabaseId"));
 export type ResourceDatabaseId = typeof ResourceDatabaseId.Type;
 
+/** A resource definition a project declared in its settings (ADR 0019). */
+export const ResourceDefinitionId = Schema.String.pipe(Schema.brand("ResourceDefinitionId"));
+export type ResourceDefinitionId = typeof ResourceDefinitionId.Type;
+
+/** One approved revision of a resource definition (ADR 0019, "Approving a definition"). */
+export const ResourceApprovalId = Schema.String.pipe(Schema.brand("ResourceApprovalId"));
+export type ResourceApprovalId = typeof ResourceApprovalId.Type;
+
+/** One project removal's fence against new resources; only that removal lifts it (ADR 0019). */
+export const ProjectRemovalFenceId = Schema.String.pipe(Schema.brand("ProjectRemovalFenceId"));
+export type ProjectRemovalFenceId = typeof ProjectRemovalFenceId.Type;
+
 /** One running instance of a resource definition (ADR 0019). */
 export const ResourceInstanceId = Schema.String.pipe(Schema.brand("ResourceInstanceId"));
 export type ResourceInstanceId = typeof ResourceInstanceId.Type;

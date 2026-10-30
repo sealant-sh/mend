@@ -1253,6 +1253,9 @@ importers:
 
   packages/domain:
     dependencies:
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.2.0
       '@sealant/api-contracts':
         specifier: 'catalog:'
         version: '@sealant/api-contracts-next@0.40.0-next.763(effect@4.0.5)'

@@ -28,6 +28,8 @@ import {
   ProjectMountsRepo,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
+  type ProjectsRepo,
+  ResourcesRepo,
   PreviewsRepo,
   PushDevice,
   PushDevicesRepo,
@@ -39,6 +41,7 @@ import {
   SessionControlEventsRepo,
   SessionGitOpsRepo,
   SessionRepositoriesRepo,
+  type SessionsRepo,
   SettingsRepo,
   StoreRefsRepo,
   SlackDefaultsRepo,
@@ -269,6 +272,10 @@ export const createTenancyApi = async (
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
+      readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
+      readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
+      readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
+      readonly hotWorkspaces?: Layer.PartialEffectful<HotWorkspacesRepo["Service"]>;
       readonly harnessModels?: Layer.PartialEffectful<HarnessModelsRepo["Service"]>;
       /** Each account's workspace SSH keys on the platform, and the gateway it reports. */
       readonly sshKeys?: SealantClients["Service"]["sshKeys"];
@@ -277,7 +284,10 @@ export const createTenancyApi = async (
     };
   } = {},
 ): Promise<TenancyApi> => {
-  const world = await createTenancyWorld(options.sessions, options.processes);
+  const world = await createTenancyWorld(options.sessions, options.processes, {
+    ...(options.implement?.projects === undefined ? {} : { projects: options.implement.projects }),
+    ...(options.implement?.sessions === undefined ? {} : { sessions: options.implement.sessions }),
+  });
   const ticketsLayer = Layer.mergeAll(
     Layer.succeed(
       UpgradeTicketsRepo,
@@ -332,7 +342,7 @@ export const createTenancyApi = async (
       recording(CheckpointsRepo, "checkpoints", options.implement?.checkpoints ?? {}, calls),
       recording(DevicesRepo, "devices", {}, calls),
       recording(FollowUpsRepo, "followUps", {}, calls),
-      recording(HotWorkspacesRepo, "hotWorkspaces", {}, calls),
+      recording(HotWorkspacesRepo, "hotWorkspaces", options.implement?.hotWorkspaces ?? {}, calls),
       recording(IssuesRepo, "issues", {}, calls),
       recording(OrganizationSettingsRepo, "organizationSettings", {}, calls),
       recording(ProjectClusterBindingsRepo, "clusterBindings", {}, calls),
@@ -353,6 +363,7 @@ export const createTenancyApi = async (
       recording(ProjectMountsRepo, "mounts", {}, calls),
       recording(ProjectSecretsRepo, "secrets", options.implement?.secrets ?? {}, calls),
       recording(ProjectServiceRecipesRepo, "recipes", {}, calls),
+      recording(ResourcesRepo, "resources", options.implement?.resources ?? {}, calls),
       recording(
         PushDevicesRepo,
         "pushDevices",
