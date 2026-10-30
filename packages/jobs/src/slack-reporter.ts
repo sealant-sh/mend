@@ -1,11 +1,8 @@
-import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
   ChangeLandingsRepo,
   ChangePassesRepo,
   ChangeToursRepo,
-  listenEvents,
-  MendEvent,
   ProjectsRepo,
   ReviewCommentsRepo,
   SessionProcessesRepo,
@@ -16,7 +13,7 @@ import {
   type SealedSlackInstall,
   type SlackThreadSession,
 } from "@mend/db";
-import { SessionId } from "@mend/domain";
+import type { SessionId } from "@mend/domain";
 import {
   agentWaitLine,
   captureStatusLine,
@@ -62,12 +59,14 @@ import {
 } from "@mend/slack";
 import { SlackApi, type SlackApiError } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
-import { Cause, Clock, Effect, Layer, Queue, Schema, Stream } from "effect";
+import { Cause, Clock, Effect, Layer, Queue } from "effect";
+import * as Context from "effect/Context";
 
 /**
  * The Slack thread reporter (docs/adr/0006-slack.md, "What Mend posts, and where"): the sibling of
- * `SessionNotifierLive` whose sink is the Slack thread a session was started from. It listens on
- * `mend_events`, re-reads the sessions that have a Slack thread, and keeps the thread in step:
+ * `SessionNotifierLive` whose sink is the Slack thread a session was started from. Asked to report
+ * (`SlackReports`, fed from the process's events bus), it re-reads the sessions that have a Slack
+ * thread, and keeps the thread in step:
  *
  * - the one status message, edited in place, and the reaction on the request (⏳ → ✅ / ❌);
  * - the agent's first message when it is a plan, and each turn's closing message;
@@ -116,21 +115,6 @@ const SEEN_SETTLED_TTL_MS = 60 * 60_000;
 const SEEN_TTL_MS = 24 * 60 * 60_000;
 /** How often the memory of what was seen is swept. */
 const SEEN_SWEEP_MS = 60_000;
-
-const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
-
-/** The events that can move what a thread shows, each naming its session. */
-const sessionOf = (event: MendEvent): string | null => {
-  switch (event.type) {
-    case "session":
-    case "session-process":
-    case "agent-conversation":
-    case "session-change":
-      return event.sessionId;
-    default:
-      return null;
-  }
-};
 
 /** The machine passes whose drafts the thread hears about: the read and the suggestions. */
 const DRAFT_PASSES: ReadonlySet<string> = new Set(["read", "suggest"]);
@@ -764,10 +748,30 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     return { observe, baseline, remembered };
   });
 
-export const SlackReporterLive: Layer.Layer<
+/**
+ * What the reporter is asked to look at again: domain ids, never event payloads. A caller says
+ * what changed; the reporter works out which threads that reaches. `Resync` follows a gap in what
+ * was heard (the events connection was lost): every active session is looked at again.
+ */
+export type SlackReportTarget =
+  | { readonly _tag: "Session"; readonly id: SessionId }
+  | { readonly _tag: "Resync" };
+
+/**
+ * The Slack thread reporter as a service: ask it to report, and it brings the threads that
+ * reaches up to date in the background. A request returns at once; it never waits on Slack.
+ */
+export class SlackReports extends Context.Service<
+  SlackReports,
+  { readonly request: (target: SlackReportTarget) => Effect.Effect<void> }
+>()("@mend/jobs/SlackReports") {}
+
+const targetKey = (target: SlackReportTarget): string =>
+  target._tag === "Resync" ? "resync" : `${target._tag}:${target.id}`;
+
+export const SlackReportsLive: Layer.Layer<
+  SlackReports,
   never,
-  never,
-  | PgClient.PgClient
   | AgentConversationRepo
   | ChangeLandingsRepo
   | ChangePassesRepo
@@ -782,22 +786,29 @@ export const SlackReporterLive: Layer.Layer<
   | SlackThreadsRepo
   | WorktreeChangesRepo
   | WorktreeReads
-> = Layer.effectDiscard(
+> = Layer.effect(
+  SlackReports,
   Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
+    const sessions = yield* SessionsRepo;
     const reporter = yield* makeSlackReporter();
     yield* reporter.baseline();
 
-    // A burst of events for one session (every streamed item notifies) is one look: a session
-    // is queued once until the look at it starts, and events during the look queue it again.
+    // A burst of requests for one session (every streamed item notifies) is one look: a session
+    // is queued once until the look at it starts, and a request during the look queues it again.
     const queued = new Set<string>();
-    const work = yield* Queue.unbounded<string>();
+    const work = yield* Queue.unbounded<SessionId>();
+    const enqueue = (sessionId: SessionId) =>
+      Effect.suspend(() => {
+        if (queued.has(sessionId)) return Effect.void;
+        queued.add(sessionId);
+        return Queue.offer(work, sessionId);
+      });
     yield* Effect.gen(function* () {
       while (true) {
         const sessionId = yield* Queue.take(work);
         queued.delete(sessionId);
         yield* reporter
-          .observe(SessionId.make(sessionId))
+          .observe(sessionId)
           .pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("slack reporter: session report failed").pipe(
@@ -808,28 +819,39 @@ export const SlackReporterLive: Layer.Layer<
       }
     }).pipe(Effect.forkScoped);
 
-    yield* listenEvents(sql).pipe(
-      Stream.runForEach((payload) =>
-        decodeEvent(payload).pipe(
-          Effect.flatMap((event) => {
-            const sessionId = sessionOf(event);
-            if (sessionId === null || queued.has(sessionId)) return Effect.void;
-            queued.add(sessionId);
-            return Queue.offer(work, sessionId);
-          }),
+    const pending = new Set<string>();
+    const requests = yield* Queue.unbounded<SlackReportTarget>();
+    const sessionsOf = (target: SlackReportTarget): Effect.Effect<ReadonlyArray<SessionId>> => {
+      switch (target._tag) {
+        case "Session":
+          return Effect.succeed([target.id]);
+        case "Resync":
+          return Effect.map(sessions.listActive(), (active) => active.map((session) => session.id));
+      }
+    };
+    yield* Effect.gen(function* () {
+      while (true) {
+        const target = yield* Queue.take(requests);
+        pending.delete(targetKey(target));
+        yield* sessionsOf(target).pipe(
+          Effect.flatMap((ids) => Effect.forEach(ids, enqueue, { discard: true })),
           Effect.catchCause((cause) =>
-            Effect.logWarning("slack reporter: event handling failed").pipe(
-              Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+            Effect.logWarning("slack reporter: report request failed").pipe(
+              Effect.annotateLogs({ target: targetKey(target), cause: Cause.pretty(cause) }),
             ),
           ),
-        ),
-      ),
-      Effect.catchCause((cause) =>
-        Effect.logWarning("slack reporter: listen stream ended").pipe(
-          Effect.annotateLogs({ cause: Cause.pretty(cause) }),
-        ),
-      ),
-      Effect.forkScoped,
-    );
+        );
+      }
+    }).pipe(Effect.forkScoped);
+
+    return {
+      request: (target) =>
+        Effect.suspend(() => {
+          const key = targetKey(target);
+          if (pending.has(key)) return Effect.void;
+          pending.add(key);
+          return Queue.offer(requests, target).pipe(Effect.asVoid);
+        }),
+    };
   }),
 );

@@ -48,4 +48,14 @@ describe("the LISTEN connections one server pins (ADR 0017 10a outage, 2026-10-3
       `LISTEN connections a server pins: ${listeners.length} (${listeners.join(", ")}), of a default pool of ${DEFAULT_POOL_MAX} · ${FIX}`,
     ).toBeLessThanOrEqual(DEFAULT_POOL_MAX - 1);
   });
+
+  it("are four: the events bus, automatic landing, the session notifier and review prep", () => {
+    // The Slack reporter and preview preparation subscribe to the events bus (ADR 0017 step 11).
+    expect(occurrences(/\blistenEvents\(/gu, files).toSorted()).toEqual([
+      "apps/api/src/automatic-landing.ts",
+      "apps/api/src/events-bus.ts",
+      "packages/jobs/src/review-prep.ts",
+      "packages/jobs/src/session-notifier.ts",
+    ]);
+  });
 });

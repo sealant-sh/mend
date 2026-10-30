@@ -61,14 +61,16 @@ import { PRIVATE_PROJECT_STATUS, SLACK_ACTIONS, statusLine, SUMMARY_PROVENANCE }
 import { makeFakeSlack, type FakeSlackCall } from "@mend/slack/client";
 import { SecretCipher, Store, StoreConfig, type ChangedFile } from "@mend/store";
 import { TestClock } from "@mend/test-ci/effect-vitest";
-import { Effect, Exit, Layer, Scope } from "effect";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { Context, Effect, Exit, Layer, Scope } from "effect";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import {
   closingOf,
   makeSlackReporter,
   openingOf,
   reviewMoment,
+  SlackReports,
+  SlackReportsLive,
   STATUS_EDIT_EVERY_MS,
 } from "../src/slack-reporter.ts";
 
@@ -576,6 +578,14 @@ const world = (options: WorldOptions = {}) => {
   const baseline = (reporter: ReturnType<typeof worker>) =>
     Effect.runPromise(reporter.baseline().pipe(Effect.provide(layer)));
 
+  /** The reporter as the worker runs it: built once, then asked to report. */
+  const reports = () =>
+    Effect.runSync(
+      Layer.buildWithScope(SlackReportsLive.pipe(Layer.provide(layer)), scope).pipe(
+        Effect.map((context) => Context.get(context, SlackReports)),
+      ),
+    );
+
   const advance = async (ms: number) => {
     state.now += ms;
     await Effect.runPromise(TestClock.adjust(ms).pipe(Effect.provideContext(clock)));
@@ -587,6 +597,7 @@ const world = (options: WorldOptions = {}) => {
     worker,
     observe,
     baseline,
+    reports,
     advance,
     writes,
     posts: () =>
@@ -607,6 +618,21 @@ const terminal = (waiting: AgentWait | null) =>
   new SessionProcess({ ...agent, kind: "agent-pty", sealantSessionId: "pty-1", waiting });
 
 describe("the Slack thread reporter", () => {
+  it("reports a session it is asked about, and every active session again after a resync", async () => {
+    const w = world();
+    w.state.turns = [turn(1, "running")];
+    // Building it records what is live without writing anything.
+    const reports = w.reports();
+    expect(w.updates()).toEqual([]);
+
+    await Effect.runPromise(reports.request({ _tag: "Resync" }));
+    await vi.waitFor(() => expect(w.updates()).toEqual([statusWith("running")]));
+
+    w.state.turns = [turn(1, "completed", NOW)];
+    await Effect.runPromise(reports.request({ _tag: "Session", id: SESSION }));
+    await vi.waitFor(() => expect(w.updates().at(-1)).toBe(statusWith("completed · observed")));
+  });
+
   it("edits the one status message as the state moves, and swaps ⏳ for ✅ with the line counts", async () => {
     const w = world();
     const reporter = w.worker();
