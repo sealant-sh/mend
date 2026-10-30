@@ -13,6 +13,7 @@ import {
   choiceInUse,
   choiceWords,
   EMPTY_DRAFT,
+  type ProposalDraft,
   fieldOf,
   proposalOf,
   type ResourceSettingView,
@@ -122,6 +123,21 @@ describe("proposing a resource from the form", () => {
       ok: false,
       refusals: [{ key: "env.AUTH", message: "is named by two rows" }],
     });
+  });
+
+  it("refuses an env row with a value and no name, and skips one left wholly blank", () => {
+    const draft: ProposalDraft = {
+      ...EMPTY_DRAFT,
+      kind: "image",
+      name: "mail",
+      image: "axllent/mailpit:v1.21",
+      ports: "smtp=1025",
+    };
+    expect(
+      proposalOf({ ...draft, env: [{ key: "   ", from: "literal", value: "must-not-disappear" }] }),
+    ).toEqual({ ok: false, refusals: [{ key: "env", message: "has a value with no name" }] });
+    const blank = proposalOf({ ...draft, env: [{ key: " ", from: "literal", value: " " }] });
+    expect(blank.ok && blank.proposal.kind === "definition" && blank.proposal.spec.env).toEqual({});
   });
 
   it("puts each server key under its field, and the rest under the form", () => {

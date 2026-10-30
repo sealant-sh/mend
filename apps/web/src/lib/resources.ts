@@ -189,9 +189,9 @@ export const proposalOf = (
   | { readonly ok: true; readonly proposal: ResourceProposalInput }
   | { readonly ok: false; readonly refusals: ReadonlyArray<ResourceRefusal> } => {
   const name = draft.name.trim();
-  const env = draft.env
-    .map((row) => ({ ...row, key: row.key.trim() }))
-    .filter((row) => row.key !== "");
+  const typed = draft.env.map((row) => ({ ...row, key: row.key.trim() }));
+  // A row left wholly blank is an unused placeholder; a value with no name would be dropped.
+  const env = typed.filter((row) => row.key !== "");
   const body =
     draft.kind === "preset"
       ? {
@@ -222,6 +222,9 @@ export const proposalOf = (
           }))(lines(draft.ports).map(portOf), env),
         };
   if (draft.kind === "image") {
+    if (typed.some((row) => row.key === "" && row.value.trim() !== "")) {
+      return { ok: false, refusals: [{ key: "env", message: "has a value with no name" }] };
+    }
     // A record keeps one value per name: a second row would silently replace the first.
     const named = env.map((row) => row.key);
     const twice = [...new Set(named.filter((key, index) => named.indexOf(key) !== index))];
