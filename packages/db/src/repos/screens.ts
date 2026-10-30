@@ -159,11 +159,15 @@ export class ScreensRepo extends Context.Service<
      * of life; null for no such screen. What a viewer does is none of these.
      */
     readonly lastActivityAt: (id: ScreenId) => Effect.Effect<Date | null>;
-    /** Applies `transitionInput` under the screen's lock and stores what it decided. */
+    /**
+     * Applies `transitionInput` under the screen's lock and stores what it decided; an entry the
+     * transition logs carries `frame`.
+     */
     readonly control: (
       id: ScreenId,
       event: ScreenInputEvent,
       owner: string | null,
+      frame?: ScreenFrameRef | null,
     ) => Effect.Effect<ScreenInputTransition, ScreenNotFoundError>;
     readonly append: (
       entry: NewScreenLogEntry,
@@ -447,6 +451,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       id: ScreenId,
       event: ScreenInputEvent,
       owner: string | null,
+      frame: ScreenFrameRef | null = null,
     ) {
       const decided = yield* db
         .transaction((tx) =>
@@ -470,8 +475,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
                   updatedAt: yield* DateTime.nowAsDate,
                 })
                 .where(eq(screens.id, id));
-              if (transition.log !== null)
-                yield* appendIn(tx, id, { ...transition.log, frame: null });
+              if (transition.log !== null) yield* appendIn(tx, id, { ...transition.log, frame });
             }
             return transition;
           }),
@@ -691,7 +695,7 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
       }),
     listHeld: () => Effect.sync(() => rows.filter((row) => !row.released).map((row) => row.screen)),
     lastActivityAt: (id) => Effect.sync(() => rowOf(id)?.activeAt ?? null),
-    control: (id, event, owner) =>
+    control: (id, event, owner, frame = null) =>
       Effect.suspend(() => {
         const row = rowOf(id);
         if (row === null) return Effect.fail(new ScreenNotFoundError({ screenId: id }));
@@ -699,7 +703,7 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
         if (transition._tag === "Changed") {
           row.screen = { ...row.screen, input: transition.next };
           row.activeAt = new Date();
-          if (transition.log !== null) appendTo(row, { ...transition.log, frame: null });
+          if (transition.log !== null) appendTo(row, { ...transition.log, frame });
         }
         return Effect.succeed(transition);
       }),

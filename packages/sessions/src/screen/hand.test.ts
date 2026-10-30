@@ -253,6 +253,39 @@ describe("a hand whose batch or stream runs long", () => {
       }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
   );
 
+  it.live(
+    "releases right after the batch it stops, ahead of the look and input queued behind it",
+    () =>
+      Effect.gen(function* () {
+        const display = yield* heldDisplay;
+        const epoch = yield* Ref.make(1);
+        const hand = yield* openHand({
+          bytes: display.bytes,
+          password: Redacted.make(XVNC_PASSWORD),
+          currentEpoch: Ref.get(epoch),
+        });
+        yield* hand.relay([key(true, SHIFT)], 1);
+        const from = display.written.length;
+        const batch = yield* Effect.forkChild(hand.act(steps({ kind: "wait", ms: 5_000 }), 1));
+        yield* Effect.yieldNow;
+        const look = yield* Effect.forkChild(hand.look);
+        yield* Effect.yieldNow;
+        const moved = yield* Effect.forkChild(
+          hand.relay([{ _tag: "Pointer", buttons: 0, x: 40, y: 30 }], 2),
+        );
+        yield* Effect.yieldNow;
+        yield* Ref.set(epoch, 2);
+        yield* Fiber.join(yield* Effect.forkChild(hand.release));
+        yield* Fiber.join(moved);
+        yield* Fiber.join(batch);
+        yield* Fiber.join(look);
+        expect(inputsIn(display.written.slice(from))).toEqual([
+          key(false, SHIFT),
+          { _tag: "Pointer", buttons: 0, x: 40, y: 30 },
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
+  );
+
   it.live("ends when its decoder's thread has gone, once a look finds it", () =>
     Effect.gen(function* () {
       const display = yield* heldDisplay;
