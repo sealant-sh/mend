@@ -2520,3 +2520,18 @@ and source trail (M2) build on the typed kinds.
   (`SealantNotImplementedError`).
 - **Suggested:** none — already planned; noting that Mend wants it by its GitHub milestone so
   long-running self-hosted instances don't accumulate workspaces.
+
+## 2026-10-31 · Preview wake needs a service-only resume of the current worktree
+
+- **Need:** An idle preview's valid visitor starts its workspace, setup and Services without
+  launching an agent, preserving the session's latest files and person layout.
+- **SDK observed:** `Workspace.ready()` waits for an existing launch. `Workspace.restart()` creates
+  a fresh runtime from the same resolved spec and explicitly promises no filesystem carry-over.
+  `recover()` drains a retained executor and then removes it. None is a resume of a stopped
+  workspace with the worktree's latest saved capture and current person layout.
+- **Resolved in Mend, 2026-10-31:** The existing session provisioning path already uses public SDK
+  creation with the current capture and person layout. Preview wake now reuses that path and returns
+  with an attachable wake shell that does not hold idle stop, skipping agent launch and harness
+  warm-up. Screen and preview use the same `wakeWorkspace` entry point. No new SDK capability is
+  required. `restart()` remains limited to co-located worktrees. Unsaved or retained executor
+  refusals from the session restore path still reach the gateway as a failed resume.

@@ -614,6 +614,18 @@ export const previews = pgTable(
   ],
 );
 
+/** Gateway activity and the attempt stopped for idleness; independent of a person's Stop. */
+export const previewActivity = pgTable("preview_activity", {
+  previewId: text()
+    .$type<PreviewId>()
+    .primaryKey()
+    .references(() => previews.id, { onDelete: "cascade" }),
+  lastAdmittedAt: timestamp({ mode: "date", withTimezone: true }),
+  idleStoppedAttemptId: text().$type<SessionProcessId>(),
+  idleStoppedAt: timestamp({ mode: "date", withTimezone: true }),
+  idleMinutes: integer(),
+});
+
 export const previewGrants = pgTable(
   "preview_grants",
   {

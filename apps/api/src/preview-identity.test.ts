@@ -162,6 +162,10 @@ const makeWorld = () => {
   };
 
   const previewsRepo: PreviewsRepo["Service"] = {
+    touchActivity: () => Effect.void,
+    activityOf: () => Effect.succeed(null),
+    idleCandidates: () => Effect.succeed([]),
+    recordIdleStop: () => Effect.void,
     ensureForWorktree: () => Effect.die("unused"),
     readForWorktree: () => Effect.die("unused"),
     ensureNamed: () => Effect.die("unused"),

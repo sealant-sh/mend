@@ -25,6 +25,7 @@ const PREVIEW_VARIABLES = [
   "domain",
   "publicPort",
   "startHold",
+  "idle",
   "bodyBytes",
   "tailnetHostname",
   "tailnetPorts",
@@ -38,6 +39,7 @@ export const PREVIEW_ENV = {
   domain: "MEND_PREVIEW_DOMAIN",
   publicPort: "MEND_PREVIEW_PUBLIC_PORT",
   startHold: "MEND_PREVIEW_START_HOLD",
+  idle: "MEND_PREVIEW_IDLE",
   bodyBytes: "MEND_PREVIEW_BODY_BYTES",
   tailnetHostname: "MEND_PREVIEW_TAILNET_HOSTNAME",
   tailnetPorts: "MEND_PREVIEW_TAILNET_PORTS",
@@ -198,6 +200,16 @@ export const previewSetupOf = (
     const rawHold = value("startHold");
     const startHoldMs =
       rawHold === undefined ? PREVIEW_GATEWAY_DEFAULTS.startHoldMs : yield* startHoldOf(rawHold);
+    const rawIdle = value("idle");
+    const idleMs =
+      rawIdle === undefined
+        ? PREVIEW_GATEWAY_DEFAULTS.idleMs
+        : Option.match(decodeDuration(rawIdle), {
+            onNone: () => Number.NaN,
+            onSome: Duration.toMillis,
+          });
+    if (!Number.isSafeInteger(idleMs) || idleMs < 60_000 || idleMs % 60_000 !== 0)
+      return yield* refuse("idle", "expected a positive whole number of minutes");
     const rawCap = value("bodyBytes");
     const bodyCap =
       rawCap === undefined ? PREVIEW_GATEWAY_DEFAULTS.bodyCap : yield* bodyCapOf(rawCap);
@@ -251,6 +263,7 @@ export const previewSetupOf = (
         bind,
         port,
         startHoldMs,
+        idleMs,
         bodyCap,
         limits: PREVIEW_GATEWAY_DEFAULTS.limits,
         queueWaitMs: PREVIEW_GATEWAY_DEFAULTS.queueWaitMs,

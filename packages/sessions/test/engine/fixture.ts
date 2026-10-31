@@ -1509,6 +1509,16 @@ export interface World {
   /** Screens and their displays (ADR 0020), as the store keeps them. */
   readonly screens: ScreensRepo["Service"];
   controlSeq: number;
+  readonly previewActivity: Map<
+    PreviewId,
+    {
+      previewId: PreviewId;
+      lastAdmittedAt: Date | null;
+      idleStoppedAttemptId: SessionProcessId | null;
+      idleStoppedAt: Date | null;
+      idleMinutes: number | null;
+    }
+  >;
   readonly previews: Map<string, Preview>;
   readonly previewControls: Map<string, PreviewControl>;
   readonly changes: Map<string, Change>;
@@ -1615,6 +1625,7 @@ export const makeWorld = (): World => ({
   setupFinished: undefined,
   screens: makeScreensMemory(),
   controlSeq: 0,
+  previewActivity: new Map(),
   previews: new Map(),
   previewControls: new Map(),
   changes: new Map(),
@@ -2135,6 +2146,7 @@ const serviceAttemptsIn = (world: World, service: Service) =>
   );
 
 export const previewsRepoOf = (world: World) => {
+  const activity = world.previewActivity;
   const targetsOf = (worktreeId: string): ReadonlyArray<PreviewTarget> => {
     const sessionIds = new Set(
       [...world.sessions.values()]
@@ -2176,6 +2188,32 @@ export const previewsRepoOf = (world: World) => {
   const keptIn = (worktreeId: string) =>
     [...world.previews.values()].filter((preview) => preview.worktreeId === worktreeId);
   return Layer.mock(PreviewsRepo, {
+    activityOf: (id) => Effect.sync(() => activity.get(id) ?? null),
+    recordIdleStop: (id, attemptId, minutes, at) =>
+      Effect.sync(() => {
+        activity.set(id, {
+          previewId: id,
+          lastAdmittedAt: activity.get(id)?.lastAdmittedAt ?? null,
+          idleStoppedAttemptId: attemptId,
+          idleStoppedAt: at,
+          idleMinutes: minutes,
+        });
+      }),
+    touchActivity: (stamps) =>
+      Effect.sync(() => {
+        for (const [id, at] of stamps) {
+          const previous = activity.get(id);
+          activity.set(id, {
+            previewId: id,
+            lastAdmittedAt: new Date(
+              Math.max(at.getTime(), previous?.lastAdmittedAt?.getTime() ?? 0),
+            ),
+            idleStoppedAttemptId: previous?.idleStoppedAttemptId ?? null,
+            idleStoppedAt: previous?.idleStoppedAt ?? null,
+            idleMinutes: previous?.idleMinutes ?? null,
+          });
+        }
+      }),
     ensureForWorktree: (worktreeId) =>
       Effect.sync(() => {
         const targets = targetsOf(worktreeId);

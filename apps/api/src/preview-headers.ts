@@ -163,7 +163,15 @@ export const undeliveredAnswer = (
   service: string,
   why: PreviewNotDelivered,
   back: string | null = null,
-): PreviewAnswer => gatewayPage(503, previewUndeliveredLine(service, why), back);
+): PreviewAnswer =>
+  gatewayPage(
+    503,
+    previewUndeliveredLine(service, why) +
+      (why._tag === "DidNotStart" && why.reason === "workspace is not live"
+        ? " · resume the session in Mend, then open this preview again"
+        : ""),
+    back,
+  );
 
 export const notDelivered = (service: string, fact: string): string =>
   `${previewFactLine(service, fact)} · your request was not delivered`;

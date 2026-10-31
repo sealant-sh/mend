@@ -449,6 +449,44 @@ guessing presence from bytes.
   presses **Start** or a request arrives. Today's Service start needs a live workspace
   (`engine.ts:21149`). Decision 5 sets the duration and when a visit wakes a preview.
 
+### Delivery step 12 implementation, 2026-10-31
+
+The gateway batches admitted application activity every ten seconds into `preview_activity`
+(migration `0171_preview_activity`, after 0170). A Service's attempt creation time is the baseline
+before its first request. `MEND_PREVIEW_IDLE` takes a positive whole number of minutes, such as
+`45 minutes`, and defaults to `30 minutes`. The sweep stops a due preview on its next pass, at most
+ten seconds after its idle deadline. Only HTTP application requests that passed admission and
+workspace access count. Sign-in pages, refusals, readiness probes through the forward adapter, Slack
+unfurlers and open WebSocket connections do not advance the clock. An open HTTP request holds the
+stop.
+
+The engine rechecks the selected attempt, activity deadline and person control under its Service
+lifecycle permit. Open turns, working agents, shells, Service starts and capture drains hold the
+stop. It closes the preview's forwards and hot-reload sockets, then stops only its own Service.
+Dependencies remain running. There is no implemented `disposable` recipe field or "keep running"
+hold in this release. The idle stop records its attempt and duration, and notifies the worktree so
+the Services card and Slack report `preview · web · stopped after 30 min idle`. Slack keeps its
+**Open preview** button. A later attempt supersedes that stop fact.
+
+A valid visit uses the existing bounded start wave and per-account start budgets. Concurrent
+visitors share a start. Recipe Services run the current recipe through setup and dependencies as
+`services.started_by`, falling back to the session owner for older rows. A person's Stop remains in
+force. A failed start answers 503 without automatically retrying the request.
+
+**Amendment to decision 5 and delivery step 12, Yiannis, 2026-10-31.** Opening a preview whose
+session workspace stopped resumes that workspace as `services.started_by`, falling back to the
+session owner for older rows. Capture mode uses the session's fenced restore path with the current
+capture and person layout through `wakeWorkspace`, shared with screen wake. It opens only a marked
+wake shell, with no agent, turn or inference request. The shell does not hold workspace or preview
+idle stop. The Service then starts through the existing start wave while visitors see the starting
+page, with the existing three-minute hold. A live executor with a paused lease is reused while its
+heartbeat is pending; a second executor is never created over it. Co-located workspaces keep their
+restart path.
+
+Only a failed workspace resume answers the page asking the person to resume the session in Mend and
+open the preview again. Failed-wake deduplication prevents repeated visits from looping the same
+failed start. A person's Stop and the existing start budgets still apply.
+
 ### Exposure
 
 A new gate item, **15. preview-gateway**, is listed only while the gateway is on: with a preview
@@ -626,11 +664,11 @@ signed-in person with a valid grant starts it and is held until it is ready, `GE
 included, in the first slice (Signing in, above). This replaced his earlier "owner Start first, wake
 later in 0.37". The owner can still press **Start**. The options weighed:
 
-| Option                                                                    | For a person                                                                                               | For the operator                                                                    | In the code                                                                                                                                                        |
-| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| No preview stop                                                           | A forgotten preview runs until someone stops it, or until the platform's own limits do.                    | Today's cost: a Service holds its workspace indefinitely.                           | The clock exists and never fires.                                                                                                                                  |
-| Stop after N minutes without admitted requests; the owner starts it again | A Slack link opened the next day shows a stopped page with **Start** for the owner.                        | Workspaces come back. A visit never launches one.                                   | The clock fires. A stopped page. The service-only workspace start, on the owner's press.                                                                           |
-| Stop after N minutes; a signed-in navigation wakes it                     | A return visit waits for the workspace, setup and the dev server (tens of seconds to minutes), then opens. | A visitor can cause billable work, so wakes need caps, backoff and failure reports. | The service-only start, as a durable wake per preview that runs once however many visits arrive. A wake runs only the approved recipe digest, as its last starter. |
+| Option                                                                    | For a person                                                                                               | For the operator                                                                    | In the code                                                                                                                                          |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No preview stop                                                           | A forgotten preview runs until someone stops it, or until the platform's own limits do.                    | Today's cost: a Service holds its workspace indefinitely.                           | The clock exists and never fires.                                                                                                                    |
+| Stop after N minutes without admitted requests; the owner starts it again | A Slack link opened the next day shows a stopped page with **Start** for the owner.                        | Workspaces come back. A visit never launches one.                                   | The clock fires. A stopped page. The service-only workspace start, on the owner's press.                                                             |
+| Stop after N minutes; a signed-in navigation wakes it                     | A return visit waits for the workspace, setup and the dev server (tens of seconds to minutes), then opens. | A visitor can cause billable work, so wakes need caps, backoff and failure reports. | The service-only start, as a durable wake per preview that runs once however many visits arrive. A wake runs the current recipe as its last starter. |
 
 **What the wake brings into the first slice.** Thirty minutes is a proposed default, not a measured
 one. Waking on every request means the first slice carries the lifecycle work that an earlier draft

@@ -292,3 +292,13 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
     expect(Exit.isFailure(refused), "a refused setup fails the layer that reads it").toBe(true);
   });
 });
+
+it("accepts a preview idle duration and refuses zero or malformed durations", () => {
+  expect(setupOf({ port: "3117", idle: "45 minutes" })).toMatchObject({
+    _tag: "Success",
+    value: { gateway: { idleMs: 2_700_000 } },
+  });
+  for (const idle of ["0", "0 seconds", "forever", "30 seconds", "90 seconds"]) {
+    expect(refusalOf({ port: "3117", idle })?.variable).toBe("MEND_PREVIEW_IDLE");
+  }
+});

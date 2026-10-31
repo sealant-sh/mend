@@ -5,6 +5,7 @@ import type { Preview } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError, SealantPrincipal } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import {
+  makeMemoryCaptureStore,
   adapterLayer,
   echo,
   fakeForward,
@@ -34,7 +35,10 @@ const noPrincipal = new SealantPlatformError({
   cause: null,
 });
 
-const principalPlatform = (opened: Array<ReadonlyArray<string>> = []) =>
+const principalPlatform = (
+  opened: Array<ReadonlyArray<string>> = [],
+  control = { stopped: false, failResume: false, resumes: 0 },
+) =>
   Layer.effect(
     SealantClient,
     Effect.map(SealantClient, (client) => {
@@ -45,7 +49,33 @@ const principalPlatform = (opened: Array<ReadonlyArray<string>> = []) =>
         });
       return {
         ...client,
-        getWorkspace: (workspaceId) => asSomeone(client.getWorkspace(workspaceId)),
+        createWorkspace: (options, launch) =>
+          asSomeone(
+            Effect.gen(function* () {
+              if (control.stopped) {
+                control.resumes += 1;
+                if (control.failResume)
+                  return yield* new SealantPlatformError({
+                    code: "resume_failed",
+                    status: 503,
+                    message: "resume failed",
+                    cause: null,
+                  });
+              }
+              const workspace = yield* client.createWorkspace(options, launch);
+              control.stopped = false;
+              return workspace;
+            }),
+          ),
+        getWorkspace: (workspaceId) =>
+          asSomeone(
+            client.getWorkspace(workspaceId).pipe(
+              Effect.map((workspace) => ({
+                ...workspace,
+                status: async () => (control.stopped ? "stopped" : workspace.status()),
+              })),
+            ),
+          ),
         openSession: (workspace, argv, options) =>
           asSomeone(
             Effect.andThen(
@@ -230,3 +260,47 @@ it("a person's Stop serves the agent's own run while it lasts, then starts nothi
     },
   );
 });
+
+for (const failResume of [false, true]) {
+  it(`capture preview visit ${failResume ? "reports a failed resume once" : "restores the workspace and answers"} without an agent`, async () => {
+    const known: { current: World | null } = { current: null };
+    const captured = makeMemoryCaptureStore();
+    const opened: Array<ReadonlyArray<string>> = [];
+    const control = { stopped: false, failResume: false, resumes: 0 };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          known.current = world;
+          const { engine, session, service, request } = yield* stagePreview(world, tmp);
+          yield* engine.stopService(service.id, { kind: "system", reason: "idle" });
+          const lease = captured.leases.get(session.worktreeId);
+          if (lease === undefined) return yield* Effect.die("no lease");
+          lease.expiresAt = 0;
+          control.stopped = true;
+          control.failResume = failResume;
+          opened.length = 0;
+          const reply = yield* request();
+          if (failResume) {
+            expect(reply.status).toBe(503);
+            expect(reply.body).toContain("resume the session in Mend");
+            const again = yield* request();
+            expect(again.status).toBe(503);
+            expect(again.body).toContain("resume the session in Mend");
+            expect(opened).toEqual([]);
+          } else {
+            expect(reply.status).toBe(200);
+            expect(reply.body).toBe("started");
+            expect(opened).toHaveLength(2);
+            expect(opened[0]?.at(-1)).toBe("zsh");
+            expect(opened[1]).toEqual(["pnpm", "dev"]);
+          }
+          expect(control.resumes).toBe(1);
+        }),
+      {
+        captured,
+        sealantLayer: principalPlatform(opened, control),
+        forwardAdapterLayer: workspacePort(known),
+      },
+    );
+  });
+}

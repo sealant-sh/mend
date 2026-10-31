@@ -20,6 +20,7 @@ import {
 import { budgetMessage, Budgets, ceilingMessage, overCeiling } from "./budgets.ts";
 import { ConnectionRegistry } from "./connections.ts";
 import { EventBus } from "./events-bus.ts";
+import { makePreviewActivity } from "./preview-activity.ts";
 import type { PreviewGatewayLimits, PreviewGatewaySettings } from "./preview-gateway-settings.ts";
 import {
   budgetPage,
@@ -190,6 +191,7 @@ export const makePreviewGatewayLayer = (
         `${appUrl}/projects/${encodeURIComponent(preview.projectId)}`;
       const pools = yield* makePreviewPools(settings.limits.forwards);
       const waves = yield* makeStartWaves(settings.startHoldMs);
+      const activity = yield* makePreviewActivity(settings.idleMs, pools.closePreview);
       const { limits } = settings;
       const occupancy = makeOccupancy();
 
@@ -298,6 +300,7 @@ export const makePreviewGatewayLayer = (
             undefined,
             "preview",
           );
+          const releaseActivity = yield* activity.enter(preview.id);
           const entry = yield* pools.enter(preview);
           const outcome = yield* boundOrStarted(entry, preview, viewerId);
           if (outcome._tag === "Refused") return yield* reply(exchange, outcome.answer);
@@ -306,6 +309,12 @@ export const makePreviewGatewayLayer = (
             entry.closeViewerPool(generation, viewerId);
             return yield* reply(exchange, NOT_FOUND);
           }
+          // Readiness probes use the adapter directly; unfurlers never count as people visiting.
+          const userAgent = exchange.downstream.request.headers["user-agent"] ?? "";
+          const recordActivity = once(() => {
+            if (exchange.downstream.kind === "http" && !/Slackbot|Slack-ImgProxy/i.test(userAgent))
+              activity.admitted(preview.id);
+          });
           const lease = yield* entry.lease(generation, viewerId);
           const forward: ForwardRequest = {
             origin,
@@ -314,6 +323,7 @@ export const makePreviewGatewayLayer = (
             cookies: cookiePolicyOf(routing, preview),
             upgrade: exchange.downstream.kind === "raw",
           };
+          if (exchange.downstream.kind === "raw") releaseActivity();
           return yield* relay(
             exchange,
             {
@@ -321,6 +331,7 @@ export const makePreviewGatewayLayer = (
               forward,
               lease,
               holdsForward: () => occupancy.occupy(preview.id, viewerId),
+              admitted: recordActivity,
             },
             settings,
           );
@@ -466,6 +477,10 @@ export const makePreviewGatewayLayer = (
         ),
       );
 
+      yield* supervised("preview gateway: idle sweep failed", activity.sweep).pipe(
+        Effect.repeat(Schedule.spaced("10 seconds")),
+        Effect.forkScoped,
+      );
       const subscription = yield* bus.subscribe;
       yield* Stream.fromSubscription(subscription).pipe(
         Stream.runForEach((signal) =>

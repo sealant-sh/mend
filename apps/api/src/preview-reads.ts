@@ -73,12 +73,20 @@ export const describeWorktreePreviews = (
         const attempt = attemptId === null ? null : yield* processes.byId(attemptId);
         const boundService =
           view.binding._tag === "Bound" ? yield* services.byId(view.binding.serviceId) : null;
+        const activity =
+          resolution?._tag === "Dormant" ? yield* previews.activityOf(view.preview.id) : null;
         const facts = previewStatusesOf(
           {
             preview: view.preview,
             resolution,
             observation,
             attemptStartedAt: attempt?.createdAt ?? null,
+            idleStop:
+              activity?.idleStoppedAttemptId === attemptId &&
+              activity?.idleMinutes !== null &&
+              activity?.idleMinutes !== undefined
+                ? { minutes: activity.idleMinutes }
+                : null,
           },
           preparation,
         );

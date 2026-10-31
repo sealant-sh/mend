@@ -13,6 +13,7 @@ export type PreviewBodyCap =
 export interface PreviewGatewaySettings {
   readonly bind: string;
   readonly port: number;
+  readonly idleMs: number;
   readonly startHoldMs: number;
   readonly bodyCap: PreviewBodyCap;
   readonly limits: PreviewGatewayLimits;
@@ -21,6 +22,7 @@ export interface PreviewGatewaySettings {
 }
 
 export const PREVIEW_GATEWAY_DEFAULTS = {
+  idleMs: 1_800_000,
   startHoldMs: 180_000,
   bodyCap: { _tag: "Unlimited" },
   limits: { perPreview: 64, gateway: 256, forwards: 128, admitting: 256, waiting: 2_048 },

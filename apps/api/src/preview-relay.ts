@@ -150,6 +150,8 @@ export interface RelayTarget {
   readonly forward: ForwardRequest;
   readonly lease: ForwardLease;
   readonly holdsForward: () => () => void;
+  /** The request reached an open forward; gateway refusals never call this. */
+  readonly admitted: () => void;
 }
 
 type End = (page?: PreviewAnswer) => void;
@@ -219,6 +221,7 @@ const sendUpstream = (
           return end(gatewayPage(503, notDelivered(serviceName, "the preview restarted")));
         }
         delivered = true;
+        target.admitted();
         handlers.deliver(sent, end);
       };
       sent.once("socket", (socket) => {

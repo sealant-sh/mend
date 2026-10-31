@@ -184,6 +184,8 @@ const noteForAttempt = (
 };
 
 export interface PreviewFacts {
+  /** Applies only to the dormant source attempt, never to a later start. */
+  readonly idleStop?: { readonly minutes: number } | null;
   readonly preview: Preview;
   readonly resolution: PreviewGatewayResolution | null;
   /** The latest observation of the Service it binds, while it binds one. */
@@ -242,6 +244,11 @@ export const previewStatusesOf = (
       ];
     }
     default:
+      if (resolution?._tag === "Dormant" && facts.idleStop != null) {
+        return [
+          { _tag: "Stopped", service, by: { _tag: "Idle", minutes: facts.idleStop.minutes } },
+        ];
+      }
       return mine === null || outlived(mine.state, facts.attemptStartedAt)
         ? []
         : preparedFacts(mine);

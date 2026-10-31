@@ -84,6 +84,8 @@ export interface PreviewEntry {
 }
 
 export interface PreviewPools {
+  /** End an idle binding, including its hot-reload sockets. */
+  readonly closePreview: (id: PreviewId) => void;
   readonly enter: (preview: PreviewOpen) => Effect.Effect<PreviewEntry, never, Scope.Scope>;
   readonly onSignal: (signal: BusSignal) => Effect.Effect<void>;
   readonly refreshAll: Effect.Effect<void>;
@@ -341,6 +343,12 @@ export const makePreviewPools = (forwardCeiling: number) =>
     };
 
     return {
+      closePreview: (id) => {
+        const entry = entries.get(id);
+        if (entry === undefined) return;
+        entry.resolution = null;
+        for (const pool of entry.pools.values()) closePool(entry, pool);
+      },
       enter,
       onSignal,
       refreshAll: Effect.suspend(() => refresh([...entries.values()])),
