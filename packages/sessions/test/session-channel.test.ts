@@ -5,17 +5,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { SessionChannelTokensRepo, SessionChannelTokensRepoMemory } from "@mend/db";
+import { ProjectId, SessionId, SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
 import {
-  OrganizationId,
-  ProjectId,
-  SessionId,
-  SessionRepositoryId,
-  Sha,
-  WorktreeId,
-} from "@mend/domain";
-import {
-  type ProjectTenancy,
-  resourceActRefusal,
   type ResourcesStatus,
   SessionRepository,
   WORKSPACE_RESOURCE_REFUSAL,
@@ -50,11 +41,6 @@ import type { WorkspaceLandOutcome } from "../src/workspace-git-hooks.ts";
 const storeRoot = path.join(os.tmpdir(), `mend-channel-test-${process.pid}`);
 const SESSION = SessionId.make("sess-channel-1");
 const OTHER = SessionId.make("sess-channel-2");
-const PROJECT_TENANCY: ProjectTenancy = {
-  organizationId: OrganizationId.make("org-1"),
-  visibility: "shared",
-  createdByUserId: "maria",
-};
 
 const api = (seen: unknown[]): SessionSocketApi => ({
   recipes: () => Effect.succeed([{ name: "web", command: "pnpm dev", port: 3000 }]),
@@ -926,8 +912,9 @@ describe("SessionChannelNetworkHost", () => {
           registry.serveResources((sessionId, act, clock) =>
             Effect.gen(function* () {
               asked.push({ sessionId, act: act.kind, timeZone: clock.timeZone });
-              const refusal = resourceActRefusal(PROJECT_TENANCY, { kind: "workspace" }, act);
-              if (refusal !== null) return yield* Effect.fail({ message: refusal });
+              if (act.kind !== "read") {
+                return yield* Effect.fail({ message: WORKSPACE_RESOURCE_REFUSAL });
+              }
               return {
                 statusLines: ["@mail · mailpit · project · added by \u001b[2JTom · not started"],
                 file: {

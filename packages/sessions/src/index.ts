@@ -24,6 +24,7 @@ export * from "./pickup-tickets.ts";
 export * from "./resource-tables.ts";
 export * from "./resources/image-resolver.ts";
 export * from "./resources/resources.ts";
+export * from "./resources/runtime.ts";
 export * from "./secret-files.ts";
 export * from "./forward.ts";
 export * from "./screen/screen-host.ts";
