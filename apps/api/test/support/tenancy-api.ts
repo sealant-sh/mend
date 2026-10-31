@@ -66,6 +66,7 @@ import {
   UserFacts,
   type MendEvent,
   makeUpgradeTicketsMemory,
+  ScreensRepo,
   UpgradeTicketsRepo,
 } from "@mend/db";
 import { AuditEventId, type DotfilesRepository, type SessionId } from "@mend/domain";
@@ -87,6 +88,7 @@ import {
   ForwardAdapter,
   ResourceImageResolver,
   ResourcesLive,
+  Screens,
   ServiceHost,
   SessionEngine,
   WorkspaceCaller,
@@ -115,6 +117,7 @@ import {
   Layer,
   ManagedRuntime,
   Logger,
+  PubSub,
   Tracer,
   Queue,
   Redacted,
@@ -137,7 +140,7 @@ import {
   type ConnectionKind,
 } from "../../src/connections.ts";
 import { errorBoundary, type ErrorDetail } from "../../src/error-boundary.ts";
-import { EventBus, makeEventBus } from "../../src/events-bus.ts";
+import { type BusSignal, EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { HandoffStartLive } from "../../src/handoff-start.ts";
@@ -158,6 +161,7 @@ import { TerminalProjects, TerminalProjectsLive } from "../../src/routes/upgrade
 import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
 import { RawReadStallLimit } from "../../src/routes/worktrees.ts";
+import { ScreenWatchLive } from "../../src/screen-watch.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
@@ -783,6 +787,8 @@ export const createTenancyApi = async (
     ),
     Layer.mergeAll(
       recording(Store, "store", options.implement?.store ?? {}, calls),
+      recording(Screens, "screens", {}, calls),
+      recording(ScreensRepo, "screensRepo", {}, calls),
       recording(StoreRefsRepo, "storeRefs", options.implement?.storeRefs ?? {}, calls),
       recording(Gh, "gh", {}, calls),
       recording(SlackApi, "slackApi", {}, calls),
@@ -857,6 +863,7 @@ export const createTenancyApi = async (
   const registry = Effect.runSync(makeConnectionRegistry);
   const connections = Layer.succeed(ConnectionRegistry, {
     register: registry.register,
+    reserve: registry.reserve,
     closeForUser: registry.closeForUser,
     closeForSession: registry.closeForSession,
     countFor: registry.countFor,
@@ -874,6 +881,18 @@ export const createTenancyApi = async (
     options.terminalProjects === undefined
       ? TerminalProjectsLive
       : Layer.succeed(TerminalProjects, options.terminalProjects),
+    // Screen viewers' recheck listens to a bus of its own: nothing here publishes to it, and the
+    // event routes' listen counters stay theirs.
+    ScreenWatchLive.pipe(
+      Layer.provide(
+        Layer.effect(
+          EventBus,
+          Effect.map(PubSub.unbounded<BusSignal>(), (pubsub) => ({
+            subscribe: PubSub.subscribe(pubsub),
+          })),
+        ),
+      ),
+    ),
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),

@@ -252,9 +252,9 @@ admits the controller's Pods by namespace and label in one selector. What the ch
 
 - The controller must append the client address to `X-Forwarded-For` and not pass one a client sent.
   Request budgets count the address that `api.trustedProxyCidrs` lets through.
-- `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws` and `/tty-embed` carry a single-use
-  upgrade ticket in the query string, and `/pair` a pairing code. Keep query strings on those paths
-  out of the controller's logs.
+- `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws`, `/api/screen-socket` and `/tty-embed`
+  carry a single-use upgrade ticket in the query string, and `/pair` a pairing code. Keep query
+  strings on those paths out of the controller's logs.
 - A sign-up from an invitation carries its token in the `X-Mend-Invitation` request header. Keep
   that header out of the controller's logs.
 - Links issued by an older Mend carry a secret in the path: `/join/<token>`, `/reset/<token>` and

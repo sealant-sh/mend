@@ -17,8 +17,8 @@ The chart creates no load balancer; route only to healthy nodes hosting the API 
 {{- if .Values.ingress.enabled }}
 
 Ingress {{ .Release.Name }}-web: https://{{ .Values.ingress.host }} → {{ .Release.Name }}-web:3105, TLS from Secret {{ .Values.ingress.tls.secretName }}.
-The controller must keep the query strings of /api/tty, /api/service-tunnel, /api/keys/bridge/ws
-and /tty-embed out of its logs (docs/KUBERNETES.md).
+The controller must keep the query strings of /api/tty, /api/service-tunnel, /api/keys/bridge/ws,
+/api/screen-socket and /tty-embed out of its logs (docs/KUBERNETES.md).
 {{- else }}
 
 No Ingress is created for Mend. Port-forward the web tier:

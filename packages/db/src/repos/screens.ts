@@ -25,7 +25,7 @@ import {
   transitionInput,
   withoutTypedText,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Context, DateTime, Effect, Layer, Schema } from "effect";
 
 import { type MendDatabase, MendDB } from "../client.ts";
@@ -176,6 +176,11 @@ export class ScreensRepo extends Context.Service<
       entry: NewScreenLogEntry,
     ) => Effect.Effect<ScreenLogEntry, ScreenNotFoundError>;
     readonly log: (id: ScreenId) => Effect.Effect<ReadonlyArray<ScreenLogEntry>>;
+    /** When the screen's latest entry of one of `bodies` was written; null for none. */
+    readonly lastLoggedAt: (
+      id: ScreenId,
+      bodies: ReadonlyArray<ScreenLogBody["_tag"]>,
+    ) => Effect.Effect<Date | null>;
     /**
      * Claims a tool call before any input. A retry with the same key and arguments answers what
      * the first did; the same key with other arguments answers `CallReused`.
@@ -518,6 +523,26 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return rows.map(toEntry);
     });
 
+    const lastLoggedAt = Effect.fn("ScreensRepo.lastLoggedAt")(function* (
+      id: ScreenId,
+      bodies: ReadonlyArray<ScreenLogBody["_tag"]>,
+    ) {
+      if (bodies.length === 0) return null;
+      const [row] = yield* db
+        .select({ at: screenLog.at })
+        .from(screenLog)
+        .where(
+          and(
+            eq(screenLog.screenId, id),
+            inArray(sql<string>`${screenLog.body}->>'_tag'`, [...bodies]),
+          ),
+        )
+        .orderBy(desc(screenLog.seq))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row?.at ?? null;
+    });
+
     const claim = Effect.fn("ScreensRepo.claim")(function* (call: {
       readonly screenId: ScreenId;
       readonly callKey: string;
@@ -617,6 +642,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       control,
       append,
       log,
+      lastLoggedAt,
       claim,
       settle,
       boot,
@@ -728,6 +754,10 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
         return Effect.succeed(appendTo(row, written));
       }),
     log: (id) => Effect.sync(() => [...(rowOf(id)?.log ?? [])]),
+    lastLoggedAt: (id, bodies) =>
+      Effect.sync(
+        () => rowOf(id)?.log.findLast((entry) => bodies.includes(entry.body._tag))?.at ?? null,
+      ),
     claim: (call) =>
       Effect.suspend(() => {
         const row = rowOf(call.screenId);

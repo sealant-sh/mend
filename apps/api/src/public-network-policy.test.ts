@@ -25,7 +25,13 @@ import {
 } from "@mend/db";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { SealantClient } from "@mend/sealant";
-import { ForwardAdapter, ServiceHost, SessionEngine, WorkspaceCaller } from "@mend/sessions";
+import {
+  ForwardAdapter,
+  Screens,
+  ServiceHost,
+  SessionEngine,
+  WorkspaceCaller,
+} from "@mend/sessions";
 import { AgentBridge, AgentBridgeLive, MendKeys, MendKeysConfig, MendKeysLive } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { HttpRouter } from "effect/http";
@@ -40,6 +46,7 @@ import { AuthMiddlewareLive } from "./routes/api-live.ts";
 import { UrlBearers } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { GitKeysGroupLive } from "./routes/workbench.ts";
+import { ScreenWatch } from "./screen-watch.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
 
 const network = makePublicNetwork(PublicOrigin.make("http://localhost:3105"), [
@@ -114,6 +121,8 @@ const startServer = async () => {
     Layer.mock(SealantClient, {}),
     Layer.mock(ForwardAdapter, {}),
     Layer.mock(ServiceHost, {}),
+    Layer.mock(Screens, {}),
+    Layer.mock(ScreenWatch, {}),
     Layer.mock(WorkspaceCaller, {
       observe: () => (self) => self,
       act: () => (self) => self,
@@ -137,6 +146,7 @@ const startServer = async () => {
     ConnectionRegistry,
     Effect.map(makeConnectionRegistry, (registry) => ({
       register: registry.register,
+      reserve: registry.reserve,
       closeForUser: registry.closeForUser,
       closeForSession: registry.closeForSession,
       countFor: registry.countFor,

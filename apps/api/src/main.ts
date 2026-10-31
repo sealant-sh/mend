@@ -272,6 +272,7 @@ import { PreviewAuthRoutes } from "./routes/preview-auth.ts";
 import { TerminalProjectsLive } from "./routes/upgrade-tickets.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
+import { ScreenWatchLive } from "./screen-watch.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { SessionStartLive } from "./session-start.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
@@ -525,6 +526,8 @@ const ServerLive = Layer.unwrap(
       ),
     ).pipe(
       Layer.provide(ProjectCreationLive),
+      // Who may watch a screen, and which viewers are open: one for the routes and the socket.
+      Layer.provide(ScreenWatchLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
     );
     const served = servePreviews(router, {
@@ -907,8 +910,9 @@ const MainLive = Layer.unwrap(
       LandingLive.pipe(Layer.provide(TourRequestsLive)),
       LandingDescriptionsLive,
     ).pipe(Layer.provide(PullRequestsLayer), Layer.provideMerge(landingGit));
+    // The one Screens, provided to the routes that watch and take over screens and to Mend's MCP server.
     const screens = ScreensLayer.pipe(Layer.provide(captureStore));
-    const served = Layer.merge(ServerLive, MendMcpLayer.pipe(Layer.provideMerge(screens)));
+    const served = Layer.merge(ServerLive, MendMcpLayer).pipe(Layer.provideMerge(screens));
     const parts =
       mode === "api"
         ? served

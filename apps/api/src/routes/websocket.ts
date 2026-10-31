@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { KeysBridgeRoutes } from "./keys-bridge.ts";
+import { ScreenSocketRoutes } from "./screens.ts";
 import { ServiceTunnelRoutes } from "./service-tunnel.ts";
 import { TtyRoutes } from "./tty.ts";
 
@@ -22,6 +23,7 @@ const upgradeRequired = HttpRouter.middleware((handler) =>
  */
 export const WebSocketRoutes = Layer.mergeAll(
   KeysBridgeRoutes,
+  ScreenSocketRoutes,
   ServiceTunnelRoutes,
   TtyRoutes,
 ).pipe(Layer.provide(upgradeRequired));

@@ -380,13 +380,14 @@ recorded above in the amendment of 2026-10-24:
   bridge host), and to the credential that minted it: the sign-in (`session:<id>`) or the paired
   device (`device:<id>`). A screen ticket is minted only for a session the caller can see, and
   another answers as a missing one.
-- The three WebSocket routes accept `?ticket=`. A ticket is spent by one statement that deletes it
-  only when it is unexpired, for exactly this target and these parameters, and its credential still
-  stands (the sign-in row exists and has not expired; the device is not revoked). Of many requests
-  racing one ticket exactly one wins, a wrong guess spends nothing, and signing out, a password
-  change that ends other sign-ins, revoking a device or removing a member ends every ticket that
-  credential minted. A repeated addressing parameter is refused with 400, so the scope the ticket is
-  checked against is always the parameter the route goes on to read. Authorization still runs as the
+- The three WebSocket routes accept `?ticket=`, and since ADR 0020 the screen socket
+  (`/api/screen-socket`) does too. A ticket is spent by one statement that deletes it only when it
+  is unexpired, for exactly this target and these parameters, and its credential still stands (the
+  sign-in row exists and has not expired; the device is not revoked). Of many requests racing one
+  ticket exactly one wins, a wrong guess spends nothing, and signing out, a password change that
+  ends other sign-ins, revoking a device or removing a member ends every ticket that credential
+  minted. A repeated addressing parameter is refused with 400, so the scope the ticket is checked
+  against is always the parameter the route goes on to read. Authorization still runs as the
   ticket's account, exactly as for a header.
 - `/tty-embed` takes a ticket and trades it, in the page, for the socket's ticket and a **renewal
   ticket**. The renewal ticket lives in the page's memory, travels only in a request body and is
