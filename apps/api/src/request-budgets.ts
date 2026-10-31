@@ -205,11 +205,20 @@ export const requestBudgets = (input: {
         }
 
         const bodyBudget = bodyBudgetFor(request.method, pathname);
-        const bodyLimit = limits[bodyBudget];
+        // Dump bodies are streamed to Core, separately from the small JSON/upload budgets.
+        const resourceLoadBody =
+          request.method === "PUT" &&
+          /^\/api\/projects\/[^/]+\/resource-loads\/[^/]+\/body$/.test(routedPath(pathname));
+        const bodyLimit = resourceLoadBody ? 20 * 1024 ** 3 : limits[bodyBudget];
         if (bodyLimit <= 0) return yield* handler;
         const declared = Number(request.headers["content-length"] ?? "");
         if (Number.isFinite(declared) && declared > bodyLimit) {
-          return budgetRefusal(413, bodyBudget, bodyLimit, null);
+          return resourceLoadBody
+            ? HttpServerResponse.jsonUnsafe(
+                { message: "a resource load may receive at most 20 GiB" },
+                { status: 413 },
+              )
+            : budgetRefusal(413, bodyBudget, bodyLimit, null);
         }
         return yield* handler.pipe(
           Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(bodyLimit)),

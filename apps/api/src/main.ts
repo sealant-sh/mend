@@ -38,6 +38,7 @@ import {
   ProjectSecretsRepoLive,
   ProjectServiceRecipesRepoLive,
   ResourcesRepoLive,
+  ResourceLoadsRepoLive,
   SessionRepositoriesRepoLive,
   AuditEventsRepoLive,
   SessionControlEventsRepoLive,
@@ -186,6 +187,9 @@ import {
   ResourceImageResolverLive,
   ResourcesChannelLive,
   ResourcesLive,
+  ResourceLoadsLive,
+  ResourceLoadsChannelLive,
+  ResourceLoads,
   ResourceRuntimeLive,
   WorktreeServiceRestartsLive,
   ProtocolHostLive,
@@ -340,6 +344,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ProjectSecretsRepoLive,
   ProjectServiceRecipesRepoLive,
   ResourcesRepoLive,
+  ResourceLoadsRepoLive,
   SessionRepositoriesRepoLive,
   SettingsRepoLive,
   SkillsRepoLive,
@@ -940,6 +945,10 @@ const MainLive = Layer.unwrap(
       parts,
       SessionChannelNetworkLayer,
       ResourcesChannelLive.pipe(Layer.provide(SessionChannelRegistryLayer)),
+      ResourceLoadsChannelLive.pipe(Layer.provide(SessionChannelRegistryLayer)),
+      ...(mode === "worker"
+        ? []
+        : [Layer.effectDiscard(Effect.flatMap(ResourceLoads, (loads) => loads.recover))]),
     ).pipe(
       // Session steering, landing (docs/adr/0007-landing.md) for the landing routes, receiving a
       // handoff (docs/specs/mend-handoff.md) for the handoff routes, and a project's resources
@@ -949,6 +958,9 @@ const MainLive = Layer.unwrap(
           SessionSteeringLive,
           landing,
           HandoffStartLive.pipe(Layer.provide(captureStore)),
+          ResourceLoadsLive.pipe(
+            Layer.provide(ResourceScopesLive.pipe(Layer.provide(SealantEnv.layer))),
+          ),
           ResourcesLive.pipe(
             Layer.provide(Layer.merge(ResourceImageResolverLive, WorktreeServiceRestartsLive)),
           ),

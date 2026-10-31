@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { MendDBLive, migrations, ResourcesRepo, ResourcesRepoLive, UserFacts } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { ProjectId, type WorktreeId } from "@mend/domain";
+import { ProjectId, ResourceLoadId, type WorktreeId } from "@mend/domain";
 import {
   ImageDigest,
   presetDefinition,
@@ -17,11 +17,12 @@ import {
   ImageResolutionError,
   type ResourceImageResolver,
   type ResetOutcome,
+  type ResourceLoads,
   type ResourceRuntime,
   type WorktreeServiceRestarts,
   WORKTREE_STAMP,
 } from "@mend/sessions";
-import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
+import { Effect, Layer, ManagedRuntime, Redacted, Schema, Stream } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -137,6 +138,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     override: (repo: ResourcesRepo["Service"]) => ResourcesRepo["Service"] = (repo) => repo,
     resourceRuntime: Layer.PartialEffectful<ResourceRuntime["Service"]> = {},
     serviceRestarts: Layer.PartialEffectful<WorktreeServiceRestarts["Service"]> = {},
+    resourceLoads: Layer.PartialEffectful<ResourceLoads["Service"]> = {},
   ) => {
     const repo = override(await runtime.runPromise(repoNow));
     api = await createTenancyApi(undefined, {
@@ -144,6 +146,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
         resources: repo,
         resourceRuntime,
         serviceRestarts,
+        resourceLoads,
         users: {
           byIds: (accounts) =>
             Effect.succeed(
@@ -898,5 +901,80 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
         )
       ).status,
     ).toBe(404);
+  });
+  it("parses pull URLs as redacted values at the boundary and never echoes malformed input", async () => {
+    const captured: Array<string> = [];
+    const secret = "api-load-private-password";
+    await start(
+      undefined,
+      {},
+      {},
+      {
+        begin: (_project, _viewer, input) =>
+          Effect.sync(() => {
+            captured.push(JSON.stringify(input));
+            return {
+              id: ResourceLoadId.make("33333333-3333-3333-3333-333333333333"),
+              phase: "pulling",
+              bytesDone: 0,
+              bytesTotal: null,
+              statusLine: "@db · loading staging/app · pulling 0 B · shared database",
+            };
+          }),
+      },
+    );
+    const base = `/api/projects/${shared.project}/resource-loads?${zone}`;
+    const response = await harness().request("alice", "POST", base, {
+      name: "db",
+      worktreeId: null,
+      target: "shared",
+      source: { kind: "pull", url: `postgres://alice:${secret}@staging/app` },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).not.toContain(secret);
+    expect(captured.join("\n")).not.toContain(secret);
+    const invalid = await harness().request("alice", "POST", base, {
+      name: "db",
+      worktreeId: secret,
+      target: "no",
+      source: { kind: "pull", url: secret },
+    });
+    expect(invalid.status).toBe(409);
+    expect(await invalid.text()).not.toContain(secret);
+    expect((await harness().request("bob", "POST", base, {})).status).toBe(404);
+  });
+  it("streams a raw dump body through the authenticated load route", async () => {
+    let received = 0;
+    const id = ResourceLoadId.make("44444444-4444-4444-4444-444444444444");
+    await start(
+      undefined,
+      {},
+      {},
+      {
+        feed: (_project, viewer, loadId, body) =>
+          Effect.gen(function* () {
+            expect(viewer.userId).toBe("alice");
+            expect(loadId).toBe(id);
+            received = yield* Stream.runFold(
+              body,
+              () => 0,
+              (bytes, chunk) => bytes + chunk.length,
+            );
+            return {
+              id,
+              phase: "restoring",
+              bytesDone: received,
+              bytesTotal: null,
+              statusLine: "@db · restoring",
+            };
+          }),
+      },
+    );
+    const path = `/api/projects/${shared.project}/resource-loads/${id}/body?${zone}`;
+    const bytes = new Uint8Array(256 * 1024).fill(128);
+    expect((await harness().request("bob", "PUT", path, bytes)).status).toBe(404);
+    expect(received).toBe(0);
+    expect((await harness().request("alice", "PUT", path, bytes)).status).toBe(200);
+    expect(received).toBe(bytes.length);
   });
 });
