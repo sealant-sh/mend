@@ -357,6 +357,18 @@ const previewParts = (
   };
 };
 
+/** Append the currently offered preview buttons to a landing reply without changing its body. */
+export const replyWithPreviews = (base: SlackMessage, previews: WorktreePreviews): SlackMessage => {
+  if (previews._tag === "Hidden") return base;
+  const offered: WorktreePreviews = {
+    ...previews,
+    previews: previews.previews.filter((notice) => notice.openable && !stoppedByPerson(notice)),
+    unprepared: null,
+  };
+  const parts = previewParts(offered, previews.appUrl);
+  return { text: base.text, blocks: [...base.blocks, ...parts.blocks] };
+};
+
 /** Every reaction Mend puts on a request, so the reporter can take the previous one off. */
 export const SLACK_REACTIONS = ["hourglass_flowing_sand", "white_check_mark", "x", "zzz"] as const;
 export type SlackReaction = (typeof SLACK_REACTIONS)[number];
@@ -832,8 +844,8 @@ export const SUMMARY_PROVENANCE =
  * agent messages are not shown or the tour did not run, the count where no review pass ran, the
  * previews where there are none to show. Zero drafts is said out loud; it is an outcome, not
  * silence. When the turn's change did not land, the reply ends with the offer to land it
- * (`landOfferBlocks`). Null when there is none of these. It is never edited: the status message
- * is the one that stays current.
+ * (`landOfferBlocks`). Null when there is none of these. When it carries a landing offer, the
+ * reporter keeps its body and edits its preview buttons as the worktree's previews change.
  */
 export const reviewMessage = (input: {
   readonly summary: TourSummary | null;

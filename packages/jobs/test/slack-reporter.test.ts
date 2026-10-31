@@ -1883,6 +1883,166 @@ describe("a worktree's previews in the thread (docs/adr/0017-live-preview.md)", 
     return w;
   };
 
+  const replyEdits = (w: ReturnType<typeof world>) =>
+    w
+      .writes()
+      .flatMap((call) => (call.kind === "update" && call.input.ts !== STATUS ? [call.input] : []));
+  const offeredReply = async () => {
+    const w = world({ threadCreatedAt: NOW });
+    w.state.change = change;
+    w.state.turns = [decidedTurn(1, "question")];
+    const reporter = w.worker();
+    await w.observe(reporter);
+    return { w, reporter };
+  };
+
+  it("edits the latest turn's landing reply once when its preview answers, including follow-ups and a worker restart", async () => {
+    const { w, reporter } = await offeredReply();
+    expect(JSON.stringify(w.posts())).not.toContain("Open preview");
+    w.state.previews = web([answered(NOW)]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    expect(replyEdits(w)).toHaveLength(1);
+    const edit = replyEdits(w)[0];
+    expect(JSON.stringify(edit?.blocks)).toContain(OPEN);
+    const button = edit?.blocks?.flatMap((block) =>
+      block.type === "section" && block.accessory?.url === OPEN ? [block.accessory] : [],
+    )[0];
+    expect(button?.style).toBe("primary");
+    expect(JSON.stringify(edit?.blocks)).toContain("Push and open pull request");
+    expect(w.posts()).toHaveLength(1);
+    await w.observe(w.worker());
+    expect(replyEdits(w)).toHaveLength(1);
+    w.state.turns = [
+      decidedTurn(1, "question"),
+      decidedTurn(2, "off", new Date(NOW.getTime() + 30_000)),
+    ];
+    w.state.previews = NO_PREVIEWS;
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    expect(w.posts()).toHaveLength(2);
+    w.state.previews = web([answered(NOW)]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    expect(replyEdits(w).at(-1)?.ts).not.toBe(edit?.ts);
+    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).toContain(OPEN);
+  });
+
+  it("edits a combined review and landing reply without losing its summary or review link", async () => {
+    const w = world({ threadCreatedAt: NOW });
+    w.state.change = change;
+    w.state.turns = [decidedTurn(1, "question")];
+    w.state.passes = [passOf("tour", "completed")];
+    w.state.tour = tourOf();
+    const reporter = w.worker();
+    await w.observe(reporter);
+    w.state.previews = web([answered(NOW)]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(w.worker());
+    expect(w.posts()).toHaveLength(1);
+    expect(replyEdits(w)).toHaveLength(1);
+    const blocks = JSON.stringify(replyEdits(w)[0]?.blocks);
+    expect(blocks).toContain("**Summary**");
+    expect(blocks).toContain(SLACK_ACTIONS.reviewChange);
+    expect(blocks).toContain(SLACK_ACTIONS.landChange);
+    expect(blocks).toContain(OPEN);
+  });
+
+  it("retries a refused reply edit after Retry-After, across workers", async () => {
+    const { w, reporter } = await offeredReply();
+    w.state.previews = web([answered(NOW)]);
+    w.slack.refuseUpdates(
+      ...[1, 2].map(
+        () =>
+          new SlackApiError({
+            method: "chat.update",
+            code: "ratelimited",
+            message: "rate limited",
+            retryAfterSeconds: 3,
+          }),
+      ),
+    );
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    expect(replyEdits(w)).toHaveLength(0);
+    expect(w.slack.refused).toHaveLength(2);
+    await w.observe(w.worker());
+    expect(w.slack.refused).toHaveLength(2);
+    await w.advance(3_000);
+    await w.observe(reporter);
+    expect(replyEdits(w)).toHaveLength(1);
+    await w.observe(reporter);
+    expect(replyEdits(w)).toHaveLength(1);
+  });
+
+  it("sends no reply edit or button after a person's Stop", async () => {
+    const { w, reporter } = await offeredReply();
+    w.state.previews = web([
+      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
+    ]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    await w.observe(reporter);
+    expect(replyEdits(w)).toEqual([]);
+    expect(JSON.stringify(w.posts())).not.toContain("Open preview");
+  });
+
+  it("keeps the reply's preview button after an idle stop and removes it after a person's Stop", async () => {
+    const { w, reporter } = await offeredReply();
+    w.state.previews = web([answered(NOW)]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    w.state.previews = web([
+      { _tag: "Stopped", service: "web", by: { _tag: "Idle", minutes: 30 } },
+    ]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).toContain(OPEN);
+    w.state.previews = web([
+      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
+    ]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).not.toContain(OPEN);
+  });
+
+  it("does not change the status rendering when retaining a landing reply", async () => {
+    const offered = await offeredReply();
+    const ordinary = completedWith();
+    ordinary.state.change = change;
+    ordinary.state.turns = [decidedTurn(1, "question")];
+    const reporter = ordinary.worker();
+    for (const previews of [NO_PREVIEWS, web([answered(NOW)])]) {
+      offered.w.state.previews = previews;
+      ordinary.state.previews = previews;
+      await offered.w.advance(STATUS_PREVIEW_EVERY_MS);
+      await ordinary.advance(STATUS_PREVIEW_EVERY_MS);
+      await offered.w.observe(offered.reporter);
+      await ordinary.observe(reporter);
+      const status = (w: ReturnType<typeof world>) =>
+        w
+          .writes()
+          .flatMap((call) =>
+            call.kind === "update" && call.input.ts === STATUS ? [call.input] : [],
+          )
+          .at(-1);
+      expect(status(offered.w)).toEqual(status(ordinary));
+    }
+  });
+
+  it("makes no chat.update for an unchanged reply rendering", async () => {
+    const { w, reporter } = await offeredReply();
+    w.state.previews = web([answered(NOW)]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    const writes = w.writes().length;
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    w.state.previews = web([answered(new Date(NOW.getTime() + 20_000))]);
+    await w.observe(w.worker());
+    await w.observe(reporter);
+    expect(w.writes()).toHaveLength(writes);
+  });
+
   it("edits the status message once per move of the preview, and never for a repeated check", async () => {
     const w = completedWith();
     const reporter = w.worker();

@@ -50,6 +50,9 @@ import {
   reactionFor,
   receiptAfter,
   receiptOf,
+  replyWithPreviews,
+  SLACK_ACTIONS,
+  SlackReplyReceipt,
   reviewMessage,
   sessionUrl,
   showsRendering,
@@ -72,7 +75,7 @@ import {
 } from "@mend/slack";
 import { SlackApi, type SlackApiError, updateRefusalOf } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
-import { Cause, Clock, Deferred, Effect, Layer, Queue } from "effect";
+import { Cause, Clock, Deferred, Effect, Layer, Queue, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { SlackPreviewReads } from "./slack-preview-reads.ts";
@@ -97,7 +100,8 @@ import { SlackPreviewReads } from "./slack-preview-reads.ts";
  *   refusal or failure in the remote's words; and when a completed turn's change did not land (a
  *   question, `autopr=false`, automatic landing off, a follow-up from someone other than the
  *   owner), the offer to land it: "Push and open pull request", on the end-of-session reply when
- *   that reply goes out in the same look, and as a reply of its own otherwise.
+ *   that reply goes out in the same look, and as a reply of its own otherwise. The latest offer
+ *   reply gains the worktree's Open preview buttons as they become available, edited in place.
  *
  * The install's display settings decide how much: with agent messages off, or in a Slack Connect
  * channel the owner did not open, the thread gets status, reactions and links only. A change to
@@ -266,10 +270,10 @@ const offerKey = (offer: LandOffer) => `land-offer:${offer.turnId}`;
 /** A Slack write whose failure is logged, never raised: the thread is not the session. */
 const quietly = <A>(what: string, effect: Effect.Effect<A, SlackApiError>) =>
   effect.pipe(
-    Effect.asVoid,
     Effect.catch((error) =>
       Effect.logWarning(`slack reporter: ${what} failed`).pipe(
         Effect.annotateLogs({ method: error.method, code: error.code }),
+        Effect.as(null),
       ),
     ),
   );
@@ -487,7 +491,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         ),
       );
 
-    const sendStatus = (
+    const sendEdit = (
       token: string,
       thread: SlackThreadSession,
       statusTs: string,
@@ -583,9 +587,12 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       }
       const wait = editWait(receipt, thread.reportedState, state, rendering.base);
       if (wait > 0) return yield* lookAgainIn(session.id, wait, recount);
-      const claimed = editedReceipt({ ...rendering, key }, now());
+      const claimed: SlackStatusReceipt = {
+        ...editedReceipt({ ...rendering, key }, now()),
+        ...(receipt.reply === undefined ? {} : { reply: receipt.reply }),
+      };
       if (!(yield* claim(thread, state, claimed))) return;
-      const failure = yield* sendStatus(token, thread, thread.statusTs, message);
+      const failure = yield* sendEdit(token, thread, thread.statusTs, message);
       if (failure !== null) {
         const after = receiptAfter(receipt, failure, now());
         yield* threads.claimStatus(
@@ -674,19 +681,42 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       thread: SlackThreadSession,
       key: string,
       messages: Effect.Effect<ReadonlyArray<SlackMessage>>,
+      previews: WorktreePreviews = NO_PREVIEWS,
     ) =>
       Effect.gen(function* () {
         if (!(yield* threads.claimPost(thread.sessionId, key))) return;
         for (const message of yield* messages) {
-          yield* quietly(
+          const carriesOffer = message.blocks.some(
+            (block) =>
+              block.type === "actions" &&
+              block.elements.some((element) => element.action_id === SLACK_ACTIONS.landChange),
+          );
+          const rendered = carriesOffer ? replyWithPreviews(message, previews) : message;
+          const posted = yield* quietly(
             "chat.postMessage",
             slack.postMessage(token, {
               channel: thread.channelId,
               threadTs: thread.threadTs,
-              text: message.text,
-              blocks: message.blocks,
+              text: rendered.text,
+              blocks: rendered.blocks,
             }),
           );
+          if (carriesOffer && posted !== null) {
+            const current = yield* threads.forSession(thread.sessionId);
+            if (current !== null && current.reportedState !== null) {
+              const receipt = receiptOf(current.reportedStatus);
+              const renderingKey = statusKey(rendered);
+              const reply = Schema.decodeUnknownSync(SlackReplyReceipt)({
+                ts: posted.ts,
+                base: message,
+                edit: editedReceipt(
+                  { key: renderingKey, base: statusKey(message), previews, counts: null },
+                  now(),
+                ),
+              });
+              yield* claim(current, current.reportedState, { ...receipt, reply });
+            }
+          }
         }
       });
 
@@ -768,7 +798,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           drafts,
           url: changeUrl(webOrigin, change.id),
           offer: offered,
-          previews,
+          previews: offered === null ? previews : NO_PREVIEWS,
         });
         return message === null ? [] : [message];
       });
@@ -879,6 +909,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
             offer,
             previews,
           ),
+          previews,
         );
       }
       // Otherwise the offer is a reply of its own: the end-of-session reply may come much later,
@@ -889,8 +920,50 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           thread,
           offerKey(offer),
           Effect.succeed([landOfferMessage(offer, thread.slackUserId)]),
+          previews,
         );
       }
+    });
+
+    /** The latest landing reply shares the status writer's queue and compare-and-set receipt. */
+    const reportReplyPreview = Effect.fn("SlackReporter.reportReplyPreview")(function* (
+      token: string,
+      observedThread: SlackThreadSession,
+      previews: WorktreePreviews,
+    ) {
+      if (receiptOf(observedThread.reportedStatus).reply === undefined) return;
+      const sessionId = observedThread.sessionId;
+      const thread = yield* threads.forSession(sessionId);
+      if (thread === null || thread.reportedState === null) return;
+      const receipt = receiptOf(thread.reportedStatus);
+      const reply = receipt.reply;
+      if (reply === undefined || reply.edit.shown._tag === "Gone") return;
+      const message = replyWithPreviews(reply.base, previews);
+      const key = statusKey(message);
+      if (showsRendering(reply.edit.shown, key, message.text)) return;
+      const wait = Math.max(
+        (reply.edit.holdUntil ?? 0) - now(),
+        (reply.edit.editedAt ?? 0) + STATUS_PREVIEW_EVERY_MS - now(),
+      );
+      if (wait > 0) return yield* lookAgainIn(sessionId, wait, false);
+      const edit = editedReceipt(
+        { key, base: statusKey(reply.base), previews, counts: null },
+        now(),
+      );
+      const claimed = { ...receipt, reply: { ...reply, edit } };
+      if (!(yield* claim(thread, thread.reportedState, claimed))) return;
+      const failure = yield* sendEdit(token, thread, reply.ts, message);
+      if (failure === null) return;
+      const after = receiptAfter(reply.edit, failure, now());
+      yield* threads.claimStatus(
+        sessionId,
+        { state: thread.reportedState, status: storedReceipt(claimed) },
+        {
+          state: thread.reportedState,
+          status: storedReceipt({ ...receipt, reply: { ...reply, edit: after } }),
+        },
+      );
+      if (after.holdUntil !== null) yield* lookAgainIn(sessionId, after.holdUntil - now(), false);
     });
 
     /** Look at a session again and bring its thread up to date. */
@@ -933,8 +1006,8 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         ? yield* previewsOf(observed.session, receiptOf(observed.thread.reportedStatus))
         : NO_PREVIEWS;
       yield* reportStatus(install, token, observed, recount, project.name, previews);
-      if (before === undefined) return; // unknown baseline: record, never post
-      yield* reportReplies(install, token, observed, before, previews);
+      yield* reportReplyPreview(token, observed.thread, previews);
+      if (before !== undefined) yield* reportReplies(install, token, observed, before, previews);
     });
 
     /**

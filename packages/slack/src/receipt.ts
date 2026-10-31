@@ -28,7 +28,7 @@ export type StatusShown = typeof StatusShown.Type;
  * edits in a row Slack refused, and the previews and change counts last read for it, for a look
  * that cannot read them.
  */
-export const SlackStatusReceipt = Schema.Struct({
+const MessageReceipt = Schema.Struct({
   shown: StatusShown,
   editedAt: Schema.NullOr(Schema.Number),
   holdUntil: Schema.NullOr(Schema.Number),
@@ -37,6 +37,47 @@ export const SlackStatusReceipt = Schema.Struct({
   counts: Schema.NullOr(
     Schema.Struct({ files: Schema.Int, additions: Schema.Int, deletions: Schema.Int }),
   ),
+});
+// The blocks the reporter retains are its generated review and landing offer, never Slack input.
+const ReplyText = Schema.Struct({ type: Schema.Literal("mrkdwn"), text: Schema.String });
+const ReplyButton = Schema.Struct({
+  type: Schema.Literal("button"),
+  action_id: Schema.String,
+  text: Schema.Struct({
+    type: Schema.Literal("plain_text"),
+    text: Schema.String,
+    emoji: Schema.optionalKey(Schema.Boolean),
+  }),
+  value: Schema.optionalKey(Schema.String),
+  url: Schema.optionalKey(Schema.String),
+  style: Schema.optionalKey(Schema.Literals(["primary", "danger"])),
+});
+
+/** The latest landing-offer reply, retained so the reporter can edit its preview buttons. */
+export const SlackReplyReceipt = Schema.Struct({
+  ts: Schema.String,
+  base: Schema.Struct({
+    text: Schema.String,
+    blocks: Schema.Array(
+      Schema.Union([
+        Schema.Struct({ type: Schema.Literal("markdown"), text: Schema.String }),
+        Schema.Struct({
+          type: Schema.Literal("section"),
+          text: ReplyText,
+          accessory: Schema.optionalKey(ReplyButton),
+        }),
+        Schema.Struct({ type: Schema.Literal("context"), elements: Schema.Array(ReplyText) }),
+        Schema.Struct({ type: Schema.Literal("actions"), elements: Schema.Array(ReplyButton) }),
+      ]),
+    ),
+  }),
+  edit: MessageReceipt,
+});
+export type SlackReplyReceipt = typeof SlackReplyReceipt.Type;
+
+export const SlackStatusReceipt = Schema.Struct({
+  ...MessageReceipt.fields,
+  reply: Schema.optionalKey(SlackReplyReceipt),
 });
 export type SlackStatusReceipt = typeof SlackStatusReceipt.Type;
 
