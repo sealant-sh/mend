@@ -120,6 +120,26 @@ const screenContract = (runFixture: RunFixture) => {
       }),
     ));
 
+  it("reads the latest screen after its display is released, and follows its next workspace", async () =>
+    runFixture(({ screens, session }) =>
+      Effect.gen(function* () {
+        const sessionId = yield* session();
+        expect(yield* screens.latestForSession(sessionId)).toBeNull();
+        const first = yield* screens.reserve({ sessionId, workspaceId: workspace() });
+        yield* screens.setLife(first.id, { life: { _tag: "Ended", reason: "idle" } });
+        yield* screens.release(first.id);
+        expect(yield* screens.ofSession(sessionId)).toBeNull();
+        expect((yield* screens.latestForSession(sessionId))?.life).toEqual({
+          _tag: "Ended",
+          reason: "idle",
+        });
+        const next = yield* screens.reserve({ sessionId, workspaceId: workspace() });
+        expect(yield* screens.latestForSession(sessionId)).toEqual(next);
+        yield* screens.release(next.id);
+        expect((yield* screens.latestForSession(sessionId))?.id).toBe(next.id);
+      }),
+    ));
+
   it("releases a display when its session ends, for the workspace's next session", async () =>
     runFixture(({ screens, session }) =>
       Effect.gen(function* () {

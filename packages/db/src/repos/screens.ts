@@ -143,6 +143,8 @@ export class ScreensRepo extends Context.Service<
     readonly byId: (id: ScreenId) => Effect.Effect<Screen | null>;
     /** The screen holding the session's display, or null once it is released. */
     readonly ofSession: (sessionId: SessionId) => Effect.Effect<Screen | null>;
+    /** The session's latest screen, including its stopped screen after the display was released. */
+    readonly latestForSession: (sessionId: SessionId) => Effect.Effect<Screen | null>;
     readonly setLife: (
       id: ScreenId,
       change: ScreenLifeChange,
@@ -395,6 +397,19 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return row === undefined ? null : toScreen(row);
     });
 
+    const latestForSession = Effect.fn("ScreensRepo.latestForSession")(function* (
+      sessionId: SessionId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(screens)
+        .where(eq(screens.sessionId, sessionId))
+        .orderBy(desc(screens.createdAt))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toScreen(row);
+    });
+
     const setLife = Effect.fn("ScreensRepo.setLife")(function* (
       id: ScreenId,
       change: ScreenLifeChange,
@@ -634,6 +649,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       reserve,
       byId,
       ofSession,
+      latestForSession,
       setLife,
       release,
       listHeld,
@@ -715,6 +731,8 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
       }),
     byId: (id) => Effect.sync(() => rowOf(id)?.screen ?? null),
     ofSession: (sessionId) => Effect.sync(() => held(sessionId)?.screen ?? null),
+    latestForSession: (sessionId) =>
+      Effect.sync(() => rows.findLast((row) => row.screen.sessionId === sessionId)?.screen ?? null),
     setLife: (id, change) =>
       Effect.suspend(() => {
         const row = rowOf(id);

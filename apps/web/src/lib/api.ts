@@ -420,6 +420,8 @@ export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.
 /** Take over the screen on this viewer's connection, the one its socket's first frame named. */
 export const takeScreen = (id: string, connection: string) =>
   orLogin(trpcClient.screens.take.mutate({ id, connection }));
+/** Wake the workspace and screen without sending the agent a message. */
+export const wakeScreen = (id: string) => orLogin(trpcClient.screens.wake.mutate({ id }));
 export const handBackScreen = (id: string) => orLogin(trpcClient.screens.handBack.mutate({ id }));
 /**
  * The owner's "discard unsaved and stop" (docs/adr/0002): ends the workspace while its captures

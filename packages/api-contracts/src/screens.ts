@@ -1,4 +1,4 @@
-import { SessionId, Timestamp, ViewerConnectionId } from "@mend/domain";
+import { SessionId, SessionProcessId, Timestamp, ViewerConnectionId } from "@mend/domain";
 import { DisplayNumber, ScreenHolder, ScreenLife } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -53,6 +53,8 @@ export const ScreenRead = Schema.Union([
   Schema.TaggedStruct("NoScreen", {}),
   Schema.TaggedStruct("Screen", {
     display: DisplayNumber,
+    /** The most recent screen start, kept after it ends to distinguish it from an older read. */
+    processId: Schema.NullOr(SessionProcessId),
     width: Schema.Int,
     height: Schema.Int,
     life: ScreenLife,

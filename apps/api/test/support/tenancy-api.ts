@@ -315,6 +315,7 @@ export const createTenancyApi = async (
       readonly reads?: Layer.PartialEffectful<WorktreeReads["Service"]>;
       readonly checkpoints?: Layer.PartialEffectful<CheckpointsRepo["Service"]>;
       readonly engine?: Layer.PartialEffectful<SessionEngine["Service"]>;
+      readonly screensRepo?: Layer.PartialEffectful<ScreensRepo["Service"]>;
       readonly controlEvents?: Layer.PartialEffectful<SessionControlEventsRepo["Service"]>;
       readonly jobs?: Layer.PartialEffectful<JobRunner["Service"]>;
       readonly changePasses?: Layer.PartialEffectful<ChangePassesRepo["Service"]>;
@@ -790,7 +791,7 @@ export const createTenancyApi = async (
       recording(Store, "store", options.implement?.store ?? {}, calls),
       recording(Screens, "screens", {}, calls),
       recording(ScreenRtc, "screenRtc", {}, calls),
-      recording(ScreensRepo, "screensRepo", {}, calls),
+      recording(ScreensRepo, "screensRepo", options.implement?.screensRepo ?? {}, calls),
       recording(StoreRefsRepo, "storeRefs", options.implement?.storeRefs ?? {}, calls),
       recording(Gh, "gh", {}, calls),
       recording(SlackApi, "slackApi", {}, calls),

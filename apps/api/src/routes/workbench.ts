@@ -2483,6 +2483,20 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         });
       }),
     )
+    .handle("wakeScreen", ({ params }) =>
+      Effect.gen(function* () {
+        yield* (yield* SessionSteering).session(params.id);
+        yield* (yield* SessionEngine)
+          .wakeScreen(params.id)
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "SessionNotFoundError"
+                ? new NotFound({ id: params.id })
+                : new StoreFailure({ message: `The screen did not start: ${error.message}` }),
+            ),
+          );
+      }),
+    )
     .handleRaw("sendMessage", ({ params, request }) =>
       Effect.gen(function* () {
         const payload = yield* request.json.pipe(

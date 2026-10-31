@@ -12,6 +12,11 @@ export const screensRouter = router({
   read: procedure
     .input(input(Schema.Struct({ id: SessionId })))
     .query(({ ctx, input: i }) => run(ctx, (api) => api.screens.read({ params: { id: i.id } }))),
+  wake: procedure
+    .input(input(Schema.Struct({ id: SessionId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.wakeScreen({ params: { id: i.id } })),
+    ),
   take: procedure
     .input(input(Schema.Struct({ id: SessionId, connection: ViewerConnectionId })))
     .mutation(({ ctx, input: i }) =>

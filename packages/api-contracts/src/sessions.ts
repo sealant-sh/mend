@@ -321,6 +321,13 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
+    HttpApiEndpoint.post("wakeScreen", "/sessions/:id/screen/wake", {
+      params: { id: SessionId },
+      success: Schema.Void,
+      error: [NotFound, SessionNotSteerable, StoreFailure, RemovalInProgress],
+    }),
+  )
+  .add(
     HttpApiEndpoint.post("sendMessage", "/sessions/:id/messages", {
       params: { id: SessionId },
       payload: SendSessionMessageRequest,

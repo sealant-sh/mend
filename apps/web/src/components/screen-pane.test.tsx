@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
-import { ViewerConnectionId } from "@mend/domain";
+import { SessionProcessId, ViewerConnectionId } from "@mend/domain";
 import { DisplayNumber } from "@mend/domain/workbench";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { serialize } from "superjson";
+import { describe, expect, it, vi } from "vitest";
 
 import type { LiveScreenDto } from "#/lib/api";
+import { makeTrpcProxy, TRPCProvider, trpcClient } from "#/lib/trpc";
 
 import {
   heldHere,
+  ScreenPane,
   ScreenPaneView,
   type ScreenPaneViewProps,
   screenControlNotice,
@@ -26,6 +30,7 @@ const heldBy = (holder: ViewerConnectionId) =>
 const screen = (overrides: Partial<LiveScreenDto> = {}): LiveScreenDto => ({
   _tag: "Screen",
   display: DisplayNumber.make(10),
+  processId: SessionProcessId.make("screen-before-wake"),
   width: 1280,
   height: 800,
   life: { _tag: "Live", degraded: null, browserSandboxOff: false },
@@ -42,10 +47,12 @@ const render = (overrides: Partial<ScreenPaneViewProps> = {}) =>
       statusLine="screen · agent has input"
       wire={watching}
       owner
+      steer
       ownerName="Yiannis"
       held={false}
       pending={null}
       notice={null}
+      onWake={() => undefined}
       onTake={() => undefined}
       onHandBack={() => undefined}
       onReconnect={() => undefined}
@@ -53,6 +60,164 @@ const render = (overrides: Partial<ScreenPaneViewProps> = {}) =>
       {...overrides}
     />,
   );
+
+const reply = (value: unknown) =>
+  new Response(JSON.stringify([{ result: { data: serialize(value) } }]), {
+    headers: { "content-type": "application/json" },
+  });
+const settleWake = async () => {
+  await act(() => vi.advanceTimersByTimeAsync(10));
+};
+
+const withWakePane = async (
+  work: (pane: {
+    readonly host: HTMLDivElement;
+    readonly wakes: string[];
+    readonly answer: () => void;
+    readonly read: (next: LiveScreenDto) => Promise<void>;
+    readonly settle: () => Promise<void>;
+  }) => Promise<void>,
+) => {
+  vi.useFakeTimers();
+  Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  const stopped = screen({ life: { _tag: "Ended", reason: "idle" } });
+  let answer: () => void = () => {
+    throw new Error(`Wake response for display ${stopped.display} is not ready`);
+  };
+  const response = new Promise<Response>((resolve) => {
+    answer = () => resolve(reply(undefined));
+  });
+  const wakes: string[] = [];
+  vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+    const path = input.toString();
+    if (path.includes("screens.wake")) {
+      wakes.push(...(path.split("/").at(-1)?.split("?")[0]?.split(",") ?? []));
+      return response;
+    }
+    if (path.includes("screens.read")) return reply(stopped);
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { gcTime: Infinity } } });
+  const trpc = makeTrpcProxy(queryClient);
+  const screenKey = trpc.screens.read.queryKey({ id: "session-wake" });
+  function Probe() {
+    const { data } = useQuery({
+      ...trpc.screens.read.queryOptions({ id: "session-wake" }),
+      initialData: stopped,
+      staleTime: Infinity,
+    });
+    return data._tag === "Screen" ? (
+      <ScreenPane
+        sessionId="session-wake"
+        screen={data}
+        steer
+        viewerId={OWNER}
+        ownerName="Yiannis"
+        nameOf={() => "Yiannis"}
+      />
+    ) : null;
+  }
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TRPCProvider trpcClient={trpcClient} queryClient={queryClient}>
+            <Probe />
+          </TRPCProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await work({
+      host,
+      wakes,
+      answer,
+      read: async (next) => {
+        await act(async () => queryClient.setQueryData(screenKey, next));
+        await settleWake();
+      },
+      settle: settleWake,
+    });
+  } finally {
+    await act(async () => root.unmount());
+    queryClient.clear();
+    host.remove();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  }
+};
+
+describe("ScreenPane wake", () => {
+  it("keeps Starting after the POST resolves and a poll still reads Ended, until Live", () =>
+    withWakePane(async ({ host, wakes, answer, read, settle }) => {
+      const button = host.querySelector("button");
+      if (button === null) throw new Error("Missing wake button");
+      await act(async () => button.click());
+      await settle();
+      expect(wakes).toHaveLength(1);
+      answer();
+      await settle();
+      expect(host.textContent).toContain("Starting…");
+      expect(host.textContent).not.toContain("Wake the screen");
+      expect(host.querySelector("button")).toBeNull();
+      await read(screen());
+      expect(host.textContent).not.toContain("Starting…");
+      expect(host.textContent).toContain("Fullscreen");
+      expect(wakes).toHaveLength(1);
+    }));
+
+  it("offers a retry when a new screen ends between polls, even with the old end reason", () =>
+    withWakePane(async ({ host, answer, read, settle }) => {
+      const button = host.querySelector("button");
+      if (button === null) throw new Error("Missing wake button");
+      await act(async () => button.click());
+      await settle();
+      answer();
+      await settle();
+      expect(host.textContent).toContain("Starting…");
+      await read(
+        screen({
+          processId: SessionProcessId.make("screen-after-wake"),
+          life: { _tag: "Ended", reason: "idle" },
+        }),
+      );
+      expect(host.textContent).toContain("Wake the screen");
+      expect(host.textContent).not.toContain("Starting…");
+    }));
+
+  it("sends one wake even when pressed twice before React commits the pending state", () =>
+    withWakePane(async ({ host, wakes, answer, read, settle }) => {
+      const button = host.querySelector("button");
+      if (button === null) throw new Error("Missing wake button");
+      await act(async () => {
+        button.click();
+        button.click();
+      });
+      await settle();
+      expect(wakes).toHaveLength(1);
+      answer();
+      await settle();
+      await read(
+        screen({
+          processId: SessionProcessId.make("screen-after-wake"),
+          life: { _tag: "Starting" },
+        }),
+      );
+      expect(host.textContent).toContain("Starting…");
+      expect(host.querySelector("button")).toBeNull();
+      expect(wakes).toHaveLength(1);
+      await read(
+        screen({
+          processId: SessionProcessId.make("screen-after-wake"),
+          life: { _tag: "Ended", reason: "process-exited" },
+        }),
+      );
+      expect(host.textContent).toContain("Wake the screen");
+      expect(host.textContent).not.toContain("Starting…");
+    }));
+});
 
 describe("ScreenPaneView", () => {
   it("shows the live screen and its status line while the agent holds it", () => {
@@ -128,17 +293,48 @@ describe("ScreenPaneView", () => {
       screen: screen({ life: { _tag: "Starting" } }),
       statusLine: "screen · starting",
     });
-    expect(starting).toContain("Connecting");
     expect(starting).toContain("Starting…");
     expect(starting).not.toContain('data-testid="novnc"');
     const ended = render({
       screen: screen({ life: { _tag: "Ended", reason: "idle" } }),
       statusLine: "screen · ended after 15 min idle",
     });
-    expect(ended).toContain("The agent&#x27;s next screen look starts it.");
+    expect(ended).toContain("The screen is stopped.");
     expect(ended).not.toContain('data-testid="novnc"');
     expect(ended).not.toContain("Take over");
   });
+  it.each([
+    { owner: true, steer: true },
+    { owner: false, steer: true },
+    { owner: false, steer: false },
+  ])("offers a wake only to a steerer: %j", ({ owner, steer }) => {
+    const html = render({
+      screen: screen({ life: { _tag: "Ended", reason: "idle" } }),
+      statusLine: "screen · ended after 15 min idle",
+      wire: { _tag: "Closed", words: "the screen stopped" },
+      owner,
+      steer,
+    });
+    expect(html).toContain("Stopped · idle");
+    expect(html).toContain("border-[1.5px]");
+    expect(html.includes("Wake the screen")).toBe(steer);
+    if (!steer) expect(html).not.toContain("<button");
+    expect(html).not.toContain("Reconnect");
+    expect(html).not.toContain("Take over");
+    expect(html).not.toContain("Only Yiannis controls this screen");
+  });
+
+  it("shows Starting without another action while waking, and keeps failures beside a retry", () => {
+    const stopped = screen({ life: { _tag: "Ended", reason: "idle" } });
+    const starting = render({ screen: stopped, pending: "wake" });
+    expect(starting).toContain("Starting…");
+    expect(starting).not.toContain("<button");
+    expect(starting).not.toContain("Wake the screen");
+    const failed = render({ screen: stopped, notice: "The screen did not start. Try again." });
+    expect(failed).toContain("The screen did not start. Try again.");
+    expect(failed).toContain("Wake the screen");
+  });
+
   it("uses earned dot colors without the run record pulse", () => {
     expect(render()).toContain("bg-success-dot");
     expect(render()).not.toContain("animate-pulse");
@@ -167,10 +363,12 @@ describe("ScreenPaneView", () => {
           statusLine="screen · agent has input"
           wire={watching}
           owner
+          steer
           ownerName="Yiannis"
           held={false}
           pending={null}
           notice={null}
+          onWake={() => undefined}
           onTake={() => undefined}
           onHandBack={() => undefined}
           onReconnect={() => undefined}

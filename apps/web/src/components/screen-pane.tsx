@@ -12,6 +12,7 @@ import {
   type ScreenControlDto,
   type ScreenReadDto,
   takeScreen,
+  wakeScreen,
 } from "#/lib/api";
 import type { ScreenRtcView } from "#/lib/screen-rtc";
 import { ScreenChannel, screenCloseWords, screenSocketUrl } from "#/lib/screen-socket";
@@ -23,7 +24,7 @@ export type ScreenWire =
   | { readonly _tag: "Watching"; readonly connection: ViewerConnectionId }
   | { readonly _tag: "Closed"; readonly words: string };
 
-type Pending = "take" | "hand-back" | null;
+type Pending = "take" | "hand-back" | "wake" | null;
 
 /**
  * Whether this viewer's own connection holds the input, as the server last reported: only then do
@@ -68,10 +69,13 @@ export interface ScreenPaneViewProps {
   readonly wire: ScreenWire;
   /** The viewer is the session's owner, the one person who may take over (ADR 0020, D3). */
   readonly owner: boolean;
+  /** The same admission as sending a message, including shared control. */
+  readonly steer: boolean;
   readonly ownerName: string;
   readonly held: boolean;
   readonly pending: Pending;
   readonly notice: string | null;
+  readonly onWake: () => void;
   readonly onTake: () => void;
   readonly onHandBack: () => void;
   readonly onReconnect: () => void;
@@ -94,17 +98,25 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
       .split(" · degraded")[0]
       ?.split(" · browser sandbox off")[0] ?? "";
   const status: { tone: "red" | "hollow" | "amber" | "accent" | "green"; word: string } =
-    screen.life._tag === "Ended"
-      ? { tone: "red", word: words.replace(/^ended(?: · | )?/, "Closed · ") }
-      : !live || wire._tag === "Connecting"
-        ? { tone: "hollow", word: "Connecting" }
-        : wire._tag === "Closed"
-          ? { tone: "red", word: `Closed · ${wire.words}` }
-          : screen.holder._tag === "Paused"
-            ? { tone: "amber", word: words.replace(/^input paused · /, "Paused · ") }
-            : screen.holder._tag === "Person"
-              ? { tone: "accent", word: held ? "You have input" : words }
-              : { tone: "green", word: words.charAt(0).toUpperCase() + words.slice(1) };
+    pending === "wake" || screen.life._tag === "Starting"
+      ? { tone: "hollow", word: "Starting…" }
+      : screen.life._tag === "Ended"
+        ? {
+            tone: "hollow",
+            word:
+              screen.life.reason === "idle"
+                ? "Stopped · idle"
+                : words.replace(/^ended(?: · | )?/, "Stopped · "),
+          }
+        : !live || wire._tag === "Connecting"
+          ? { tone: "hollow", word: "Connecting" }
+          : wire._tag === "Closed"
+            ? { tone: "red", word: `Closed · ${wire.words}` }
+            : screen.holder._tag === "Paused"
+              ? { tone: "amber", word: words.replace(/^input paused · /, "Paused · ") }
+              : screen.holder._tag === "Person"
+                ? { tone: "accent", word: held ? "You have input" : words }
+                : { tone: "green", word: words.charAt(0).toUpperCase() + words.slice(1) };
   const fullscreen = async () => {
     setFullscreenNotice(null);
     try {
@@ -135,7 +147,7 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
       <div className="flex min-h-13 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
           <StatusDot tone={status.tone} word={status.word} />
-          {!owner && (
+          {!owner && live && (
             <span className="text-xs text-muted-foreground">
               Only {props.ownerName} controls this screen
             </span>
@@ -162,6 +174,16 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {props.steer && screen.life._tag === "Ended" && pending !== "wake" && (
+            <button
+              type="button"
+              disabled={pending !== null}
+              onClick={props.onWake}
+              className={BUTTON_FILLED}
+            >
+              Wake the screen
+            </button>
+          )}
           {takeShows && (
             <button
               type="button"
@@ -182,15 +204,17 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
               {pending === "hand-back" ? "Handing back…" : "Hand back"}
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => void fullscreen()}
-            className="inline-flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-[13px] text-muted-foreground hover:text-foreground"
-          >
-            <Maximize className="size-3.5" aria-hidden="true" />
-            Fullscreen
-          </button>
-          {wire._tag === "Closed" && (
+          {live && (
+            <button
+              type="button"
+              onClick={() => void fullscreen()}
+              className="inline-flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-[13px] text-muted-foreground hover:text-foreground"
+            >
+              <Maximize className="size-3.5" aria-hidden="true" />
+              Fullscreen
+            </button>
+          )}
+          {live && wire._tag === "Closed" && (
             <button type="button" onClick={props.onReconnect} className={BUTTON_OUTLINE}>
               Reconnect
             </button>
@@ -203,9 +227,11 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
             props.viewer
           ) : (
             <p className="absolute inset-0 flex items-center justify-center p-6 text-center text-xs text-muted-foreground">
-              {screen.life._tag === "Starting"
+              {pending === "wake" || screen.life._tag === "Starting"
                 ? "Starting…"
-                : "The agent's next screen look starts it."}
+                : screen.life._tag === "Ended"
+                  ? "The screen is stopped."
+                  : "The agent's next screen look starts it."}
             </p>
           )}
         </div>
@@ -224,6 +250,7 @@ export function ScreenPane({
   sessionId,
   active = true,
   screen,
+  steer,
   viewerId,
   ownerName,
   nameOf,
@@ -231,6 +258,7 @@ export function ScreenPane({
   readonly sessionId: string;
   readonly active?: boolean;
   readonly screen: LiveScreenDto;
+  readonly steer: boolean;
   readonly viewerId: string | null;
   readonly ownerName: string;
   readonly nameOf: (userId: string) => string;
@@ -240,12 +268,23 @@ export function ScreenPane({
   const [attempt, setAttempt] = useState(0);
   const [wire, setWire] = useState<ScreenWire>({ _tag: "Connecting" });
   const [pending, setPending] = useState<Pending>(null);
+  const [wakeFrom, setWakeFrom] = useState<{
+    readonly sessionId: string;
+    readonly processId: LiveScreenDto["processId"];
+  } | null>(null);
+  const wakeInFlight = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
   const rfb = useRef<RFB | null>(null);
   const rtc = useRef<ScreenRtcView | null>(null);
   const heldRef = useRef(false);
   const owner = viewerId !== null && viewerId === screen.ownerUserId;
   const held = heldHere(screen, wire);
+  // A successful POST does not make an older poll current. Wait for Live or a different start
+  // ending, including a start that ended between polls without this pane ever reading Starting.
+  const waking =
+    wakeFrom?.sessionId === sessionId &&
+    screen.life._tag !== "Live" &&
+    !(screen.life._tag === "Ended" && screen.processId !== wakeFrom.processId);
 
   // noVNC is an imperative widget bound to its element: it opens with the element, at each
   // Reconnect (a new key), and closes with it. It reads `window` as it loads, so it loads here,
@@ -355,6 +394,24 @@ export function ScreenPane({
     };
     void answer();
   };
+  const wake = async () => {
+    if (wakeInFlight.current || waking || pending !== null || screen.life._tag !== "Ended") return;
+    wakeInFlight.current = true;
+    setPending("wake");
+    setWakeFrom({ sessionId, processId: screen.processId });
+    setNotice(null);
+    try {
+      await wakeScreen(sessionId);
+      await queryClient.invalidateQueries({ queryKey: screenKey });
+    } catch (error) {
+      setWakeFrom(null);
+      setNotice(error instanceof Error ? error.message : "The screen did not start. Try again.");
+    } finally {
+      wakeInFlight.current = false;
+      setPending(null);
+      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+    }
+  };
   const take = () => {
     if (wire._tag !== "Watching") return;
     const { connection } = wire;
@@ -379,10 +436,12 @@ export function ScreenPane({
       })}
       wire={wire}
       owner={owner}
+      steer={steer}
       ownerName={ownerName}
       held={held}
-      pending={pending}
+      pending={screen.life._tag === "Live" && pending === "wake" ? null : waking ? "wake" : pending}
       notice={notice}
+      onWake={() => void wake()}
       onTake={take}
       onHandBack={handBack}
       onReconnect={() => setAttempt((n) => n + 1)}

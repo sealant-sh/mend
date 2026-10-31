@@ -2965,6 +2965,25 @@ export class SessionEngine extends Context.Service<
       | ScreenDisplaysFullError
       | ScreenNeedsPersonError
     >;
+    /**
+     * Wake the workspace and start its screen, with no agent process or turn (ADR 0020).
+     * Concurrent wakes wait their turn and read the workspace and screen again, starting each once.
+     */
+    readonly wakeScreen: (
+      sessionId: SessionId,
+    ) => Effect.Effect<
+      void,
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | LegacyBenchReadOnlyError
+      | ProjectNotFoundError
+      | SealantPlatformError
+      | HarnessStateError
+      | SessionLaunchSetupError
+      | DotfilesResolveError
+      | ScreenDisplaysFullError
+      | ScreenNeedsPersonError
+    >;
     /** Ends the session's screen for `reason`; one already ended, or never started, is left. */
     readonly stopScreen: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
     /** The live screen's passwords, held only by the process that started or rekeyed it. */
@@ -23398,6 +23417,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         fork: (effect) => Effect.asVoid(Effect.forkIn(effect, scope)),
       });
 
+      const wakeScreen = Effect.fn("SessionEngine.wakeScreen")(function* (sessionId: SessionId) {
+        yield* wakeWorkspace(sessionId, { reason: "screen" });
+        yield* screenProcess.start(sessionId);
+      });
+
       /** A whole executor ended: clear refusals for the rows its bulk reap ends too. */
       const reapWorkspaceProcesses = Effect.fn("SessionEngine.reapWorkspaceProcesses")(function* (
         workspaceId: SealantWorkspaceId,
@@ -27553,6 +27577,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         wakeWorkspace: (sessionId, options) =>
           oneLaunch(sessionId)(wakeWorkspace(sessionId, options)),
         startScreen: (sessionId) => owned(sessionId)(screenProcess.start(sessionId)),
+        wakeScreen: (sessionId) =>
+          detached(owned(sessionId)(queuedLaunch(sessionId)(wakeScreen(sessionId)))),
         stopScreen: (sessionId, reason) => owned(sessionId)(screenProcess.stop(sessionId, reason)),
         screenPasswords: (sessionId) => Effect.sync(() => screenPasswords.of(sessionId)),
         rekeyScreen: (sessionId) => owned(sessionId)(screenProcess.rekey(sessionId)),
