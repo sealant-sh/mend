@@ -39,6 +39,8 @@ export type WaveOutcome = Exclude<PreviewRoute, { readonly _tag: "Start" }>;
 
 const refused = (answer: PreviewAnswer): WaveOutcome => ({ _tag: "Refused", answer });
 
+const MAX_SETTLED_WAVES = 1024;
+
 const NOT_FOUND = refusalAnswer(new PreviewNotFound());
 
 export const routeOf = (
@@ -79,6 +81,9 @@ type Settled =
   | { readonly _tag: "ElsewhereDeclined" };
 
 interface Wave {
+  keepResult: boolean;
+  readonly revision: number;
+  readonly sourceAttemptId: StartFrom["sourceAttemptId"];
   readonly deadline: number;
   readonly done: Deferred.Deferred<Settled>;
 }
@@ -91,6 +96,12 @@ export interface PreviewToStart {
 }
 
 export interface StartWaves {
+  /** Starts or joins a wave without holding a browser request. */
+  readonly poll: (
+    preview: PreviewToStart,
+    from: StartFrom,
+    viewerId: string,
+  ) => Effect.Effect<WaveOutcome | null>;
   readonly join: (
     preview: PreviewToStart,
     from: StartFrom,
@@ -213,10 +224,17 @@ export const makeStartWaves = (startHoldMs: number) =>
                 Effect.as(didNotStart(preview, "preview is unavailable")),
               ),
         ),
-        Effect.flatMap((settled) => Deferred.succeed(wave.done, settled)),
+        Effect.flatMap((settled) => {
+          if ((!wave.keepResult || settled._tag === "Bound") && waves.get(preview.id) === wave)
+            waves.delete(preview.id);
+          return Deferred.succeed(wave.done, settled);
+        }),
         Effect.ensuring(
           Effect.suspend(() => {
-            if (waves.get(preview.id) === wave) waves.delete(preview.id);
+            // Browser polls retain a failure for this revision and source attempt.
+            // Requests using the hold keep their existing retry behavior.
+            if (!Deferred.isDoneUnsafe(wave.done) && waves.get(preview.id) === wave)
+              waves.delete(preview.id);
             return Deferred.succeed(wave.done, didNotStart(preview, "preview is unavailable"));
           }),
         ),
@@ -228,19 +246,43 @@ export const makeStartWaves = (startHoldMs: number) =>
       preview: PreviewToStart,
       from: StartFrom,
       viewerId: string,
-    ): Effect.Effect<Settled> =>
+      response: "wait" | "poll",
+    ): Effect.Effect<Settled | null> =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           let wave = waves.get(preview.id);
+          if (
+            wave !== undefined &&
+            (wave.revision !== from.revision || wave.sourceAttemptId !== from.sourceAttemptId) &&
+            Deferred.isDoneUnsafe(wave.done)
+          ) {
+            waves.delete(preview.id);
+            wave = undefined;
+          }
           if (wave === undefined) {
+            // Retain only a bounded number of completed browser results. The engine also
+            // deduplicates failed wakes, so evicting one never forces another launch.
+            for (const [id, kept] of waves) {
+              if (waves.size < MAX_SETTLED_WAVES) break;
+              if (Deferred.isDoneUnsafe(kept.done)) waves.delete(id);
+            }
             wave = {
+              keepResult: response === "poll",
+              revision: from.revision,
+              sourceAttemptId: from.sourceAttemptId,
               deadline: clock.currentTimeMillisUnsafe() + startHoldMs,
               done: Deferred.makeUnsafe<Settled>(),
             };
             waves.set(preview.id, wave);
             yield* Effect.forkIn(runWave(preview, wave, from, viewerId), scope);
           }
-          return yield* restore(Deferred.await(wave.done));
+          if (response === "poll") wave.keepResult = true;
+          if (response === "poll" && !Deferred.isDoneUnsafe(wave.done)) return null;
+          const settled = yield* restore(Deferred.await(wave.done));
+          if (settled._tag === "ClaimerDeclined" || settled._tag === "ElsewhereDeclined") {
+            if (waves.get(preview.id) === wave) waves.delete(preview.id);
+          }
+          return settled;
         }),
       );
 
@@ -251,12 +293,21 @@ export const makeStartWaves = (startHoldMs: number) =>
     ): Effect.Effect<WaveOutcome> =>
       Effect.gen(function* () {
         for (;;) {
-          const settled = yield* awaitWave(preview, from, viewerId);
+          const settled = yield* awaitWave(preview, from, viewerId, "wait");
+          if (settled === null) continue;
           if (settled._tag === "ElsewhereDeclined") continue;
           if (settled._tag !== "ClaimerDeclined") return settled;
           if (settled.by === viewerId) return refused(settled.answer);
         }
       });
 
-    return { join } satisfies StartWaves;
+    const poll: StartWaves["poll"] = (preview, from, viewerId) =>
+      Effect.map(awaitWave(preview, from, viewerId, "poll"), (settled) => {
+        if (settled === null || settled._tag === "ElsewhereDeclined") return null;
+        if (settled._tag === "ClaimerDeclined")
+          return settled.by === viewerId ? refused(settled.answer) : null;
+        return settled;
+      });
+
+    return { join, poll } satisfies StartWaves;
   });

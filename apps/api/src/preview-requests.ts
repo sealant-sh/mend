@@ -94,6 +94,7 @@ export const browserAdmits = (head: BrowserHead, own: PreviewOrigin): boolean =>
 };
 
 export interface PreviewAnswer {
+  readonly message?: string;
   readonly status: number;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: string;
@@ -120,7 +121,7 @@ const themeVariables = (theme: PageTheme) =>
     .join("")}`;
 
 // Self-contained: no font, script or stylesheet is fetched, so the page reads the same on a preview
-// host that serves nothing else and under any edge's Content-Security-Policy.
+// host that serves nothing else, without relying on the preview app's assets.
 const GATEWAY_PAGE_CSS =
   `:root{${themeVariables(pageThemes.light)}}` +
   `@media (prefers-color-scheme: dark){:root{${themeVariables(pageThemes.dark)}}}` +
@@ -140,21 +141,25 @@ export const gatewayPage = (
   status: number,
   text: string,
   back: string | null = null,
+  content?: { readonly body: string; readonly css: string; readonly script: string },
 ): PreviewAnswer => {
   const line = escapeHtml(text);
   const link = back === null ? "" : `<a href="${escapeHtml(back)}">Open in Mend</a>`;
-  return answer(
-    status,
-    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
-      `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-      `<title>${line}</title><style>${GATEWAY_PAGE_CSS}</style></head>` +
-      `<body><main><h1>Mend preview · ${status}</h1><p>${line}</p>${link}</main></body></html>`,
-    {
-      "cache-control": "no-store, private",
-      "content-type": "text/html; charset=utf-8",
-      "x-robots-tag": "noindex",
-    },
-  );
+  return {
+    message: text,
+    ...answer(
+      status,
+      `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+        `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+        `<title>${line}</title><style>${GATEWAY_PAGE_CSS}${content?.css ?? ""}</style></head>` +
+        `<body><main><h1>Mend preview · ${status}</h1><p>${line}</p>${content?.body ?? ""}${link}</main>${content === undefined ? "" : `<script>${content.script}</script>`}</body></html>`,
+      {
+        "cache-control": "no-store, private",
+        "content-type": "text/html; charset=utf-8",
+        "x-robots-tag": "noindex",
+      },
+    ),
+  };
 };
 
 export const redirect = (
@@ -271,4 +276,11 @@ export const headRefusal = (head: PreviewRequestHead): PreviewAnswer | null =>
 export const queryOf = (target: string): string => {
   const mark = target.indexOf("?");
   return mark === -1 ? "" : target.slice(mark + 1);
+};
+
+/** Only document GETs receive the interactive startup page. */
+export const opensStartingPage = (head: BrowserHead): boolean => {
+  if (head.method !== "GET" || head.upgrade) return false;
+  if (head.sentFetchMetadata) return head.fetchMode === "navigate";
+  return head.acceptsHtml;
 };

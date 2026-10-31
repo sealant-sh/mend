@@ -345,6 +345,10 @@ of the gateway logs no URI for preview hosts:
   (128). A start pays the start budgets only when it launches a process, and the account whose
   request launched it pays; a request that waits for a start under way, or meets a start that
   already failed, pays nothing. A `503` from the gateway always means the preview is not available.
+- Browser navigations to a starting or idle-stopped preview immediately show startup progress and
+  Snake; the admitted `/__mend/status` poll checks every two seconds, and opens the original path
+  and query when ready, after the game ends or the visitor chooses Open. Fetches, assets, POSTs and
+  upgrades keep the start hold.
 - A request held for a stopped preview that does not start in time gets `503` and one line, such as
   `preview · web · did not start in 3 min · start timed out · your request was not delivered`. A
   start refused sooner says only why, as in

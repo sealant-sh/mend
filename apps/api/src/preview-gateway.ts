@@ -28,7 +28,7 @@ import {
   type ForwardRequest,
   notDelivered,
 } from "./preview-headers.ts";
-import { servePreviewRequest } from "./preview-host.ts";
+import { browserOf, servePreviewRequest } from "./preview-host.ts";
 import {
   type PreviewAccessEnded,
   PreviewConfig,
@@ -48,9 +48,16 @@ import {
   relay,
   respond,
 } from "./preview-relay.ts";
-import { answer, gatewayPage, type PreviewAnswer, refusalAnswer } from "./preview-requests.ts";
+import {
+  answer,
+  gatewayPage,
+  opensStartingPage,
+  type PreviewAnswer,
+  refusalAnswer,
+} from "./preview-requests.ts";
 import { cookiePolicyOf, type PreviewRouting } from "./preview-routing.ts";
 import { makeStartWaves, routeOf, type WaveOutcome } from "./preview-start-wave.ts";
+import { startingPage } from "./preview-starting-page.ts";
 import { PreviewTargets } from "./preview-targets.ts";
 import { addressWindowWait } from "./request-budgets.ts";
 
@@ -75,6 +82,13 @@ const UNAVAILABLE = refusalAnswer(new PreviewUnavailable({ operation: "admit" })
 const ACCESS_ENDED = refusalAnswer(
   new PreviewNoIdentity({ reason: "membership-ended", previewId: null }),
 );
+const statusAnswer = (state: "starting" | "ready" | "failed", line: string) =>
+  answer(200, JSON.stringify({ state, line }), {
+    "content-type": "application/json; charset=utf-8",
+    "x-robots-tag": "noindex",
+    "cache-control": "no-store, private",
+  });
+
 const FAILED = answer(500, "The preview gateway could not answer this request.");
 const PIPELINED = answer(400, "Bad request.", { connection: "close" });
 
@@ -237,6 +251,7 @@ export const makePreviewGatewayLayer = (
         entry: PreviewEntry,
         preview: PreviewViewer["preview"],
         viewerId: string,
+        response: "wait" | "page" | "status",
       ): Effect.Effect<WaveOutcome> =>
         Effect.gen(function* () {
           const cached = entry.resolution();
@@ -253,13 +268,27 @@ export const makePreviewGatewayLayer = (
             return { _tag: "Refused", answer: NOT_FOUND };
           }
           const release = occupancy.occupy(preview.id, viewerId);
-          const outcome = yield* waves
-            .join(
-              { id: preview.id, serviceName: preview.serviceName, back: backOf(preview) },
-              route.from,
-              viewerId,
-            )
-            .pipe(Effect.ensuring(Effect.sync(release)));
+          const outcome = yield* waves[response === "wait" ? "join" : "poll"](
+            { id: preview.id, serviceName: preview.serviceName, back: backOf(preview) },
+            route.from,
+            viewerId,
+          ).pipe(Effect.ensuring(Effect.sync(release)));
+          if (outcome === null) {
+            const phase =
+              read.value?._tag === "Starting"
+                ? read.value.attemptId === null
+                  ? "setup"
+                  : "server"
+                : "starting";
+            const line = `preview · ${preview.serviceName} · ${phase}`;
+            return {
+              _tag: "Refused",
+              answer:
+                response === "status"
+                  ? statusAnswer("starting", line)
+                  : startingPage(line, backOf(preview)),
+            };
+          }
           if (outcome._tag === "Bound") entry.remember(outcome.resolution);
           return outcome;
         });
@@ -302,7 +331,28 @@ export const makePreviewGatewayLayer = (
           );
           const releaseActivity = yield* activity.enter(preview.id);
           const entry = yield* pools.enter(preview);
-          const outcome = yield* boundOrStarted(entry, preview, viewerId);
+          const status = URL.parse(exchange.head.target, origin)?.pathname === "/__mend/status";
+          const outcome = yield* boundOrStarted(
+            entry,
+            preview,
+            viewerId,
+            status ? "status" : opensStartingPage(browserOf(exchange.head)) ? "page" : "wait",
+          );
+          if (
+            status &&
+            outcome._tag === "Bound" &&
+            Exit.isFailure(yield* lent(viewerId, outcome.resolution.attempt.workspaceId))
+          )
+            return yield* reply(exchange, NOT_FOUND);
+          if (status)
+            return yield* reply(
+              exchange,
+              outcome._tag === "Bound"
+                ? statusAnswer("ready", `preview · ${preview.serviceName} · ready`)
+                : outcome.answer.headers["content-type"] === "application/json; charset=utf-8"
+                  ? outcome.answer
+                  : statusAnswer("failed", outcome.answer.message ?? "Preview is unavailable."),
+            );
           if (outcome._tag === "Refused") return yield* reply(exchange, outcome.answer);
           const generation = generationOf(outcome.resolution);
           if (Exit.isFailure(yield* lent(viewerId, generation.attempt.workspaceId))) {
