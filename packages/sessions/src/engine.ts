@@ -745,6 +745,7 @@ import {
 import { WorkspaceGitHooks } from "./workspace-git-hooks.ts";
 import {
   parseWorkspaceNoteOutcomes,
+  PREVIEWS_NOTE,
   WORKSPACE_NOTE_NOT_WRITTEN,
   workspaceNoteExec,
 } from "./workspace-note.ts";
@@ -13457,7 +13458,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           foldersSection +
           `\n` +
           repositoriesSection +
-          servicesSection;
+          servicesSection +
+          PREVIEWS_NOTE;
         const notWritten = (detail: Record<string, unknown>) =>
           Effect.logWarning("session engine: the workspace note was not written").pipe(
             Effect.annotateLogs({ workspaceId: workspace.id, ...detail }),
