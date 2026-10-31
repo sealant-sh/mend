@@ -115,8 +115,13 @@ it("answers nothing but an authenticated Binding request, even from a tuple it r
   indication.writeUInt16BE(0x0011);
   const response = Buffer.from(allocate);
   response.writeUInt16BE(0x0101);
+  // A type above RFC 7983's STUN range that a STUN parser still accepts.
+  const high = Buffer.from(allocate);
+  high.writeUInt16BE(0x0401);
   const before = received.length;
-  for (const message of [allocate, indication, response]) browser.send(message, port, "127.0.0.1");
+  for (const message of [allocate, indication, response, high]) {
+    browser.send(message, port, "127.0.0.1");
+  }
   await delay();
   expect(received).toHaveLength(before);
   expect(replies).toEqual([72]);

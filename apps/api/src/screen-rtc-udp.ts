@@ -43,8 +43,9 @@ export class ScreenRtcUdp {
     let peer = this.#remotes.get(key);
     // On a public port, any STUN but an authenticated Binding request goes unanswered: a peer
     // would answer an unsigned request with a larger error, a reflector anyone could scan for.
+    // Any type a STUN parser accepts (two zero top bits, up to 0x3fff), not only RFC 7983's 0..3.
     const isStun =
-      data.length >= 20 && (data[0] ?? 0xff) < 4 && data.readUInt32BE(4) === 0x2112a442;
+      data.length >= 20 && (data[0] ?? 0xff) < 0x40 && data.readUInt32BE(4) === 0x2112a442;
     if (isStun && data.readUInt16BE(0) !== 1) return;
     if (isStun) {
       // A USERNAME alone is public. Authenticate MESSAGE-INTEGRITY before remembering a tuple.
