@@ -524,14 +524,18 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
   });
 
   describe("own databases", () => {
-    it("records how each began, once, and only for its worktree", async () => {
+    it("records how each began, as it was last made, and only for its worktree", async () => {
       const project = await newProject();
       const [one, two] = [await newWorktree(project), await newWorktree(project)];
       const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
       await withRepo((repo) => repo.recordOwnDatabase(one, db.id, "copied"));
+      expect([...(await withRepo((repo) => repo.ownDatabases(one)))]).toEqual([
+        [db.id, { kind: "copied", at: expect.any(Date) }],
+      ]);
+      // A reset makes it again.
       await withRepo((repo) => repo.recordOwnDatabase(one, db.id, "empty"));
       const mine = await withRepo((repo) => repo.ownDatabases(one));
-      expect([...mine]).toEqual([[db.id, { kind: "copied", at: expect.any(Date) }]]);
+      expect([...mine]).toEqual([[db.id, { kind: "empty", at: expect.any(Date) }]]);
       expect((await withRepo((repo) => repo.ownDatabases(two))).size).toBe(0);
     });
 

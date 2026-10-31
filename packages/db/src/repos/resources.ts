@@ -163,7 +163,7 @@ export class ResourcesRepo extends Context.Service<
     readonly ownDatabases: (
       worktreeId: WorktreeId,
     ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, OwnDatabaseOrigin>>;
-    /** Records an own database Mend made; one it recorded already keeps how it began. */
+    /** Records how an own database Mend made, or made again on a reset, began. */
     readonly recordOwnDatabase: (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
@@ -642,7 +642,10 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       yield* db
         .insert(resourceOwnDatabases)
         .values({ worktreeId, definitionId, origin })
-        .onConflictDoNothing()
+        .onConflictDoUpdate({
+          target: [resourceOwnDatabases.worktreeId, resourceOwnDatabases.definitionId],
+          set: { origin, madeAt: sql`now()` },
+        })
         .pipe(Effect.orDie);
     });
 
