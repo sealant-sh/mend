@@ -27,7 +27,6 @@ export type ResourceSecretState = "applied" | "changed-not-applied";
 /** What Mend observed of the instance a worktree reaches, apart from the worktree's choice. */
 export type ResourceInstanceObservation =
   | { readonly kind: "declared" }
-  | { readonly kind: "waiting-for-approval" }
   | { readonly kind: "starting" }
   | {
       readonly kind: "running";
@@ -101,7 +100,7 @@ export type ResourceStatusView =
       readonly restarted: ReadonlyArray<string>;
       readonly waitingFor: ReadonlyArray<string>;
     }
-  /** A definition or proposal with no instance behind it: what was declared, where and by whom. */
+  /** A definition or `mend.toml` table with no instance behind it: what was declared, where and by whom. */
   | {
       readonly kind: "declared";
       readonly definition: ResourceDefinitionInput;
@@ -109,30 +108,23 @@ export type ResourceStatusView =
     };
 
 /**
- * Where a declared resource stands: a person's proposal, a file's, or project settings. A
- * proposal identical to the definition settings hold says so, since approving it changes nothing.
+ * Where a declared resource stands: a `mend.toml` table, against what settings hold under its
+ * name, or a definition settings hold, with whoever added it.
  */
 export type ResourceDeclaration =
-  | { readonly kind: "proposal"; readonly by: string; readonly sameAsSettings: boolean }
-  | { readonly kind: "file"; readonly sameAsSettings: boolean }
+  | { readonly kind: "file"; readonly settings: "absent" | "same" | "differs" }
   | {
       readonly kind: "settings";
-      readonly approval: ResourceDeclaredApproval | null;
+      readonly addedBy: string;
       /** The worktree's stored choice, when the line is read for one that made it. */
       readonly choice?: WorktreeChoice;
     };
 
-/**
- * The approval of the spec as listed: a manager's for the project, or a change owner's for the
- * worktree read (decision G4), which the line keeps apart.
- */
-export interface ResourceDeclaredApproval {
-  readonly by: string;
-  readonly for: "project" | "worktree";
-}
-
-const waits = (sameAsSettings: boolean) =>
-  sameAsSettings ? "same as settings" : "waiting for approval";
+const AGAINST_SETTINGS = {
+  absent: "not in settings",
+  same: "same as settings",
+  differs: "differs from settings",
+} as const;
 
 const chosen = (def: ResourceDefinitionInput, choice: WorktreeChoice) => {
   if (choice === "off") return "off";
@@ -146,22 +138,14 @@ const declarationParts = (
   source: ResourceDeclaration,
 ): ReadonlyArray<string> => {
   switch (source.kind) {
-    case "proposal":
-      return [`proposed by ${source.by}`, waits(source.sameAsSettings)];
     case "file":
-      return ["proposed in mend.toml", waits(source.sameAsSettings)];
-    case "settings": {
-      const choice = source.choice === undefined ? [] : [chosen(def, source.choice)];
-      return source.approval === null
-        ? ["waiting for approval", ...choice]
-        : [
-            source.approval.for === "project"
-              ? `approved by ${source.approval.by}`
-              : `approved by ${source.approval.by} for this worktree`,
-            ...choice,
-            "not started",
-          ];
-    }
+      return ["in mend.toml", AGAINST_SETTINGS[source.settings]];
+    case "settings":
+      return [
+        `added by ${source.addedBy}`,
+        ...(source.choice === undefined ? [] : [chosen(def, source.choice)]),
+        "not started",
+      ];
   }
 };
 
@@ -207,8 +191,6 @@ const instanceParts = (instance: ResourceInstanceObservation): ReadonlyArray<str
   switch (instance.kind) {
     case "declared":
       return ["declared"];
-    case "waiting-for-approval":
-      return ["waiting for approval"];
     case "starting":
     case "stopping":
       return [instance.kind];

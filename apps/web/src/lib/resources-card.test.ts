@@ -24,33 +24,28 @@ const page = (choice: WorktreeChoice | null): ResourcesPageView => ({
         version: PresetVersion.make("17"),
         scope: "project",
       }),
-      approvals: { project: null, worktree: null },
-      approve: {
-        project: { kind: "denied", message: "is a manager's to approve" },
-        worktree: null,
-      },
+      image: `postgres:17@sha256:${"c".repeat(64)}`,
+      addedBy: "maria",
       choice,
       canRemove: false,
       canChoose: true,
       statusLine: `@db · ${choice ?? "nothing"}`,
     },
   ],
-  proposals: [],
   file: { kind: "not-selected" },
-  canPropose: true,
 });
 const receipt = { refused: false, lines: ["image postgres:17@sha256:…"], reload: false };
 
 describe("where an act's answer lands", () => {
-  it("keeps the answer to an approval of the definition the act started on", () => {
+  it("keeps the answer to an act on the definition the act started on", () => {
     expect(answered(new Map(), "s:rdef_db", { at: "s:rdef_db", note: receipt })).toEqual(
       new Map([["s:rdef_db", receipt]]),
     );
   });
 
-  it("moves a proposal's answer to the definition it became, and clears the proposal's", () => {
-    const before = new Map([["p:rprop_1", { refused: true, lines: ["old"], reload: false }]]);
-    expect(answered(before, "p:rprop_1", { at: "s:rdef_db", note: receipt })).toEqual(
+  it("moves a mend.toml table's answer to the definition it became, and clears the table's", () => {
+    const before = new Map([["f:db", { refused: true, lines: ["old"], reload: false }]]);
+    expect(answered(before, "f:db", { at: "s:rdef_db", note: receipt })).toEqual(
       new Map([["s:rdef_db", receipt]]),
     );
   });

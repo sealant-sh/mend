@@ -198,11 +198,10 @@ purge stops partway, purge again to finish. Purging a project that is already pu
 says when it was purged; nothing more is deleted. A project left mid-deletion by an older Mend is
 listed here too; Restore refuses when completeness cannot be proved.
 
-While a project is removed, nothing in it changes. Starting a session, proposing a resource,
-deleting a session or changing a setting is refused with words that say to restore the project
-first, and so is a request that read it before the removal and tries the same afterwards. A link
-from another project to a removed one keeps its name; delete that link, or Restore the project, to
-reuse the name.
+While a project is removed, nothing in it changes. Starting a session, adding a resource, deleting a
+session or changing a setting is refused with words that say to restore the project first, and so is
+a request that read it before the removal and tries the same afterwards. A link from another project
+to a removed one keeps its name; delete that link, or Restore the project, to reuse the name.
 
 If a member leaves with a removed private project, an organization owner finds it in the
 organization's orphaned projects and takes it over. The owner can then Restore or purge it.

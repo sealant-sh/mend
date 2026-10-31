@@ -217,11 +217,11 @@ const READS: Readonly<Record<string, Reads>> = {
   "shared.ts gitTopLevel": CHILD,
   "organization.ts inviteCommand": { pages: ["invite"] },
   "resource.ts VALUE_FLAGS": {
-    pages: ["resource list", "resource add", "resource remove", "resource approve", "resource use"],
+    pages: ["resource list", "resource add", "resource remove", "resource use"],
   },
-  "resource.ts proposalOf": { pages: ["resource add"] },
+  "resource.ts additionOf": { pages: ["resource add"] },
   "resource.ts resourceCommand": {
-    pages: ["resource list", "resource remove", "resource approve", "resource use"],
+    pages: ["resource list", "resource add", "resource remove", "resource use"],
   },
   "organization.ts folderCommand": { pages: ["folder push"] },
   "organization.ts operatorCommand": { pages: ["operator org invite-owner"] },

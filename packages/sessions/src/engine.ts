@@ -132,7 +132,7 @@ import {
   previewControlDecider,
   previewStartId,
   recipeRefusalLine,
-  resourceProposalsSection,
+  resourceTablesSection,
   PreviewStartRefusal,
   type PreviewStartRequest,
   type ServiceStartCause,
@@ -648,7 +648,7 @@ import {
   RecipeFileError,
   resolveDeclarations,
 } from "./recipes.ts";
-import { declarationsNote } from "./resource-proposals.ts";
+import { declarationsNote } from "./resource-tables.ts";
 import {
   HOT_POOL_MAX_OWNERS,
   HOT_POOL_RECENT_OWNER_WINDOW,
@@ -24347,7 +24347,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The in-workspace helper prints this message as is, so it carries the file's notices.
         const notRun = (line: string) =>
           new ServiceStartError({
-            message: [line, ...resourceProposalsSection(declared)].join("\n"),
+            message: [line, ...resourceTablesSection(declared)].join("\n"),
           });
         if (refusals.length > 0) {
           return yield* notRun(

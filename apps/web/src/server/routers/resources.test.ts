@@ -7,7 +7,6 @@ import { createTrpcHandler } from "../trpc-handler.ts";
 const origin = "https://mend.example";
 const network = makePublicNetwork(PublicOrigin.make(origin), []);
 const projectId = "p_shop";
-const proposalId = "rprop_1";
 const digest = "a".repeat(64);
 let answer: Response;
 
@@ -39,11 +38,12 @@ const mutate = async (path: string, input: unknown) => {
     : { status: response.status, value: deserialize(body.result.data) };
 };
 
-const approval = {
+const preset = {
   projectId,
   timeZone: "Europe/Athens",
-  request: { source: { kind: "settings", id: "rdef_1", digest }, worktreeId: null },
+  addition: { kind: "preset", name: "db", preset: "postgres", version: "17", scope: "project" },
 };
+const removal = { projectId, definitionId: "rdef_1", expectedDigest: digest };
 
 describe("resource writes through the web tier", () => {
   it("returns a refusal by field as a value, each refusal apart", async () => {
@@ -59,7 +59,7 @@ describe("resource writes through the web tier", () => {
       },
       { status: 422 },
     );
-    expect(await mutate("resources.approve", approval)).toEqual({
+    expect(await mutate("resources.add", preset)).toEqual({
       status: 200,
       value: {
         ok: false,
@@ -78,7 +78,7 @@ describe("resource writes through the web tier", () => {
       { _tag: "ResourceStale", message: "@db · the definition changed since you read it" },
       { status: 409 },
     );
-    expect(await mutate("resources.approve", approval)).toMatchObject({
+    expect(await mutate("resources.remove", removal)).toMatchObject({
       value: { ok: false, kind: "stale" },
     });
     for (const [tag, status] of [
@@ -86,40 +86,36 @@ describe("resource writes through the web tier", () => {
       ["ResourceManifestUnverifiable", 502],
     ] as const) {
       answer = Response.json({ _tag: tag, message: `@db · ${tag}` }, { status });
-      expect(await mutate("resources.approve", approval)).toEqual({
+      expect(await mutate("resources.add", preset)).toEqual({
         status: 200,
         value: { ok: false, kind: "unanswered", message: `@db · ${tag}` },
       });
     }
   });
 
-  it("says a proposal another removal took is gone, and leaves a project the reader cannot see an error", async () => {
-    answer = Response.json({ _tag: "NotFound", id: proposalId }, { status: 404 });
-    expect(await mutate("resources.withdraw", { projectId, proposalId })).toEqual({
-      status: 200,
-      value: { ok: false, kind: "gone" },
-    });
-    answer = Response.json({ _tag: "NotFound", id: projectId }, { status: 404 });
-    expect(await mutate("resources.withdraw", { projectId, proposalId })).toEqual({
-      status: 404,
-    });
-  });
-
-  it("sends each kind of proposal as its own member", async () => {
+  it("sends each kind of addition as its own member", async () => {
     answer = Response.json(
-      { _tag: "ResourceRejected", name: "db", refusals: [], message: "@db" },
+      { _tag: "ResourceRejected", name: "mail", refusals: [], message: "@mail" },
       { status: 422 },
     );
     expect(
-      await mutate("resources.propose", {
+      await mutate("resources.add", {
         projectId,
         timeZone: "Europe/Athens",
-        proposal: {
-          kind: "preset",
-          name: "db",
-          preset: "postgres",
-          version: "17",
-          scope: "project",
+        addition: {
+          kind: "definition",
+          spec: {
+            name: "mail",
+            scope: "worktree",
+            preset: null,
+            image: "axllent/mailpit:v1.21",
+            command: null,
+            ports: [{ name: "smtp", port: 1025, protocol: "tcp" }],
+            env: {},
+            volumes: [],
+            ready: { kind: "tcp" },
+            exports: {},
+          },
         },
       }),
     ).toMatchObject({ value: { ok: false, kind: "rejected" } });

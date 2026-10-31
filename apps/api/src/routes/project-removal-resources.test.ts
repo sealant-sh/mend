@@ -10,7 +10,7 @@ import {
   ResourcesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { ResourceDefinitionInput, withPresetCommand } from "@mend/domain/workbench";
+import { ImageDigest, ResourceDefinitionInput, withPresetCommand } from "@mend/domain/workbench";
 import { WORKTREE_STAMP } from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
@@ -224,7 +224,13 @@ describe.skipIf(postgres.skip)("two purges of one removed project, in Postgres",
       }),
     );
     const declared = await runtime.runPromise(
-      resources.declare(project, spec, "alice").pipe(Effect.result),
+      resources
+        .declare(
+          project,
+          { spec, imageDigest: ImageDigest.make(`sha256:${"a".repeat(64)}`) },
+          "alice",
+        )
+        .pipe(Effect.result),
     );
     expect(Result.isFailure(declared) ? declared.failure : "accepted").toMatchObject({
       _tag: "ResourceDefinitionRefusedError",

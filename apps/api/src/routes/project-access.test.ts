@@ -546,21 +546,17 @@ const CASES: ReadonlyArray<AccessCase> = [
   })("projectRecipes.add"),
   project("project-manage", "DELETE", "/service-recipes/web")("projectRecipes.remove"),
   project("project-read", "GET", "/resources?timeZone=UTC")("resources.list"),
-  project("project-read", "POST", "/resource-proposals?timeZone=UTC", {
+  project("project-read", "POST", "/resources?timeZone=UTC", {
     kind: "preset",
     name: "db",
     preset: "postgres",
     version: "17",
     scope: "project",
-  })("resources.propose"),
-  project("project-read", "DELETE", "/resource-proposals/rprop_1")("resources.withdraw"),
-  project("project-manage-visible", "DELETE", "/resources/rdef_1", {
+  })("resources.add"),
+  // Its adder or a manager removes a definition, which is read to say who added it.
+  project("project-read", "DELETE", "/resources/rdef_1", {
     expectedDigest: "a".repeat(64),
   })("resources.remove"),
-  project("project-manage-visible", "POST", "/resources/approvals?timeZone=UTC", {
-    source: { kind: "settings", id: "rdef_1", digest: "a".repeat(64) },
-    worktreeId: null,
-  })("resources.approve"),
   // A worktree's choice is its change owner's, which in the harness is its session's owner.
   {
     endpoint: "resources.use",
@@ -949,17 +945,18 @@ const ADMITTED: Readonly<
   "projectRecipes.list": { status: 500, calls: ["recipes.listForProject"] },
   "projectRecipes.add": { status: 500, calls: ["recipes.create"] },
   "projectRecipes.remove": { status: 500, calls: ["recipes.remove"] },
-  // The page's three reads run together, so all are asked before the first unimplemented one fails.
+  // The page's reads run together, so all are asked before the first unimplemented one fails.
   "resources.list": {
     status: 500,
-    calls: ["resources.listWithApprovals", "resources.proposals", "resources.ownSelections"],
+    calls: ["resources.listWithChoices", "resources.ownSelections"],
   },
-  "resources.propose": { status: 500, calls: ["resources.propose"] },
-  // The proposal's author decides who may remove it, so it is read first.
-  "resources.withdraw": { status: 500, calls: ["resources.proposalById"] },
-  "resources.remove": { status: 500, calls: ["resources.removeIfCurrent"] },
-  // The approver's permission is decided before the definition they name is read.
-  "resources.approve": { status: 500, calls: ["resources.listForProject"] },
+  // What settings hold under the name decides whether the add replaces someone else's.
+  "resources.add": {
+    status: 500,
+    calls: ["resources.listWithChoices", "resources.ownSelections"],
+  },
+  // Who added the definition decides who may remove it, so it is read first.
+  "resources.remove": { status: 500, calls: ["resources.listForProject"] },
   "resources.use": { status: 500, calls: ["resources.setSelection"] },
   // Every start is refused, and nothing is read or written for it.
   "resources.start": {

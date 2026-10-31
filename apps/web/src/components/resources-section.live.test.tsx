@@ -15,7 +15,7 @@ import type { ResourcesPageView } from "#/lib/resources";
 
 const boundary = vi.hoisted(() => {
   const page: { current: unknown } = { current: null };
-  return { propose: vi.fn(), choose: vi.fn(), approve: vi.fn(), page };
+  return { add: vi.fn(), choose: vi.fn(), page };
 });
 
 vi.mock("#/lib/trpc", () => ({
@@ -46,18 +46,15 @@ vi.mock("#/lib/trpc", () => ({
 }));
 vi.mock("#/lib/resources", async (original) => ({
   ...(await original<typeof import("#/lib/resources")>()),
-  proposeResource: boundary.propose,
+  addResource: boundary.add,
   chooseResource: boundary.choose,
-  approveResource: boundary.approve,
 }));
 
 const { ResourcesSection } = await import("./resources-section.tsx");
 
 const page = (overrides: Partial<ResourcesPageView> = {}): ResourcesPageView => ({
   settings: [],
-  proposals: [],
   file: { kind: "not-selected" },
-  canPropose: true,
   ...overrides,
 });
 
@@ -70,12 +67,12 @@ const db = {
     version: PresetVersion.make("17"),
     scope: "project",
   }),
-  approvals: { project: { by: "manager" }, worktree: null },
-  approve: { project: { kind: "approved" as const }, worktree: null },
+  image: `postgres:17@sha256:${"e".repeat(64)}`,
+  addedBy: "manager",
   choice: "shared" as const,
   canRemove: false,
   canChoose: true,
-  statusLine: "@db · postgres 17 · project · approved by Manager · shared database · not started",
+  statusLine: "@db · postgres 17 · project · added by Manager · shared database · not started",
 };
 
 const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 30)));
@@ -124,9 +121,8 @@ const type = async (field: Element | null, value: string) => {
 };
 
 afterEach(() => {
-  boundary.propose.mockReset();
+  boundary.add.mockReset();
   boundary.choose.mockReset();
-  boundary.approve.mockReset();
 });
 
 /** The worktree select, and a switch of the read to `id` ("" reads no worktree). */
@@ -147,16 +143,16 @@ describe("the Resources card's answers", () => {
     ["worktree-B", "wt_b"],
     ["no worktree", ""],
   ])(
-    "keeps a refusal of a proposal made on worktree-A out of the form once the read is %s",
+    "keeps a refusal of an add made on worktree-A out of the form once the read is %s",
     async (_, target) => {
       boundary.page.current = page();
       const pending: Array<(value: unknown) => void> = [];
-      boundary.propose.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+      boundary.add.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
       const card = await mount();
       try {
         const switchTo = reads(card.host);
         await switchTo("wt_a");
-        await act(async () => card.buttonNamed("+ propose a resource…")?.click());
+        await act(async () => card.buttonNamed("+ add a resource…")?.click());
         await type(card.host.querySelector('[aria-label="Name"]'), "db");
         await type(card.host.querySelector('[aria-label="Version"]'), "17");
         await act(async () =>
@@ -164,7 +160,7 @@ describe("the Resources card's answers", () => {
             .querySelector("form")
             ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
         );
-        expect(boundary.propose).toHaveBeenCalledOnce();
+        expect(boundary.add).toHaveBeenCalledOnce();
         await switchTo(target);
         await act(async () => {
           for (const finish of pending) {
@@ -188,7 +184,7 @@ describe("the Resources card's answers", () => {
 
   it("clears a delivered form refusal when the read changes, and keeps the draft", async () => {
     boundary.page.current = page();
-    boundary.propose.mockResolvedValue({
+    boundary.add.mockResolvedValue({
       ok: false,
       kind: "rejected",
       refusals: [{ key: "version", message: "is not a major version" }],
@@ -198,7 +194,7 @@ describe("the Resources card's answers", () => {
     try {
       const switchTo = reads(card.host);
       await switchTo("wt_a");
-      await act(async () => card.buttonNamed("+ propose a resource…")?.click());
+      await act(async () => card.buttonNamed("+ add a resource…")?.click());
       await type(card.host.querySelector('[aria-label="Name"]'), "db");
       await type(card.host.querySelector('[aria-label="Version"]'), "latest");
       await act(async () =>
@@ -218,63 +214,54 @@ describe("the Resources card's answers", () => {
     }
   });
 
-  it("leaves a review opened on worktree-B open when an approval sent on worktree-A answers", async () => {
-    const offered = (id: ResourceDefinitionId) => ({
-      project: {
-        kind: "ready" as const,
-        request: { source: { kind: "settings" as const, id, digest: db.digest }, worktreeId: null },
-      },
-      worktree: null,
-    });
-    const cache = ResourceDefinitionId.make("rdef_cache");
+  it("never lands the answer to a mend.toml table added on worktree-A under worktree-B", async () => {
     boundary.page.current = page({
-      settings: [
-        { ...db, approvals: { project: null, worktree: null }, approve: offered(db.id) },
-        {
-          ...db,
-          id: cache,
-          spec: { ...db.spec, name: ResourceName.make("cache") },
-          approvals: { project: null, worktree: null },
-          approve: offered(cache),
-          statusLine: "@cache · waiting for approval",
-        },
-      ],
+      file: {
+        kind: "read",
+        worktreeId: WorktreeId.make("wt_a"),
+        observed: "observed on the worktree",
+        tables: [
+          {
+            digest: db.digest,
+            spec: db.spec,
+            add: { kind: "ready" },
+            statusLine: "@db · postgres 17 · project · in mend.toml · not in settings",
+          },
+        ],
+        refused: [],
+        ignored: [],
+      },
     });
     const pending: Array<(value: unknown) => void> = [];
-    boundary.approve.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    boundary.add.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
     const card = await mount();
-    const approveButtons = () =>
-      [...card.host.querySelectorAll("button")].filter(
-        (button) => button.textContent === "approve for the project…",
-      );
     try {
       const switchTo = reads(card.host);
       await switchTo("wt_a");
-      await act(async () => approveButtons()[0]?.click());
-      await act(async () => card.buttonNamed("approve")?.click());
-      expect(boundary.approve).toHaveBeenCalledOnce();
+      await act(async () => card.buttonNamed("add to settings")?.click());
+      expect(boundary.add).toHaveBeenCalledWith("project_probe", {
+        kind: "definition",
+        spec: db.spec,
+      });
       await switchTo("wt_b");
-      await act(async () => approveButtons()[1]?.click());
-      expect(card.host.textContent).toContain("Approve exactly this definition");
       await act(async () => {
         for (const finish of pending) {
-          finish({ ok: false, kind: "stale", message: "@db · changed (the answer for A)" });
+          finish({ ok: false, kind: "rejected", message: "@db · refused (the answer for A)" });
         }
       });
       await settle();
-      expect(card.host.textContent).toContain("Approve exactly this definition");
       expect(card.host.textContent).not.toContain("the answer for A");
     } finally {
       await card.unmount();
     }
   });
 
-  it("shows a proposal that failed in transit in the form, which keeps the draft for a retry", async () => {
+  it("shows an add that failed in transit in the form, which keeps the draft for a retry", async () => {
     boundary.page.current = page();
-    boundary.propose.mockRejectedValue(new Error("probe: connection interrupted"));
+    boundary.add.mockRejectedValue(new Error("probe: connection interrupted"));
     const card = await mount();
     try {
-      await act(async () => card.buttonNamed("+ propose a resource…")?.click());
+      await act(async () => card.buttonNamed("+ add a resource…")?.click());
       await type(card.host.querySelector('[aria-label="Name"]'), "db");
       await type(card.host.querySelector('[aria-label="Version"]'), "17");
       const form = card.host.querySelector("form");
@@ -282,7 +269,7 @@ describe("the Resources card's answers", () => {
         form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
       );
       await settle();
-      expect(boundary.propose).toHaveBeenCalledOnce();
+      expect(boundary.add).toHaveBeenCalledOnce();
       const shown = card.host.querySelector("form");
       expect(shown?.textContent).toContain("probe: connection interrupted");
       expect(shown?.querySelector<HTMLInputElement>('[aria-label="Name"]')?.value).toBe("db");
@@ -292,7 +279,7 @@ describe("the Resources card's answers", () => {
   });
 
   it("never shows an answer to an act on one worktree under another", async () => {
-    boundary.page.current = page({ settings: [db], canPropose: false });
+    boundary.page.current = page({ settings: [db] });
     const pending: Array<(value: unknown) => void> = [];
     boundary.choose.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
     const card = await mount();
@@ -324,7 +311,7 @@ describe("the Resources card's answers", () => {
   });
   it("drops a delivered refusal when the setup moves to another project", async () => {
     boundary.page.current = page();
-    boundary.propose.mockResolvedValue({
+    boundary.add.mockResolvedValue({
       ok: false,
       kind: "rejected",
       refusals: [{ key: "version", message: "is not a major version" }],
@@ -332,7 +319,7 @@ describe("the Resources card's answers", () => {
     });
     const card = await mount();
     try {
-      await act(async () => card.buttonNamed("+ propose a resource…")?.click());
+      await act(async () => card.buttonNamed("+ add a resource…")?.click());
       await type(card.host.querySelector('[aria-label="Name"]'), "db");
       await type(card.host.querySelector('[aria-label="Version"]'), "latest");
       await act(async () =>
@@ -349,13 +336,13 @@ describe("the Resources card's answers", () => {
     }
   });
 
-  it("locks the draft while its proposal is in flight, so nothing typed can be dropped", async () => {
+  it("locks the draft while its add is in flight, so nothing typed can be dropped", async () => {
     boundary.page.current = page();
     const pending: Array<(value: unknown) => void> = [];
-    boundary.propose.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    boundary.add.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
     const card = await mount();
     try {
-      await act(async () => card.buttonNamed("+ propose a resource…")?.click());
+      await act(async () => card.buttonNamed("+ add a resource…")?.click());
       await type(card.host.querySelector('[aria-label="Name"]'), "first");
       await type(card.host.querySelector('[aria-label="Version"]'), "17");
       await act(async () =>
@@ -363,13 +350,15 @@ describe("the Resources card's answers", () => {
           .querySelector("form")
           ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
       );
-      expect(boundary.propose).toHaveBeenCalledOnce();
+      expect(boundary.add).toHaveBeenCalledOnce();
       const controls = [
         ...(card.host.querySelector("form")?.querySelectorAll("input, textarea, button") ?? []),
       ];
       expect(controls.length).toBeGreaterThan(0);
       expect(controls.filter((control) => !control.matches(":disabled"))).toEqual([]);
-      await act(async () => pending[0]?.({ ok: true, result: { id: "rprop_first" } }));
+      await act(async () =>
+        pending[0]?.({ ok: true, result: { definition: db, resolvedBy: null } }),
+      );
       await settle();
       expect(card.host.querySelector("form")).toBeNull();
     } finally {

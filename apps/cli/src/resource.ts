@@ -1,22 +1,16 @@
 import {
   RESOURCE_PRESETS,
-  type ResourceApprovalOffer,
-  type ResourceApprovalOffers,
-  type ResourceApprovalRequest,
-  type ResourceApproved,
-  type ResourceDefinitionInput,
+  type ResourceAdded,
   type ResourcePreset,
-  resourceProposalNotices,
   resourceRefusalWords,
-  resourceReviewRows,
   type ResourceSelectionEntry,
   type ResourcesPage,
+  resourceTableNotices,
   WorktreeChoice,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import type { ApiCall } from "./pair.ts";
-import { askYesNo } from "./shared-workspace.ts";
 import {
   jsonWithoutCredentials,
   paint,
@@ -26,10 +20,10 @@ import {
 } from "./shared.ts";
 
 /**
- * `mend resource add|list|remove|approve|use|start` (docs/adr/0019-shared-services.md): a
- * project's resources from a person's terminal. Adding proposes; a manager approves. The server
- * decides every act; these commands print its status lines as they come. Anything a proposal
- * stored is someone else's text, so it reaches the terminal through `printable`.
+ * `mend resource add|list|remove|use|start` (docs/adr/0019-shared-services.md): a project's
+ * resources from a person's terminal. What a member adds is the project's. The server decides
+ * every act; these commands print its status lines as they come. Anything a definition stores is
+ * someone else's text, so it reaches the terminal through `printable`.
  */
 
 const dim = paint("2");
@@ -65,9 +59,7 @@ const VALUE_FLAGS = [
   "--image",
   "--port",
   "--scope",
-  "--proposal",
   "--definition",
-  "--digest",
 ];
 
 const positionals = (args: ReadonlyArray<string>) =>
@@ -76,7 +68,7 @@ const positionals = (args: ReadonlyArray<string>) =>
   );
 
 /** The body `mend resource add` sends, or why the arguments name none. */
-export const proposalOf = (
+export const additionOf = (
   args: ReadonlyArray<string>,
 ):
   | { readonly ok: true; readonly body: unknown }
@@ -97,7 +89,7 @@ export const proposalOf = (
     return {
       ok: false,
       message:
-        "pass one of --preset <postgres|redis|mysql> --version <v>, or --image <ref> --port <name>=<port>",
+        "pass one of --preset <postgres|redis|mysql> --version <v>, --image <ref> --port <name>=<port>, or --from-file --worktree <w>",
     };
   }
   if (preset !== null) {
@@ -131,18 +123,15 @@ export const proposalOf = (
   return { ok: true, body: { kind: "definition", spec } };
 };
 
-/** A listed entry: its status line, then the image it would run, then its id when it has one. */
-const entryLine = (
-  entry: { readonly statusLine: string; readonly spec: { readonly image: string } },
-  id: string | null,
-) =>
+/** A listed entry: its status line, then the image it runs or would run, then its id when it has one. */
+const entryLine = (entry: { readonly statusLine: string }, image: string, id: string | null) =>
   [
     printable(entry.statusLine),
-    printable(entry.spec.image),
+    printable(image),
     ...(id === null ? [] : [dim(printable(id))]),
   ].join("  ");
 
-/** The list as the terminal prints it: settings, proposals with their ids, then the file. */
+/** The list as the terminal prints it: settings with their ids, then the file. */
 export const renderResources = (
   project: ProjectRef,
   page: ResourcesPage,
@@ -150,10 +139,10 @@ export const renderResources = (
 ) => {
   const lines: Array<string> = [];
   if (page.settings.length > 0) {
-    lines.push("settings", ...page.settings.map((entry) => `  ${entryLine(entry, entry.id)}`));
-  }
-  if (page.proposals.length > 0) {
-    lines.push("proposals", ...page.proposals.map((entry) => `  ${entryLine(entry, entry.id)}`));
+    lines.push(
+      "settings",
+      ...page.settings.map((entry) => `  ${entryLine(entry, entry.image, entry.id)}`),
+    );
   }
   const file = page.file;
   const where = `mend.toml in ${printable(worktree ?? "")}`;
@@ -165,17 +154,21 @@ export const renderResources = (
   if (file.kind === "read") {
     lines.push(
       `${where} · ${printable(file.observed)}`,
-      ...file.proposals.map((proposal) => `  ${entryLine(proposal, null)}`),
-      ...resourceProposalNotices(file).map((notice) => `  ${printable(notice)}`),
+      ...file.tables.flatMap((table) => [
+        `  ${entryLine(table, table.spec.image, null)}`,
+        ...(table.add.kind === "ready"
+          ? [
+              `    ${dim(`mend resource add ${printable(table.spec.name)} --from-file --worktree ${printable(worktree ?? "")}`)}`,
+            ]
+          : []),
+      ]),
+      ...resourceTableNotices(file).map((notice) => `  ${printable(notice)}`),
     );
   }
   return lines.length > 0
     ? lines
-    : [`no resources in ${printable(project.name)} · mend resource add proposes one`];
+    : [`no resources in ${printable(project.name)} · mend resource add adds one`];
 };
-
-const idsOf = (entries: ReadonlyArray<{ readonly id: string }>) =>
-  entries.map((entry) => printable(entry.id)).join(" | ");
 
 type RemovalTarget =
   | {
@@ -184,210 +177,97 @@ type RemovalTarget =
       readonly body: unknown;
       readonly line: string;
     }
-  | { readonly kind: "proposal"; readonly route: string; readonly line: string }
   | { readonly kind: "none"; readonly message: string };
 
 /**
- * What `mend resource remove` removes, from the page the caller just read. A name picks the
- * definition settings hold, or the one proposal of that name, of the ones the caller may remove;
- * a name that matches both is refused with each id. `--definition` and `--proposal` name one by
- * the id `mend resource list` prints, and must be of the name when one is given too.
+ * What `mend resource remove` removes, from the page the caller just read: the definition
+ * settings hold under the name, or the one `--definition` names by the id `mend resource list`
+ * prints, which must be of the name when one is given too.
  */
 export const removalTarget = (
   project: ProjectRef,
   page: ResourcesPage,
   name: string | null,
-  named: { readonly proposal: string | null; readonly definition: string | null },
+  definition: string | null,
 ): RemovalTarget => {
-  const base = `/projects/${encodeURIComponent(project.id)}`;
-  const definitionTarget = (entry: ResourcesPage["settings"][number]): RemovalTarget => ({
-    kind: "definition",
-    route: `${base}/resources/${encodeURIComponent(entry.id)}`,
-    body: { expectedDigest: entry.digest },
-    line: entryLine(entry, entry.id),
-  });
-  const proposalTarget = (entry: ResourcesPage["proposals"][number]): RemovalTarget => ({
-    kind: "proposal",
-    route: `${base}/resource-proposals/${encodeURIComponent(entry.id)}`,
-    line: entryLine(entry, entry.id),
-  });
-  const ofName = (entry: { readonly id: string; readonly spec: { readonly name: string } }) =>
-    name === null || entry.spec.name === name
-      ? null
-      : `${printable(entry.id)} is @${printable(entry.spec.name)}, not @${printable(name)} · nothing was removed`;
-  if (named.proposal !== null && named.definition !== null) {
-    return { kind: "none", message: "pass --proposal or --definition, not both" };
-  }
-  if (named.proposal !== null) {
-    const entry = page.proposals.find((each) => each.id === named.proposal);
-    if (entry === undefined) {
-      return {
-        kind: "none",
-        message: `no proposal ${printable(named.proposal)} in ${printable(project.name)}`,
-      };
-    }
-    const mismatch = ofName(entry);
-    return mismatch === null ? proposalTarget(entry) : { kind: "none", message: mismatch };
-  }
-  if (named.definition !== null) {
-    const entry = page.settings.find((each) => each.id === named.definition);
-    if (entry === undefined) {
-      return {
-        kind: "none",
-        message: `no definition ${printable(named.definition)} in ${printable(project.name)}`,
-      };
-    }
-    const mismatch = ofName(entry);
-    return mismatch === null ? definitionTarget(entry) : { kind: "none", message: mismatch };
-  }
-  if (name === null) return { kind: "none", message: "name the resource: mend resource remove db" };
-  const definition = page.settings.find((entry) => entry.spec.name === name && entry.canRemove);
-  const proposals = page.proposals.filter((entry) => entry.spec.name === name && entry.canRemove);
-  const [only] = proposals;
-  if (definition !== undefined && proposals.length > 0) {
+  const entry =
+    definition === null
+      ? page.settings.find((each) => each.spec.name === name)
+      : page.settings.find((each) => each.id === definition);
+  if (entry === undefined) {
     return {
       kind: "none",
-      message: `@${printable(name)} is a definition (${printable(definition.id)}) and a proposal you can remove (${idsOf(proposals)}) · name one with --definition ${printable(definition.id)} or --proposal ${idsOf(proposals)}`,
+      message:
+        definition !== null
+          ? `no definition ${printable(definition)} in ${printable(project.name)}`
+          : name === null
+            ? "name the resource: mend resource remove db"
+            : `no @${printable(name)} in ${printable(project.name)}`,
     };
   }
-  if (definition !== undefined) return definitionTarget(definition);
-  if (only !== undefined && proposals.length === 1) return proposalTarget(only);
+  if (name !== null && entry.spec.name !== name) {
+    return {
+      kind: "none",
+      message: `${printable(entry.id)} is @${printable(entry.spec.name)}, not @${printable(name)} · nothing was removed`,
+    };
+  }
   return {
-    kind: "none",
-    message:
-      proposals.length === 0
-        ? `no @${printable(name)} in ${printable(project.name)} that you can remove`
-        : `${proposals.length} proposals of @${printable(name)} · name one with --proposal ${idsOf(proposals)}`,
+    kind: "definition",
+    route: `/projects/${encodeURIComponent(project.id)}/resources/${encodeURIComponent(entry.id)}`,
+    body: { expectedDigest: entry.digest },
+    line: entryLine(entry, entry.image, entry.id),
   };
 };
 
-type Reviewed = {
-  readonly spec: ResourceDefinitionInput;
-  readonly digest: string;
-  readonly statusLine: string;
-  readonly approve: ResourceApprovalOffers;
-};
-
-export type ApprovalTarget =
-  | {
-      readonly kind: "ready";
-      readonly reviewed: Reviewed;
-      readonly request: ResourceApprovalRequest;
-    }
-  | { readonly kind: "refused"; readonly message: string }
-  /** Approved already, as `reviewed` reads: nothing to post, and no failure. */
-  | { readonly kind: "approved"; readonly reviewed: Reviewed; readonly message: string };
-
-/** The offer's request when it is ready, else why there is none, as the approve route says it. */
-const offered = (
-  reviewed: Reviewed,
-  offer: ResourceApprovalOffer,
-  target: string,
-): ApprovalTarget => {
-  const name = `@${printable(reviewed.spec.name)}`;
-  switch (offer.kind) {
+/**
+ * What `mend resource add <name> --from-file` adds, from the page read for `--worktree`: the
+ * `[resource.<name>]` table in its `mend.toml`, as the page offers it. A table settings already
+ * hold the same is said, and nothing is posted.
+ */
+export const tableAddition = (
+  page: ResourcesPage,
+  name: string,
+  worktree: string,
+):
+  | { readonly kind: "ready"; readonly body: unknown; readonly line: string }
+  | { readonly kind: "added"; readonly message: string }
+  | { readonly kind: "refused"; readonly message: string } => {
+  const where = `mend.toml in ${printable(worktree)}`;
+  const file = page.file;
+  if (file.kind !== "read") {
+    return {
+      kind: "refused",
+      message: `${where} · ${"message" in file ? printable(file.message) : file.kind}`,
+    };
+  }
+  const table = file.tables.find((each) => each.spec.name === name);
+  if (table === undefined) {
+    return { kind: "refused", message: `no [resource.${printable(name)}] in ${where}` };
+  }
+  const named = `@${printable(name)}`;
+  switch (table.add.kind) {
     case "ready":
-      return { kind: "ready", reviewed, request: offer.request };
+      return {
+        kind: "ready",
+        body: { kind: "definition", spec: table.spec },
+        line: entryLine(table, table.spec.image, null),
+      };
+    case "added":
+      return { kind: "added", message: `${named} is in settings already, as ${where} has it` };
     case "denied":
-      return { kind: "refused", message: `${printable(offer.message)} · nothing was approved` };
+      return { kind: "refused", message: `${printable(table.add.message)} · nothing was added` };
     case "rejected":
       return {
         kind: "refused",
         message: [
-          ...offer.refusals.map(
-            (refusal) => `${name} · ${printable(resourceRefusalWords(refusal))}`,
+          ...table.add.refusals.map(
+            (refusal) => `${named} · ${printable(resourceRefusalWords(refusal))}`,
           ),
-          "nothing was approved",
+          "nothing was added",
         ].join("\n"),
       };
-    case "approved":
-      return { kind: "approved", reviewed, message: `${name} is approved ${target} already` };
   }
 };
-
-/**
- * What `mend resource approve` approves, from the page the caller just read: the definition
- * settings hold under the name, the proposal `--proposal` names (or the only one of the name), or,
- * with `--worktree`, that worktree's `mend.toml` table when it differs from settings. The request
- * is the one the page offers for the target: the read worktree when the page offers one, unless
- * `--for-project`, else the project.
- */
-export const approvalTarget = (
-  page: ResourcesPage,
-  name: string,
-  named: {
-    readonly proposal: string | null;
-    readonly worktree: { readonly id: string; readonly label: string } | null;
-    readonly forProject: boolean;
-  },
-): ApprovalTarget => {
-  const held = page.settings.find((entry) => entry.spec.name === name);
-  const target = (reviewed: Reviewed): ApprovalTarget => {
-    if (named.worktree === null || named.forProject) {
-      return offered(reviewed, reviewed.approve.project, "for the project");
-    }
-    const forWorktree = `for worktree ${printable(named.worktree.label)}`;
-    if (reviewed.approve.worktree !== null) {
-      return offered(reviewed, reviewed.approve.worktree, forWorktree);
-    }
-    // A worktree resource is approved for the worktree it was read for, never widened to the project.
-    return reviewed.spec.scope === "worktree"
-      ? {
-          kind: "refused",
-          message: `@${printable(reviewed.spec.name)} · the page offers no approval ${forWorktree} · nothing was approved`,
-        }
-      : offered(reviewed, reviewed.approve.project, "for the project");
-  };
-  /** The only proposal of the name, or why there is none to approve. */
-  const fromProposals = (none: string): ApprovalTarget => {
-    const proposals = page.proposals.filter((entry) => entry.spec.name === name);
-    const [only] = proposals;
-    if (only !== undefined && proposals.length === 1) return target(only);
-    return {
-      kind: "refused",
-      message:
-        proposals.length === 0
-          ? none
-          : `${proposals.length} proposals of @${printable(name)} · name one with --proposal ${idsOf(proposals)}`,
-    };
-  };
-  const nothing = `no @${printable(name)} in settings or proposals · mend resource list shows what there is`;
-  const fromSettings = (none: string): ApprovalTarget =>
-    held === undefined ? fromProposals(none) : target(held);
-  if (named.proposal !== null) {
-    const entry = page.proposals.find((each) => each.id === named.proposal);
-    if (entry?.spec.name !== name) {
-      return {
-        kind: "refused",
-        message: `no proposal ${printable(named.proposal)} of @${printable(name)}`,
-      };
-    }
-    return target(entry);
-  }
-  if (named.worktree !== null) {
-    const file = page.file;
-    if (file.kind !== "read") {
-      const where = `mend.toml in ${printable(named.worktree.label)}`;
-      return fromSettings(`${where} · ${"message" in file ? printable(file.message) : file.kind}`);
-    }
-    const table = file.proposals.find((each) => each.spec.name === name);
-    if (table === undefined || table.digest === held?.digest) return fromSettings(nothing);
-    return target(table);
-  }
-  return fromSettings(nothing);
-};
-
-/** The definition as an approver reviews it: every field that runs, and the digest approved. */
-export const reviewLines = (
-  reviewed: Omit<Reviewed, "approve">,
-  forWorktree: string | null,
-): ReadonlyArray<string> => [
-  printable(reviewed.statusLine),
-  ...resourceReviewRows(reviewed.spec, reviewed.digest).map(
-    (row) => `  ${printable(row.label)} ${printable(row.value)}`,
-  ),
-  `  for ${forWorktree === null ? "the project" : `worktree ${printable(forWorktree)}`}`,
-];
 
 const isChoice = Schema.is(WorktreeChoice);
 
@@ -437,74 +317,48 @@ export const resourceCommand = async (
       return;
     }
     case "add": {
-      const proposal = proposalOf(rest);
-      if (!proposal.ok) return fail(proposal.message);
-      const entry = await api<{ readonly id: string; readonly statusLine: string }>(
-        "POST",
-        `/projects/${project.id}/resource-proposals?${zone}`,
-        proposal.body,
-      );
-      say(printable(entry.statusLine));
-      say(dim(`proposal ${printable(entry.id)} · a manager approves it in project settings`));
-      return;
+      const added = async (body: unknown) => {
+        const answer = await api<ResourceAdded>(
+          "POST",
+          `/projects/${project.id}/resources?${zone}`,
+          body,
+        );
+        say(printable(answer.definition.statusLine));
+        const by =
+          answer.resolvedBy === null ? "" : ` · digest from ${printable(answer.resolvedBy)}`;
+        say(dim(`image ${printable(answer.definition.image)}${by}`));
+      };
+      if (rest.includes("--from-file")) {
+        if (name === null) return fail("name the resource: mend resource add db --from-file");
+        const worktree = await worktreeOf();
+        if (worktree === null) {
+          return fail("name the worktree whose mend.toml holds it: --worktree <w>");
+        }
+        const table = tableAddition(await read(worktree.id), name, worktree.label);
+        if (table.kind === "refused") return fail(table.message);
+        if (table.kind === "added") return say(table.message);
+        say(`adding ${table.line}`);
+        return added(table.body);
+      }
+      const addition = additionOf(rest);
+      if (!addition.ok) return fail(addition.message);
+      return added(addition.body);
     }
     case "remove": {
-      const target = removalTarget(project, await read(null), name, {
-        proposal: takeFlagValue(rest, "--proposal"),
-        definition: takeFlagValue(rest, "--definition"),
-      });
+      const target = removalTarget(
+        project,
+        await read(null),
+        name,
+        takeFlagValue(rest, "--definition"),
+      );
       if (target.kind === "none") return fail(target.message);
       say(`removing ${target.line}`);
       const removed = await api<{ readonly statusLine: string }>(
         "DELETE",
         target.route,
-        target.kind === "definition" ? target.body : undefined,
+        target.body,
       );
       return say(printable(removed.statusLine));
-    }
-    case "approve": {
-      if (name === null) return fail("name the resource: mend resource approve db");
-      const worktree = await worktreeOf();
-      const target = approvalTarget(await read(worktree?.id ?? null), name, {
-        proposal: takeFlagValue(rest, "--proposal"),
-        worktree,
-        forProject: rest.includes("--for-project"),
-      });
-      // What is approved is the digest the approver read: the one they pass, or the one shown.
-      const passed = takeFlagValue(rest, "--digest");
-      if (passed !== null && !/^sha256:[0-9a-f]{64}$/.test(passed)) {
-        return fail("--digest is sha256: and 64 lower-case hex digits, as printed above");
-      }
-      if (target.kind === "refused") return fail(target.message);
-      if (target.kind === "approved") {
-        // An approval already made answers only for the definition the approver read.
-        if (passed !== null && passed.slice("sha256:".length) !== target.reviewed.digest) {
-          return fail(
-            `@${printable(name)} · changed since you read it · mend resource list shows what settings hold · nothing was approved`,
-          );
-        }
-        return say(target.message);
-      }
-      const forWorktree = target.request.worktreeId === null ? null : (worktree?.label ?? null);
-      for (const line of reviewLines(target.reviewed, forWorktree)) say(line);
-      if (passed === null && (process.stdin.isTTY !== true || process.stdout.isTTY !== true)) {
-        return fail(
-          "approving without a terminal takes --digest sha256:… of the definition you read, as printed above · nothing was approved",
-        );
-      }
-      if (passed === null && !(await askYesNo("Approve this definition?"))) {
-        return say("nothing was approved");
-      }
-      const digest = passed === null ? target.reviewed.digest : passed.slice("sha256:".length);
-      const approved = await api<ResourceApproved>(
-        "POST",
-        `/projects/${project.id}/resources/approvals?${zone}`,
-        { ...target.request, source: { ...target.request.source, digest } },
-      );
-      say(printable(approved.definition.statusLine));
-      const by =
-        approved.resolvedBy === null ? "" : ` · digest from ${printable(approved.resolvedBy)}`;
-      return say(dim(`image ${printable(approved.image)}${by}`));
     }
     case "use": {
       const mode = positionals(rest)[1] ?? "";
@@ -531,7 +385,7 @@ export const resourceCommand = async (
     }
     default:
       return fail(
-        `unknown resource command "${printable(verb)}" · try: add, list, remove, approve, use, start`,
+        `unknown resource command "${printable(verb)}" · try: add, list, remove, use, start`,
       );
   }
 };

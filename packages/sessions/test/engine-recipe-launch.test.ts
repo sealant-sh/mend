@@ -281,7 +281,7 @@ describe("a recipe's launch", () => {
     );
   });
 
-  it("names the file's resource proposal notices when no recipe matches, in what the in-workspace helper prints", async () => {
+  it("names the file's resource table notices when no recipe matches, in what the in-workspace helper prints", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
       (world, tmp) =>
@@ -316,7 +316,7 @@ describe("a recipe's launch", () => {
           const missing = (yield* helperPrints("absent")).split("\n");
           expect(missing.slice(0, 2)).toEqual([
             'mend: No Service recipe named "absent" exists in this session.',
-            "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings):",
+            "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):",
           ]);
           expect(missing.filter((line) => line.includes("resource.bad.ports.http"))).toEqual([
             expect.stringMatching(/^ {2}resource\.bad\.ports\.http · /),
@@ -325,7 +325,7 @@ describe("a recipe's launch", () => {
           const refused = (yield* helperPrints("api")).split("\n");
           expect(refused.slice(0, 2)).toEqual([
             "mend: mend.toml refuses api: api · cwd · is absolute; name a path inside the repository",
-            "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings):",
+            "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):",
           ]);
         }),
       { sealantLayer: sealantLaunchLayer(created) },

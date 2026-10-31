@@ -194,8 +194,8 @@ export const WorktreeResourceDefinition = Schema.Struct({
 export type WorktreeResourceDefinition = typeof WorktreeResourceDefinition.Type;
 
 /**
- * A resource as declared and not yet approved (ADR 0019): from project settings, `mend resource`
- * or a `[resource.*]` proposal in `mend.toml`. Shapes are checked here; rules across fields are
+ * A resource as declared (ADR 0019): from project settings, `mend resource add` or a
+ * `[resource.*]` table in `mend.toml`. Shapes are checked here; rules across fields are
  * `resourceDefinitionRefusals`.
  */
 export const ResourceDefinitionInput = Schema.Union([
@@ -204,7 +204,7 @@ export const ResourceDefinitionInput = Schema.Union([
 ]);
 export type ResourceDefinitionInput = typeof ResourceDefinitionInput.Type;
 
-/** What an approval approves: a sha256, in lower-case hex, of a definition's canonical JSON. */
+/** A sha256, in lower-case hex, of a definition's canonical JSON: which spec a reader saw. */
 export const ResourceSpecDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)).pipe(
   Schema.brand("ResourceSpecDigest"),
 );
@@ -226,7 +226,7 @@ const canonicalJson = (value: unknown): string => {
 const encodeDefinition = Schema.encodeSync(ResourceDefinitionInput);
 
 /**
- * The digest over every field of `spec` as it is stored (ADR 0019, "Approving a definition").
+ * The digest over every field of `spec` as it is stored (ADR 0019).
  * A worktree's selection is not in it (decision S9).
  */
 export const resourceSpecDigest = (spec: ResourceDefinitionInput): ResourceSpecDigest =>
@@ -257,7 +257,7 @@ export const pinImage = (image: string, digest: ImageDigest): string | null => {
   return pinned === null || pinned === digest ? `${named}@${digest}` : null;
 };
 
-/** Why a definition cannot be approved: the key it names (`ports.http`, `exports.URL`) and why. */
+/** Why a definition cannot be added: the key it names (`ports.http`, `exports.URL`) and why. */
 export const ResourceRefusal = Schema.Struct({
   key: Schema.String,
   message: Schema.String,
@@ -398,7 +398,7 @@ export const RESOURCE_PRESETS: {
 /**
  * The port and data directory a preset's own image uses, by its major version, and the command
  * that runs its engine with every acknowledged write durable (ADR 0019, "Engine settings are part
- * of the preset"). The command is in the definition, so approving it approves those settings. It
+ * of the preset"). The command is in the definition, so adding it adds those settings. It
  * is flags alone: each image's entrypoint starts its own server for a leading flag (`mariadbd`,
  * `valkey-server`) and still sets up an empty volume.
  */
@@ -442,7 +442,7 @@ export type PresetVersion = typeof PresetVersion.Type;
 
 /**
  * The definition `--preset postgres --version 17` names: the preset's own image at that tag, its
- * engine settings, its port, one data volume and its own ready check. Built in one place so every client proposes the
+ * engine settings, its port, one data volume and its own ready check. Built in one place so every client adds the
  * same spec.
  */
 export const presetDefinition = (input: {
@@ -477,7 +477,7 @@ export const presetDefinition = (input: {
 /**
  * A preset definition that names no command runs its preset's engine settings. Every reader of a
  * declared definition applies this before the definition is shown or digested, so a `mend.toml`
- * table, a whole definition and `--preset` all propose the same spec.
+ * table, a whole definition and `--preset` all declare the same spec.
  */
 export const withPresetCommand = <D extends ResourceDefinitionInput>(def: D): D =>
   def.preset === null || def.command !== null
@@ -913,7 +913,7 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
  * Every free-text field a definition stores, keyed: a control character in one would reach a
- * reader's terminal before anyone approved it.
+ * reader's terminal before anyone read it.
  */
 const controlRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> =>
   [
@@ -973,19 +973,19 @@ export const resourceDefinitionRefusals = (
   ];
 };
 
-/** A `mend.toml` key a `[resource.*]` proposal owns (decision S8): `resource`, or one under it. */
-export const isResourceProposalKey = (key: string): boolean =>
+/** A `mend.toml` key a `[resource.*]` table owns (decision S8): `resource`, or one under it. */
+export const isResourceTableKey = (key: string): boolean =>
   key === "resource" || key.startsWith("resource.");
 
-/** Heads `resourceProposalNotices`; true of every proposal, refused or not. */
-export const RESOURCE_PROPOSALS_HEADING =
-  "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings)";
+/** Heads `resourceTableNotices`; true of every table, refused or not. */
+export const RESOURCE_TABLES_HEADING =
+  "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file)";
 
 /**
  * A file's refusals and ignored keys under `[resource]`, one line each, keyed in full:
  * `resource.db.ports.pg · must be a port in 1..65535`. Empty when there is none.
  */
-export const resourceProposalNotices = (declared: {
+export const resourceTableNotices = (declared: {
   readonly refused: ReadonlyArray<{
     readonly key: string;
     readonly message: string;
@@ -993,21 +993,21 @@ export const resourceProposalNotices = (declared: {
   readonly ignored: ReadonlyArray<{ readonly key: string }>;
 }): ReadonlyArray<string> => [
   ...declared.refused.flatMap((refusal) =>
-    isResourceProposalKey(refusal.key) ? [`${refusal.key} · ${refusal.message}`] : [],
+    isResourceTableKey(refusal.key) ? [`${refusal.key} · ${refusal.message}`] : [],
   ),
   ...declared.ignored.flatMap((ignored) =>
-    isResourceProposalKey(ignored.key)
+    isResourceTableKey(ignored.key)
       ? [`${ignored.key} · is ignored: this Mend does not read it`]
       : [],
   ),
 ];
 
-/** `resourceProposalNotices` for a terminal: the heading, then one indented line each; empty when none. */
-export const resourceProposalsSection = (
-  declared: Parameters<typeof resourceProposalNotices>[0],
+/** `resourceTableNotices` for a terminal: the heading, then one indented line each; empty when none. */
+export const resourceTablesSection = (
+  declared: Parameters<typeof resourceTableNotices>[0],
 ): ReadonlyArray<string> => {
-  const notices = resourceProposalNotices(declared);
+  const notices = resourceTableNotices(declared);
   return notices.length === 0
     ? []
-    : [`${RESOURCE_PROPOSALS_HEADING}:`, ...notices.map((notice) => `  ${notice}`)];
+    : [`${RESOURCE_TABLES_HEADING}:`, ...notices.map((notice) => `  ${notice}`)];
 };

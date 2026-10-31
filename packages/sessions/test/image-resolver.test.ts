@@ -309,21 +309,21 @@ describe("pinning a resource's image through the registry API", () => {
     expect(asked).toEqual(["ghcr.io"]);
   });
 
-  it("says each failure in words that end in not approved", () => {
+  it("says each failure in words that end in not added", () => {
     expect(refusalLine("not-found")).toBe(
-      "@db · image postgres:17 · not found in the registry · not approved",
+      "@db · image postgres:17 · not found in the registry · not added",
     );
     expect(refusalLine("login-required")).toBe(
-      "@db · image postgres:17 · registry needs a login · ask the operator · not approved",
+      "@db · image postgres:17 · registry needs a login · ask the operator · not added",
     );
     expect(refusalLine("registry-refused")).toBe(
-      "@db · image postgres:17 · registry is not allowed on this instance · not approved",
+      "@db · image postgres:17 · registry is not allowed on this instance · not added",
     );
     expect(refusalLine("unavailable")).toBe(
-      "@db · image postgres:17 · registry did not answer · try approval again · not approved",
+      "@db · image postgres:17 · registry did not answer · try adding it again · not added",
     );
     expect(refusalLine("unverifiable")).toBe(
-      "@db · image postgres:17 · registry returned an unverifiable manifest · not approved",
+      "@db · image postgres:17 · registry returned an unverifiable manifest · not added",
     );
   });
 });

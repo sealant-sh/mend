@@ -121,7 +121,7 @@ const exceptions = new Map([
   ],
   [
     "packages/db/src/repos/resources.ts:lockProject:a342f75d",
-    "Declarations and approvals lock the row in every state; a removed project's declaration is refused.",
+    "Declarations lock the row in every state; a removed project's declaration is refused.",
   ],
 ]);
 

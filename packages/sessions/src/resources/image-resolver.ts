@@ -10,7 +10,7 @@ import { Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 /**
- * Pins a resource's image at approval (ADR 0019, "Approving a definition"): the digest of the
+ * Pins a resource's image when it is added (ADR 0019): the digest of the
  * manifest a registry serves for its tag, through the OCI distribution API. Mend asks the
  * operator's Docker Hub mirrors first, then the registry. Only an operator's mirror, asked as a
  * mirror, may be private or plain HTTP; any other destination, a registry's redirect or token realm
@@ -23,7 +23,7 @@ const FAILURE_WORDS = {
   "not-found": "not found in the registry",
   "login-required": "registry needs a login · ask the operator",
   "registry-refused": "registry is not allowed on this instance",
-  unavailable: "registry did not answer · try approval again",
+  unavailable: "registry did not answer · try adding it again",
   unverifiable: "registry returned an unverifiable manifest",
 } as const;
 type ImageFailure = keyof typeof FAILURE_WORDS;
@@ -43,11 +43,11 @@ export class ImageResolutionError extends Schema.TaggedError<ImageResolutionErro
   { image: Schema.String, reason: ImageFailureReason },
 ) {}
 
-/** `postgres:17 · not found in the registry · not approved`: what the image refusal says of it. */
+/** `postgres:17 · not found in the registry · not added`: what the image refusal says of it. */
 export const imageRefusalClause = (error: ImageResolutionError): string =>
-  `${error.image} · ${FAILURE_WORDS[error.reason]} · not approved`;
+  `${error.image} · ${FAILURE_WORDS[error.reason]} · not added`;
 
-/** `@db · image postgres:17 · not found in the registry · not approved`. */
+/** `@db · image postgres:17 · not found in the registry · not added`. */
 export const imageRefusalLine = (name: string, error: ImageResolutionError): string =>
   `@${name} · image ${imageRefusalClause(error)}`;
 

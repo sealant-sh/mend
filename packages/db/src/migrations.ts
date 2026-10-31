@@ -4739,6 +4739,34 @@ const dopplerMigration = Effect.gen(function* () {
   )`;
 });
 
+/**
+ * 0173 (docs/adr/0019-shared-services.md): a resource a member adds is the project's, with no
+ * proposal or approval. Each definition keeps the image its latest project approval of its current
+ * spec pinned, now on its own row, else the digest its own image names. One with neither was never
+ * the project's under approval and goes, with its selections. Then the approvals, their guard and
+ * the proposals go, and `declared_by` is `added_by`.
+ */
+const dropResourceApprovalsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE resource_definitions ADD COLUMN image_digest text
+    CHECK (image_digest ~ '^sha256:[0-9a-f]{64}$')`;
+  // A removed project's definitions take the pin too, which its retention guard would refuse.
+  yield* sql`ALTER TABLE resource_definitions DISABLE TRIGGER resource_definitions_project_retention`;
+  yield* sql`UPDATE resource_definitions d SET image_digest = coalesce(
+      (SELECT substring(a.spec->>'image' FROM '@(sha256:[0-9a-f]{64})$')
+        FROM resource_approvals a
+        WHERE a.definition_id = d.id AND a.worktree_id IS NULL AND a.definition_digest = d.spec_digest
+        ORDER BY a.revision DESC LIMIT 1),
+      substring(d.spec->>'image' FROM '@(sha256:[0-9a-f]{64})$'))`;
+  yield* sql`DELETE FROM resource_definitions WHERE image_digest IS NULL`;
+  yield* sql`ALTER TABLE resource_definitions ENABLE TRIGGER resource_definitions_project_retention`;
+  yield* sql`ALTER TABLE resource_definitions ALTER COLUMN image_digest SET NOT NULL`;
+  yield* sql`ALTER TABLE resource_definitions RENAME COLUMN declared_by TO added_by`;
+  yield* sql`DROP TABLE resource_approvals`;
+  yield* sql`DROP FUNCTION resource_approvals_kept()`;
+  yield* sql`DROP TABLE resource_proposals`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4900,4 +4928,5 @@ export const migrations = {
   "0170_drop_recipe_approvals": dropRecipeApprovalsMigration,
   "0171_preview_activity": previewActivityMigration,
   "0172_doppler": dopplerMigration,
+  "0173_drop_resource_approvals": dropResourceApprovalsMigration,
 };

@@ -16,6 +16,7 @@ import {
 import { postgresTestConfig } from "@mend/db/testing";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import {
+  ImageDigest,
   ResourceDefinitionInput,
   withPresetCommand,
   WORKSPACE_RESOURCE_REFUSAL,
@@ -175,38 +176,45 @@ describe.skipIf(postgres.skip)("a session's read of its project's resources, end
           origin: "mend",
         });
         const repo = yield* ResourcesRepo;
+        const imageDigest = ImageDigest.make(`sha256:${"a".repeat(64)}`);
         yield* repo.declare(
           PROJECT,
-          decodeSpec({
-            name: "queue",
-            scope: "project",
-            preset: null,
-            image: "rabbitmq:4-management",
-            command: null,
-            ports: [{ name: "amqp", port: 5672, protocol: "tcp" }],
-            env: { RABBITMQ_DEFAULT_PASS: "s3cret-literal" },
-            volumes: [],
-            ready: { kind: "tcp" },
-            exports: {},
-          }),
-          "u-maria",
-        );
-        yield* repo.propose(
-          PROJECT,
-          withPresetCommand(
-            decodeSpec({
-              name: "cache",
+          {
+            imageDigest,
+            spec: decodeSpec({
+              name: "queue",
               scope: "project",
-              preset: "redis",
-              image: "redis:8",
+              preset: null,
+              image: "rabbitmq:4-management",
               command: null,
-              ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
-              env: {},
-              volumes: [{ name: "data", mountPath: "/data" }],
-              ready: { kind: "preset" },
+              ports: [{ name: "amqp", port: 5672, protocol: "tcp" }],
+              env: { RABBITMQ_DEFAULT_PASS: "s3cret-literal" },
+              volumes: [],
+              ready: { kind: "tcp" },
               exports: {},
             }),
-          ),
+          },
+          "u-maria",
+        );
+        yield* repo.declare(
+          PROJECT,
+          {
+            imageDigest,
+            spec: withPresetCommand(
+              decodeSpec({
+                name: "cache",
+                scope: "project",
+                preset: "redis",
+                image: "redis:8",
+                command: null,
+                ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
+                env: {},
+                volumes: [{ name: "data", mountPath: "/data" }],
+                ready: { kind: "preset" },
+                exports: {},
+              }),
+            ),
+          },
           "u-tom",
         );
       }),
@@ -240,13 +248,13 @@ describe.skipIf(postgres.skip)("a session's read of its project's resources, end
     expect(ownerLookups).toEqual([]);
     expect(status).toEqual({
       statusLines: [
-        "@queue · rabbitmq 4 · project · waiting for approval",
-        "@cache · redis 8 · project · proposed by Tom · waiting for approval",
+        "@cache · redis 8 · project · added by Tom · not started",
+        "@queue · rabbitmq 4 · project · added by Maria · not started",
       ],
       file: {
         kind: "read",
         observed: "observed on the worktree",
-        statusLines: ["@mail · mailpit · project · proposed in mend.toml · waiting for approval"],
+        statusLines: ["@mail · mailpit · project · in mend.toml · not in settings"],
         notices: ["resource.mail.device · is ignored: this Mend does not read it"],
       },
     });
@@ -294,9 +302,9 @@ describe.skipIf(postgres.skip)("a session's read of its project's resources, end
 
   it("refuses every change a workspace asks, in the permission function's words", async () => {
     for (const act of [
-      { kind: "propose" },
-      { kind: "remove-definition" },
-      { kind: "remove-proposal", proposedBy: "u-tom" },
+      { kind: "add", replaces: null },
+      { kind: "remove-definition", addedBy: "u-tom" },
+      { kind: "use", changeOwner: "u-tom" },
     ] as const) {
       const outcome = await runtime.runPromise(
         Effect.flatMap(serve, (read) => read(SESSION, act, clock)).pipe(Effect.result),
@@ -318,7 +326,9 @@ describe.skipIf(postgres.skip)("a session's read of its project's resources, end
         return (yield* read(SESSION, { kind: "read" }, clock)).statusLines;
       }),
     );
-    expect(statusLines[0]).toBe("@queue · rabbitmq 4 · project · waiting for approval · off");
+    expect(statusLines[1]).toBe(
+      "@queue · rabbitmq 4 · project · added by Maria · off · not started",
+    );
   });
 
   it("refuses a person's read of a project they cannot see, in the service itself", async () => {

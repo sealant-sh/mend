@@ -543,7 +543,7 @@ describe("secret env names", () => {
     expect([...secretEnvNames([bind(queue)])]).toEqual(["MEND_RESOURCE_QUEUE_URL"]);
   });
 
-  it("marks an export it cannot parse, which approval refuses anyway", () => {
+  it("marks an export it cannot parse, which adding refuses anyway", () => {
     const queue = define({
       env: { PASS: { secret: "RABBITMQ_PASSWORD" } },
       exports: { URL: "amqp://{env.PASS" },
@@ -764,7 +764,7 @@ describe("a preset's definition", () => {
       ["--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"],
     ],
   ] as const)(
-    "runs %s with its durable engine settings as flags, which every image of the preset hands to its own server, inside the approved digest",
+    "runs %s with its durable engine settings as flags, which every image of the preset hands to its own server, inside the pinned digest",
     (preset, version, command) => {
       const input = {
         name: ResourceName.make("db"),
@@ -778,7 +778,7 @@ describe("a preset's definition", () => {
     },
   );
 
-  it("gives a preset definition that names no command its engine settings, so a table and --preset propose one spec", () => {
+  it("gives a preset definition that names no command its engine settings, so a table and --preset declare one spec", () => {
     const declared = presetDefinition({
       name: ResourceName.make("cache"),
       preset: "redis",

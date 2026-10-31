@@ -14,26 +14,19 @@ export type ResourceActor =
   | { readonly kind: "person"; readonly viewer: Viewer }
   | { readonly kind: "workspace" };
 
-/**
- * Who an approval is for: the project, or one worktree, whose change owner (the owner of its
- * first session, ADR 0007) is null until it has a first session with an owner.
- */
-export type ResourceApprovalFor =
-  | { readonly kind: "project" }
-  | { readonly kind: "worktree"; readonly changeOwner: string | null };
-
 export type ResourceAct =
   | { readonly kind: "read" }
-  | { readonly kind: "propose" }
-  | { readonly kind: "remove-proposal"; readonly proposedBy: string }
-  | { readonly kind: "remove-definition" }
-  /** `replaces`: the approval adopts a spec over a different one that settings hold. */
-  | { readonly kind: "approve"; readonly for: ResourceApprovalFor; readonly replaces: boolean }
+  /**
+   * Adding a definition under its name: `replaces` names who added the definition settings hold
+   * under that name, which this add would change; null when it changes none.
+   */
+  | { readonly kind: "add"; readonly replaces: { readonly addedBy: string } | null }
+  | { readonly kind: "remove-definition"; readonly addedBy: string }
   /** Choosing `off`, `shared` or `own` for one worktree. */
   | { readonly kind: "use"; readonly changeOwner: string | null };
 
 export const WORKSPACE_RESOURCE_REFUSAL =
-  "a workspace reads resources and changes none · propose, approve or choose them from the web app, VS Code, the phone or mend on your machine";
+  "a workspace reads resources and changes none · add, remove or choose them from the web app, VS Code, the phone or mend on your machine";
 
 const MANAGER = "a manager's: the project's creator or an organization owner";
 
@@ -47,13 +40,23 @@ const changeOwnerRefusal = (changeOwner: string | null, viewer: Viewer, act: str
       ? `${act} is the change owner's, and this worktree has no first session with an owner yet`
       : `${act} is ${CHANGE_OWNER}`;
 
+/** Null when `viewer` added the definition or manages the project, else whose `act` it is. */
+const adderRefusal = (
+  project: ProjectTenancy,
+  viewer: Viewer,
+  addedBy: string,
+  act: string,
+): string | null =>
+  addedBy === viewer.userId || canManageProject(project, viewer)
+    ? null
+    : `${act} someone else added is theirs or ${MANAGER}`;
+
 /**
  * Null when `actor` may do `act` in `project`, else the words that say whose act it is. Servers
  * refuse with it and clients derive their controls from it, so the two cannot disagree. Any member
- * who can see the project proposes (decision G1); settings are a manager's (decision S12). A
- * worktree's approval and choice are its change owner's alone, a manager's included (decision
- * G4): the change owner may adopt a worktree resource settings do not hold yet, and its image must
- * be one a manager approved, which the approval's own transaction checks.
+ * who can see the project reads and adds a resource, and it is the project's from then on; a
+ * definition someone else added is replaced or removed by them or a manager. A worktree's choice
+ * is its change owner's alone, a manager's included.
  */
 export const resourceActRefusal = (
   project: ProjectTenancy,
@@ -65,29 +68,13 @@ export const resourceActRefusal = (
   if (!canSeeProject(project, viewer)) return "is not a project you can see";
   switch (act.kind) {
     case "read":
-    case "propose":
       return null;
-    case "remove-proposal":
-      return act.proposedBy === viewer.userId || canManageProject(project, viewer)
+    case "add":
+      return act.replaces === null
         ? null
-        : `removing another person's proposal is theirs or ${MANAGER}`;
+        : adderRefusal(project, viewer, act.replaces.addedBy, "replacing a definition");
     case "remove-definition":
-      return canManageProject(project, viewer) ? null : `removing a definition is ${MANAGER}`;
-    case "approve": {
-      const manager = canManageProject(project, viewer);
-      if (act.for.kind === "project") {
-        return manager ? null : `approving a resource for the project is ${MANAGER}`;
-      }
-      const owner = changeOwnerRefusal(
-        act.for.changeOwner,
-        viewer,
-        "approving a worktree resource for this worktree",
-      );
-      if (owner !== null) return owner;
-      return act.replaces && !manager
-        ? `replacing the definition settings hold is ${MANAGER}`
-        : null;
-    }
+      return adderRefusal(project, viewer, act.addedBy, "removing a definition");
     case "use":
       return changeOwnerRefusal(
         act.changeOwner,

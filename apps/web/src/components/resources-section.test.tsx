@@ -1,25 +1,24 @@
-import { ResourceDefinitionId, ResourceProposalId, WorktreeId } from "@mend/domain";
+import { ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
   presetDefinition,
   PresetVersion,
-  type ResourceApprovalRequest,
+  type ResourceAddOffer,
   ResourceName,
   ResourceSpecDigest,
-  type ResourceApprovalOffers,
 } from "@mend/domain/workbench";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
   EMPTY_DRAFT,
-  type ResourceProposalView,
+  type ResourceFileTableView,
   type ResourceSettingView,
   type ResourcesPageView,
 } from "#/lib/resources";
 
 import {
-  ProposalForm,
   ReadState,
+  ResourceForm,
   type ResourceHandlers,
   ResourcesView,
   type ResourcesViewProps,
@@ -33,66 +32,52 @@ const db = presetDefinition({
   version: PresetVersion.make("17"),
   scope: "project",
 });
+const mail = { ...db, name: ResourceName.make("mail"), scope: "worktree" as const };
 const nothing = () => undefined;
 const handlers: ResourceHandlers = {
-  withdraw: nothing,
   remove: nothing,
-  confirm: nothing,
-  approve: nothing,
+  add: nothing,
   choose: nothing,
   reload: nothing,
-};
-const none = { project: null, worktree: null };
-const withheld: ResourceApprovalOffers = {
-  project: { kind: "denied", message: "is a manager's to approve" },
-  worktree: null,
-};
-const forProject: ResourceApprovalRequest = {
-  source: { kind: "settings", id: ResourceDefinitionId.make("rdef_db"), digest },
-  worktreeId: null,
 };
 
 const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingView => ({
   id: ResourceDefinitionId.make("rdef_db"),
   digest,
   spec: db,
-  approvals: { project: { by: "alice" }, worktree: null },
-  approve: withheld,
+  image: `postgres:17@sha256:${"e".repeat(64)}`,
+  addedBy: "alice",
   choice: "shared",
   canRemove: false,
   canChoose: false,
-  statusLine: "@db · postgres 17 · project · approved by Alice · shared database · not started",
+  statusLine: "@db · postgres 17 · project · added by Alice · shared database · not started",
   ...overrides,
 });
 
-const proposal = (overrides: Partial<ResourceProposalView> = {}): ResourceProposalView => ({
-  id: ResourceProposalId.make("rprop_1"),
+const table = (add: ResourceAddOffer, name = "mail"): ResourceFileTableView => ({
   digest,
-  spec: db,
-  proposedBy: "carol",
-  mine: true,
-  canRemove: true,
-  approvals: none,
-  approve: withheld,
-  statusLine: "@db · postgres 17 · project · proposed by Carol · waiting for approval",
-  ...overrides,
+  spec: { ...mail, name: ResourceName.make(name) },
+  add,
+  statusLine: `@${name} · postgres 17 · worktree · in mend.toml · not in settings`,
+});
+
+const fileOf = (...tables: ReadonlyArray<ResourceFileTableView>): ResourcesPageView["file"] => ({
+  kind: "read",
+  worktreeId: worktree,
+  observed: "observed at capture 3 · seq 40",
+  tables,
+  refused: [],
+  ignored: [],
 });
 
 const render = (page: Partial<ResourcesPageView>, overrides: Partial<ResourcesViewProps> = {}) =>
   renderToStaticMarkup(
     <ResourcesView
-      page={{
-        settings: [],
-        proposals: [],
-        file: { kind: "not-selected" },
-        canPropose: true,
-        ...page,
-      }}
+      page={{ settings: [], file: { kind: "not-selected" }, ...page }}
       worktreeId={worktree}
       worktreeName="checkout"
       busy={new Map()}
       notes={new Map()}
-      confirming={null}
       handlers={handlers}
       {...overrides}
     />,
@@ -101,162 +86,67 @@ const render = (page: Partial<ResourcesPageView>, overrides: Partial<ResourcesVi
 const buttons = (markup: string) =>
   [...markup.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((match) => match[1]);
 
-/** Each reason under an item: the target it is for, then the route's words. */
+/** Each reason under a table, in the route's words. */
 const reasons = (markup: string) =>
   [
     ...markup
       .replaceAll("<!-- -->", "")
       .replaceAll("&#x27;", "'")
-      .matchAll(/<span class="text-label">approve ([^<]*)<\/span> ([^<]*)<\/p>/g),
-  ].map((match) => `${match[1]} ${match[2]}`);
+      .matchAll(/<span class="text-label">add ·<\/span> ([^<]*)<\/p>/g),
+  ].map((match) => match[1]);
 
 describe("the resources card", () => {
   it("says so when there are none", () => {
     expect(render({})).toContain("No resources yet.");
   });
 
-  it("shows each line as the server sent it, and only the acts the page offers", () => {
-    const markup = render({ settings: [setting()], proposals: [proposal()] });
+  it("shows each line as the server sent it, with the image it runs, and only the acts the page offers", () => {
+    const markup = render({ settings: [setting()] });
     expect(markup).toContain(
-      "@db · postgres 17 · project · approved by Alice · shared database · not started",
+      "@db · postgres 17 · project · added by Alice · shared database · not started",
     );
-    expect(markup).toContain(">proposals<");
-    expect(markup).not.toContain("not approved");
-    expect(buttons(markup)).toEqual(["withdraw"]);
+    expect(markup).toContain(`postgres:17@sha256:${"e".repeat(64)} · rdef_db`);
+    expect(markup).not.toContain("approv");
+    expect(buttons(markup)).toEqual([]);
+    expect(buttons(render({ settings: [setting({ canRemove: true })] }))).toEqual(["remove"]);
   });
 
-  it("says withdraw for the reader's own proposal and remove for a manager removing another's", () => {
-    expect(buttons(render({ proposals: [proposal({ mine: false })] }))).toEqual(["remove"]);
-  });
-
-  it("offers one approval per target the server built a request for", () => {
-    const markup = render({
-      settings: [
-        setting({
-          approvals: none,
-          approve: {
-            project: { kind: "ready", request: forProject },
-            worktree: { kind: "ready", request: { ...forProject, worktreeId: worktree } },
-          },
-        }),
-      ],
-    });
-    expect(buttons(markup)).toEqual(["approve for the project…", "approve for worktree checkout…"]);
-  });
-
-  describe("why a target has no approval", () => {
+  describe("a worktree's mend.toml tables", () => {
     const collision = {
       key: "exports.URL",
       message: "sets MEND_RESOURCE_DB_MAIN_URL, as mail does too",
     };
-    const waiting = {
-      key: "image",
-      message:
-        "is not one a manager approved for this project · a manager approves @mail for the project first",
-    };
-    const mail = { ...db, name: ResourceName.make("mail"), scope: "worktree" as const };
+    const denied =
+      "replacing a definition someone else added is theirs or a manager's: the project's creator or an organization owner";
 
-    it("says each refusal by its key, for the target it refuses", () => {
+    it("offers to add a table the page says is ready, and nothing for one settings hold", () => {
       const markup = render({
-        settings: [
-          setting({
-            approvals: none,
-            approve: { project: { kind: "rejected", refusals: [collision] }, worktree: null },
-          }),
-        ],
-        proposals: [
-          proposal({
-            spec: mail,
-            approve: {
-              project: { kind: "rejected", refusals: [collision] },
-              worktree: { kind: "rejected", refusals: [waiting, collision] },
-            },
-          }),
-        ],
+        file: fileOf(table({ kind: "ready" }), table({ kind: "added" }, "box")),
       });
-      expect(reasons(markup)).toEqual([
-        "for the project · exports.URL sets MEND_RESOURCE_DB_MAIN_URL, as mail does too",
-        "for the project · exports.URL sets MEND_RESOURCE_DB_MAIN_URL, as mail does too",
-        "for worktree checkout · image is not one a manager approved for this project · a manager approves @mail for the project first",
-        "for worktree checkout · exports.URL sets MEND_RESOURCE_DB_MAIN_URL, as mail does too",
-      ]);
-      expect(buttons(markup)).toEqual(["withdraw"]);
-    });
-
-    it("says what comes first for a worktree, beside the project's approval", () => {
-      const markup = render({
-        file: {
-          kind: "read",
-          worktreeId: worktree,
-          observed: "observed at capture 3 · seq 40",
-          proposals: [
-            {
-              digest,
-              spec: mail,
-              approvals: none,
-              approve: {
-                project: { kind: "ready", request: forProject },
-                worktree: { kind: "rejected", refusals: [waiting] },
-              },
-              statusLine: "@mail · postgres 17 · worktree · proposed in mend.toml",
-            },
-          ],
-          refused: [],
-          ignored: [],
-        },
-      });
-      expect(buttons(markup)).toEqual(["approve for the project…"]);
-      expect(reasons(markup)).toEqual([
-        "for worktree checkout · image is not one a manager approved for this project · a manager approves @mail for the project first",
-      ]);
-    });
-
-    it("says nothing beside a target that is ready or approved", () => {
-      const markup = render({
-        settings: [
-          setting(),
-          setting({
-            id: ResourceDefinitionId.make("rdef_mail"),
-            spec: mail,
-            approve: {
-              project: { kind: "ready", request: forProject },
-              worktree: { kind: "approved" },
-            },
-          }),
-        ],
-        proposals: [
-          proposal({
-            approve: { project: { kind: "approved" }, worktree: null },
-          }),
-        ],
-      });
+      expect(buttons(markup)).toEqual(["add to settings"]);
       expect(reasons(markup)).toEqual([]);
     });
 
-    it("says a denial for the read worktree, never the project's, which the introduction says", () => {
+    it("says why a table has no add, each refusal by its key, and a denial in its words", () => {
       const markup = render({
-        proposals: [
-          proposal({
-            spec: mail,
-            approve: {
-              project: {
-                kind: "denied",
-                message:
-                  "approving a resource for the project is a manager's: the project's creator or an organization owner",
-              },
-              worktree: {
-                kind: "denied",
-                message:
-                  "approving a worktree resource for this worktree is its change owner's: the owner of its first session",
-              },
-            },
-          }),
-        ],
+        file: fileOf(
+          table({ kind: "rejected", refusals: [collision] }),
+          table({ kind: "denied", message: denied }, "db"),
+        ),
       });
+      expect(buttons(markup)).toEqual([]);
       expect(reasons(markup)).toEqual([
-        "for worktree checkout · approving a worktree resource for this worktree is its change owner's: the owner of its first session",
+        "exports.URL sets MEND_RESOURCE_DB_MAIN_URL, as mail does too",
+        denied,
       ]);
-      expect(markup).not.toContain("a manager&#x27;s");
+    });
+
+    it("says adding only on the table being added", () => {
+      const markup = render(
+        { file: fileOf(table({ kind: "ready" }), table({ kind: "ready" }, "box")) },
+        { busy: new Map([["f:mail", "add"]]) },
+      );
+      expect(buttons(markup)).toEqual(["adding…", "add to settings"]);
     });
   });
 
@@ -280,30 +170,6 @@ describe("the resources card", () => {
     );
     expect(markup).not.toContain("this session");
     expect(buttons(markup)).not.toContain("start");
-  });
-
-  it("reviews every field apart and the definition digest, for the read it was opened on", () => {
-    const entry = setting({
-      approvals: none,
-      approve: { project: { kind: "ready", request: forProject }, worktree: null },
-    });
-    const confirming = {
-      key: "s:rdef_db",
-      spec: db,
-      digest,
-      request: forProject,
-      target: "for the project",
-      worktreeId: null,
-    };
-    const markup = render({ settings: [entry] }, { worktreeId: null, confirming });
-    expect(markup).toContain(`sha256:${digest}`);
-    expect(markup).toContain(">definition digest<");
-    expect(markup).toContain("[&quot;-c&quot;,&quot;fsync=on&quot;");
-    expect(markup).toContain("Approve exactly this definition for the project.");
-    // Read for another worktree, the same item shows no review it was not opened on.
-    expect(render({ settings: [entry] }, { worktreeId: worktree, confirming })).not.toContain(
-      "Approve exactly",
-    );
   });
 
   it("writes each refusal on its own line, with a reload beside a stale read", () => {
@@ -338,12 +204,7 @@ describe("the resources card", () => {
   });
 });
 
-const emptyPage: ResourcesPageView = {
-  settings: [],
-  proposals: [],
-  file: { kind: "not-selected" },
-  canPropose: true,
-};
+const emptyPage: ResourcesPageView = { settings: [], file: { kind: "not-selected" } };
 
 describe("reading the card", () => {
   const show = (read: Parameters<typeof ReadState>[0]["read"]) =>
@@ -362,10 +223,10 @@ describe("reading the card", () => {
   });
 });
 
-describe("the proposal form", () => {
+describe("the add form", () => {
   it("shows each refusal under the field it names, in the server's words", () => {
     const markup = renderToStaticMarkup(
-      <ProposalForm
+      <ResourceForm
         draft={{ ...EMPTY_DRAFT, kind: "image", name: "mail" }}
         refusals={[
           { key: "ports", message: "names no port, and a resource is reached on one" },
@@ -388,7 +249,7 @@ describe("the proposal form", () => {
 
   it("lets each env row be removed", () => {
     const markup = renderToStaticMarkup(
-      <ProposalForm
+      <ResourceForm
         draft={{
           ...EMPTY_DRAFT,
           kind: "image",

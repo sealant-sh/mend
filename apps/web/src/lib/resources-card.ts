@@ -16,7 +16,7 @@ export interface ItemNote {
   readonly reload: boolean;
 }
 
-/** Where an act's answer lands (an approved proposal's lands on its definition), and what it says. */
+/** Where an act's answer lands (an added table's lands on its definition), and what it says. */
 export interface Answer {
   readonly at: string;
   readonly note: ItemNote | null;
