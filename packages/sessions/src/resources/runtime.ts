@@ -9,6 +9,10 @@ import {
   boundDatabase,
   ownDatabaseName,
   type ResourceBinding,
+  type ServiceDependency,
+  type ResourceDependencyStopped,
+  resourceDependenciesOf,
+  serviceResourceEnv,
   resourceBindings,
   type ResourceEnvLeft,
   type ResourceInstanceObservation,
@@ -62,12 +66,17 @@ export interface PrepareInput {
   readonly workspaceId: string;
   /** The person the launch is for: a `mend.toml` table this adds to settings is theirs. */
   readonly launcher: string;
+  readonly dependencies?: ReadonlyArray<ServiceDependency>;
+  readonly recipeEnv?: Readonly<Record<string, string>>;
 }
 
 /** The env the process gets, and what a launch says about it (the "starts without it" lines). */
 export interface Prepared {
   readonly env: Readonly<Record<string, string>>;
   readonly views: ReadonlyArray<ResourceStatusView>;
+  readonly refusal?: string;
+  readonly resourceStopped?: { readonly name: string; readonly by: string };
+  readonly notReady?: ReadonlyArray<string>;
 }
 
 /** Instances observed in a project, by Sealant key, or why none could be. */
@@ -85,6 +94,12 @@ export class ResourceRuntime extends Context.Service<
      * fails the launch: the env is the same, and a view says the process starts without it.
      */
     readonly prepare: (input: PrepareInput) => Effect.Effect<Prepared>;
+    /** Read only: whether a person stopped one of this Service's required resources. */
+    readonly stoppedDependency: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+      dependencies: ReadonlyArray<ServiceDependency>,
+    ) => Effect.Effect<ResourceDependencyStopped | null>;
     /** The env a worktree's processes get now, from the rows alone; nothing is started. */
     readonly envOf: (
       projectId: ProjectId,
@@ -140,6 +155,7 @@ export const PREPARE_BOUND = Duration.seconds(30);
 /** A runtime that runs nothing: every process gets no resource env. For tests and tools. */
 export const ResourceRuntimeNone: Layer.Layer<ResourceRuntime> = Layer.succeed(ResourceRuntime, {
   prepare: () => Effect.succeed({ env: {}, views: [] }),
+  stoppedDependency: () => Effect.succeed(null),
   envOf: () => Effect.succeed({ env: {}, left: [] }),
   start: () => Effect.succeed(unobserved("no runtime runs resources here")),
   stop: () => Effect.succeed(unobserved("no runtime runs resources here")),
@@ -402,11 +418,23 @@ export const resourceRuntimeLayer = (
           [bindingsOf(input.projectId, input.worktreeId), projectEnvNames(input.projectId)],
           { concurrency: "unbounded" },
         );
-        const { env, left } = resourceProcessEnv({
+        const mapped = serviceResourceEnv({
+          dependencies: input.dependencies ?? [],
+          definitions: (yield* repo.listWithChoices(input.projectId, input.worktreeId)).map(
+            ({ definition, choice }) => ({ spec: definition.spec, choice }),
+          ),
+          worktreeId: input.worktreeId,
+          projectEnvNames: names,
+          recipeEnv: input.recipeEnv ?? {},
+        });
+        if (mapped.refusal !== null)
+          return { env: {}, views: fileViews, refusal: mapped.refusal } satisfies Prepared;
+        const { env: processEnv, left } = resourceProcessEnv({
           bindings: bound.map(({ binding }) => binding),
           worktreeId: input.worktreeId,
           projectEnvNames: names,
         });
+        const env = { ...processEnv, ...mapped.env };
         const leftViews = left.flatMap(
           ({ resource, names: kept }): ReadonlyArray<ResourceStatusView> => {
             const definition = bound.find(({ binding }) => binding.definition.name === resource);
@@ -460,7 +488,27 @@ export const resourceRuntimeLayer = (
           }
           return view === null ? [] : [view];
         });
-        return { env, views: [...fileViews, ...runViews, ...leftViews] } satisfies Prepared;
+        const required = new Set(
+          resourceDependenciesOf(input.dependencies ?? []).map((each) => each.name),
+        );
+        const notReady: string[] = [];
+        for (const view of runViews) {
+          if (view.kind !== "launched-without" || !required.has(view.definition.name)) continue;
+          if (view.instance.kind === "stopped" && view.instance.reason.kind === "person") {
+            return {
+              env,
+              views: [...fileViews, ...runViews, ...leftViews],
+              refusal: `@${view.definition.name} stopped by ${view.instance.reason.by}`,
+              resourceStopped: { name: view.definition.name, by: view.instance.reason.by },
+            } satisfies Prepared;
+          }
+          notReady.push(`@${view.definition.name} not ready`);
+        }
+        return {
+          env,
+          views: [...fileViews, ...runViews, ...leftViews],
+          notReady,
+        } satisfies Prepared;
       });
 
       const bounded = (work: Effect.Effect<InstanceObserved>) =>
@@ -625,7 +673,24 @@ export const resourceRuntimeLayer = (
         );
       });
 
-      return { prepare, envOf, start, stop, observe, archive, reset };
+      const stoppedDependency = Effect.fn("ResourceRuntime.stoppedDependency")(function* (
+        projectId: ProjectId,
+        worktreeId: WorktreeId,
+        dependencies: ReadonlyArray<ServiceDependency>,
+      ) {
+        const required = new Set(resourceDependenciesOf(dependencies).map((each) => each.name));
+        if (required.size === 0) return null;
+        const seen = yield* observe(projectId);
+        if (seen.kind !== "observed") return null;
+        for (const { binding, definition } of yield* bindingsOf(projectId, worktreeId)) {
+          if (!required.has(definition.spec.name)) continue;
+          const instance = seen.byKey.get(keyOf(definition, binding, worktreeId))?.instance;
+          if (instance?.kind === "stopped" && instance.reason.kind === "person")
+            return { name: definition.spec.name, by: instance.reason.by };
+        }
+        return null;
+      });
+      return { prepare, envOf, stoppedDependency, start, stop, observe, archive, reset };
     }),
   );
 

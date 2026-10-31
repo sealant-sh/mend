@@ -38,6 +38,7 @@ import {
   ResourceName,
   resourceStatusLine,
   type Viewer,
+  type ServiceDependency,
   withPresetCommand,
 } from "@mend/domain/workbench";
 import {
@@ -260,7 +261,10 @@ const definition = (name: string) =>
       found === null ? Effect.die(new Error(`no @${name}`)) : Effect.succeed(found),
     ),
   );
-const prepare = () =>
+const prepare = (
+  dependencies: ReadonlyArray<ServiceDependency> = [],
+  recipeEnv: Readonly<Record<string, string>> = {},
+) =>
   runtime.runPromise(
     Effect.flatMap(ResourceRuntime, (live) =>
       live.prepare({
@@ -268,6 +272,8 @@ const prepare = () =>
         worktreeId: WORKTREE,
         workspaceId: "ws-1",
         launcher: "u-tom",
+        dependencies,
+        recipeEnv,
       }),
     ),
   );
@@ -447,6 +453,70 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     );
     expect(started.instance).toBe("running");
     expect((await prepare()).views).toEqual([]);
+  });
+
+  it("maps exports for a required resource and refuses a conventional name a recipe sets", async () => {
+    const prepared = await prepare([
+      {
+        kind: "resource",
+        name: "db",
+        env: { TEST_DATABASE_URL: "url", TEST_DATABASE: "database", DB_LOGIN: "username" },
+      },
+    ]);
+    expect(prepared.refusal).toBeUndefined();
+    expect(prepared.env).toMatchObject({
+      TEST_DATABASE_URL: `postgres://postgres@db:5432/${OWN}`,
+      TEST_DATABASE: OWN,
+      DB_LOGIN: "postgres",
+    });
+    expect(
+      (await prepare([{ kind: "resource", name: "db", env: {} }], { DATABASE_URL: "literal" }))
+        .refusal,
+    ).toBe("DATABASE_URL comes from @db");
+  });
+
+  it("a preview wake starts an idle resource and holds a person's stop by name", async () => {
+    await prepare();
+    const spec = sealant.specs.get(db.id);
+    if (spec === undefined) throw new Error("db did not start");
+    const idle = { kind: "idle" } satisfies NonNullable<ScopeInstance["stopReason"]>;
+    sealant.instances.set(
+      db.id,
+      instanceOf(db.id, spec, { kind: "stopped", at: new Date(), reason: idle }, idle),
+    );
+    const dependencies: ReadonlyArray<ServiceDependency> = [
+      { kind: "resource", name: "db", env: {} },
+    ];
+    const woken = await prepare(dependencies);
+    expect(woken.refusal).toBeUndefined();
+    expect(sealant.instances.get(db.id)?.state.kind).toBe("running");
+    await runtime.runPromise(fakeScope.stop(db.id, "Maria"));
+    const held = await prepare(dependencies);
+    expect(held.refusal).toBe("@db stopped by Maria");
+    expect(held.resourceStopped).toEqual({ name: "db", by: "Maria" });
+    expect(sealant.instances.get(db.id)?.state.kind).toBe("stopped");
+    await runtime.runPromise(fakeScope.up(db.id, spec, "person"));
+  });
+
+  it("a missing or off resource refuses its dependent before any start", async () => {
+    expect((await prepare([{ kind: "resource", name: "absent", env: {} }])).refusal).toContain(
+      "@absent · no resource in this project",
+    );
+    await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) =>
+        repo.setSelection(PROJECT, WORKTREE, db.id, "off", "u-maria"),
+      ),
+    );
+    const before = sealant.calls.length;
+    expect((await prepare([{ kind: "resource", name: "db", env: {} }])).refusal).toBe(
+      "@db · this worktree has it off · mend resource use db shared",
+    );
+    expect(sealant.calls.length).toBe(before);
+    await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) =>
+        repo.setSelection(PROJECT, WORKTREE, db.id, "own", "u-maria"),
+      ),
+    );
   });
 
   it("opens a process past the bound with the same env, and the start goes on", async () => {

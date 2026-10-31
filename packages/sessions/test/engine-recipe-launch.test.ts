@@ -29,6 +29,7 @@ import {
   withEngine,
   withPreparedEngineEffect,
 } from "./engine/fixture.ts";
+import { resourcePreviewFixture } from "./engine/resource-preview-fixture.ts";
 
 const ownerStart = { kind: "person", userId: "user-fixture" } as const;
 
@@ -174,6 +175,58 @@ describe("a recipe's launch", () => {
           opened,
         ),
         previewUrls: previewUrlsAt({ web: "http://web-label.localhost:3200" }, asked),
+      },
+    );
+  });
+
+  it("opens a Service with mapped resource env and holds a person's stop on a restart", async () => {
+    const resources = resourcePreviewFixture();
+    const opened: Array<SessionOptions | PersonSessionOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const { engine, session } = yield* provisionIn(project);
+          yield* engine.launch(session.id, ["codex"]);
+          writeMendToml(
+            tmp,
+            session.worktree,
+            '[service.web]\ncommand = "pnpm dev"\nport = 3000\nbrowserScheme = "http"\ndepends = [{ shared = "db", env = { TEST_DATABASE_URL = "url" } }]',
+          );
+          const web = yield* engine.runServiceRecipe(session.id, "web", ownerStart);
+          expect(opened.at(-1)?.env).toMatchObject({
+            DATABASE_URL: "postgres://postgres@db:5432/app",
+            TEST_DATABASE_URL: "postgres://postgres@db:5432/app",
+            PORT: "3000",
+          });
+          expect(resources.control.starts).toBe(1);
+          resources.control.state = {
+            kind: "stopped",
+            at: new Date(),
+            reason: { kind: "person", by: "Maria" },
+          };
+          const before = opened.length;
+          const refused = yield* Effect.result(engine.restartService(web.service.id, ownerStart));
+          expect(refused._tag).toBe("Failure");
+          if (refused._tag === "Failure")
+            expect(refused.failure).toMatchObject({
+              message: "@db stopped by Maria",
+              resourceStopped: { name: "db", by: "Maria" },
+            });
+          expect(opened).toHaveLength(before);
+        }),
+      {
+        resourceRuntime: resources.layer,
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          [],
+          undefined,
+          undefined,
+          undefined,
+          opened,
+        ),
       },
     );
   });

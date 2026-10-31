@@ -5,7 +5,6 @@ import * as path from "node:path";
 import {
   recipeRefusalLine,
   RepoRelativePath,
-  resourceDependsRefusal,
   ServiceRecipe,
   SetupDeclaration,
   setupRefusalsOf,
@@ -178,7 +177,7 @@ service = "web"
     ["host", 'host = "keep"', "host", /"rewrite" or "preserve"/],
     ["address", 'address = "host"', "address", /"loopback" or "docker"/],
     ["depends", 'depends = "db"', "depends", /list/],
-    ["depends", 'depends = ["Db App"]', "depends", /not a recipe name/],
+    ["depends", 'depends = ["Db App"]', "depends", /must name a Service/],
     ["port", "port = 70000", "port", /1\.\.65535/],
     ["command", 'command = " "', "command", /non-empty/],
     ["protocol", 'protocol = "sctp"', "protocol", /"tcp" or "udp"/],
@@ -250,16 +249,52 @@ ready = { http = "/" }
     ]);
   });
 
-  it("refuses a dependency on a resource, which a later Mend waits on", () => {
+  it("reads resource dependencies separately from the Service graph", () => {
     const file = parse(
-      [...WEB, 'depends = ["@db", { shared = "cache" }, { resource = "queue" }]'].join("\n"),
+      [
+        ...WEB,
+        'depends = ["@db", { shared = "cache", env = { CACHE_URL = "url" } }, { resource = "queue" }]',
+      ].join("\n"),
     );
-    expect(file.refused.map((refusal) => refusal.message)).toEqual([
-      "@db · a Service's depends does not name a resource yet · every process in the worktree has @db's env already",
-      resourceDependsRefusal("cache"),
-      resourceDependsRefusal("queue"),
+    const declared = resolveDeclarations(file, []);
+    expect(declared.refused).toEqual([]);
+    expect(declared.recipes[0]?.depends).toEqual([
+      { kind: "resource", name: "db", env: {} },
+      { kind: "resource", name: "cache", env: { CACHE_URL: "url" } },
+      { kind: "resource", name: "queue", env: {} },
     ]);
-    expect(file.refused.every((refusal) => refusal.key === "depends")).toBe(true);
+    expect(planStart(declared, "web").map((each) => each.name)).toEqual(["web"]);
+  });
+
+  it.each([
+    ['["@"]', "must name"],
+    ['[{ shared = "db", resource = "db" }]', "not both"],
+    ['[{ shared = "db", env = { PORT = "port" } }]', "Mend owns"],
+    ['[{ shared = "db", env = { MEND_X = "url" } }]', "Mend owns"],
+    ['[{ shared = "db", env = { TEST_URL = 1 } }]', "must name an export"],
+    [
+      '[{ shared = "db", env = { TEST_URL = "url" } }, { resource = "cache", env = { TEST_URL = "url" } }]',
+      "TEST_URL comes from @db and @cache",
+    ],
+  ])("refuses just the malformed resource binding %s", (depends, words) => {
+    const file = parse(
+      [...WEB, `depends = ${depends}`, "[service.other]", "port = 4000"].join("\n"),
+    );
+    expect(file.refused.map((refusal) => refusal.message).join(" ")).toContain(words);
+    expect(file.recipes.map((recipe) => recipe.name)).toEqual(["other"]);
+  });
+
+  it("refuses recipe env shadowing a mapped name", () => {
+    const file = parse(
+      [
+        ...WEB,
+        'depends = [{ shared = "db", env = { TEST_URL = "url" } }]',
+        'env = { TEST_URL = "literal" }',
+      ].join("\n"),
+    );
+    expect(file.refused).toEqual([
+      expect.objectContaining({ key: "env.TEST_URL", message: "TEST_URL comes from @db" }),
+    ]);
   });
 
   it("leaves the other recipes parsed when one is bad", () => {

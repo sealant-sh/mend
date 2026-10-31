@@ -17,7 +17,10 @@ import {
   type RepoRelativePath,
   repoRelativePathOf,
   type ResourceDefinitionInput,
-  resourceDependsRefusal,
+  parseServiceDependency,
+  resourceDependenciesOf,
+  serviceDependenciesOf,
+  type ServiceDependency,
   ServiceDeclarations,
   type ServiceAddress,
   type ServiceHostPolicy,
@@ -108,7 +111,7 @@ interface RecipeFields {
   readonly ready: RecipeReady;
   readonly host: ServiceHostPolicy;
   readonly address: ServiceAddress;
-  readonly depends: ReadonlyArray<string>;
+  readonly depends: ReadonlyArray<ServiceDependency>;
 }
 
 const DEFAULTS: RecipeFields = {
@@ -232,23 +235,29 @@ const READERS: { readonly [K in keyof RecipeFields]: KeyReader<K> } = {
       context.refuse("depends", "must be a list of recipe names");
       return undefined;
     }
-    const names: string[] = [];
+    const names: ServiceDependency[] = [];
     let refused = false;
+    const mapped = new Map<string, string>();
     for (const entry of value) {
-      if (typeof entry === "string" && entry.startsWith("@")) {
+      const read = parseServiceDependency(entry);
+      if ("issue" in read) {
         refused = true;
-        context.refuse("depends", resourceDependsRefusal(entry.slice(1)));
-      } else if (isRecord(entry) && typeof entry["shared"] === "string") {
-        refused = true;
-        context.refuse("depends", resourceDependsRefusal(entry["shared"]));
-      } else if (isRecord(entry) && typeof entry["resource"] === "string") {
-        refused = true;
-        context.refuse("depends", resourceDependsRefusal(entry["resource"]));
-      } else if (typeof entry === "string" && RECIPE_NAME.test(entry)) {
-        if (!names.includes(entry)) names.push(entry);
+        context.refuse("depends", read.issue);
+        continue;
+      }
+      const dependency = read.dependency;
+      if (typeof dependency === "string") {
+        if (!names.includes(dependency)) names.push(dependency);
       } else {
-        refused = true;
-        context.refuse("depends", `${JSON.stringify(entry)} is not a recipe name`);
+        for (const key of Object.keys(dependency.env)) {
+          const earlier = mapped.get(key);
+          if (earlier !== undefined) {
+            refused = true;
+            context.refuse("depends", `${key} comes from @${earlier} and @${dependency.name}`);
+          }
+          mapped.set(key, dependency.name);
+        }
+        names.push(dependency);
       }
     }
     return refused ? undefined : names;
@@ -367,6 +376,13 @@ const readRecipe = (
   }
   if (draft.address === "docker" && draft.protocol === "udp") {
     context.refuse("address", '"docker" is for TCP Services');
+  }
+
+  for (const binding of resourceDependenciesOf(draft.depends)) {
+    for (const envName of Object.keys(binding.env)) {
+      if (Object.hasOwn(draft.env, envName))
+        context.refuse(`env.${envName}`, `${envName} comes from @${binding.name}`);
+    }
   }
 
   if (refused.length > 0 || draft.port === undefined) return { recipe: null, refused, ignored };
@@ -646,7 +662,7 @@ export const resolveDeclarations = (
   };
 
   for (const recipe of runnable.values()) {
-    for (const dependency of recipe.depends) {
+    for (const dependency of serviceDependenciesOf(recipe.depends)) {
       if (dependency === recipe.name) {
         refuse(recipe.name, "names the recipe itself");
         break;
@@ -660,7 +676,7 @@ export const resolveDeclarations = (
 
   for (const recipe of runnable.values()) {
     const named = new Map<string, string>();
-    for (const dependency of recipe.depends) {
+    for (const dependency of serviceDependenciesOf(recipe.depends)) {
       const prefix = dependencyEnvPrefix(dependency);
       const earlier = named.get(prefix);
       if (earlier !== undefined) {
@@ -679,7 +695,9 @@ export const resolveDeclarations = (
   for (let changed = true; changed; ) {
     changed = false;
     for (const recipe of runnable.values()) {
-      const blocked = recipe.depends.find((dependency) => !runnable.has(dependency));
+      const blocked = serviceDependenciesOf(recipe.depends).find(
+        (dependency) => !runnable.has(dependency),
+      );
       if (blocked !== undefined) {
         refuse(recipe.name, `names ${blocked}, which is refused`);
         changed = true;
@@ -723,7 +741,8 @@ const cyclesOf = (
     if (done.has(name)) return;
     const recipe = recipes.get(name);
     if (recipe === undefined) return;
-    for (const dependency of recipe.depends) visit(dependency, [...trail, name]);
+    for (const dependency of serviceDependenciesOf(recipe.depends))
+      visit(dependency, [...trail, name]);
     done.add(name);
   };
   for (const name of recipes.keys()) visit(name, []);
@@ -747,7 +766,7 @@ export const planStart = (
   const visit = (current: string) => {
     const recipe = byName.get(current);
     if (recipe === undefined || plan.includes(recipe)) return;
-    for (const dependency of recipe.depends) visit(dependency);
+    for (const dependency of serviceDependenciesOf(recipe.depends)) visit(dependency);
     plan.push(recipe);
   };
   visit(name);

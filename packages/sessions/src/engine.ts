@@ -85,6 +85,11 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import {
+  ResourceDependencyStopped,
+  serviceDependenciesOf,
+  type ServiceDependency,
+} from "@mend/domain/workbench";
+import {
   DOPPLER_CONFIG_PATH,
   dopplerConfigContents,
   dopplerTokenIssue,
@@ -650,7 +655,7 @@ import {
   resolveDeclarations,
 } from "./recipes.ts";
 import { declarationsNote } from "./resource-tables.ts";
-import { ResourceRuntime } from "./resources/runtime.ts";
+import { type Prepared, ResourceRuntime } from "./resources/runtime.ts";
 import {
   HOT_POOL_MAX_OWNERS,
   HOT_POOL_RECENT_OWNER_WINDOW,
@@ -2488,6 +2493,7 @@ export class ServiceStartError extends Schema.TaggedError<ServiceStartError>()(
   "ServiceStartError",
   {
     message: Schema.String,
+    resourceStopped: Schema.optional(ResourceDependencyStopped),
   },
 ) {}
 
@@ -2511,6 +2517,7 @@ export class PreviewStartRefused extends Schema.TaggedError<PreviewStartRefused>
   {
     reason: PreviewStartRefusal,
     detail: Schema.optional(Schema.String),
+    resourceStopped: Schema.optional(ResourceDependencyStopped),
   },
 ) {}
 
@@ -23635,8 +23642,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly dependencies: ReadonlyArray<DependencyAddress>;
         readonly runsAs: string | null;
         readonly launchCorrelationId: string | null;
+        readonly beforeOpen?: Effect.Effect<void, ServiceStartError>;
       }) {
         const { session, workspace, service, argv, launch, runsAs } = start;
+        const resourceLauncher = runsAs ?? session.ownerUserId;
+        const preparedResources: Prepared =
+          resourceLauncher === null
+            ? { env: {}, views: [] }
+            : yield* resourceRuntime.prepare({
+                projectId: session.projectId,
+                worktreeId: session.worktreeId,
+                workspaceId: workspace.id,
+                launcher: resourceLauncher,
+                dependencies: launch.depends,
+                recipeEnv: launch.env,
+              });
+        if (preparedResources.refusal !== undefined) {
+          return yield* new ServiceStartError({
+            message: preparedResources.refusal,
+            ...(preparedResources.resourceStopped !== undefined
+              ? { resourceStopped: preparedResources.resourceStopped }
+              : {}),
+          });
+        }
+        if (preparedResources.notReady !== undefined && preparedResources.notReady.length > 0)
+          yield* noteLaunchWords(
+            session.id,
+            `${service.name} · ${preparedResources.notReady.join(" · ")}`,
+          ).pipe(Effect.ignore);
+        if (start.beforeOpen !== undefined) yield* start.beforeOpen;
         const previewUrl = yield* previewUrlFor(session, service, start.filePreview);
         const workspaceId = SealantWorkspaceId.make(workspace.id);
         const attempts = yield* processes.listForService(service.id);
@@ -23664,9 +23698,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : services.setStartedBy(service.id, runsAs),
           ),
           Effect.flatMap((startAs) =>
-            resourceEnvOf(session, workspace, runsAs, false).pipe(
-              Effect.map((resources) => ({ startAs, resources })),
-            ),
+            Effect.succeed({ startAs, resources: preparedResources.env }),
           ),
           Effect.flatMap(({ startAs, resources }) => {
             const cwd = serviceCwdOf(launch.cwd);
@@ -23771,6 +23803,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           dependencies: start.dependencies,
           runsAs,
           launchCorrelationId,
+          ...(start.beforeAttempt === undefined ? {} : { beforeOpen: start.beforeAttempt }),
         });
         // Once its attempt is live: the preview's rule decides whether it selects this Service.
         yield* clearStop(service.id, cause);
@@ -23989,10 +24022,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const dependencyAddressesOf = Effect.fn("SessionEngine.dependencyAddressesOf")(function* (
         sessionId: SessionId,
-        names: ReadonlyArray<string>,
+        names: ReadonlyArray<ServiceDependency>,
       ) {
         const addresses: DependencyAddress[] = [];
-        for (const name of names) {
+        for (const name of serviceDependenciesOf(names)) {
           const live = yield* liveServiceNamed(sessionId, name);
           if (live === null) continue;
           const { service } = live;
@@ -24280,10 +24313,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const targetStep = steps.at(-1);
         if (targetStep === undefined) return yield* Effect.die("a plan without its Service");
         const target = targetStep.recipe;
-        const end = (state: "failed" | "stopped", message: string) =>
+        const end = (
+          state: "failed" | "stopped",
+          message: string,
+          resourceStopped?: ResourceDependencyStopped,
+        ) =>
           Effect.suspend(() =>
             progressTo(plan, new ServiceStartProgress({ ...plan.progress, state, message })),
-          ).pipe(Effect.andThen(Effect.fail(new ServiceStartError({ message }))));
+          ).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new ServiceStartError({
+                  message,
+                  ...(resourceStopped === undefined ? {} : { resourceStopped }),
+                }),
+              ),
+            ),
+          );
         const stoppedWords = `a Stop came before ${target.name} started`;
         // Its follower admits each command the plan would start, not only the Service's attempt: a
         // preparation that lost its claim starts no setup and no dependency either.
@@ -24332,6 +24378,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* end(
             "failed",
             `${dependency.name} did not start, so ${target.name} was not started · ${why}`,
+            Result.isFailure(met) && met.failure instanceof ServiceStartError
+              ? met.failure.resourceStopped
+              : undefined,
           );
         }
         if (plan.stopped) return yield* end("stopped", stoppedWords);
@@ -25955,7 +26004,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const awaitPreviewRecipe = (plan: ServicePlan) =>
         Effect.gen(function* () {
           const ended = yield* Deferred.await(plan.done).pipe(
-            Effect.mapError((error) => previewRefused("command-failed", error.message)),
+            Effect.mapError(
+              (error) =>
+                new PreviewStartRefused({
+                  reason: "command-failed",
+                  detail: error.message,
+                  ...(error instanceof ServiceStartError && error.resourceStopped !== undefined
+                    ? { resourceStopped: error.resourceStopped }
+                    : {}),
+                }),
+            ),
           );
           if (ended.outcome._tag !== "Ready" || ended.view.service.currentAttemptId === null)
             return yield* previewRefused("command-failed");
@@ -26004,6 +26062,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const follower: PlanFollower = {
             progress: () => Effect.void,
             admit: Effect.gen(function* () {
+              if (previewRemainingMs(request.deadline) === 0) return "claim-lost";
               const control = yield* previews.controlOf(request.previewId);
               return control._tag === "Stopped" || control.revision !== request.revision
                 ? "stopped"
