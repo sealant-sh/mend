@@ -959,7 +959,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
               body,
               () => 0,
               (bytes, chunk) => bytes + chunk.length,
-            );
+            ).pipe(Effect.orDie);
             return {
               id,
               phase: "restoring",
