@@ -63,6 +63,7 @@ const SDK_DIAL_REASONS = {
   "binding-unsupported": true,
   "protocol-unsupported": true,
   "transport-unavailable": true,
+  "not-a-person": true,
 } as const satisfies Record<SdkDialReason, true>;
 
 /**
