@@ -1354,10 +1354,10 @@ describe("an attempt that ends while its start waits", () => {
 });
 
 describe("serviceProcessEnv", () => {
-  it("layers the shared binding, the recipe, Mend's names, then the person's, each over the last", () => {
+  it("layers the resources, the recipe, Mend's names, then the person's, each over the last", () => {
     expect(
       serviceProcessEnv({
-        sharedBinding: { DATABASE_URL: "shared", A: "shared" },
+        resources: { DATABASE_URL: "shared", A: "shared" },
         recipe: { A: "recipe", B: "recipe", HOME: "/recipe" },
         port: 3000,
         previewUrl: "https://x.example",

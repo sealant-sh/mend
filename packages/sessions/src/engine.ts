@@ -259,6 +259,7 @@ import {
   noResumeLine,
   PROMPTABLE_HARNESSES,
   resumesOwnHarness,
+  resourceStatusLine,
 } from "@mend/domain/workbench";
 import { makeWindowLimiter } from "@mend/network";
 import {
@@ -649,6 +650,7 @@ import {
   resolveDeclarations,
 } from "./recipes.ts";
 import { declarationsNote } from "./resource-tables.ts";
+import { ResourceRuntime } from "./resources/runtime.ts";
 import {
   HOT_POOL_MAX_OWNERS,
   HOT_POOL_RECENT_OWNER_WINDOW,
@@ -1041,6 +1043,18 @@ const agentLaunch = (
  */
 const HOLD_LAUNCH: LaunchPlan = { ...agentLaunch(["bash"], { state: null }), role: "hold" };
 
+/**
+ * `argv` run with `env` added to its environment, for an exec, which takes no env of its own. The
+ * resources' values are addresses, never credentials, so they may be in an argv.
+ */
+const withEnvArgv = (
+  env: Readonly<Record<string, string>>,
+  argv: ReadonlyArray<string>,
+): ReadonlyArray<string> =>
+  Object.keys(env).length === 0
+    ? argv
+    : ["env", ...Object.entries(env).map(([name, value]) => `${name}=${value}`), ...argv];
+
 /** What a launch records once its PTY is open, by its role (`launchRecords` in the engine). */
 interface LaunchRecords {
   /** A run of the session's harness, recorded and named on the session's row. */
@@ -1060,9 +1074,11 @@ const launchOpenOptions = (input: {
     readonly user: ProcessUser;
     readonly env: Readonly<Record<string, string>>;
   } | null;
+  /** What the worktree's resources give every process (ADR 0019): beneath everything else. */
+  readonly resources: Readonly<Record<string, string>>;
   readonly env: Readonly<Record<string, string>>;
 }): PersonSessionOptions | undefined => {
-  const env = { ...input.person?.env, ...input.env };
+  const env = { ...input.resources, ...input.person?.env, ...input.env };
   const options = {
     ...(input.pipe ? { mode: "pipe" as const } : {}),
     ...(input.person === null ? {} : { user: input.person.user }),
@@ -3403,6 +3419,7 @@ export class SessionEngine extends Context.Service<
 >()("@mend/sessions/SessionEngine") {}
 
 type SessionEngineRequirements =
+  | ResourceRuntime
   | RemovalFencesRepo
   | SealantClient
   | WorkspaceCaller
@@ -3494,6 +3511,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const clock = yield* Clock.Clock;
       const scope = yield* Effect.scope;
       const sealant = yield* SealantClient;
+      const resourceRuntime = yield* ResourceRuntime;
       // Whose platform identity a call about a workspace runs as (`workspace-caller.ts`): the
       // engine tells it when a creator is recorded, and asks it before restoring a process.
       const workspaceCaller = yield* WorkspaceCaller;
@@ -3815,13 +3833,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               command,
             }),
           );
+          // The install gets the worktree's resources, as every process in it does: a postinstall
+          // that migrates finds its database.
+          const installEnv = yield* resourceEnvOf(session, workspace, null, false);
           // Counted from each exec's output and dropped: the lines carry the count, never the
           // text. A shortened install that failed on fetch retries runs once more with pnpm's
           // defaults, and says so on its own line.
           const outcome = yield* runInstallCommand(
             command,
             (script) =>
-              sealant.exec(workspace, ["sh", "-lc", script], {
+              sealant.exec(workspace, withEnvArgv(installEnv, ["sh", "-lc", script]), {
                 cwd: "/workspace/repo",
                 ...(user === undefined ? {} : { user }),
               }),
@@ -12414,11 +12435,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Custom-image setup commands run in the fresh workspace BEFORE anything else (the
           // harness launch). They are part of the image contract, so a failing one fails the
           // provision loudly instead of handing the agent a half-prepared environment.
+          // Setup commands get the worktree's resources too: a migration in one finds its database.
+          const setupEnv =
+            workspaceImage.setupCommands.length === 0
+              ? {}
+              : yield* sessions.byId(sessionId).pipe(
+                  Effect.flatMap((session) => resourceEnvOf(session, workspace, null, false)),
+                  Effect.orElseSucceed(() => ({})),
+                );
           for (const command of workspaceImage.setupCommands) {
             const result = yield* sealant
               .exec(
                 workspace,
-                ["sh", "-lc", command],
+                withEnvArgv(setupEnv, ["sh", "-lc", command]),
                 setupUser === undefined ? undefined : { user: setupUser },
               )
               .pipe(
@@ -19025,6 +19054,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? Effect.void
             : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
         );
+        const resourceEnv = yield* resourceEnvOf(session, workspace, ownerUserId, true);
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
         const onScreen = yield* displayOfLaunch(
@@ -19044,6 +19074,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   startAs === null
                     ? null
                     : { user: startAs.user, env: inConversation?.env ?? startAs.env },
+                resources: resourceEnv,
                 env: {
                   ...records.processEnv(processId),
                   ...(onScreen === null ? {} : screenEnvOf(onScreen.display, onScreen.user)),
@@ -20558,6 +20589,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * What every process in the session's worktree gets from its resources (ADR 0019, story
+       * 2): the workspace is linked, what the worktree uses is started and its own databases
+       * made, bounded, before the process opens. What the process starts without is logged, and
+       * said on the session's line for an agent's launch (`say`).
+       */
+      const resourceEnvOf = Effect.fn("SessionEngine.resourceEnvOf")(function* (
+        session: Session,
+        workspace: Workspace,
+        launcher: string | null,
+        say: boolean,
+      ) {
+        const by = launcher ?? session.ownerUserId;
+        if (by === null) return {};
+        const prepared = yield* resourceRuntime.prepare({
+          projectId: session.projectId,
+          worktreeId: session.worktreeId,
+          workspaceId: workspace.id,
+          launcher: by,
+        });
+        // No line of a launch names a clock time, so no reader's zone is needed.
+        const at = { now: new Date(clock.currentTimeMillisUnsafe()), timeZone: "UTC" };
+        const lines = prepared.views.map((view) => resourceStatusLine(view, at));
+        if (lines.length > 0) {
+          yield* Effect.logInfo(`session engine: resources · ${lines.join(" · ")}`).pipe(
+            Effect.annotateLogs({ sessionId: session.id, workspaceId: workspace.id }),
+          );
+          if (say) yield* noteLaunchWords(session.id, lines.join(" · ")).pipe(Effect.ignore);
+        }
+        return prepared.env;
+      });
+
+      /**
        * Remote-SSH is down while a fallback's SSH reset has not reached Core: said on the session
        * line (kept there across retries) and taken off once it has (docs/adr/0016, decision 10).
        */
@@ -20982,6 +21045,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   resumePath: inConversation.resumePath,
                   terminal: protocolStart === null,
                 });
+          const resourceEnv = yield* resourceEnvOf(session, workspace, sender, true);
           const records = launchRecords[plan.role];
           const processId = SessionProcessId.make(crypto.randomUUID());
           const workspaceId = SealantWorkspaceId.make(workspace.id);
@@ -21007,6 +21071,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     startAs === null
                       ? null
                       : { user: startAs.user, env: inConversation?.env ?? startAs.env },
+                  resources: resourceEnv,
                   env: {
                     ...records.processEnv(processId),
                     ...(onScreen === null ? {} : screenEnvOf(onScreen.display, onScreen.user)),
@@ -22743,11 +22808,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.succeed(openedBy ?? session.ownerUserId),
           "shell",
         );
-        const pty = yield* sealant.openSession(
-          workspace,
-          shellArgv,
-          startAs === null ? undefined : { user: startAs.user, env: startAs.env },
-        );
+        const resourceEnv = yield* resourceEnvOf(session, workspace, openedBy ?? null, false);
+        const shellEnv = { ...resourceEnv, ...startAs?.env };
+        const pty = yield* sealant.openSession(workspace, shellArgv, {
+          ...(startAs === null ? {} : { user: startAs.user }),
+          ...(Object.keys(shellEnv).length === 0 ? {} : { env: shellEnv }),
+        });
         const shellWorkspaceId =
           session.sealantWorkspaceId ?? SealantWorkspaceId.make(workspace.id);
         const shellProcess = yield* processes
@@ -23597,12 +23663,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? Effect.void
               : services.setStartedBy(service.id, runsAs),
           ),
-          Effect.flatMap((startAs) => {
+          Effect.flatMap((startAs) =>
+            resourceEnvOf(session, workspace, runsAs, false).pipe(
+              Effect.map((resources) => ({ startAs, resources })),
+            ),
+          ),
+          Effect.flatMap(({ startAs, resources }) => {
             const cwd = serviceCwdOf(launch.cwd);
             return sealant.openSession(workspace, argv, {
               ...(cwd === undefined ? {} : { cwd }),
               env: serviceProcessEnv({
-                sharedBinding: {},
+                resources,
                 recipe: launch.env,
                 port: service.workspacePort,
                 previewUrl,

@@ -67,21 +67,21 @@ export interface DependencyAddress {
  * A Service process's environment, each layer over the one before (the workspace's and the
  * project's are the workspace's own, beneath all of these):
  *
- * 1. `sharedBinding`: what a bound shared service provides (P-SLNT-46); nothing binds one yet.
+ * 1. `resources`: what the worktree's resources give every process (ADR 0019, story 2).
  * 2. `recipe`: the recipe's own `env`, which may not name `MEND_*` or `PORT`.
  * 3. Mend's: `PORT`, `MEND_PREVIEW_URL` when a preview has an address (unset, never empty, when
  *    none does), and `MEND_SERVICE_<NAME>_HOST`/`_PORT` for each dependency.
  * 4. `person`: Mend's identity plumbing for a person executor, last so nothing shadows it.
  */
 export const serviceProcessEnv = (layers: {
-  readonly sharedBinding: RecipeEnv;
+  readonly resources: Readonly<Record<string, string>>;
   readonly recipe: RecipeEnv;
   readonly port: number;
   readonly previewUrl: string | null;
   readonly dependencies: ReadonlyArray<DependencyAddress>;
   readonly person: Readonly<Record<string, string>>;
 }): Readonly<Record<string, string>> => ({
-  ...layers.sharedBinding,
+  ...layers.resources,
   ...layers.recipe,
   PORT: String(layers.port),
   ...(layers.previewUrl === null ? {} : { MEND_PREVIEW_URL: layers.previewUrl }),
