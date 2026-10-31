@@ -1,4 +1,3 @@
-import { deviceIdOf } from "@mend/api-contracts";
 import {
   type PreviewGrantKey,
   type PreviewGrantSecret,
@@ -10,28 +9,30 @@ import {
   type TicketCredential,
   UpgradeTicketsRepo,
 } from "@mend/db";
-import { PreviewId, type OrganizationId } from "@mend/domain";
+import { PreviewId } from "@mend/domain";
 import { canSeeProject, type Preview, type Viewer } from "@mend/domain/workbench";
 import {
-  Array as Arr,
   Cause,
   Clock,
-  Deferred,
   Duration,
   Effect,
-  Fiber,
   Layer,
   Option,
   Redacted,
   Schedule,
   Schema,
   type Scope,
-  Stream,
 } from "effect";
 import * as Context from "effect/Context";
 
+import {
+  type Admission,
+  makeAccessRecheck,
+  type RecheckTiming,
+  withinDeadline,
+} from "./access-recheck.ts";
 import { ProjectAccess } from "./access.ts";
-import { type BusSignal, EventBus } from "./events-bus.ts";
+import { EventBus } from "./events-bus.ts";
 import {
   previewAtOrigin,
   previewOriginOf,
@@ -128,11 +129,8 @@ export class PreviewIdentity extends Context.Service<
   }
 >()("@mend/api/PreviewIdentity") {}
 
-export interface PreviewTiming {
-  readonly sweepEvery: Duration.Input;
-  readonly passDeadline: Duration.Input;
+export interface PreviewTiming extends RecheckTiming {
   readonly admissionDeadline: Duration.Input;
-  readonly closeGrace: Duration.Input;
   readonly cleanupEvery: Duration.Input;
 }
 
@@ -143,9 +141,6 @@ export const PREVIEW_TIMING: PreviewTiming = {
   closeGrace: "1 second",
   cleanupEvery: "60 seconds",
 };
-
-const STANDING_BATCH = 500;
-const RECHECK_CONCURRENCY = 4;
 
 type Verdict =
   | { readonly _tag: "Admitted"; readonly viewer: Viewer; readonly subject: PreviewGrantSubject }
@@ -167,76 +162,12 @@ const judge = (standing: PreviewGrantStanding | null, previewId: PreviewId): Ver
     : refused(new PreviewNotFound());
 };
 
-type StopReason =
-  | { readonly _tag: "Refused"; readonly refusal: PreviewRefusal }
-  | { readonly _tag: "Unavailable" };
-
-interface Registration {
-  readonly key: PreviewGrantKey;
-  readonly preview: KeptPreview;
+/** An admitted viewer, as the shared recheck holds it while its stream is open. */
+interface Admitted extends Admission {
   readonly subject: PreviewGrantSubject;
-  readonly organizationId: OrganizationId;
-  readonly stopped: Deferred.Deferred<StopReason>;
-}
-
-type Selection =
-  | { readonly _tag: "Project"; readonly projectId: string }
-  | { readonly _tag: "UserDevices"; readonly userId: string }
-  | { readonly _tag: "User"; readonly userId: string }
-  | { readonly _tag: "Organization"; readonly organizationId: string }
-  | { readonly _tag: "All" };
-
-const selectionOf = (signal: BusSignal): Selection | null => {
-  if (signal.kind === "resync") return { _tag: "All" };
-  const event = signal.event;
-  switch (event.type) {
-    case "project":
-    case "worktree":
-      return { _tag: "Project", projectId: event.projectId };
-    case "user":
-      if (event.facet === "devices") return { _tag: "UserDevices", userId: event.userId };
-      return event.facet === "access" ? { _tag: "User", userId: event.userId } : null;
-    case "organization":
-      return { _tag: "Organization", organizationId: event.organizationId };
-    default:
-      return null;
-  }
-};
-
-const selects = (selection: Selection, registration: Registration): boolean => {
-  switch (selection._tag) {
-    case "All":
-      return true;
-    case "Project":
-      return registration.preview.projectId === selection.projectId;
-    case "UserDevices":
-      return (
-        registration.subject.userId === selection.userId &&
-        deviceIdOf(registration.subject.credential) !== undefined
-      );
-    case "User":
-      return registration.subject.userId === selection.userId;
-    case "Organization":
-      return registration.organizationId === selection.organizationId;
-  }
-};
-
-interface Admitted {
   readonly viewer: PreviewViewer;
-  readonly subject: PreviewGrantSubject;
   readonly key: PreviewGrantKey;
 }
-
-interface GrantGroup {
-  readonly key: PreviewGrantKey;
-  readonly registrations: Array<Registration>;
-}
-
-const stop = (registration: Registration, reason: StopReason) =>
-  Deferred.succeed(registration.stopped, reason).pipe(Effect.asVoid);
-
-const stopAll = (registrations: Iterable<Registration>, reason: StopReason) =>
-  Effect.forEach(registrations, (registration) => stop(registration, reason), { discard: true });
 
 export const makePreviewIdentityLayer = (
   timing: PreviewTiming,
@@ -253,10 +184,7 @@ export const makePreviewIdentityLayer = (
       const previews = yield* PreviewsRepo;
       const tickets = yield* UpgradeTicketsRepo;
       const access = yield* ProjectAccess;
-      const bus = yield* EventBus;
       const scope = yield* Effect.scope;
-      const registry = new Set<Registration>();
-      let passesStarted = 0;
 
       const unavailable = () => new PreviewUnavailable({ operation: "admit" });
 
@@ -268,20 +196,6 @@ export const makePreviewIdentityLayer = (
               Effect.andThen(Effect.fail(unavailable())),
             ),
           ),
-        );
-
-      /**
-       * `effect`, given up on at `deadline` without waiting for it to stop: a query parked on a
-       * pool connection cannot be interrupted, and must not hold an answer past its bound.
-       */
-      const withinDeadline = <A, E>(deadline: Duration.Input, effect: Effect.Effect<A, E>) =>
-        Effect.uninterruptibleMask((restore) =>
-          Effect.gen(function* () {
-            const work = yield* Effect.forkIn(effect, scope);
-            return yield* restore(Effect.timeoutOption(Fiber.join(work), deadline)).pipe(
-              Effect.ensuring(Effect.sync(() => work.interruptUnsafe())),
-            );
-          }),
         );
 
       const routing = Effect.suspend(() =>
@@ -316,6 +230,7 @@ export const makePreviewIdentityLayer = (
         readonly grant: PreviewGrantSecret | null;
       }): Effect.Effect<Admitted, PreviewRefusal | PreviewUnavailable> =>
         withinDeadline(
+          scope,
           timing.admissionDeadline,
           Effect.gen(function* () {
             const { preview, renewPort } = yield* previewAt(request.origin);
@@ -341,6 +256,8 @@ export const makePreviewIdentityLayer = (
               viewer: { viewer: verdict.viewer, preview, origin: request.origin },
               subject: verdict.subject,
               key,
+              projectId: preview.projectId,
+              organizationId: verdict.viewer.organizationId,
             };
           }).pipe(undecidedOnDefect),
         ).pipe(
@@ -443,91 +360,41 @@ export const makePreviewIdentityLayer = (
         return { origin: request.origin, grant, clearSiteData };
       }, undecidedOnDefect);
 
-      /** The ports the previews hold now; none to read off the tailnet default. */
-      const heldPorts = (routed: PreviewRouting, ids: ReadonlyArray<PreviewId>) =>
-        routed.mode !== "tailnet-https"
-          ? Effect.succeed(Option.some(new Map<PreviewId, number>()))
-          : withinDeadline(timing.passDeadline, previews.tailnetPorts(ids)).pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.failCause(cause)
-                  : Effect.logWarning("preview: the held ports could not be read").pipe(
-                      Effect.annotateLogs({ cause: Cause.pretty(cause) }),
-                      Effect.as(Option.none()),
-                    ),
-              ),
-            );
-
-      const recheck = (selection: Selection) =>
+      /** A stream whose preview moved to another port is gone, before any grant is read. */
+      const moved = (batch: ReadonlyArray<Admitted>) =>
         Effect.gen(function* () {
-          passesStarted += 1;
-          const selected = [...registry].filter((registration) => selects(selection, registration));
-          if (selected.length === 0) return;
           const routed = config.routing;
-          if (routed === null) return yield* stopAll(selected, { _tag: "Unavailable" });
-          const held = yield* heldPorts(
-            routed,
-            selected.map((registration) => registration.preview.id),
+          if (routed === null) return yield* unavailable();
+          const held =
+            routed.mode === "tailnet-https"
+              ? yield* previews.tailnetPorts(batch.map(({ viewer }) => viewer.preview.id))
+              : new Map<PreviewId, number>();
+          return batch.map(({ viewer, key }): PreviewRefusal | null =>
+            previewOriginOf(routed, {
+              label: viewer.preview.label,
+              tailnetPort: held.get(viewer.preview.id) ?? null,
+            }) === key.origin
+              ? null
+              : new PreviewNotFound(),
           );
-          if (Option.isNone(held)) return yield* stopAll(selected, { _tag: "Unavailable" });
-          const byGrant = new Map<string, GrantGroup>();
-          for (const registration of selected) {
-            const place = {
-              label: registration.preview.label,
-              tailnetPort: held.value.get(registration.preview.id) ?? null,
-            };
-            if (previewOriginOf(routed, place) !== registration.key.origin) {
-              yield* stop(registration, { _tag: "Refused", refusal: new PreviewNotFound() });
-              continue;
-            }
-            const secret = Redacted.value(registration.key.grant);
-            const group = byGrant.get(secret);
-            if (group === undefined) {
-              byGrant.set(secret, { key: registration.key, registrations: [registration] });
-            } else {
-              group.registrations.push(registration);
-            }
-          }
-          const unjudged = new Set(byGrant.values());
-          const judgeBatch = (batch: ReadonlyArray<GrantGroup>) =>
-            grants.standing(batch.map((group) => group.key)).pipe(
-              Effect.flatMap((answers) =>
-                Effect.forEach(
-                  batch,
-                  (group, index) => {
-                    unjudged.delete(group);
-                    const verdict = judge(answers[index] ?? null, group.key.previewId);
-                    return verdict._tag === "Refused"
-                      ? stopAll(group.registrations, { _tag: "Refused", refusal: verdict.refusal })
-                      : Effect.void;
-                  },
-                  { discard: true },
-                ),
-              ),
-            );
-          const judged = yield* withinDeadline(
-            timing.passDeadline,
-            Effect.forEach(Arr.chunksOf([...unjudged], STANDING_BATCH), judgeBatch, {
-              concurrency: RECHECK_CONCURRENCY,
-              discard: true,
-            }),
-          ).pipe(
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.failCause(cause)
-                : Effect.logWarning("preview: an open stream's recheck failed").pipe(
-                    Effect.annotateLogs({ cause: Cause.pretty(cause) }),
-                    Effect.as(Option.none()),
-                  ),
-            ),
-          );
-          if (Option.isNone(judged)) {
-            yield* stopAll(
-              [...unjudged].flatMap((group) => group.registrations),
-              { _tag: "Unavailable" },
-            );
-          }
         });
+
+      /** The rest of a pass: each stream stands while its grant does. */
+      const standing = (batch: ReadonlyArray<Admitted>) =>
+        Effect.map(grants.standing(batch.map(({ key }) => key)), (answers) =>
+          batch.map(({ key }, at): PreviewRefusal | null => {
+            const verdict = judge(answers[at] ?? null, key.previewId);
+            return verdict._tag === "Refused" ? verdict.refusal : null;
+          }),
+        );
+
+      const recheck = yield* makeAccessRecheck<Admitted, PreviewRefusal>({
+        name: "preview",
+        timing,
+        groupOf: ({ key }) => Redacted.value(key.grant),
+        known: moved,
+        standing,
+      });
 
       // Each pass stamps every preview with a connection open; a close stamps its own preview
       // unless this process stamped it within the last pass, so short requests cost no write each.
@@ -549,7 +416,7 @@ export const makePreviewIdentityLayer = (
         );
       const stampOpen = Effect.suspend(() => {
         lastStamped.clear();
-        return stampUsed([...new Set([...registry].map(({ preview }) => preview.id))]);
+        return stampUsed([...new Set(recheck.held().map(({ viewer }) => viewer.preview.id))]);
       });
       const stampClosed = (id: PreviewId) =>
         Effect.gen(function* () {
@@ -559,38 +426,6 @@ export const makePreviewIdentityLayer = (
           yield* stampUsed([id]);
         });
 
-      const closeWriter = <A, E>(writer: Fiber.Fiber<A, E>) =>
-        Fiber.interrupt(writer).pipe(Effect.timeoutOption(timing.closeGrace), Effect.asVoid);
-
-      const runWriter = <E, R>(
-        stopped: Deferred.Deferred<StopReason>,
-        write: Effect.Effect<undefined, E, R>,
-      ): Effect.Effect<void, E | PreviewAccessEnded, R> =>
-        Effect.uninterruptibleMask((restore) =>
-          Effect.gen(function* () {
-            const writer = yield* Effect.forkDetach(write);
-            return yield* restore(
-              Effect.gen(function* () {
-                const ended = yield* Effect.raceFirst(
-                  Effect.map(Fiber.await(writer), () => null),
-                  Deferred.await(stopped),
-                );
-                if (ended === null) return yield* Fiber.join(writer);
-                return yield* new PreviewAccessEnded({
-                  reason: ended._tag === "Refused" ? "access-ended" : "admission-unavailable",
-                });
-              }),
-            ).pipe(Effect.ensuring(closeWriter(writer)));
-          }),
-        );
-
-      /** A pass that started during `first`'s admission may have missed it: admit it again. */
-      const admittedAfterPassesSince = (
-        passesBefore: number,
-        first: Admitted,
-        request: { readonly origin: PreviewOrigin; readonly grant: PreviewGrantSecret | null },
-      ) => (passesStarted === passesBefore ? Effect.succeed(first) : admit(request));
-
       const withViewer = <E, R>(
         request: { readonly origin: PreviewOrigin; readonly grant: PreviewGrantSecret | null },
         write: (admitted: PreviewViewer) => Effect.Effect<undefined, E, R>,
@@ -599,58 +434,34 @@ export const makePreviewIdentityLayer = (
         E | PreviewRefusal | PreviewUnavailable | PreviewAccessEnded,
         Exclude<R, Scope.Scope>
       > =>
-        Effect.gen(function* () {
-          const passesBefore = passesStarted;
-          const first = yield* admit(request);
-          const registration: Registration = {
-            key: first.key,
-            preview: first.viewer.preview,
-            subject: first.subject,
-            organizationId: first.viewer.viewer.organizationId,
-            stopped: yield* Deferred.make<StopReason>(),
-          };
-          registry.add(registration);
-          return yield* Effect.gen(function* () {
-            const admitted = yield* admittedAfterPassesSince(passesBefore, first, request);
-            if (yield* Deferred.isDone(registration.stopped)) {
-              const reason = yield* Deferred.await(registration.stopped);
-              return yield* reason._tag === "Refused"
-                ? Effect.fail(reason.refusal)
-                : Effect.fail(unavailable());
-            }
-            return yield* runWriter(registration.stopped, Effect.scoped(write(admitted.viewer)));
-          }).pipe(
-            Effect.ensuring(
-              Effect.sync(() => void registry.delete(registration)).pipe(
-                Effect.andThen(Effect.forkIn(stampClosed(registration.preview.id), scope)),
+        Effect.suspend(() => {
+          let opened: PreviewId | null = null;
+          return recheck
+            .hold({
+              admit: Effect.tap(admit(request), (first) =>
+                Effect.sync(() => {
+                  opened ??= first.viewer.preview.id;
+                }),
               ),
-            ),
-          );
+              use: (admitted) => Effect.scoped(write(admitted.viewer)),
+              stopped: (stop, during) =>
+                during === "admission"
+                  ? stop._tag === "Refused"
+                    ? stop.refusal
+                    : unavailable()
+                  : new PreviewAccessEnded({
+                      reason: stop._tag === "Refused" ? "access-ended" : "admission-unavailable",
+                    }),
+            })
+            .pipe(
+              Effect.ensuring(
+                Effect.suspend(() =>
+                  opened === null ? Effect.void : Effect.forkIn(stampClosed(opened), scope),
+                ),
+              ),
+            );
         });
 
-      const supervisedRecheck = (selection: Selection) =>
-        recheck(selection).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.failCause(cause)
-              : Effect.logError("preview: a recheck pass failed").pipe(
-                  Effect.annotateLogs({ cause: Cause.pretty(cause) }),
-                ),
-          ),
-        );
-
-      const subscription = yield* bus.subscribe;
-      yield* Stream.fromSubscription(subscription).pipe(
-        Stream.runForEach((signal) => {
-          const selection = selectionOf(signal);
-          return selection === null ? Effect.void : supervisedRecheck(selection);
-        }),
-        Effect.forkScoped,
-      );
-      yield* supervisedRecheck({ _tag: "All" }).pipe(
-        Effect.repeat(Schedule.fixed(timing.sweepEvery)),
-        Effect.forkScoped,
-      );
       yield* stampOpen.pipe(Effect.delay(timing.sweepEvery), Effect.forever, Effect.forkScoped);
       yield* grants.cleanup().pipe(
         Effect.catchCause((cause) =>
@@ -661,8 +472,6 @@ export const makePreviewIdentityLayer = (
         Effect.repeat(Schedule.fixed(timing.cleanupEvery)),
         Effect.forkScoped,
       );
-      yield* Effect.addFinalizer(() => stopAll(registry, { _tag: "Unavailable" }));
-
       return { issueTicket, exchangeTicket, withViewer };
     }),
   );
