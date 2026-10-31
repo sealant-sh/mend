@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import type { ResourceLoadId } from "@mend/domain";
 import { OWN_DATABASE, SHARED_DATABASE } from "@mend/domain/workbench";
 
@@ -12,12 +10,12 @@ export const LOAD_DIR_ARGV = [
   "mkdir -p /mend/dumps/incoming && chown -R postgres /mend/dumps",
 ];
 
-/** A digest avoids collisions between UUIDs whose first eight characters happen to match. */
+/** The load id ties temporary database names to the durable attempt. */
 export const loadNames = (database: string, id: ResourceLoadId) => {
   if (database !== SHARED_DATABASE && !OWN_DATABASE.test(database))
     throw new Error("invalid load database");
   if (!/^[a-zA-Z0-9-]+$/.test(id)) throw new Error("invalid load id");
-  const suffix = createHash("sha256").update(id).digest("hex").slice(0, 16);
+  const suffix = id.slice(0, 8);
   return {
     target: database,
     temp: `${database}__load_${suffix}`,

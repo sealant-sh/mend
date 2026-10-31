@@ -240,7 +240,7 @@ export const ResourceLoadsLive: Layer.Layer<ResourceLoads, never, Needs> = Layer
         yield* exec(scope, row, installLoadArgv(names));
         const present = yield* exec(scope, row, observeLoadArgv(names));
         const savedAt = new Date();
-        const stamp = row.createdAt.toISOString().replace(/[-:.]/g, "");
+        const stamp = savedAt.toISOString().replace(/[-:.]/g, "");
         const saving = yield* next(
           row,
           "saving",
