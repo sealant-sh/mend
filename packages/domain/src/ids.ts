@@ -203,3 +203,7 @@ export type ScreenFrameId = typeof ScreenFrameId.Type;
 
 export const ViewerConnectionId = Schema.String.pipe(Schema.brand("ViewerConnectionId"));
 export type ViewerConnectionId = typeof ViewerConnectionId.Type;
+
+/** One attempt to replace a resource database. */
+export const ResourceLoadId = Schema.String.pipe(Schema.brand("ResourceLoadId"));
+export type ResourceLoadId = typeof ResourceLoadId.Type;
