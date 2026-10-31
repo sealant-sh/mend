@@ -285,6 +285,7 @@ export const loadPreviewSetup: Effect.Effect<
     domain: variableConfig(PREVIEW_ENV.domain),
     publicPort: variableConfig(PREVIEW_ENV.publicPort),
     startHold: variableConfig(PREVIEW_ENV.startHold),
+    idle: variableConfig(PREVIEW_ENV.idle),
     bodyBytes: variableConfig(PREVIEW_ENV.bodyBytes),
     tailnetHostname: variableConfig(PREVIEW_ENV.tailnetHostname),
     tailnetPorts: variableConfig(PREVIEW_ENV.tailnetPorts),
