@@ -48,6 +48,7 @@ const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingV
   choice: null,
   canRemove: true,
   canChoose: false,
+  canLoadOwn: false,
   instance: "not-started",
   statusLine: "@db · postgres 17 · project · added by Maria · not started",
   ...overrides,

@@ -72,6 +72,7 @@ const db = {
   choice: "shared" as const,
   canRemove: false,
   canChoose: true,
+  canLoadOwn: true,
   instance: "not-started" as const,
   statusLine: "@db · postgres 17 · project · added by Manager · shared database · not started",
 };
