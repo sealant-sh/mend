@@ -142,9 +142,21 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 
 ## Fix Now or File
 
-While Mend's core features are still being built, fix a problem straight away only if people will run into it in ordinary use and it does at least one of three things: it makes Mend look like an unfinished pet project, it stops someone getting their work done, or it loses real work. Anything else gets filed as an issue for later, including a problem that is rare, hard to reproduce, or something a developer would understand and work around while the app keeps working. That holds even when a fix would make the experience nicer and even when it looks small. Three agents designing a fix, three more attacking it and one reviewing the result costs more than the fix is worth next to everything still left to build on the roadmap.
+While Mend's core features are still being built, fix a problem straight away only if people will
+run into it in ordinary use and it does at least one of three things: it makes Mend look like an
+unfinished pet project, it stops someone getting their work done, or it loses real work. Anything
+else gets filed as an issue for later, including a problem that is rare, hard to reproduce, or
+something a developer would understand and work around while the app keeps working. That holds even
+when a fix would make the experience nicer and even when it looks small. Three agents designing a
+fix, three more attacking it and one reviewing the result costs more than the fix is worth next to
+everything still left to build on the roadmap.
 
-Before any fix, write down what a person does to hit the problem ("someone sends a message while…") and roughly how often that happens. If the trigger needs two events to land within milliseconds of each other, or was only seen in tests with fakes, it's rare: file it. Reviewers and gates grade their findings by this rule too. A finding that doesn't meet it is an issue to file, not a failed review. This rule overrides older rules that call a problem a blocker without asking how often people hit it.
+Before any fix, write down what a person does to hit the problem ("someone sends a message while…")
+and roughly how often that happens. If the trigger needs two events to land within milliseconds of
+each other, or was only seen in tests with fakes, it's rare: file it. Reviewers and gates grade
+their findings by this rule too. A finding that doesn't meet it is an issue to file, not a failed
+review. This rule overrides older rules that call a problem a blocker without asking how often
+people hit it.
 
 ## Effect Best Practices
 
