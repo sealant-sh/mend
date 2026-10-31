@@ -1028,6 +1028,7 @@ describe("a worktree's previews in a message (docs/adr/0017-live-preview.md)", (
         action_id: `${SLACK_ACTIONS.openPreview}:pv-web`,
         text: { type: "plain_text", text: "Open preview", emoji: true },
         url: "https://mend.example/preview-auth?preview=pv-web&path=%2F",
+        style: "primary",
       },
     });
     expect(message.text).toBe(
@@ -1036,6 +1037,36 @@ describe("a worktree's previews in a message (docs/adr/0017-live-preview.md)", (
     const url = new URL(preview?.accessory?.url ?? "");
     expect([...url.searchParams.keys()]).toEqual(["preview", "path"]);
     expect(copyOf(message)).not.toMatch(/ticket|__mend|preview\.test/u);
+  });
+
+  it("makes Open preview the call to action while it answers or starts, and plain otherwise", () => {
+    const styleOf = (preview: PreviewNotice) =>
+      sections(statusMessage({ ...completed, previews: shown(preview) }))[1]?.accessory?.style;
+    expect(styleOf(answered)).toBe("primary");
+    expect(styleOf(notice("web", [{ _tag: "Starting", service: "web", phase: "setup" }]))).toBe(
+      "primary",
+    );
+    const unreachable = notice("web", [
+      { _tag: "Observed", service: "web", reachable: false, httpStatus: null, observedAt },
+    ]);
+    expect(styleOf(unreachable)).toBeUndefined();
+    expect(styleOf(notice("web", []))).toBeUndefined();
+  });
+
+  it("offers no Open preview after a person's Stop, and keeps the line saying who", () => {
+    const stopped = notice("web", [
+      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
+    ]);
+    const [, preview] = sections(statusMessage({ ...completed, previews: shown(stopped) }));
+    expect(preview).toEqual({
+      type: "section",
+      text: { type: "mrkdwn", text: "preview · web · stopped by Maria" },
+    });
+    const idle = notice("web", [
+      { _tag: "Stopped", service: "web", by: { _tag: "Idle", minutes: 30 } },
+    ]);
+    const [, afterIdle] = sections(statusMessage({ ...completed, previews: shown(idle) }));
+    expect(afterIdle?.accessory?.text.text, "an idle stop wakes on a request").toBe("Open preview");
   });
 
   it("words a preview the same whenever it is read and however often its check repeats", () => {
