@@ -5,12 +5,16 @@ import {
   ResourceManifestUnverifiable,
   ResourceRegistryUnavailable,
   ResourceRejected,
-  ResourceRuntimeUnavailable,
   ResourceStale,
 } from "@mend/api-contracts";
 import type { ProjectId, WorktreeId } from "@mend/domain";
-import { resourceRefusalWords, resourceRuntimeRefusal } from "@mend/domain/workbench";
-import { type ResourceImageRefusedError, Resources } from "@mend/sessions";
+import { resourceRefusalWords } from "@mend/domain/workbench";
+import {
+  type ResourceImageRefusedError,
+  type ResourceNameNotFoundError,
+  type ResourceWorktreeNeededError,
+  Resources,
+} from "@mend/sessions";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -61,6 +65,21 @@ const namedWorktree = Effect.fn("resources.namedWorktree")(function* (
   yield* projectWorktree(projectId, worktreeId);
   return worktreeId;
 });
+
+/** A start's or stop's refusals: whose act it is, an unknown name, or a worktree it needs. */
+const controlRefused = {
+  ResourceActRefusedError: (error: { readonly message: string }) => Effect.fail(denied(error)),
+  ResourceNameNotFoundError: (error: ResourceNameNotFoundError) =>
+    Effect.fail(new NotFound({ id: error.name })),
+  ResourceWorktreeNeededError: (error: ResourceWorktreeNeededError) =>
+    Effect.fail(
+      new ResourceRejected({
+        name: error.name,
+        refusals: [{ key: "worktree", message: error.message }],
+        message: error.message,
+      }),
+    ),
+};
 
 /**
  * A project's resources (ADR 0019). Every caller here is a person, whatever device their token is
@@ -143,14 +162,41 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
           );
       }),
     )
-    // A person's start comes in a later step, so every start of one, by anyone who sees the
-    // project, is refused before anything is created.
-    .handle("start", ({ params }) =>
+    .handle("start", ({ params, query }) =>
       Effect.gen(function* () {
-        yield* visible(params.id);
-        return yield* new ResourceRuntimeUnavailable({
-          message: resourceRuntimeRefusal(params.name),
-        });
+        const { project, viewer } = yield* visible(params.id);
+        const worktreeId = yield* namedWorktree(project.id, query.worktreeId);
+        return yield* (yield* Resources)
+          .start(project, viewer, params.name, worktreeId, {
+            now: new Date(),
+            timeZone: query.timeZone,
+          })
+          .pipe(Effect.catchTags(controlRefused));
+      }),
+    )
+    .handle("stop", ({ params, query }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        const worktreeId = yield* namedWorktree(project.id, query.worktreeId);
+        return yield* (yield* Resources)
+          .stop(project, viewer, params.name, worktreeId, {
+            now: new Date(),
+            timeZone: query.timeZone,
+          })
+          .pipe(Effect.catchTags(controlRefused));
+      }),
+    )
+    .handle("env", ({ params, query }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        yield* projectWorktree(project.id, params.worktreeId);
+        return yield* (yield* Resources)
+          .env(project, viewer, params.worktreeId, { now: new Date(), timeZone: query.timeZone })
+          .pipe(
+            Effect.catchTag("ResourceActRefusedError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+          );
       }),
     ),
 );

@@ -11,7 +11,6 @@ import {
   type ResourceAdded,
   ResourceDefinitionInput,
   ResourceName,
-  resourceRuntimeRefusal,
   type ResourcesPage,
 } from "@mend/domain/workbench";
 import {
@@ -721,21 +720,111 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     });
   });
 
-  it("refuses every start in the words a recipe's depends says", async () => {
-    await start();
-    const refused = await harness()
-      .request("carol", "POST", `/api/projects/${shared.project}/resources/db/start`)
+  describe("starting and stopping", () => {
+    const control = (as: HarnessUser, name: string, verb: "start" | "stop", query = "") =>
+      harness()
+        .request(
+          as,
+          "POST",
+          `/api/projects/${shared.project}/resources/${name}/${verb}?${zone}${query}`,
+        )
+        .then(json);
+
+    it("lets any member start and stop a project resource, and says who stopped it", async () => {
+      await start();
+      await addPreset("alice", "17");
+      expect(await control("carol", "db", "stop")).toEqual({
+        status: 200,
+        body: {
+          instance: "stopped",
+          statusLine:
+            "@db · postgres 17 · project · added by Alice · stopped by Carol · observed 0 s ago",
+        },
+      });
+      expect(await control("carol", "db", "start")).toEqual({
+        status: 200,
+        body: {
+          instance: "running",
+          statusLine: "@db · postgres 17 · project · added by Alice · running · observed 0 s ago",
+        },
+      });
+      expect(harness().world.calls.filter((call) => call.startsWith("resourceRuntime."))).toEqual([
+        "resourceRuntime.start",
+        "resourceRuntime.stop",
+        "resourceRuntime.start",
+      ]);
+    });
+
+    it("starts a worktree resource in the worktree named, and refuses one named for none", async () => {
+      await start();
+      await add("carol", { kind: "definition", spec: mailpit("mail", "worktree") });
+      expect(await control("carol", "mail", "start")).toEqual({
+        status: 422,
+        body: {
+          _tag: "ResourceRejected",
+          name: "mail",
+          refusals: [
+            {
+              key: "worktree",
+              message: "@mail runs one instance per worktree · name the worktree: --worktree <w>",
+            },
+          ],
+          message: "@mail runs one instance per worktree · name the worktree: --worktree <w>",
+        },
+      });
+      expect(await control("carol", "mail", "start", forCarol)).toEqual({
+        status: 200,
+        body: {
+          instance: "running",
+          statusLine: "@mail · running · its own instance · observed 0 s ago",
+        },
+      });
+    });
+
+    it("answers a name the project lacks, and a project the caller cannot see, as not found", async () => {
+      await start();
+      expect((await control("carol", "db", "start")).status).toBe(404);
+      await addPreset("alice", "17");
+      expect((await control("bob", "db", "stop")).status).toBe(404);
+    });
+  });
+
+  it("answers the env a worktree's processes get now, with what the project sets itself", async () => {
+    const env = {
+      DATABASE_URL: "postgres://postgres@db:5432/own_0123456789ab",
+      PGHOST: "db",
+    };
+    await start(undefined, {
+      envOf: () =>
+        Effect.succeed({ env, left: [{ resource: ResourceName.make("db"), names: ["PGPORT"] }] }),
+    });
+    await addPreset("alice", "17");
+    const answered = await harness()
+      .request(
+        "carol",
+        "GET",
+        `/api/projects/${shared.project}/worktrees/${CAROL_WORKTREE_IN_SHARED_A}/resources/env?${zone}`,
+      )
       .then(json);
-    expect(refused).toEqual({
-      status: 409,
+    expect(answered).toEqual({
+      status: 200,
       body: {
-        _tag: "ResourceRuntimeUnavailable",
-        message: resourceRuntimeRefusal("db"),
+        env,
+        exports: [
+          "export DATABASE_URL='postgres://postgres@db:5432/own_0123456789ab'",
+          "export PGHOST='db'",
+        ],
+        statusLines: ["@db · PGPORT left as the project sets it"],
       },
     });
     expect(
-      (await harness().request("bob", "POST", `/api/projects/${shared.project}/resources/db/start`))
-        .status,
+      (
+        await harness().request(
+          "bob",
+          "GET",
+          `/api/projects/${shared.project}/worktrees/${CAROL_WORKTREE_IN_SHARED_A}/resources/env?${zone}`,
+        )
+      ).status,
     ).toBe(404);
   });
 });
