@@ -194,6 +194,7 @@ const fakeScope: ResourceScope = {
         timedOut: false,
       };
     }),
+  archiveScope: () => Effect.succeed([]),
   archive: (key) =>
     Effect.sync(() => {
       sealant.calls.push(`archive ${key}`);

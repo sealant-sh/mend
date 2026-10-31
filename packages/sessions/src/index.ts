@@ -58,3 +58,4 @@ export * from "./transcript-pages.ts";
 export * from "./resources/loads.ts";
 
 export * from "./resources/load-channel.ts";
+export * from "./resources/removal.ts";
