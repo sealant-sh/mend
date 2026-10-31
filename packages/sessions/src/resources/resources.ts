@@ -68,6 +68,7 @@ import {
   ResourceImageResolver,
 } from "./image-resolver.ts";
 import { type InstanceObserved, type ProjectObservation, ResourceRuntime } from "./runtime.ts";
+import { WorktreeServiceRestarts } from "./service-restarts.ts";
 import { readWorktreeTables } from "./worktree-tables.ts";
 
 /** A project as the resource rules read it. */
@@ -102,6 +103,12 @@ export class ResourceNameNotFoundError extends Schema.TaggedError<ResourceNameNo
 /** A worktree resource runs one instance per worktree, so an act on it names the worktree. */
 export class ResourceWorktreeNeededError extends Schema.TaggedError<ResourceWorktreeNeededError>()(
   "ResourceWorktreeNeededError",
+  { name: Schema.String, message: Schema.String },
+) {}
+
+/** A reset that did not happen, in a status line's words. */
+export class ResourceNotResetError extends Schema.TaggedError<ResourceNotResetError>()(
+  "ResourceNotResetError",
   { name: Schema.String, message: Schema.String },
 ) {}
 
@@ -150,7 +157,10 @@ export class Resources extends Context.Service<
       { readonly statusLine: string },
       ResourceActRefusedError | ResourceDefinitionNotFoundError | ResourceDefinitionStaleError
     >;
-    /** Stores the worktree's choice and answers the row written. */
+    /**
+     * Stores the worktree's choice and, when what it uses changed, restarts its running Services
+     * so they open with the new env. Answers the row written, its line naming what restarted.
+     */
     readonly use: (
       project: ResourceProject,
       viewer: Viewer,
@@ -161,6 +171,22 @@ export class Resources extends Context.Service<
     ) => Effect.Effect<
       ResourceSelectionEntry,
       ResourceActRefusedError | ResourceDefinitionNotFoundError | ResourceSelectionRefusedError
+    >;
+    /**
+     * Saves a Postgres database as a dump, then empties it: the worktree's own one is copied from
+     * shared again when shared has tables. `target` defaults to what the worktree uses. Resetting
+     * an own database is the worktree's change owner's; the shared one, any member's.
+     */
+    readonly reset: (
+      project: ResourceProject,
+      viewer: Viewer,
+      name: string,
+      worktreeId: WorktreeId,
+      target: "shared" | "own" | null,
+      clock: ReaderClock,
+    ) => Effect.Effect<
+      { readonly statusLine: string },
+      ResourceActRefusedError | ResourceNameNotFoundError | ResourceNotResetError
     >;
     /** A person's start, which clears a person's stop; `worktreeId` for a worktree resource. */
     readonly start: (
@@ -406,7 +432,14 @@ const pageLines = (page: ResourcesPage): ReadonlyArray<string> => {
 const lines = (...each: ReadonlyArray<string>): ResourceSessionAnswer => ({ lines: each });
 
 const SESSION_USAGE =
-  "mend resource list · add NAME (--preset P --version V | --image I --port N=P) [--scope worktree] · remove|start|stop NAME · use NAME shared|own|off · env";
+  "mend resource list · add NAME (--preset P --version V | --image I --port N=P) [--scope worktree] · remove|start|stop NAME · use NAME shared|own|off · reset NAME [--target shared|own] · env";
+
+/** The value after `flag`, or null. */
+const flagOf = (args: ReadonlyArray<string>, flag: string): string | null => {
+  const at = args.indexOf(flag);
+  const value = at === -1 ? undefined : args[at + 1];
+  return value === undefined || value.startsWith("--") ? null : value;
+};
 
 const decodeAddInput = Schema.decodeUnknownEffect(ResourceAddInput);
 const isChoice = Schema.is(WorktreeChoice);
@@ -423,6 +456,7 @@ export const ResourcesLive: Layer.Layer<
   | WorktreeReads
   | ResourceImageResolver
   | ResourceRuntime
+  | WorktreeServiceRestarts
 > = Layer.effect(
   Resources,
   Effect.gen(function* () {
@@ -435,6 +469,7 @@ export const ResourcesLive: Layer.Layer<
     const reads = yield* WorktreeReads;
     const images = yield* ResourceImageResolver;
     const runtime = yield* ResourceRuntime;
+    const restarts = yield* WorktreeServiceRestarts;
 
     /** Display names by account id, in one query; an id with no account reads as itself. */
     const namesOf = (ids: ReadonlyArray<string>) =>
@@ -683,6 +718,9 @@ export const ResourcesLive: Layer.Layer<
       clock: ReaderClock,
     ) {
       yield* decide(project, viewer, { kind: "use", changeOwner: yield* changeOwner(worktreeId) });
+      const before = (yield* repo.listWithChoices(project.id, worktreeId)).find(
+        (each) => each.definition.id === definitionId,
+      );
       const stored = yield* repo.setSelection(
         project.id,
         worktreeId,
@@ -695,13 +733,26 @@ export const ResourcesLive: Layer.Layer<
       );
       if (listed === undefined)
         return yield* new ResourceDefinitionNotFoundError({ id: definitionId });
+      const changed =
+        before === undefined ||
+        choiceInEffect(before.definition.spec, before.choice) !==
+          choiceInEffect(listed.definition.spec, listed.choice);
+      // Services read their env at start, so a switch restarts the running ones; both databases
+      // stay as they are.
+      const restarted = changed ? yield* restarts.restart(worktreeId, viewer.userId) : [];
       const shownOf = yield* viewsFor([listed], project.id, worktreeId, clock);
+      const { view } = shownOf(listed);
       return {
         definitionId,
         worktreeId,
         mode: stored.mode,
         chosenBy: stored.chosenBy,
-        statusLine: resourceStatusLine(shownOf(listed).view, clock),
+        statusLine: resourceStatusLine(
+          view.kind === "observed"
+            ? { kind: "switched", definition: view.definition, use: view.use, restarted }
+            : view,
+          clock,
+        ),
       } satisfies ResourceSelectionEntry;
     });
 
@@ -748,6 +799,76 @@ export const ResourcesLive: Layer.Layer<
           statusLine: resourceStatusLine(shown.view, clock),
         } satisfies ResourceControlled;
       });
+
+    const reset = Effect.fn("Resources.reset")(function* (
+      project: ResourceProject,
+      viewer: Viewer,
+      name: string,
+      worktreeId: WorktreeId,
+      asked: "shared" | "own" | null,
+      clock: ReaderClock,
+    ) {
+      const definition = yield* target(project, viewer, name, worktreeId).pipe(
+        Effect.catchTag("ResourceWorktreeNeededError", (error) =>
+          Effect.fail(new ResourceNotResetError({ name, message: error.message })),
+        ),
+      );
+      const spec = definition.spec;
+      if (spec.preset !== "postgres") {
+        return yield* new ResourceNotResetError({
+          name,
+          message: `@${name} · a reset saves and empties a Postgres database, and @${name} is not one`,
+        });
+      }
+      const choice =
+        spec.scope === "worktree"
+          ? null
+          : choiceInEffect(
+              spec,
+              (yield* repo.listWithChoices(project.id, worktreeId)).find(
+                (each) => each.definition.id === definition.id,
+              )?.choice ?? null,
+            );
+      const which =
+        spec.scope === "worktree" ? "own" : (asked ?? (choice === "own" ? "own" : "shared"));
+      if (which === "own" && spec.scope === "project") {
+        yield* decide(project, viewer, {
+          kind: "use",
+          changeOwner: yield* changeOwner(worktreeId),
+        });
+      }
+      const outcome = yield* runtime.reset({
+        definition,
+        worktreeId,
+        target: spec.scope === "worktree" ? "shared" : which,
+        at: clock.now,
+      });
+      switch (outcome.kind) {
+        case "not-running":
+          return yield* new ResourceNotResetError({
+            name,
+            message: `${resourceStatusLine({ kind: "launched-without", definition: spec, instance: outcome.instance }, clock).replace(/ · this session starts without it$/, "")} · nothing was reset`,
+          });
+        case "failed":
+          return yield* new ResourceNotResetError({
+            name,
+            message: `@${name} · not reset · ${outcome.message}`,
+          });
+        case "reset":
+          return {
+            statusLine: resourceStatusLine(
+              {
+                kind: "reset",
+                definition: spec,
+                target: which,
+                origin: outcome.origin,
+                savedAt: outcome.savedAt,
+              },
+              clock,
+            ),
+          };
+      }
+    });
 
     const start = Effect.fn("Resources.start")(function* (
       project: ResourceProject,
@@ -854,6 +975,7 @@ export const ResourcesLive: Layer.Layer<
         | ResourceSelectionRefusedError
         | ResourceNameNotFoundError
         | ResourceWorktreeNeededError
+        | ResourceNotResetError
       > = (() => {
         switch (verb) {
           case "list":
@@ -911,6 +1033,15 @@ export const ResourcesLive: Layer.Layer<
                     Effect.map((chosen) => lines(chosen.statusLine)),
                   ),
             );
+          case "reset":
+            return named((resource) => {
+              const asked = flagOf(rest, "--target");
+              return asked !== null && asked !== "shared" && asked !== "own"
+                ? Effect.fail(new ResourceActRefusedError({ message: "--target is shared or own" }))
+                : reset(project, viewer, resource, worktreeId, asked, clock).pipe(
+                    Effect.map((done) => lines(done.statusLine)),
+                  );
+            });
           case "env":
             return env(project, viewer, worktreeId, clock).pipe(
               Effect.map((current) =>
@@ -953,7 +1084,7 @@ export const ResourcesLive: Layer.Layer<
       );
     });
 
-    return { list, add, remove, use, start, stop, env, forSession };
+    return { list, add, remove, use, reset, start, stop, env, forSession };
   }),
 );
 

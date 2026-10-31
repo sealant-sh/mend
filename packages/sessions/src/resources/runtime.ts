@@ -18,6 +18,7 @@ import {
   resourceScopeKey,
   resourceSpecDigest,
   type ResourceStatusView,
+  SHARED_DATABASE,
 } from "@mend/domain/workbench";
 import {
   ResourceScopes,
@@ -31,7 +32,15 @@ import * as Context from "effect/Context";
 
 import { WorktreeReads } from "../worktree-reads.ts";
 import { ResourceImageResolver } from "./image-resolver.ts";
-import { OWN_DATABASE_TIMEOUT_MS, ownDatabaseArgv, ownDatabaseOutcome } from "./postgres-ops.ts";
+import {
+  DUMPS_READY_ARGV,
+  dumpPath,
+  OWN_DATABASE_TIMEOUT_MS,
+  ownDatabaseArgv,
+  ownDatabaseOutcome,
+  resetArgv,
+  resetOutcome,
+} from "./postgres-ops.ts";
 import { readWorktreeTables, tablesOf } from "./worktree-tables.ts";
 
 /**
@@ -99,8 +108,31 @@ export class ResourceRuntime extends Context.Service<
     readonly observe: (projectId: ProjectId) => Effect.Effect<ProjectObservation>;
     /** Archives every instance of a definition: containers go, volumes stay. */
     readonly archive: (definition: StoredResourceDefinition) => Effect.Effect<void>;
+    /**
+     * Saves a Postgres database as a dump in its dumps volume, checks the dump reads back, then
+     * makes it again: empty, or an own database copied from shared when shared has tables. The
+     * instance must be running; a person's stop is never overridden for it.
+     */
+    readonly reset: (input: {
+      readonly definition: StoredResourceDefinition;
+      readonly worktreeId: WorktreeId;
+      /** `own` is the worktree's own database on the project's server; `shared` is `app`. */
+      readonly target: "shared" | "own";
+      readonly at: Date;
+    }) => Effect.Effect<ResetOutcome>;
   }
 >()("@mend/sessions/ResourceRuntime") {}
+
+/** What a reset did, or why it did not. */
+export type ResetOutcome =
+  | {
+      readonly kind: "reset";
+      readonly origin: "empty" | "copied";
+      /** When the previous data was saved as a dump; null when there was none to save. */
+      readonly savedAt: Date | null;
+    }
+  | { readonly kind: "not-running"; readonly instance: ResourceInstanceObservation }
+  | { readonly kind: "failed"; readonly message: string };
 
 /** How long a launch waits on its resources before it opens without them. */
 export const PREPARE_BOUND = Duration.seconds(30);
@@ -117,6 +149,7 @@ export const ResourceRuntimeNone: Layer.Layer<ResourceRuntime> = Layer.succeed(R
       instance: { kind: "not-observed", message: "no runtime runs resources here" },
     }),
   archive: () => Effect.void,
+  reset: () => Effect.succeed({ kind: "failed", message: "no runtime runs resources here" }),
 });
 
 const unobserved = (message: string): InstanceObserved => ({
@@ -524,7 +557,75 @@ export const resourceRuntimeLayer = (
         );
       });
 
-      return { prepare, envOf, start, stop, observe, archive };
+      const reset = Effect.fn("ResourceRuntime.reset")(function* (input: {
+        readonly definition: StoredResourceDefinition;
+        readonly worktreeId: WorktreeId;
+        readonly target: "shared" | "own";
+        readonly at: Date;
+      }) {
+        const { definition, worktreeId, target, at } = input;
+        const worktreeScoped = definition.spec.scope === "worktree";
+        const key = resourceInstanceKey(definition.id, worktreeScoped ? worktreeId : null);
+        const database =
+          target === "own" && !worktreeScoped ? ownDatabaseName(worktreeId) : SHARED_DATABASE;
+        const run = Effect.gen(function* () {
+          const client = yield* scopeOf(definition.projectId);
+          const instance = yield* client.up(key, specOf(definition, worktreeId), "use");
+          const observation = observationOf(instance);
+          if (observation.kind !== "running") {
+            return { kind: "not-running", instance: observation } satisfies ResetOutcome;
+          }
+          return yield* gateOf(`${key}/${database}`).withPermits(1)(
+            Effect.gen(function* () {
+              const ready = yield* client.exec(key, {
+                argv: DUMPS_READY_ARGV,
+                user: "root",
+                timeoutMs: 30_000,
+              });
+              if (ready.exitCode !== 0) {
+                return {
+                  kind: "failed",
+                  message: "the dumps volume could not be readied",
+                } satisfies ResetOutcome;
+              }
+              const result = yield* client.exec(key, {
+                argv: resetArgv({
+                  database,
+                  copy: database !== SHARED_DATABASE,
+                  file: dumpPath(database, at),
+                }),
+                user: "postgres",
+                timeoutMs: OWN_DATABASE_TIMEOUT_MS,
+              });
+              const outcome = result.exitCode === 0 ? resetOutcome(result.stdout) : null;
+              if (outcome === null) {
+                const tail = result.stderr.trim().split("\n").at(-1) ?? "";
+                return {
+                  kind: "failed",
+                  message: result.timedOut
+                    ? "the reset ran past its time limit"
+                    : `exit ${result.exitCode ?? "none"}${tail === "" ? "" : ` · ${tail}`}`,
+                } satisfies ResetOutcome;
+              }
+              if (database !== SHARED_DATABASE) {
+                yield* repo.recordOwnDatabase(worktreeId, definition.id, outcome.origin);
+              }
+              return {
+                kind: "reset",
+                origin: outcome.origin,
+                savedAt: outcome.saved ? at : null,
+              } satisfies ResetOutcome;
+            }),
+          );
+        });
+        return yield* run.pipe(
+          Effect.catch((error: SealantPlatformError) =>
+            Effect.succeed<ResetOutcome>({ kind: "failed", message: error.message }),
+          ),
+        );
+      });
+
+      return { prepare, envOf, start, stop, observe, archive, reset };
     }),
   );
 
