@@ -782,12 +782,15 @@ const main = async () => {
         let total = null;
         if (from !== null && /^postgres(?:ql)?:/i.test(from)) {
           const url = new URL(from);
+          if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname || url.hash) fail("use a postgres:// URL naming a host and database");
           for (const key of url.searchParams.keys()) if (key !== "sslmode") fail("only sslmode is accepted in a load URL's query");
           const password = decodeURIComponent(url.password);
           if (/[\\r\\n\\0]/.test(password)) fail("the password cannot contain a line break or NUL");
           url.password = "";
-          label = (url.host + url.pathname).split(password || "\\0").join("[redacted]");
-          local = { connection: url.toString(), password };
+          const connection = url.toString();
+          if (password !== "" && [password, encodeURIComponent(password)].some((secret) => connection.includes(secret))) fail("the source address must not repeat its password outside the password field");
+          label = url.host + url.pathname;
+          local = { connection, password };
         } else if (from !== null) {
           const info = fs.statSync(from);
           if (!info.isFile()) fail("the dump must be a regular file");
