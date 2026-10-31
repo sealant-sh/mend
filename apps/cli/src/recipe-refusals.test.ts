@@ -16,14 +16,14 @@ describe("mend service run <name> with no recipe to run", () => {
             name: "web",
             key: "depends",
             message:
-              "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+              "@db · a Service's depends does not name a resource yet · every process in the worktree has @db's env already",
           },
           { name: "api", key: "port", message: "must be a port in 1..65535" },
         ],
         ignored: [],
       }),
     ).toBe(
-      "web is refused by mend.toml · cwd is absolute; name a path inside the repository · depends @db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+      "web is refused by mend.toml · cwd is absolute; name a path inside the repository · depends @db · a Service's depends does not name a resource yet · every process in the worktree has @db's env already",
     );
   });
 

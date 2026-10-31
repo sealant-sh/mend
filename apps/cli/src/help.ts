@@ -893,7 +893,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[--project <p>] [--worktree <w>] [--json]"],
     description: [
       "One status line per resource, then the image it runs and its id, as Sealant last observed its instance: the definitions project settings hold, each with whoever added it, and, with --worktree, that worktree's use of each (shared, its own database, its own instance or off) and the [resource.*] tables in its mend.toml with the keys it refuses or ignores. A table's line says whether settings hold it, hold it the same, or differ.",
-      "Inside a session's workspace, mend resource list reads the session's own project and worktree, as its owner sees them. Adding, removing and choosing are a person's: run them from the web app or mend on your machine.",
+      "Inside a session's workspace, mend resource list reads the session's own project and worktree, as its owner sees them. Adding, removing, starting, stopping and choosing are a person's: run them from the web app or mend on your machine.",
     ],
     options: [
       project(),
@@ -969,7 +969,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "choose how a worktree uses a project resource",
     synopsis: ["<name> <off|shared|own> --worktree <w> [--project <p>]"],
     description: [
-      "Stores the worktree's choice and prints the line it wrote: shared reaches the project's database app, own the worktree's own database on the same server (Postgres only), off none. The choice is the worktree's change owner's: the owner of its first session. Both databases stay. A process started before the choice keeps its env until it restarts.",
+      "Stores the worktree's choice and prints the line it wrote: shared reaches the project's database app, own the worktree's own database on the same server (Postgres only), off none. The choice is the worktree's change owner's: the owner of its first session. Both databases stay. A process started before the choice keeps its env until it restarts; mend resource env prints the current one.",
     ],
     options: [{ flag: "--worktree <w>", text: "the worktree, by name or id" }, project()],
     see: ["resource list"],
@@ -978,12 +978,40 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "resource start",
     section: "project setup",
     summary: "start a resource's instance",
-    synopsis: ["<name> [--project <p>]"],
+    synopsis: ["<name> [--worktree <w>] [--project <p>]"],
     description: [
-      "Refused on every runtime this Mend reaches: a person's start comes in a later step. A session's launch starts what its worktree uses. Nothing is started.",
+      "Starts the instance and prints its line once it is ready, or once 30 seconds pass, with the start going on. A person's start clears a person's stop. A worktree resource runs one instance per worktree, so its start names the worktree.",
     ],
-    options: [project()],
-    see: ["resource list"],
+    options: [{ flag: "--worktree <w>", text: "the worktree, for a worktree resource" }, project()],
+    see: ["resource stop", "resource list"],
+  },
+  {
+    name: "resource stop",
+    section: "project setup",
+    summary: "stop a resource's instance, keeping its data",
+    synopsis: ["<name> [--worktree <w>] [--project <p>]"],
+    description: [
+      "Stops the instance and keeps its volumes. A person's stop holds: a launch does not start it again, and the session's line says it starts without it, until a person starts it.",
+    ],
+    options: [{ flag: "--worktree <w>", text: "the worktree, for a worktree resource" }, project()],
+    see: ["resource start", "resource list"],
+  },
+  {
+    name: "resource env",
+    section: "project setup",
+    summary: "the env a worktree's processes get from its resources",
+    synopsis: ["--worktree <w> [--project <p>]"],
+    description: [
+      "Prints export lines for MEND_RESOURCE_<NAME>_HOST, _PORT and _URL, and DATABASE_URL, PG* and REDIS_URL where they apply, as every process in the worktree gets them now. A process started before a switch keeps its env: eval these in it. A name the project's env or secrets set is left as the project sets it, and a comment says so. Inside a session, mend resource env prints the session's worktree's.",
+    ],
+    options: [{ flag: "--worktree <w>", text: "the worktree, by name or id" }, project()],
+    examples: [
+      {
+        command: 'eval "$(mend resource env --worktree checkout)"',
+        text: "take the current env in a shell started before a switch",
+      },
+    ],
+    see: ["resource use"],
   },
 
   {

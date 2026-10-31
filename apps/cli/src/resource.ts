@@ -1,6 +1,8 @@
 import {
   RESOURCE_PRESETS,
   type ResourceAdded,
+  type ResourceControlled,
+  type ResourceEnvAnswer,
   type ResourcePreset,
   resourceRefusalWords,
   type ResourceSelectionEntry,
@@ -20,7 +22,7 @@ import {
 } from "./shared.ts";
 
 /**
- * `mend resource add|list|remove|use|start` (docs/adr/0019-shared-services.md): a
+ * `mend resource add|list|remove|use|start|stop|env` (docs/adr/0019-shared-services.md): a
  * project's resources from a person's terminal. What a member adds is the project's, and runs.
  * The server decides every act; these commands print its status lines as they come. Anything a
  * definition stores is someone else's text, so it reaches the terminal through `printable`.
@@ -377,15 +379,31 @@ export const resourceCommand = async (
       );
       return say(printable(chosen.statusLine));
     }
-    case "start": {
-      if (name === null) return fail("name the resource: mend resource start db");
-      // The server refuses every start until a person's start lands, and says why.
-      await api("POST", `/projects/${project.id}/resources/${encodeURIComponent(name)}/start`);
+    case "start":
+    case "stop": {
+      if (name === null) return fail(`name the resource: mend resource ${verb} db`);
+      const worktree = await worktreeOf();
+      const answer = await api<ResourceControlled>(
+        "POST",
+        `/projects/${project.id}/resources/${encodeURIComponent(name)}/${verb}?${zone}${worktree === null ? "" : `&worktreeId=${encodeURIComponent(worktree.id)}`}`,
+      );
+      return say(printable(answer.statusLine));
+    }
+    case "env": {
+      const worktree = await worktreeOf();
+      if (worktree === null) return fail("name the worktree whose env to print: --worktree <w>");
+      const answer = await api<ResourceEnvAnswer>(
+        "GET",
+        `/projects/${project.id}/worktrees/${encodeURIComponent(worktree.id)}/resources/env?${zone}`,
+      );
+      // What a shell evals: the exports, then what the project sets itself as comments.
+      for (const line of answer.exports) process.stdout.write(`${line}\n`);
+      for (const line of answer.statusLines) say(`# ${printable(line)}`);
       return;
     }
     default:
       return fail(
-        `unknown resource command "${printable(verb)}" · try: add, list, remove, use, start`,
+        `unknown resource command "${printable(verb)}" · try: add, list, remove, use, start, stop, env`,
       );
   }
 };

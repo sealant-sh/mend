@@ -221,7 +221,15 @@ const READS: Readonly<Record<string, Reads>> = {
   },
   "resource.ts additionOf": { pages: ["resource add"] },
   "resource.ts resourceCommand": {
-    pages: ["resource list", "resource add", "resource remove", "resource use"],
+    pages: [
+      "resource list",
+      "resource add",
+      "resource remove",
+      "resource use",
+      "resource start",
+      "resource stop",
+      "resource env",
+    ],
   },
   "organization.ts folderCommand": { pages: ["folder push"] },
   "organization.ts operatorCommand": { pages: ["operator org invite-owner"] },
