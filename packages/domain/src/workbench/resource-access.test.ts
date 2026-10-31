@@ -2,17 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { OrganizationId } from "../ids.ts";
 import type { ProjectTenancy, Viewer } from "./organization.ts";
-import {
-  type ResourceAct,
-  type ResourceActor,
-  resourceActRefusal,
-  WORKSPACE_RESOURCE_REFUSAL,
-} from "./resource-access.ts";
+import { type ResourceAct, resourceActRefusal } from "./resource-access.ts";
 
 const org = OrganizationId.make("org-a");
-const person = (userId: string, role: Viewer["role"]): ResourceActor => ({
-  kind: "person",
-  viewer: { userId, organizationId: org, role },
+const person = (userId: string, role: Viewer["role"]): Viewer => ({
+  userId,
+  organizationId: org,
+  role,
 });
 
 const shared: ProjectTenancy = {
@@ -23,7 +19,6 @@ const shared: ProjectTenancy = {
 const creator = person("maria", "member");
 const owner = person("olga", "owner");
 const member = person("tom", "member");
-const workspace: ResourceActor = { kind: "workspace" };
 
 const acts: ReadonlyArray<{ readonly name: string; readonly act: ResourceAct }> = [
   { name: "read", act: { kind: "read" } },
@@ -39,11 +34,11 @@ const acts: ReadonlyArray<{ readonly name: string; readonly act: ResourceAct }> 
 
 // Any member who can see the project reads and adds; a definition is replaced or removed by the
 // person who added it or a manager (the creator or an owner); a worktree's choice is its change
-// owner's, a manager's never; a workspace only reads.
+// owner's, a manager's never.
 const managing = ["read", "add", "replace tom's", "replace ana's", "remove tom's", "remove ana's"];
 const table: ReadonlyArray<{
   readonly name: string;
-  readonly actor: ResourceActor;
+  readonly actor: Viewer;
   readonly allowed: ReadonlyArray<string>;
 }> = [
   { name: "the creator", actor: creator, allowed: [...managing, "use in maria's worktree"] },
@@ -53,7 +48,6 @@ const table: ReadonlyArray<{
     actor: member,
     allowed: ["read", "add", "replace tom's", "remove tom's", "use in tom's worktree"],
   },
-  { name: "a workspace", actor: workspace, allowed: ["read"] },
 ];
 
 describe("who may do what with a project's resources", () => {
@@ -65,12 +59,6 @@ describe("who may do what with a project's resources", () => {
       });
     }
   }
-
-  it("refuses a workspace's change with the words that send it to a person", () => {
-    expect(resourceActRefusal(shared, workspace, { kind: "add", replaces: null })).toBe(
-      WORKSPACE_RESOURCE_REFUSAL,
-    );
-  });
 
   it("refuses everything in a project the person cannot see", () => {
     const hidden: ProjectTenancy = { ...shared, visibility: "private" };

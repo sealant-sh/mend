@@ -5,16 +5,8 @@ import {
   type Viewer,
 } from "./organization.ts";
 
-/**
- * Who asks about a project's resources (ADR 0019, "Who may do what"). A workspace is a call
- * through its session's socket or channel. A call on the account API is the person whose token
- * it carries, wherever that token was used (ADR 0017's build draws the same line).
- */
-export type ResourceActor =
-  | { readonly kind: "person"; readonly viewer: Viewer }
-  | { readonly kind: "workspace" };
-
 export type ResourceAct =
+  /** Reading status, and starting or stopping an instance. */
   | { readonly kind: "read" }
   /**
    * Adding a definition under its name: `replaces` names who added the definition settings hold
@@ -25,6 +17,7 @@ export type ResourceAct =
   /** Choosing `off`, `shared` or `own` for one worktree. */
   | { readonly kind: "use"; readonly changeOwner: string | null };
 
+/** What a session's channel answers a change it is asked for: a workspace reads, and changes none. */
 export const WORKSPACE_RESOURCE_REFUSAL =
   "a workspace reads resources and changes none · add, remove or choose them from the web app, VS Code, the phone or mend on your machine";
 
@@ -52,19 +45,18 @@ const adderRefusal = (
     : `${act} someone else added is theirs or ${MANAGER}`;
 
 /**
- * Null when `actor` may do `act` in `project`, else the words that say whose act it is. Servers
+ * Null when `viewer` may do `act` in `project`, else the words that say whose act it is. Servers
  * refuse with it and clients derive their controls from it, so the two cannot disagree. Any member
- * who can see the project reads and adds a resource, and it is the project's from then on; a
- * definition someone else added is replaced or removed by them or a manager. A worktree's choice
- * is its change owner's alone, a manager's included.
+ * who can see the project reads, adds, starts and stops a resource, and it is the project's from
+ * then on; a definition someone else added is replaced or removed by them or a manager. A
+ * worktree's choice is its change owner's alone, a manager's included. The agent in a session acts
+ * as the session's owner (ADR 0019, story 8).
  */
 export const resourceActRefusal = (
   project: ProjectTenancy,
-  actor: ResourceActor,
+  viewer: Viewer,
   act: ResourceAct,
 ): string | null => {
-  if (actor.kind === "workspace") return act.kind === "read" ? null : WORKSPACE_RESOURCE_REFUSAL;
-  const { viewer } = actor;
   if (!canSeeProject(project, viewer)) return "is not a project you can see";
   switch (act.kind) {
     case "read":
