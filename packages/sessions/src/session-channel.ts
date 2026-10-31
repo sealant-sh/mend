@@ -10,8 +10,7 @@ import {
   AgentHookReport,
   PAGE_REQUEST_MAX_BYTES,
   ReaderTimeZone,
-  type ResourceAct,
-  type ResourcesStatus,
+  type ResourceSessionAnswer,
   type ServiceBrowserScheme,
 } from "@mend/domain/workbench";
 import { DeploymentConfig } from "@mend/store";
@@ -49,31 +48,14 @@ import type { SessionSocketApi } from "./session-socket.ts";
 // ─── Registry ───────────────────────────────────────────────────────────────
 
 /**
- * A workspace's request about its session's project's resources (`Resources.forSession`): a read
- * answers status, and the permission function refuses any change with its words.
+ * `mend resource <argv>` from inside a session (`Resources.forSession`), decided as the session's
+ * owner: the lines the helper prints, or why the act was refused.
  */
 export type SessionResources = (
   sessionId: SessionId,
-  act: ResourceAct,
+  argv: ReadonlyArray<string>,
   clock: { readonly now: Date; readonly timeZone: string },
-) => Effect.Effect<ResourcesStatus, { readonly message: string }>;
-
-/**
- * The act a helper request asks: `GET /resources` reads, `POST /resources` adds,
- * `DELETE /resources/<name>` removes and `PUT /resources/<name>/selection` chooses. A workspace
- * names no adder, worktree or change owner, so each is asked with none; the workspace's refusal
- * is the same either way.
- */
-const workspaceResourceAct = (route: string, pathname: string): ResourceAct | null => {
-  if (route === "GET /resources") return { kind: "read" };
-  if (route === "POST /resources") return { kind: "add", replaces: null };
-  const [name = "", tail, ...more] = pathname.slice("/resources/".length).split("/");
-  if (!pathname.startsWith("/resources/") || name === "" || more.length > 0) return null;
-  const method = route.slice(0, route.indexOf(" "));
-  if (method === "DELETE" && tail === undefined) return { kind: "remove-definition", addedBy: "" };
-  if (method === "PUT" && tail === "selection") return { kind: "use", changeOwner: null };
-  return null;
-};
+) => Effect.Effect<ResourceSessionAnswer, { readonly message: string }>;
 
 export class SessionChannelRegistry extends Context.Service<
   SessionChannelRegistry,
@@ -405,22 +387,21 @@ export const handleSessionRequest = async (
         typeof body["worktree"] === "string" && body["worktree"] !== "" ? body["worktree"] : null;
       return respond(202, await Effect.runPromise(api.addRepository({ project, name, worktree })));
     }
-    // Resources (ADR 0019, "Who may do what"): `Resources.forSession` decides every request as
-    // the workspace's, so a read answers status and a change is refused there.
-    if (url.pathname === "/resources" || url.pathname.startsWith("/resources/")) {
-      const act = workspaceResourceAct(route, url.pathname);
-      if (act === null) return respond(404, { message: `no resources route ${route}` });
+    // Resources (ADR 0019, story 8): the agent's `mend resource`, decided as the session's owner.
+    if (route === "POST /resources") {
       const serve = registry.resources();
-      if (serve === undefined) return respond(503, { message: "resources cannot be read now" });
+      if (serve === undefined) return respond(503, { message: "resources cannot be reached now" });
       const timeZone = decodeTimeZone(url.searchParams.get("timeZone") ?? "UTC");
       if (Exit.isFailure(timeZone)) {
         return respond(400, { message: "timeZone must be an IANA time zone" });
       }
+      const body = asRecord(await readBody(request));
+      const argv = Array.isArray(body["argv"]) ? body["argv"].map(String) : [];
       const sessionId = await Effect.runPromise(api.resourceSession());
       const answer = await Effect.runPromise(
-        Effect.result(serve(sessionId, act, { now: new Date(), timeZone: timeZone.value })),
+        Effect.result(serve(sessionId, argv, { now: new Date(), timeZone: timeZone.value })),
       ).catch(() => null);
-      if (answer === null) return respond(503, { message: "resources could not be read now" });
+      if (answer === null) return respond(503, { message: "resources could not be reached now" });
       if (answer._tag === "Failure") return respond(403, { message: answer.failure.message });
       return respond(200, answer.success);
     }

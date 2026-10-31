@@ -27,6 +27,7 @@ import {
   ResourceAddInput,
   type ResourceAddOffer,
   type ResourceAdded,
+  resourceAdditionOf,
   type ResourceControlled,
   resourceDeclarationRefusals,
   type ResourceDefinitionInput,
@@ -35,12 +36,14 @@ import {
   type ResourceFileTable,
   type ResourceInstanceKind,
   resourceInstanceKey,
+  resourcePositionals,
   ResourceRefusal,
+  resourceRefusalWords,
   type ResourceSelectionEntry,
+  type ResourceSessionAnswer,
   type ResourceSettingEntry,
   type ResourceSettingsState,
   type ResourcesPage,
-  type ResourcesStatus,
   type ResourceSpecDigest,
   resourceSpecDigest,
   resourceStatusLine,
@@ -49,7 +52,6 @@ import {
   type ResourceUse,
   shellExports,
   type Viewer,
-  WORKSPACE_RESOURCE_REFUSAL,
   WorktreeChoice,
   withPresetCommand,
 } from "@mend/domain/workbench";
@@ -190,15 +192,14 @@ export class Resources extends Context.Service<
       clock: ReaderClock,
     ) => Effect.Effect<ResourceEnvAnswer, ResourceActRefusedError>;
     /**
-     * A request through a session's own socket or channel: a read answers its project's status
-     * lines, read for the session's owner, and its worktree's file, never a spec; any change is
-     * refused.
+     * `mend resource <argv>` from inside a session, decided as the session's owner (ADR 0019,
+     * story 8) for the session's worktree; answers the lines the helper prints.
      */
     readonly forSession: (
       sessionId: SessionId,
-      act: ResourceAct,
+      argv: ReadonlyArray<string>,
       clock: ReaderClock,
-    ) => Effect.Effect<ResourcesStatus, ResourceActRefusedError>;
+    ) => Effect.Effect<ResourceSessionAnswer, { readonly message: string }>;
   }
 >()("@mend/sessions/Resources") {}
 
@@ -383,28 +384,32 @@ const viewOf = (input: {
   };
 };
 
-/** The page as a workspace may read it: status lines and the file's diagnostics. */
-const statusOf = (page: ResourcesPage): ResourcesStatus => {
-  const { file } = page;
-  return {
-    statusLines: page.settings.map((entry) => entry.statusLine),
-    file:
-      file.kind === "read"
-        ? {
-            kind: "read",
-            observed: file.observed,
-            statusLines: file.tables.map((table) => table.statusLine),
-            notices: resourceTableNotices(file),
-          }
-        : file.kind === "absent"
-          ? { kind: "absent", observed: file.observed }
-          : file.kind === "unavailable"
-            ? { kind: "unavailable", message: file.message }
-            : file.kind === "unparsed"
-              ? { kind: "unparsed", observed: file.observed, message: file.message }
-              : { kind: "not-selected" },
-  };
+/** A session's page as lines: each status line, then its worktree's `mend.toml`. */
+const pageLines = (page: ResourcesPage): ReadonlyArray<string> => {
+  const lines = page.settings.map((entry) => entry.statusLine);
+  const file = page.file;
+  if (file.kind === "unavailable") return [...lines, `mend.toml · ${file.message}`];
+  if (file.kind === "unparsed") {
+    return [...lines, `mend.toml · ${file.observed} · ${file.message}`];
+  }
+  if (file.kind !== "read") return lines.length === 0 ? ["no resources in this project"] : lines;
+  const notices = resourceTableNotices(file);
+  return [
+    ...lines,
+    ...(file.tables.length + notices.length === 0 ? [] : [`mend.toml · ${file.observed}`]),
+    ...file.tables.map((table) => table.statusLine),
+    ...notices.map((notice) => `  ${notice}`),
+  ];
 };
+
+/** A session's answer: the lines the helper prints. */
+const lines = (...each: ReadonlyArray<string>): ResourceSessionAnswer => ({ lines: each });
+
+const SESSION_USAGE =
+  "mend resource list · add NAME (--preset P --version V | --image I --port N=P) [--scope worktree] · remove|start|stop NAME · use NAME shared|own|off · env";
+
+const decodeAddInput = Schema.decodeUnknownEffect(ResourceAddInput);
+const isChoice = Schema.is(WorktreeChoice);
 
 export const ResourcesLive: Layer.Layer<
   Resources,
@@ -800,16 +805,12 @@ export const ResourcesLive: Layer.Layer<
 
     const forSession = Effect.fn("Resources.forSession")(function* (
       sessionId: SessionId,
-      act: ResourceAct,
+      argv: ReadonlyArray<string>,
       clock: ReaderClock,
     ) {
       // The channel exists only for a session Mend holds, in a project it holds.
       const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
       const project = yield* projects.byId(session.projectId).pipe(Effect.orDie);
-      if (act.kind !== "read") {
-        return yield* new ResourceActRefusedError({ message: WORKSPACE_RESOURCE_REFUSAL });
-      }
-      // A workspace reads what its session's owner sees.
       const owner = session.ownerUserId;
       const membership = owner === null ? null : yield* organizations.membershipOf(owner);
       if (owner === null || membership === null) {
@@ -822,7 +823,134 @@ export const ResourcesLive: Layer.Layer<
         organizationId: membership.organization.id,
         role: membership.role,
       };
-      return statusOf(yield* list(project, viewer, session.worktreeId, clock));
+      const worktreeId = session.worktreeId;
+      const [verb = "list", ...rest] = argv;
+      const [name = null, second = null] = resourcePositionals(rest);
+      const named = <E>(run: (name: string) => Effect.Effect<ResourceSessionAnswer, E>) =>
+        name === null
+          ? Effect.fail(
+              new ResourceActRefusedError({
+                message: `name the resource: mend resource ${verb} db`,
+              }),
+            )
+          : run(name);
+      const byName = (resource: string) =>
+        repo
+          .byName(project.id, resource)
+          .pipe(
+            Effect.flatMap((definition) =>
+              definition === null
+                ? Effect.fail(new ResourceNameNotFoundError({ name: resource }))
+                : Effect.succeed(definition),
+            ),
+          );
+      const answer: Effect.Effect<
+        ResourceSessionAnswer,
+        | ResourceActRefusedError
+        | ResourceDefinitionRefusedError
+        | ResourceImageRefusedError
+        | ResourceDefinitionNotFoundError
+        | ResourceDefinitionStaleError
+        | ResourceSelectionRefusedError
+        | ResourceNameNotFoundError
+        | ResourceWorktreeNeededError
+      > = (() => {
+        switch (verb) {
+          case "list":
+            return list(project, viewer, worktreeId, clock).pipe(
+              Effect.map((page) => ({ lines: pageLines(page) })),
+            );
+          case "add": {
+            const addition = resourceAdditionOf(rest);
+            if (!addition.ok)
+              return Effect.fail(new ResourceActRefusedError({ message: addition.message }));
+            return decodeAddInput(addition.body).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ResourceActRefusedError({ message: `not a resource: ${error.message}` }),
+              ),
+              Effect.flatMap((input) => add(project, viewer, input, worktreeId, clock)),
+              Effect.map((added) =>
+                lines(added.definition.statusLine, `image ${added.definition.image}`),
+              ),
+            );
+          }
+          case "remove":
+            return named((resource) =>
+              byName(resource).pipe(
+                Effect.flatMap((definition) =>
+                  remove(project, viewer, { id: definition.id, digest: definition.specDigest }),
+                ),
+                Effect.map((removed) => lines(removed.statusLine)),
+              ),
+            );
+          case "start":
+            return named((resource) =>
+              start(project, viewer, resource, worktreeId, clock).pipe(
+                Effect.map((done) => lines(done.statusLine)),
+              ),
+            );
+          case "stop":
+            return named((resource) =>
+              stop(project, viewer, resource, worktreeId, clock).pipe(
+                Effect.map((done) => lines(done.statusLine)),
+              ),
+            );
+          case "use":
+            return named((resource) =>
+              second === null || !isChoice(second)
+                ? Effect.fail(
+                    new ResourceActRefusedError({
+                      message: `name a choice: mend resource use ${resource} shared|own|off`,
+                    }),
+                  )
+                : byName(resource).pipe(
+                    Effect.flatMap((definition) =>
+                      use(project, viewer, worktreeId, definition.id, second, clock),
+                    ),
+                    Effect.map((chosen) => lines(chosen.statusLine)),
+                  ),
+            );
+          case "env":
+            return env(project, viewer, worktreeId, clock).pipe(
+              Effect.map((current) =>
+                lines(...current.exports, ...current.statusLines.map((line) => `# ${line}`)),
+              ),
+            );
+          default:
+            return Effect.fail(
+              new ResourceActRefusedError({
+                message: `unknown resource command "${verb}" · ${SESSION_USAGE}`,
+              }),
+            );
+        }
+      })();
+      return yield* answer.pipe(
+        Effect.mapError((error): { readonly message: string } => {
+          switch (error._tag) {
+            case "ResourceDefinitionRefusedError":
+            case "ResourceSelectionRefusedError": {
+              const refusals =
+                error._tag === "ResourceSelectionRefusedError" ? [error.refusal] : error.refusals;
+              return {
+                message: refusals
+                  .map((refusal) => `@${error.name} · ${resourceRefusalWords(refusal)}`)
+                  .join("\n"),
+              };
+            }
+            case "ResourceNameNotFoundError":
+              return {
+                message: `no @${error.name} in this project · mend resource list shows them`,
+              };
+            case "ResourceDefinitionNotFoundError":
+              return { message: "that resource is gone · mend resource list shows them" };
+            case "ResourceDefinitionStaleError":
+              return { message: "the definition changed as it was removed · nothing was removed" };
+            default:
+              return { message: error.message };
+          }
+        }),
+      );
     });
 
     return { list, add, remove, use, start, stop, env, forSession };
