@@ -9,6 +9,7 @@ import {
   ScreenActParams,
   type ScreenInput,
   type ScreenLife,
+  screenHolderOf,
   screenIdleStopDue,
   ScreenSpan,
   screenStatusLine,
@@ -89,7 +90,7 @@ describe("screenStatusLine", () => {
   const line = (input: ScreenInput, facts: { life?: ScreenLife; viewers?: number } = {}) =>
     screenStatusLine({
       life: facts.life ?? live,
-      input,
+      holder: screenHolderOf(input),
       lastFrameAt: new Date("2026-10-30T10:00:07Z"),
       viewers: facts.viewers ?? 0,
       now,
@@ -105,7 +106,7 @@ describe("screenStatusLine", () => {
     ],
     [
       { _tag: "Fencing", epoch: 3, by: "u-yiannis", to: { _tag: "AwaitingAgent" } },
-      "screen · handing back to the agent · frame 3 s ago",
+      "screen · waiting for the agent's next look · frame 3 s ago",
     ],
     [
       { _tag: "Person", epoch: 2, userId: "u-yiannis", connection },
@@ -142,13 +143,22 @@ describe("screenStatusLine", () => {
     expect(
       screenStatusLine({
         life: live,
-        input: { _tag: "AwaitingAgent", epoch: 0 },
+        holder: { _tag: "Agent", awaiting: true },
         lastFrameAt: null,
         viewers: 0,
         now,
         nameOf: String,
       }),
     ).toBe("screen · waiting for the agent's next look · no frame yet");
+    expect(
+      screenStatusLine({
+        life: live,
+        holder: { _tag: "Person", userId: "u-yiannis", taking: false },
+        viewers: 0,
+        now,
+        nameOf: String,
+      }),
+    ).toBe("screen · u-yiannis has input");
   });
 
   it("reads a screen not started, starting or ended without its input", () => {

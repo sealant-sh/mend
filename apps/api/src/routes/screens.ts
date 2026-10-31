@@ -6,14 +6,13 @@ import {
   MendApi,
   SCREEN_SOCKET_CLOSE,
   type ScreenControlResult,
-  type ScreenHolder,
   type ScreenRead,
   type ScreenSocketHello,
 } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import { OrganizationsRepo, ScreensRepo, UpgradeTicketsRepo } from "@mend/db";
 import { SessionId, ViewerConnectionId } from "@mend/domain";
-import { SCREEN_LIMITS, type ScreenInput, type ScreenLogBody } from "@mend/domain/workbench";
+import { SCREEN_LIMITS, type ScreenLogBody, screenHolderOf } from "@mend/domain/workbench";
 import { type ScreenControlAnswer, Screens, type ViewerBytes, type WatchEnd } from "@mend/sessions";
 import { type Cause, Duration, Effect, Queue, Semaphore } from "effect";
 import { HttpRouter, type HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -27,26 +26,8 @@ import { ScreenWatch } from "../screen-watch.ts";
 import { makeFrameGuard, reserveScreenViewer } from "../socket-budgets.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
-/** Who holds a screen's input, as watchers see it (ADR 0020, "How people watch and take over"). */
-const holderOf = (input: ScreenInput): ScreenHolder => {
-  switch (input._tag) {
-    case "Agent":
-      return { _tag: "Agent", awaiting: false };
-    case "AwaitingAgent":
-      return { _tag: "Agent", awaiting: true };
-    case "Person":
-      return { _tag: "Person", userId: input.userId, taking: false };
-    case "Fencing":
-      return input.to._tag === "Person"
-        ? { _tag: "Person", userId: input.by, taking: true }
-        : { _tag: "Agent", awaiting: true };
-    case "Paused":
-      return { _tag: "Paused", reason: input.reason };
-  }
-};
-
 const resultOf = (answer: ScreenControlAnswer): ScreenControlResult =>
-  answer._tag === "Changed" ? { _tag: "Changed", holder: holderOf(answer.next) } : answer;
+  answer._tag === "Changed" ? { _tag: "Changed", holder: screenHolderOf(answer.next) } : answer;
 
 const OWNER_ONLY: ScreenControlResult = { _tag: "Refused", why: "owner-only" };
 const NOT_WATCHING: ScreenControlResult = { _tag: "NotWatching" };
@@ -76,7 +57,7 @@ export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handle
           width: SCREEN_LIMITS.width,
           height: SCREEN_LIMITS.height,
           life: screen.life,
-          holder: holderOf(screen.input),
+          holder: screenHolderOf(screen.input),
           since: screen.input._tag === "Paused" ? screen.input.since : given,
           ownerUserId: session.ownerUserId,
         };
