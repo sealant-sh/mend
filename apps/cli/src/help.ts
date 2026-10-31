@@ -889,11 +889,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "resource list",
     section: "project setup",
-    summary: "a project's resources: settings, proposals, mend.toml",
+    summary: "a project's resources: settings and mend.toml",
     synopsis: ["[--project <p>] [--worktree <w>] [--json]"],
     description: [
-      "One status line per resource, then the image it would run and its id: the definitions project settings hold, the proposals members made beside them, and, with --worktree, the [resource.*] proposals in that worktree's mend.toml with the keys it refuses or ignores. A proposal runs nothing until a manager approves it in project settings.",
-      "Inside a session's workspace, mend resource list reads the session's own project and worktree. Proposing, removing, approving and choosing are a person's: run them from the web app, VS Code, the phone or mend on your machine.",
+      "One status line per resource, then the image it runs and its id: the definitions project settings hold, each with whoever added it, and, with --worktree, the [resource.*] tables in that worktree's mend.toml with the keys it refuses or ignores. A table's line says whether settings hold it, hold it the same, or differ; nothing runs from the file itself.",
+      "Inside a session's workspace, mend resource list reads the session's own project and worktree. Adding, removing and choosing are a person's: run them from the web app, VS Code, the phone or mend on your machine.",
     ],
     options: [
       project(),
@@ -905,14 +905,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "resource add",
     section: "project setup",
-    summary: "propose a resource for the project",
+    summary: "add a resource to the project",
     synopsis: [
       "<name> --preset <postgres|redis|mysql> --version <v> [--scope <s>] [--project <p>]",
       "<name> --image <ref> --port <port>... [--scope <s>] [--project <p>]",
+      "<name> --from-file --worktree <w> [--project <p>]",
     ],
     description: [
-      "Any member who can see the project proposes. A proposal sits beside the project's settings and changes none of them; a manager approves it there. Two people may propose the same name, and each keeps their own.",
-      "A preset runs its own image at the version named, which starts with its major version (17, 16.4-bookworm), with its port, a data volume and its own ready check. An image is any image reference, such as axllent/mailpit:v1.21; approving it pins the digest it resolves to. Each --port names one port.",
+      "Any member who can see the project adds a resource, and it is the project's. Mend pins the image to the digest its registry serves for the tag, asking the operator's mirrors first; a registry that cannot say leaves nothing added. Adding a name that exists replaces its definition, which is the person who added it or a manager's: the project's creator or an organization owner.",
+      "A preset runs its own image at the version named, which starts with its major version (17, 16.4-bookworm), with its port, a data volume and its own ready check. An image is any image reference, such as axllent/mailpit:v1.21. Each --port names one port. --from-file adds the [resource.<name>] table in --worktree's mend.toml as it stands, or says why it may not.",
     ],
     options: [
       { flag: "--preset <p>", text: "postgres, redis or mysql" },
@@ -926,70 +927,41 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         flag: "--scope <s>",
         text: "project (one instance) or worktree (one per worktree). Default: project",
       },
+      { flag: "--from-file", text: "add the [resource.<name>] table in --worktree's mend.toml" },
+      {
+        flag: "--worktree <w>",
+        text: "the worktree whose mend.toml --from-file reads, by name or id",
+      },
       project(),
     ],
     examples: [
       {
         command: "mend resource add db --preset postgres --version 17",
-        text: "propose a Postgres 17",
+        text: "add a Postgres 17",
       },
       {
         command:
           "mend resource add mail --image axllent/mailpit:v1.21 --port smtp=1025 --scope worktree",
-        text: "propose a mail catcher for each worktree",
+        text: "add a mail catcher for each worktree",
+      },
+      {
+        command: "mend resource add queue --from-file --worktree checkout",
+        text: "add checkout's [resource.queue]",
       },
     ],
-    see: ["resource list", "resource remove", "resource approve"],
+    see: ["resource list", "resource remove"],
   },
   {
     name: "resource remove",
     section: "project setup",
-    summary: "remove a definition, or a proposal",
-    synopsis: [
-      "<name> [--project <p>]",
-      "[<name>] --proposal <id> [--project <p>]",
-      "[<name>] --definition <id> [--project <p>]",
-    ],
+    summary: "remove a resource's definition",
+    synopsis: ["<name> [--project <p>]", "[<name>] --definition <id> [--project <p>]"],
     description: [
-      "Removes what you may remove under that name: the definition project settings hold, which is a manager's act, or the one proposal of that name. A manager may remove anyone's proposal; a member only their own. When the name matches both, or several proposals, nothing is removed and each id is listed: name one with --definition or --proposal, by the id mend resource list prints. With a name too, the id must be of that name.",
+      "Removes the definition project settings hold under that name, or the one --definition names by the id mend resource list prints; with a name too, the id must be of that name. Removing a definition is the person who added it or a manager's.",
       "The line being removed prints first. A definition changed since it was read is not removed. Nothing runs yet, so removing deletes no data.",
     ],
-    options: [
-      { flag: "--proposal <id>", text: "the proposal to remove" },
-      { flag: "--definition <id>", text: "the definition to remove" },
-      project(),
-    ],
+    options: [{ flag: "--definition <id>", text: "the definition to remove" }, project()],
     see: ["resource list"],
-  },
-  {
-    name: "resource approve",
-    section: "project setup",
-    summary: "approve a resource's definition, pinning its image",
-    synopsis: [
-      "<name> [--proposal <id> | --worktree <w> [--for-project]] [--digest sha256:<hex>] [--project <p>]",
-    ],
-    description: [
-      "Approves the definition project settings hold under the name, or adopts a proposal into settings and approves it in the same write: the one --proposal names, the only one of the name, or the [resource.*] table in --worktree's mend.toml. Every field that runs prints first, with the digest approved. Mend pins the image to the digest its registry serves for the tag, asking the operator's mirrors first; a registry that cannot say leaves nothing approved.",
-      "Approving for the project is a manager's. A worktree resource read with --worktree is approved for that worktree, which is its change owner's, and only for an image a manager approved for the project; --for-project approves it for the project instead. When the project offers you no approval for that target, the reason prints, in the words the server would answer with, and nothing is approved. A definition changed since it was read is not approved. A target approved already for the definition you read says so and succeeds. Without a terminal, --digest names the digest of the definition you read, as printed.",
-    ],
-    options: [
-      { flag: "--proposal <id>", text: "the proposal to adopt and approve" },
-      { flag: "--worktree <w>", text: "read this worktree's mend.toml, by name or id" },
-      { flag: "--for-project", text: "approve a worktree resource for the project" },
-      { flag: "--digest <d>", text: "the definition's digest, as printed: sha256:<hex>" },
-      project(),
-    ],
-    examples: [
-      {
-        command: "mend resource approve db --proposal rprop_21",
-        text: "adopt and approve a proposal",
-      },
-      {
-        command: "mend resource approve mail --worktree checkout",
-        text: "approve checkout's mail for checkout",
-      },
-    ],
-    see: ["resource list", "resource use"],
   },
   {
     name: "resource use",
@@ -1000,7 +972,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Stores the worktree's choice and prints the line it wrote: shared reaches the project's instance, own its own database or instance, off none. The choice is the worktree's change owner's: the owner of its first session. Nothing runs yet, so choosing starts, copies and moves nothing.",
     ],
     options: [{ flag: "--worktree <w>", text: "the worktree, by name or id" }, project()],
-    see: ["resource approve"],
+    see: ["resource list"],
   },
   {
     name: "resource start",
