@@ -8,6 +8,7 @@ import {
   type ResourceDefinitionStaleError,
   type ResourceSelectionRefusedError,
   ResourcesRepo,
+  ResourceLoadsRepo,
   SessionsRepo,
   type StoredResourceDefinition,
   UsersRepo,
@@ -50,6 +51,8 @@ import {
   type ResourceStatusView,
   resourceTableNotices,
   type ResourceUse,
+  ownDatabaseName,
+  SHARED_DATABASE,
   shellExports,
   type Viewer,
   WorktreeChoice,
@@ -448,6 +451,7 @@ export const ResourcesLive: Layer.Layer<
   Resources,
   never,
   | ResourcesRepo
+  | ResourceLoadsRepo
   | ProjectsRepo
   | SessionsRepo
   | UsersRepo
@@ -461,6 +465,7 @@ export const ResourcesLive: Layer.Layer<
   Resources,
   Effect.gen(function* () {
     const repo = yield* ResourcesRepo;
+    const loads = yield* ResourceLoadsRepo;
     const projects = yield* ProjectsRepo;
     const sessions = yield* SessionsRepo;
     const users = yield* UsersRepo;
@@ -501,6 +506,12 @@ export const ResourcesLive: Layer.Layer<
           addedBy: definition.addedBy,
         }),
         canChoose: mayChoose(reader, definition.spec),
+        canLoadOwn:
+          reader.worktree !== null &&
+          allows(reader.project, reader.viewer, {
+            kind: "use",
+            changeOwner: reader.worktree.changeOwner,
+          }),
         instance: shown.instance,
         statusLine: resourceStatusLine(shown.view, clock),
       };
@@ -563,19 +574,20 @@ export const ResourcesLive: Layer.Layer<
       worktreeId: WorktreeId | null,
       clock: ReaderClock,
     ) {
-      const [observation, owns, nameOf] = yield* Effect.all(
+      const [observation, owns, nameOf, latestLoads] = yield* Effect.all(
         [
           listed.length === 0 ? Effect.succeed(null) : runtime.observe(projectId),
           worktreeId === null
             ? Effect.succeed(new Map<ResourceDefinitionId, OwnDatabaseOrigin>())
             : repo.ownDatabases(worktreeId),
           namesOf(listed.map(({ definition }) => definition.addedBy)),
+          loads.latest(projectId),
         ],
         { concurrency: "unbounded" },
       );
       const lookup = lookupIn(observation, clock.now);
-      return (each: DefinitionWithChoice) =>
-        viewOf({
+      return (each: DefinitionWithChoice) => {
+        const shown = viewOf({
           definition: each.definition,
           choice: each.choice,
           worktreeId,
@@ -584,6 +596,37 @@ export const ResourcesLive: Layer.Layer<
           lookup,
           addedBy: nameOf(each.definition.addedBy),
         });
+        const mode =
+          worktreeId === null ? "shared" : choiceInEffect(each.definition.spec, each.choice);
+        const database =
+          mode === "own" && worktreeId !== null ? ownDatabaseName(worktreeId) : SHARED_DATABASE;
+        const instanceKey = resourceInstanceKey(
+          each.definition.id,
+          each.definition.spec.scope === "worktree" ? worktreeId : null,
+        );
+        const load =
+          mode === "off"
+            ? undefined
+            : latestLoads.find(
+                (row) => row.instanceKey === instanceKey && row.database === database,
+              );
+        return load === undefined
+          ? shown
+          : {
+              instance: shown.instance,
+              view: {
+                kind: "load",
+                definition: each.definition.spec,
+                target: load.target,
+                phase: load.phase,
+                label: load.label,
+                bytesDone: load.bytesDone,
+                bytesTotal: load.bytesTotal,
+                savedAt: load.savedAt,
+                message: load.message,
+              } satisfies ResourceStatusView,
+            };
+      };
     });
 
     const list = Effect.fn("Resources.list")(function* (

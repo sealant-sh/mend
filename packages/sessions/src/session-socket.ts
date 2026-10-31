@@ -768,6 +768,72 @@ const main = async () => {
     const printable = (text) =>
       String(text).replace(/[\\u0000-\\u001f\\u007f-\\u009f]/g, (c) => "\\\\x" + c.charCodeAt(0).toString(16).padStart(2, "0"));
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    if (verb === "load") {
+      try {
+        const flag = (name) => { const at = rest.indexOf(name); return at < 0 ? null : rest[at + 1] ?? null; };
+        const from = flag("--from");
+        const pull = flag("--pull");
+        const target = flag("--target");
+        const name = rest[0];
+        if (!name || (from === null) === (pull === null)) fail("mend resource load NAME --from FILE|postgres-url or --pull postgres-url");
+        if (target !== null && target !== "shared" && target !== "own") fail("--target is shared or own");
+        let local = null;
+        let label = "dump";
+        let total = null;
+        if (from !== null && /^postgres(?:ql)?:/i.test(from)) {
+          const url = new URL(from);
+          for (const key of url.searchParams.keys()) if (key !== "sslmode") fail("only sslmode is accepted in a load URL's query");
+          const password = decodeURIComponent(url.password);
+          if (/[\\r\\n\\0]/.test(password)) fail("the password cannot contain a line break or NUL");
+          url.password = "";
+          label = (url.host + url.pathname).split(password || "\\0").join("[redacted]");
+          local = { connection: url.toString(), password };
+        } else if (from !== null) {
+          const info = fs.statSync(from);
+          if (!info.isFile()) fail("the dump must be a regular file");
+          label = require("node:path").basename(from);
+          total = info.size;
+        }
+        const zoneQuery = "?timeZone=" + encodeURIComponent(zone);
+        let row = await request("POST", "/resources/loads" + zoneQuery, { name, target, source: pull !== null ? { kind: "pull", url: pull } : { kind: "upload", label, bytesTotal: total } });
+        console.log(printable(row.statusLine));
+        const route = "/resources/loads/" + encodeURIComponent(row.id);
+        if (pull === null) {
+          const child = local === null ? null : require("node:child_process").spawn("pg_dump", ["--format=custom", "--no-owner", "--no-acl", "--dbname=" + local.connection], { env: { ...process.env, PGPASSWORD: local.password }, stdio: ["ignore", "pipe", "ignore"] });
+          const done = child === null ? null : new Promise((resolve, reject) => { child.once("error", () => reject(new Error("pg_dump not found here; install postgresql-client or use --pull"))); child.once("close", (code) => code === 0 ? resolve() : reject(new Error("pg_dump failed here"))); });
+          if (done !== null) void done.catch(() => {});
+          const source = child === null ? fs.createReadStream(from) : child.stdout;
+          const count = async function* () {
+            let bytes = 0;
+            let last = 0;
+            for await (const chunk of source) {
+              bytes += chunk.length;
+              if (Date.now() - last >= 1000) { last = Date.now(); console.log("@" + printable(name) + " · loading " + printable(label) + " · receiving " + bytes + " B" + (total === null ? "" : " of " + total + " B")); }
+              yield chunk;
+            }
+            if (done !== null) await done;
+          };
+          try {
+            await new Promise((resolve, reject) => {
+              const req = transportClient().request(transportOptions("PUT", route + "/body" + zoneQuery, { "content-type": "application/octet-stream" }), (res) => {
+                res.resume();
+                res.once("end", () => res.statusCode === 200 ? resolve() : reject(new Error("the dump upload was refused")));
+                res.once("error", () => reject(new Error("the dump upload ended")));
+              });
+              req.once("error", () => reject(new Error("the dump upload ended")));
+              require("node:stream/promises").pipeline(require("node:stream").Readable.from(count()), req).catch(reject);
+            });
+          } finally { if (child !== null) child.kill(); }
+        }
+        while (row.phase !== "done" && row.phase !== "failed") {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          row = await request("GET", route + zoneQuery);
+          console.log(printable(row.statusLine));
+        }
+        if (row.phase === "failed") process.exitCode = 1;
+      } catch { fail("the load could not finish; check the file, pg_dump or use --pull; the resource's load status has the observed phase"); }
+      return;
+    }
     let answer;
     try {
       answer = await request("POST", "/resources?timeZone=" + encodeURIComponent(zone), { argv: [verb ?? "list", ...rest] }, 5 * 60 * 1000);

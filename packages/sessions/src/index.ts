@@ -54,3 +54,7 @@ export * from "./harness-layout-steps.ts";
 export * from "./workspace-caller.ts";
 export * from "./mend-mcp/index.ts";
 export * from "./transcript-pages.ts";
+
+export * from "./resources/loads.ts";
+
+export * from "./resources/load-channel.ts";

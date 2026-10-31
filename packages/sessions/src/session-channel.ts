@@ -11,10 +11,11 @@ import {
   PAGE_REQUEST_MAX_BYTES,
   ReaderTimeZone,
   type ResourceSessionAnswer,
+  type ResourceLoadAnswer,
   type ServiceBrowserScheme,
 } from "@mend/domain/workbench";
 import { DeploymentConfig } from "@mend/store";
-import { Effect, Exit, Layer, Redacted, Schema } from "effect";
+import { Effect, Exit, Layer, Redacted, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import { CAPTURE_ROUTES, dispatchCaptureRoute, MAX_CAPTURE_BODY_BYTES } from "./capture-channel.ts";
@@ -57,6 +58,16 @@ export type SessionResources = (
   clock: { readonly now: Date; readonly timeZone: string },
 ) => Effect.Effect<ResourceSessionAnswer, { readonly message: string }>;
 
+/** The channel's raw dump body stays streamed through to the instance. */
+export type SessionResourceLoads = (
+  sessionId: SessionId,
+  method: string,
+  id: string | null,
+  input: unknown,
+  body: Stream.Stream<Uint8Array, unknown>,
+  clock: { readonly now: Date; readonly timeZone: string },
+) => Effect.Effect<ResourceLoadAnswer, { readonly message: string }>;
+
 export class SessionChannelRegistry extends Context.Service<
   SessionChannelRegistry,
   {
@@ -68,6 +79,8 @@ export class SessionChannelRegistry extends Context.Service<
     readonly mcp: () => MendMcp["Service"] | undefined;
     readonly serveResources: (reader: SessionResources | undefined) => void;
     readonly resources: () => SessionResources | undefined;
+    readonly serveResourceLoads?: (handler: SessionResourceLoads | undefined) => void;
+    readonly resourceLoads?: () => SessionResourceLoads | undefined;
   }
 >()("@mend/sessions/SessionChannelRegistry") {}
 
@@ -77,6 +90,7 @@ export const SessionChannelRegistryLive: Layer.Layer<SessionChannelRegistry> = L
     const live = new Map<SessionId, SessionSocketApi>();
     let mcp: MendMcp["Service"] | undefined;
     let resources: SessionResources | undefined;
+    let loads: SessionResourceLoads | undefined;
     return {
       register: (sessionId, api) => {
         live.set(sessionId, api);
@@ -94,6 +108,10 @@ export const SessionChannelRegistryLive: Layer.Layer<SessionChannelRegistry> = L
         resources = reader;
       },
       resources: () => resources,
+      serveResourceLoads: (handler) => {
+        loads = handler;
+      },
+      resourceLoads: () => loads,
     };
   },
 );
@@ -277,7 +295,7 @@ export const handleSessionRequest = async (
   api: SessionSocketApi,
   request: http.IncomingMessage,
   response: http.ServerResponse,
-  registry: Pick<SessionChannelRegistry["Service"], "mcp" | "resources">,
+  registry: Pick<SessionChannelRegistry["Service"], "mcp" | "resources" | "resourceLoads">,
 ): Promise<void> => {
   const respond = (status: number, payload: unknown): void => {
     response.writeHead(status, { "content-type": "application/json" });
@@ -386,6 +404,41 @@ export const handleSessionRequest = async (
       const worktree =
         typeof body["worktree"] === "string" && body["worktree"] !== "" ? body["worktree"] : null;
       return respond(202, await Effect.runPromise(api.addRepository({ project, name, worktree })));
+    }
+    if (
+      url.pathname === "/resources/loads" ||
+      /^\/resources\/loads\/[0-9a-f-]+(?:\/body)?$/.test(url.pathname)
+    ) {
+      const serve = registry.resourceLoads?.();
+      if (serve === undefined)
+        return respond(503, { message: "resource loads cannot be reached now" });
+      const zone = decodeTimeZone(url.searchParams.get("timeZone") ?? "UTC");
+      if (Exit.isFailure(zone))
+        return respond(400, { message: "timeZone must be an IANA time zone" });
+      if (!["POST", "GET", "PUT"].includes(request.method ?? ""))
+        return respond(405, { message: "use POST, GET or PUT" });
+      const raw = request.method === "POST" ? await readBody(request) : null;
+      const bytes = Stream.fromAsyncIterable<Uint8Array, Error>(
+        request,
+        () => new Error("upload ended"),
+      );
+      const sessionId = await Effect.runPromise(api.resourceSession());
+      const result = await Effect.runPromise(
+        Effect.result(
+          serve(
+            sessionId,
+            request.method ?? "GET",
+            url.pathname.split("/")[3] ?? null,
+            raw,
+            bytes,
+            { now: new Date(), timeZone: zone.value },
+          ),
+        ),
+      ).catch(() => null);
+      if (result === null) return respond(503, { message: "the load could not finish" });
+      return result._tag === "Success"
+        ? respond(200, result.success)
+        : respond(409, { message: result.failure.message });
     }
     // Resources (ADR 0019, story 8): the agent's `mend resource`, decided as the session's owner.
     if (route === "POST /resources") {

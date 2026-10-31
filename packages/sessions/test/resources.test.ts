@@ -12,6 +12,7 @@ import {
   ProjectsRepoLive,
   ResourcesRepo,
   ResourcesRepoLive,
+  ResourceLoadsRepo,
   SessionsRepo,
   SessionsRepoLive,
   type StoredResourceDefinition,
@@ -228,7 +229,10 @@ const restarts = Layer.succeed(WorktreeServiceRestarts, {
       return ["web"];
     }),
 });
-const resources = ResourcesLive.pipe(Layer.provideMerge(Layer.merge(runtimeLayer, restarts)));
+const resources = ResourcesLive.pipe(
+  Layer.provide(Layer.mock(ResourceLoadsRepo, { latest: () => Effect.succeed([]) })),
+  Layer.provideMerge(Layer.merge(runtimeLayer, restarts)),
+);
 const channel = ResourcesChannelLive.pipe(
   Layer.provideMerge(Layer.merge(resources, SessionChannelRegistryLive)),
 );
