@@ -54,18 +54,24 @@ fi
     done)" ]
   }
   if [ "$wm" = xfwm4 ]; then
-    # The workspace starts the screen with a capability its person keeps (CAP_FOWNER), and
-    # bwrap then fails with words glycin does not know, so glycin sandboxes every image load
-    # through a bwrap that cannot run: libwnck gets no default icon and XFCE stops at start.
-    # Without the capability bwrap says it has no namespaces, and glycin loads unsandboxed,
-    # as it does wherever bwrap cannot run. Started again a few times should it still stop.
+    # A person's processes keep CAP_FOWNER (ADR 0016: pnpm fixes restored files with it), and
+    # with it bwrap fails with words glycin does not know, so glycin sandboxed every image load
+    # through a bwrap that cannot run here: libwnck got no default icon and XFCE stopped at
+    # start. The session finds a bwrap first that fails as bwrap does without namespaces, so
+    # glycin loads unsandboxed, as it does wherever bwrap cannot run, and every program keeps
+    # the capability. Started again a few times should it still stop.
+    mkdir -p "$dir/bin"
+    cat >"$dir/bin/bwrap" <<'MEND_BWRAP'
+#!/bin/sh
+echo "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces." >&2
+exit 1
+MEND_BWRAP
+    chmod 755 "$dir/bin/bwrap"
     (
-      drop=
-      command -v setpriv >/dev/null 2>&1 && drop="setpriv --inh-caps=-all --ambient-caps=-all"
       starts=0
       while [ "$starts" -lt 5 ]; do
         starts=$((starts + 1))
-        $drop dbus-run-session -- startxfce4 >>"$dir/xfce.log" 2>&1 || true
+        PATH="$dir/bin:$PATH" dbus-run-session -- startxfce4 >>"$dir/xfce.log" 2>&1 || true
         sleep 1
       done
     ) &
