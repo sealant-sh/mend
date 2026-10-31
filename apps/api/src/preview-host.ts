@@ -17,6 +17,7 @@ import {
   answer,
   browserAdmits,
   type BrowserHead,
+  gatewayPage,
   headRefusal,
   membersOf,
   mustNotForward,
@@ -139,11 +140,11 @@ export const servePreviewRequest = <E, R>(
   Effect.gen(function* () {
     if (head.method === "CONNECT") return answer(405, "Method not allowed.");
     const { appUrl, routing } = yield* PreviewConfig;
-    if (routing === null) return answer(503, "Previews are unavailable right now.");
+    if (routing === null) return gatewayPage(503, "Previews are unavailable right now.");
     const hosts = valuesOf(head.headers, "host");
     if (hosts.length !== 1) return answer(400, "Bad request.");
     const origin = reachedPreviewOrigin(routing, hosts[0] ?? "");
-    if (origin === null) return answer(404, NO_SUCH_PREVIEW);
+    if (origin === null) return gatewayPage(404, NO_SUCH_PREVIEW);
     const browser = browserOf(head);
     if (!browserAdmits(browser, origin)) return answer(403, "Refused.");
     const refusedHead = headRefusal(head);

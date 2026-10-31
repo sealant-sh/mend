@@ -25,7 +25,6 @@ import {
   budgetPage,
   CEILING_RETRY_SECONDS,
   type ForwardRequest,
-  gatewayPage,
   notDelivered,
 } from "./preview-headers.ts";
 import { servePreviewRequest } from "./preview-host.ts";
@@ -48,7 +47,7 @@ import {
   relay,
   respond,
 } from "./preview-relay.ts";
-import { answer, type PreviewAnswer, refusalAnswer } from "./preview-requests.ts";
+import { answer, gatewayPage, type PreviewAnswer, refusalAnswer } from "./preview-requests.ts";
 import { cookiePolicyOf, type PreviewRouting } from "./preview-routing.ts";
 import { makeStartWaves, routeOf, type WaveOutcome } from "./preview-start-wave.ts";
 import { PreviewTargets } from "./preview-targets.ts";
@@ -186,6 +185,9 @@ export const makePreviewGatewayLayer = (
       const bus = yield* EventBus;
       const clock = yield* Clock.Clock;
       const run = Effect.runCallbackWith(yield* Effect.context<PreviewIdentity | PreviewConfig>());
+      const { appUrl } = yield* PreviewConfig;
+      const backOf = (preview: PreviewViewer["preview"]) =>
+        `${appUrl}/projects/${encodeURIComponent(preview.projectId)}`;
       const pools = yield* makePreviewPools(settings.limits.forwards);
       const waves = yield* makeStartWaves(settings.startHoldMs);
       const { limits } = settings;
@@ -240,7 +242,7 @@ export const makePreviewGatewayLayer = (
           const read = yield* readResolution(preview.id);
           if (Option.isNone(read)) return { _tag: "Refused", answer: UNAVAILABLE };
           entry.remember(read.value);
-          const route = routeOf(preview.serviceName, read.value);
+          const route = routeOf(preview.serviceName, read.value, backOf(preview));
           if (route._tag !== "Start") return route;
           if (
             route.workspaceId !== null &&
@@ -250,7 +252,11 @@ export const makePreviewGatewayLayer = (
           }
           const release = occupancy.occupy(preview.id, viewerId);
           const outcome = yield* waves
-            .join(preview, route.from, viewerId)
+            .join(
+              { id: preview.id, serviceName: preview.serviceName, back: backOf(preview) },
+              route.from,
+              viewerId,
+            )
             .pipe(Effect.ensuring(Effect.sync(release)));
           if (outcome._tag === "Bound") entry.remember(outcome.resolution);
           return outcome;

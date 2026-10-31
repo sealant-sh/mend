@@ -265,6 +265,9 @@ describe("refusals before anything starts", () => {
         expect(reply.body, "the page says who stopped it").toContain(
           "preview · web · Maria stopped the preview · your request was not delivered",
         );
+        expect(reply.body, "and links to its project in Mend, where Start is").toMatch(
+          /<a href="https:\/\/mend\.test\/projects\/[^"]+">Open in Mend<\/a>/,
+        );
         expect(reply.headers["cache-control"], "the page is never cached").toBe(
           "no-store, private",
         );
@@ -702,7 +705,9 @@ describe("a held request ends when its viewer's access does", () => {
         });
         const reply = yield* Fiber.join(held);
         expect(reply.status, "access that ended during the hold is a sign-in refusal").toBe(401);
-        expect(reply.body, "in the gateway's words").toBe("Not signed in to this preview.");
+        expect(reply.body, "in the gateway's words").toContain(
+          "<p>Not signed in to this preview.</p>",
+        );
         yield* start.release;
         const after = yield* fetchAt(
           world.port,
