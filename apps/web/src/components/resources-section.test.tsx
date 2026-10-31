@@ -50,6 +50,7 @@ const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingV
   choice: "shared",
   canRemove: false,
   canChoose: false,
+  instance: "not-started",
   statusLine: "@db · postgres 17 · project · added by Alice · shared database · not started",
   ...overrides,
 });
@@ -107,8 +108,10 @@ describe("the resources card", () => {
     );
     expect(markup).toContain(`postgres:17@sha256:${"e".repeat(64)} · rdef_db`);
     expect(markup).not.toContain("approv");
-    expect(buttons(markup)).toEqual([]);
-    expect(buttons(render({ settings: [setting({ canRemove: true })] }))).toEqual(["remove"]);
+    expect(buttons(render({ settings: [setting({ instance: "none" })] }))).toEqual([]);
+    expect(buttons(render({ settings: [setting({ instance: "none", canRemove: true })] }))).toEqual(
+      ["remove"],
+    );
   });
 
   describe("a worktree's mend.toml tables", () => {
