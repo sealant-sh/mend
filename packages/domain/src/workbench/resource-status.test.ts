@@ -139,11 +139,6 @@ const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
     "@queue · rabbitmq 4 · project · shared · reached by 3 worktrees · declared · observed 3 s ago",
   ],
   [
-    "a definition waiting for approval",
-    ofMail({ kind: "waiting-for-approval" }),
-    "@mail · mailpit · worktree · waiting for approval · observed 3 s ago",
-  ],
-  [
     "an instance starting",
     ofMail({ kind: "starting" }),
     "@mail · mailpit · worktree · starting · observed 3 s ago",
@@ -358,52 +353,30 @@ describe("a resource only declared", () => {
     source: Extract<ResourceStatusView, { kind: "declared" }>["source"],
   ) => resourceStatusLine({ kind: "declared", definition, source }, at);
 
-  it("says who proposed it and that it waits", () => {
-    expect(declared(db, { kind: "proposal", by: "Maria", sameAsSettings: false })).toBe(
-      "@db · postgres 17 · project · proposed by Maria · waiting for approval",
+  it("says a mend.toml table and how it stands against settings", () => {
+    expect(declared(mail, { kind: "file", settings: "absent" })).toBe(
+      "@mail · mailpit · worktree · in mend.toml · not in settings",
+    );
+    expect(declared(mail, { kind: "file", settings: "same" })).toBe(
+      "@mail · mailpit · worktree · in mend.toml · same as settings",
+    );
+    expect(declared(db, { kind: "file", settings: "differs" })).toBe(
+      "@db · postgres 17 · project · in mend.toml · differs from settings",
     );
   });
 
-  it("says a file proposed it", () => {
-    expect(declared(mail, { kind: "file", sameAsSettings: false })).toBe(
-      "@mail · mailpit · worktree · proposed in mend.toml · waiting for approval",
-    );
-  });
-
-  it("says a proposal settings already hold is the same, not waiting", () => {
-    expect(declared(db, { kind: "proposal", by: "Maria", sameAsSettings: true })).toBe(
-      "@db · postgres 17 · project · proposed by Maria · same as settings",
-    );
-    expect(declared(mail, { kind: "file", sameAsSettings: true })).toBe(
-      "@mail · mailpit · worktree · proposed in mend.toml · same as settings",
-    );
-  });
-
-  it("says whether settings hold it approved, and that nothing started", () => {
-    expect(declared(cache, { kind: "settings", approval: null })).toBe(
-      "@cache · redis 8 · project · waiting for approval",
-    );
-    expect(declared(cache, { kind: "settings", approval: { by: "Maria", for: "project" } })).toBe(
-      "@cache · redis 8 · project · approved by Maria · not started",
-    );
-  });
-
-  it("keeps a worktree's approval apart from the project's", () => {
-    expect(declared(mail, { kind: "settings", approval: { by: "Tom", for: "worktree" } })).toBe(
-      "@mail · mailpit · worktree · approved by Tom for this worktree · not started",
+  it("says who added a definition settings hold, and that nothing started", () => {
+    expect(declared(db, { kind: "settings", addedBy: "Maria" })).toBe(
+      "@db · postgres 17 · project · added by Maria · not started",
     );
   });
 
   it("says what a worktree chose, in the words its use is read in", () => {
-    expect(
-      declared(db, {
-        kind: "settings",
-        approval: { by: "Maria", for: "project" },
-        choice: "own",
-      }),
-    ).toBe("@db · postgres 17 · project · approved by Maria · its own database · not started");
-    expect(declared(cache, { kind: "settings", approval: null, choice: "shared" })).toBe(
-      "@cache · redis 8 · project · waiting for approval · shared",
+    expect(declared(db, { kind: "settings", addedBy: "Maria", choice: "own" })).toBe(
+      "@db · postgres 17 · project · added by Maria · its own database · not started",
+    );
+    expect(declared(cache, { kind: "settings", addedBy: "Tom", choice: "shared" })).toBe(
+      "@cache · redis 8 · project · added by Tom · shared · not started",
     );
   });
 });

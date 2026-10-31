@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { ResourceDefinitionId, ResourceProposalId, WorktreeId } from "../ids.ts";
+import { ResourceDefinitionId, WorktreeId } from "../ids.ts";
 import {
   ResourceDefinitionInput,
   ResourceName,
@@ -14,8 +14,8 @@ import {
 
 /**
  * A project's resources as its settings page and `mend resource list` read them (ADR 0019): the
- * definitions settings hold, the proposals members made beside them, and the `[resource.*]`
- * proposals in one worktree's `mend.toml`. No source overwrites another, and every entry carries
+ * definitions settings hold, and the `[resource.*]` tables in one worktree's `mend.toml`, which a
+ * person adds to settings. The file never overwrites settings by itself, and every entry carries
  * its status line from `resourceStatusLine`.
  */
 
@@ -35,7 +35,7 @@ export const ReaderTimeZone = Schema.String.check(
 );
 
 /** A preset at a version, which the server expands (`presetDefinition`), or a whole definition. */
-export const ResourceProposalInput = Schema.Union([
+export const ResourceAddInput = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("preset"),
     name: ResourceName,
@@ -45,96 +45,32 @@ export const ResourceProposalInput = Schema.Union([
   }),
   Schema.Struct({ kind: Schema.Literal("definition"), spec: ResourceDefinitionInput }),
 ]);
-export type ResourceProposalInput = typeof ResourceProposalInput.Type;
-
-/** A definition settings hold, as its reader saw it: a write over it holds only while it still is. */
-export const ResourceDefinitionVersion = Schema.Struct({
-  id: ResourceDefinitionId,
-  digest: ResourceSpecDigest,
-});
+export type ResourceAddInput = typeof ResourceAddInput.Type;
 
 /**
- * What an approver read and approves, by the digest they read: the definition settings hold, a
- * member's proposal, or one `[resource.*]` table in a worktree's `mend.toml`. Adopting a proposal
- * or a table names what settings held under its name when it was read (null for nothing), so it
- * never writes over a definition its approver did not see.
- */
-export const ResourceApprovalSource = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("settings"),
-    id: ResourceDefinitionId,
-    digest: ResourceSpecDigest,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("proposal"),
-    id: ResourceProposalId,
-    digest: ResourceSpecDigest,
-    settings: Schema.NullOr(ResourceDefinitionVersion),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("file"),
-    worktreeId: WorktreeId,
-    name: ResourceName,
-    digest: ResourceSpecDigest,
-    settings: Schema.NullOr(ResourceDefinitionVersion),
-  }),
-]);
-export type ResourceApprovalSource = typeof ResourceApprovalSource.Type;
-
-export const ResourceApprovalRequest = Schema.Struct({
-  source: ResourceApprovalSource,
-  /** Null approves for the project; a worktree approves a worktree resource for it alone (G4). */
-  worktreeId: Schema.NullOr(WorktreeId),
-});
-export type ResourceApprovalRequest = typeof ResourceApprovalRequest.Type;
-
-/** One target's approval of the listed spec: the approver's account id. */
-export const ResourceListedApproval = Schema.Struct({ by: Schema.String });
-export type ResourceListedApproval = typeof ResourceListedApproval.Type;
-
-/**
- * The listed spec's latest approval for each target: the project's, a manager's, and the read
- * worktree's own (decision G4), which is null when no worktree was read.
- */
-export const ResourceApprovals = Schema.Struct({
-  project: Schema.NullOr(ResourceListedApproval),
-  worktree: Schema.NullOr(ResourceListedApproval),
-});
-export type ResourceApprovals = typeof ResourceApprovals.Type;
-
-/**
- * One target's approval as its reader may ask for it: the request to post as it stands, built by
- * the server from what it listed, or why there is none. `denied`: the approval is not the
- * reader's, in `resourceActRefusal`'s words. `rejected`: each refusal the approve route would
- * answer, by key (`resourceApprovalRefusals`). `approved`: the target already approves this exact
+ * Whether the reader may add a `mend.toml` table to settings as it stands, or why not. `denied`:
+ * the add is not the reader's, in `resourceActRefusal`'s words. `rejected`: each refusal the add
+ * route would answer, by key (`resourceDeclarationRefusals`). `added`: settings hold this exact
  * spec. Only a registry's answer, a project's removal, and a change after the read can still
- * refuse a ready request.
+ * refuse a ready add.
  */
-export const ResourceApprovalOffer = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("ready"), request: ResourceApprovalRequest }),
+export const ResourceAddOffer = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("ready") }),
   Schema.Struct({ kind: Schema.Literal("denied"), message: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("rejected"), refusals: Schema.Array(ResourceRefusal) }),
-  Schema.Struct({ kind: Schema.Literal("approved") }),
+  Schema.Struct({ kind: Schema.Literal("added") }),
 ]);
-export type ResourceApprovalOffer = typeof ResourceApprovalOffer.Type;
-
-/**
- * Each target's offer. `worktree` is null when no worktree was read, or the resource is the
- * project's, which no worktree approves on its own.
- */
-export const ResourceApprovalOffers = Schema.Struct({
-  project: ResourceApprovalOffer,
-  worktree: Schema.NullOr(ResourceApprovalOffer),
-});
-export type ResourceApprovalOffers = typeof ResourceApprovalOffers.Type;
+export type ResourceAddOffer = typeof ResourceAddOffer.Type;
 
 export const ResourceSettingEntry = Schema.Struct({
   id: ResourceDefinitionId,
   /** What a removal sends back: it holds only while the definition still has this spec. */
   digest: ResourceSpecDigest,
   spec: ResourceDefinitionInput,
-  approvals: ResourceApprovals,
-  approve: ResourceApprovalOffers,
+  /** The image as it runs, pinned to the digest it resolved to when it was added. */
+  image: Schema.String,
+  /** The account id of whoever added it last; the status line names them. */
+  addedBy: Schema.String,
   /** The read worktree's stored choice; null when no worktree was read or it stored none. */
   choice: Schema.NullOr(WorktreeChoice),
   canRemove: Schema.Boolean,
@@ -144,22 +80,14 @@ export const ResourceSettingEntry = Schema.Struct({
 });
 export type ResourceSettingEntry = typeof ResourceSettingEntry.Type;
 
-export const ResourceProposalEntry = Schema.Struct({
-  id: ResourceProposalId,
+/** One `[resource.*]` table as read, and whether its reader may add it to settings. */
+export const ResourceFileTable = Schema.Struct({
   digest: ResourceSpecDigest,
   spec: ResourceDefinitionInput,
-  /** The proposer's account id; the status line names them. */
-  proposedBy: Schema.String,
-  /** Whether the reader proposed it: they withdraw it, where a manager removes another's. */
-  mine: Schema.Boolean,
-  canRemove: Schema.Boolean,
-  /** Of the definition settings hold under its name, when that holds this exact spec. */
-  approvals: ResourceApprovals,
-  /** Each adopts it into settings and approves it for that target. */
-  approve: ResourceApprovalOffers,
+  add: ResourceAddOffer,
   statusLine: Schema.String,
 });
-export type ResourceProposalEntry = typeof ResourceProposalEntry.Type;
+export type ResourceFileTable = typeof ResourceFileTable.Type;
 
 /**
  * A worktree's `mend.toml` as read: unavailable is never shown as an empty file. Bytes that were
@@ -190,16 +118,7 @@ export const ResourceFileRead = Schema.Union([
     kind: Schema.Literal("read"),
     worktreeId: WorktreeId,
     observed: Schema.String,
-    proposals: Schema.Array(
-      Schema.Struct({
-        digest: ResourceSpecDigest,
-        spec: ResourceDefinitionInput,
-        /** As on a member's proposal. */
-        approvals: ResourceApprovals,
-        approve: ResourceApprovalOffers,
-        statusLine: Schema.String,
-      }),
-    ),
+    tables: Schema.Array(ResourceFileTable),
     /** Keyed in full (`resource.queue.ports.amqp`). */
     refused: Schema.Array(ResourceRefusal),
     ignored: Schema.Array(Schema.Struct({ key: Schema.String })),
@@ -209,9 +128,7 @@ export type ResourceFileRead = typeof ResourceFileRead.Type;
 
 export const ResourcesPage = Schema.Struct({
   settings: Schema.Array(ResourceSettingEntry),
-  proposals: Schema.Array(ResourceProposalEntry),
   file: ResourceFileRead,
-  canPropose: Schema.Boolean,
 });
 export type ResourcesPage = typeof ResourcesPage.Type;
 
@@ -235,14 +152,15 @@ export interface ResourcesStatus {
       };
 }
 
-export const ResourceApproved = Schema.Struct({
+export const ResourceAdded = Schema.Struct({
   definition: ResourceSettingEntry,
-  /** The image as it runs, pinned to the digest it resolved to: `postgres:17@sha256:…`. */
-  image: Schema.String,
-  /** The registry or mirror that answered; null when nothing was asked, as for an image pinned already. */
+  /**
+   * The registry or mirror that answered for the image's digest; null when nothing was asked, as
+   * for an image pinned already or a definition that did not change.
+   */
   resolvedBy: Schema.NullOr(Schema.String),
 });
-export type ResourceApproved = typeof ResourceApproved.Type;
+export type ResourceAdded = typeof ResourceAdded.Type;
 
 export const ResourceUseRequest = Schema.Struct({ mode: WorktreeChoice });
 
