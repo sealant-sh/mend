@@ -1,11 +1,9 @@
-import { ProjectId, ResourceDefinitionId, ResourceProposalId, WorktreeId } from "@mend/domain";
+import { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
-  ResourceApprovalRequest,
-  ResourceApproved,
+  ResourceAddInput,
+  ResourceAdded,
   ResourceName,
-  ResourceProposalEntry,
-  ResourceProposalInput,
   ResourceRefusal,
   ResourceSelectionEntry,
   ResourcesPage,
@@ -20,10 +18,9 @@ import { AuthMiddleware } from "./common.ts";
 import { RemovalInProgress } from "./workbench-views.ts";
 
 /**
- * A project's resources (ADR 0019): read them, propose one, remove a proposal or a definition,
- * approve one and choose how a worktree uses it. A project the caller cannot see is `NotFound`;
- * one they see but may not change this way is `ResourceDenied`, with the words that say whose act
- * it is.
+ * A project's resources (ADR 0019): read them, add one, remove one and choose how a worktree uses
+ * it. A project the caller cannot see is `NotFound`; one they see but may not change this way is
+ * `ResourceDenied`, with the words that say whose act it is.
  */
 
 export class ResourceDenied extends Schema.TaggedError<ResourceDenied>()(
@@ -46,14 +43,14 @@ export class ResourceStale extends Schema.TaggedError<ResourceStale>()(
   { httpApiStatus: 409 },
 ) {}
 
-/** The image's registry did not answer in time; nothing was approved, so approving again may. */
+/** The image's registry did not answer in time; nothing was added, so adding again may. */
 export class ResourceRegistryUnavailable extends Schema.TaggedError<ResourceRegistryUnavailable>()(
   "ResourceRegistryUnavailable",
   { message: Schema.String },
   { httpApiStatus: 503 },
 ) {}
 
-/** The registry's manifest could not be verified against its bytes; nothing was approved. */
+/** The registry's manifest could not be verified against its bytes; nothing was added. */
 export class ResourceManifestUnverifiable extends Schema.TaggedError<ResourceManifestUnverifiable>()(
   "ResourceManifestUnverifiable",
   { message: Schema.String },
@@ -80,20 +77,20 @@ export const resourcesGroup = HttpApiGroup.make("resources")
     }),
   )
   .add(
-    HttpApiEndpoint.post("propose", "/projects/:id/resource-proposals", {
+    HttpApiEndpoint.post("add", "/projects/:id/resources", {
       params: { id: ProjectId },
       query: { timeZone: ReaderTimeZone },
-      payload: ResourceProposalInput,
-      success: ResourceProposalEntry,
+      payload: ResourceAddInput,
+      success: ResourceAdded,
       // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.
-      error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
-    }),
-  )
-  .add(
-    HttpApiEndpoint.delete("withdraw", "/projects/:id/resource-proposals/:proposalId", {
-      params: { id: ProjectId, proposalId: ResourceProposalId },
-      success: ResourceRemoved,
-      error: [NotFound, ResourceDenied, RemovalInProgress],
+      error: [
+        NotFound,
+        ResourceDenied,
+        ResourceRejected,
+        ResourceRegistryUnavailable,
+        ResourceManifestUnverifiable,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -102,23 +99,6 @@ export const resourcesGroup = HttpApiGroup.make("resources")
       payload: Schema.Struct({ expectedDigest: ResourceSpecDigest }),
       success: ResourceRemoved,
       error: [NotFound, ResourceDenied, ResourceStale, RemovalInProgress],
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("approve", "/projects/:id/resources/approvals", {
-      params: { id: ProjectId },
-      query: { timeZone: ReaderTimeZone },
-      payload: ResourceApprovalRequest,
-      success: ResourceApproved,
-      error: [
-        NotFound,
-        ResourceDenied,
-        ResourceRejected,
-        ResourceStale,
-        ResourceRegistryUnavailable,
-        ResourceManifestUnverifiable,
-        RemovalInProgress,
-      ],
     }),
   )
   .add(
