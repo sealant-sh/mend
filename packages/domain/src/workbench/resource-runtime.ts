@@ -295,3 +295,9 @@ export const resourceProcessEnv = (input: {
   }
   return { env, left };
 };
+
+/** `export NAME='value'` lines a POSIX shell reads back exactly, sorted by name. */
+export const shellExports = (env: Readonly<Record<string, string>>): ReadonlyArray<string> =>
+  Object.entries(env)
+    .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([name, value]) => `export ${name}='${value.replaceAll("'", `'\\''`)}'`);

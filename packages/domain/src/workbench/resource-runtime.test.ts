@@ -12,6 +12,7 @@ import {
   resourceProcessEnv,
   resourceScopeKey,
   secretEnvLeftOut,
+  shellExports,
 } from "./resource-runtime.ts";
 import {
   presetDefinition,
@@ -249,5 +250,16 @@ describe("the env every process in a worktree gets", () => {
 
   it("answers nothing for a worktree that uses nothing", () => {
     expect(envOf([])).toEqual({ env: {}, left: [] });
+  });
+});
+
+describe("exports a shell reads back", () => {
+  it("single-quotes each value, closing the quote around a quote, so a shell expands nothing", () => {
+    const env = { B: "it's $HOME `x`", A: "postgres://postgres@db:5432/app" };
+    const lines = shellExports(env);
+    expect(lines).toEqual([
+      "export A='postgres://postgres@db:5432/app'",
+      `export B='it'\\''s $HOME \`x\`'`,
+    ]);
   });
 });
