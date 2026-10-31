@@ -1,5 +1,6 @@
 import {
   Sealant,
+  type ScopeArchivedVolume,
   type ScopeExecResult,
   type ScopeInstance,
   type ScopeInstanceSpec,
@@ -11,7 +12,7 @@ import { toPlatformError } from "./client.ts";
 import { SealantEnv } from "./config.ts";
 import { SealantPlatformError } from "./errors.ts";
 
-export type { ScopeExecResult, ScopeInstance, ScopeInstanceSpec };
+export type { ScopeArchivedVolume, ScopeExecResult, ScopeInstance, ScopeInstanceSpec };
 
 /**
  * One project's resources on Sealant (`sealant.scopes`, ADR 0019): its instances and the
@@ -28,7 +29,9 @@ export interface ResourceScope {
   ) => Effect.Effect<ScopeInstance, SealantPlatformError>;
   /** Null when the scope has no instance by this key. */
   readonly get: (key: string) => Effect.Effect<ScopeInstance | null, SealantPlatformError>;
-  readonly list: () => Effect.Effect<ReadonlyArray<ScopeInstance>, SealantPlatformError>;
+  readonly list: (
+    archived?: boolean,
+  ) => Effect.Effect<ReadonlyArray<ScopeInstance>, SealantPlatformError>;
   /** A person's stop: it holds against every `use` until a person's `up`. */
   readonly stop: (key: string, by: string) => Effect.Effect<ScopeInstance, SealantPlatformError>;
   /** Run `argv` in the running instance; stdout and stderr come back as capped tails. */
@@ -43,6 +46,11 @@ export interface ResourceScope {
   ) => Effect.Effect<ScopeExecResult, SealantPlatformError>;
   /** Stop it and remove its container; every volume stays. */
   readonly archive: (key: string) => Effect.Effect<void, SealantPlatformError>;
+  /** Archives every instance and unlinks every workspace; all volumes stay. */
+  readonly archiveScope: () => Effect.Effect<
+    ReadonlyArray<ScopeArchivedVolume>,
+    SealantPlatformError
+  >;
   /** This workspace reaches the scope's project instances, and those of `worktreeKey`, by alias. */
   readonly link: (
     workspaceId: string,
@@ -103,7 +111,9 @@ export const ResourceScopesLive: Layer.Layer<ResourceScopes, never, SealantEnv> 
           wrap(() => client.instances.get(key)).pipe(
             Effect.catchIf(isNotFound, () => Effect.succeed(null)),
           ),
-        list: () => wrap(() => client.instances.list()),
+        list: (archived) => wrap(() => client.instances.list({ archived: archived === true })),
+        archiveScope: () =>
+          wrap(() => client.archive()).pipe(Effect.map((answer) => answer.volumes)),
         stop: (key, by) => wrap(() => client.instances.stop(key, { kind: "person", by })),
         exec: (key, options) =>
           wrap(() =>
