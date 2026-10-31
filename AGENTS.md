@@ -86,6 +86,14 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   holds every input. The `screen log` records what the screen showed and who acted on it, and its
   `frames` live in Mend's blob store for 30 days. "Desktop" stays the Electron app: never call a
   screen a desktop, and never call a frame or the screen log a recording run.
+- Resource nouns (`docs/adr/0019-shared-services.md`, amended 2026-10-31): a `resource` is a
+  long-running service a project declares (Postgres, Redis or any image), written with its `@`
+  (`@db`). A `project resource` runs one instance for the project; a `worktree resource` runs one
+  per worktree. A worktree's choice for a project resource is `shared`, `own` or `off`; for
+  Postgres, `the shared database` and `its own database` are databases on one server. The
+  `project network` is how a session reaches a resource by name. A `load` replaces a database's data
+  from a dump or another database, and saves the previous data as a dump first. A `Service` keeps
+  its meaning: a session's declared port.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that
