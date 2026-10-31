@@ -60,7 +60,7 @@ fi
       starts=0
       while [ "$starts" -lt 5 ]; do
         starts=$((starts + 1))
-        dbus-run-session -- startxfce4 >>"$dir/xfce.log" 2>&1
+        dbus-run-session -- startxfce4 >>"$dir/xfce.log" 2>&1 || true
         sleep 1
       done
     ) &
