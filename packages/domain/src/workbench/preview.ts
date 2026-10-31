@@ -283,8 +283,9 @@ export type PreviewGatewayResolution =
   | {
       readonly _tag: "Starting";
       readonly revision: number;
-      readonly attemptId: SessionProcessId;
-      readonly workspaceId: SealantWorkspaceId;
+      /** Null while a leased preparation runs setup or dependencies before its attempt. */
+      readonly attemptId: SessionProcessId | null;
+      readonly workspaceId: SealantWorkspaceId | null;
     }
   | {
       readonly _tag: "Dormant";

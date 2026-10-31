@@ -310,6 +310,32 @@ describe("refusals before anything starts", () => {
 });
 
 describe("a request to a stopped preview starts it and is held", () => {
+  it.live(
+    "holds a request during recipe preparation and delivers it without replaying the old command",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { world } = yield* worldWithApp();
+          const cookie = world.cookieFor("carol", "web");
+          world.targets.resolutions.set(PREVIEWS.web.id, {
+            _tag: "Starting",
+            revision: 0,
+            attemptId: null,
+            workspaceId: null,
+          });
+          const held = yield* fetchAt(world.port, world.hostOf("web"), cookie, "/held").pipe(
+            Effect.forkChild,
+          );
+          yield* realDelay(100);
+          expect(held.pollUnsafe()).toBeUndefined();
+          expect(world.targets.starts).toHaveLength(0);
+          world.targets.resolutions.set(PREVIEWS.web.id, bound());
+          expect((yield* Fiber.join(held)).status).toBe(200);
+          expect(world.targets.starts).toHaveLength(0);
+        }),
+      ),
+  );
+
   it.live("answers the DidNotStart page when the start outlasts the hold", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -356,6 +356,30 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
       }),
     ));
 
+  it("restarts the preview selected in a sibling session as the turn's sender", () =>
+    withPreview((harness) =>
+      Effect.gen(function* () {
+        yield* harness.engine.runServiceRecipe(harness.sessionId, "web", ownerStart);
+        const original = harness.webOf();
+        const sibling = yield* harness.sibling();
+        harness.write("mend.toml", EDITED);
+        harness.write("pnpm-lock.yaml", LOCK_B);
+        harness.senderByTurn.set(1, STEERER);
+        const before = harness.timeline.length;
+
+        const { outcome } = yield* harness.prepare(1, undefined, sibling);
+
+        expect(outcome).toMatchObject({ _tag: "Started", service: "web" });
+        expect(commandsAfter(harness.timeline, before)).toContain("pnpm dev --edited");
+        expect(harness.world.services.get(original)?.currentAttemptId).not.toBeNull();
+        expect(harness.world.setupRuns.at(-1)).toMatchObject({ state: "done", runsAs: STEERER });
+        expect(
+          [...harness.world.services.values()].filter((service) => service.name === "web"),
+        ).toHaveLength(1);
+        expect((yield* harness.prepare(2, undefined, sibling)).outcome._tag).toBe("Running");
+      }),
+    ));
+
   it("starts nothing a person stopped; the agent's own stop does not hold it", () =>
     withPreview((harness) =>
       Effect.gen(function* () {

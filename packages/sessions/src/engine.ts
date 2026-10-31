@@ -2513,6 +2513,7 @@ type AcceptedStart =
 const PREVIEW_JOIN_POLL_MS = 250;
 
 type PreviewStartStep =
+  | { readonly _tag: "Preparation" }
   | { readonly _tag: "Join"; readonly attemptId: SessionProcessId }
   | {
       readonly _tag: "Start";
@@ -24391,16 +24392,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         name: string,
         previewId: PreviewId | null,
       ) {
-        const snapshot = previewId === null ? null : yield* previews.gatewaySnapshot(previewId);
-        const resolution = snapshot?.resolution ?? null;
-        if (resolution?._tag === "Bound" || resolution?._tag === "Starting") {
+        // Admission observes attempts, not the preparation's own gateway hold.
+        const view = previewId === null ? null : yield* previews.resolveById(previewId);
+        if (view?.binding._tag === "Bound") {
           return { _tag: "Running" } as const;
         }
         const control = previewId === null ? null : yield* previews.controlOf(previewId);
         if (control?._tag === "Stopped") return { _tag: "Stopped" } as const;
+        const snapshot = previewId === null ? null : yield* previews.gatewaySnapshot(previewId);
         const sourceId =
-          resolution?._tag === "Dormant"
-            ? resolution.source.serviceId
+          snapshot?.resolution._tag === "Dormant"
+            ? snapshot.resolution.source.serviceId
             : ((yield* services.byName(session.id, name))?.id ?? null);
         return {
           _tag: "Free",
@@ -24409,15 +24411,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       const staleRecipeService = Effect.fn("SessionEngine.staleRecipeService")(function* (
-        session: Session,
-        name: string,
+        previewId: PreviewId | null,
         recipePlan: Extract<RecipePlan, { readonly _tag: "Planned" }>,
       ) {
         const launch = recipePlan.steps.at(-1)?.launch ?? null;
         if (launch === null) return null;
-        const live = yield* liveServiceNamed(session.id, name);
+        const view = previewId === null ? null : yield* previews.resolveById(previewId);
+        if (view?.binding._tag !== "Bound") return null;
+        const service = yield* services.byId(view.binding.serviceId);
+        if (service === null) return null;
+        const live = { service, attempt: yield* processes.byId(view.binding.attemptId) };
         if (
-          live === null ||
           live.attempt === null ||
           (live.service.declarationSource !== "recipe-file" &&
             live.service.declarationSource !== "recipe-project")
@@ -24530,9 +24534,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const planned = yield* recipePlanFrom(session, read.file, name).pipe(Effect.result);
         const changedService =
           seen._tag === "Running" && Result.isSuccess(planned)
-            ? yield* withServiceLifecycle(
-                staleRecipeService(session, name, planned.success.recipePlan),
-              )
+            ? yield* withServiceLifecycle(staleRecipeService(previewId, planned.success.recipePlan))
             : null;
         if (seen._tag === "Running" && changedService === null) {
           const declared = resolveDeclarations(
@@ -24553,8 +24555,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             reason: planned.failure.message,
           } satisfies PreviewPrepared;
         }
+        const startSession =
+          changedService === null ? session : yield* sessions.byId(changedService.sessionId);
         const startId = previewTurnStartId(turnId);
-        if (yield* startedUnder(session, name, startId)) {
+        if (yield* startedUnder(startSession, name, startId)) {
           return {
             _tag: "Started",
             service: name,
@@ -24598,7 +24602,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
         const begun = yield* beginRecipePlan(
-          session,
+          startSession,
           name,
           { kind: "system", runsAs },
           startId,
@@ -25327,6 +25331,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (resolution._tag !== "Refused" && resolution.revision !== request.revision) {
           return yield* previewRefused("control-changed");
         }
+        if (resolution._tag === "Starting" && resolution.attemptId === null) {
+          return { _tag: "Preparation" } satisfies PreviewStartStep;
+        }
         const source = yield* processes.byId(request.sourceAttemptId);
         if (source === null || source.serviceId === null) {
           return yield* previewRefused("preview-gone", "the source attempt is not recorded");
@@ -25349,7 +25356,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           case "Bound":
             return joinStep(resolution.attempt.attemptId);
           case "Starting":
-            return joinStep(resolution.attemptId);
+            return resolution.attemptId === null
+              ? yield* previewRefused("start-expired")
+              : joinStep(resolution.attemptId);
           case "Dormant":
             if (resolution.source.sourceAttemptId !== request.sourceAttemptId) {
               return yield* previewRefused("control-changed");
@@ -25512,11 +25521,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      const joinPreviewPreparation = Effect.fn("SessionEngine.joinPreviewPreparation")(function* (
+        request: PreviewStartRequest,
+      ) {
+        for (;;) {
+          const snapshot = yield* previews.gatewaySnapshot(request.previewId);
+          if (snapshot === null) return yield* previewRefused("preview-gone");
+          const resolution = snapshot.resolution;
+          if (resolution._tag === "Stopped") return yield* previewRefused("stopped");
+          if (resolution._tag === "Refused") return yield* previewRefused("command-failed");
+          if (resolution.revision !== request.revision)
+            return yield* previewRefused("control-changed");
+          if (resolution._tag === "Bound") return resolution.attempt.attemptId;
+          if (resolution._tag === "Dormant") return yield* previewRefused("command-failed");
+          if (resolution.attemptId !== null)
+            return yield* joinPreviewAttempt(resolution.attemptId, request.deadline);
+          const left = previewRemainingMs(request.deadline);
+          if (left === 0) return yield* previewRefused("start-expired");
+          yield* Effect.sleep(Duration.millis(Math.min(PREVIEW_JOIN_POLL_MS, left)));
+        }
+      });
+
       const runPreviewStart = Effect.fn("SessionEngine.runPreviewStart")(function* (
         request: PreviewStartRequest,
         claim: Effect.Effect<void, PreviewStartDeclined, Scope.Scope>,
       ) {
         const step = yield* previewStartStep(request);
+        if (step._tag === "Preparation") return yield* joinPreviewPreparation(request);
         if (step._tag === "Join")
           return yield* joinPreviewAttempt(step.attemptId, request.deadline);
         // Outside the permit: a docker dependency's address is a probe of the workspace.
@@ -25533,12 +25564,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* previewRefused("start-expired", "other Service work held the start");
             }
             const again = yield* previewStartStep(request);
-            if (again._tag === "Join") return again;
+            if (again._tag !== "Start") return again;
             yield* claim;
             return yield* acceptPreviewStart(again, lookedUp);
           }),
         );
         if ("_tag" in accepted) {
+          if (accepted._tag === "Preparation") return yield* joinPreviewPreparation(request);
           return yield* joinPreviewAttempt(accepted.attemptId, request.deadline);
         }
         return yield* finishPreviewStart(request, accepted);

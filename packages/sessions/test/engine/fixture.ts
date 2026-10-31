@@ -2242,6 +2242,18 @@ export const previewsRepoOf = (world: World) => {
         const selected = selectPreviewTarget(kept, targetsOf(session.worktreeId));
         return selected.service?.id === serviceId ? kept.id : null;
       }),
+    resolveById: (id) =>
+      Effect.sync(() => {
+        const preview = world.previews.get(id);
+        if (preview === undefined) return null;
+        return {
+          preview,
+          binding: resolvePreviewBinding(
+            preview,
+            preview.worktreeId === null ? [] : targetsOf(preview.worktreeId),
+          ),
+        };
+      }),
     gatewaySnapshot: (id) => Effect.sync(() => snapshotOf(id)),
     gatewaySnapshots: (ids) =>
       Effect.sync(() => {

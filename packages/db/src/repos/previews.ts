@@ -30,6 +30,7 @@ import {
   agentSessions,
   previewControls,
   previewPorts,
+  previewPreparations,
   previews,
   projects,
   services,
@@ -325,11 +326,29 @@ const readGatewaySnapshots = (tx: Reader, ids: ReadonlyArray<PreviewId>) =>
       tx,
       selected.flatMap(({ candidate }) => (candidate === null ? [] : [candidate])),
     );
+    const preparing = new Set(
+      (yield* tx
+        .select({ previewId: previewPreparations.previewId })
+        .from(previewPreparations)
+        .where(
+          and(
+            inArray(previewPreparations.previewId, [...new Set(ids)]),
+            eq(previewPreparations.state, "starting"),
+            isNull(previewPreparations.decidedAt),
+            sql`${previewPreparations.leaseUntil} > now()`,
+          ),
+        )).map((row) => row.previewId),
+    );
     for (const { preview, control, selection, candidate } of selected) {
       const history = candidate === null ? [] : (histories.get(candidate.id) ?? []);
       read.set(preview.id, {
         preview,
-        resolution: previewGatewayResolution(control, selection, history),
+        resolution:
+          preparing.has(preview.id) && preview.state !== "removed"
+            ? control._tag === "Stopped"
+              ? { _tag: "Stopped", control }
+              : { _tag: "Starting", revision: control.revision, attemptId: null, workspaceId: null }
+            : previewGatewayResolution(control, selection, history),
       });
     }
     return read;

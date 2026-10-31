@@ -189,6 +189,37 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
       );
   });
 
+  it("holds the gateway on a leased preparation while the old attempt is dormant", () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* PreviewsRepo;
+        const { worktree } = yield* seed("preparing");
+        const id = yield* repo.ensureNamed(worktree, "web");
+        yield* sql`UPDATE session_processes SET status = 'stopped', exited_at = now()
+        WHERE session_id IN ('s-preparing-1', 's-preparing-2')`;
+        yield* sql`UPDATE services SET current_attempt_id = NULL
+        WHERE session_id IN ('s-preparing-1', 's-preparing-2')`;
+        yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status)
+        VALUES ('turn-preparing', 's-preparing-1', 'att-preparing-1', 1, 'edit', 'completed')`;
+        yield* sql`INSERT INTO preview_preparations
+        (turn_id, session_id, worktree_id, state, service_name, preview_id, start_id, phase,
+         claim_id, claimed_at, lease_until)
+        VALUES ('turn-preparing', 's-preparing-1', ${worktree}, 'starting', 'web', ${id},
+          'preview-turn:turn-preparing', 'setup', '00000000-0000-0000-0000-000000000001',
+          now(), now() + interval '1 minute')`;
+        expect((yield* repo.gatewaySnapshot(id))?.resolution).toEqual({
+          _tag: "Starting",
+          revision: 0,
+          attemptId: null,
+          workspaceId: null,
+        });
+        yield* sql`UPDATE preview_preparations SET lease_until = now() - interval '1 second'
+        WHERE turn_id = 'turn-preparing'`;
+        expect((yield* repo.gatewaySnapshot(id))?.resolution._tag).toBe("Dormant");
+      }),
+    ));
+
   it("a read-only reader allocates nothing, however often it reads, and reads what an allocation made", async () => {
     await run(
       Effect.gen(function* () {
