@@ -2550,3 +2550,14 @@ and source trail (M2) build on the typed kinds.
   warm-up. Screen and preview use the same `wakeWorkspace` entry point. No new SDK capability is
   required. `restart()` remains limited to co-located worktrees. Unsaved or retained executor
   refusals from the session restore path still reach the gateway as a failed resume.
+
+## 2026-11-01: portable client packages on custom workspace bases
+
+A resource-backed Service needs Postgres and Redis clients in its workspace. Family images resolve
+`postgresql-client` and `redis-cli` through Core's portable catalog. A custom base passes packages
+verbatim to its package manager, so `redis-cli` fails every Debian workspace build with
+`Unable to locate package redis-cli`. Mend now keeps automatic clients on family images; a custom
+image's owner supplies its native packages, such as `postgresql-client` and `redis-tools` on Debian.
+Please offer portable client packages on custom bases, or a capability that installs clients by
+command name without Mend guessing the base's distribution. Observed in isolated verify run
+`st-verify-res08-1031-2339-de43`, Core `9d686294966f`, sealantd `52228108c8bd`.

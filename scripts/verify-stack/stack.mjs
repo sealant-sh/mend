@@ -1379,7 +1379,7 @@ async function projectImage(state, name) {
       workspaceImage: {
         mode: "custom",
         baseImage: FIXTURE_BASE_IMAGE,
-        packages: [],
+        packages: ["postgresql-client", "redis-tools"],
         setupCommands: [],
         services: { docker: false },
       },

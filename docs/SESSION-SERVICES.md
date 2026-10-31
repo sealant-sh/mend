@@ -724,6 +724,15 @@ runs that full stack and ships something usable on its own.
    no Services yet. **Desktop and phone.** Session-nested Services, factual state, explicit actions,
    stale observation timestamps, and no standalone inbox rows for ordinary reachable Services.
 
+## Resource runtime settings
+
+Operators can set `MEND_RESOURCE_IDLE_STOP_SECONDS` to a positive integer number of seconds. The
+default is `1800`. It sets each resource instance's idle stop bound; the data stays, and a Service
+start or preview wake starts an instance stopped by idle. A person's stop still holds.
+
+Family workspace images include Postgres and Redis clients. For a custom base, add its native client
+packages to the workspace image, for example `postgresql-client` and `redis-tools` on Debian.
+
 ## Acceptance scenarios
 
 1. The user runs `mend service run --port 3000 -- pnpm dev` and opens the app on their laptop
@@ -748,7 +757,3 @@ runs that full stack and ships something usable on its own.
 - The friendly-address lookup (`session:port`), if ever; this is presentation only.
 - Sharing setup's output across workspaces, once a project's restore has been measured against its
   install (ADR 0017, decision 4).
-
-Operators can set `MEND_RESOURCE_IDLE_STOP_SECONDS` to a positive integer number of seconds. The
-default is `1800`. It sets each resource instance's idle stop bound; the data stays, and a Service
-start or preview wake starts an instance stopped by idle. A person's stop still holds.
