@@ -287,6 +287,23 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
     const opened = await runtime.runPromise(Scope.make());
     await runtime.runPromise(Layer.buildWithScope(worker, opened));
     stopWorker = () => runtime.runPromise(Scope.close(opened, Exit.void));
+    // The bus's LISTEN connects after the layer is built; a write before it would never be heard.
+    await vi.waitFor(
+      async () =>
+        expect(
+          await run(
+            Effect.flatMap(
+              SqlClient.SqlClient,
+              (sql) =>
+                sql<{ readonly listening: boolean }>`SELECT EXISTS (
+                  SELECT 1 FROM pg_stat_activity
+                  WHERE datname = current_database() AND query ILIKE 'LISTEN %'
+                ) AS listening`,
+            ),
+          ),
+        ).toEqual([{ listening: true }]),
+      { timeout: 30_000 },
+    );
   }, 120_000);
 
   afterAll(async () => {
