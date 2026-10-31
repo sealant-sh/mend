@@ -78,7 +78,6 @@ import type {
   HarnessLayout,
   RecipeEnv,
   RecipeReady,
-  RecipeSpec,
   RemoteSsh,
   RepoRelativePath,
   ResourcePreset,
@@ -86,7 +85,6 @@ import type {
   ResourceSpecDigest,
   ServiceAddress,
   ServiceHostPolicy,
-  ServiceLaunchSource,
 } from "@mend/domain/workbench";
 import {
   AuditData,
@@ -1881,7 +1879,6 @@ export const sessionProcesses = pgTable(
     launchReady: jsonb().$type<RecipeReady>(),
     /** The session dependencies it was started with, bound again at a restart; null: none. */
     launchDepends: jsonb().$type<ReadonlyArray<string>>(),
-    launchSource: text().$type<ServiceLaunchSource>(),
   },
   (table) => [
     index("session_processes_session_idx").on(table.sessionId, table.createdAt),
@@ -2304,7 +2301,6 @@ export type PreviewPreparationStateColumn =
   | "no-preview"
   | "session-ended"
   | "stopped"
-  | "not-approved"
   | "refused"
   | "running"
   | "started";
@@ -2341,22 +2337,6 @@ export const setupRuns = pgTable(
       .on(table.workspaceId)
       .where(sql`${table.state} = 'running'`),
   ],
-);
-
-export const recipeApprovals = pgTable(
-  "recipe_approvals",
-  {
-    worktreeId: text()
-      .$type<WorktreeId>()
-      .notNull()
-      .references(() => worktrees.id, { onDelete: "cascade" }),
-    serviceName: text().notNull(),
-    digest: text().notNull(),
-    approvedBy: text().notNull(),
-    approvedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-    spec: jsonb().$type<typeof RecipeSpec.Encoded>().notNull(),
-  },
-  (table) => [primaryKey({ columns: [table.worktreeId, table.serviceName, table.approvedBy] })],
 );
 
 /**

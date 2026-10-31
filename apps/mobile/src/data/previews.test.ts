@@ -95,7 +95,7 @@ describe("the preview status lines on the phone", () => {
               httpStatus: 200,
               observedAt: "2026-10-30T12:00:06.000Z",
             },
-            { _tag: "RecipeChanged", service: "web" },
+            { _tag: "SetupInputsChanged" },
           ],
         }),
         preview("docs", { facts: [{ _tag: "Starting", service: "docs", phase: "setup" }] }),
@@ -108,7 +108,7 @@ describe("the preview status lines on the phone", () => {
         serviceName: "web",
         lines: [
           "preview · web · answered HTTP 200 · observed 4 s ago",
-          "preview · web · recipe changed · the owner's Start runs it",
+          "setup inputs changed · restart to apply",
         ],
       },
       { key: "preview-docs", serviceName: "docs", lines: ["preview · docs · starting · setup"] },

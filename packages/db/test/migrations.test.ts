@@ -2434,38 +2434,83 @@ describe.skipIf(postgres.skip)("0148 resources", () => {
   }, 60_000);
 });
 
-describe.skipIf(postgres.skip)("recipe approvals", () => {
-  const at = ORDERED.findIndex(([name]) => name.endsWith("_recipe_approvals"));
-  const approvals = ORDERED[at]?.[0] ?? "";
-  const previous = ORDERED[at - 1]?.[0] ?? "";
-
+describe.skipIf(postgres.skip)("0170 drop recipe approvals", () => {
   beforeAll(emptyScratch);
 
-  it("reaches a database the migrator took to the one before it, approving nothing, and gives attempts a launch source", async () => {
-    expect(at).toBeGreaterThan(0);
-    const result = await withScratch(
+  it("leaves nothing that refers to recipe approvals, and keeps a refused turn decided", async () => {
+    const outcome = await withScratch(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* migrateWith(Object.fromEntries(ORDERED.filter(([name]) => name <= previous)));
+        yield* upTo("0168_turn_dispatch_attempt");
         yield* sql`
           INSERT INTO projects (id, name, store_path, default_branch, organization_id)
-          VALUES ('p-approvals', 'approvals', '/store/p/repo.git', 'main',
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main',
                   (SELECT id FROM organizations LIMIT 1))`;
         yield* sql`
           INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
-          VALUES ('wt-approvals', 'p-approvals', 'wt', 'wt', 'mend/wt', 'abc')`;
-        yield* migrateWith(migrations);
-        const applied = yield* sql<{ readonly name: string }>`
-          SELECT name FROM mend_migrations WHERE migration_id = ${Number(approvals.slice(0, 4))}`;
-        const rows = yield* sql`SELECT 1 FROM recipe_approvals`;
-        const source = yield* sql<{ readonly column_name: string }>`
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status)
+          VALUES ('s-1', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running')`;
+        yield* sql`
+          INSERT INTO session_processes
+            (id, session_id, sealant_workspace_id, sealant_session_id, kind, status,
+             launch_source)
+          VALUES ('proc-1', 's-1', 'ws-1', 'pty-1', 'agent-protocol', 'running', 'recipe')`;
+        yield* sql`
+          INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status, ended_at)
+          VALUES ('t-refused', 's-1', 'proc-1', 0, 'fix it', 'completed', now()),
+                 ('t-changed', 's-1', 'proc-1', 1, 'fix it', 'completed', now())`;
+        yield* sql`
+          INSERT INTO recipe_approvals (worktree_id, service_name, digest, approved_by, spec)
+          VALUES ('wt-1', 'web', 'd-1', 'alice', '{}'::jsonb)`;
+        yield* sql`
+          INSERT INTO preview_preparations
+            (turn_id, session_id, worktree_id, state, note, service_name, claim_id, claimed_at,
+             lease_until, decided_at)
+          VALUES
+            ('t-refused', 's-1', 'wt-1', 'not-approved', NULL, 'web', gen_random_uuid(), now(),
+             now(), now()),
+            ('t-changed', 's-1', 'wt-1', 'running', 'recipe-changed', 'web', gen_random_uuid(),
+             now(), now(), now())`;
+        yield* migrations["0170_drop_recipe_approvals"];
+        const named = yield* sql<{ readonly what: string }>`
+          SELECT relname AS what FROM pg_class WHERE relname LIKE '%recipe_approval%'
+          UNION ALL
+          SELECT conname FROM pg_constraint
+          WHERE pg_get_constraintdef(oid) LIKE '%recipe_approval%'
+            OR pg_get_constraintdef(oid) LIKE '%not-approved%'
+            OR pg_get_constraintdef(oid) LIKE '%recipe-changed%'
+          UNION ALL
+          SELECT proname FROM pg_proc WHERE prosrc LIKE '%recipe_approval%'
+          UNION ALL
           SELECT column_name FROM information_schema.columns
           WHERE table_name = 'session_processes' AND column_name = 'launch_source'`;
-        return { recorded: applied[0]?.name, rows: rows.length, source: source.length };
+        const preparations = yield* sql<{
+          readonly turnId: string;
+          readonly state: string;
+          readonly note: string | null;
+          readonly decided: boolean;
+        }>`
+          SELECT turn_id AS "turnId", state, note, decided_at IS NOT NULL AS decided
+          FROM preview_preparations ORDER BY turn_id`;
+        const refusedAgain = yield* attempt(
+          sql`UPDATE preview_preparations SET state = 'not-approved', service_name = NULL
+            WHERE turn_id = 't-changed'`,
+        );
+        return { named: named.map((row) => row.what), preparations, refusedAgain };
       }),
     );
-    expect(result).toEqual({ recorded: "recipe_approvals", rows: 0, source: 1 });
-  });
+    expect(outcome).toEqual({
+      named: [],
+      preparations: [
+        { turnId: "t-changed", state: "running", note: null, decided: true },
+        { turnId: "t-refused", state: "skipped", note: null, decided: true },
+      ],
+      refusedAgain: { code: "23514", constraint: "preview_preparations_state_check" },
+    });
+  }, 60_000);
 });
 
 describe.skipIf(postgres.skip)("0163 push device credentials", () => {

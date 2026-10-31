@@ -156,35 +156,27 @@ describe("a preview's status lines", () => {
     expect(lines(running(at(30)), leftAlone)).toEqual([
       "preview · web · answered HTTP 200 · observed 4 s ago",
     ]);
-    const changed = decided({
-      _tag: "Running",
-      service: "web",
-      previewId: web.id,
-      note: "recipe-changed",
-    });
-    expect(lines(running(at(5)), changed)).toEqual([
-      "preview · web · answered HTTP 200 · observed 4 s ago",
-      "preview · web · recipe changed · the owner's Start runs it",
-    ]);
   });
 
   it("says why a stopped-running preview was not prepared, and only for its own Service", () => {
     const refused = decided({
-      _tag: "NotApproved",
+      _tag: "Refused",
       service: "web",
       previewId: web.id,
+      reason: "setup failed",
     });
-    expect(lines(factsWith(), refused)).toEqual([
-      "preview not prepared · web · recipe not approved · the owner's Start runs it",
-    ]);
+    expect(lines(factsWith(), refused)).toEqual(["preview not prepared · web · setup failed"]);
     expect(lines(factsWith({ preview: { ...web, serviceName: "docs" } }), refused)).toEqual([]);
   });
 
-  it("drops a refusal once the owner's Start began an attempt after it, running or not", () => {
-    const refused = decided({ _tag: "NotApproved", service: "web", previewId: web.id }, at(10));
+  it("drops a refusal once a Start began an attempt after it, running or not", () => {
+    const refused = decided(
+      { _tag: "Refused", service: "web", previewId: web.id, reason: "setup failed" },
+      at(10),
+    );
     expect(lines(factsWith({ attemptStartedAt: at(20) }), refused)).toEqual([]);
     expect(lines(factsWith({ attemptStartedAt: at(5) }), refused)).toEqual([
-      "preview not prepared · web · recipe not approved · the owner's Start runs it",
+      "preview not prepared · web · setup failed",
     ]);
   });
 
@@ -213,10 +205,15 @@ describe("the worktree's own line", () => {
   });
 
   it("states a refusal before any preview of the Service exists, and leaves a kept one's to it", () => {
-    const refused = decided({ _tag: "NotApproved", service: "web", previewId: null });
+    const refused = decided({
+      _tag: "Refused",
+      service: "web",
+      previewId: null,
+      reason: "setup failed",
+    });
     const status = unpreparedStatusOf([], refused);
     expect(status === null ? null : previewStatusLine(status, { now: at(0) })).toBe(
-      "preview not prepared · web · recipe not approved · the owner's Start runs it",
+      "preview not prepared · web · setup failed",
     );
     expect(unpreparedStatusOf([web], refused)).toBeNull();
   });

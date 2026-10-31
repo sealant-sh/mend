@@ -127,13 +127,6 @@ const columnsOf = (decision: PreviewPreparationDecision): Columns => {
         serviceName: decision.service,
         previewId: decision.previewId,
       };
-    case "NotApproved":
-      return {
-        ...none,
-        state: "not-approved",
-        serviceName: decision.service,
-        previewId: decision.previewId,
-      };
     case "Refused":
       return {
         ...none,
@@ -182,8 +175,6 @@ const decisionOf = (row: Row): Effect.Effect<PreviewPreparationDecision | null> 
         return { _tag: "SessionEnded" };
       case "stopped":
         return { _tag: "Stopped", service: yield* service, previewId: row.previewId };
-      case "not-approved":
-        return { _tag: "NotApproved", service: yield* service, previewId: row.previewId };
       case "refused":
         return {
           _tag: "Refused",

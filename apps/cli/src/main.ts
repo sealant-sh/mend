@@ -105,11 +105,7 @@ import { type ApiCall, pairCommand, qrCommand, type T3GatewayDto } from "./pair.
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
 import { parseProjectRetentionArgs } from "./project-retention.ts";
 import { isTerminalGone, leaveRawMode } from "./raw-mode.ts";
-import {
-  approvedVersionLine,
-  missingRecipeLine,
-  type ServiceDeclarationsDto,
-} from "./recipe-refusals.ts";
+import { missingRecipeLine, type ServiceDeclarationsDto } from "./recipe-refusals.ts";
 import { resourceCommand } from "./resource.ts";
 import {
   beforeDeadline,
@@ -2095,8 +2091,6 @@ interface ServiceViewDto {
   readonly endpoints: ReadonlyArray<ServiceEndpointDto>;
   /** A recipe start's answer: how its `[setup]` went; absent from older servers. */
   readonly setup?: ServiceStartSetupSlice | null;
-  /** A start's or restart's answer: it ran the recipe's approved version; absent from older servers. */
-  readonly approvedVersion?: boolean;
 }
 
 interface ProcessLogPageDto {
@@ -2962,8 +2956,6 @@ const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) =>
   );
   const restarted = flattenService(view);
   say(`${green("✓")} restarted · ${restarted.status}`);
-  const approved = approvedVersionLine(view);
-  if (approved !== null) say(`${amber("!")} ${approved}`);
   printServiceEndpoint(config, restarted);
 };
 

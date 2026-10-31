@@ -1057,7 +1057,7 @@ describe("a worktree's previews in a message (docs/adr/0017-live-preview.md)", (
     const message = statusMessage({
       ...completed,
       previews: shown(
-        notice("web", [{ _tag: "RecipeChanged", service: "web" }], false),
+        notice("web", [{ _tag: "SetupInputsChanged" }], false),
         notice("docs", [], false),
         notice("storybook", []),
       ),
@@ -1067,7 +1067,7 @@ describe("a worktree's previews in a message (docs/adr/0017-live-preview.md)", (
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "preview · web · recipe changed · the owner's Start runs it",
+          text: "setup inputs changed · restart to apply",
         },
       },
       {

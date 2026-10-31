@@ -148,14 +148,6 @@ export class ServiceView extends Schema.Class<ServiceView>("ServiceView")({
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
-  /**
-   * A start's or restart's answer only: it ran the version of the recipe the owner approved, not
-   * the one the file (or the attempt it replaced) has now (ADR 0017, decision log 4).
-   */
-  approvedVersion: Schema.Boolean.pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed(false)),
-    Schema.withConstructorDefault(Effect.succeed(false)),
-  ),
 }) {}
 
 const endpointAuthority = (address: string, port: number): string =>

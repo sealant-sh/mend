@@ -1,4 +1,4 @@
-import { recipeChangedLine, resourceProposalsSection } from "@mend/domain/workbench";
+import { resourceProposalsSection } from "@mend/domain/workbench";
 
 /** One refusal of `GET /sessions/:id/declarations`: the recipe, the key it names, and why. */
 export interface RecipeRefusalDto {
@@ -38,8 +38,3 @@ export const missingRecipeLine = (
     recipeLine(name, declared, declarations),
     ...(declarations === null ? [] : resourceProposalsSection(declarations)),
   ].join("\n");
-
-export const approvedVersionLine = (view: {
-  readonly service: { readonly name: string };
-  readonly approvedVersion?: boolean;
-}): string | null => (view.approvedVersion === true ? recipeChangedLine(view.service.name) : null);

@@ -3173,8 +3173,8 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
     });
   });
 
-  it("Mend's restart of a recipe after a turn changed it runs the approved version, as its last starter", async () => {
-    let toml = '[service.web]\ncommand = "pnpm dev"\nport = 3000\nenv = { MODE = "approved" }\n';
+  it("Mend's restart of a recipe after a turn changed it runs the file as it reads now, as its last starter", async () => {
+    let toml = '[service.web]\ncommand = "pnpm dev"\nport = 3000\nenv = { MODE = "first" }\n';
     await livePersonJoin({
       flag: "person",
       exec: (argv) =>
@@ -3184,19 +3184,19 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           const owner = join.holder.ownerUserId ?? "";
           yield* engine.runServiceRecipe(join.holder.id, "web", { kind: "person", userId: owner });
           yield* engine.stopServices(join.holder.id, { kind: "workspace" });
-          toml = toml.replace("pnpm dev", "pnpm dev --edited").replace("approved", "edited");
+          toml = toml.replace("pnpm dev", "pnpm dev --edited").replace("first", "edited");
 
           const started = join.opened.length;
           const view = yield* engine.runServiceRecipe(join.holder.id, "web", {
             kind: "system",
             runsAs: MARIA,
           });
-          expect(view.approvedVersion).toBe(true);
-          expect(view.attempts.at(-1)?.argv).toEqual(["sh", "-c", "pnpm dev"]);
+          expect(view.attempts.at(-1)?.argv).toEqual(["sh", "-c", "pnpm dev --edited"]);
           expect(join.opened.at(started)).toMatchObject({
             user: { name: JOINER },
-            env: { MODE: "approved", PORT: "3000" },
+            env: { MODE: "edited", PORT: "3000" },
           });
+          expect(join.world.serviceStarters.get(view.service.id), "started_by").toBe(MARIA);
         }),
     });
   });

@@ -12,12 +12,7 @@ import {
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 import { observedAgo } from "./landing.ts";
-import {
-  recipeChangedLine,
-  recipeUnapprovedLine,
-  type ServiceAddress,
-  ServiceHostPolicy,
-} from "./service-recipe.ts";
+import { type ServiceAddress, ServiceHostPolicy } from "./service-recipe.ts";
 import { type Service, serviceStartCorrelation } from "./service.ts";
 import type { SessionProcess } from "./session-process.ts";
 
@@ -467,7 +462,6 @@ export type PreviewPhase = typeof PreviewPhase.Type;
 export const PreviewNotPrepared = Schema.Union([
   Schema.TaggedStruct("NotCaptured", {}),
   Schema.TaggedStruct("SessionEnded", {}),
-  Schema.TaggedStruct("NotApproved", {}),
   Schema.TaggedStruct("Refused", { words: Schema.String }),
 ]);
 export type PreviewNotPrepared = typeof PreviewNotPrepared.Type;
@@ -498,7 +492,6 @@ export const PreviewStatus = Schema.Union([
     service: Schema.NullOr(Schema.String),
     why: PreviewNotPrepared,
   }),
-  Schema.TaggedStruct("RecipeChanged", { service: Schema.String }),
   Schema.TaggedStruct("SetupInputsChanged", {}),
 ]);
 export type PreviewStatus = typeof PreviewStatus.Type;
@@ -521,8 +514,6 @@ const notPreparedWords = (service: string | null, why: PreviewNotPrepared): stri
       return "change not captured";
     case "SessionEnded":
       return "session ended";
-    case "NotApproved":
-      return service === null ? "recipe not approved" : recipeUnapprovedLine(service);
     case "Refused":
       return firstLine(why.words);
   }
@@ -560,12 +551,10 @@ export const previewStatusLine = (status: PreviewStatus, options: PreviewLineOpt
       );
     case "NotPrepared": {
       const words = notPreparedWords(status.service, status.why);
-      return status.service === null || status.why._tag === "NotApproved"
+      return status.service === null
         ? `preview not prepared · ${words}`
         : `preview not prepared · ${status.service} · ${words}`;
     }
-    case "RecipeChanged":
-      return `preview · ${recipeChangedLine(status.service)}`;
     case "SetupInputsChanged":
       return "setup inputs changed · restart to apply";
   }

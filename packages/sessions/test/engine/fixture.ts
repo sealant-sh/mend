@@ -31,7 +31,6 @@ import {
   ServiceObservationsRepo,
   ServicesRepo,
   decideSetupClaim,
-  RecipeApprovalsRepo,
   SetupRunsRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
@@ -142,12 +141,7 @@ import {
   type CapturePosition,
   withoutAgentStarting,
 } from "@mend/domain/workbench";
-import type {
-  AgentWait,
-  HarnessLayout,
-  RecipeApproval,
-  ServiceLaunch,
-} from "@mend/domain/workbench";
+import type { AgentWait, HarnessLayout, ServiceLaunch } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
   PersonLayoutPlatform,
@@ -1512,7 +1506,6 @@ export interface World {
   setupFinishing: (() => Effect.Effect<void>) | undefined;
   /** Runs after a setup stamp is written, before its answer, so a test can hold the reply. */
   setupFinished: (() => Effect.Effect<void>) | undefined;
-  readonly recipeApprovals: Map<WorktreeId, Map<string, Map<string, RecipeApproval>>>;
   /** Screens and their displays (ADR 0020), as the store keeps them. */
   readonly screens: ScreensRepo["Service"];
   controlSeq: number;
@@ -1620,7 +1613,6 @@ export const makeWorld = (): World => ({
   setupRuns: [],
   setupFinishing: undefined,
   setupFinished: undefined,
-  recipeApprovals: new Map(),
   screens: makeScreensMemory(),
   controlSeq: 0,
   previews: new Map(),
@@ -2359,27 +2351,10 @@ export const setupRunsLayer = (world: World) => {
   });
 };
 
-export const recipeApprovalsLayer = (world: World) =>
-  Layer.succeed(RecipeApprovalsRepo, {
-    approve: (worktreeId, approvals) =>
-      Effect.sync(() => {
-        const byApprover = world.recipeApprovals.get(worktreeId) ?? new Map();
-        for (const approval of approvals) {
-          const kept = byApprover.get(approval.approvedBy) ?? new Map<string, RecipeApproval>();
-          kept.set(approval.serviceName, { ...approval, approvedAt: world.clock.now() });
-          byApprover.set(approval.approvedBy, kept);
-        }
-        world.recipeApprovals.set(worktreeId, byApprover);
-      }),
-    forWorktree: (worktreeId, approvedBy) =>
-      Effect.sync(() => new Map(world.recipeApprovals.get(worktreeId)?.get(approvedBy) ?? [])),
-  });
-
 /** Shared serviceStateLayer fixture for engine scenarios. */
 export const serviceStateLayer = (world: World) =>
   Layer.mergeAll(
     setupRunsLayer(world),
-    recipeApprovalsLayer(world),
     servicesLayer(world),
     serviceForwardsLayer(world),
     serviceObservationsLayer(world),

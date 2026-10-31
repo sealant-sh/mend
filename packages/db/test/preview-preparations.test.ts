@@ -204,7 +204,7 @@ describe.skipIf(postgres.skip)("preview_preparations: one worker prepares each e
           previewId: null,
           startId: `preview-turn:${turn}`,
           phase: "depends",
-          note: "recipe-changed",
+          note: "setup-inputs-changed",
         });
         const starting = yield* repo.latestForWorktree(WORKTREE);
         const renewed = yield* repo.renew(claim, 0);
@@ -214,7 +214,7 @@ describe.skipIf(postgres.skip)("preview_preparations: one worker prepares each e
           _tag: "Running",
           service: "web",
           previewId: null,
-          note: "recipe-changed",
+          note: "setup-inputs-changed",
         });
         return { starting, renewed, afterRetake, decided: yield* repo.latestForWorktree(WORKTREE) };
       }),
@@ -224,13 +224,13 @@ describe.skipIf(postgres.skip)("preview_preparations: one worker prepares each e
       service: "web",
       previewId: null,
       phase: "depends",
-      note: "recipe-changed",
+      note: "setup-inputs-changed",
     });
     expect(result.renewed).toBe(true);
     expect(result.afterRetake).toBeNull();
     expect(result.decided?.state).toMatchObject({
       _tag: "Decided",
-      decision: { _tag: "Running", service: "web", note: "recipe-changed" },
+      decision: { _tag: "Running", service: "web", note: "setup-inputs-changed" },
     });
   });
 
@@ -252,7 +252,12 @@ describe.skipIf(postgres.skip)("preview_preparations: one worker prepares each e
         const claimedHeard = yield* next;
         yield* repo.progress(claim, startingWeb(turn));
         const setupHeard = yield* next;
-        yield* repo.decide(claim, { _tag: "NotApproved", service: "web", previewId: null });
+        yield* repo.decide(claim, {
+          _tag: "Refused",
+          service: "web",
+          previewId: null,
+          reason: "setup failed",
+        });
         const refusalHeard = yield* next;
         const lapsed = claimed(yield* repo.claim(yield* endedTurn(), 0));
         yield* repo.decide(lapsed, { _tag: "NoChange" });

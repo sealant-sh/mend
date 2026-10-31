@@ -260,7 +260,7 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
       }),
     ));
 
-  it("leaves a running preview alone, and says when the turn changed its setup inputs or its recipe", () =>
+  it("leaves a running preview alone, and says when the turn changed its setup inputs", () =>
     withPreview((harness) =>
       Effect.gen(function* () {
         yield* harness.engine.runServiceRecipe(harness.sessionId, "web", ownerStart);
@@ -269,22 +269,14 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
         const unchanged = yield* harness.prepare(1);
         harness.write("pnpm-lock.yaml", LOCK_B);
         const lockfile = yield* harness.prepare(2);
-        harness.write("mend.toml", EDITED);
-        const recipe = yield* harness.prepare(3);
 
-        expect([unchanged, lockfile, recipe].map(({ outcome }) => outcome)).toEqual([
+        expect([unchanged, lockfile].map(({ outcome }) => outcome)).toEqual([
           { _tag: "Running", service: "web", previewId: harness.previewId(), note: null },
           {
             _tag: "Running",
             service: "web",
             previewId: harness.previewId(),
             note: "setup-inputs-changed",
-          },
-          {
-            _tag: "Running",
-            service: "web",
-            previewId: harness.previewId(),
-            note: "recipe-changed",
           },
         ]);
         expect(commandsAfter(harness.timeline, before), "nothing ran again").toEqual([]);
@@ -592,7 +584,7 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
       }),
     ));
 
-  it("runs the approved graph when the turn names a dependency mend.toml does not declare", () =>
+  it("refuses, in mend.toml's words, a recipe whose depends names a Service it does not declare", () =>
     withPreview((harness) =>
       Effect.gen(function* () {
         yield* startedOnceThenAgentStopped(harness);
@@ -604,8 +596,12 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
 
         const { outcome } = yield* harness.prepare(1);
 
-        expect(outcome).toMatchObject({ _tag: "Started", service: "web" });
-        expect(commandsAfter(harness.timeline, before)).toEqual(["postgres", "pnpm dev"]);
+        expect(outcome).toMatchObject({
+          _tag: "Refused",
+          service: "web",
+          reason: expect.stringContaining("mend.toml refuses web"),
+        });
+        expect(commandsAfter(harness.timeline, before)).toEqual([]);
       }),
     ));
 
@@ -633,20 +629,25 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
       }),
     ));
 
-  it("refuses a recipe the owner never started, and starts nothing", () =>
+  it("starts a committed recipe nobody ever started, with no Start", () =>
     withPreview((harness) =>
       Effect.gen(function* () {
         const { outcome } = yield* harness.prepare(1);
         expect(outcome).toEqual({
-          _tag: "NotApproved",
+          _tag: "Started",
           service: "web",
           previewId: harness.previewId(),
+          note: null,
         });
-        expect(harness.timeline).toEqual([]);
+        expect(harness.timeline).toEqual([
+          "setup:pnpm install --frozen-lockfile",
+          "postgres",
+          "pnpm dev",
+        ]);
       }),
     ));
 
-  it("runs the approved version of a recipe the turn changed, and says so", () =>
+  it("runs the recipe as the turn changed it", () =>
     withPreview((harness) =>
       Effect.gen(function* () {
         yield* startedOnceThenAgentStopped(harness);
@@ -655,13 +656,8 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
 
         const { outcome } = yield* harness.prepare(1);
 
-        expect(outcome).toEqual({
-          _tag: "Started",
-          service: "web",
-          previewId: harness.previewId(),
-          note: "recipe-changed",
-        });
-        expect(commandsAfter(harness.timeline, before)).toEqual(["postgres", "pnpm dev"]);
+        expect(outcome).toMatchObject({ _tag: "Started", service: "web", note: null });
+        expect(commandsAfter(harness.timeline, before)).toEqual(["postgres", "pnpm dev --edited"]);
       }),
     ));
 

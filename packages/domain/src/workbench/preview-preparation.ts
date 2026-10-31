@@ -11,7 +11,7 @@ import {
 import type { ServiceStartProgress } from "./service-recipe.ts";
 import type { ServiceTargetState } from "./service.ts";
 
-export type PreviewPreparationNote = "recipe-changed" | "setup-inputs-changed";
+export type PreviewPreparationNote = "setup-inputs-changed";
 
 export type PreviewPreparationDecision =
   | { readonly _tag: "Skipped"; readonly why: string }
@@ -22,11 +22,6 @@ export type PreviewPreparationDecision =
   | { readonly _tag: "SessionEnded" }
   | {
       readonly _tag: "Stopped";
-      readonly service: string;
-      readonly previewId: PreviewId | null;
-    }
-  | {
-      readonly _tag: "NotApproved";
       readonly service: string;
       readonly previewId: PreviewId | null;
     }
@@ -153,8 +148,6 @@ const preparedFacts = (preparation: PreviewPreparation): ReadonlyArray<PreviewSt
       return [{ _tag: "NotPrepared", service: null, why: { _tag: "NotCaptured" } }];
     case "SessionEnded":
       return [{ _tag: "NotPrepared", service: null, why: { _tag: "SessionEnded" } }];
-    case "NotApproved":
-      return [{ _tag: "NotPrepared", service: decision.service, why: { _tag: "NotApproved" } }];
     case "Refused":
       return [
         {
@@ -177,15 +170,8 @@ const preparedFacts = (preparation: PreviewPreparation): ReadonlyArray<PreviewSt
 const outlived = (state: PreviewPreparationState, attemptStartedAt: Date | null): boolean =>
   state._tag === "Decided" && attemptStartedAt !== null && attemptStartedAt > state.decidedAt;
 
-const noteFacts = (
-  service: string,
-  note: PreviewPreparationNote | null,
-): ReadonlyArray<PreviewStatus> =>
-  note === "recipe-changed"
-    ? [{ _tag: "RecipeChanged", service }]
-    : note === "setup-inputs-changed"
-      ? [{ _tag: "SetupInputsChanged" }]
-      : [];
+const noteFacts = (note: PreviewPreparationNote | null): ReadonlyArray<PreviewStatus> =>
+  note === "setup-inputs-changed" ? [{ _tag: "SetupInputsChanged" }] : [];
 
 const noteForAttempt = (
   state: PreviewPreparationState,
@@ -252,9 +238,7 @@ export const previewStatusesOf = (
             ];
       return [
         ...observed,
-        ...(mine === null
-          ? []
-          : noteFacts(service, noteForAttempt(mine.state, facts.attemptStartedAt))),
+        ...(mine === null ? [] : noteFacts(noteForAttempt(mine.state, facts.attemptStartedAt))),
       ];
     }
     default:

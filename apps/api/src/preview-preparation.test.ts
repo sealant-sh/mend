@@ -90,7 +90,7 @@ const startingWeb = {
   note: null,
 } as const;
 
-const running = (note: "recipe-changed" | null = null): PreviewPrepared => ({
+const running = (note: "setup-inputs-changed" | null = null): PreviewPrepared => ({
   _tag: "Running",
   service: "web",
   previewId: PREVIEW,

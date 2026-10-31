@@ -325,20 +325,12 @@ describe("previewStatusLine", () => {
       "preview not prepared · session ended",
     ],
     [
-      { _tag: "NotPrepared", service: "web", why: { _tag: "NotApproved" } },
-      "preview not prepared · web · recipe not approved · the owner's Start runs it",
-    ],
-    [
       {
         _tag: "NotPrepared",
         service: "web",
         why: { _tag: "Refused", words: "mend.toml refuses web: web · cwd · is absolute\nnotices" },
       },
       "preview not prepared · web · mend.toml refuses web: web · cwd · is absolute",
-    ],
-    [
-      { _tag: "RecipeChanged", service: "web" },
-      "preview · web · recipe changed · the owner's Start runs it",
     ],
     [{ _tag: "SetupInputsChanged" }, "setup inputs changed · restart to apply"],
   ];

@@ -603,11 +603,6 @@ const fileNamesOf = (file: MendTomlFile): ReadonlySet<string> =>
     ...file.refused.flatMap((refusal) => (refusal.name === null ? [] : [refusal.name])),
   ]);
 
-export const recipesBeforeDependsCheck = (
-  file: MendTomlFile,
-  project: ReadonlyArray<ServiceRecipe>,
-): ReadonlyArray<ServiceRecipe> => mergeRecipes(file.recipes, project, fileNamesOf(file));
-
 /**
  * File + project recipes as ONE declaration set. Collisions are refused at write time (the web
  * checks before creating); if one exists anyway, the file wins: it travels with the repo and
