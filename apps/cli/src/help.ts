@@ -893,7 +893,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[--project <p>] [--worktree <w>] [--json]"],
     description: [
       "One status line per resource, then the image it runs and its id, as Sealant last observed its instance: the definitions project settings hold, each with whoever added it, and, with --worktree, that worktree's use of each (shared, its own database, its own instance or off) and the [resource.*] tables in its mend.toml with the keys it refuses or ignores. A table's line says whether settings hold it, hold it the same, or differ.",
-      "Inside a session's workspace, mend resource list reads the session's own project and worktree, as its owner sees them. Adding, removing, starting, stopping and choosing are a person's: run them from the web app or mend on your machine.",
+      "Inside a session's workspace, mend resource reads and acts for the session's own project and worktree, as the session's owner: list, add, remove, start, stop, use and env.",
     ],
     options: [
       project(),

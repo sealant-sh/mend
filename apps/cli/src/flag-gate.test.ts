@@ -216,10 +216,6 @@ const READS: Readonly<Record<string, Reads>> = {
   "shared.ts gitCurrentBranch": CHILD,
   "shared.ts gitTopLevel": CHILD,
   "organization.ts inviteCommand": { pages: ["invite"] },
-  "resource.ts VALUE_FLAGS": {
-    pages: ["resource list", "resource add", "resource remove", "resource use"],
-  },
-  "resource.ts additionOf": { pages: ["resource add"] },
   "resource.ts resourceCommand": {
     pages: [
       "resource list",
