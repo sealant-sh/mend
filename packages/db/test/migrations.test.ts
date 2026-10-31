@@ -2513,6 +2513,114 @@ describe.skipIf(postgres.skip)("0170 drop recipe approvals", () => {
   }, 60_000);
 });
 
+const pin = (hex: string) => `sha256:${hex.repeat(64)}`;
+
+describe.skipIf(postgres.skip)("0173 drop resource approvals", () => {
+  beforeAll(emptyScratch);
+
+  it("keeps each definition's pin on its own row, and drops what only approval held", async () => {
+    const outcome = await withScratch(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0172_doppler");
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1)),
+                 ('p-gone', 'old', '/store/p-gone/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1))`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        const define = (id: string, project: string, name: string, image: string, digest: string) =>
+          sql`
+            INSERT INTO resource_definitions
+              (id, project_id, name, scope, preset, spec, spec_digest, declared_by)
+            VALUES (${id}, ${project}, ${name}, 'project', NULL,
+                    ${JSON.stringify({ name, scope: "project", preset: null, image })}::jsonb,
+                    ${digest.repeat(64)}, 'alice')`;
+        const approve = (
+          id: string,
+          definition: string,
+          revision: number,
+          declared: string,
+          image: string,
+          worktree: string | null = null,
+        ) =>
+          sql`
+            INSERT INTO resource_approvals
+              (id, definition_id, worktree_id, revision, definition_digest, digest, spec,
+               approved_by)
+            VALUES (${id}, ${definition}, ${worktree}, ${revision}, ${declared.repeat(64)},
+                    ${"f".repeat(64)}, ${JSON.stringify({ image })}::jsonb, 'maria')`;
+        // The latest project approval of the spec held now pins it.
+        yield* define("rdef_db", "p-1", "db", "postgres:17", "a");
+        yield* approve("rapr_1", "rdef_db", 1, "a", `postgres:17@${pin("1")}`);
+        yield* approve("rapr_2", "rdef_db", 2, "a", `postgres:17@${pin("2")}`);
+        yield* approve("rapr_3", "rdef_db", 3, "a", `postgres:17@${pin("3")}`, "wt-1");
+        // An approval of an older spec never carries over; an image pinned already pins itself.
+        yield* define("rdef_cache", "p-1", "cache", `redis:8@${pin("4")}`, "b");
+        yield* approve("rapr_4", "rdef_cache", 1, "c", `redis:8@${pin("5")}`);
+        // Neither: it was never the project's, and goes with its selection.
+        yield* define("rdef_mail", "p-1", "mail", "axllent/mailpit:v1.27", "d");
+        yield* sql`
+          INSERT INTO resource_selections (worktree_id, definition_id, mode, revision)
+          VALUES ('wt-1', 'rdef_mail', 'shared', 0)`;
+        yield* sql`
+          INSERT INTO resource_proposals (id, project_id, name, spec, spec_digest, proposed_by)
+          VALUES ('rprop_1', 'p-1', 'db', '{"name":"db"}'::jsonb, ${"e".repeat(64)}, 'tom')`;
+        // A removed project's definition takes its pin too.
+        yield* define("rdef_old", "p-gone", "db", "postgres:16", "a");
+        yield* approve("rapr_5", "rdef_old", 1, "a", `postgres:16@${pin("6")}`);
+        yield* sql`
+          UPDATE projects SET removal_phase = 'removed', removal_id = 'rmv_1',
+            removal_since = now(), removed_at = now()
+          WHERE id = 'p-gone'`;
+        yield* migrations["0173_drop_resource_approvals"];
+        const definitions = yield* sql<{
+          readonly id: string;
+          readonly imageDigest: string;
+          readonly addedBy: string;
+        }>`
+          SELECT id, image_digest AS "imageDigest", added_by AS "addedBy"
+          FROM resource_definitions ORDER BY id`;
+        const selections = yield* sql<{ readonly n: number }>`
+          SELECT count(*)::int AS n FROM resource_selections`;
+        const named = yield* sql<{ readonly what: string }>`
+          SELECT relname AS what FROM pg_class
+          WHERE relname LIKE 'resource_approval%' OR relname LIKE 'resource_proposal%'
+          UNION ALL
+          SELECT proname FROM pg_proc WHERE proname LIKE 'resource_approval%'`;
+        const unpinned = yield* attempt(
+          sql`UPDATE resource_definitions SET image_digest = 'latest' WHERE id = 'rdef_db'`,
+        );
+        const removedChanged = yield* attempt(
+          sql`UPDATE resource_definitions SET added_by = 'mallory' WHERE id = 'rdef_old'`,
+        );
+        return {
+          definitions,
+          selections: selections[0]?.n,
+          named: named.map((row) => row.what),
+          unpinned,
+          removedChanged,
+        };
+      }),
+    );
+    expect(outcome).toMatchObject({
+      definitions: [
+        { id: "rdef_cache", imageDigest: pin("4"), addedBy: "alice" },
+        { id: "rdef_db", imageDigest: pin("2"), addedBy: "alice" },
+        { id: "rdef_old", imageDigest: pin("6"), addedBy: "alice" },
+      ],
+      selections: 0,
+      named: [],
+      unpinned: { code: "23514" },
+      // The removed project's guard is back once the pins are in.
+      removedChanged: { code: "MRFRM" },
+    });
+  }, 60_000);
+});
+
 describe.skipIf(postgres.skip)("0163 push device credentials", () => {
   beforeAll(emptyScratch);
 

@@ -50,9 +50,7 @@ import type {
   ProjectSecretId,
   ProjectMountId,
   ReferenceId,
-  ResourceApprovalId,
   ResourceDefinitionId,
-  ResourceProposalId,
   RoutedAction,
   RunId,
   RunKind,
@@ -76,6 +74,7 @@ import type {
   MessageTurnReason,
   CapturePosition,
   HarnessLayout,
+  ImageDigest,
   RecipeEnv,
   RecipeReady,
   RemoteSsh,
@@ -684,10 +683,11 @@ export const previewControls = pgTable("preview_controls", {
 });
 
 /**
- * A resource a project declared (ADR 0019). `spec` is the definition; name, scope and preset are
- * copied out of it, and a CHECK in the migration holds them equal. `specDigest` is the spec's digest
- * when it was declared, so a later Mend that reads the spec differently does not unapprove it. The
- * project is not deleted while one exists.
+ * A resource a project declared (ADR 0019). `spec` is the definition as added; name, scope and
+ * preset are copied out of it, and a CHECK in the migration holds them equal. `specDigest` is the
+ * spec's digest when it was added, so a later Mend that reads the spec differently still matches
+ * what its readers saw. `imageDigest` pins the image: the digest its tag resolved to when the
+ * definition was added. The project is not deleted while one exists.
  */
 export const resourceDefinitions = pgTable(
   "resource_definitions",
@@ -702,74 +702,12 @@ export const resourceDefinitions = pgTable(
     preset: text().$type<ResourcePreset>(),
     spec: jsonbOf(ResourceDefinitionInput).notNull(),
     specDigest: text().$type<ResourceSpecDigest>().notNull(),
-    declaredBy: text().notNull(),
+    imageDigest: text().$type<ImageDigest>().notNull(),
+    addedBy: text().notNull(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [unique("resource_definitions_project_name_key").on(table.projectId, table.name)],
-);
-
-/**
- * A definition a member proposed in settings (ADR 0019, decision G1), kept apart from the one the
- * project declares, so a proposal never replaces a definition. Its spec never changes: one author
- * proposing one spec twice is one row, and two people's proposals of one name are two.
- */
-export const resourceProposals = pgTable(
-  "resource_proposals",
-  {
-    id: text().$type<ResourceProposalId>().primaryKey(),
-    projectId: text()
-      .$type<ProjectId>()
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    name: text().notNull(),
-    spec: jsonbOf(ResourceDefinitionInput).notNull(),
-    specDigest: text().$type<ResourceSpecDigest>().notNull(),
-    proposedBy: text().notNull(),
-    proposedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    unique("resource_proposals_author_spec_key").on(
-      table.projectId,
-      table.proposedBy,
-      table.specDigest,
-    ),
-    index("resource_proposals_project_name_idx").on(table.projectId, table.name),
-  ],
-);
-
-/**
- * One approved spec of a definition, its image pinned to a digest. `definitionDigest` is the
- * declared spec the approver read; `digest` is the pinned spec's. A null `worktreeId` is a
- * manager's approval for the project, a set one a change owner's for that worktree (decision G4).
- * Triggers in the migration refuse an update, and a delete other than the cascade from its
- * definition or worktree.
- */
-export const resourceApprovals = pgTable(
-  "resource_approvals",
-  {
-    id: text().$type<ResourceApprovalId>().primaryKey(),
-    definitionId: text()
-      .$type<ResourceDefinitionId>()
-      .notNull()
-      .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
-    worktreeId: text()
-      .$type<WorktreeId>()
-      .references(() => worktrees.id, { onDelete: "cascade" }),
-    revision: integer().notNull(),
-    definitionDigest: text().$type<ResourceSpecDigest>().notNull(),
-    digest: text().$type<ResourceSpecDigest>().notNull(),
-    spec: jsonbOf(ResourceDefinitionInput).notNull(),
-    approvedBy: text().notNull(),
-    approvedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    unique("resource_approvals_definition_revision_key").on(table.definitionId, table.revision),
-    index("resource_approvals_definition_declared_idx").on(
-      table.definitionId,
-      table.definitionDigest,
-    ),
-  ],
 );
 
 /**
