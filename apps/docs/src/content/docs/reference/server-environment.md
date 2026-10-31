@@ -311,3 +311,14 @@ extraEnv:
 
 Use `extraEnv` for the variables the chart does not set, and the value that maps to a variable for
 the ones it does. See [Deploy on Kubernetes](/operate/deploy-kubernetes/).
+
+## Screen video
+
+| Variable                      | Default                                            | Meaning                                                                                                                                         |
+| ----------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_SCREEN_RTC_UDP_PORT`    | `3140`, packaged edge `443`                        | One UDP listener shared by every screen viewer. Valid ports are 1 through 65535. Open and forward this port to the API process.                 |
+| `MEND_SCREEN_RTC_PUBLIC_HOST` | `APP_URL` hostname, packaged edge `MEND_EDGE_HOST` | IPv4 address or hostname announced in the ICE host candidate. Hostnames resolve to one IPv4 address. Use an address clients can reach directly. |
+
+The packaged edge publishes 443/udp from Mend and 443/tcp from Caddy. Caddy has HTTP/3 off and
+serves HTTP/1.1 and HTTP/2. Screens use WebRTC H.264 video and a data channel for the holder's
+input, with no TURN. An unavailable encoder or UDP path falls back to the WebSocket screen viewer.

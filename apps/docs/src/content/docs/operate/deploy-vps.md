@@ -295,3 +295,18 @@ Back up private configuration and Docker volumes as well. Read the
 [self-hosting and recovery guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md)
 before planned maintenance. [Kubernetes](/operate/deploy-kubernetes/) remains an operator-managed
 alternative, not a mode of this setup command.
+
+## Screen streams
+
+The packaged edge gives Mend **443/udp** for a session's screen video and Take over input over
+WebRTC. Caddy serves HTTPS on 443/tcp with HTTP/1.1 and HTTP/2. HTTP/3 is off so it does not compete
+for the UDP port. Allow 443/udp through the host firewall and forward it to Mend when there is a
+router in front. The stream uses authenticated signalling on the same Mend origin. There is no TURN
+relay. If UDP cannot connect within five seconds, or the workspace has no ffmpeg encoder, the screen
+pane falls back to its WebSocket viewer.
+
+`MEND_SCREEN_RTC_PUBLIC_HOST` is the IPv4 address or hostname announced to clients, defaulting to
+the edge hostname. A hostname resolves to one IPv4 address. Override it when the edge's DNS name
+points to a CDN that does not forward UDP to Mend. The packaged edge sets
+`MEND_SCREEN_RTC_UDP_PORT=443`; direct development uses 3140/udp. The screen log still keeps frames
+from Mend's hand, independently of the video stream.
