@@ -70,8 +70,8 @@ describe("[resource.*] tables in mend.toml", () => {
       },
     ]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
-      "web · depends · @db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
-      "web · depends · @queue · resources need a newer Sealant on this runtime · this session can run its own [service.queue]",
+      "web · depends · @db · a Service's depends does not name a resource yet · every process in the worktree has @db's env already",
+      "web · depends · @queue · a Service's depends does not name a resource yet · every process in the worktree has @queue's env already",
     ]);
     expect(file.ignored).toEqual([]);
   });

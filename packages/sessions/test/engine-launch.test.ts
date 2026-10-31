@@ -1106,7 +1106,9 @@ describe("SessionEngine", () => {
                 ],
               };
             }),
+          envOf: () => Effect.die("not in this test"),
           start: () => Effect.die("not in this test"),
+          stop: () => Effect.die("not in this test"),
           observe: () => Effect.die("not in this test"),
           archive: () => Effect.die("not in this test"),
         }),

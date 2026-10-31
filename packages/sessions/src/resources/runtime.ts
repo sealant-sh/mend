@@ -10,6 +10,7 @@ import {
   ownDatabaseName,
   type ResourceBinding,
   resourceBindings,
+  type ResourceEnvLeft,
   type ResourceInstanceObservation,
   resourceInstanceKey,
   resourceInstanceSpec,
@@ -75,10 +76,24 @@ export class ResourceRuntime extends Context.Service<
      * fails the launch: the env is the same, and a view says the process starts without it.
      */
     readonly prepare: (input: PrepareInput) => Effect.Effect<Prepared>;
+    /** The env a worktree's processes get now, from the rows alone; nothing is started. */
+    readonly envOf: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<{
+      readonly env: Readonly<Record<string, string>>;
+      readonly left: ReadonlyArray<ResourceEnvLeft>;
+    }>;
     /** A person's start: clears a person's stop. Bounded; the start goes on past the bound. */
     readonly start: (
       definition: StoredResourceDefinition,
       worktreeId: WorktreeId | null,
+    ) => Effect.Effect<InstanceObserved>;
+    /** A person's stop, which holds against every launch until a person starts it. */
+    readonly stop: (
+      definition: StoredResourceDefinition,
+      worktreeId: WorktreeId | null,
+      by: string,
     ) => Effect.Effect<InstanceObserved>;
     /** Every instance of the project as Sealant observed it, in one call. */
     readonly observe: (projectId: ProjectId) => Effect.Effect<ProjectObservation>;
@@ -93,7 +108,9 @@ export const PREPARE_BOUND = Duration.seconds(30);
 /** A runtime that runs nothing: every process gets no resource env. For tests and tools. */
 export const ResourceRuntimeNone: Layer.Layer<ResourceRuntime> = Layer.succeed(ResourceRuntime, {
   prepare: () => Effect.succeed({ env: {}, views: [] }),
+  envOf: () => Effect.succeed({ env: {}, left: [] }),
   start: () => Effect.succeed(unobserved("no runtime runs resources here")),
+  stop: () => Effect.succeed(unobserved("no runtime runs resources here")),
   observe: () =>
     Effect.succeed({
       kind: "unobserved",
@@ -214,6 +231,21 @@ export const resourceRuntimeLayer = (
         ).flatMap((binding) => {
           const definition = byName.get(binding.definition.name);
           return definition === undefined ? [] : [{ binding, definition }];
+        });
+      });
+
+      const envOf = Effect.fn("ResourceRuntime.envOf")(function* (
+        projectId: ProjectId,
+        worktreeId: WorktreeId,
+      ) {
+        const [bound, names] = yield* Effect.all(
+          [bindingsOf(projectId, worktreeId), projectEnvNames(projectId)],
+          { concurrency: "unbounded" },
+        );
+        return resourceProcessEnv({
+          bindings: bound.map(({ binding }) => binding),
+          worktreeId,
+          projectEnvNames: names,
         });
       });
 
@@ -433,6 +465,20 @@ export const resourceRuntimeLayer = (
         );
       });
 
+      const stop = Effect.fn("ResourceRuntime.stop")(function* (
+        definition: StoredResourceDefinition,
+        worktreeId: WorktreeId | null,
+        by: string,
+      ) {
+        const key = resourceInstanceKey(
+          definition.id,
+          definition.spec.scope === "worktree" ? worktreeId : null,
+        );
+        return yield* asObserved(
+          scopeOf(definition.projectId).pipe(Effect.flatMap((client) => client.stop(key, by))),
+        );
+      });
+
       const observe = Effect.fn("ResourceRuntime.observe")(function* (projectId: ProjectId) {
         return yield* scopeOf(projectId).pipe(
           Effect.flatMap((client) => client.list()),
@@ -478,7 +524,7 @@ export const resourceRuntimeLayer = (
         );
       });
 
-      return { prepare, start, observe, archive };
+      return { prepare, envOf, start, stop, observe, archive };
     }),
   );
 

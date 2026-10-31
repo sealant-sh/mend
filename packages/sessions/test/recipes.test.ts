@@ -5,7 +5,7 @@ import * as path from "node:path";
 import {
   recipeRefusalLine,
   RepoRelativePath,
-  resourceRuntimeRefusal,
+  resourceDependsRefusal,
   ServiceRecipe,
   SetupDeclaration,
   setupRefusalsOf,
@@ -250,19 +250,14 @@ ready = { http = "/" }
     ]);
   });
 
-  it("refuses a dependency on a resource in the words a start of it says", () => {
+  it("refuses a dependency on a resource, which a later Mend waits on", () => {
     const file = parse(
       [...WEB, 'depends = ["@db", { shared = "cache" }, { resource = "queue" }]'].join("\n"),
     );
     expect(file.refused.map((refusal) => refusal.message)).toEqual([
-      "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
-      "@cache · resources need a newer Sealant on this runtime · this session can run its own [service.cache]",
-      "@queue · resources need a newer Sealant on this runtime · this session can run its own [service.queue]",
-    ]);
-    expect(file.refused.map((refusal) => refusal.message)).toEqual([
-      resourceRuntimeRefusal("db"),
-      resourceRuntimeRefusal("cache"),
-      resourceRuntimeRefusal("queue"),
+      "@db · a Service's depends does not name a resource yet · every process in the worktree has @db's env already",
+      resourceDependsRefusal("cache"),
+      resourceDependsRefusal("queue"),
     ]);
     expect(file.refused.every((refusal) => refusal.key === "depends")).toBe(true);
   });
