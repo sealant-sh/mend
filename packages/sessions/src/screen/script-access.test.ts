@@ -1,0 +1,149 @@
+import { DisplayNumber } from "@mend/domain/workbench";
+import { it } from "@mend/test-ci/effect-vitest";
+import { Effect, Redacted } from "effect";
+import { describe, expect } from "vitest";
+
+import {
+  FULL,
+  VIEW_ONLY,
+  RUNTIME,
+  docker,
+  useScreenScript,
+} from "../../test/screen-script-fixture.ts";
+import { connectInside, dockerReady } from "../../test/xvnc.ts";
+import { planActions } from "./hand-steps.ts";
+import { openHand } from "./hand.ts";
+import { SCREEN_WORKER, screenWorkersLayer } from "./screen-workers.ts";
+import { screenPort } from "./script.ts";
+
+const fails = (run: () => unknown) => {
+  try {
+    run();
+    return false;
+  } catch {
+    return true;
+  }
+};
+
+describe.skipIf(!dockerReady)("screen script access and input", () => {
+  const { container, inside, asPerson, xvncPid, start } = useScreenScript();
+
+  it.live(
+    "listens on loopback only, behind its passwords and its cookie, with neither in argv",
+    () =>
+      Effect.gen(function* () {
+        const screen = start(10);
+        yield* Effect.promise(() => screen.said("mend-screen ready"));
+        const port = screenPort(DisplayNumber.make(10)).toString(16).toUpperCase().padStart(4, "0");
+        const listening = inside(
+          "cat /proc/net/tcp /proc/net/tcp6 | awk '$4 == \"0A\" { print $2 }'",
+        )
+          .trim()
+          .split("\n");
+        expect(listening.toSorted()).toEqual([
+          `00000000000000000000000001000000:${port}`,
+          `0100007F:${port}`,
+        ]);
+        expect(asPerson(10, "xdpyinfo | head -1")).toContain(":10");
+        expect(fails(() => asPerson(10, "xdpyinfo", "/nonexistent"))).toBe(true);
+        expect(fails(() => inside("DISPLAY=:10 xdpyinfo"))).toBe(true);
+        expect(inside(`stat -c '%a %U %s' ${RUNTIME}/mend-screen-10/passwd`).trim()).toBe(
+          "600 person 16",
+        );
+        const argv = inside("cat /proc/[0-9]*/cmdline | tr '\\0' ' '");
+        expect(argv).toContain("Xvnc :10");
+        expect(argv).not.toContain(FULL);
+        expect(argv).not.toContain(VIEW_ONLY);
+        expect(inside(`cat /proc/${xvncPid(10)}/environ | tr '\\0' '\\n'`)).not.toMatch(
+          /fullpass|viewpass/,
+        );
+      }),
+    { timeout: 120_000 },
+  );
+
+  it.live(
+    "lets the full password move the pointer, the view-only one move nothing, and refuses any other",
+    () =>
+      Effect.gen(function* () {
+        const pointer = () =>
+          asPerson(10, "xdotool getmouselocation").match(/x:(\d+) y:(\d+)/)?.[0];
+        const signIn = (password: string) =>
+          openHand({
+            bytes: connectInside(container, screenPort(DisplayNumber.make(10))).bytes,
+            password: Redacted.make(password),
+            currentEpoch: Effect.succeed(1),
+          });
+        const plan = planActions([{ kind: "move", to: { x: 321, y: 123 } }]);
+        if (plan._tag === "Unsupported") throw new Error("a move is always planned");
+
+        const full = yield* signIn(FULL);
+        yield* full.act(plan.steps, 1);
+        expect(pointer()).toBe("x:321 y:123");
+
+        const viewer = yield* signIn(VIEW_ONLY);
+        expect((yield* viewer.look).length).toBeGreaterThan(0);
+        yield* viewer.relay([{ _tag: "Pointer", buttons: 0, x: 900, y: 700 }], 1);
+        yield* Effect.sleep("500 millis");
+        expect(pointer()).toBe("x:321 y:123");
+
+        const refused = yield* signIn("guessed!").pipe(Effect.flip);
+        expect(refused.reason).toBe("auth-failed");
+      }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
+    { timeout: 60_000 },
+  );
+
+  it.live(
+    "keeps the hand's keys and Unicode typing working with xfsettingsd running",
+    () =>
+      Effect.gen(function* () {
+        expect(asPerson(10, "pgrep -x xfsettingsd").trim()).not.toBe("");
+        docker(
+          "exec",
+          "-d",
+          "-u",
+          "person",
+          "-e",
+          "DISPLAY=:10",
+          "-e",
+          `XAUTHORITY=${RUNTIME}/mend-screen-10/auth`,
+          container,
+          "xterm",
+          "-title",
+          "mend-hand-keyboard",
+          "-e",
+          "sh",
+          "-c",
+          `cat > ${RUNTIME}/mend-screen-10/typed`,
+        );
+        for (let tries = 0; ; tries++) {
+          try {
+            asPerson(
+              10,
+              "xdotool windowfocus --sync $(xdotool search --name '^mend-hand-keyboard$' | head -1)",
+            );
+            break;
+          } catch (error) {
+            if (tries === 50) throw error;
+            yield* Effect.sleep("100 millis");
+          }
+        }
+        const hand = yield* openHand({
+          bytes: connectInside(container, screenPort(DisplayNumber.make(10))).bytes,
+          password: Redacted.make(FULL),
+          currentEpoch: Effect.succeed(1),
+        });
+        const plan = planActions([
+          { kind: "type", text: "discard" },
+          { kind: "key", combo: "ctrl+u" },
+          { kind: "type", text: "é€あ" },
+          { kind: "key", combo: "Return" },
+        ]);
+        if (plan._tag === "Unsupported") throw new Error(`unsupported ${plan.key}`);
+        expect((yield* hand.act(plan.steps, 1)).results).toEqual(["done", "done", "done", "done"]);
+        yield* Effect.sleep("200 millis");
+        expect(asPerson(10, `cat ${RUNTIME}/mend-screen-10/typed`)).toBe("é€あ\n");
+        asPerson(10, "pkill -x xterm");
+      }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
+    { timeout: 60_000 },
+  );
+});
