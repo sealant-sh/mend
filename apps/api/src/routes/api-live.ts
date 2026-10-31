@@ -58,6 +58,7 @@ import { instanceIdOf } from "../instance-id.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AgentMemoryGroupLive } from "./agent-memory.ts";
 import { DevicePairingLive } from "./devices.ts";
+import { DopplerGroupLive } from "./doppler.ts";
 import { FoldersGroupLive } from "./folders.ts";
 import { GithubGroupLive } from "./github.ts";
 import { HandoffsGroupLive } from "./handoffs.ts";
@@ -683,6 +684,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       PiProfileGroupLive,
       AgentMemoryGroupLive,
       SecretFilesGroupLive,
+      DopplerGroupLive,
       HarnessModelsGroupLive,
     ),
   ),

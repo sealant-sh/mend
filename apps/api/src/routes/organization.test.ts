@@ -799,7 +799,11 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
     await expect(rejected.json()).resolves.toMatchObject({
       saved: false,
       settings: { organization: { workspaceImage: null } },
-      resolutions: [{ requested: "nope", status: "not-found" }],
+      // Validation includes Mend's Doppler CLI even when a configured package is rejected.
+      resolutions: [
+        { requested: "nope", status: "not-found" },
+        { requested: "doppler", status: "resolved", canonicalId: "doppler-canonical" },
+      ],
     });
     expect(writes).toEqual([]);
 

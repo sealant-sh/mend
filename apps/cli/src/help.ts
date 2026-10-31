@@ -74,6 +74,55 @@ const noTunnel: OptionDoc = {
 };
 
 export const COMMANDS: ReadonlyArray<CommandDoc> = [
+  {
+    name: "doppler",
+    section: "project setup",
+    summary: "connect your Doppler login and project configs",
+    synopsis: [
+      "connect | use <doppler-project> <config> [--project <mend-project>] | status | disconnect",
+    ],
+    options: [project()],
+    description: [
+      "Keeps your own Doppler token encrypted in Mend and delivers ~/.doppler/.doppler.yaml into your own workspace home. Run doppler login, then mend doppler connect on your laptop or inside a session. Launch never calls Doppler.",
+    ],
+  },
+  {
+    name: "doppler connect",
+    section: "project setup",
+    summary: "import your local Doppler login",
+    synopsis: [""],
+    description: [
+      "Imports your local Doppler token and maps directory scopes to adopted Mend projects by their Git remotes. The token is write-only and never printed.",
+    ],
+  },
+  {
+    name: "doppler use",
+    section: "project setup",
+    summary: "choose your Doppler config for a Mend project",
+    synopsis: ["<doppler-project> <config> [--project <mend-project>]"],
+    description: [
+      "Defaults to the current session's project inside a workspace, or the current repository on your laptop. In a session, updates your local Doppler file immediately. Other running homes receive the selection at their next delivery.",
+    ],
+    options: [project()],
+  },
+  {
+    name: "doppler status",
+    section: "project setup",
+    summary: "show your connection and project mappings",
+    synopsis: [""],
+    description: [
+      "Shows names and connection time, never tokens. Inside a workspace also reports when the Doppler CLI is not installed.",
+    ],
+  },
+  {
+    name: "doppler disconnect",
+    section: "project setup",
+    summary: "remove your Mend Doppler connection",
+    synopsis: [""],
+    description: [
+      "Removes your server token and mappings. Inside a workspace removes your unchanged Mend-delivered file. A later local Doppler login is preserved. Other homes are cleaned up on their next delivery.",
+    ],
+  },
   // ── start ──────────────────────────────────────────────────────────────
   {
     name: "login",

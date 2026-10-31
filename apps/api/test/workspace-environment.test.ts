@@ -63,6 +63,7 @@ describe("resolveWorkspaceEnvironment", () => {
     expect(observed).toEqual([
       { packageName: "gh", os: "arch" },
       { packageName: "github-cli", os: "arch" },
+      { packageName: "doppler", os: "arch" },
     ]);
     expect(result.workspaceImage).toEqual({
       mode: "family",
@@ -88,7 +89,7 @@ describe("resolveWorkspaceEnvironment", () => {
     );
 
     expect(result.workspaceImage).toBeNull();
-    expect(result.resolutions).toHaveLength(2);
+    expect(result.resolutions).toHaveLength(3);
   });
 
   it("refuses a name outside the catalog that the platform matched to another project", async () => {
@@ -174,7 +175,7 @@ describe("resolveWorkspaceEnvironment", () => {
       ),
     );
 
-    expect(asked).toEqual(["gh", ...screenPackageIds("arch")]);
+    expect(asked).toEqual(["gh", "doppler", ...screenPackageIds("arch")]);
     expect(result.workspaceImage).toMatchObject({ packages: ["github-cli"], screen: true });
   });
 
@@ -188,9 +189,10 @@ describe("resolveWorkspaceEnvironment", () => {
     );
 
     expect(result.workspaceImage).toBeNull();
-    expect(result.resolutions.filter((r) => !r.supported).map((r) => r.requested)).toEqual(
-      screenPackageIds("arch"),
-    );
+    expect(result.resolutions.filter((r) => !r.supported).map((r) => r.requested)).toEqual([
+      "doppler",
+      ...screenPackageIds("arch"),
+    ]);
   });
 
   it("refuses a screen off x86_64 before asking the platform anything", async () => {
@@ -311,6 +313,7 @@ describe("workspace environment save boundaries", () => {
     expect(result.resolutions.map(({ requested, status }) => ({ requested, status }))).toEqual([
       { requested: "pnpm", status: "resolved" },
       { requested: "missing", status: "not-found" },
+      { requested: "doppler", status: "resolved" },
     ]);
     expect({ saves, current }).toEqual({ saves: 0, current: initial });
   });

@@ -311,6 +311,8 @@ const READS: Readonly<Record<string, Reads>> = {
     pages: ["server logs", "server start", "server restart"],
     childArgv: ["--no-color", "--timeout"],
   },
+  "doppler.ts dopplerCommand": { pages: ["doppler use"] },
+  "doppler.ts readDopplerLocalConfig": CHILD,
   "git-author.ts parseGitAuthorArgs": { pages: ["git-author"] },
   "claude-grant.ts forgetGrant": CHILD,
   "claude-grant.ts grantStatus": CHILD,

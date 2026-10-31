@@ -48,7 +48,8 @@
     "qrcode": "catalog:",
     "react": "catalog:",
     "undici": "catalog:",
-    "ws": "catalog:"
+    "ws": "catalog:",
+    "yaml": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

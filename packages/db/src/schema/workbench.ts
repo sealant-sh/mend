@@ -3101,3 +3101,25 @@ export const sessionMessages = pgTable(
     index("session_messages_session_idx").on(table.sessionId),
   ],
 );
+
+/** Personal Doppler token, encrypted with SecretCipher, never returned by HTTP. */
+export const userDopplerConnections = pgTable("user_doppler_connections", {
+  userId: text().primaryKey(),
+  sealedToken: text().notNull(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+export const userDopplerProjects = pgTable(
+  "user_doppler_projects",
+  {
+    userId: text()
+      .notNull()
+      .references(() => userDopplerConnections.userId, { onDelete: "cascade" }),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    dopplerProject: text().notNull(),
+    config: text().notNull(),
+  },
+  (table) => [unique("user_doppler_projects_user_project_key").on(table.userId, table.projectId)],
+);
