@@ -138,7 +138,7 @@ function PreviewLines({ facts }: { readonly facts: ReadonlyArray<PreviewStatus> 
   const now = new Date(useSecondTick() * 1000);
   return facts.map((status, index) => (
     <p key={index} className="mt-1 font-mono break-words text-[11px] text-muted-foreground">
-      {previewStatusLine(status, now)}
+      {previewStatusLine(status, { now })}
     </p>
   ));
 }

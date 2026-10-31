@@ -30,6 +30,8 @@ export class SlackApiError extends Schema.TaggedError<SlackApiError>()("SlackApi
   method: Schema.String,
   code: Schema.String,
   message: Schema.String,
+  /** Slack's Retry-After on a `ratelimited` answer, once the client's own waits ran out. */
+  retryAfterSeconds: Schema.optional(Schema.Number),
 }) {}
 
 /** Slack's answers that mean the token itself is no good, as opposed to the call. */
@@ -271,7 +273,28 @@ export const slackApiError = (method: string, cause: unknown): SlackApiError => 
     return new SlackApiError({ method, code: cause.data.error, message: cause.message });
   }
   if (cause instanceof WebAPIRateLimitedError) {
-    return new SlackApiError({ method, code: "ratelimited", message: cause.message });
+    return new SlackApiError({
+      method,
+      code: "ratelimited",
+      message: cause.message,
+      retryAfterSeconds: cause.retryAfter,
+    });
+  }
+  // The client waits out each Retry-After itself; when its retries run out it throws the last
+  // wait's own error, which names the Retry-After only in its message.
+  const exhausted =
+    cause instanceof WebAPIRequestError
+      ? /^A rate limit was exceeded \(url: [^,]*, retry-after: (\d+)\)$/u.exec(
+          cause.original.message,
+        )
+      : null;
+  if (exhausted !== null) {
+    return new SlackApiError({
+      method,
+      code: "ratelimited",
+      message: "rate limited",
+      retryAfterSeconds: Number(exhausted[1]),
+    });
   }
   if (cause instanceof WebAPIHTTPError) {
     return new SlackApiError({ method, code: `http_${cause.statusCode}`, message: cause.message });
@@ -285,6 +308,26 @@ export const slackApiError = (method: string, cause: unknown): SlackApiError => 
     message: cause instanceof Error ? cause.message : String(cause),
   });
 };
+
+const MESSAGE_GONE: ReadonlySet<string> = new Set(["message_not_found", "channel_not_found"]);
+
+/**
+ * `MessageGone`: never edited again. `Refused`: anything else, from a rate limit to a channel
+ * archived for now or a token that stopped working; the edit waits `retryAfterMs` when Slack
+ * named a Retry-After, and backs off otherwise.
+ */
+export type UpdateRefusal =
+  | { readonly _tag: "MessageGone" }
+  | { readonly _tag: "Refused"; readonly retryAfterMs: number | null };
+
+export const updateRefusalOf = (error: SlackApiError): UpdateRefusal =>
+  MESSAGE_GONE.has(error.code)
+    ? { _tag: "MessageGone" }
+    : {
+        _tag: "Refused",
+        retryAfterMs:
+          error.retryAfterSeconds === undefined ? null : error.retryAfterSeconds * 1_000,
+      };
 
 /** The one host family the bot token is ever sent to. */
 export const isSlackFileUrl = (url: string): boolean => {
@@ -591,6 +634,9 @@ export interface FakeSlack {
   readonly calls: ReadonlyArray<FakeSlackCall>;
   /** Reactions on each `<channel>:<ts>` right now. */
   readonly reactions: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Refuse the next `chat.update` calls, one per error, in order; a refused edit changes nothing. */
+  readonly refuseUpdates: (...errors: ReadonlyArray<SlackApiError>) => void;
+  readonly refused: ReadonlyArray<SlackUpdateInput>;
 }
 
 /**
@@ -600,6 +646,8 @@ export interface FakeSlack {
 export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): FakeSlack => {
   const calls: Array<FakeSlackCall> = [];
   const reactions = new Map<string, Set<string>>();
+  const updateRefusals: Array<SlackApiError> = [];
+  const refused: Array<SlackUpdateInput> = [];
   let sequence = 0;
   const nextTs = () => {
     sequence += 1;
@@ -666,9 +714,14 @@ export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): Fa
       ),
     update: (token, input) =>
       byBot("chat.update", token).pipe(
-        Effect.map((workspace) => {
+        Effect.flatMap((workspace) => {
+          const refusal = updateRefusals.shift();
+          if (refusal !== undefined) {
+            refused.push(input);
+            return Effect.fail(refusal);
+          }
           calls.push({ kind: "update", teamId: workspace.teamId, input });
-          return { channel: input.channel, ts: input.ts };
+          return Effect.succeed({ channel: input.channel, ts: input.ts });
         }),
       ),
     reactionsAdd: (token, input) =>
@@ -720,5 +773,12 @@ export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): Fa
       ),
   };
 
-  return { service, layer: Layer.succeed(SlackApi, service), calls, reactions };
+  return {
+    service,
+    layer: Layer.succeed(SlackApi, service),
+    calls,
+    reactions,
+    refuseUpdates: (...errors) => void updateRefusals.push(...errors),
+    refused,
+  };
 };

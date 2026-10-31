@@ -179,7 +179,7 @@ const preview = (
           dial: "session-bound",
         }
       : { _tag: "Unbound", reason: "no-live-attempt" },
-  status: facts.map((status) => previewStatusLine(status, now)),
+  status: facts.map((status) => previewStatusLine(status, { now })),
   facts,
   open: "bound" in binding || binding.open ? `/preview-auth?preview=pv-${name}&path=%2F` : null,
   boundTo:

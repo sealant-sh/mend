@@ -531,12 +531,20 @@ const notPreparedWords = (service: string | null, why: PreviewNotPrepared): stri
 export const previewFactLine = (service: string, fact: string): string =>
   `preview · ${service} · ${fact}`;
 
-export const previewStatusLine = (status: PreviewStatus, now: Date): string => {
+/**
+ * How a fact is worded: as of `now`, or `stable`, without an age, so the line does not change as
+ * time passes or a check repeats (`preview · web · answered HTTP 200 · observed`).
+ */
+export type PreviewLineOptions = { readonly now: Date } | { readonly stable: true };
+
+export const previewStatusLine = (status: PreviewStatus, options: PreviewLineOptions): string => {
   switch (status._tag) {
     case "Observed":
       return previewFactLine(
         status.service,
-        `${observedWords(status)} · observed ${observedAgo(status.observedAt, now)}`,
+        "now" in options
+          ? `${observedWords(status)} · observed ${observedAgo(status.observedAt, options.now)}`
+          : `${observedWords(status)} · observed`,
       );
     case "Starting":
       return previewFactLine(

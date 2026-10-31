@@ -1,12 +1,13 @@
 import { PgClient } from "@effect/sql-pg";
-import { listenEvents, MendEvent } from "@mend/db";
+import { MendEvent, openEvents } from "@mend/db";
 import { Effect, Layer, PubSub, Ref, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 import type * as Scope from "effect/Scope";
 
 /**
- * What subscribers receive: a decoded pointer event with its original payload, or `resync`
- * after the listen connection was lost and re-established, when events may have been missed.
+ * What subscribers receive: a decoded pointer event with its original payload, or `resync` when
+ * events may have been missed: once when the listen connection is lost, and once when it listens
+ * again.
  */
 export type BusSignal =
   | { readonly kind: "event"; readonly event: MendEvent; readonly payload: string }
@@ -54,28 +55,40 @@ export const busPayloads = (subscription: PubSub.Subscription<BusSignal>) =>
     Stream.map((signal) => signal.payload),
   );
 
-export const makeEventBus = <E, R>(listen: Stream.Stream<string, E, R>) =>
+/**
+ * `open` LISTENs, succeeding once the LISTEN is confirmed, with the payloads from then on. Whatever
+ * is notified while not listening is gone, so subscribers hear `resync` twice per outage: when the
+ * connection is lost, and once it listens again, so a change made in between is read too. A
+ * database that stays down adds nothing: no subscriber refetches on every failed attempt.
+ */
+export const makeEventBus = <E, R>(
+  open: Effect.Effect<Stream.Stream<string, E>, E, R | Scope.Scope>,
+) =>
   Effect.gen(function* () {
     const pubsub = yield* PubSub.sliding<BusSignal>(BUFFER);
-    /** True from the moment the connection is lost until a payload arrives again. */
     const down = yield* Ref.make(false);
-    const attempt = Effect.gen(function* () {
-      yield* pumpEvents(
-        pubsub,
-        Stream.tap(listen, () => Ref.set(down, false)),
-      ).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("the events listen connection ended; reconnecting").pipe(
-            Effect.annotateLogs({ cause: String(cause) }),
-          ),
+    const attempt = Effect.scoped(
+      Effect.gen(function* () {
+        const payloads = yield* open;
+        if (yield* Ref.getAndSet(down, false)) {
+          yield* PubSub.publish(pubsub, { kind: "resync" });
+        }
+        yield* pumpEvents(pubsub, payloads);
+      }),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("the events listen connection ended; reconnecting").pipe(
+          Effect.annotateLogs({ cause: String(cause) }),
         ),
-      );
-      // Whatever was notified while not listening is gone: tell subscribers to re-read, once per
-      // outage, so a database that stays down does not make every client refetch every second.
-      if (!(yield* Ref.getAndSet(down, true))) {
-        yield* PubSub.publish(pubsub, { kind: "resync" });
-      }
-    });
+      ),
+      Effect.andThen(
+        Effect.gen(function* () {
+          if (!(yield* Ref.getAndSet(down, true))) {
+            yield* PubSub.publish(pubsub, { kind: "resync" });
+          }
+        }),
+      ),
+    );
     const reconnect = Schedule.min([
       Schedule.exponential("1 second"),
       Schedule.spaced("30 seconds"),
@@ -88,6 +101,6 @@ export const EventBusLive: Layer.Layer<EventBus, never, PgClient.PgClient> = Lay
   EventBus,
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
-    return yield* makeEventBus(listenEvents(sql));
+    return yield* makeEventBus(openEvents(sql));
   }),
 );

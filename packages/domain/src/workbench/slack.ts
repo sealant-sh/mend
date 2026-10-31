@@ -71,6 +71,17 @@ export const SlackSessionState = Schema.Literals([
 export type SlackSessionState = typeof SlackSessionState.Type;
 
 /**
+ * What a status message shows, as one key over its whole rendering (`statusKey`): its text and
+ * every block, buttons included. Two renderings with the same key look the same in Slack, so the
+ * reporter edits only when the key moves.
+ */
+export const SlackStatusKey = Schema.String.pipe(
+  Schema.check(Schema.isPattern(/^k1:[0-9a-f]{64}$/)),
+  Schema.brand("@mend/domain/SlackStatusKey"),
+);
+export type SlackStatusKey = typeof SlackStatusKey.Type;
+
+/**
  * A file on a mention, as Slack described it (`files:read`): enough to fetch it with the bot token
  * when the mention runs, so a screenshot sent before linking still reaches the session.
  */

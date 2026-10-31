@@ -46,6 +46,7 @@ import {
   ThreadProjectReader,
   type ThreadProjectOptions,
 } from "@mend/inference";
+import { SlackReports } from "@mend/jobs";
 import { makeWindowLimiter } from "@mend/network";
 import { asSealantUser, SealantClients } from "@mend/sealant";
 import { PASTED_IMAGE_MAX_BYTES, PASTED_IMAGE_TYPES, SessionEngine } from "@mend/sessions";
@@ -83,6 +84,12 @@ import {
   skippedImage,
   SLACK_ACTIONS,
   slackToPlain,
+  NO_PREVIEWS,
+  editedReceipt,
+  postedReceipt,
+  receiptAfter,
+  statusKey,
+  storedReceipt,
   statusMessage,
   switchOffered,
   threadContext,
@@ -100,7 +107,7 @@ import {
   type ThreadImageLimits,
   type ThreadImageSkip,
 } from "@mend/slack";
-import { SlackApi, type SlackApiError } from "@mend/slack/client";
+import { SlackApi, type SlackApiError, updateRefusalOf } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
 import { SecretCipher, Store } from "@mend/store";
 import { Cause, Clock, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
@@ -673,6 +680,11 @@ export const SLACK_TURN_IMAGE_LIMITS: ThreadImageLimits = {
   maxTotalBytes: 3 * PASTED_IMAGE_MAX_BYTES,
 };
 
+const renderingOf = (message: SlackMessage) => {
+  const key = statusKey(message);
+  return { key, base: key, previews: NO_PREVIEWS, counts: null };
+};
+
 export const makeSlackRunner = (options: SlackRunnerOptions) =>
   Effect.gen(function* () {
     const installs = yield* SlackInstallsRepo;
@@ -696,6 +708,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     const controls = yield* SessionControlEventsRepo;
     const processes = yield* SessionProcessesRepo;
     const ownerLanding = yield* OwnerLanding;
+    const reports = yield* SlackReports;
     const clock = yield* Clock.Clock;
     const now = options.now ?? (() => clock.currentTimeMillisUnsafe());
     const ceiling = makeWindowLimiter();
@@ -1165,14 +1178,11 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     });
 
     /**
-     * Stop the session a switch replaced, once its replacement exists, as the requester, and show
-     * it stopped. The stop is recorded as a control event only when the engine stopped it; when it
-     * could not, the requester is told, and the thread is left as it reads. The status message
-     * moves by the reporter's own compare-and-set, so the reporter finds `stopped` already shown
-     * and leaves the request's reaction to the session that replaces it.
+     * Stop the session a switch replaced, once its replacement exists, as the requester. The stop
+     * is recorded as a control event only when the engine stopped it; when it could not, the
+     * requester is told, and the thread is left as it reads. The reporter shows it stopped.
      */
     const stopSwitched = Effect.fn("SlackRunner.stopSwitched")(function* (
-      install: SealedSlackInstall,
       token: string,
       mention: SlackMention,
       userId: string,
@@ -1191,40 +1201,10 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         kind: "stop",
         refId: null,
       });
-
-      const project = yield* access
-        .projectAs(userId, session.projectId)
-        .pipe(Effect.catchTag("NotFound", () => Effect.succeed(null)));
-      const stopped = statusMessage({
-        project: project?.name ?? session.projectId,
-        source: thread.projectSource,
-        harness: session.harness,
-        branch: session.branch,
-        state: "stopped",
-        recorded: session.sealantRunId !== null,
-        change: null,
-        url: sessionUrl(install.webOrigin, session.id),
-      });
-      // The reporter may be moving the message too: claim from what it shows, a few times over.
-      let shown = (yield* threads.forSession(session.id)) ?? thread;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (shown.statusTs === null || isStoppedState(shown.reportedState)) break;
-        const moved = yield* threads.claimStatus(session.id, shown.reportedStatus, {
-          state: "stopped",
-          line: stopped.text,
-        });
-        if (moved) {
-          yield* quietly(
-            "chat.update",
-            slack.update(token, { channel: thread.channelId, ts: shown.statusTs, ...stopped }),
-          );
-          yield* react(token, mention, null, reactionFor(shown.reportedState ?? "starting"));
-          break;
-        }
-        const again = yield* threads.forSession(session.id);
-        if (again === null) break;
-        shown = again;
-      }
+      const shown = (yield* threads.forSession(session.id)) ?? thread;
+      // The request is the replacement's now (ownsRequestReaction), so only this removes it.
+      yield* react(token, mention, null, reactionFor(shown.reportedState ?? "starting"));
+      yield* reports.request({ _tag: "Session", id: session.id });
     });
 
     /**
@@ -1413,7 +1393,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         );
       }
       const session = created.success;
-      if (replacing !== null) yield* stopSwitched(install, token, mention, userId, replacing);
+      // Before the stop, so the reporter already finds the request the replacement's.
       yield* threads.record({
         sessionId: session.id,
         teamId: install.teamId,
@@ -1424,6 +1404,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         projectSource: choice.source,
         external: mention.external !== false,
       });
+      if (replacing !== null) yield* stopSwitched(token, mention, userId, replacing);
       yield* audit.record({
         organizationId: choice.project.organizationId,
         actorUserId: userId,
@@ -1442,9 +1423,6 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         },
       });
       yield* react(token, mention, reactionFor("starting"));
-      // The status message is the reporter's once posted: every move after the first goes
-      // through the same compare-and-set, so a launch that ends here and the reporter's next
-      // event cannot both write it.
       const status = (state: SlackSessionState, current: Session) =>
         statusMessage({
           project: choice.project.name,
@@ -1456,6 +1434,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           change: null,
           url: sessionUrl(install.webOrigin, current.id),
           switchSession: switchOffered(state, []) ? current.id : null,
+          previews: NO_PREVIEWS,
         });
       const shown = status("starting", session);
       const posted = yield* say(token, mention, shown).pipe(
@@ -1467,25 +1446,44 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           ),
         ),
       );
+      const posting = postedReceipt(renderingOf(shown));
+      const postedStatus = storedReceipt(posting);
       if (posted !== null) {
-        yield* threads.setStatusTs(session.id, posted, { state: "starting", line: shown.text });
+        yield* threads.setStatusTs(session.id, posted, { state: "starting", status: postedStatus });
       }
-      /** Move the status message on from `starting`, unless the reporter already has. */
+      /** Move the status message on from `starting`, or ask the reporter once it has. */
       const updateStatus = (state: SlackSessionState, current: Session) =>
         Effect.gen(function* () {
-          if (posted === null) return false;
+          if (posted === null) return;
           const next = status(state, current);
-          const moved = yield* threads.claimStatus(session.id, shown.text, {
-            state,
-            line: next.text,
-          });
-          if (moved) {
-            yield* quietly(
-              "chat.update",
-              slack.update(token, { channel: mention.channelId, ts: posted, ...next }),
-            );
-          }
-          return moved;
+          const claimed = storedReceipt(editedReceipt(renderingOf(next), now()));
+          const moved = yield* threads.claimStatus(
+            session.id,
+            { state: "starting", status: postedStatus },
+            { state, status: claimed },
+          );
+          const edited =
+            moved &&
+            (yield* slack.update(token, { channel: mention.channelId, ts: posted, ...next }).pipe(
+              Effect.as(true),
+              Effect.catch((error) =>
+                Effect.logWarning("slack runner: chat.update failed").pipe(
+                  Effect.annotateLogs({ method: error.method, code: error.code }),
+                  Effect.andThen(
+                    threads.claimStatus(
+                      session.id,
+                      { state, status: claimed },
+                      {
+                        state,
+                        status: storedReceipt(receiptAfter(posting, updateRefusalOf(error), now())),
+                      },
+                    ),
+                  ),
+                  Effect.as(false),
+                ),
+              ),
+            ));
+          if (!edited) yield* reports.request({ _tag: "Session", id: session.id });
         });
 
       const attached = yield* attachImages(token, session.id, userId, images);
@@ -2275,6 +2273,7 @@ export const SlackRunnerLive: Layer.Layer<
   | SlackEventClaimsRepo
   | SlackInstallsRepo
   | SlackLinksRepo
+  | SlackReports
   | SlackThreadsRepo
   | Store
   | ThreadProjectReader

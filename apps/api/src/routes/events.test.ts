@@ -1,5 +1,6 @@
 import type { MendEvent } from "@mend/db";
-import { Effect, Exit, PubSub, Queue, Scope, Stream } from "effect";
+import { TestClock } from "@mend/test-ci/effect-vitest";
+import { Deferred, Effect, Exit, PubSub, Queue, Scope, Stream } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -15,7 +16,7 @@ describe("the event bus", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const source = yield* Queue.unbounded<string>();
-          const bus = yield* makeEventBus(Stream.fromQueue(source));
+          const bus = yield* makeEventBus(Effect.succeed(Stream.fromQueue(source)));
 
           const leaving = yield* Scope.make();
           const staying = yield* Scope.make();
@@ -45,17 +46,53 @@ describe("the event bus", () => {
     ).toEqual(["project", "session"]);
   });
 
-  it("tells subscribers to re-read when the listen connection ends", async () => {
-    const signal = await Effect.runPromise(
+  it("tells subscribers to re-read when the listen connection ends, and once it listens again", async () => {
+    const project = event({ type: "project", projectId: "project-1" });
+    const session = event({ type: "session", sessionId: "session-1", projectId: "project-1" });
+    const heard = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const bus = yield* makeEventBus(Stream.fail("connection lost"));
+          const go = yield* Deferred.make<void>();
+          const lost = yield* Deferred.make<void>();
+          const source = yield* Queue.unbounded<string>();
+          let opens = 0;
+          const open = Effect.suspend(() => {
+            opens += 1;
+            if (opens === 1) {
+              return Effect.succeed(
+                Stream.fromEffect(Effect.as(Deferred.await(go), project.payload)).pipe(
+                  Stream.concat(
+                    Stream.fromEffect(Deferred.await(lost)).pipe(
+                      Stream.flatMap(() => Stream.fail("connection lost")),
+                    ),
+                  ),
+                ),
+              );
+            }
+            return opens < 4
+              ? Effect.fail("connection refused")
+              : Effect.succeed(Stream.fromQueue(source));
+          });
+          const bus = yield* makeEventBus(open);
           const subscription = yield* bus.subscribe;
-          return yield* PubSub.take(subscription);
+          yield* Deferred.succeed(go, undefined);
+          const signals = [yield* PubSub.take(subscription)];
+          yield* Deferred.succeed(lost, undefined);
+          signals.push(yield* PubSub.take(subscription));
+          for (const wait of ["1 second", "2 seconds", "4 seconds"] as const) {
+            yield* TestClock.adjust(wait);
+          }
+          signals.push(yield* PubSub.take(subscription));
+          yield* Queue.offer(source, session.payload);
+          signals.push(yield* PubSub.take(subscription));
+          return { signals, opens };
         }),
-      ),
+      ).pipe(Effect.provide(TestClock.layer()), Effect.timeout("3 seconds")),
     );
-    expect(signal).toEqual({ kind: "resync" });
+    expect(heard.opens).toBe(4);
+    expect(
+      heard.signals.map((signal) => (signal.kind === "event" ? signal.event.type : "resync")),
+    ).toEqual(["project", "resync", "resync", "session"]);
   });
 });
 

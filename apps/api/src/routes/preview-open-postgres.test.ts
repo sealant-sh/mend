@@ -1,7 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import { DevicesRepo } from "@mend/db";
-import { Effect, Schema } from "effect";
+import {
+  DevicesRepo,
+  PreviewPreparationsRepoLive,
+  PreviewsRepo,
+  ServiceObservationsRepoLive,
+  ServicesRepoLive,
+  SessionProcessesRepoLive,
+} from "@mend/db";
+import { WorktreeId } from "@mend/domain";
+import { SlackPreviewReads } from "@mend/jobs";
+import { Effect, Layer, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -24,6 +33,37 @@ import {
   tearDownPreviewAuth,
   whoami,
 } from "../../test/support/preview-auth-fixture.ts";
+import { PreviewSetupConfig } from "../preview-config.ts";
+import { describeWorktreePreviews, SlackPreviewReadsLive } from "../preview-reads.ts";
+
+const SHARED_WORKTREE = WorktreeId.make("wt-p-shared");
+const previewReads = Layer.mergeAll(
+  PreviewPreparationsRepoLive,
+  ServiceObservationsRepoLive,
+  ServicesRepoLive,
+  SessionProcessesRepoLive,
+);
+/** What a Slack thread reads of the shared worktree's previews. */
+const slackRead = () =>
+  runtime.runPromise(
+    Effect.flatMap(SlackPreviewReads, (reads) => reads.forWorktree(SHARED_WORKTREE)).pipe(
+      Effect.provide(SlackPreviewReadsLive.pipe(Layer.provide(previewReads))),
+    ),
+  );
+/** The web's read: allocating, then the same assembly. */
+const webRead = () =>
+  runtime.runPromise(
+    Effect.gen(function* () {
+      const views = yield* (yield* PreviewsRepo).ensureForWorktree(SHARED_WORKTREE);
+      const { setup } = yield* PreviewSetupConfig;
+      return yield* describeWorktreePreviews(SHARED_WORKTREE, views, setup);
+    }).pipe(Effect.provide(previewReads)),
+  );
+const previewRows = () =>
+  query((sql) =>
+    sql<{ count: number }>`SELECT count(*)::int AS count FROM previews
+      WHERE worktree_id = ${SHARED_WORKTREE}`.pipe(Effect.map(([row]) => row?.count)),
+  );
 
 const pairPhone = async (person: Person) => {
   const token = `mdt_${randomBytes(24).toString("base64url")}`;
@@ -128,6 +168,43 @@ describe.skipIf(postgres.skip)(
       expect(await outsider.json()).toEqual({ _tag: "NotFound", id: PREVIEWS.served.id });
       expect((await openOnPhone(null, "served")).status).toBe(401);
       expect(await previewTickets()).toBe(before);
+    });
+
+    it("gives Slack the phone's Open and the web's facts, and allocates no preview however often it reads", async () => {
+      await query(
+        (sql) =>
+          sql`INSERT INTO services (id, session_id, name, declaration_source, workspace_port,
+          browser_scheme)
+        VALUES ('svc-storybook', 's-served', 'storybook', 'explicit-run', 6006, 'http')`,
+      );
+      const before = await previewRows();
+      const reads = [await slackRead(), await slackRead(), await slackRead()];
+      expect(await previewRows()).toBe(before);
+      const [read] = reads;
+      if (read?._tag !== "Shown") throw new Error("the gateway is on in this fixture");
+      expect(reads.every((again) => JSON.stringify(again) === JSON.stringify(read))).toBe(true);
+      expect(read.appUrl).toBe(APP);
+      expect(read.previews.map(({ service }) => service)).not.toContain("storybook");
+
+      const web = await webRead();
+      expect(await previewRows()).toBe((before ?? 0) + 1);
+      const carols = await pairPhone(carol);
+      for (const notice of read.previews) {
+        const described = web.previews.find(({ view }) => view.preview.id === notice.id);
+        expect(notice.facts).toEqual(described?.facts);
+        expect(notice.openable).toBe(described?.open._tag === "Open");
+        const key = Object.entries(PREVIEWS).find(([, { id }]) => id === notice.id)?.[0];
+        if (key !== "served" && key !== "shared" && key !== "sibling") {
+          throw new Error(`unexpected preview ${notice.id}`);
+        }
+        const opened = await openOnPhone(carols.token, key);
+        expect(opened.status).toBe(notice.openable ? 200 : 409);
+      }
+      expect(read.previews.map(({ id, openable }) => [id, openable])).toEqual([
+        [PREVIEWS.served.id, true],
+        [PREVIEWS.shared.id, false],
+        [PREVIEWS.sibling.id, false],
+      ]);
     });
 
     it("never prints the URL or its ticket", () => {

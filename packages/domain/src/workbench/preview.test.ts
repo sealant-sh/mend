@@ -344,7 +344,7 @@ describe("previewStatusLine", () => {
   ];
 
   it.each(lines)("states %j as the ADR writes it", (status, line) => {
-    expect(previewStatusLine(status, now)).toBe(line);
+    expect(previewStatusLine(status, { now })).toBe(line);
   });
 
   it("ages an observation by the time it is worded, not when it was read", () => {
@@ -355,9 +355,20 @@ describe("previewStatusLine", () => {
       httpStatus: 200,
       observedAt,
     };
-    expect(previewStatusLine(status, new Date(observedAt.getTime() + 90_000))).toBe(
+    expect(previewStatusLine(status, { now: new Date(observedAt.getTime() + 90_000) })).toBe(
       "preview · web · answered HTTP 200 · observed 1 min ago",
     );
+  });
+
+  it("words a fact the same at any time and after any repeat of its check, when asked to be stable", () => {
+    for (const [status, line] of lines) {
+      const stable = line.replace(/ · observed 4 s ago$/u, " · observed");
+      expect(previewStatusLine(status, { stable: true })).toBe(stable);
+      if (status._tag === "Observed") {
+        const later = { ...status, observedAt: new Date(observedAt.getTime() + 86_400_000) };
+        expect(previewStatusLine(later, { stable: true })).toBe(stable);
+      }
+    }
   });
 
   it("travels the JSON wire as facts a client words again", () => {
@@ -366,7 +377,7 @@ describe("previewStatusLine", () => {
     const decoded = Schema.decodeUnknownSync(wire)(
       JSON.parse(JSON.stringify(Schema.encodeSync(wire)(facts))),
     );
-    expect(decoded.map((status) => previewStatusLine(status, now))).toEqual(
+    expect(decoded.map((status) => previewStatusLine(status, { now }))).toEqual(
       lines.map(([, line]) => line),
     );
   });

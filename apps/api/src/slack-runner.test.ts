@@ -68,6 +68,7 @@ import {
   ThreadProjectReaderLive,
   type InferenceRequest,
 } from "@mend/inference";
+import { SlackReports } from "@mend/jobs";
 import { Landing, LandingNotStartedError, type LandInput } from "@mend/landing";
 import { SealantClients, SealantPrincipal } from "@mend/sealant";
 import {
@@ -644,7 +645,7 @@ const world = (options: WorldOptions = {}) => {
     Layer.mock(SlackThreadsRepo, {
       record: (input) =>
         Effect.sync(() => {
-          const row = {
+          const row: SlackThreadSession = {
             ...input,
             statusTs: null,
             reportedState: null,
@@ -684,7 +685,7 @@ const world = (options: WorldOptions = {}) => {
             Effect.sync(() => {
               statusTs.set(sessionId, ts);
               shownState.set(sessionId, shown.state);
-              reported.set(sessionId, options.reporterMovedFirst === true ? "moved" : shown.line);
+              reported.set(sessionId, options.reporterMovedFirst === true ? "moved" : shown.status);
             }),
           ),
         ),
@@ -694,8 +695,8 @@ const world = (options: WorldOptions = {}) => {
         ),
       claimStatus: (sessionId, from, to) =>
         Effect.sync(() => {
-          if (reported.get(sessionId) !== from) return false;
-          reported.set(sessionId, to.line);
+          if ((reported.get(sessionId) ?? null) !== from.status) return false;
+          reported.set(sessionId, to.status);
           shownState.set(sessionId, to.state);
           return true;
         }),
@@ -966,6 +967,10 @@ const world = (options: WorldOptions = {}) => {
   );
 
   const layer = Layer.mergeAll(
+    Layer.succeed(SlackReports, {
+      request: (target) =>
+        note(`reports.request:${target._tag === "Session" ? target.id : target._tag}`),
+    }),
     options.liveBoundaries === true
       ? SessionSteeringLive
       : Layer.mock(SessionSteering, {
@@ -1750,15 +1755,13 @@ describe("the Slack runner, switching a session's project", () => {
       `start.createAs:alice:${billing.id}:claude:null:slack`,
       "engine.stop:session-1",
       "controls.record:session-1:stop:alice",
+      // The reporter shows the stop, from all it reads: the runner writes no status of its own.
+      "reports.request:session-1",
       "threads.setStatusTs:session-2:1700000000.000003",
       "start.launchAs:alice:session-2",
     ]);
     const updates = w.slack.calls.flatMap((call) => (call.kind === "update" ? [call.input] : []));
-    expect(updates.map((update) => update.text)).toContain(
-      "web · named in the request · claude · stopped · mend/wt-1",
-    );
-    const stopped = updates.find((update) => update.text.includes("stopped"));
-    expect(JSON.stringify(stopped?.blocks)).not.toContain(SLACK_ACTIONS.switchProject);
+    expect(updates.some((update) => update.text.includes("stopped"))).toBe(false);
     expect(w.recorded[1]).toMatchObject({ sessionId: "session-2", projectSource: "picked" });
     expect(w.audited[1]?.data).toMatchObject({
       switchedFrom: "session-1",
@@ -2351,6 +2354,8 @@ describe("the Slack runner, for the thread reporter", () => {
     await w.deliver(sharedMention(w, "Ev1", "1.1", "U-alice", false));
     expect(w.effects).toContain("start.launchAs:alice:session-1");
     expect(w.slack.calls.filter((call) => call.kind === "update")).toEqual([]);
+    // The launch's outcome reaches the thread through the reporter instead.
+    expect(w.effects).toContain("reports.request:session-1");
   });
 });
 

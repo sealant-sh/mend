@@ -16,6 +16,7 @@ import {
   SlackInstallsRepo,
   SlackThreadsRepo,
   WorktreeChangesRepo,
+  WorktreeNotFoundError,
   type SealedSlackInstall,
   type SlackThreadSession,
 } from "@mend/db";
@@ -26,6 +27,7 @@ import {
   ChangeId,
   ChangeLandingId,
   OrganizationId,
+  PreviewId,
   ProjectId,
   ReviewCommentId,
   SealantRunId,
@@ -54,22 +56,37 @@ import {
   type AgentRequestKind,
   type AgentTurnStatus,
   type SlackInstallSettings,
+  type PreviewStatus,
   type TurnLanding,
 } from "@mend/domain/workbench";
+import { PublicOrigin } from "@mend/network";
 import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
-import { PRIVATE_PROJECT_STATUS, SLACK_ACTIONS, statusLine, SUMMARY_PROVENANCE } from "@mend/slack";
-import { makeFakeSlack, type FakeSlackCall } from "@mend/slack/client";
+import {
+  NO_PREVIEWS,
+  PRIVATE_PROJECT_STATUS,
+  SLACK_ACTIONS,
+  statusLine,
+  SUMMARY_PROVENANCE,
+  type WorktreePreviews,
+} from "@mend/slack";
+import { makeFakeSlack, SlackApi, SlackApiError, type FakeSlackCall } from "@mend/slack/client";
 import { SecretCipher, Store, StoreConfig, type ChangedFile } from "@mend/store";
 import { TestClock } from "@mend/test-ci/effect-vitest";
-import { Effect, Exit, Layer, Scope } from "effect";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { Context, Deferred, Effect, Exit, Layer, Scope } from "effect";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
+import { PreviewReadUnavailable, SlackPreviewReads } from "../src/slack-preview-reads.ts";
 import {
   closingOf,
   makeSlackReporter,
   openingOf,
+  REQUEST_RETRY_MS,
   reviewMoment,
+  SlackReports,
+  SlackReportsLive,
   STATUS_EDIT_EVERY_MS,
+  STATUS_PREVIEW_EVERY_MS,
+  type SlackReportTarget,
 } from "../src/slack-reporter.ts";
 
 const NOW = new Date("2026-09-23T10:00:00.000Z");
@@ -475,6 +492,24 @@ const world = (options: WorldOptions = {}) => {
     project,
     /** The thread row is gone (its session deleted). */
     threadGone: false,
+    /** A later session started from the same request (a switch): its reaction is that one's. */
+    requestReused: false,
+    /** The worktree's previews as Slack's read returns them. */
+    previews: NO_PREVIEWS,
+    /** The next preview reads fail. */
+    previewReadsFail: 0,
+    /** How many times the previews were read. */
+    previewReads: 0,
+    /** How many times a thread's row was read: one per look. */
+    threadReads: 0,
+    /** How many times the change's files were read from the worktree. */
+    diffReads: 0,
+    /** The worktree cannot be read (it was removed). */
+    worktreeGone: false,
+    /** The next reads of the active sessions fail. */
+    listActiveFailuresLeft: 0,
+    /** The next `chat.update` waits for this before it reaches Slack. */
+    updateGate: null as Deferred.Deferred<void> | null,
     /** The reporter's clock. */
     now: NOW.getTime(),
   };
@@ -494,16 +529,36 @@ const world = (options: WorldOptions = {}) => {
 
   const layer = Layer.mergeAll(
     Layer.succeedContext(clock),
-    slack.layer,
+    Layer.succeed(SlackApi, {
+      ...slack.service,
+      update: (token, input) =>
+        Effect.suspend(() => {
+          const gate = state.updateGate;
+          if (gate === null) return slack.service.update(token, input);
+          state.updateGate = null;
+          return Effect.andThen(Deferred.await(gate), slack.service.update(token, input));
+        }),
+    }),
     Layer.mock(SlackThreadsRepo, {
       forSession: (id) =>
-        Effect.sync(() => (id === SESSION && !state.threadGone ? state.thread : null)),
+        Effect.sync(() => {
+          state.threadReads += 1;
+          return id === SESSION && !state.threadGone ? state.thread : null;
+        }),
       claimStatus: (_id, from, to) =>
         Effect.sync(() => {
-          if (state.thread.statusTs === null || state.thread.reportedStatus !== from) return false;
-          state.thread = { ...state.thread, reportedState: to.state, reportedStatus: to.line };
+          if (
+            state.thread.statusTs === null ||
+            state.thread.reportedState !== from.state ||
+            state.thread.reportedStatus !== from.status
+          ) {
+            return false;
+          }
+          state.thread = { ...state.thread, reportedState: to.state, reportedStatus: to.status };
           return true;
         }),
+      ownsRequestReaction: () => Effect.sync(() => !state.requestReused),
+      sessionsReached: () => Effect.sync(() => (state.threadGone ? [] : [SESSION])),
       claimPost: (id, key) =>
         Effect.sync(() => {
           const claimed = `${id}:${key}`;
@@ -528,7 +583,12 @@ const world = (options: WorldOptions = {}) => {
         id === SESSION
           ? Effect.sync(() => state.session)
           : Effect.fail(new SessionNotFoundError({ sessionId: id })),
-      listActive: () => Effect.sync(() => [state.session]),
+      listActive: () =>
+        Effect.suspend(() => {
+          if (state.listActiveFailuresLeft === 0) return Effect.succeed([state.session]);
+          state.listActiveFailuresLeft -= 1;
+          return Effect.die("the database is down");
+        }),
     }),
     Layer.mock(SessionProcessesRepo, {
       listForSession: () => Effect.sync(() => state.processes),
@@ -547,12 +607,17 @@ const world = (options: WorldOptions = {}) => {
     Layer.mock(ReviewCommentsRepo, { listForChange: () => Effect.sync(() => state.comments) }),
     Layer.mock(WorktreeReads, {
       changedFiles: () =>
-        Effect.succeed({
-          value: options.diff?.files ?? [
-            { path: "src/login.ts", additions: 2, deletions: 1 },
-            { path: "test/login.test.ts", additions: 1, deletions: 0 },
-          ],
-          stamp: WORKTREE_STAMP,
+        Effect.suspend(() => {
+          state.diffReads += 1;
+          return state.worktreeGone
+            ? Effect.fail(new WorktreeNotFoundError({ id: WORKTREE }))
+            : Effect.succeed({
+                value: options.diff?.files ?? [
+                  { path: "src/login.ts", additions: 2, deletions: 1 },
+                  { path: "test/login.test.ts", additions: 1, deletions: 0 },
+                ],
+                stamp: WORKTREE_STAMP,
+              });
         }),
       diffWorktree: () =>
         Effect.succeed({ value: options.diff?.patch ?? DIFF, stamp: WORKTREE_STAMP }),
@@ -560,6 +625,17 @@ const world = (options: WorldOptions = {}) => {
     Layer.succeed(SecretCipher, {
       encrypt: (plaintext) => Effect.succeed(`sealed:${plaintext}`),
       decrypt: (sealed) => Effect.succeed(sealed.replace(/^sealed:/, "")),
+    }),
+    Layer.succeed(SlackPreviewReads, {
+      forWorktree: (worktreeId) =>
+        Effect.suspend(() => {
+          state.previewReads += 1;
+          if (state.previewReadsFail > 0) {
+            state.previewReadsFail -= 1;
+            return Effect.fail(new PreviewReadUnavailable({ worktreeId, cause: "refused" }));
+          }
+          return Effect.succeed(state.previews);
+        }),
     }),
   );
 
@@ -576,9 +652,24 @@ const world = (options: WorldOptions = {}) => {
   const baseline = (reporter: ReturnType<typeof worker>) =>
     Effect.runPromise(reporter.baseline().pipe(Effect.provide(layer)));
 
+  /** The reporter as the worker runs it: built once, then asked to report. */
+  const reports = () =>
+    Effect.runSync(
+      Layer.buildWithScope(SlackReportsLive.pipe(Layer.provide(layer)), scope).pipe(
+        Effect.map((context) => Context.get(context, SlackReports)),
+      ),
+    );
+
   const advance = async (ms: number) => {
     state.now += ms;
     await Effect.runPromise(TestClock.adjust(ms).pipe(Effect.provideContext(clock)));
+  };
+
+  /** Hold the next `chat.update` until the returned release is called. */
+  const hold = () => {
+    const gate = Deferred.makeUnsafe<void>();
+    state.updateGate = gate;
+    return () => Effect.runSync(Deferred.succeed(gate, undefined));
   };
 
   return {
@@ -587,7 +678,9 @@ const world = (options: WorldOptions = {}) => {
     worker,
     observe,
     baseline,
+    reports,
     advance,
+    hold,
     writes,
     posts: () =>
       writes().flatMap((call: FakeSlackCall) => (call.kind === "postMessage" ? [call.input] : [])),
@@ -607,6 +700,21 @@ const terminal = (waiting: AgentWait | null) =>
   new SessionProcess({ ...agent, kind: "agent-pty", sealantSessionId: "pty-1", waiting });
 
 describe("the Slack thread reporter", () => {
+  it("reports a session it is asked about, and every active session again after a resync", async () => {
+    const w = world();
+    w.state.turns = [turn(1, "running")];
+    // Building it records what is live without writing anything.
+    const reports = w.reports();
+    expect(w.updates()).toEqual([]);
+
+    await Effect.runPromise(reports.request({ _tag: "Resync" }));
+    await vi.waitFor(() => expect(w.updates()).toEqual([statusWith("running")]));
+
+    w.state.turns = [turn(1, "completed", NOW)];
+    await Effect.runPromise(reports.request({ _tag: "Session", id: SESSION }));
+    await vi.waitFor(() => expect(w.updates().at(-1)).toBe(statusWith("completed · observed")));
+  });
+
   it("edits the one status message as the state moves, and swaps ⏳ for ✅ with the line counts", async () => {
     const w = world();
     const reporter = w.worker();
@@ -1318,12 +1426,173 @@ describe("the Slack thread reporter", () => {
     expect(w.writes().filter((call) => call.kind === "reactionsAdd")).toHaveLength(1);
   });
 
+  it("holds every edit until Slack's Retry-After, whatever asks for the next look", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.slack.refuseUpdates(
+      new SlackApiError({
+        method: "chat.update",
+        code: "ratelimited",
+        message: "rate limited",
+        retryAfterSeconds: 3,
+      }),
+    );
+    w.state.turns = [turn(1, "running")];
+    await w.observe(reporter);
+    expect(w.slack.refused.map((input) => input.text)).toEqual([statusWith("running")]);
+    expect(w.state.thread.reportedState).toBe("running");
+
+    await w.observe(reporter);
+    w.state.turns = [turn(1, "completed", NOW)];
+    await w.observe(reporter);
+    expect(w.slack.refused).toHaveLength(1);
+    expect(w.updates()).toEqual([]);
+
+    await w.advance(3_000);
+    await vi.waitFor(() => expect(w.updates()).toEqual([statusWith("completed · observed")]));
+    // Shown now: a look at the same message edits nothing.
+    await w.observe(reporter);
+    expect(w.updates()).toHaveLength(1);
+  });
+
+  it("backs off an edit Slack refused without a Retry-After, longer after each refusal in a row", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.slack.refuseUpdates(
+      ...["first", "second"].map(
+        () =>
+          new SlackApiError({ method: "chat.update", code: "is_archived", message: "archived" }),
+      ),
+    );
+    w.state.turns = [turn(1, "running")];
+    await w.observe(reporter);
+    await w.advance(4_999);
+    await w.observe(reporter);
+    expect(w.slack.refused).toHaveLength(1);
+    await w.advance(1);
+    await vi.waitFor(() => expect(w.slack.refused).toHaveLength(2));
+    await w.advance(9_999);
+    await w.observe(reporter);
+    expect(w.slack.refused).toHaveLength(2);
+    expect(w.updates()).toEqual([]);
+    await w.advance(1);
+    await vi.waitFor(() => expect(w.updates()).toEqual([statusWith("running")]));
+  });
+
+  it("never edits a status message Slack says is gone again, whatever moves, and still moves the reaction", async () => {
+    for (const code of ["message_not_found", "channel_not_found"]) {
+      const w = world();
+      const reporter = w.worker();
+      w.slack.refuseUpdates(new SlackApiError({ method: "chat.update", code, message: "gone" }));
+      w.state.turns = [turn(1, "running")];
+      await w.observe(reporter);
+      w.state.turns = [turn(1, "completed", NOW)];
+      w.state.previews = {
+        _tag: "Shown",
+        appUrl: PublicOrigin.make("https://app.mend.test"),
+        previews: [{ id: PreviewId.make("pv-web"), service: "web", facts: [], openable: true }],
+        unprepared: null,
+      };
+      await w.observe(reporter);
+      await w.advance(60_000);
+      await w.observe(reporter);
+      expect(w.slack.refused).toHaveLength(1);
+      expect(w.updates()).toEqual([]);
+      expect(w.reactions()).toEqual(new Set(["white_check_mark"]));
+    }
+  });
+
+  it("lets no retry overtake a newer edit: every look and send for a session takes its turn", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.slack.refuseUpdates(
+      new SlackApiError({ method: "chat.update", code: "internal_error", message: "try again" }),
+    );
+    w.state.turns = [turn(1, "running")];
+    await w.observe(reporter);
+    const release = w.hold();
+    await w.advance(5_000);
+    await vi.waitFor(() => expect(w.state.updateGate).toBeNull());
+    w.state.turns = [turn(1, "completed", NOW)];
+    const completed = w.observe(reporter);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(w.updates()).toEqual([]);
+    release();
+    await completed;
+    expect(w.updates()).toEqual([statusWith("running"), statusWith("completed · observed")]);
+  });
+
+  it("lets no held-back preview edit land after a project turned private hid it", async () => {
+    const w = world();
+    const reporter = w.worker();
+    const app = PublicOrigin.make("https://app.mend.test");
+    const preview = (phase: "setup" | "depends"): WorktreePreviews => ({
+      _tag: "Shown",
+      appUrl: app,
+      previews: [
+        {
+          id: PreviewId.make("pv-web"),
+          service: "web",
+          facts: [{ _tag: "Starting", service: "web", phase }],
+          openable: false,
+        },
+      ],
+      unprepared: null,
+    });
+    w.state.turns = [turn(1, "completed", NOW)];
+    w.state.session = sessionWith("completed");
+    w.state.previews = preview("setup");
+    await w.observe(reporter);
+    w.state.previews = preview("depends");
+    await w.observe(reporter);
+    expect(w.updates()).toHaveLength(1);
+    w.state.now += STATUS_PREVIEW_EVERY_MS;
+    const release = w.hold();
+    const previewed = w.observe(reporter);
+    await vi.waitFor(() => expect(w.state.updateGate).toBeNull());
+    w.state.project = new Project({ ...project, visibility: "private" });
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    release();
+    await previewed;
+    await vi.waitFor(() => expect(w.updates().at(-1)).toBe(PRIVATE_PROJECT_STATUS));
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toBe(PRIVATE_PROJECT_STATUS);
+  });
+
+  it("leaves the request's reaction to the session a switch started from it", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.state.requestReused = true;
+    w.state.turns = [turn(1, "completed", NOW)];
+    await w.observe(reporter);
+    expect(w.updates()).toEqual([statusWith("completed · observed")]);
+    expect(w.reactions()).toEqual(new Set(["hourglass_flowing_sand"]));
+    expect(w.state.thread.reportedState).toBe("completed");
+  });
+
+  it("keeps a failed launch's state while the rest of its status message still moves", async () => {
+    const w = world();
+    w.state.thread = {
+      ...w.state.thread,
+      reportedState: "failed",
+      reportedStatus: statusWith("failed · observed"),
+    };
+    w.state.session = sessionWith("idle");
+    w.state.processes = [];
+    w.state.project = new Project({ ...project, name: "billing" });
+    await w.observe(w.worker());
+    expect(w.updates()).toEqual([
+      "billing · from a link in the thread · claude · failed · observed · mend/flaky-login-test",
+    ]);
+    expect(w.state.thread.reportedState).toBe("failed");
+  });
+
   it("never moves a failed launch back to starting, and writes nothing for a removed app", async () => {
     const w = world();
     w.state.thread = {
       ...w.state.thread,
       reportedState: "failed",
-      reportedStatus: "billing-api · … · failed",
+      reportedStatus: statusWith("failed · observed"),
     };
     w.state.session = sessionWith("idle");
     w.state.processes = [];
@@ -1574,5 +1843,337 @@ describe("what the reporter reads", () => {
     // A failed pass adds nothing, and a pass from before the thread began is not this thread's.
     expect(reviewMoment(change, [passOf("tour", "failed")], since)).toBeNull();
     expect(reviewMoment(change, [passOf("read", "completed", minutesAgo(20))], since)).toBeNull();
+  });
+});
+
+const answered = (at: Date): PreviewStatus => ({
+  _tag: "Observed",
+  service: "web",
+  reachable: true,
+  httpStatus: 200,
+  observedAt: at,
+});
+/** The status message's last edit, whole. */
+const lastEdit = (w: ReturnType<typeof world>) =>
+  w.writes().findLast((call) => call.kind === "update");
+
+describe("a worktree's previews in the thread (docs/adr/0017-live-preview.md)", () => {
+  const APP_URL = PublicOrigin.make("https://app.mend.test");
+  const PREVIEW = PreviewId.make("pv-web");
+  const OPEN = "https://app.mend.test/preview-auth?preview=pv-web&path=%2F";
+  const COMPLETED = statusWith("completed · observed");
+  const web = (facts: ReadonlyArray<PreviewStatus>, openable = true): WorktreePreviews => ({
+    _tag: "Shown",
+    appUrl: APP_URL,
+    previews: [{ id: PREVIEW, service: "web", facts, openable }],
+    unprepared: null,
+  });
+  const opensOf = (w: ReturnType<typeof world>) => {
+    const edit = lastEdit(w);
+    return edit?.kind === "update"
+      ? [...JSON.stringify(edit.input.blocks).matchAll(/"url":"([^"]+preview-auth[^"]+)"/gu)].map(
+          ([, url]) => url,
+        )
+      : [];
+  };
+  const completedWith = () => {
+    const w = world();
+    w.state.turns = [turn(1, "completed", NOW)];
+    w.state.session = sessionWith("completed");
+    return w;
+  };
+
+  it("edits the status message once per move of the preview, and never for a repeated check", async () => {
+    const w = completedWith();
+    const reporter = w.worker();
+    const settle = async () => {
+      await w.observe(reporter);
+      await w.advance(STATUS_PREVIEW_EVERY_MS);
+    };
+    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "setup" }], false);
+    await settle();
+    w.state.previews = web([answered(NOW)]);
+    await settle();
+    // Readiness checks repeat: the observation's time moves, what it says does not.
+    for (let check = 1; check <= 12; check++) {
+      w.state.previews = web([answered(new Date(NOW.getTime() + check * 10_000))]);
+      await settle();
+    }
+    w.state.previews = web([
+      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
+    ]);
+    await settle();
+    w.state.previews = {
+      _tag: "Shown",
+      appUrl: APP_URL,
+      previews: [],
+      unprepared: {
+        _tag: "NotPrepared",
+        service: "web",
+        why: { _tag: "Refused", words: "setup exited 1" },
+      },
+    };
+    await settle();
+    expect(w.updates()).toEqual([
+      `${COMPLETED}\npreview · web · starting · setup`,
+      `${COMPLETED}\npreview · web · answered HTTP 200 · observed`,
+      `${COMPLETED}\npreview · web · stopped by Maria`,
+      `${COMPLETED}\npreview not prepared · web · setup exited 1`,
+    ]);
+    expect(JSON.stringify(w.writes())).not.toMatch(/ticket/u);
+  });
+
+  it("edits once when only the Open button changes", async () => {
+    const w = completedWith();
+    const reporter = w.worker();
+    const facts = [answered(NOW)];
+    w.state.previews = web(facts, false);
+    await w.observe(reporter);
+    expect(opensOf(w)).toEqual([]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    w.state.previews = web(facts, true);
+    await w.observe(reporter);
+    await w.observe(reporter);
+    expect(w.updates()).toHaveLength(2);
+    expect(w.updates()[0]).toBe(w.updates()[1]);
+    expect(opensOf(w)).toEqual([OPEN]);
+  });
+
+  it("holds a run of preview moves to one edit every 10 s, and lands on the latest", async () => {
+    const w = completedWith();
+    const reporter = w.worker();
+    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "setup" }], false);
+    await w.observe(reporter);
+    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "depends" }], false);
+    await w.observe(reporter);
+    w.state.previews = web([answered(NOW)]);
+    await w.observe(reporter);
+    expect(w.updates()).toEqual([`${COMPLETED}\npreview · web · starting · setup`]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    expect(w.updates()).toEqual([
+      `${COMPLETED}\npreview · web · starting · setup`,
+      `${COMPLETED}\npreview · web · answered HTTP 200 · observed`,
+    ]);
+  });
+
+  it("reads no preview for a private project's channel thread, and shows one in a direct message", async () => {
+    const channel = completedWith();
+    channel.state.project = new Project({ ...project, visibility: "private" });
+    channel.state.previews = web([answered(NOW)]);
+    await channel.observe(channel.worker());
+    expect(channel.state.previewReads).toBe(0);
+    expect(channel.updates()).toEqual([PRIVATE_PROJECT_STATUS]);
+    expect(JSON.stringify(channel.writes())).not.toMatch(/preview/u);
+
+    const direct = world({ channelId: "D-alice" });
+    direct.state.turns = [turn(1, "completed", NOW)];
+    direct.state.project = new Project({ ...project, visibility: "private" });
+    direct.state.previews = web([answered(NOW)]);
+    await direct.observe(direct.worker());
+    expect(direct.updates()).toEqual([
+      `${COMPLETED}\npreview · web · answered HTTP 200 · observed`,
+    ]);
+  });
+
+  it("keeps previews out of a Slack Connect channel the owner did not open, and in a thread with agent messages off", async () => {
+    const external = world({ external: true });
+    external.state.turns = [turn(1, "completed", NOW)];
+    external.state.previews = web([answered(NOW)]);
+    await external.observe(external.worker());
+    expect(external.state.previewReads).toBe(0);
+    expect(external.updates()).toEqual([COMPLETED]);
+
+    const opened = world({ external: true, settings: { externalChannels: true } });
+    opened.state.turns = [turn(1, "completed", NOW)];
+    opened.state.previews = web([answered(NOW)]);
+    await opened.observe(opened.worker());
+    expect(opened.updates()).toEqual([
+      `${COMPLETED}\npreview · web · answered HTTP 200 · observed`,
+    ]);
+
+    const quiet = world({ settings: { showAgentMessages: false } });
+    quiet.state.turns = [turn(1, "completed", NOW)];
+    quiet.state.previews = web([answered(NOW)]);
+    await quiet.observe(quiet.worker());
+    expect(quiet.updates()).toEqual([`${COMPLETED}\npreview · web · answered HTTP 200 · observed`]);
+  });
+
+  it("holds a move of the previews alone to one edit every 10 s, across workers too", async () => {
+    const w = completedWith();
+    const first = w.worker();
+    const second = w.worker();
+    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "setup" }], false);
+    await w.observe(first);
+    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "depends" }], false);
+    await w.observe(second);
+    expect(w.updates()).toEqual([`${COMPLETED}\npreview · web · starting · setup`]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await vi.waitFor(() =>
+      expect(w.updates()).toEqual([
+        `${COMPLETED}\npreview · web · starting · setup`,
+        `${COMPLETED}\npreview · web · starting · depends`,
+      ]),
+    );
+  });
+
+  it("reads the change's counts when its own session moves, never for a look at its worktree's previews", async () => {
+    const w = completedWith();
+    w.state.change = change;
+    const reports = w.reports();
+    const ask = (target: SlackReportTarget) => Effect.runPromise(reports.request(target));
+    await ask({ _tag: "Session", id: SESSION });
+    await vi.waitFor(() => expect(w.updates()).toEqual([`${COMPLETED} · 2 files · +3 −1`]));
+    expect(w.state.diffReads).toBe(1);
+
+    w.state.previews = web([answered(NOW)]);
+    await ask({ _tag: "SessionWorktree", id: SessionId.make("s-service") });
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await ask({ _tag: "Worktree", id: WORKTREE });
+    await vi.waitFor(() =>
+      expect(w.updates().at(-1)).toBe(
+        `${COMPLETED} · 2 files · +3 −1\npreview · web · answered HTTP 200 · observed`,
+      ),
+    );
+    expect(w.state.diffReads).toBe(1);
+
+    await ask({ _tag: "Session", id: SESSION });
+    await vi.waitFor(() => expect(w.state.diffReads).toBe(2));
+  });
+
+  it("keeps a settled message's counts when its worktree can no longer be read", async () => {
+    const w = completedWith();
+    w.state.change = change;
+    const reporter = w.worker();
+    await w.observe(reporter);
+    w.state.worktreeGone = true;
+    await w.observe(reporter);
+    expect(w.state.diffReads).toBe(2);
+    expect(w.updates()).toEqual([`${COMPLETED} · 2 files · +3 −1`]);
+  });
+
+  it("looks at a project's threads again only when its visibility or name moved", async () => {
+    const w = completedWith();
+    const reports = w.reports();
+    const ask = (target: SlackReportTarget) => Effect.runPromise(reports.request(target));
+    await ask({ _tag: "Project", id: PROJECT });
+    await vi.waitFor(() => expect(w.updates()).toEqual([COMPLETED]));
+    const looks = w.state.threadReads;
+
+    await ask({ _tag: "Project", id: PROJECT });
+    await ask({ _tag: "Session", id: SESSION });
+    await vi.waitFor(() => expect(w.state.threadReads).toBe(looks + 1));
+
+    w.state.project = new Project({ ...project, name: "billing" });
+    await ask({ _tag: "Project", id: PROJECT });
+    await vi.waitFor(() =>
+      expect(w.updates().at(-1)).toBe(
+        "billing · from a link in the thread · claude · completed · observed · mend/flaky-login-test",
+      ),
+    );
+    expect(w.state.threadReads).toBe(looks + 2);
+  });
+
+  it("asks again for a resync whose read of the active sessions failed", async () => {
+    const w = world();
+    w.state.turns = [turn(1, "running")];
+    const reports = w.reports();
+    w.state.listActiveFailuresLeft = 1;
+    await Effect.runPromise(reports.request({ _tag: "Resync" }));
+    await vi.waitFor(() => expect(w.state.listActiveFailuresLeft).toBe(0));
+    await w.advance(REQUEST_RETRY_MS - 1);
+    expect(w.updates()).toEqual([]);
+    await w.advance(1);
+    await vi.waitFor(() => expect(w.updates()).toEqual([statusWith("running")]));
+  });
+
+  it("removes the previews when the project turns private", async () => {
+    const w = completedWith();
+    const reporter = w.worker();
+    w.state.previews = web([answered(NOW)]);
+    await w.observe(reporter);
+    w.state.project = new Project({ ...project, visibility: "private" });
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toBe(PRIVATE_PROJECT_STATUS);
+    expect(opensOf(w)).toEqual([]);
+  });
+
+  it("keeps the previews it showed when a read fails, while the status and the replies go on, and reads again backing off", async () => {
+    const w = world({ threadCreatedAt: minutesAgo(1) });
+    const reporter = w.worker();
+    const RUNNING = statusWith("running");
+    w.state.turns = [turn(1, "running")];
+    w.state.previews = web([answered(NOW)]);
+    await w.observe(reporter);
+    expect(w.updates()).toEqual([`${RUNNING}\npreview · web · answered HTTP 200 · observed`]);
+
+    w.state.previewReadsFail = 3;
+    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "setup" }]);
+    w.state.turns = [turn(1, "completed", NOW)];
+    w.state.items = [item("m1", 1, "assistant-message", "Bounded the retry at three.")];
+    const reads = w.state.previewReads;
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toBe(`${COMPLETED}\npreview · web · answered HTTP 200 · observed`);
+    expect(w.posts().map((post) => post.text)).toEqual(["Bounded the retry at three."]);
+
+    const readAgainAfter = async (ms: number, times: number) => {
+      await w.advance(ms - 1);
+      expect(w.state.previewReads - reads).toBe(times - 1);
+      await w.advance(1);
+      await vi.waitFor(() => expect(w.state.previewReads - reads).toBe(times));
+    };
+    await readAgainAfter(5_000, 2);
+    await readAgainAfter(10_000, 3);
+    await readAgainAfter(20_000, 4);
+    await vi.waitFor(() =>
+      expect(w.updates().at(-1)).toBe(`${COMPLETED}\npreview · web · starting · setup`),
+    );
+  });
+
+  it("shows a switched session stopped with its previews and landing, leaving the request's reaction to its replacement", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.state.change = change;
+    w.state.turns = [decidedTurn(1, "attempted")];
+    w.state.landings = [landingOf("l1", "pull-request", { pullRequest: 412 })];
+    w.state.previews = web([answered(NOW)]);
+    await w.observe(reporter);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    // The runner stopped it for a switch, recorded the replacement, and asked for a report.
+    w.state.requestReused = true;
+    w.state.session = sessionWith("stopped");
+    w.state.processes = [];
+    w.state.turns = [decidedTurn(1, "attempted"), turn(2, "interrupted", NOW)];
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toBe(
+      `${statusWith("stopped")} · 2 files · +3 −1\npushed · mend/flaky-login-test · pull request #412 · opened\npreview · web · answered HTTP 200 · observed`,
+    );
+    expect(opensOf(w)).toEqual([OPEN]);
+    expect(w.reactions()).toEqual(new Set(["white_check_mark"]));
+  });
+
+  it("puts the previews on the end-of-session reply once, and edits only the status as they move", async () => {
+    const w = world({ settings: { showAgentMessages: false }, threadCreatedAt: minutesAgo(1) });
+    const reporter = w.worker();
+    w.state.session = sessionWith("completed");
+    w.state.turns = [turn(1, "completed", NOW)];
+    w.state.change = change;
+    // A tour ran but its summary is not shown, and nothing drafted: the preview is the reply.
+    w.state.passes = [passOf("tour", "completed")];
+    w.state.tour = tourOf();
+    w.state.previews = web([answered(NOW)]);
+    await w.observe(reporter);
+    expect(w.posts()).toHaveLength(1);
+    expect(w.posts()[0]?.text).toBe("preview · web · answered HTTP 200 · observed");
+    expect(JSON.stringify(w.posts()[0]?.blocks)).toContain(OPEN);
+
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    w.state.previews = web([
+      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
+    ]);
+    await w.observe(reporter);
+    expect(w.posts()).toHaveLength(1);
+    expect(w.updates().at(-1)).toBe(
+      `${COMPLETED} · 2 files · +3 −1\npreview · web · stopped by Maria`,
+    );
   });
 });

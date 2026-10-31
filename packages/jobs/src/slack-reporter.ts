@@ -1,11 +1,8 @@
-import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
   ChangeLandingsRepo,
   ChangePassesRepo,
   ChangeToursRepo,
-  listenEvents,
-  MendEvent,
   ProjectsRepo,
   ReviewCommentsRepo,
   SessionProcessesRepo,
@@ -16,7 +13,7 @@ import {
   type SealedSlackInstall,
   type SlackThreadSession,
 } from "@mend/db";
-import { SessionId } from "@mend/domain";
+import type { ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import {
   agentWaitLine,
   captureStatusLine,
@@ -30,7 +27,9 @@ import {
   type Change,
   type ChangeLanding,
   type ChangePass,
+  type Project,
   type Session,
+  type SlackStatusKey,
 } from "@mend/domain/workbench";
 import { WorktreeReads } from "@mend/sessions";
 import {
@@ -39,35 +38,50 @@ import {
   changeUrl,
   diffMessages,
   disclosureFor,
+  editedReceipt,
   isSettledState,
   landingStatusLines,
   landOfferMessage,
   landOfferOf,
+  NO_PREVIEWS,
   planText,
   privateProjectStatusMessage,
   questionMessage,
   reactionFor,
+  receiptAfter,
+  receiptOf,
   reviewMessage,
   sessionUrl,
+  showsRendering,
   slackSessionState,
   splitDiff,
   statusMayMove,
+  statusKey,
   statusMessage,
+  storedReceipt,
   switchOffered,
   threadShowsReplies,
   type ChangeCounts,
+  type EditFailure,
   type LandOffer,
   type SlackMessage,
   type SlackSessionState,
+  type SlackStatusReceipt,
+  type StatusRendering,
+  type WorktreePreviews,
 } from "@mend/slack";
-import { SlackApi, type SlackApiError } from "@mend/slack/client";
+import { SlackApi, type SlackApiError, updateRefusalOf } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
-import { Cause, Clock, Effect, Layer, Queue, Schema, Stream } from "effect";
+import { Cause, Clock, Deferred, Effect, Layer, Queue } from "effect";
+import * as Context from "effect/Context";
+
+import { SlackPreviewReads } from "./slack-preview-reads.ts";
 
 /**
  * The Slack thread reporter (docs/adr/0006-slack.md, "What Mend posts, and where"): the sibling of
- * `SessionNotifierLive` whose sink is the Slack thread a session was started from. It listens on
- * `mend_events`, re-reads the sessions that have a Slack thread, and keeps the thread in step:
+ * `SessionNotifierLive` whose sink is the Slack thread a session was started from. Asked to report
+ * (`SlackReports`, fed from the process's events bus), it re-reads the sessions that have a Slack
+ * thread, and keeps the thread in step:
  *
  * - the one status message, edited in place, and the reaction on the request (⏳ → ✅ / ❌);
  * - the agent's first message when it is a plan, and each turn's closing message;
@@ -76,6 +90,8 @@ import { Cause, Clock, Effect, Layer, Queue, Schema, Stream } from "effect";
  *   approach, what the review pass drafted, and "Review in Mend";
  * - on completion, the change's line counts in the status line; and when the owner turned diffs
  *   on, each file's diff, once, the first time the session settles with a change;
+ * - under the status line, the worktree's previews, whichever session runs them, and an Open
+ *   preview button for each the gateway would serve (docs/adr/0017-live-preview.md);
  * - the change's landing under the status line (docs/adr/0007-landing.md, "What the thread sees"):
  *   `pushed · mend/fix-login · pull request #412 · opened`, edited in place by each landing, or a
  *   refusal or failure in the remote's words; and when a completed turn's change did not land (a
@@ -84,7 +100,8 @@ import { Cause, Clock, Effect, Layer, Queue, Schema, Stream } from "effect";
  *   that reply goes out in the same look, and as a reply of its own otherwise.
  *
  * The install's display settings decide how much: with agent messages off, or in a Slack Connect
- * channel the owner did not open, the thread gets status, reactions and links only.
+ * channel the owner did not open, the thread gets status, reactions and links only. A change to
+ * those settings reaches a thread at its next look.
  *
  * Disclosure is checked again on every look. A channel thread whose project is no longer `shared`
  * gets its status message edited to a line that names nothing, and no reply; a direct message
@@ -96,19 +113,33 @@ import { Cause, Clock, Effect, Layer, Queue, Schema, Stream } from "effect";
  * converges on the observed state whenever the reporter looks, so a restart never leaves a thread
  * reading `running`.
  *
- * What was posted lives in Postgres, not in memory, so a restart or a second worker never posts
- * twice: the status line moves only by compare-and-set (`claimStatus`), and each reply is claimed
- * by key (`claimPost`) before it is posted. A claimed reply whose post fails is logged, not
- * retried, as a claimed Slack event is.
+ * In a process, every look at a session, and every write to its thread, runs on one fiber, one
+ * after another; a look that must wait asks for another look later, on that same queue. Across
+ * processes, what was posted lives in Postgres, not in memory, so a restart or a second worker
+ * never posts twice: the status message moves only by compare-and-set over its receipt
+ * (`claimStatus`, `SlackStatusReceipt`), and each reply is claimed by key (`claimPost`) before it
+ * is posted. A claimed reply whose post fails is logged, not retried, as a claimed Slack event
+ * is. After launch the reporter is the status message's one writer: the runner asks it to report.
  *
- * While the session runs, its status line moves at most once every `STATUS_EDIT_EVERY_MS`: a loop
- * that flips it between `running` and `waiting` would otherwise edit the message on every flip. A
- * move held back looks again when the window ends, so the line still lands on the latest state. A
- * move into a settled state, and the first move out of one, is edited at once.
+ * The receipt holds what every worker must agree on. While the session runs, its status line
+ * moves at most once every `STATUS_EDIT_EVERY_MS`: a loop that flips it between `running` and
+ * `waiting` would otherwise edit the message on every flip. A change to the previews alone moves
+ * at most once every `STATUS_PREVIEW_EVERY_MS`. A move into a settled state, and the first move
+ * out of one, is edited at once. A move held back looks again when its wait ends, so the message
+ * still lands on the latest state.
  */
 
 const REPORT_FRESHNESS_MS = 2 * 60_000;
 export const STATUS_EDIT_EVERY_MS = 30_000;
+/** A change to a status message's previews alone edits it at most this often. */
+export const STATUS_PREVIEW_EVERY_MS = 10_000;
+/** How soon a look whose previews could not be read tries again. */
+const PREVIEW_READ_RETRY_MS = 5_000;
+const PREVIEW_READ_RETRY_MAX_MS = 5 * 60_000;
+/** How long one status edit may take, the Slack client's own retries and waits included. */
+export const STATUS_EDIT_DEADLINE_MS = 15_000;
+/** How soon a report whose threads could not be read is asked for again. */
+export const REQUEST_RETRY_MS = 5_000;
 
 /** A settled session not looked at for this long is forgotten: its next look is a baseline. */
 const SEEN_SETTLED_TTL_MS = 60 * 60_000;
@@ -116,21 +147,6 @@ const SEEN_SETTLED_TTL_MS = 60 * 60_000;
 const SEEN_TTL_MS = 24 * 60 * 60_000;
 /** How often the memory of what was seen is swept. */
 const SEEN_SWEEP_MS = 60_000;
-
-const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
-
-/** The events that can move what a thread shows, each naming its session. */
-const sessionOf = (event: MendEvent): string | null => {
-  switch (event.type) {
-    case "session":
-    case "session-process":
-    case "agent-conversation":
-    case "session-change":
-      return event.sessionId;
-    default:
-      return null;
-  }
-};
 
 /** The machine passes whose drafts the thread hears about: the read and the suggestions. */
 const DRAFT_PASSES: ReadonlySet<string> = new Set(["read", "suggest"]);
@@ -262,6 +278,28 @@ export interface SlackReporterOptions {
   readonly now?: () => number;
 }
 
+/**
+ * The threads a report reaches, and for each whether its look reads the change's counts again:
+ * a session's own look does; a look for what it shares with its worktree or project (previews,
+ * the project's name) keeps the counts its message shows.
+ */
+type Reached = ReadonlyArray<{ readonly sessionId: SessionId; readonly recount: boolean }>;
+
+/**
+ * Whether a settled thread's change counts are read again: its own session moved, it is settling
+ * now, or none were read yet. A look for its worktree's previews keeps them.
+ */
+const countsMayHaveMoved = (
+  recount: boolean,
+  receipt: SlackStatusReceipt,
+  reportedState: SlackSessionState | null,
+) => recount || receipt.counts === null || reportedState === null || !isSettledState(reportedState);
+
+interface Queued {
+  recount: boolean;
+  readonly waiters: Array<Deferred.Deferred<void>>;
+}
+
 export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
   Effect.gen(function* () {
     const threads = yield* SlackThreadsRepo;
@@ -278,13 +316,17 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const reads = yield* WorktreeReads;
     const cipher = yield* SecretCipher;
     const slack = yield* SlackApi;
+    const previewReads = yield* SlackPreviewReads;
     const clock = yield* Clock.Clock;
     const now = options.now ?? (() => clock.currentTimeMillisUnsafe());
     const scope = yield* Effect.scope;
 
     const seen = new Map<string, Seen>();
-    const editedAt = new Map<string, number>();
-    const heldBack = new Set<string>();
+    const previewReadFailures = new Map<string, number>();
+    const projectsRead = new Map<
+      ProjectId,
+      { readonly visibility: Project["visibility"]; readonly name: string }
+    >();
     let sweptAt = 0;
 
     /** Forget settled sessions nobody has looked at in an hour, and anything after a day. */
@@ -296,7 +338,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         const idle = at - entry.at;
         if (idle > SEEN_TTL_MS || (entry.settled && idle > SEEN_SETTLED_TTL_MS)) {
           seen.delete(sessionId);
-          editedAt.delete(sessionId);
+          previewReadFailures.delete(sessionId);
         }
       }
     };
@@ -315,6 +357,43 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
             ),
           ),
         );
+
+    const queued = new Map<SessionId, Queued>();
+    const work = yield* Queue.unbounded<SessionId>();
+    const enqueue = (
+      sessionId: SessionId,
+      recount: boolean,
+      waiter: Deferred.Deferred<void> | null,
+    ) =>
+      Effect.suspend(() => {
+        const entry = queued.get(sessionId);
+        if (entry !== undefined) {
+          entry.recount ||= recount;
+          if (waiter !== null) entry.waiters.push(waiter);
+          return Effect.void;
+        }
+        queued.set(sessionId, { recount, waiters: waiter === null ? [] : [waiter] });
+        return Queue.offer(work, sessionId);
+      });
+
+    const wakes = new Map<SessionId, { readonly at: number; readonly recount: boolean }>();
+    const lookAgainIn = (sessionId: SessionId, delayMs: number, recount: boolean) =>
+      Effect.suspend(() => {
+        const wake = { at: now() + delayMs, recount };
+        const set = wakes.get(sessionId);
+        if (set !== undefined && set.at <= wake.at && (set.recount || !recount)) return Effect.void;
+        wakes.set(sessionId, wake);
+        return Effect.sleep(Math.max(delayMs, 0)).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              if (wakes.get(sessionId) === wake) wakes.delete(sessionId);
+              return enqueue(sessionId, recount, null);
+            }),
+          ),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        );
+      });
 
     /** Read everything the thread could show about a session, or null for one it does not. */
     const lookAt = Effect.fn("SlackReporter.lookAt")(function* (sessionId: SessionId) {
@@ -388,92 +467,184 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         ),
       );
 
-    const lookAgainIn = (sessionId: SessionId, delayMs: number) =>
-      Effect.suspend(() => {
-        if (heldBack.has(sessionId)) return Effect.void;
-        heldBack.add(sessionId);
-        return Effect.sleep(delayMs).pipe(
-          Effect.andThen(
-            Effect.suspend((): Effect.Effect<void> => {
-              heldBack.delete(sessionId);
-              return observe(sessionId).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("slack reporter: held-back session report failed").pipe(
-                    Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
-                  ),
-                ),
-              );
-            }),
-          ),
-          Effect.forkIn(scope),
-          Effect.asVoid,
-        );
-      });
+    const previewsOf = (session: Session, receipt: SlackStatusReceipt) =>
+      previewReads.forWorktree(session.worktreeId).pipe(
+        Effect.tap(() => Effect.sync(() => previewReadFailures.delete(session.id))),
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            const failures = (previewReadFailures.get(session.id) ?? 0) + 1;
+            previewReadFailures.set(session.id, failures);
+            yield* Effect.logWarning("slack reporter: previews not read").pipe(
+              Effect.annotateLogs({ sessionId: session.id, cause: error.cause, failures }),
+            );
+            yield* lookAgainIn(
+              session.id,
+              Math.min(PREVIEW_READ_RETRY_MS * 2 ** (failures - 1), PREVIEW_READ_RETRY_MAX_MS),
+              false,
+            );
+            return receipt.previews;
+          }),
+        ),
+      );
 
-    /**
-     * Edit the status message to `message` and move the reaction to the state, once, whichever
-     * worker gets there first. A line that stays the same (a private project's) still moves the
-     * reaction when the state does.
-     */
-    const moveStatus = Effect.fn("SlackReporter.moveStatus")(function* (
+    const sendStatus = (
       token: string,
-      look: Look,
+      thread: SlackThreadSession,
+      statusTs: string,
       message: SlackMessage,
+    ): Effect.Effect<EditFailure | null> =>
+      slack.update(token, { channel: thread.channelId, ts: statusTs, ...message }).pipe(
+        Effect.as(null),
+        Effect.catch((error) =>
+          Effect.logWarning("slack reporter: chat.update failed").pipe(
+            Effect.annotateLogs({
+              method: error.method,
+              code: error.code,
+              sessionId: thread.sessionId,
+            }),
+            Effect.as(updateRefusalOf(error)),
+          ),
+        ),
+        Effect.timeoutOrElse({
+          duration: STATUS_EDIT_DEADLINE_MS,
+          orElse: () =>
+            Effect.logWarning("slack reporter: chat.update not answered in time").pipe(
+              Effect.annotateLogs({ sessionId: thread.sessionId }),
+              Effect.as<EditFailure>({ _tag: "Unanswered" }),
+            ),
+        }),
+      );
+
+    const moveReaction = Effect.fn("SlackReporter.moveReaction")(function* (
+      token: string,
+      thread: SlackThreadSession,
+      state: SlackSessionState,
     ) {
-      const { thread, session, state } = look;
-      if (thread.statusTs === null) return;
-      const edit = message.text !== thread.reportedStatus;
-      if (!edit && state === thread.reportedState) return;
-      const lastEdit = editedAt.get(session.id);
-      if (edit && !isSettledState(state) && lastEdit !== undefined) {
-        const wait = lastEdit + STATUS_EDIT_EVERY_MS - now();
-        if (wait > 0) return yield* lookAgainIn(session.id, wait);
-      }
-      const moved = yield* threads.claimStatus(session.id, thread.reportedStatus, {
-        state,
-        line: message.text,
-      });
-      if (!moved) return;
-      if (edit) {
-        if (isSettledState(state)) editedAt.delete(session.id);
-        else editedAt.set(session.id, now());
-        yield* quietly(
-          "chat.update",
-          slack.update(token, { channel: thread.channelId, ts: thread.statusTs, ...message }),
-        );
-      }
       const was = reactionFor(thread.reportedState ?? "starting");
       const is = reactionFor(state);
       if (was === is) return;
+      if (!(yield* threads.ownsRequestReaction(thread.sessionId))) return;
       const at = { channel: thread.channelId, timestamp: thread.requestTs };
-      if (is !== null)
+      if (is !== null) {
         yield* quietly("reactions.add", slack.reactionsAdd(token, { ...at, name: is }));
+      }
       if (was !== null) {
         yield* quietly("reactions.remove", slack.reactionsRemove(token, { ...at, name: was }));
       }
     });
 
+    const claim = (
+      thread: SlackThreadSession,
+      state: SlackSessionState,
+      receipt: SlackStatusReceipt,
+    ) =>
+      threads.claimStatus(
+        thread.sessionId,
+        { state: thread.reportedState, status: thread.reportedStatus },
+        { state, status: storedReceipt(receipt) },
+      );
+
+    const editWait = (
+      receipt: SlackStatusReceipt,
+      from: SlackSessionState | null,
+      to: SlackSessionState,
+      base: SlackStatusKey,
+    ) => {
+      const at = now();
+      const { editedAt, holdUntil, shown } = receipt;
+      const running = from !== null && !isSettledState(from) && !isSettledState(to);
+      const previewsOnly = from === to && shown._tag === "Rendered" && shown.base === base;
+      return Math.max(
+        holdUntil === null ? 0 : holdUntil - at,
+        editedAt !== null && running ? editedAt + STATUS_EDIT_EVERY_MS - at : 0,
+        editedAt !== null && previewsOnly ? editedAt + STATUS_PREVIEW_EVERY_MS - at : 0,
+      );
+    };
+
+    /**
+     * Edit the status message and move the reaction, once across workers. Only the session the
+     * request last started takes its reaction: a switch reuses the request.
+     */
+    const moveStatus = Effect.fn("SlackReporter.moveStatus")(function* (
+      token: string,
+      look: Look,
+      receipt: SlackStatusReceipt,
+      recount: boolean,
+      message: SlackMessage,
+      rendering: Omit<StatusRendering, "key">,
+    ) {
+      const { thread, session, state } = look;
+      if (thread.statusTs === null) return;
+      const key = statusKey(message);
+      if (showsRendering(receipt.shown, key, message.text)) {
+        if (state === thread.reportedState) return;
+        if (yield* claim(thread, state, receipt)) yield* moveReaction(token, thread, state);
+        return;
+      }
+      const wait = editWait(receipt, thread.reportedState, state, rendering.base);
+      if (wait > 0) return yield* lookAgainIn(session.id, wait, recount);
+      const claimed = editedReceipt({ ...rendering, key }, now());
+      if (!(yield* claim(thread, state, claimed))) return;
+      const failure = yield* sendStatus(token, thread, thread.statusTs, message);
+      if (failure !== null) {
+        const after = receiptAfter(receipt, failure, now());
+        yield* threads.claimStatus(
+          session.id,
+          { state, status: storedReceipt(claimed) },
+          { state, status: storedReceipt(after) },
+        );
+        if (after.holdUntil !== null) {
+          yield* lookAgainIn(session.id, after.holdUntil - now(), recount);
+        }
+      }
+      yield* moveReaction(token, thread, state);
+    });
+
     /**
      * Keep the status message and the reaction on the observed state. A null `projectName` is a
-     * channel thread whose project is private now: the message says so and names nothing.
+     * channel thread whose project is private now: the message says so and names nothing. Nothing
+     * moves the state back to `starting` (`statusMayMove`): a launch that failed keeps `failed`,
+     * and the rest of the message still follows what changes.
      */
     const reportStatus = Effect.fn("SlackReporter.reportStatus")(function* (
       install: SealedSlackInstall,
       token: string,
-      look: Look,
+      observed: Look,
+      recount: boolean,
       projectName: string | null,
+      previews: WorktreePreviews,
     ) {
-      const { thread, session, state } = look;
+      const { thread } = observed;
       if (thread.statusTs === null) return;
-      if (!statusMayMove(thread.reportedState, state)) return;
-      if (projectName === null) {
-        return yield* moveStatus(token, look, privateProjectStatusMessage());
+      const receipt = receiptOf(thread.reportedStatus);
+      const look: Look = {
+        ...observed,
+        state:
+          thread.reportedState === null || statusMayMove(thread.reportedState, observed.state)
+            ? observed.state
+            : thread.reportedState,
+      };
+      const { session, state } = look;
+      if (receipt.shown._tag === "Gone") {
+        if (state !== thread.reportedState && (yield* claim(thread, state, receipt))) {
+          yield* moveReaction(token, thread, state);
+        }
+        return;
       }
-      const change =
-        look.change !== null && isSettledState(state)
-          ? yield* countsOf(session, look.change)
-          : null;
-      const message = statusMessage({
+      if (projectName === null) {
+        const message = privateProjectStatusMessage();
+        return yield* moveStatus(token, look, receipt, recount, message, {
+          base: statusKey(message),
+          previews: NO_PREVIEWS,
+          counts: receipt.counts,
+        });
+      }
+      const change = isSettledState(state) ? look.change : null;
+      const counts =
+        change !== null && countsMayHaveMoved(recount, receipt, thread.reportedState)
+          ? ((yield* countsOf(session, change)) ?? receipt.counts)
+          : receipt.counts;
+      const status = {
         project: projectName,
         source: thread.projectSource,
         harness: session.harness,
@@ -481,7 +652,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         state,
         recorded: session.sealantRunId !== null,
         agent: look.agent,
-        change,
+        change: change === null ? null : counts,
         url: sessionUrl(install.webOrigin, session.id),
         // Offered until the first turn completes, which also moves the line, so the button
         // leaves with the edit that says so. The runner checks again on a click.
@@ -489,8 +660,12 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         landing: landingStatusLines({ landings: look.landings, latestTurn: look.decided }),
         summary: session.summary,
         capture: captureStatusLine(session),
+      };
+      yield* moveStatus(token, look, receipt, recount, statusMessage({ ...status, previews }), {
+        base: statusKey(statusMessage({ ...status, previews: NO_PREVIEWS })),
+        previews,
+        counts,
       });
-      yield* moveStatus(token, look, message);
     });
 
     /** Post a reply once, whichever worker gets there first. */
@@ -555,6 +730,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       showSummary: boolean,
       webOrigin: string,
       offer: LandOffer | null,
+      previews: WorktreePreviews,
     ) =>
       Effect.gen(function* () {
         const tour =
@@ -592,6 +768,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           drafts,
           url: changeUrl(webOrigin, change.id),
           offer: offered,
+          previews,
         });
         return message === null ? [] : [message];
       });
@@ -602,6 +779,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       token: string,
       look: Look,
       before: Seen,
+      previews: WorktreePreviews,
     ) {
       const { thread, session } = look;
       const shown = disclosureFor(install.settings, thread.external);
@@ -692,7 +870,15 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           token,
           thread,
           review.key,
-          reviewReply(thread, change, review, shown.agentMessages, install.webOrigin, offer),
+          reviewReply(
+            thread,
+            change,
+            review,
+            shown.agentMessages,
+            install.webOrigin,
+            offer,
+            previews,
+          ),
         );
       }
       // Otherwise the offer is a reply of its own: the end-of-session reply may come much later,
@@ -708,24 +894,27 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     });
 
     /** Look at a session again and bring its thread up to date. */
-    const observe = Effect.fn("SlackReporter.observe")(function* (sessionId: SessionId) {
+    const look = Effect.fn("SlackReporter.look")(function* (
+      sessionId: SessionId,
+      recount: boolean,
+    ) {
       sweep();
-      const look = yield* lookAt(sessionId);
-      if (look === null) {
+      const observed = yield* lookAt(sessionId);
+      if (observed === null) {
         seen.delete(sessionId);
-        editedAt.delete(sessionId);
+        previewReadFailures.delete(sessionId);
         return;
       }
       // A thread started in the last two minutes has no history to replay: everything in it is
       // news, even to a process that has not looked at it yet.
-      const before =
-        seen.get(sessionId) ?? (fresh(look.thread.createdAt) ? NOTHING_SEEN : undefined);
-      seen.set(sessionId, seenOf(look, now()));
-      const install = yield* installs.byTeam(look.thread.teamId);
+      const previous = seen.get(sessionId);
+      const before = previous ?? (fresh(observed.thread.createdAt) ? NOTHING_SEEN : undefined);
+      seen.set(sessionId, seenOf(observed, now()));
+      const install = yield* installs.byTeam(observed.thread.teamId);
       // The app was removed: the thread stays, and nothing can be written to it.
       if (install === null) return;
       const project = yield* projects
-        .byId(look.session.projectId)
+        .byId(observed.session.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
       if (project === null) return;
       // The workspace now belongs to another organization than the project's: write nothing.
@@ -737,12 +926,15 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       const token = yield* botTokenOf(install);
       if (token === null) return;
       // Everyone in a channel reads the thread: a project made private since is not shown there.
-      if (!threadShowsReplies(look.thread.channelId, project.visibility)) {
-        return yield* reportStatus(install, token, look, null);
+      if (!threadShowsReplies(observed.thread.channelId, project.visibility)) {
+        return yield* reportStatus(install, token, observed, recount, null, NO_PREVIEWS);
       }
-      yield* reportStatus(install, token, look, project.name);
+      const previews = disclosureFor(install.settings, observed.thread.external).previews
+        ? yield* previewsOf(observed.session, receiptOf(observed.thread.reportedStatus))
+        : NO_PREVIEWS;
+      yield* reportStatus(install, token, observed, recount, project.name, previews);
       if (before === undefined) return; // unknown baseline: record, never post
-      yield* reportReplies(install, token, look, before);
+      yield* reportReplies(install, token, observed, before, previews);
     });
 
     /**
@@ -751,23 +943,147 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
      */
     const baseline = Effect.fn("SlackReporter.baseline")(function* () {
       for (const session of yield* sessions.listActive()) {
-        const look = yield* lookAt(session.id);
-        if (look !== null && !fresh(look.thread.createdAt)) {
-          seen.set(session.id, seenOf(look, now()));
+        const observed = yield* lookAt(session.id);
+        if (observed !== null && !fresh(observed.thread.createdAt)) {
+          seen.set(session.id, seenOf(observed, now()));
         }
       }
     });
 
+    yield* Effect.gen(function* () {
+      while (true) {
+        const sessionId = yield* Queue.take(work);
+        const entry = queued.get(sessionId);
+        queued.delete(sessionId);
+        yield* look(sessionId, entry?.recount ?? true).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("slack reporter: session report failed").pipe(
+              Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+            ),
+          ),
+        );
+        for (const waiter of entry?.waiters ?? []) yield* Deferred.succeed(waiter, undefined);
+      }
+    }).pipe(Effect.forkIn(scope));
+
+    /**
+     * The threads a report reaches. A project's threads are looked at again only when its
+     * visibility or name moved since the last `Project` report this process read: a project
+     * event also follows its secrets, environment and recipes, which no thread shows.
+     */
+    const reached = (target: SlackReportTarget): Effect.Effect<Reached> => {
+      switch (target._tag) {
+        case "Session":
+          return Effect.succeed([{ sessionId: target.id, recount: true }]);
+        case "SessionWorktree":
+          return Effect.map(threads.sessionsReached({ worktreeOf: target.id }), (ids) =>
+            ids.map((sessionId) => ({ sessionId, recount: sessionId === target.id })),
+          );
+        case "Worktree":
+          return Effect.map(threads.sessionsReached({ worktreeId: target.id }), (ids) =>
+            ids.map((sessionId) => ({ sessionId, recount: false })),
+          );
+        case "Project":
+          return Effect.gen(function* () {
+            const project = yield* projects
+              .byId(target.id)
+              .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+            if (project === null) return [];
+            const read = projectsRead.get(target.id);
+            if (read?.visibility === project.visibility && read.name === project.name) return [];
+            const ids = yield* threads.sessionsReached({ projectId: target.id });
+            projectsRead.set(target.id, { visibility: project.visibility, name: project.name });
+            return ids.map((sessionId) => ({ sessionId, recount: false }));
+          });
+        case "Resync":
+          return Effect.map(sessions.listActive(), (active) =>
+            active.map((session) => ({ sessionId: session.id, recount: true })),
+          );
+      }
+    };
+
+    const pending = new Set<string>();
+    const requests = yield* Queue.unbounded<SlackReportTarget>();
+    const request = (target: SlackReportTarget): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        const key = targetKey(target);
+        if (pending.has(key)) return Effect.void;
+        pending.add(key);
+        return Queue.offer(requests, target).pipe(Effect.asVoid);
+      });
+    yield* Effect.gen(function* () {
+      while (true) {
+        const target = yield* Queue.take(requests);
+        pending.delete(targetKey(target));
+        yield* reached(target).pipe(
+          Effect.flatMap((sessionsReached) =>
+            Effect.forEach(
+              sessionsReached,
+              ({ sessionId, recount }) => enqueue(sessionId, recount, null),
+              { discard: true },
+            ),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("slack reporter: report request failed").pipe(
+              Effect.annotateLogs({ target: targetKey(target), cause: Cause.pretty(cause) }),
+              Effect.andThen(
+                Effect.sleep(REQUEST_RETRY_MS).pipe(
+                  Effect.andThen(request(target)),
+                  Effect.forkIn(scope),
+                ),
+              ),
+            ),
+          ),
+        );
+      }
+    }).pipe(Effect.forkIn(scope));
+
+    /** Look at a session now, through the writer's queue, and wait for that look to finish. */
+    const observe = (sessionId: SessionId) =>
+      Effect.gen(function* () {
+        const done = yield* Deferred.make<void>();
+        yield* enqueue(sessionId, true, done);
+        yield* Deferred.await(done);
+      });
+
     /** How many sessions this process remembers having seen: for tests. */
     const remembered = () => seen.size;
 
-    return { observe, baseline, remembered };
+    return { request, observe, baseline, remembered };
   });
 
-export const SlackReporterLive: Layer.Layer<
+/**
+ * What the reporter is asked to look at again: domain ids, never event payloads. A caller says
+ * what changed; the reporter works out which threads that reaches. `Resync` follows a gap in what
+ * was heard (the events connection was lost, or is back): every active session is looked at
+ * again.
+ */
+export type SlackReportTarget =
+  /** The session's own thread: its conversation moved. */
+  | { readonly _tag: "Session"; readonly id: SessionId }
+  /** Every thread of the session's worktree: the session or one of its Services moved. */
+  | { readonly _tag: "SessionWorktree"; readonly id: SessionId }
+  /** Every thread of the worktree: its previews or their preparation moved. */
+  | { readonly _tag: "Worktree"; readonly id: WorktreeId }
+  /** Every thread of the project, settled ones included, when its visibility or name moved. */
+  | { readonly _tag: "Project"; readonly id: ProjectId }
+  | { readonly _tag: "Resync" };
+
+const targetKey = (target: SlackReportTarget): string =>
+  target._tag === "Resync" ? "resync" : `${target._tag}:${target.id}`;
+
+/**
+ * The Slack thread reporter as a service: ask it to report, and it brings the threads that
+ * reaches up to date in the background. A request returns at once; it never waits on Slack.
+ */
+export class SlackReports extends Context.Service<
+  SlackReports,
+  { readonly request: (target: SlackReportTarget) => Effect.Effect<void> }
+>()("@mend/jobs/SlackReports") {}
+
+export const SlackReportsLive: Layer.Layer<
+  SlackReports,
   never,
-  never,
-  | PgClient.PgClient
   | AgentConversationRepo
   | ChangeLandingsRepo
   | ChangePassesRepo
@@ -779,57 +1095,15 @@ export const SlackReporterLive: Layer.Layer<
   | SessionsRepo
   | SlackApi
   | SlackInstallsRepo
+  | SlackPreviewReads
   | SlackThreadsRepo
   | WorktreeChangesRepo
   | WorktreeReads
-> = Layer.effectDiscard(
+> = Layer.effect(
+  SlackReports,
   Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
     const reporter = yield* makeSlackReporter();
     yield* reporter.baseline();
-
-    // A burst of events for one session (every streamed item notifies) is one look: a session
-    // is queued once until the look at it starts, and events during the look queue it again.
-    const queued = new Set<string>();
-    const work = yield* Queue.unbounded<string>();
-    yield* Effect.gen(function* () {
-      while (true) {
-        const sessionId = yield* Queue.take(work);
-        queued.delete(sessionId);
-        yield* reporter
-          .observe(SessionId.make(sessionId))
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("slack reporter: session report failed").pipe(
-                Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
-              ),
-            ),
-          );
-      }
-    }).pipe(Effect.forkScoped);
-
-    yield* listenEvents(sql).pipe(
-      Stream.runForEach((payload) =>
-        decodeEvent(payload).pipe(
-          Effect.flatMap((event) => {
-            const sessionId = sessionOf(event);
-            if (sessionId === null || queued.has(sessionId)) return Effect.void;
-            queued.add(sessionId);
-            return Queue.offer(work, sessionId);
-          }),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("slack reporter: event handling failed").pipe(
-              Effect.annotateLogs({ cause: Cause.pretty(cause) }),
-            ),
-          ),
-        ),
-      ),
-      Effect.catchCause((cause) =>
-        Effect.logWarning("slack reporter: listen stream ended").pipe(
-          Effect.annotateLogs({ cause: Cause.pretty(cause) }),
-        ),
-      ),
-      Effect.forkScoped,
-    );
+    return { request: reporter.request };
   }),
 );

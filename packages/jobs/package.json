@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@mend/network": "workspace:*",
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",

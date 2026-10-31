@@ -115,8 +115,10 @@ stores them in `slack_installs`, which is one row per organization. The Slack wo
 That matters in `multi` mode, where two organizations might otherwise claim the same workspace.
 
 When the owner connects Slack, the install also records the web origin they were using. Mend builds
-every link it posts into Slack from that origin. Mend has no configured public URL today, and this
-avoids adding one.
+its links to sessions and changes from that origin. A preview's **Open preview** link is the
+exception: it uses `APP_URL`, the origin the preview gateway's own sign-in redirect uses, so a
+person signs in on one origin before Mend hands the preview a ticket (ADR 0017, "Where the link
+shows up").
 
 Only an organization owner installs, replaces or removes the app, or changes its settings. Removing
 it deletes the tokens, the links and the channel defaults. Session records stay, including where the
@@ -285,7 +287,17 @@ Mend posts only into the thread the request came from.
   (`changes not landed · the request read as a question`), and so does a request for a change or a
   landing that landed nothing (`not landed · the change was not captured`,
   `not landed · the change is empty`, `not landed · nothing new since the last landing`; ADR 0007,
-  "Why a turn did not land").
+  "Why a turn did not land"). Under those lines it shows the worktree's previews (ADR 0017),
+  whichever session of the worktree runs them: one line each, as `previewStatusLine` words it
+  without an age (`preview · web · starting · setup`,
+  `preview · web · answered HTTP 200 · observed`, `preview · web · stopped by Maria`,
+  `preview not prepared · web · <reason>`), and an **Open preview** button beside each preview the
+  gateway would serve, named by its Service (`Open preview · docs`) when there are several. The
+  button goes to Mend's own `<APP_URL>/preview-auth?preview=<id>&path=%2F`, which asks for sign-in
+  and checks the person may see the project. It carries no ticket and no preview host. A message
+  lists twenty previews and counts the rest with a link to Mend. The message moves as a preview
+  prepares, starts, fails or stops, at most once every 10 s for the previews alone, and a readiness
+  check that repeats the same answer does not edit it. With the gateway off it shows none.
 - **The agent's plan and closing message** for each turn, as replies, each cut at 3,000 characters
   with a link to the rest. Cursor posts a plan before it changes code. Mend posts the agent's first
   message when it is one, and does not write a plan of its own. A plan with no text of its own, such
@@ -297,7 +309,9 @@ Mend posts only into the thread the request came from.
   edits, and a "Review in Mend" button. This is Mend's counterpart to Cursor's agent summary. The
   summary is not the agent's account of itself: Mend writes it using inference on the diff and the
   session record, and the reply says so. It describes what changed and how the session went about
-  it, and gives no verdict. Mend has no proposed-check entity yet, so the count names none.
+  it, and gives no verdict. Mend has no proposed-check entity yet, so the count names none. It ends
+  with the worktree's previews as they read when it was posted, with their **Open preview** buttons.
+  It is never edited: the status message is the one that stays current.
 - **"Push and open pull request"**, when a completed turn left a change that did not land: the
   request read as a question, it said `autopr=false`, automatic landing is off, someone other than
   the owner sent the follow-up, or the executor's captures never caught up (ADR 0007). The button
@@ -317,25 +331,50 @@ for each tour Mend composes, so a pass that finishes after the reply does not re
 
 An organization owner decides how much goes into Slack, as Cursor's admins do:
 
-| Setting             | Off                                                                     | On                                                                                                                                                  |
-| ------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Show agent messages | Status, reactions and links only                                        | Also the plan, closing messages, questions and the summary (default)                                                                                |
-| Show diffs          | Changed files and line counts only (default)                            | Also the diff of each changed file, up to 3,000 characters, once, when the session first settles                                                    |
-| External channels   | Only status and links in Slack Connect channels (default)               | The two settings above apply there too                                                                                                              |
-| Land automatically  | A completed turn pushes nothing; the thread offers the owner the button | A request that asked for a change lands when a turn completes (default, ADR 0007); a project set to off wins, and `autopr=` decides for one request |
+| Setting             | Off                                                                         | On                                                                                                                                                  |
+| ------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Show agent messages | Status, reactions and links only                                            | Also the plan, closing messages, questions and the summary (default)                                                                                |
+| Show diffs          | Changed files and line counts only (default)                                | Also the diff of each changed file, up to 3,000 characters, once, when the session first settles                                                    |
+| External channels   | Only status and links in Slack Connect channels, without previews (default) | The two settings above apply there too, and the previews show                                                                                       |
+| Land automatically  | A completed turn pushes nothing; the thread offers the owner the button     | A request that asked for a change lands when a turn completes (default, ADR 0007); a project set to off wins, and `autopr=` decides for one request |
 
 Status copy follows the product voice. It states what was observed and gives no verdict:
 `completed · observed`, never "done", "looks good" or "safe to merge".
 
-The reporter is a sibling of `SessionNotifierLive`. It listens on `mend_events`, re-reads the
-sessions that have a Slack thread, and applies the same guards: a session first seen mid-flight is
-recorded without posting, and state older than two minutes is not announced.
+The reporter is a sibling of `SessionNotifierLive`. It hears the process's events bus (one LISTEN
+per process, ADR 0017), re-reads the sessions that have a Slack thread, and applies the same guards:
+a session first seen mid-flight is recorded without posting, and state older than two minutes is not
+announced. With the preview gateway on, a change to a session or a Service, or a preview's
+preparation, reaches every thread of its worktree, settled ones included; with it off, a session's
+change reaches its own thread only. A project's change reaches its threads, settled ones included,
+when it moved the project's visibility or name, which is all a thread shows of it. A look for a
+worktree's previews keeps the change's line counts the message shows, and a worktree that can no
+longer be read keeps them too. When the events connection is lost, and again once it listens, the
+reporter looks at every active session, so a change made in between reaches the thread; a look that
+could not read the sessions is asked for again. A change to the install's settings reaches a thread
+at its next look.
+
+After launch the reporter is the status message's one writer. In a process, every look at a session
+and every write to its thread take turns on one queue, retries included, so an older edit never
+lands after a newer one. It compares the message whole, text and buttons, so a button that appears
+or goes edits it once and a look with nothing new edits nothing. What the message shows, when it was
+last edited and when the next edit may go are kept with the thread (its receipt), so every worker
+holds to the same pace. An edit Slack refuses waits for Slack's `Retry-After`, or backs off from 5
+s, doubling up to 15 minutes, whatever asks for the next look. An edit Slack does not answer in 15 s
+waits a minute, so a late answer to it cannot overwrite a newer one. A message that was deleted, or
+whose channel is gone, is never edited again; an archived channel, or a bot removed from it, backs
+off instead, since it can come back. A look whose previews cannot be read goes on with the previews
+the message shows, and reads them again later, backing off. A switch's stopped session is shown
+stopped by the reporter, and the request's reaction is the replacement session's.
 
 The reporter checks disclosure again on every look, since a project's visibility can change while
 its session runs. When a channel thread's project is no longer `shared`, Mend edits the status
-message to `not shown · the project is private`, which does not name the project, and posts nothing
-more into that thread. The reporter posts only through the install of the organization that owns the
-session's project.
+message to `not shown · the project is private`, which does not name the project or any preview, and
+posts nothing more into that thread. The project's change reaches its threads at once, settled ones
+included. In a Slack Connect channel the owner did not open, the previews do not show, since a
+stopped preview names who stopped it. A direct message with the bot shows a private project's
+previews: it is the requester's own. The reporter posts only through the install of the organization
+that owns the session's project.
 
 ### Commands
 

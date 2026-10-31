@@ -1,7 +1,17 @@
-import { AgentTurnId, ChangeId, ChangeLandingId, ProjectId, SessionId, Sha } from "@mend/domain";
+import {
+  AgentTurnId,
+  ChangeId,
+  ChangeLandingId,
+  PreviewId,
+  ProjectId,
+  SessionId,
+  Sha,
+} from "@mend/domain";
 import { ChangeLanding } from "@mend/domain/workbench";
+import { PublicOrigin } from "@mend/network";
 import { describe, expect, it } from "vitest";
 
+import type { SlackBlock } from "./blocks.ts";
 import {
   agentMessage,
   AGENT_MESSAGE_LIMIT,
@@ -29,6 +39,7 @@ import {
   outsiderMessage,
   pickProjectActionId,
   planText,
+  PREVIEWS_LISTED,
   projectPicker,
   projectPickerBlockId,
   questionMessage,
@@ -46,6 +57,8 @@ import {
   threadOfChannelSettings,
   type StatusInput,
 } from "./format.ts";
+import { NO_PREVIEWS, type PreviewNotice, type WorktreePreviews } from "./previews.ts";
+import { privateProjectStatusMessage } from "./privacy.ts";
 
 const status: StatusInput = {
   project: "billing-api",
@@ -151,7 +164,7 @@ describe("the status message", () => {
   });
 
   it("carries an Open in Mend button and escapes Slack's control characters", () => {
-    const message = statusMessage({ ...status, project: "a<b>&c" });
+    const message = statusMessage({ ...status, previews: NO_PREVIEWS, project: "a<b>&c" });
     expect(message.text).toBe(
       "a&lt;b&gt;&amp;c · from the thread · claude · running · mend/flaky-login-test",
     );
@@ -170,8 +183,12 @@ describe("the status message", () => {
   });
 
   it("offers Switch project for the session it names, and no button otherwise", () => {
-    expect(statusMessage({ ...status, switchSession: null }).blocks).toHaveLength(1);
-    expect(statusMessage({ ...status, switchSession: "s1" }).blocks[1]).toEqual({
+    expect(
+      statusMessage({ ...status, previews: NO_PREVIEWS, switchSession: null }).blocks,
+    ).toHaveLength(1);
+    expect(
+      statusMessage({ ...status, previews: NO_PREVIEWS, switchSession: "s1" }).blocks[1],
+    ).toEqual({
       type: "actions",
       elements: [
         {
@@ -339,6 +356,7 @@ describe("replies only the person sees", () => {
   it("gives no verdicts", () => {
     const messages = [
       statusMessage({
+        previews: NO_PREVIEWS,
         ...status,
         state: "completed",
         change: { files: 2, additions: 1, deletions: 1 },
@@ -369,22 +387,31 @@ describe("what the reporter posts", () => {
   const settings = { showAgentMessages: true, showDiffs: false, externalChannels: false };
 
   it("keeps a Slack Connect channel to status and links unless the owner opens it", () => {
-    expect(disclosureFor(settings, false)).toEqual({ agentMessages: true, diffs: false });
+    expect(disclosureFor(settings, false)).toEqual({
+      agentMessages: true,
+      diffs: false,
+      previews: true,
+    });
     expect(disclosureFor({ ...settings, showDiffs: true }, false)).toEqual({
       agentMessages: true,
       diffs: true,
+      previews: true,
     });
     expect(disclosureFor({ ...settings, showDiffs: true }, true)).toEqual({
       agentMessages: false,
       diffs: false,
+      previews: false,
     });
     expect(disclosureFor({ ...settings, showDiffs: true, externalChannels: true }, true)).toEqual({
       agentMessages: true,
       diffs: true,
+      previews: true,
     });
+    // Previews are status: agent messages off still shows them.
     expect(disclosureFor({ ...settings, showAgentMessages: false }, false)).toEqual({
       agentMessages: false,
       diffs: false,
+      previews: true,
     });
   });
 
@@ -443,6 +470,7 @@ describe("what the reporter posts", () => {
     const review = changeUrl("https://mend.example/", "chg 1");
     expect(review).toBe("https://mend.example/changes/chg%201");
     const message = reviewMessage({
+      previews: NO_PREVIEWS,
       summary: null,
       drafts: { drafts: 3, suggestions: 1 },
       url: review,
@@ -457,7 +485,12 @@ describe("what the reporter posts", () => {
       },
     });
     const counted = (drafts: number, suggestions: number) =>
-      reviewMessage({ summary: null, drafts: { drafts, suggestions }, url: review })?.text;
+      reviewMessage({
+        summary: null,
+        drafts: { drafts, suggestions },
+        url: review,
+        previews: NO_PREVIEWS,
+      })?.text;
     expect(counted(0, 0)).toBe("Mend read the change · no draft comments");
     expect(counted(1, 0)).toBe("Mend read the change · 1 draft comment");
   });
@@ -465,6 +498,7 @@ describe("what the reporter posts", () => {
   it("leads with the tour's summary and approach, says where they came from, and ends on the count", () => {
     const review = changeUrl("https://mend.example", "chg-1");
     const message = reviewMessage({
+      previews: NO_PREVIEWS,
       summary: {
         summary: "Bounds the login retry at three attempts.",
         approach: "Read the flaky test, then ran it 20 times.",
@@ -496,6 +530,7 @@ describe("what the reporter posts", () => {
 
     // A tour with no approach, and no review pass: the summary and the button.
     const tourOnly = reviewMessage({
+      previews: NO_PREVIEWS,
       summary: { summary: "Bounds the retry.", approach: null },
       drafts: null,
       url: review,
@@ -508,7 +543,9 @@ describe("what the reporter posts", () => {
     expect(tourOnly?.blocks.at(-1)).toMatchObject({ accessory: { url: review } });
 
     // Nothing to say: no reply.
-    expect(reviewMessage({ summary: null, drafts: null, url: review })).toBeNull();
+    expect(
+      reviewMessage({ summary: null, drafts: null, url: review, previews: NO_PREVIEWS }),
+    ).toBeNull();
   });
 
   it("writes a plan's todo list as a short checklist, and keeps a plan's own text", () => {
@@ -610,6 +647,7 @@ describe("what the reporter posts", () => {
       questionMessage({ ownerSlackUserId: "U1", questions: [], showText: true, url }),
       approvalMessage({ kind: "tool-permission", title: null, showText: true, url }),
       reviewMessage({
+        previews: NO_PREVIEWS,
         summary: { summary: "Bounds the retry.", approach: "Ran the test." },
         drafts: { drafts: 0, suggestions: 0 },
         url,
@@ -815,6 +853,7 @@ describe("landing in the thread", () => {
     expect(copyOf(message)).toContain("<@U-alice>");
 
     const reply = reviewMessage({
+      previews: NO_PREVIEWS,
       summary: null,
       drafts: { drafts: 1, suggestions: 0 },
       url: "https://mend.example/changes/chg-1",
@@ -825,6 +864,7 @@ describe("landing in the thread", () => {
     // With nothing else to say, the reply is the offer.
     expect(
       reviewMessage({
+        previews: NO_PREVIEWS,
         summary: null,
         drafts: null,
         url: "https://mend.example/changes/chg-1",
@@ -835,6 +875,7 @@ describe("landing in the thread", () => {
 
   it("carries the landing under the status line, and gives no verdicts", () => {
     const message = statusMessage({
+      previews: NO_PREVIEWS,
       ...status,
       state: "completed",
       landing: ["pushed · mend/fix-login · pull request #412 · opened"],
@@ -940,5 +981,237 @@ describe("@mend list", () => {
     expect(sessionListMessage({ sessions: [], more: false }).text).toBe(
       "No sessions you started from Slack in this workspace.",
     );
+  });
+});
+
+const notice = (
+  service: string,
+  facts: PreviewNotice["facts"],
+  openable = true,
+  id = `pv-${service}`,
+): PreviewNotice => ({ id: PreviewId.make(id), service, facts, openable });
+
+describe("a worktree's previews in a message (docs/adr/0017-live-preview.md)", () => {
+  const APP = PublicOrigin.make("https://mend.example");
+  const completed = {
+    project: "billing-api",
+    source: "thread-inference",
+    harness: "claude",
+    branch: "mend/flaky-login-test",
+    state: "completed",
+    recorded: true,
+    change: null,
+    url: "https://mend.example/sessions/s1",
+  } as const;
+  const observedAt = new Date("2026-10-30T12:00:00.000Z");
+  const shown = (...previews: ReadonlyArray<PreviewNotice>): WorktreePreviews => ({
+    _tag: "Shown",
+    appUrl: APP,
+    previews,
+    unprepared: null,
+  });
+  const answered = notice("web", [
+    { _tag: "Observed", service: "web", reachable: true, httpStatus: 200, observedAt },
+  ]);
+  type Section = Extract<SlackBlock, { readonly type: "section" }>;
+  const sections = (message: { readonly blocks: ReadonlyArray<SlackBlock> }) =>
+    message.blocks.filter((block): block is Section => block.type === "section");
+
+  it("puts the preview's line under the status, and an Open preview button to Mend's sign-in", () => {
+    const message = statusMessage({ ...completed, previews: shown(answered) });
+    const [, preview] = sections(message);
+    expect(preview).toEqual({
+      type: "section",
+      text: { type: "mrkdwn", text: "preview · web · answered HTTP 200 · observed" },
+      accessory: {
+        type: "button",
+        action_id: `${SLACK_ACTIONS.openPreview}:pv-web`,
+        text: { type: "plain_text", text: "Open preview", emoji: true },
+        url: "https://mend.example/preview-auth?preview=pv-web&path=%2F",
+      },
+    });
+    expect(message.text).toBe(
+      "billing-api · from the thread · claude · completed · observed · mend/flaky-login-test\npreview · web · answered HTTP 200 · observed",
+    );
+    const url = new URL(preview?.accessory?.url ?? "");
+    expect([...url.searchParams.keys()]).toEqual(["preview", "path"]);
+    expect(copyOf(message)).not.toMatch(/ticket|__mend|preview\.test/u);
+  });
+
+  it("words a preview the same whenever it is read and however often its check repeats", () => {
+    const later = notice("web", [
+      {
+        _tag: "Observed",
+        service: "web",
+        reachable: true,
+        httpStatus: 200,
+        observedAt: new Date(observedAt.getTime() + 3_600_000),
+      },
+    ]);
+    expect(statusMessage({ ...completed, previews: shown(later) })).toEqual(
+      statusMessage({ ...completed, previews: shown(answered) }),
+    );
+  });
+
+  it("offers no button for a preview the gateway would not serve, and leaves out one with nothing to say", () => {
+    const message = statusMessage({
+      ...completed,
+      previews: shown(
+        notice("web", [{ _tag: "RecipeChanged", service: "web" }], false),
+        notice("docs", [], false),
+        notice("storybook", []),
+      ),
+    });
+    expect(sections(message).slice(1)).toEqual([
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "preview · web · recipe changed · the owner's Start runs it",
+        },
+      },
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: "preview · storybook" },
+        accessory: {
+          type: "button",
+          action_id: `${SLACK_ACTIONS.openPreview}:pv-storybook`,
+          text: { type: "plain_text", text: "Open preview", emoji: true },
+          url: "https://mend.example/preview-auth?preview=pv-storybook&path=%2F",
+        },
+      },
+    ]);
+  });
+
+  it("names the Service on each button when there are several, and lists twenty with a link for the rest", () => {
+    const many = Array.from({ length: 23 }, (_, index) =>
+      notice(`svc-${String(index).padStart(2, "0")}`, [
+        { _tag: "Starting", service: `svc-${String(index).padStart(2, "0")}`, phase: "setup" },
+      ]),
+    );
+    const message = statusMessage({ ...completed, previews: shown(...many) });
+    const listed = sections(message).slice(1);
+    expect(listed).toHaveLength(PREVIEWS_LISTED);
+    expect(listed.map((block) => block.accessory?.text.text)).toEqual(
+      many.slice(0, PREVIEWS_LISTED).map(({ service }) => `Open preview · ${service}`),
+    );
+    expect(new Set(listed.map((block) => block.accessory?.action_id)).size).toBe(PREVIEWS_LISTED);
+    expect(message.blocks.at(-1)).toEqual({
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: "<https://mend.example/sessions/s1|3 more previews in Mend>" },
+      ],
+    });
+    expect(message.blocks.length).toBeLessThanOrEqual(50);
+  });
+
+  it("says a preparation that failed before any preview, with nothing to open", () => {
+    const message = statusMessage({
+      ...completed,
+      previews: {
+        _tag: "Shown",
+        appUrl: APP,
+        previews: [],
+        unprepared: {
+          _tag: "NotPrepared",
+          service: "web",
+          why: { _tag: "Refused", words: "setup exited 1\nnpm ERR!" },
+        },
+      },
+    });
+    expect(sections(message).slice(1)).toEqual([
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: "preview not prepared · web · setup exited 1" },
+      },
+    ]);
+  });
+
+  it("escapes a Service's name, a stopper's name and a refusal in the blocks and the top-level text alike", () => {
+    const previews: WorktreePreviews = {
+      _tag: "Shown",
+      appUrl: APP,
+      previews: [
+        notice("<!channel>", [{ _tag: "Starting", service: "<!channel>", phase: "service" }]),
+        notice("web", [
+          { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "<https://x|y>" } },
+        ]),
+      ],
+      unprepared: {
+        _tag: "NotPrepared",
+        service: "docs",
+        why: { _tag: "Refused", words: "<!channel> <https://x|y>" },
+      },
+    };
+    const message = statusMessage({ ...completed, previews });
+    const reply = reviewMessage({ summary: null, drafts: null, url: completed.url, previews });
+    expect(message.text.split("\n").slice(1)).toEqual([
+      "preview · &lt;!channel&gt; · starting · &lt;!channel&gt;",
+      "preview · web · stopped by &lt;https://x|y&gt;",
+      "preview not prepared · docs · &lt;!channel&gt; &lt;https://x|y&gt;",
+    ]);
+    expect(
+      sections(message)
+        .slice(1)
+        .map((block) => block.text.text),
+    ).toEqual(message.text.split("\n").slice(1));
+    expect(reply?.text).toBe(message.text.split("\n").slice(1).join("\n"));
+    expect(sections(reply ?? { blocks: [] }).map((block) => block.text.text)).toEqual(
+      message.text.split("\n").slice(1),
+    );
+  });
+
+  it("carries nothing about a preview when the previews are hidden, and a private project's message never does", () => {
+    expect(statusMessage({ ...completed, previews: NO_PREVIEWS }).blocks).toHaveLength(1);
+    expect(copyOf(privateProjectStatusMessage())).not.toMatch(/preview/u);
+  });
+
+  it("ends the end-of-session reply with the previews as they read when it was posted", () => {
+    const review = "https://mend.example/changes/c1";
+    const both = reviewMessage({
+      summary: { summary: "Bounds the retry.", approach: null },
+      drafts: { drafts: 2, suggestions: 0 },
+      url: review,
+      previews: shown(answered),
+    });
+    expect(both?.blocks.map((block) => block.type)).toEqual([
+      "markdown",
+      "context",
+      "section",
+      "section",
+    ]);
+    expect(copyOf(both ?? { text: "", blocks: [] })).toContain(
+      "https://mend.example/preview-auth?preview=pv-web&path=%2F",
+    );
+    const counted = reviewMessage({
+      summary: null,
+      drafts: { drafts: 0, suggestions: 0 },
+      url: review,
+      previews: shown(answered),
+    });
+    expect(counted?.text).toBe("Mend read the change · no draft comments");
+    expect(counted?.blocks).toHaveLength(2);
+    // A review moment whose summary is not shown and that drafted nothing still shows the preview.
+    const previewOnly = reviewMessage({
+      summary: null,
+      drafts: null,
+      url: review,
+      previews: shown(answered),
+    });
+    expect(previewOnly).toEqual({
+      text: "preview · web · answered HTTP 200 · observed",
+      blocks: [sections(statusMessage({ ...completed, previews: shown(answered) }))[1]],
+    });
+    expect(reviewMessage({ summary: null, drafts: null, url: review, previews: NO_PREVIEWS })).toBe(
+      null,
+    );
+    expect(
+      reviewMessage({
+        summary: null,
+        drafts: null,
+        url: review,
+        previews: shown(notice("x", [], false)),
+      }),
+    ).toBe(null);
   });
 });

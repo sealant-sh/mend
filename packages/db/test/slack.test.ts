@@ -450,32 +450,36 @@ describe.skipIf(postgres.skip)("slack in Postgres", () => {
           reportedState: null,
           reportedStatus: null,
         });
+        // The receipts are the writer's (the Slack package's codec): opaque here.
+        const starting = { state: "starting", status: '{"r":"starting"}' } as const;
+        const running = { state: "running", status: '{"r":"running"}' } as const;
         // Nothing to move before the status message exists.
-        const running = { state: "running", line: "api · running" } as const;
-        expect(yield* threads.claimStatus(first.id, null, running)).toBe(false);
-        yield* threads.setStatusTs(first.id, "1726000001.000300", {
-          state: "starting",
-          line: "api · starting",
-        });
+        expect(yield* threads.claimStatus(first.id, { state: null, status: null }, running)).toBe(
+          false,
+        );
+        yield* threads.setStatusTs(first.id, "1726000001.000300", starting);
         expect(yield* threads.forSession(first.id)).toMatchObject({
           statusTs: "1726000001.000300",
           reportedState: "starting",
-          reportedStatus: "api · starting",
+          reportedStatus: starting.status,
         });
         // Two workers saw the same move: one edits the message.
         const moves = yield* Effect.all(
-          Array.from({ length: 8 }, () => threads.claimStatus(first.id, "api · starting", running)),
+          Array.from({ length: 8 }, () => threads.claimStatus(first.id, starting, running)),
           { concurrency: "unbounded" },
         );
         expect(moves.filter(Boolean)).toHaveLength(1);
-        // A worker that read the old line cannot move it back.
-        expect(
-          yield* threads.claimStatus(first.id, "api · starting", {
-            state: "starting",
-            line: "api · starting",
-          }),
-        ).toBe(false);
+        // A worker that read the old receipt cannot move it back.
+        expect(yield* threads.claimStatus(first.id, starting, starting)).toBe(false);
         expect((yield* threads.forSession(first.id))?.reportedState).toBe("running");
+
+        const stopped = { state: "stopped", status: running.status } as const;
+        expect(yield* threads.claimStatus(first.id, running, stopped)).toBe(true);
+        expect(yield* threads.claimStatus(first.id, running, stopped)).toBe(false);
+        expect(yield* threads.forSession(first.id)).toMatchObject({
+          reportedState: "stopped",
+          reportedStatus: running.status,
+        });
 
         const posts = yield* Effect.all(
           Array.from({ length: 8 }, () => threads.claimPost(first.id, "turn:t-1")),
@@ -484,6 +488,34 @@ describe.skipIf(postgres.skip)("slack in Postgres", () => {
         expect(posts.filter(Boolean)).toHaveLength(1);
         expect(yield* threads.claimPost(first.id, "turn:t-2")).toBe(true);
         expect(yield* threads.claimPost(second.id, "turn:t-1")).toBe(true);
+
+        // A switch restarts the same request in a new session: its reaction is the new one's.
+        expect(yield* threads.ownsRequestReaction(first.id)).toBe(true);
+        const switched = yield* newSession("s-slack-3", "slack");
+        yield* threads.record({
+          ...thread,
+          sessionId: switched.id,
+          requestTs: "1726000000.000100",
+          slackUserId: "U-ALICE",
+          projectSource: "picked",
+          external: false,
+        });
+        expect(yield* threads.ownsRequestReaction(first.id)).toBe(false);
+        expect(yield* threads.ownsRequestReaction(switched.id)).toBe(true);
+        expect(yield* threads.ownsRequestReaction(second.id)).toBe(true);
+        expect(yield* threads.ownsRequestReaction(fromWeb.id)).toBe(false);
+
+        // A change to the worktree reaches every thread of it, from a session with none too.
+        const all = [first.id, second.id, switched.id];
+        expect(yield* threads.sessionsReached({ worktreeOf: fromWeb.id })).toEqual(all);
+        expect(yield* threads.sessionsReached({ worktreeId: WORKTREE })).toEqual(all);
+        expect(yield* threads.sessionsReached({ projectId: PROJECT })).toEqual(all);
+        expect(yield* threads.sessionsReached({ worktreeId: WorktreeId.make("wt-none") })).toEqual(
+          [],
+        );
+        expect(yield* threads.sessionsReached({ worktreeOf: SessionId.make("s-gone") })).toEqual(
+          [],
+        );
 
         const twice = yield* threads
           .record({

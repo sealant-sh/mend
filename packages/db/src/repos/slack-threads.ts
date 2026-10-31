@@ -1,6 +1,7 @@
-import type { ProjectId, SessionId } from "@mend/domain";
+import type { ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import type { SessionStatus, SlackProjectSource, SlackSessionState } from "@mend/domain/workbench";
-import { and, desc, eq, getTableColumns, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNotNull, isNull } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -28,15 +29,18 @@ export interface SlackThreadSession extends SlackThreadRef {
   readonly external: boolean;
   /** The state the status message last showed; null until it is posted. */
   readonly reportedState: SlackSessionState | null;
-  /** The status line the status message last showed; null until it is posted. */
+  /**
+   * What Mend keeps about the status message, as its writer stored it (the Slack package's
+   * `SlackStatusReceipt`), or the line a release before receipts wrote; null until it is posted.
+   */
   readonly reportedStatus: string | null;
   readonly createdAt: Date;
 }
 
-/** What the status message shows: the state, and the line that words it. */
+/** The status message's state and receipt, as stored. */
 export interface SlackReportedStatus {
   readonly state: SlackSessionState;
-  readonly line: string;
+  readonly status: string;
 }
 
 /** A session its owner started from Slack, with what `@mend list` shows of it. */
@@ -84,15 +88,34 @@ export class SlackThreadsRepo extends Context.Service<
       reported: SlackReportedStatus,
     ) => Effect.Effect<void>;
     /**
-     * Move the status message from the line it showed (`from`) to `to`: true for exactly one
-     * caller, who then edits the message. False when another worker moved it first, or when the
-     * message has not been posted.
+     * Move the status message from its state and receipt as read (`from`) to `to`: true for
+     * exactly one caller, who then edits the message or records how the edit went. False when
+     * another writer moved it first, or when the message has not been posted.
      */
     readonly claimStatus: (
       sessionId: SessionId,
-      from: string | null,
+      from: {
+        readonly state: SlackSessionState | null;
+        readonly status: string | null;
+      },
       to: SlackReportedStatus,
     ) => Effect.Effect<boolean>;
+    /**
+     * Whether the session is the latest to start from its request (the same workspace, channel
+     * and message): the one whose reaction the request carries. A switch reuses the request.
+     */
+    readonly ownsRequestReaction: (sessionId: SessionId) => Effect.Effect<boolean>;
+    /**
+     * The sessions with a thread that a change reaches, settled ones included: every session of a
+     * worktree (its previews are the worktree's, and a Service can run in a sibling session), of
+     * the worktree a session is in, or of a project.
+     */
+    readonly sessionsReached: (
+      by:
+        | { readonly worktreeId: WorktreeId }
+        | { readonly worktreeOf: SessionId }
+        | { readonly projectId: ProjectId },
+    ) => Effect.Effect<ReadonlyArray<SessionId>>;
     /** Claim a reply by key before posting it: true for exactly one caller, ever. */
     readonly claimPost: (sessionId: SessionId, key: string) => Effect.Effect<boolean>;
     /**
@@ -154,31 +177,93 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
     ) {
       yield* db
         .update(slackThreads)
-        .set({ statusTs, reportedState: reported.state, reportedStatus: reported.line })
+        .set({ statusTs, reportedState: reported.state, reportedStatus: reported.status })
         .where(eq(slackThreads.sessionId, sessionId))
         .pipe(Effect.orDie);
     });
 
     const claimStatus = Effect.fn("SlackThreadsRepo.claimStatus")(function* (
       sessionId: SessionId,
-      from: string | null,
+      from: { readonly state: SlackSessionState | null; readonly status: string | null },
       to: SlackReportedStatus,
     ) {
       const moved = yield* db
         .update(slackThreads)
-        .set({ reportedState: to.state, reportedStatus: to.line })
+        .set({ reportedState: to.state, reportedStatus: to.status })
         .where(
           and(
             eq(slackThreads.sessionId, sessionId),
             isNotNull(slackThreads.statusTs),
-            from === null
+            from.state === null
+              ? isNull(slackThreads.reportedState)
+              : eq(slackThreads.reportedState, from.state),
+            from.status === null
               ? isNull(slackThreads.reportedStatus)
-              : eq(slackThreads.reportedStatus, from),
+              : eq(slackThreads.reportedStatus, from.status),
           ),
         )
         .returning({ sessionId: slackThreads.sessionId })
         .pipe(Effect.orDie);
       return moved.length === 1;
+    });
+
+    const ownsRequestReaction = Effect.fn("SlackThreadsRepo.ownsRequestReaction")(function* (
+      sessionId: SessionId,
+    ) {
+      const [own] = yield* db
+        .select({
+          teamId: slackThreads.teamId,
+          channelId: slackThreads.channelId,
+          requestTs: slackThreads.requestTs,
+        })
+        .from(slackThreads)
+        .where(eq(slackThreads.sessionId, sessionId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (own === undefined) return false;
+      const [latest] = yield* db
+        .select({ sessionId: slackThreads.sessionId })
+        .from(slackThreads)
+        .where(
+          and(
+            eq(slackThreads.teamId, own.teamId),
+            eq(slackThreads.channelId, own.channelId),
+            eq(slackThreads.requestTs, own.requestTs),
+          ),
+        )
+        .orderBy(desc(slackThreads.createdAt), desc(slackThreads.sessionId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return latest?.sessionId === sessionId;
+    });
+
+    const source = alias(agentSessions, "source");
+    const sessionsReached = Effect.fn("SlackThreadsRepo.sessionsReached")(function* (
+      by:
+        | { readonly worktreeId: WorktreeId }
+        | { readonly worktreeOf: SessionId }
+        | { readonly projectId: ProjectId },
+    ) {
+      const reached =
+        "worktreeId" in by
+          ? eq(agentSessions.worktreeId, by.worktreeId)
+          : "worktreeOf" in by
+            ? inArray(
+                agentSessions.worktreeId,
+                db
+                  .select({ worktreeId: source.worktreeId })
+                  .from(source)
+                  .where(eq(source.id, by.worktreeOf)),
+              )
+            : eq(agentSessions.projectId, by.projectId);
+      const rows = yield* db
+        .select({ sessionId: slackThreads.sessionId })
+        .from(slackThreads)
+        .innerJoin(agentSessions, eq(agentSessions.id, slackThreads.sessionId))
+        .where(reached)
+        .orderBy(slackThreads.sessionId)
+        .pipe(Effect.orDie);
+      return rows.map((row) => row.sessionId);
     });
 
     const claimPost = Effect.fn("SlackThreadsRepo.claimPost")(function* (
@@ -199,7 +284,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       readonly ownerUserId: string;
       readonly limit: number;
     }) {
-      return yield* db
+      const rows = yield* db
         .select({
           ...getTableColumns(slackThreads),
           projectId: agentSessions.projectId,
@@ -219,6 +304,7 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
         .orderBy(desc(slackThreads.createdAt), desc(slackThreads.sessionId))
         .limit(input.limit)
         .pipe(Effect.orDie);
+      return rows;
     });
 
     return {
@@ -227,6 +313,8 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       forSession,
       setStatusTs,
       claimStatus,
+      ownsRequestReaction,
+      sessionsReached,
       claimPost,
       listForOwner,
     };

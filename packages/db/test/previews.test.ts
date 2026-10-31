@@ -189,6 +189,31 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
       );
   });
 
+  it("a read-only reader allocates nothing, however often it reads, and reads what an allocation made", async () => {
+    await run(
+      Effect.gen(function* () {
+        const { worktree } = yield* seed("readonly");
+        const previews = yield* PreviewsRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const rows = () =>
+          sql<{
+            count: number;
+          }>`SELECT count(*)::int AS count FROM previews WHERE worktree_id = ${worktree}`.pipe(
+            Effect.map(([row]) => row?.count),
+          );
+        for (let read = 0; read < 3; read++) {
+          expect(yield* previews.readForWorktree(worktree)).toEqual([]);
+        }
+        expect(yield* rows()).toBe(0);
+        const allocated = yield* previews.ensureForWorktree(worktree);
+        expect(allocated).toHaveLength(1);
+        expect(yield* previews.readForWorktree(worktree)).toEqual(allocated);
+        expect(yield* rows()).toBe(1);
+        expect(yield* previews.readForWorktree(WorktreeId.make("wt-gone"))).toEqual([]);
+      }),
+    );
+  });
+
   it("concurrent readers of two sessions reserve one label; a second worktree gets another", async () => {
     await run(
       Effect.gen(function* () {

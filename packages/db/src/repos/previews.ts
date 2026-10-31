@@ -48,6 +48,12 @@ export class PreviewsRepo extends Context.Service<
     readonly ensureForWorktree: (
       id: WorktreeId,
     ) => Effect.Effect<ReadonlyArray<PreviewView>, WorktreeNotFoundError>;
+    /**
+     * The worktree's previews as they are, allocating none: a browser Service with no preview yet
+     * stays absent until a reader that may allocate (`ensureForWorktree`) gives it one. Empty for a
+     * worktree that is gone.
+     */
+    readonly readForWorktree: (id: WorktreeId) => Effect.Effect<ReadonlyArray<PreviewView>>;
     /** The kept preview of `serviceName` in the worktree, allocated now if it has none. */
     readonly ensureNamed: (
       id: WorktreeId,
@@ -406,6 +412,13 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         return (yield* snapshot((tx) => readPreviews(tx, id))).views;
       }, Effect.catchTags(queryErrorsDie));
 
+      const readForWorktree = Effect.fn("PreviewsRepo.readForWorktree")(
+        function* (id: WorktreeId) {
+          return (yield* snapshot((tx) => readPreviews(tx, id))).views;
+        },
+        Effect.catchTags({ ...queryErrorsDie, WorktreeNotFoundError: () => Effect.succeed([]) }),
+      );
+
       const ensureNamed = Effect.fn("PreviewsRepo.ensureNamed")(function* (
         id: WorktreeId,
         serviceName: string,
@@ -706,6 +719,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         touchTailnetPorts,
         tailnetPortReused,
         ensureForWorktree,
+        readForWorktree,
         ensureNamed,
         resolveByLabel,
         resolveById,

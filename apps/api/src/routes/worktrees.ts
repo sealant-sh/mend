@@ -23,9 +23,7 @@ import {
   WorktreeRangeFile,
 } from "@mend/api-contracts";
 import {
-  PreviewPreparationsRepo,
   PreviewsRepo,
-  ServiceObservationsRepo,
   SessionsRepo,
   ServicesRepo,
   SessionProcessesRepo,
@@ -34,12 +32,7 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import type { CheckpointId, WorktreeId } from "@mend/domain";
-import {
-  currentAgentProcess,
-  previewStatusesOf,
-  previewStatusLine,
-  unpreparedStatusOf,
-} from "@mend/domain/workbench";
+import { currentAgentProcess, previewStatusLine } from "@mend/domain/workbench";
 import {
   SessionEngine,
   startFromBase,
@@ -56,7 +49,7 @@ import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";
 import { LIVE_STATES } from "../live-states.ts";
 import { PreviewSetupConfig } from "../preview-config.ts";
-import { previewOpenOf } from "../preview-open.ts";
+import { describeWorktreePreviews } from "../preview-reads.ts";
 import { refuseStartWhileRemoving, Removal } from "../removal.ts";
 import { budgetExceeded } from "../session-budgets.ts";
 import { observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
@@ -624,67 +617,26 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const worktree = yield* (yield* ProjectAccess)
           .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
-        const previews = yield* PreviewsRepo;
-        const observations = yield* ServiceObservationsRepo;
-        const processes = yield* SessionProcessesRepo;
-        const services = yield* ServicesRepo;
-        const views = yield* previews
+        const views = yield* (yield* PreviewsRepo)
           .ensureForWorktree(worktree.id)
           .pipe(
             Effect.catchTag("WorktreeNotFoundError", () =>
               Effect.fail(new WorktreeNotFound({ id: params.id })),
             ),
           );
-        const snapshots = yield* previews.gatewaySnapshots(views.map(({ preview }) => preview.id));
-        const preparation = yield* (yield* PreviewPreparationsRepo).latestForWorktree(worktree.id);
         const { setup } = yield* PreviewSetupConfig;
+        const { previews, unprepared } = yield* describeWorktreePreviews(worktree.id, views, setup);
         const now = new Date(yield* Clock.currentTimeMillis);
-        const described = yield* Effect.forEach(views, (view) =>
-          Effect.gen(function* () {
-            const resolution = snapshots.get(view.preview.id)?.resolution ?? null;
-            const bound = resolution?._tag === "Bound" ? resolution.attempt : null;
-            const observation =
-              bound === null ? null : yield* observations.latestForService(bound.serviceId);
-            const attemptId =
-              resolution?._tag === "Bound"
-                ? resolution.attempt.attemptId
-                : resolution?._tag === "Starting"
-                  ? resolution.attemptId
-                  : resolution?._tag === "Dormant"
-                    ? resolution.source.sourceAttemptId
-                    : null;
-            const attempt = attemptId === null ? null : yield* processes.byId(attemptId);
-            const boundService =
-              view.binding._tag === "Bound" ? yield* services.byId(view.binding.serviceId) : null;
-            const open = previewOpenOf(setup, view);
-            const facts = previewStatusesOf(
-              {
-                preview: view.preview,
-                resolution,
-                observation,
-                attemptStartedAt: attempt?.createdAt ?? null,
-              },
-              preparation,
-            );
-            return {
-              ...view,
-              status: facts.map((status) => previewStatusLine(status, now)),
-              facts,
-              open: open._tag === "Open" ? open.target : null,
-              boundTo:
-                boundService === null
-                  ? null
-                  : { serviceId: boundService.id, sessionId: boundService.sessionId },
-            };
-          }),
-        );
-        const unprepared = unpreparedStatusOf(
-          views.map(({ preview }) => preview),
-          preparation,
-        );
+        const described = previews.map(({ view, facts, open, boundTo }) => ({
+          ...view,
+          status: facts.map((status) => previewStatusLine(status, { now })),
+          facts,
+          open: open._tag === "Open" ? open.target : null,
+          boundTo,
+        }));
         return {
           previews: described,
-          unprepared: unprepared === null ? null : previewStatusLine(unprepared, now),
+          unprepared: unprepared === null ? null : previewStatusLine(unprepared, { now }),
           starting: [...described.flatMap(({ facts }) => facts), unprepared].some(
             (status) => status?._tag === "Starting",
           ),

@@ -4,6 +4,8 @@ import {
   landingFacts,
   notLandedReasonOf,
   offersLanding,
+  previewAuthTarget,
+  previewStatusLine,
   type AgentTurn,
   type AgentWaitLine,
   type ChangeLanding,
@@ -19,11 +21,13 @@ import type {
   ActionsBlock,
   ButtonElement,
   PlainText,
+  SectionBlock,
   SlackBlock,
   SlackMessage,
   StaticSelectElement,
 } from "./blocks.ts";
 import { escapeSlack } from "./markup.ts";
+import type { PreviewNotice, WorktreePreviews } from "./previews.ts";
 
 /**
  * What Mend posts into a thread (docs/adr/0006-slack.md, "What Mend posts, and where"). The copy
@@ -44,6 +48,7 @@ export const SLACK_ACTIONS = {
   clearChannelDefault: "mend_clear_channel_default",
   landChange: "mend_land_change",
   openPullRequest: "mend_open_pull_request",
+  openPreview: "mend_open_preview",
 } as const;
 
 /** A project button's `action_id`: unique within its block, and starts with `pickProject`. */
@@ -92,6 +97,13 @@ export const settingsUrl = (webOrigin: string): string => `${origin(webOrigin)}/
 /** The change's review page. */
 export const changeUrl = (webOrigin: string, changeId: string): string =>
   `${origin(webOrigin)}/changes/${encodeURIComponent(changeId)}`;
+
+/**
+ * Mend's sign-in page for the preview, on `APP_URL`, which checks the person may see the project
+ * before it hands the preview a ticket. The link carries no credential and names no preview host.
+ */
+export const previewUrl = (appUrl: string, previewId: PreviewNotice["id"]): string =>
+  `${origin(appUrl)}${previewAuthTarget(previewId, "/")}`;
 
 // ---------------------------------------------------------------------------
 // The status message and the reaction.
@@ -190,6 +202,10 @@ export interface StatusInput {
   readonly capture?: string | null;
 }
 
+export interface StatusMessageInput extends StatusInput {
+  readonly previews: WorktreePreviews;
+}
+
 const stateLine = (input: StatusInput): string => {
   if (input.state === "idle-stopped" && input.summary !== undefined && input.summary !== null) {
     return input.summary;
@@ -221,7 +237,7 @@ export const statusLine = (input: StatusInput): string =>
  * requester picks. Once the change lands, or a turn's change does not, the lines under it say so
  * (docs/adr/0007-landing.md, "What the thread sees"), and a later landing edits them in place.
  */
-export const statusMessage = (input: StatusInput): SlackMessage => {
+export const statusMessage = (input: StatusMessageInput): SlackMessage => {
   const line = [statusLine(input), ...(input.landing ?? [])].map(escapeSlack).join("\n");
   const switchSession = input.switchSession ?? null;
   const switching: ReadonlyArray<ActionsBlock> =
@@ -240,8 +256,9 @@ export const statusMessage = (input: StatusInput): SlackMessage => {
             ],
           },
         ];
+  const previews = previewParts(input.previews, input.url);
   return {
-    text: line,
+    text: [line, ...previews.lines].join("\n"),
     blocks: [
       {
         type: "section",
@@ -253,8 +270,77 @@ export const statusMessage = (input: StatusInput): SlackMessage => {
           url: input.url,
         },
       },
+      ...previews.blocks,
       ...switching,
     ],
+  };
+};
+
+/** How many previews one message lists; the rest are counted, with a link to Mend. */
+export const PREVIEWS_LISTED = 20;
+/** Slack's limit on a section's text. */
+const SECTION_TEXT_LIMIT = 3_000;
+/** Slack's limit on a button's label. */
+const BUTTON_TEXT_LIMIT = 75;
+
+/** A preview with neither a fact nor an Open says nothing. */
+const previewParts = (
+  previews: WorktreePreviews,
+  moreUrl: string,
+): { readonly lines: ReadonlyArray<string>; readonly blocks: ReadonlyArray<SlackBlock> } => {
+  if (previews._tag === "Hidden") return { lines: [], blocks: [] };
+  const entries = [
+    ...previews.previews.flatMap((notice) => {
+      const facts = notice.facts.map((fact) => previewStatusLine(fact, { stable: true }));
+      if (facts.length === 0 && !notice.openable) return [];
+      return [{ notice, lines: facts.length === 0 ? [`preview · ${notice.service}`] : facts }];
+    }),
+    ...(previews.unprepared === null
+      ? []
+      : [{ notice: null, lines: [previewStatusLine(previews.unprepared, { stable: true })] }]),
+  ];
+  const escaped = entries
+    .slice(0, PREVIEWS_LISTED)
+    .map(({ notice, lines }) => ({ notice, lines: lines.map(escapeSlack) }));
+  const named = escaped.filter(({ notice }) => notice?.openable === true).length > 1;
+  const sections = escaped.map(({ notice, lines }): SectionBlock => {
+    const text = clip(lines.join("\n"), SECTION_TEXT_LIMIT);
+    return notice === null || !notice.openable
+      ? { type: "section", text: { type: "mrkdwn", text } }
+      : {
+          type: "section",
+          text: { type: "mrkdwn", text },
+          accessory: {
+            type: "button",
+            action_id: `${SLACK_ACTIONS.openPreview}:${notice.id}`,
+            text: plain(
+              clip(named ? `Open preview · ${notice.service}` : "Open preview", BUTTON_TEXT_LIMIT),
+            ),
+            url: previewUrl(previews.appUrl, notice.id),
+          },
+        };
+  });
+  const more = entries.length - escaped.length;
+  const overflow: ReadonlyArray<SlackBlock> =
+    more === 0
+      ? []
+      : [
+          {
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: `<${moreUrl}|${more} more ${more === 1 ? "preview" : "previews"} in Mend>`,
+              },
+            ],
+          },
+        ];
+  return {
+    lines: [
+      ...escaped.flatMap(({ lines }) => lines),
+      ...(more === 0 ? [] : [`${more} more ${more === 1 ? "preview" : "previews"} in Mend`]),
+    ],
+    blocks: [...sections, ...overflow],
   };
 };
 
@@ -391,6 +477,11 @@ export interface SlackDisclosure {
   readonly agentMessages: boolean;
   /** The diff of each changed file. */
   readonly diffs: boolean;
+  /**
+   * Status, so shown with agent messages off; in a Slack Connect channel only when the owner turned
+   * external channels on, since a stopped preview names who stopped it.
+   */
+  readonly previews: boolean;
 }
 
 export const disclosureFor = (
@@ -405,6 +496,7 @@ export const disclosureFor = (
   return {
     agentMessages: here && settings.showAgentMessages,
     diffs: here && settings.showDiffs,
+    previews: here,
   };
 };
 
@@ -722,24 +814,31 @@ export const SUMMARY_PROVENANCE =
 
 /**
  * The end-of-session reply, once Mend's passes over the change have run: the review tour's summary
- * and approach, then what the review pass drafted, with a "Review in Mend" button. Either part may
- * be missing: the summary where agent messages are not shown or the tour did not run, the count
- * where no review pass ran. Zero drafts is said out loud; it is an outcome, not silence. When the
- * turn's change did not land, the reply ends with the offer to land it (`landOfferBlocks`). Null
- * when there is none of these.
+ * and approach, then what the review pass drafted, with a "Review in Mend" button, then the
+ * worktree's previews as they read when it was posted. Any part may be missing: the summary where
+ * agent messages are not shown or the tour did not run, the count where no review pass ran, the
+ * previews where there are none to show. Zero drafts is said out loud; it is an outcome, not
+ * silence. When the turn's change did not land, the reply ends with the offer to land it
+ * (`landOfferBlocks`). Null when there is none of these. It is never edited: the status message
+ * is the one that stays current.
  */
 export const reviewMessage = (input: {
   readonly summary: TourSummary | null;
   readonly drafts: DraftCounts | null;
   readonly url: string;
   readonly offer?: { readonly offer: LandOffer; readonly ownerSlackUserId: string } | null;
+  readonly previews: WorktreePreviews;
 }): SlackMessage | null => {
   const { summary, drafts } = input;
   const offer = input.offer ?? null;
-  if (summary === null && drafts === null) {
-    return offer === null ? null : landOfferMessage(offer.offer, offer.ownerSlackUserId);
-  }
   const offered = offer === null ? [] : landOfferBlocks(offer.offer, offer.ownerSlackUserId);
+  const previews = previewParts(input.previews, input.url);
+  if (summary === null && drafts === null) {
+    if (previews.blocks.length === 0) {
+      return offer === null ? null : landOfferMessage(offer.offer, offer.ownerSlackUserId);
+    }
+    return { text: previews.lines.join("\n"), blocks: [...previews.blocks, ...offered] };
+  }
   const counted =
     drafts === null
       ? ""
@@ -754,7 +853,9 @@ export const reviewMessage = (input: {
     text: plain("Review in Mend"),
     url: input.url,
   });
-  if (summary === null) return { text: review.text, blocks: [...review.blocks, ...offered] };
+  if (summary === null) {
+    return { text: review.text, blocks: [...review.blocks, ...previews.blocks, ...offered] };
+  }
   const approach = summary.approach?.trim() ?? "";
   const body = [
     `**Summary**\n${summary.summary.trim()}`,
@@ -766,6 +867,7 @@ export const reviewMessage = (input: {
       { type: "markdown", text: clip(body, AGENT_MESSAGE_LIMIT) },
       { type: "context", elements: [{ type: "mrkdwn", text: SUMMARY_PROVENANCE }] },
       ...review.blocks,
+      ...previews.blocks,
       ...offered,
     ],
   };

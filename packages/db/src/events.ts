@@ -1,5 +1,6 @@
 import type { PgClient } from "@effect/sql-pg";
 import { Effect, Schema, Stream } from "effect";
+import type * as Scope from "effect/Scope";
 import type { SqlError } from "effect/sql/SqlError";
 
 /**
@@ -171,12 +172,16 @@ export const guardListens = (sql: PgClient.PgClient): void => {
 };
 
 /**
- * The channel's payloads, from the moment PostgreSQL confirms the LISTEN. The stream holds one
- * connection while it runs and fails with the connection's `SqlError` when it drops.
+ * LISTEN on the channel: succeeds once PostgreSQL confirms it, with the payloads from then on. The
+ * stream holds the scope's connection and fails with its `SqlError` when it drops.
  */
-export const listenEvents = (sql: PgClient.PgClient): Stream.Stream<string, SqlError> =>
-  Stream.unwrap(
-    Effect.map(sql.listen(MEND_EVENTS_CHANNEL), (notifications) =>
-      Stream.map(Stream.fromQueue(notifications), (notification) => notification.payload),
-    ),
+export const openEvents = (
+  sql: PgClient.PgClient,
+): Effect.Effect<Stream.Stream<string, SqlError>, SqlError, Scope.Scope> =>
+  Effect.map(sql.listen(MEND_EVENTS_CHANNEL), (notifications) =>
+    Stream.map(Stream.fromQueue(notifications), (notification) => notification.payload),
   );
+
+/** The channel's payloads, from the moment PostgreSQL confirms the LISTEN (`openEvents`). */
+export const listenEvents = (sql: PgClient.PgClient): Stream.Stream<string, SqlError> =>
+  Stream.unwrap(openEvents(sql));
