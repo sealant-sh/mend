@@ -48,7 +48,8 @@
     "qrcode": "catalog:",
     "react": "catalog:",
     "undici": "catalog:",
-    "ws": "catalog:"
+    "ws": "catalog:",
+    "yaml": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
@@ -67,8 +68,7 @@
     "esbuild": "catalog:",
     "fast-check": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:",
-    "yaml": "catalog:"
+    "vitest": "catalog:"
   },
   "engines": {
     "node": ">=22.13.0"
