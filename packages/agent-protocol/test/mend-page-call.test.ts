@@ -418,12 +418,12 @@ describe("a call to Mend's html_render as the harness records it", () => {
         providerTurnId: "turn",
         kind: "tool-call",
         status: "completed",
-        title: "html_render",
+        title: "mcp__mend__html_render",
         text: null,
         data: {
           type: "tool_use",
           id: "toolu_mend_2",
-          name: "html_render",
+          name: "mcp__mend__html_render",
           input: { "$mend.toolInput": { format: "json", value: ` ${args}` } },
         },
       },
@@ -437,20 +437,21 @@ describe("a call to Mend's html_render as the harness records it", () => {
     expect(
       [
         { name: "mcp__mend__html_render", namespace: null },
-        { name: "html_render", namespace: null },
         { name: "html_render", namespace: "mcp__mend__" },
-        { name: "imported_html_render", namespace: null },
+        { name: "html_render", namespace: "mend" },
         { name: "imported_mcp__mend__html_render", namespace: null },
       ].map(isMendPageTool),
-    ).toEqual([true, true, true, true, true]);
+    ).toEqual([true, true, true, true]);
     expect(
       [
+        { name: "html_render", namespace: null },
+        { name: "imported_html_render", namespace: null },
         { name: "html_render", namespace: "mcp__figma__" },
         { name: "mcp__t3-code__html_render", namespace: null },
         { name: "imported_mcp__figma__html_render", namespace: null },
         { name: "html_render_v2", namespace: null },
       ].map(isMendPageTool),
-    ).toEqual([false, false, false, false]);
+    ).toEqual([false, false, false, false, false, false]);
   });
 
   it("leaves every other tool call as the harness wrote it", () => {

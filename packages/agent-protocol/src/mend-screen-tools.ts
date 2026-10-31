@@ -16,8 +16,13 @@ import { isMendTool, type ToolIdentity } from "./mend-page-call.ts";
 export { ScreenActParams };
 export const ScreenLookParams = Tool.EmptyParams;
 
-export const isMendScreenTool = (identity: ToolIdentity): boolean =>
-  isMendTool(SCREEN_LOOK_TOOL, identity) || isMendTool(SCREEN_ACT_TOOL, identity);
+export type MendScreenTool = typeof SCREEN_LOOK_TOOL | typeof SCREEN_ACT_TOOL;
+
+/** Which of Mend's screen tools a call names; null for any other tool. */
+export const mendScreenToolOf = (identity: ToolIdentity): MendScreenTool | null => {
+  if (isMendTool(SCREEN_ACT_TOOL, identity)) return SCREEN_ACT_TOOL;
+  return isMendTool(SCREEN_LOOK_TOOL, identity) ? SCREEN_LOOK_TOOL : null;
+};
 
 export const ScreenToolRefusal = Schema.Literals([
   "no_screen",
@@ -76,3 +81,13 @@ export const ScreenToolText = Schema.Struct({
   message: Schema.String,
 });
 export type ScreenToolText = typeof ScreenToolText.Type;
+
+/** What a stored screen call keeps of its answer: the receipt that links it to the screen log. */
+export const MendScreenCall = Schema.Struct({
+  receipt: Schema.NullOr(ScreenToolReceipt),
+  outcome: ScreenCallOutcome,
+  refusal: Schema.NullOr(ScreenToolRefusal),
+});
+export type MendScreenCall = typeof MendScreenCall.Type;
+
+export const MEND_SCREEN_CALL_FIELD = "mendScreenCall";

@@ -31,6 +31,11 @@ import {
   requestInputWithoutPageHtml,
   withMendPageResult,
 } from "./mend-page-call.ts";
+import {
+  compactMendScreenCall,
+  requestInputWithoutTypedText,
+  withMendScreenResult,
+} from "./mend-screen-call.ts";
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
@@ -259,7 +264,7 @@ export const ClaudeAdapter: AgentAdapter = {
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));
       const updateItem = (update: AgentEventItem): Effect.Effect<void> => {
-        const item = compactMendPageCall(update);
+        const item = compactMendScreenCall(compactMendPageCall(update));
         items.set(item.providerItemId, item);
         return publish({ _tag: "item.updated", item });
       };
@@ -415,7 +420,14 @@ export const ClaudeAdapter: AgentAdapter = {
             providerItemId: stringField(input, "tool_use_id"),
             kind: kind === "input" ? "user-input" : "tool-permission",
             title: toolName,
-            detail: { toolName, input: requestInputWithoutPageHtml(toolName, input), suggestions },
+            detail: {
+              toolName,
+              ...requestInputWithoutTypedText(
+                toolName,
+                requestInputWithoutPageHtml(toolName, input),
+              ),
+              suggestions,
+            },
             questions: kind === "input" ? questionsFrom(input) : null,
           },
         });
@@ -632,14 +644,12 @@ export const ClaudeAdapter: AgentAdapter = {
           (block) => {
             if (stringField(block, "type") !== "tool_result") return Effect.void;
             const call = items.get(stringField(block, "tool_use_id") ?? "");
+            const output = isObject(block) ? block["content"] : null;
+            const failed = isObject(block) && block["is_error"] === true;
             const answered =
               call === undefined
                 ? null
-                : withMendPageResult(
-                    call,
-                    isObject(block) ? block["content"] : null,
-                    isObject(block) && block["is_error"] === true,
-                  );
+                : (withMendPageResult(call, output, failed) ?? withMendScreenResult(call, output));
             return answered === null ? Effect.void : updateItem(answered);
           },
           { discard: true },

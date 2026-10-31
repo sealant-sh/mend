@@ -1,4 +1,10 @@
-import { compactMendPageCall, contentBlockKind, withMendPageResult } from "@mend/agent-protocol";
+import {
+  compactMendPageCall,
+  compactMendScreenCall,
+  contentBlockKind,
+  withMendPageResult,
+  withMendScreenResult,
+} from "@mend/agent-protocol";
 import type { BackfillTurnInput } from "@mend/db";
 import type { AgentEventItem, NativeIngestCursor } from "@mend/domain/workbench";
 
@@ -54,13 +60,17 @@ const textOf = (content: unknown): string => {
     .join("\n");
 };
 
+/** A call to one of Mend's own tools, kept as the live adapters keep it. */
+const compactMend = (item: AgentEventItem): AgentEventItem =>
+  compactMendScreenCall(compactMendPageCall(item));
+
 interface OpenTurn {
   readonly providerTurnId: string;
   readonly input: string;
   readonly items: AgentEventItem[];
 }
 
-const notePageResult = (
+const noteMendResult = (
   open: OpenTurn | null,
   callId: string | null,
   output: unknown,
@@ -69,7 +79,10 @@ const notePageResult = (
   if (open === null || callId === null) return;
   const at = open.items.findIndex((item) => item.providerItemId === callId);
   const call = open.items[at];
-  const answered = call === undefined ? null : withMendPageResult(call, output, failed);
+  const answered =
+    call === undefined
+      ? null
+      : (withMendPageResult(call, output, failed) ?? withMendScreenResult(call, output));
   if (answered !== null) open.items[at] = answered;
 };
 
@@ -131,7 +144,7 @@ const backfillClaude = (
       if (Array.isArray(content)) {
         for (const part of content) {
           if (stringField(part, "type") !== "tool_result" || !isObject(part)) continue;
-          notePageResult(
+          noteMendResult(
             open,
             stringField(part, "tool_use_id"),
             part["content"],
@@ -170,7 +183,7 @@ const backfillClaude = (
           ? `${open.providerTurnId}:block:${streamIndex}`
           : `${messageId}:block:${streamIndex}`);
       open.items.push(
-        compactMendPageCall({
+        compactMend({
           providerItemId,
           providerTurnId: open.providerTurnId,
           kind: contentBlockKind(blockType, stringField(block, "name")),
@@ -277,7 +290,7 @@ const backfillCodex = (
       const name = stringField(payload, "name") ?? "tool";
       const shell = name === "exec_command" || name === "shell";
       open.items.push(
-        compactMendPageCall({
+        compactMend({
           providerItemId: stringField(payload, "call_id") ?? `rollout:${index}`,
           providerTurnId: open.providerTurnId,
           kind: shell ? "command-execution" : "tool-call",
@@ -290,7 +303,7 @@ const backfillCodex = (
       continue;
     }
     if (payloadType === "function_call_output") {
-      notePageResult(open, stringField(payload, "call_id"), payload["output"], false);
+      noteMendResult(open, stringField(payload, "call_id"), payload["output"], false);
     }
   }
   close();

@@ -19,7 +19,7 @@
  * claude session files from this store.
  */
 
-import { TOOL_INPUT_ENVELOPE } from "@mend/agent-protocol";
+import { TOOL_INPUT_ENVELOPE, toolNameWithNamespace } from "@mend/agent-protocol";
 
 export interface CanonicalSession {
   readonly version: 1;
@@ -234,6 +234,7 @@ const ingestCodex = (jsonl: string): CanonicalEvent[] => {
       readonly content?: unknown;
       readonly summary?: unknown;
       readonly name?: string;
+      readonly namespace?: string;
       readonly arguments?: string;
       readonly input?: string;
       readonly call_id?: string;
@@ -275,12 +276,15 @@ const ingestCodex = (jsonl: string): CanonicalEvent[] => {
           command = null;
         }
       }
+      const raw = p.name ?? "tool";
+      // The namespace names the tool's MCP server, so the name keeps it once the call is canonical.
       const name =
         command !== null
           ? "shell"
-          : (p.name ?? "tool").startsWith(IMPORT_PREFIX)
-            ? (p.name ?? "tool").slice(IMPORT_PREFIX.length)
-            : (p.name ?? "tool");
+          : toolNameWithNamespace(
+              raw.startsWith(IMPORT_PREFIX) ? raw.slice(IMPORT_PREFIX.length) : raw,
+              p.namespace ?? null,
+            );
       pending.set(p.call_id, {
         name,
         args: command !== null ? "" : rawArgs,
