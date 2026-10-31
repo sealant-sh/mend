@@ -1,10 +1,10 @@
 import {
   envCollisionRefusals,
-  isResourceProposalKey,
+  isResourceTableKey,
   ProjectResourceDefinition,
   recipeRefusalLine,
   RESOURCE_PRESETS,
-  RESOURCE_PROPOSALS_HEADING,
+  RESOURCE_TABLES_HEADING,
   ResourceDefinitionInput,
   resourceDefinitionRefusals,
   withPresetCommand,
@@ -12,7 +12,7 @@ import {
   ResourceLimits,
   resourceNameIssue,
   ResourcePort,
-  resourceProposalNotices,
+  resourceTableNotices,
   ResourcePreset,
   ResourceReady,
   type ResourceRefusal,
@@ -23,11 +23,11 @@ import {
 import { Option, Schema } from "effect";
 
 /**
- * `[resource.*]` tables in `mend.toml` (ADR 0019, decision S8): proposals, which run only once a
- * manager approves them in project settings. A bad table refuses that resource alone, naming its
- * full key; the file's other resources still read. A key this Mend does not read is listed as
- * ignored, as recipes' are. Fields are checked with the domain's schemas, so a proposal passes the
- * rules a definition entered in settings does.
+ * `[resource.*]` tables in `mend.toml` (ADR 0019, decision S8): definitions a person adds to the
+ * project's settings from the file; none runs from the file itself. A bad table refuses that
+ * resource alone, naming its full key; the file's other resources still read. A key this Mend does
+ * not read is listed as ignored, as recipes' are. Fields are checked with the domain's schemas, so
+ * a table passes the rules a definition entered in settings does.
  *
  * ```toml
  * [resource.queue]
@@ -40,8 +40,8 @@ import { Option, Schema } from "effect";
  * ```
  */
 
-export interface ResourceProposals {
-  readonly proposals: ReadonlyArray<ResourceDefinitionInput>;
+export interface ResourceTables {
+  readonly tables: ReadonlyArray<ResourceDefinitionInput>;
   /** Keyed in full (`resource.queue.ports.amqp`), which names the resource. */
   readonly refused: ReadonlyArray<ResourceRefusal>;
   readonly ignored: ReadonlyArray<{ readonly key: string }>;
@@ -380,12 +380,12 @@ const readResource = (
 };
 
 /** The key a collision refuses: the export that sets the name, else the table. */
-/** `mend.toml`'s `resource` value, as parsed. Absent proposes nothing. */
-export const readResourceProposals = (value: unknown): ResourceProposals => {
-  if (value === undefined) return { proposals: [], refused: [], ignored: [] };
+/** `mend.toml`'s `resource` value, as parsed. Absent declares nothing. */
+export const readResourceTables = (value: unknown): ResourceTables => {
+  if (value === undefined) return { tables: [], refused: [], ignored: [] };
   if (!isRecord(value)) {
     return {
-      proposals: [],
+      tables: [],
       refused: [{ key: "resource", message: "must be a table of resources ([resource.<name>])" }],
       ignored: [],
     };
@@ -406,29 +406,27 @@ export const readResourceProposals = (value: unknown): ResourceProposals => {
       context.refuse("", "must be a table");
       continue;
     }
-    const proposal = readResource(name, entry, context);
-    if (proposal !== null) read.push(proposal);
+    const table = readResource(name, entry, context);
+    if (table !== null) read.push(table);
   }
 
-  // Two proposals that set one env name can never be in use together (ADR 0019, A1).
+  // Two tables that set one env name can never be in use together (ADR 0019, A1).
   const collided = new Set<string>();
   for (const { resource, refusal } of envCollisionRefusals(read)) {
     collided.add(resource);
     contextOf(resource).refuse(refusal.key, refusal.message);
   }
-  return { proposals: read.filter((def) => !collided.has(def.name)), refused, ignored };
+  return { tables: read.filter((def) => !collided.has(def.name)), refused, ignored };
 };
 
 const noteSection = (heading: string, lines: ReadonlyArray<string>): string =>
   lines.length === 0 ? "" : `${heading}:\n\n${lines.map((line) => `- ${line}`).join("\n")}\n\n`;
 
-/** The workspace note on what `mend.toml` refuses or ignores: recipes to fix, then proposals. */
+/** The workspace note on what `mend.toml` refuses or ignores: recipes to fix, then resource tables. */
 export const declarationsNote = (
   declared: Pick<ServiceDeclarations, "refused" | "ignored">,
 ): string =>
   noteSection(
     "Refused in mend.toml (fix these before running them)",
-    declared.refused
-      .filter((refusal) => !isResourceProposalKey(refusal.key))
-      .map(recipeRefusalLine),
-  ) + noteSection(RESOURCE_PROPOSALS_HEADING, resourceProposalNotices(declared));
+    declared.refused.filter((refusal) => !isResourceTableKey(refusal.key)).map(recipeRefusalLine),
+  ) + noteSection(RESOURCE_TABLES_HEADING, resourceTableNotices(declared));

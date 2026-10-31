@@ -973,19 +973,19 @@ export const resourceDefinitionRefusals = (
   ];
 };
 
-/** A `mend.toml` key a `[resource.*]` proposal owns (decision S8): `resource`, or one under it. */
-export const isResourceProposalKey = (key: string): boolean =>
+/** A `mend.toml` key a `[resource.*]` table owns (decision S8): `resource`, or one under it. */
+export const isResourceTableKey = (key: string): boolean =>
   key === "resource" || key.startsWith("resource.");
 
-/** Heads `resourceProposalNotices`; true of every proposal, refused or not. */
-export const RESOURCE_PROPOSALS_HEADING =
-  "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings)";
+/** Heads `resourceTableNotices`; true of every table, refused or not. */
+export const RESOURCE_TABLES_HEADING =
+  "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file)";
 
 /**
  * A file's refusals and ignored keys under `[resource]`, one line each, keyed in full:
  * `resource.db.ports.pg · must be a port in 1..65535`. Empty when there is none.
  */
-export const resourceProposalNotices = (declared: {
+export const resourceTableNotices = (declared: {
   readonly refused: ReadonlyArray<{
     readonly key: string;
     readonly message: string;
@@ -993,21 +993,21 @@ export const resourceProposalNotices = (declared: {
   readonly ignored: ReadonlyArray<{ readonly key: string }>;
 }): ReadonlyArray<string> => [
   ...declared.refused.flatMap((refusal) =>
-    isResourceProposalKey(refusal.key) ? [`${refusal.key} · ${refusal.message}`] : [],
+    isResourceTableKey(refusal.key) ? [`${refusal.key} · ${refusal.message}`] : [],
   ),
   ...declared.ignored.flatMap((ignored) =>
-    isResourceProposalKey(ignored.key)
+    isResourceTableKey(ignored.key)
       ? [`${ignored.key} · is ignored: this Mend does not read it`]
       : [],
   ),
 ];
 
-/** `resourceProposalNotices` for a terminal: the heading, then one indented line each; empty when none. */
-export const resourceProposalsSection = (
-  declared: Parameters<typeof resourceProposalNotices>[0],
+/** `resourceTableNotices` for a terminal: the heading, then one indented line each; empty when none. */
+export const resourceTablesSection = (
+  declared: Parameters<typeof resourceTableNotices>[0],
 ): ReadonlyArray<string> => {
-  const notices = resourceProposalNotices(declared);
+  const notices = resourceTableNotices(declared);
   return notices.length === 0
     ? []
-    : [`${RESOURCE_PROPOSALS_HEADING}:`, ...notices.map((notice) => `  ${notice}`)];
+    : [`${RESOURCE_TABLES_HEADING}:`, ...notices.map((notice) => `  ${notice}`)];
 };

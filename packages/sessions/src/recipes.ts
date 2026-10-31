@@ -27,7 +27,7 @@ import {
 import { Effect, Schema } from "effect";
 import { parse as parseToml, TomlError } from "smol-toml";
 
-import { readResourceProposals } from "./resource-proposals.ts";
+import { readResourceTables } from "./resource-tables.ts";
 
 /**
  * Declared Services (docs/SESSION-SERVICES.md): the repo's `mend.toml`, read from the SESSION's
@@ -70,7 +70,7 @@ export class RecipeFileError extends Schema.TaggedError<RecipeFileError>()("Reci
 /** One file's declarations as written, before the project's rows and the graph are read. */
 export interface MendTomlFile {
   readonly recipes: ReadonlyArray<ServiceRecipe>;
-  /** `[resource.*]` proposals (ADR 0019); their refusals and ignored keys join the file's. */
+  /** `[resource.*]` tables (ADR 0019); their refusals and ignored keys join the file's. */
   readonly resources: ReadonlyArray<ResourceDefinitionInput>;
   readonly refused: ReadonlyArray<RecipeRefusal>;
   readonly ignored: ReadonlyArray<IgnoredDeclaration>;
@@ -433,7 +433,7 @@ export const parseMendToml = (
     const refused: RecipeRefusal[] = [];
     const { resource, ...unread } = rest;
     const ignored = Object.keys(unread).map((key) => new IgnoredDeclaration({ name: null, key }));
-    const resources = readResourceProposals(resource);
+    const resources = readResourceTables(resource);
     refused.push(...resources.refused.map((r) => new RecipeRefusal({ name: null, ...r })));
     ignored.push(...resources.ignored.map((i) => new IgnoredDeclaration({ name: null, ...i })));
     for (const [name, entry] of Object.entries(services)) {
@@ -482,7 +482,7 @@ export const parseMendToml = (
           });
     return {
       recipes,
-      resources: resources.proposals,
+      resources: resources.tables,
       refused,
       ignored,
       preview: previewService,

@@ -47,7 +47,7 @@ import {
   type ResourceApprovals,
   type ResourceProposalEntry,
   type ResourceProposalInput,
-  resourceProposalNotices,
+  resourceTableNotices,
   ResourceRefusal,
   type ResourceSelectionEntry,
   type ResourceSettingEntry,
@@ -65,7 +65,7 @@ import * as Context from "effect/Context";
 import { parse as parseToml, TomlError } from "smol-toml";
 
 import { MEND_TOML } from "../recipes.ts";
-import { readResourceProposals } from "../resource-proposals.ts";
+import { readResourceTables } from "../resource-tables.ts";
 import { SessionChannelRegistry } from "../session-channel.ts";
 import { stampLabel, WorktreeReads } from "../worktree-reads.ts";
 import {
@@ -246,7 +246,7 @@ const statusOf = (page: ResourcesPage): ResourcesStatus => {
             kind: "read",
             observed: file.observed,
             statusLines: file.proposals.map((proposal) => proposal.statusLine),
-            notices: resourceProposalNotices(file),
+            notices: resourceTableNotices(file),
           }
         : file.kind === "absent"
           ? { kind: "absent", observed: file.observed }
@@ -568,12 +568,12 @@ export const ResourcesLive: Layer.Layer<
       } catch (cause) {
         return unparsed(tomlDiagnostic(cause));
       }
-      const declared = readResourceProposals(isRecord(parsed) ? parsed["resource"] : undefined);
+      const declared = readResourceTables(isRecord(parsed) ? parsed["resource"] : undefined);
       return {
         kind: "read",
         worktreeId,
         observed,
-        proposals: declared.proposals.map((spec) => {
+        proposals: declared.tables.map((spec) => {
           const digest = resourceSpecDigest(spec);
           return {
             digest,

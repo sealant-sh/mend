@@ -5,7 +5,7 @@ import {
   type ResourceApprovalOffers,
   type ResourceApprovalRequest,
   type ResourceDefinitionInput,
-  resourceProposalNotices,
+  resourceTableNotices,
   type ResourceRefusal,
   resourceRefusalWords,
   resourceReviewRows,
@@ -466,7 +466,7 @@ export function ResourcesView(props: ResourcesViewProps) {
     </ResourceItem>
   );
   const { file } = page;
-  const notices = file.kind === "read" ? resourceProposalNotices(file) : [];
+  const notices = file.kind === "read" ? resourceTableNotices(file) : [];
   const empty = page.settings.length === 0 && page.proposals.length === 0 && file.kind !== "read";
   return (
     <div className="mt-4 space-y-5">

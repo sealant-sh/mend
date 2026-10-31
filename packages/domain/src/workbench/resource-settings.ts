@@ -230,7 +230,7 @@ export interface ResourcesStatus {
         readonly kind: "read";
         readonly observed: string;
         readonly statusLines: ReadonlyArray<string>;
-        /** `resourceProposalNotices`: each refused or ignored key, one line each. */
+        /** `resourceTableNotices`: each refused or ignored key, one line each. */
         readonly notices: ReadonlyArray<string>;
       };
 }

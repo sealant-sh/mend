@@ -6,7 +6,7 @@ import {
   type ResourceApproved,
   type ResourceDefinitionInput,
   type ResourcePreset,
-  resourceProposalNotices,
+  resourceTableNotices,
   resourceRefusalWords,
   resourceReviewRows,
   type ResourceSelectionEntry,
@@ -166,7 +166,7 @@ export const renderResources = (
     lines.push(
       `${where} · ${printable(file.observed)}`,
       ...file.proposals.map((proposal) => `  ${entryLine(proposal, null)}`),
-      ...resourceProposalNotices(file).map((notice) => `  ${printable(notice)}`),
+      ...resourceTableNotices(file).map((notice) => `  ${printable(notice)}`),
     );
   }
   return lines.length > 0

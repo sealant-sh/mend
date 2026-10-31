@@ -11,7 +11,7 @@ import {
   declarationsNote,
   type MendTomlFile,
   parseMendToml,
-  readResourceProposals,
+  readResourceTables,
   resolveDeclarations,
 } from "@mend/sessions";
 import { Effect } from "effect";
@@ -48,7 +48,7 @@ const MAIL = [
 const refusedKeys = (file: MendTomlFile) => file.refused.map((refusal) => refusal.key);
 const proposed = (file: MendTomlFile) => file.resources.map((resource) => resource.name);
 
-describe("[resource.*] proposals in mend.toml", () => {
+describe("[resource.*] tables in mend.toml", () => {
   it("reads ADR 0019's queue as a definition, and still refuses @names in depends", () => {
     const file = parse([...ADR_QUEUE, "", ...ADR_WEB]);
     expect(file.resources).toEqual([
@@ -114,7 +114,7 @@ describe("[resource.*] proposals in mend.toml", () => {
     expect(byName.get("probe")?.limits).toEqual({ cpu: 0.5, memoryMiB: 256, diskGiB: 10 });
   });
 
-  it("gives a preset table its engine settings, so it proposes what --preset proposes", () => {
+  it("gives a preset table its engine settings, so it declares what --preset declares", () => {
     const file = parse([
       "[resource.cache]",
       'preset = "redis"',
@@ -273,7 +273,7 @@ describe("[resource.*] proposals in mend.toml", () => {
     expect(proposed(file)).toEqual(["mail"]);
   });
 
-  it("lists a key it does not read as ignored, by its full key, and still proposes the resource", () => {
+  it("lists a key it does not read as ignored, by its full key, and still declares the resource", () => {
     const file = parse([
       "[resource.queue]",
       'image = "rabbitmq:4"',
@@ -434,7 +434,7 @@ describe("[resource.*] proposals in mend.toml", () => {
     expect(proposed(pinned)).toEqual(["db"]);
   });
 
-  it("refuses both proposals that would set the same env name, each at its own key", () => {
+  it("refuses both tables that would set the same env name, each at its own key", () => {
     const file = parse([
       "[resource.db]",
       'image = "ghcr.io/acme/db:1"',
@@ -456,12 +456,12 @@ describe("[resource.*] proposals in mend.toml", () => {
   });
 });
 
-describe("readResourceProposals", () => {
+describe("readResourceTables", () => {
   it("returns each refusal and ignored key by its full key alone, which names the resource", () => {
     expect(
-      readResourceProposals({ web: { image: "nginx:1.27", ports: { http: 0 }, weight: 2 } }),
+      readResourceTables({ web: { image: "nginx:1.27", ports: { http: 0 }, weight: 2 } }),
     ).toEqual({
-      proposals: [],
+      tables: [],
       refused: [{ key: "resource.web.ports.http", message: "must be a port in 1..65535" }],
       ignored: [{ key: "resource.web.weight" }],
     });
@@ -469,7 +469,7 @@ describe("readResourceProposals", () => {
 });
 
 describe("the workspace note on mend.toml", () => {
-  it("lists recipes to fix, then resource proposals' refusals and ignored keys under their own heading", () => {
+  it("lists recipes to fix, then resource tables' refusals and ignored keys under their own heading", () => {
     const declared = resolveDeclarations(
       parse([
         "future = 1",
@@ -489,13 +489,13 @@ describe("the workspace note on mend.toml", () => {
     expect(declarationsNote(declared)).toBe(
       "Refused in mend.toml (fix these before running them):\n\n" +
         "- api · cwd · is absolute; name a path inside the repository\n\n" +
-        "Resource proposals in mend.toml (none runs from the file; a manager approves each in project settings):\n\n" +
+        "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):\n\n" +
         "- resource.web.ports.http · must be a port in 1..65535\n" +
         "- resource.web.healthcheck · is ignored: this Mend does not read it\n\n",
     );
   });
 
-  it("says nothing of proposals when the file has none to report", () => {
+  it("says nothing of resource tables when the file has none to report", () => {
     expect(
       declarationsNote(
         resolveDeclarations(parse(["[service.web]", 'command = "pnpm dev"', "port = 3000"]), []),

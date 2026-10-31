@@ -1,4 +1,4 @@
-import { resourceProposalsSection } from "@mend/domain/workbench";
+import { resourceTablesSection } from "@mend/domain/workbench";
 
 /** One refusal of `GET /sessions/:id/declarations`: the recipe, the key it names, and why. */
 export interface RecipeRefusalDto {
@@ -36,5 +36,5 @@ export const missingRecipeLine = (
 ): string =>
   [
     recipeLine(name, declared, declarations),
-    ...(declarations === null ? [] : resourceProposalsSection(declarations)),
+    ...(declarations === null ? [] : resourceTablesSection(declarations)),
   ].join("\n");
