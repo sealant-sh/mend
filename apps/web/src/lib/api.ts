@@ -110,6 +110,7 @@ export type DotfilesSnapshotDto = NonNullable<DotfilesDto["snapshot"]>;
 export type SecretFilesDto = Outputs["settings"]["secretFiles"];
 export type SecretFileDto = SecretFilesDto["files"][number];
 export type SecretFileSavedDto = Outputs["settings"]["putSecretFile"];
+export type DopplerDto = Outputs["doppler"]["status"];
 
 export type SkillDto = Outputs["skills"]["list"][number];
 export type SkillDetailDto = Outputs["skills"]["detail"];

@@ -6449,9 +6449,13 @@ const main = async () => {
       return memoryCommand(config, rest);
     case "resource":
       return resourceCommand(boundApi(config), (explicit) => findProject(config, explicit), rest);
-    case "doppler":
-      for (const line of await dopplerCommand(boundApi(config), rest)) say(line);
+    case "doppler": {
+      const lines = await dopplerCommand(boundApi(config), rest).catch((error: unknown) =>
+        fail(error instanceof Error ? error.message : String(error)),
+      );
+      for (const line of lines) say(line);
       return;
+    }
     case "secrets":
       return secretsCommand(config, rest);
     case "accounts":

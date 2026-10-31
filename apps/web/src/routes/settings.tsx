@@ -4,6 +4,7 @@ import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { ConnectedAccountsPanel } from "#/components/connected-accounts";
+import { DopplerPanel } from "#/components/doppler-panel";
 import { GitAccessPanel } from "#/components/git-access-panel";
 import { GitAuthorPanel } from "#/components/git-author-panel";
 import { MessageSettingsPanel } from "#/components/message-settings";
@@ -59,6 +60,7 @@ export const Route = createFileRoute("/settings")({
       queryClient.ensureQueryData(trpc.settings.get.queryOptions()),
       queryClient.ensureQueryData(trpc.settings.dotfiles.queryOptions()),
       queryClient.ensureQueryData(trpc.settings.secretFiles.queryOptions()),
+      queryClient.ensureQueryData(trpc.doppler.status.queryOptions()),
       queryClient.ensureQueryData(trpc.git.author.queryOptions()),
       queryClient.ensureQueryData(trpc.platform.sealantIdentity.queryOptions()),
       queryClient.ensureQueryData(trpc.platform.agentLogins.queryOptions()),
@@ -101,6 +103,7 @@ function SettingsPage() {
         <OrganizationDefaults />
         <DotfilesPanel />
         <SecretFilesPanel />
+        <DopplerPanel />
         <GitAccessSettingsPanel />
         <GitAuthorPanel />
         <ConnectedAccountsPanel />
