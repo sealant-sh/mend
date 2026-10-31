@@ -9,9 +9,10 @@ import {
   type PersonExecOptions,
   type PersonSessionOptions,
   SealantPlatformError,
+  SealantClient,
 } from "@mend/sealant";
 import { ServiceHost, SessionEngine } from "@mend/sessions";
-import type { CreateOptions, SessionOptions } from "@sealant/sdk";
+import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
 import { Effect, Layer } from "effect";
 
 import { SCREEN_REKEYED } from "../../src/screen/script.ts";
@@ -58,6 +59,8 @@ export const withScreens = <A, E>(
     readonly layoutState?: HarnessLayoutsMemoryState;
     readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
     readonly screen?: boolean;
+    /** Give each new executor its own id when testing a stopped workspace. */
+    readonly distinctWorkspaces?: boolean;
     /** A world the caller keeps; `restart` boots another engine over one an engine already set up. */
     readonly fixture?: { readonly world: World; readonly tmp: string };
     readonly restart?: boolean;
@@ -109,6 +112,31 @@ export const withScreens = <A, E>(
             argv[3] === "mend-screen-reap" ? options.reap?.(argv, execOptions) : undefined,
           ...(options.aroundOpen === undefined ? {} : { aroundOpen: options.aroundOpen }),
         },
+      ).pipe((base) =>
+        Layer.effect(
+          SealantClient,
+          Effect.map(SealantClient, (client) => {
+            if (options.distinctWorkspaces !== true) return client;
+            const workspaces = new Map<string, Workspace>();
+            return {
+              ...client,
+              createWorkspace: (...args) =>
+                client.createWorkspace(...args).pipe(
+                  Effect.map((workspace) => {
+                    const handle = { ...workspace, id: `workspace-${workspaces.size + 1}` };
+                    workspaces.set(handle.id, handle);
+                    return handle;
+                  }),
+                ),
+              getWorkspace: (id) => {
+                const workspace = workspaces.get(id);
+                return workspace === undefined
+                  ? client.getWorkspace(id)
+                  : Effect.succeed(workspace);
+              },
+            };
+          }),
+        ).pipe(Layer.provide(base)),
       ),
       harnessLayout: {
         flag: options.layout ?? "person",

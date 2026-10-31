@@ -59,7 +59,8 @@ export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handle
       Effect.gen(function* () {
         const session = yield* (yield* ProjectAccess).session(params.id);
         const repo = yield* ScreensRepo;
-        const screen = yield* repo.ofSession(session.id);
+        const screen =
+          (yield* repo.ofSession(session.id)) ?? (yield* repo.latestForSession(session.id));
         if (screen === null) return NO_SCREEN;
         const given = yield* repo.lastLoggedAt(screen.id, GIVES_INPUT);
         const read: ScreenRead = {

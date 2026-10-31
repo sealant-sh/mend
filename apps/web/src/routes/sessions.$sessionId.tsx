@@ -446,6 +446,7 @@ function SessionPage() {
                     sessionId={sessionId}
                     active={view === "desktop"}
                     screen={screen}
+                    steer={control.steer}
                     viewerId={viewer?.userId ?? null}
                     ownerName={ownerName ?? "its owner"}
                     nameOf={(userId) => names?.get(userId) ?? "a member"}

@@ -42,10 +42,12 @@ const render = (overrides: Partial<ScreenPaneViewProps> = {}) =>
       statusLine="screen · agent has input"
       wire={watching}
       owner
+      steer
       ownerName="Yiannis"
       held={false}
       pending={null}
       notice={null}
+      onWake={() => undefined}
       onTake={() => undefined}
       onHandBack={() => undefined}
       onReconnect={() => undefined}
@@ -128,17 +130,48 @@ describe("ScreenPaneView", () => {
       screen: screen({ life: { _tag: "Starting" } }),
       statusLine: "screen · starting",
     });
-    expect(starting).toContain("Connecting");
     expect(starting).toContain("Starting…");
     expect(starting).not.toContain('data-testid="novnc"');
     const ended = render({
       screen: screen({ life: { _tag: "Ended", reason: "idle" } }),
       statusLine: "screen · ended after 15 min idle",
     });
-    expect(ended).toContain("The agent&#x27;s next screen look starts it.");
+    expect(ended).toContain("The screen is stopped.");
     expect(ended).not.toContain('data-testid="novnc"');
     expect(ended).not.toContain("Take over");
   });
+  it.each([
+    { owner: true, steer: true },
+    { owner: false, steer: true },
+    { owner: false, steer: false },
+  ])("offers a wake only to a steerer: %j", ({ owner, steer }) => {
+    const html = render({
+      screen: screen({ life: { _tag: "Ended", reason: "idle" } }),
+      statusLine: "screen · ended after 15 min idle",
+      wire: { _tag: "Closed", words: "the screen stopped" },
+      owner,
+      steer,
+    });
+    expect(html).toContain("Stopped · idle");
+    expect(html).toContain("border-[1.5px]");
+    expect(html.includes("Wake the screen")).toBe(steer);
+    if (!steer) expect(html).not.toContain("<button");
+    expect(html).not.toContain("Reconnect");
+    expect(html).not.toContain("Take over");
+    expect(html).not.toContain("Only Yiannis controls this screen");
+  });
+
+  it("shows a disabled Starting action while waking, and keeps failures beside a retry", () => {
+    const stopped = screen({ life: { _tag: "Ended", reason: "idle" } });
+    const starting = render({ screen: stopped, pending: "wake" });
+    expect(starting).toContain("Starting…");
+    expect(starting).toContain('disabled=""');
+    expect(starting).not.toContain("Wake the screen");
+    const failed = render({ screen: stopped, notice: "The screen did not start. Try again." });
+    expect(failed).toContain("The screen did not start. Try again.");
+    expect(failed).toContain("Wake the screen");
+  });
+
   it("uses earned dot colors without the run record pulse", () => {
     expect(render()).toContain("bg-success-dot");
     expect(render()).not.toContain("animate-pulse");
@@ -167,10 +200,12 @@ describe("ScreenPaneView", () => {
           statusLine="screen · agent has input"
           wire={watching}
           owner
+          steer
           ownerName="Yiannis"
           held={false}
           pending={null}
           notice={null}
+          onWake={() => undefined}
           onTake={() => undefined}
           onHandBack={() => undefined}
           onReconnect={() => undefined}
