@@ -91,7 +91,8 @@ MEND_BWRAP
       (
         if [ "$mouse" -eq 1 ]; then port=$((7900 + n)); else port=$((8100 + n)); fi
         while :; do
-          ffmpeg -nostdin -loglevel error -f x11grab -draw_mouse "$mouse" -framerate 30 \\
+          # Discard X11 probe frames captured before the listener accepts a viewer.
+          ffmpeg -nostdin -loglevel error -fflags nobuffer -f x11grab -draw_mouse "$mouse" -framerate 30 \\
             -video_size "$2" -i "$display" -c:v libx264 -threads 2 -preset ultrafast \\
             -tune zerolatency -profile:v baseline -level:v 3.1 -pix_fmt yuv420p \\
             -vf scale=out_color_matrix=bt709 -colorspace bt709 -color_primaries bt709 -color_trc bt709 \\

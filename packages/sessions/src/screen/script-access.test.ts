@@ -114,6 +114,58 @@ describe.skipIf(!dockerReady)("screen script access and input", () => {
   );
 
   it.live(
+    "discards probe frames captured before an encoder viewer connects",
+    () =>
+      Effect.gen(function* () {
+        for (const port of [7910, 8110]) yield* encoderReady(port);
+        docker(
+          "exec",
+          "-d",
+          "-u",
+          "person",
+          "-e",
+          "DISPLAY=:10",
+          "-e",
+          `XAUTHORITY=${RUNTIME}/mend-screen-10/auth`,
+          container,
+          "xterm",
+          "-title",
+          "handback-live",
+          "-geometry",
+          "200x60+0+0",
+          "-bg",
+          "#20d040",
+          "-e",
+          "sleep",
+          "30",
+        );
+        for (let tries = 0; ; tries++) {
+          if (!fails(() => asPerson(10, "xdotool search --onlyvisible --name '^handback-live$'")))
+            break;
+          if (tries === 50) throw new Error("live colour window did not open");
+          yield* Effect.sleep("50 millis");
+        }
+        yield* Effect.sleep("100 millis");
+        for (const port of [7910, 8110]) {
+          const pixels = asPerson(
+            10,
+            `ffmpeg -nostdin -loglevel error -i tcp://127.0.0.1:${port} -frames:v 6 -vf crop=2:2:100:100,scale=1:1 -f rawvideo -pix_fmt rgb24 pipe:1 | od -An -tu1`,
+          )
+            .trim()
+            .split(/\s+/)
+            .map(Number);
+          expect(pixels).toHaveLength(18);
+          expect(
+            pixels.every((value, i) => Math.abs(value - ([32, 208, 64][i % 3] ?? 0)) < 25),
+            "every decoded frame must show the live window, including the first IDR",
+          ).toBe(true);
+        }
+        asPerson(10, "xdotool search --name '^handback-live$' windowclose");
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.live(
     "lets the full password move the pointer, the view-only one move nothing, and refuses any other",
     () =>
       Effect.gen(function* () {
