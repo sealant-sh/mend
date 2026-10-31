@@ -154,7 +154,14 @@ export const renderResources = (
   if (file.kind === "read") {
     lines.push(
       `${where} · ${printable(file.observed)}`,
-      ...file.tables.map((table) => `  ${entryLine(table, table.spec.image, null)}`),
+      ...file.tables.flatMap((table) => [
+        `  ${entryLine(table, table.spec.image, null)}`,
+        ...(table.add.kind === "ready"
+          ? [
+              `    ${dim(`mend resource add ${printable(table.spec.name)} --from-file --worktree ${printable(worktree ?? "")}`)}`,
+            ]
+          : []),
+      ]),
       ...resourceTableNotices(file).map((notice) => `  ${printable(notice)}`),
     );
   }

@@ -90,12 +90,13 @@ const page = pageOf({
 });
 
 describe("mend resource list", () => {
-  it("prints settings with their pinned images and ids, then the worktree's file", () => {
+  it("prints settings with their pinned images and ids, then the worktree's file and how to add a table", () => {
     expect(renderResources(shop, page, "checkout")).toEqual([
       "settings",
       `  @db · postgres 17 · project · added by Maria · not started  postgres:17@${pin}  rdef_1`,
       "mend.toml in checkout · observed at capture 12 · seq 4180",
       "  @queue · rabbitmq 4 · project · in mend.toml · not in settings  rabbitmq:4-management",
+      "    mend resource add queue --from-file --worktree checkout",
       "  @db · postgres 18 · project · in mend.toml · differs from settings  postgres:18",
       "  @cache · redis 7 · project · in mend.toml · not in settings  redis:7",
       "  @mail · mailpit · project · in mend.toml · same as settings  axllent/mailpit:v1.21",
