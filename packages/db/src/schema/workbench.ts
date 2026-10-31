@@ -88,7 +88,6 @@ import type {
 import {
   AuditData,
   HotWorkspaceEnvironment,
-  OwnTarget,
   RecordLink,
   ResourceDefinitionInput,
   ReviewCommentAnchor,
@@ -711,9 +710,9 @@ export const resourceDefinitions = pgTable(
 );
 
 /**
- * A worktree's choice for a project resource. `ownTarget` is set exactly when the mode is `own`
- * (a CHECK in the migration), and no two selections of a definition own one target. A null
- * `chosenBy` is the policy's default, which nobody chose.
+ * A worktree's choice for a project resource: the mode alone, since own is a database whose name
+ * derives from the worktree (ADR 0019, amendment of 2026-10-31). A null `chosenBy` is the
+ * policy's default, which nobody chose.
  */
 export const resourceSelections = pgTable(
   "resource_selections",
@@ -727,17 +726,33 @@ export const resourceSelections = pgTable(
       .notNull()
       .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
     mode: text().$type<WorktreeChoice>().notNull(),
-    revision: integer().notNull(),
-    ownTarget: jsonbOf(OwnTarget),
     chosenBy: text(),
     chosenAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     primaryKey({ columns: [table.worktreeId, table.definitionId] }),
     index("resource_selections_definition_idx").on(table.definitionId),
-    uniqueIndex("resource_selections_own_target_key")
-      .on(table.definitionId, table.ownTarget)
-      .where(sql`mode = 'own'`),
+  ],
+);
+
+/**
+ * Each own database Mend made on a project Postgres, and how it began. No foreign key to the
+ * worktree: the row outlives it until the database's dump lands.
+ */
+export const resourceOwnDatabases = pgTable(
+  "resource_own_databases",
+  {
+    worktreeId: text().$type<WorktreeId>().notNull(),
+    definitionId: text()
+      .$type<ResourceDefinitionId>()
+      .notNull()
+      .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
+    origin: text().$type<"empty" | "copied">().notNull(),
+    madeAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.worktreeId, table.definitionId] }),
+    index("resource_own_databases_definition_idx").on(table.definitionId),
   ],
 );
 
