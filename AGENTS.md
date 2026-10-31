@@ -140,6 +140,17 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 - In React code, avoid `useEffect` unless there is no cleaner data-flow option.
 - Avoid `any` and avoid type assertions/casts like `as X` unless absolutely unavoidable.
 
+## Fix Now or File
+
+While Mend's core features are still being built, fix a problem straight away only if people will
+run into it in ordinary use and it does at least one of three things: it makes Mend look like an
+unfinished pet project, it stops someone getting their work done, or it loses real work. Anything
+else gets filed as an issue for later, including a problem that is rare, hard to reproduce, or
+something a developer would understand and work around while the app keeps working. That holds
+even when a fix would make the experience nicer and even when it looks small. Three agents
+designing a fix, three more attacking it and one reviewing the result costs more than the fix is
+worth next to everything still left to build on the roadmap.
+
 ## Effect Best Practices
 
 **IMPORTANT:** Always consult effect-solutions before writing Effect code.
