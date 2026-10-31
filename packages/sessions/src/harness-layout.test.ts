@@ -246,6 +246,23 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
     }
   });
 
+  it("with the flag on, tries person on a screen's image whose answer is unknown, and falls back if prepare must", () => {
+    const on = { ...fresh, flag: "person" } as const;
+    expect(decideHarnessLayout({ ...on, screen: true })).toMatchObject({
+      layout: "person",
+      onMissing: "fallback",
+    });
+    expect(decideHarnessLayout({ ...on, screen: false })).toMatchObject({ layout: "shared" });
+    expect(decideHarnessLayout({ ...fresh, screen: true })).toMatchObject({ layout: "shared" });
+    expect(
+      decideHarnessLayout({
+        ...on,
+        screen: true,
+        capability: { person: false, missing: ["no sudo"], source: "mend" },
+      }),
+    ).toMatchObject({ layout: "shared" });
+  });
+
   it("with the flag on, runs person only where the image is known to run it", () => {
     const on = { ...fresh, flag: "person" } as const;
     expect(decideHarnessLayout({ ...on, capability: capable })).toEqual({

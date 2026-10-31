@@ -327,7 +327,7 @@ describe.skipIf(!dockerReady)("the hand, against TigerVNC Xvnc in a container", 
       .map(Number);
 
   beforeAll(() => {
-    xvnc = startXvnc(`mend-hand-${process.pid}-${Date.now()}`);
+    xvnc = startXvnc(`task1-xfce-hand-${process.pid}-${Date.now()}`);
   }, 660_000);
 
   afterAll(() => xvnc.remove());

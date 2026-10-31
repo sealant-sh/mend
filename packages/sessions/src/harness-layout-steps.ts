@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
  * nothing recorded, nothing here reads the store, execs or calls Core.
  */
 import { HarnessLayoutsRepo, type OrganizationsRepo } from "@mend/db";
-import { type OrganizationId, type WorkspaceImage, WorktreeId } from "@mend/domain";
+import { imageHasScreen, type OrganizationId, type WorkspaceImage, WorktreeId } from "@mend/domain";
 import {
   DEFAULT_HARNESS_LAYOUT,
   type HarnessLayout,
@@ -1109,8 +1109,9 @@ export const makeHarnessLayoutSteps = (deps: {
       // where the flag is on and the worktree has no record.
       const headHasPeople =
         worktree.layout === null && flag === "person" ? yield* input.headHasPeople : false;
+      const image = yield* input.image;
       const { capability, imageKey, runtime, replaces } = yield* capabilityFor(
-        yield* input.image,
+        image,
         input.ownerUserId,
         input.harness,
       );
@@ -1132,6 +1133,7 @@ export const makeHarnessLayoutSteps = (deps: {
         worktree,
         headHasPeople,
         capability,
+        screen: imageHasScreen(image),
         dotfilesBlocked,
         ...(input.standby === undefined ? {} : { standby: input.standby }),
       });
@@ -1205,8 +1207,9 @@ export const makeHarnessLayoutSteps = (deps: {
       readonly launcherHasDotfiles?: Effect.Effect<boolean>;
     },
   ) {
+    const image = yield* input.image;
     const { capability, imageKey, runtime } = yield* capabilityFor(
-      yield* input.image,
+      image,
       input.ownerUserId,
       input.harness,
     );
@@ -1222,6 +1225,7 @@ export const makeHarnessLayoutSteps = (deps: {
       worktree,
       headHasPeople: false,
       capability,
+      screen: imageHasScreen(image),
       dotfilesBlocked,
     });
     return {

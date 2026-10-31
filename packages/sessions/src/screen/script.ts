@@ -6,6 +6,7 @@ import {
   MEND_HELPER_PATH,
   SESSION_SOCKET_MOUNT_PATH,
 } from "../session-socket.ts";
+import { XFCE_CONFIG_SCRIPT } from "./xfce.ts";
 
 /**
  * The screen's process (ADR 0020), as `sh -c SCREEN_SCRIPT mend-screen :<n> <width>x<height> <dir>
@@ -31,6 +32,12 @@ cookie=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')
 printf 'add %s . %s\\n' "$display" "$cookie" | xauth -q -f "$dir/auth" source -
 unset secret cookie
 export DISPLAY="$display" XAUTHORITY="$dir/auth"
+if command -v startxfce4 >/dev/null 2>&1 && command -v dbus-run-session >/dev/null 2>&1; then
+  wm=xfwm4
+${XFCE_CONFIG_SCRIPT}
+else
+  wm=openbox
+fi
 (
   trap 'trap "" TERM; kill -TERM 0; exit 0' HUP
   tries=0
@@ -39,17 +46,52 @@ export DISPLAY="$display" XAUTHORITY="$dir/auth"
     if [ "$tries" -ge 50 ]; then echo "mend-screen failed display"; kill -TERM 0; exit 1; fi
     sleep 0.2
   done
-  openbox >/dev/null 2>&1 &
-  wm=$!
+  xset s off -dpms >/dev/null 2>&1 || true
+  wm_alive() {
+    if [ "$wm" = openbox ]; then kill -0 "$openbox" 2>/dev/null; return; fi
+    [ -n "$(pgrep -u "$(id -u)" -x xfwm4 | while read -r pid; do
+      tr '\\0' '\\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "DISPLAY=$display" && echo "$pid"
+    done)" ]
+  }
+  if [ "$wm" = xfwm4 ]; then
+    # A person's processes keep CAP_FOWNER (ADR 0016: pnpm fixes restored files with it), and
+    # with it bwrap fails with words glycin does not know, so glycin sandboxed every image load
+    # through a bwrap that cannot run here: libwnck got no default icon and XFCE stopped at
+    # start. The session finds a bwrap first that fails as bwrap does without namespaces, so
+    # glycin loads unsandboxed, as it does wherever bwrap cannot run, and every program keeps
+    # the capability. Started again a few times should it still stop.
+    mkdir -p "$dir/bin"
+    cat >"$dir/bin/bwrap" <<'MEND_BWRAP'
+#!/bin/sh
+echo "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces." >&2
+exit 1
+MEND_BWRAP
+    chmod 755 "$dir/bin/bwrap"
+    (
+      starts=0
+      while [ "$starts" -lt 5 ]; do
+        starts=$((starts + 1))
+        PATH="$dir/bin:$PATH" dbus-run-session -- startxfce4 >>"$dir/xfce.log" 2>&1 || true
+        sleep 1
+      done
+    ) &
+  else
+    openbox >/dev/null 2>&1 &
+    openbox=$!
+  fi
+  # The browser opens once the window manager runs: a window that appears while the session
+  # starts is what it stopped on.
+  waited=0
+  until wm_alive || [ "$waited" -ge 50 ]; do waited=$((waited + 1)); sleep 0.2; done
   ${CHROMIUM_WRAPPER_PATH} about:blank >/dev/null 2>&1 &
   said=
   sandbox=
   while sleep 0.5 && kill -0 $$ 2>/dev/null; do
-    if kill -0 "$wm" 2>/dev/null; then
-      [ -n "$said" ] || { said=ready; echo "mend-screen ready"; }
+    if wm_alive; then
+      [ "$said" = ready ] || { said=ready; echo "mend-screen ready"; }
     elif [ "$said" != degraded ]; then
       said=degraded
-      echo "mend-screen degraded openbox"
+      echo "mend-screen degraded $wm"
     fi
     if [ -z "$sandbox" ] && [ "$(cat "$dir/browser-sandbox" 2>/dev/null)" = off ]; then
       sandbox=off
@@ -192,7 +234,7 @@ export const screenReportOf = (line: string): ScreenReport | null => {
   const said = line.trim();
   if (said === "mend-screen ready") return { _tag: "Ready" };
   if (said === "mend-screen browser sandbox off") return { _tag: "BrowserSandboxOff" };
-  return said.startsWith("mend-screen degraded ")
+  return said === "mend-screen degraded xfwm4" || said === "mend-screen degraded openbox"
     ? { _tag: "Degraded", reason: "client-failed" }
     : null;
 };

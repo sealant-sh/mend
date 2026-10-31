@@ -108,15 +108,19 @@ export const defaultWorkspaceImage: FamilyWorkspaceImage = {
 
 /**
  * What a screen needs in its image (docs/adr/0020-guis-in-sessions.md, D1 and D8): TigerVNC's
- * Xvnc and `vncpasswd`, `xauth` for the display's cookie, `xdpyinfo` to wait for the display, a
- * light window manager, Chromium and a font set. Portable ids a family image asks the platform's
- * catalog for, kept apart from the saved packages so turning the screen off removes them.
+ * Xvnc and `vncpasswd`, `xauth` for the display's cookie, `xdpyinfo` to wait for the display,
+ * Chromium, a font set and a desktop. Portable ids a family image asks the platform's catalog for,
+ * kept apart from the saved packages so turning the screen off removes them. The desktop is XFCE
+ * with its session bus where the family's catalog carries both, and Openbox where it does not
+ * (nix has no session bus); `ffmpeg` streams the screen where it is built with libx264, so Fedora
+ * goes without and its screen is watched over RFB only.
  */
-export const SCREEN_PACKAGE_IDS: ReadonlyArray<string> = [
+export const screenPackageIds = (os: WorkspaceImageOs): ReadonlyArray<string> => [
   "tigervnc",
   "xauth",
   "xdpyinfo",
-  "openbox",
+  ...(os === "nix" ? ["openbox"] : ["xfce", "dbus"]),
+  ...(os === "arch" || os === "ubuntu" ? ["ffmpeg"] : []),
   "chromium",
   "fonts-dejavu",
 ];
@@ -127,8 +131,11 @@ export const imageHasScreen = (image: WorkspaceImage | null): boolean =>
 
 /** Every package an image installs: its own, then those of the screen's it lacks. */
 export const workspaceImagePackages = (image: WorkspaceImage): ReadonlyArray<string> =>
-  imageHasScreen(image)
-    ? [...image.packages, ...SCREEN_PACKAGE_IDS.filter((id) => !image.packages.includes(id))]
+  image.mode === "family" && image.screen
+    ? [
+        ...image.packages,
+        ...screenPackageIds(image.os).filter((id) => !image.packages.includes(id)),
+      ]
     : image.packages;
 
 export type ImageArchitecture = "x86_64" | "aarch64";

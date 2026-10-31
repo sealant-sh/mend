@@ -180,6 +180,7 @@ const STARTUP_ACTION = {
   "binding-unverifiable": "stop",
   "binding-unsupported": "stop",
   "protocol-unsupported": "stop",
+  "not-a-person": "stop",
   "unrecognized-refusal": "stop",
   cancelled: "stop",
 } as const satisfies Record<ForwardIssueReason, ForwardStartupAction>;

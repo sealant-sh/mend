@@ -4,7 +4,7 @@ import {
   defaultSettings,
   defaultWorkspaceImage,
   MendSettings,
-  SCREEN_PACKAGE_IDS,
+  screenPackageIds,
 } from "@mend/domain";
 import type { FamilyWorkspaceImage, WorkspaceImage } from "@mend/domain";
 import {
@@ -174,7 +174,7 @@ describe("resolveWorkspaceEnvironment", () => {
       ),
     );
 
-    expect(asked).toEqual(["gh", ...SCREEN_PACKAGE_IDS]);
+    expect(asked).toEqual(["gh", ...screenPackageIds("arch")]);
     expect(result.workspaceImage).toMatchObject({ packages: ["github-cli"], screen: true });
   });
 
@@ -189,7 +189,7 @@ describe("resolveWorkspaceEnvironment", () => {
 
     expect(result.workspaceImage).toBeNull();
     expect(result.resolutions.filter((r) => !r.supported).map((r) => r.requested)).toEqual(
-      SCREEN_PACKAGE_IDS,
+      screenPackageIds("arch"),
     );
   });
 

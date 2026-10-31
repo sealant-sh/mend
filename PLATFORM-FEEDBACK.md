@@ -7,6 +7,33 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-31 · 0.37 · bwrap under a person's capability fails in a way glycin does not expect
+
+- **Needed:** a screen's XFCE session (ADR 0020) to load images. GTK loads them through glycin,
+  which sandboxes loaders with bwrap and falls back only when bwrap says it cannot make namespaces.
+- **Today:** a person's session processes keep CAP_FOWNER effective, deliberately (ADR 0016: pnpm
+  fixes restored, root-owned files with it). With it, bwrap fails with "Unexpected capabilities but
+  not setuid, old file caps config?", which glycin does not recognise. glycin keeps trying bwrap,
+  every image load fails, and libwnck's default-icon assertion stops xfce4-session, the panel and
+  xfdesktop. Seen on the box, preview.37, 2026-10-31.
+- **Mend's workaround:** the screen's XFCE session finds a `bwrap` first on PATH that fails as bwrap
+  does without namespaces, so glycin falls back and every program keeps the capability.
+- **Suggested:** none for Core, which needs the capability. Noting it for anything else that runs
+  bwrap-based sandboxes inside person processes.
+
+## 2026-10-31 · 0.40.0-next.768 · XFCE and capture packages for a screen
+
+ADR 0020's styled XFCE screen asks for `tigervnc`, `xauth`, `xdpyinfo`, `xfce`, `dbus`, `ffmpeg`,
+`chromium` and `fonts-dejavu`. Core's catalog change is committed locally on `feat/catalog-xfce`; it
+must be deployed before Mend can resolve the new ids. No SDK contract change is needed.
+
+Installed in x86_64 containers, with aarch64 checked only in repository indexes. Arch starts the
+full screen. Fedora 41 starts XFCE but its `ffmpeg-free` lacks libx264, so Core refuses `ffmpeg`.
+Ubuntu 24.04 runs XFCE and the required ffmpeg, but still refuses the Chromium snap stub. Nixpkgs
+installs the components and a working `ffmpeg-full`, but `dbus-run-session` exits because
+`/etc/dbus-1/session.conf` is absent from the workspace image, so Core refuses `dbus` on nix. The
+original screen package request below is kept as the history of sealant#419.
+
 ## 2026-10-30 · 0.40.0-next.768 · A session's env cannot put a directory in front of PATH
 
 ADR 0020 puts a `chromium` wrapper, staged in `/run/mend/bin`, first on the PATH of a session with a

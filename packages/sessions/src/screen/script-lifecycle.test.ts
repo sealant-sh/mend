@@ -1,0 +1,63 @@
+import { DisplayNumber } from "@mend/domain/workbench";
+import { it } from "@mend/test-ci/effect-vitest";
+import { Effect } from "effect";
+import { describe, expect } from "vitest";
+
+import { BASELINE, docker, useScreenScript } from "../../test/screen-script-fixture.ts";
+import { dockerReady } from "../../test/xvnc.ts";
+import { screenReapArgv } from "./script.ts";
+
+describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
+  const { container, inside, asPerson, settled, xvncPid, start } = useScreenScript();
+
+  it.live(
+    "says degraded when the window manager dies, and leaves nothing once Xvnc ends",
+    () =>
+      Effect.gen(function* () {
+        const other = start(10);
+        yield* Effect.promise(() => other.said("mend-screen ready"));
+        const screen = start(12);
+        yield* Effect.promise(() => screen.said("mend-screen ready"));
+        inside("pkill -STOP -x xfce4-session");
+        const wm = asPerson(
+          12,
+          "xdotool getwindowpid $(xprop -root _NET_SUPPORTING_WM_CHECK | awk '{print $NF}')",
+        ).trim();
+        inside(`kill ${wm}`);
+        yield* Effect.promise(() => screen.said("mend-screen degraded xfwm4"));
+        inside("pkill -CONT -x xfce4-session");
+        inside(`kill ${xvncPid(12)}`);
+        yield* Effect.promise(() => screen.exited);
+        inside(`kill ${xvncPid(10)}`);
+        expect(yield* settled).toEqual(BASELINE);
+      }),
+    { timeout: 240_000 },
+  );
+
+  it.live(
+    "ends everything it started when its terminal hangs up",
+    () =>
+      Effect.gen(function* () {
+        const screen = start(11);
+        yield* Effect.promise(() => screen.said("mend-screen ready"));
+        inside(`kill -HUP -${xvncPid(11)}`);
+        yield* Effect.promise(() => screen.exited);
+        expect(yield* settled).toEqual(BASELINE);
+      }),
+    { timeout: 180_000 },
+  );
+
+  it.live(
+    "a lost start's reap, as the person, ends the screen on its display and nothing else",
+    () =>
+      Effect.gen(function* () {
+        const screen = start(13);
+        yield* Effect.promise(() => screen.said("mend-screen ready"));
+        docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
+        yield* Effect.promise(() => screen.exited);
+        expect(yield* settled).toEqual(BASELINE);
+        docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
+      }),
+    { timeout: 180_000 },
+  );
+});

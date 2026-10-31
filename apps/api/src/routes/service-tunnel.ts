@@ -78,6 +78,7 @@ const TUNNEL_REFUSAL_CLOSE = {
   forbidden: 4403,
   no_standing: 4403,
   creator_no_access: 4403,
+  "not-a-person": 4403,
   "not-found": 4404,
   "owner-exited": 4409,
   "peer-mismatch": 4409,

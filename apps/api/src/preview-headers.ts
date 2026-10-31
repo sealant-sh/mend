@@ -228,6 +228,7 @@ export const DIAL_DISPOSITION = {
   unauthorized: undelivered(503, "the platform refused the forward"),
   NO_PRINCIPAL: undelivered(503, "the platform refused the forward"),
   UNKNOWN_USER: undelivered(503, "the platform refused the forward"),
+  "not-a-person": undelivered(503, "the platform refused the forward"),
   forbidden: NOT_LENT,
   no_standing: NOT_LENT,
   creator_no_access: NOT_LENT,
