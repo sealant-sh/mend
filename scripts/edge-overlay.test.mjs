@@ -68,25 +68,30 @@ const render = (extra = {}, overlays = []) => {
   return result;
 };
 
-test("the edge is the only thing published beyond loopback, on 80 and 443", { skip }, () => {
-  const result = render();
-  assert.equal(result.status, 0, result.stderr);
-  const compose = JSON.parse(result.stdout);
-  const published = Object.entries(compose.services).flatMap(([name, service]) =>
-    (service.ports ?? []).map((port) => ({
-      name,
-      host: port.host_ip ?? "0.0.0.0",
-      published: String(port.published),
-    })),
-  );
-  const beyondLoopback = published.filter((port) => port.host !== "127.0.0.1");
-  assert.deepEqual(
-    [...new Set(beyondLoopback.map((port) => `${port.name}:${port.published}`))].toSorted(),
-    ["edge:443", "edge:80"],
-  );
-  // Mend's own port stays on loopback: the way in from outside is through TLS.
-  assert.ok(published.some((port) => port.name === "mend" && port.host === "127.0.0.1"));
-});
+test(
+  "only the edge on TCP 80/443 and Mend screen streams on UDP 443 are published beyond loopback",
+  { skip },
+  () => {
+    const result = render();
+    assert.equal(result.status, 0, result.stderr);
+    const compose = JSON.parse(result.stdout);
+    const published = Object.entries(compose.services).flatMap(([name, service]) =>
+      (service.ports ?? []).map((port) => ({
+        name,
+        host: port.host_ip ?? "0.0.0.0",
+        published: String(port.published),
+        protocol: port.protocol,
+      })),
+    );
+    const beyondLoopback = published.filter((port) => port.host !== "127.0.0.1");
+    assert.deepEqual(
+      beyondLoopback.map((port) => `${port.name}:${port.published}/${port.protocol}`).toSorted(),
+      ["edge:443/tcp", "edge:80/tcp", "mend:443/udp"],
+    );
+    // Mend's HTTP port stays on loopback; the edge terminates TLS for it.
+    assert.ok(published.some((port) => port.name === "mend" && port.host === "127.0.0.1"));
+  },
+);
 
 test("the edge shares a network with Mend and with nothing else", { skip }, () => {
   const compose = JSON.parse(render().stdout);
@@ -1077,9 +1082,9 @@ test(
       const beyondLoopback = Object.entries(compose.services).flatMap(([name, service]) =>
         (service.ports ?? [])
           .filter((port) => (port.host_ip ?? "0.0.0.0") !== "127.0.0.1")
-          .map((port) => `${name}:${port.published}`),
+          .map((port) => `${name}:${port.published}/${port.protocol}`),
       );
-      assert.deepEqual([...new Set(beyondLoopback)].toSorted(), ["edge:443", "edge:80"]);
+      assert.deepEqual(beyondLoopback.toSorted(), ["edge:443/tcp", "edge:80/tcp", "mend:443/udp"]);
       assert.deepEqual(
         compose.services.mend.ports
           .filter((port) => port.target === 3130)

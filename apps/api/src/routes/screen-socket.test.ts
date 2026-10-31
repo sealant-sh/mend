@@ -714,7 +714,7 @@ describe.skipIf(!dockerReady)(
     const blobs = mkdtempSync(join(tmpdir(), "mend-screen-socket-blobs-"));
     const passwords = { full: "socket-full", viewOnly: "socket-view" };
     beforeAll(() => {
-      xvnc = startXvnc(`task2-rtc-socket-${process.pid}-${Date.now()}`);
+      xvnc = startXvnc(`ci-fix-rtc-socket-${process.pid}-${Date.now()}`);
       xvnc.signWith(passwords.full, passwords.viewOnly);
     }, 660_000);
     afterAll(() => {
@@ -865,7 +865,7 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
     let encoderPort = 0;
     let encoderAddress = "127.0.0.1";
     let proxy: net.Server;
-    const container = `task2-rtc-video-${process.pid}`;
+    const container = `ci-fix-rtc-video-${process.pid}`;
     const blobs = mkdtempSync(join(tmpdir(), "task2-rtc-blobs-"));
     beforeAll(async () => {
       const bundledClient = await build({

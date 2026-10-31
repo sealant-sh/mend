@@ -174,7 +174,7 @@ test(
 );
 
 test(
-  "only the edge, workspace SSH and the VPC-side session channel are published",
+  "only the edge, screen streams, workspace SSH and the VPC-side session channel are published",
   { skip },
   () => {
     const published = (service) =>
@@ -183,14 +183,11 @@ test(
       );
     assert.deepEqual(published("mend").toSorted(), [
       "0.0.0.0:2222/tcp",
+      "0.0.0.0:443/udp",
       "10.42.0.10:3106/tcp",
       "127.0.0.1:3105/tcp",
     ]);
-    assert.deepEqual(published("edge").toSorted(), [
-      "0.0.0.0:443/tcp",
-      "0.0.0.0:443/udp",
-      "0.0.0.0:80/tcp",
-    ]);
+    assert.deepEqual(published("edge").toSorted(), ["0.0.0.0:443/tcp", "0.0.0.0:80/tcp"]);
   },
 );
 
