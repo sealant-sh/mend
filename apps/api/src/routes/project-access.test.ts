@@ -198,6 +198,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // screen-socket.test.ts covers who may take over and hand back.
   "screens.take",
   "screens.handBack",
+  // ScreenRtc checks session visibility through AccessRecheck; screen-socket.test.ts covers admission.
+  "screens.rtc",
   "handoffs.receive",
   "handoffs.instanceTerms",
 ]);

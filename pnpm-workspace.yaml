@@ -105,6 +105,8 @@ catalogs:
 # @effect/platform-node 4.0.5 asks for @effect/platform-node-shared ^4.0.5, which would resolve to
 # the newest 4.0.x and its own effect peer. Pin it with the rest of the Effect family (t3code does too).
 overrides:
+  # Werift's x509 v1 must share its ASN.1 schema registry with the 2.11 model packages.
+  "@peculiar/x509@1>@peculiar/asn1-schema": 2.11.1
   "@effect/platform-node@4.0.5>@effect/platform-node-shared": 4.0.5
 
 # These declare a typescript peer but never load it: bun-ffi-structs has no runtime use, and tsconfck

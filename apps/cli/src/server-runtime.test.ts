@@ -871,6 +871,7 @@ describe.skipIf(!composeAvailable)(
             ports: [
               expect.objectContaining({ host_ip: "127.0.0.1", target: 3105, published: "3105" }),
               expect.objectContaining({ host_ip: "127.0.0.1", target: 2222, published: "2222" }),
+              expect.objectContaining({ target: 443, published: "443", protocol: "udp" }),
             ],
           },
           edge: {
@@ -926,7 +927,7 @@ describe.skipIf(!composeAvailable)(
           expect.objectContaining({ host_ip: "0.0.0.0", target: 443, published: "443" }),
         ]),
       });
-      // Only the edge is published beyond loopback; nothing else gained an interface.
+      // Only edge HTTP/TLS and Mend screen streams are published beyond loopback.
       const published = Object.entries(
         typeof services === "object" && services !== null ? services : {},
       ).flatMap(([name, service]) =>
@@ -934,15 +935,18 @@ describe.skipIf(!composeAvailable)(
         service !== null &&
         "ports" in service &&
         Array.isArray(service.ports)
-          ? service.ports.map(
-              (port: { host_ip?: string }) => `${name}:${port.host_ip ?? "0.0.0.0"}`,
-            )
+          ? service.ports
+              .filter((port: { host_ip?: string }) => port.host_ip !== "127.0.0.1")
+              .map(
+                (port: { host_ip?: string; published: string; protocol: string }) =>
+                  `${name}:${port.host_ip ?? "0.0.0.0"}:${port.published}/${port.protocol}`,
+              )
           : [],
       );
-      expect(published.filter((entry) => !entry.endsWith(":127.0.0.1"))).toEqual([
-        "edge:0.0.0.0",
-        "edge:0.0.0.0",
-        "edge:0.0.0.0",
+      expect(published.toSorted()).toEqual([
+        "edge:0.0.0.0:443/tcp",
+        "edge:0.0.0.0:80/tcp",
+        "mend:0.0.0.0:443/udp",
       ]);
       expect(rendered).not.toContain("poison");
       expect(rendered).not.toContain(`MEND_URL_BEARERS": "accept`);

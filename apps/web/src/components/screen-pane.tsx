@@ -11,6 +11,7 @@ import {
   type ScreenReadDto,
   takeScreen,
 } from "#/lib/api";
+import type { ScreenRtcView } from "#/lib/screen-rtc";
 import { ScreenChannel, screenCloseWords, screenSocketUrl } from "#/lib/screen-socket";
 import { useTRPC } from "#/lib/trpc";
 
@@ -163,8 +164,8 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
 }
 
 /**
- * The live pane: noVNC on `/api/screen-socket`, read-only until this viewer's own connection holds
- * the input. Whatever noVNC sends, the server passes keys and pointer only from the holder.
+ * The live pane tries H.264 over WebRTC, then noVNC when UDP or the encoder is unavailable.
+ * Both paths put input through the hand only while this connection holds it.
  * Nothing reaches the clipboard either way: the pane never sends noVNC's clipboard and never
  * listens for the screen's (ADR 0020, D13).
  */
@@ -188,6 +189,8 @@ export function ScreenPane({
   const [pending, setPending] = useState<Pending>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const rfb = useRef<RFB | null>(null);
+  const rtc = useRef<ScreenRtcView | null>(null);
+  const heldRef = useRef(false);
   const owner = viewerId !== null && viewerId === screen.ownerUserId;
   const held = heldHere(screen, wire);
 
@@ -199,8 +202,9 @@ export function ScreenPane({
       if (element === null) return;
       let disposed = false;
       let view: RFB | null = null;
+      let stream: ScreenRtcView | null = null;
       setWire({ _tag: "Connecting" });
-      const open = async () => {
+      const openVnc = async () => {
         const { default: Rfb } = await import("@novnc/novnc");
         if (disposed) return;
         const socket = new WebSocket(screenSocketUrl(sessionId, window.location.origin));
@@ -213,18 +217,47 @@ export function ScreenPane({
           },
         });
         view = new Rfb(element, channel, { shared: true });
-        view.viewOnly = true;
+        view.viewOnly = !heldRef.current;
         view.scaleViewport = true;
         view.background = "transparent";
         rfb.current = view;
       };
-      open().catch(() => {
-        if (!disposed) setWire({ _tag: "Closed", words: "the screen viewer did not load" });
-      });
+      const fallback = () => {
+        if (disposed) return;
+        stream?.close();
+        rtc.current = null;
+        element.replaceChildren();
+        openVnc().catch(() => {
+          if (!disposed) setWire({ _tag: "Closed", words: "the screen viewer did not load" });
+        });
+      };
+      const open = async () => {
+        const { openScreenRtc } = await import("#/lib/screen-rtc");
+        if (disposed) return;
+        const video = document.createElement("video");
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        video.tabIndex = 0;
+        video.setAttribute("aria-label", "Session screen");
+        video.className = "h-full w-full outline-none";
+        element.append(video);
+        stream = openScreenRtc(video, sessionId, {
+          watching: (connection) => {
+            if (!disposed) setWire({ _tag: "Watching", connection });
+          },
+          fallback,
+        });
+        rtc.current = stream;
+        stream.setHeld(heldRef.current);
+      };
+      void open().catch(fallback);
       return () => {
         disposed = true;
         rfb.current = null;
         view?.disconnect();
+        stream?.close();
+        rtc.current = null;
       };
     },
     [sessionId],
@@ -233,6 +266,8 @@ export function ScreenPane({
   // The one thing render cannot say to noVNC: whether its keys and pointer go up. It follows the
   // holder as the read reports it, so a lapse or a hand back elsewhere ends it here too.
   useEffect(() => {
+    heldRef.current = held;
+    rtc.current?.setHeld(held);
     if (rfb.current !== null) rfb.current.viewOnly = !held;
   }, [held]);
 
@@ -267,7 +302,10 @@ export function ScreenPane({
     if (wire._tag !== "Watching") return;
     const { connection } = wire;
     send("take", takeScreen(sessionId, connection), (result) => {
-      if (result._tag === "Changed" || result._tag === "Unchanged") rfb.current?.focus();
+      if (result._tag === "Changed" || result._tag === "Unchanged") {
+        rfb.current?.focus();
+        rtc.current?.focus();
+      }
     });
   };
   const handBack = () => send("hand-back", handBackScreen(sessionId));

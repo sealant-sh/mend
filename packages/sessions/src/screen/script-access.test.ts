@@ -28,22 +28,44 @@ const fails = (run: () => unknown) => {
 describe.skipIf(!dockerReady)("screen script access and input", () => {
   const { container, inside, asPerson, xvncPid, start } = useScreenScript();
 
+  // Observing LISTEN does not connect and consume ffmpeg's one-viewer socket.
+  const encoderReady = Effect.gen(function* () {
+    const address = `0100007F:${(7910).toString(16).toUpperCase()}`;
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const listening = inside("cat /proc/net/tcp | awk '$4 == \"0A\" { print $2 }'")
+        .trim()
+        .split("\n");
+      if (listening.includes(address)) return;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `encoder did not listen: ${inside(`cat ${RUNTIME}/mend-screen-10/stream.log`)}`,
+        );
+      }
+      yield* Effect.sleep("50 millis");
+    }
+  });
+
   it.live(
     "listens on loopback only, behind its passwords and its cookie, with neither in argv",
     () =>
       Effect.gen(function* () {
         const screen = start(10);
         yield* Effect.promise(() => screen.said("mend-screen ready"));
+        yield* encoderReady;
         const port = screenPort(DisplayNumber.make(10)).toString(16).toUpperCase().padStart(4, "0");
         const listening = inside(
           "cat /proc/net/tcp /proc/net/tcp6 | awk '$4 == \"0A\" { print $2 }'",
         )
           .trim()
           .split("\n");
-        expect(listening.toSorted()).toEqual([
-          `00000000000000000000000001000000:${port}`,
-          `0100007F:${port}`,
-        ]);
+        expect(listening.toSorted()).toEqual(
+          [
+            `00000000000000000000000001000000:${port}`,
+            `0100007F:${port}`,
+            `0100007F:${(7910).toString(16).toUpperCase()}`,
+          ].toSorted(),
+        );
         expect(asPerson(10, "xdpyinfo | head -1")).toContain(":10");
         expect(fails(() => asPerson(10, "xdpyinfo", "/nonexistent"))).toBe(true);
         expect(fails(() => inside("DISPLAY=:10 xdpyinfo"))).toBe(true);
@@ -59,6 +81,20 @@ describe.skipIf(!dockerReady)("screen script access and input", () => {
         );
       }),
     { timeout: 120_000 },
+  );
+
+  it.live(
+    "starts the encoder on connection and listens again when its last viewer leaves",
+    () =>
+      Effect.gen(function* () {
+        const receive = () =>
+          inside("socat -u TCP:127.0.0.1:7910 STDOUT | head -c6 | od -An -tx1").replace(/\s/g, "");
+        yield* encoderReady;
+        expect(receive()).toBe("000000010910");
+        yield* encoderReady;
+        expect(receive()).toBe("000000010910");
+      }),
+    { timeout: 20_000 },
   );
 
   it.live(

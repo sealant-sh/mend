@@ -43,6 +43,15 @@ describe("the edge the CLI carries", () => {
     expect(EDGE_CADDYFILE).toBe(repositoryFile("Caddyfile"));
   });
 
+  it("gives Mend 443/udp for screen streams and keeps Caddy on HTTP/1.1 and HTTP/2", () => {
+    const [edge, mend] = EDGE_COMPOSE_OVERLAY.split("\n  mend:\n");
+    expect(edge).not.toContain("443:443/udp");
+    expect(mend).toContain('"${MEND_EDGE_BIND_HOST:-0.0.0.0}:443:443/udp"');
+    expect(mend).toContain("MEND_SCREEN_RTC_UDP_PORT: 443");
+    expect(mend).toContain("MEND_SCREEN_RTC_PUBLIC_HOST:");
+    expect(EDGE_CADDYFILE).toContain("\tservers {\n\t\tprotocols h1 h2\n\t}");
+  });
+
   it("pins the image the overlay runs", () => {
     expect(EDGE_COMPOSE_OVERLAY).toContain(`\n    image: ${EDGE_IMAGE}\n`);
     expect(EDGE_COMPOSE_OVERLAY).toContain("MEND_EDGE_HOST:?set MEND_EDGE_HOST in .env");

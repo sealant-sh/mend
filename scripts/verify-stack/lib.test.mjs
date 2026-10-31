@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
+import { parse } from "yaml";
+
 import {
   composeImages,
   defaultSpec,
@@ -677,11 +679,19 @@ test("overrides join the workspace file's own block, or start one", async () => 
   const mend = await readFile(new URL("../../pnpm-workspace.yaml", import.meta.url), "utf8");
   const joined = withOverrides(mend, { "@sealant/sdk": "file:./x.tgz" });
   assert.equal(joined.match(/^overrides:/gm).length, 1);
-  assert.match(joined, /^overrides:\n {2}"@sealant\/sdk": file:\.\/x\.tgz\n {2}"@effect/m);
+  assert.deepEqual(parse(joined).overrides, {
+    ...parse(mend).overrides,
+    "@sealant/sdk": "file:./x.tgz",
+  });
   assert.equal(
     withOverrides("packages:\n  - a\n", { b: "file:./b.tgz" }),
     'packages:\n  - a\n\noverrides:\n  "b": file:./b.tgz\n',
   );
+  const existing = 'packages: []\noverrides:\n  # Keep this dependency pinned.\n  "z": 1.2.3\n';
+  assert.deepEqual(parse(withOverrides(existing, { a: "file:./a.tgz" })).overrides, {
+    a: "file:./a.tgz",
+    z: "1.2.3",
+  });
   assert.equal(withOverrides("packages: []\n", {}), "packages: []\n");
 });
 
