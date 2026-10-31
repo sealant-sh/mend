@@ -31,8 +31,8 @@ import { MediaStreamTrack, RTCPeerConnection, RTCRtpCodecParameters } from "weri
 import type { AccessSubject } from "./access-recheck.ts";
 import { Budgets } from "./budgets.ts";
 import { ConnectionRegistry, reserveSocket } from "./connections.ts";
-import { ScreenH264 } from "./screen-h264.ts";
 import { ScreenRtcUdp } from "./screen-rtc-udp.ts";
+import { streamScreenVideo } from "./screen-video.ts";
 import { ScreenWatch } from "./screen-watch.ts";
 
 type RtcError = NotFound | BudgetExceeded | ScreenRtcUnavailable;
@@ -120,31 +120,34 @@ const make = (
               const pty = screen.processId === null ? null : yield* host.ptyOf(screen.processId);
               if (pty === null) return yield* new ScreenRtcUnavailable();
               const owner = yield* host.ownerOf(screen.sessionId);
-              const { bytes } = yield* forward
-                .open(
-                  {
-                    workspaceId: screen.workspaceId,
-                    port: 7900 + screen.display,
-                    binding: { kind: "session", session: ForwardSessionOwner.make(pty) },
-                  },
-                  { purpose: "screen", timeoutMs: 3000 },
-                )
-                .pipe(asSealantUser(owner));
-              const parser = new ScreenH264();
-              for (;;) {
-                const read = yield* bytes.read().pipe(Effect.timeout("5 seconds"));
-                if (read.kind === "eof") return yield* new ScreenRtcUnavailable();
-                const frames = parser.push(read.bytes);
-                if (frames === null) return yield* new ScreenRtcUnavailable();
-                for (const frame of frames) {
-                  yield* Deferred.succeed(ready, undefined);
+              yield* streamScreenVideo({
+                pointer: repo
+                  .ofSession(screen.sessionId)
+                  .pipe(Effect.map((now) => now?.input._tag !== "Person")),
+                open: (pointer) =>
+                  forward
+                    .open(
+                      {
+                        workspaceId: screen.workspaceId,
+                        port: (pointer ? 7900 : 8100) + screen.display,
+                        binding: { kind: "session", session: ForwardSessionOwner.make(pty) },
+                      },
+                      { purpose: "screen", timeoutMs: 3000 },
+                    )
+                    .pipe(
+                      asSealantUser(owner),
+                      Effect.map(({ bytes }) => bytes),
+                      Effect.mapError(() => new ScreenRtcUnavailable()),
+                    ),
+                emit: (frame) => {
+                  Deferred.doneUnsafe(ready, Exit.void);
                   for (const viewer of subscribers) {
                     if (!viewer.connected() || (viewer.waiting && !frame.idr)) continue;
                     viewer.waiting = false;
                     for (const packet of frame.packets) viewer.track.writeRtp(packet.clone());
                   }
-                }
-              }
+                },
+              });
             }),
           ).pipe(
             Effect.catchCause((cause) =>

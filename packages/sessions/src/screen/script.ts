@@ -85,17 +85,22 @@ MEND_BWRAP
   until wm_alive || [ "$waited" -ge 50 ]; do waited=$((waited + 1)); sleep 0.2; done
   ${CHROMIUM_WRAPPER_PATH} about:blank >/dev/null 2>&1 &
   if command -v ffmpeg >/dev/null 2>&1; then
-    (
-      while :; do
-        ffmpeg -nostdin -loglevel error -f x11grab -draw_mouse 1 -framerate 30 \\
-          -video_size "$2" -i "$display" -c:v libx264 -threads 2 -preset ultrafast \\
-          -tune zerolatency -profile:v baseline -level:v 3.1 -pix_fmt yuv420p \\
-          -vf scale=out_color_matrix=bt709 -colorspace bt709 -color_primaries bt709 -color_trc bt709 \\
-          -g 30 -keyint_min 30 -bf 0 -x264-params aud=1:repeat-headers=1 \\
-          -f h264 "tcp://127.0.0.1:$((7900 + n))?listen=1" 2>"$dir/stream.log" || true
-        sleep 0.2
-      done
-    ) &
+    # Separate listeners let a person see only their local pointer.
+    # Displays are 10..99: 8100+n never overlaps the pointer listeners at 7900+n.
+    for mouse in 1 0; do
+      (
+        if [ "$mouse" -eq 1 ]; then port=$((7900 + n)); else port=$((8100 + n)); fi
+        while :; do
+          ffmpeg -nostdin -loglevel error -f x11grab -draw_mouse "$mouse" -framerate 30 \\
+            -video_size "$2" -i "$display" -c:v libx264 -threads 2 -preset ultrafast \\
+            -tune zerolatency -profile:v baseline -level:v 3.1 -pix_fmt yuv420p \\
+            -vf scale=out_color_matrix=bt709 -colorspace bt709 -color_primaries bt709 -color_trc bt709 \\
+            -g 30 -keyint_min 30 -bf 0 -x264-params aud=1:repeat-headers=1 \\
+            -f h264 "tcp://127.0.0.1:$port?listen=1" 2>"$dir/stream-$mouse.log" || true
+          sleep 0.2
+        done
+      ) &
+    done
   fi
   said=
   sandbox=
