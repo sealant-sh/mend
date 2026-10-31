@@ -161,6 +161,7 @@ import { TerminalProjects, TerminalProjectsLive } from "../../src/routes/upgrade
 import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
 import { RawReadStallLimit } from "../../src/routes/worktrees.ts";
+import { ScreenRtc } from "../../src/screen-rtc.ts";
 import { ScreenWatchLive } from "../../src/screen-watch.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
@@ -788,6 +789,7 @@ export const createTenancyApi = async (
     Layer.mergeAll(
       recording(Store, "store", options.implement?.store ?? {}, calls),
       recording(Screens, "screens", {}, calls),
+      recording(ScreenRtc, "screenRtc", {}, calls),
       recording(ScreensRepo, "screensRepo", {}, calls),
       recording(StoreRefsRepo, "storeRefs", options.implement?.storeRefs ?? {}, calls),
       recording(Gh, "gh", {}, calls),

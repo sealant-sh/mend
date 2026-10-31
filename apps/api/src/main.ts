@@ -272,6 +272,7 @@ import { PreviewAuthRoutes } from "./routes/preview-auth.ts";
 import { TerminalProjectsLive } from "./routes/upgrade-tickets.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
+import { ScreenRtcLive } from "./screen-rtc.ts";
 import { ScreenWatchLive } from "./screen-watch.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { SessionStartLive } from "./session-start.ts";
@@ -527,6 +528,7 @@ const ServerLive = Layer.unwrap(
     ).pipe(
       Layer.provide(ProjectCreationLive),
       // Who may watch a screen, and which viewers are open: one for the routes and the socket.
+      Layer.provide(ScreenRtcLive.pipe(Layer.provide(ScreenHostLive))),
       Layer.provide(ScreenWatchLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
     );

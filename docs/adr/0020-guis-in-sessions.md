@@ -857,6 +857,26 @@ started before the decisions, because none of them changed with an answer.
 
 What the build changed against this text, with the PR that carries each. Yiannis can overrule any.
 
+- **People watch H.264 over WebRTC first** (2026-10-31, Task 2). The workspace's screen process
+  starts an optional ffmpeg x11grab encoder at 30 fps on loopback `7900+n`. It waits for a client,
+  uses baseline H.264 with AUDs, repeated parameter sets and a one-second GOP, and restarts after a
+  disconnect. Mend holds one session-bound forward per watched screen. Each new viewer waits for the
+  next IDR. Signalling reuses visibility, the screen-viewer budgets, connection registry and access
+  rechecks. The owner's data-channel input goes through the unchanged hand and input arbiter.
+  Viewers count as viewers and keep no screen alive. The screen log still gets its frames from the
+  hand. The existing noVNC path is the fallback after five seconds or an unavailable encoder. The
+  pane's controls and layout stay the same. Werift 0.25.2 has H.264 packetizing but no shared UDP
+  mux option. Mend therefore uses ICE-lite peers on private loopback sockets behind one public UDP
+  listener, demultiplexed by a STUN username only after verifying MESSAGE-INTEGRITY. Only the
+  configured IPv4 address and port appear in answers. Hostnames resolve to one IPv4 address; IPv6
+  and TURN are not implemented. The packaged edge gives Mend 443/udp and turns Caddy's HTTP/3 off.
+  Development uses 3140/udp. A scoped ASN.1 dependency override keeps werift's certificate schema
+  registry consistent. The browser uses a small X11 keysym mapping because noVNC's keyboard helper
+  is internal. The local Xvnc/ffmpeg/API/Chromium check observed 1280×800 at 60 frames in two
+  seconds, two viewers sharing one encoder forward and one announced UDP port, and
+  colour-change-to-video times of 96, 108 and 94 ms. Public NAT traversal and the packaged edge's
+  UDP path remain untested.
+
 - **A screen starts a styled XFCE session** (2026-10-31). Someone opening any screen used to see a
   black display and a narrow browser window. Every start now seeds its own XFCE configuration, a
   full-bleed warm canvas gradient from DESIGN.md, a thin clock bar, and a small dock for Chromium,

@@ -30,7 +30,8 @@
     "@mend/store": "workspace:*",
     "@mend/t3-contracts": "workspace:*",
     "@mend/ui": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "werift": "^0.25.2"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

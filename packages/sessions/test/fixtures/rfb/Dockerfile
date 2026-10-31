@@ -2,7 +2,7 @@ FROM debian:trixie-slim AS xvnc
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     fonts-dejavu-core locales tigervnc-standalone-server tigervnc-tools x11-utils \
-    x11-xserver-utils xdotool xinput xterm \
+    x11-xserver-utils xdotool xinput xterm ffmpeg \
   && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen \
   && rm -rf /var/lib/apt/lists/*
 ENV LANG=en_US.UTF-8

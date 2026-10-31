@@ -40,10 +40,13 @@ describe.skipIf(!dockerReady)("screen script access and input", () => {
         )
           .trim()
           .split("\n");
-        expect(listening.toSorted()).toEqual([
-          `00000000000000000000000001000000:${port}`,
-          `0100007F:${port}`,
-        ]);
+        expect(listening.toSorted()).toEqual(
+          [
+            `00000000000000000000000001000000:${port}`,
+            `0100007F:${port}`,
+            `0100007F:${(7910).toString(16).toUpperCase()}`,
+          ].toSorted(),
+        );
         expect(asPerson(10, "xdpyinfo | head -1")).toContain(":10");
         expect(fails(() => asPerson(10, "xdpyinfo", "/nonexistent"))).toBe(true);
         expect(fails(() => inside("DISPLAY=:10 xdpyinfo"))).toBe(true);
@@ -59,6 +62,19 @@ describe.skipIf(!dockerReady)("screen script access and input", () => {
         );
       }),
     { timeout: 120_000 },
+  );
+
+  it.live(
+    "starts the encoder on connection and listens again when its last viewer leaves",
+    () =>
+      Effect.gen(function* () {
+        const receive = () =>
+          inside("socat -u TCP:127.0.0.1:7910 STDOUT | head -c6 | od -An -tx1").replace(/\s/g, "");
+        expect(receive()).toBe("000000010910");
+        yield* Effect.sleep("500 millis");
+        expect(receive()).toBe("000000010910");
+      }),
+    { timeout: 20_000 },
   );
 
   it.live(

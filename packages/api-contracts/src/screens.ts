@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware } from "./common.ts";
+import { AuthMiddleware, BudgetExceeded } from "./common.ts";
 
 /**
  * A session's screen, for the people who watch it (docs/adr/0020-guis-in-sessions.md). Anyone who
@@ -78,6 +78,20 @@ export const ScreenControlResult = Schema.Union([
 ]);
 export type ScreenControlResult = typeof ScreenControlResult.Type;
 
+/** The workspace has no encoder, or this API could not negotiate a video stream. */
+export class ScreenRtcUnavailable extends Schema.TaggedError<ScreenRtcUnavailable>()(
+  "ScreenRtcUnavailable",
+  {},
+  { httpApiStatus: 503 },
+) {}
+
+/** Non-trickle SDP and the open viewer id that Take over accepts. */
+export const ScreenRtcAnswer = Schema.Struct({
+  answer: Schema.String,
+  connection: ViewerConnectionId,
+});
+export type ScreenRtcAnswer = typeof ScreenRtcAnswer.Type;
+
 export const screensGroup = HttpApiGroup.make("screens")
   .add(
     HttpApiEndpoint.get("read", "/sessions/:id/screen", {
@@ -99,6 +113,16 @@ export const screensGroup = HttpApiGroup.make("screens")
       params: { id: SessionId },
       success: ScreenControlResult,
       error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("rtc", "/sessions/:id/screen/rtc", {
+      params: { id: SessionId },
+      payload: Schema.Struct({
+        offer: Schema.String.pipe(Schema.check(Schema.isMaxLength(64 * 1024))),
+      }),
+      success: ScreenRtcAnswer,
+      error: [NotFound, BudgetExceeded, ScreenRtcUnavailable],
     }),
   )
   .middleware(AuthMiddleware);

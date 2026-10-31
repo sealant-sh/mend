@@ -22,6 +22,7 @@ import { Socket } from "effect/socket";
 import { ProjectAccess } from "../access.ts";
 import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry } from "../connections.ts";
+import { ScreenRtc } from "../screen-rtc.ts";
 import { ScreenWatch } from "../screen-watch.ts";
 import { makeFrameGuard, reserveScreenViewer } from "../socket-budgets.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
@@ -44,6 +45,16 @@ const GIVES_INPUT: ReadonlyArray<ScreenLogBody["_tag"]> = [
 
 export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handlers) =>
   handlers
+    .handle("rtc", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* ScreenRtc).connect(
+          { userId: caller.user.id, credential: caller.credential ?? null },
+          params.id,
+          payload.offer,
+        );
+      }),
+    )
     .handle("read", ({ params }) =>
       Effect.gen(function* () {
         const session = yield* (yield* ProjectAccess).session(params.id);
