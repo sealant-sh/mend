@@ -9,6 +9,7 @@ import {
 import {
   AuditEvent,
   Invitation,
+  ResourceArchive,
   Organization,
   OrganizationMember,
   OrganizationRole,
@@ -254,6 +255,12 @@ export const organizationGroup = HttpApiGroup.make("organization")
     HttpApiEndpoint.get("audit", "/organization/audit", {
       query: { before: Schema.optional(Schema.String), limit: Schema.optional(Schema.String) },
       success: Schema.Array(AuditEntry),
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("resourceArchives", "/organization/resource-archives", {
+      success: Schema.Array(ResourceArchive),
       error: NotFound,
     }),
   )

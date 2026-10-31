@@ -21,7 +21,6 @@ import {
   REMOVAL_FENCE_RENEW_EVERY,
   RemovalFenced,
   RemovalFencesRepo,
-  ResourcesRepo,
   ServiceForwardsRepo,
   ServicesRepo,
   SessionProcessesRepo,
@@ -60,7 +59,7 @@ import {
   worktreeRefusalWords,
   worktreeRemovalRight,
 } from "@mend/domain/workbench";
-import { SessionEngine, CaptureRuntime } from "@mend/sessions";
+import { SessionEngine, CaptureRuntime, ResourceRemoval } from "@mend/sessions";
 import { Store } from "@mend/store";
 import { Data, Effect, Fiber, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -207,7 +206,7 @@ export const RemovalLive: Layer.Layer<
   | CaptureRuntime
   | ProjectsRepo
   | RemovalFencesRepo
-  | ResourcesRepo
+  | ResourceRemoval
   | ServiceForwardsRepo
   | ServicesRepo
   | SessionEngine
@@ -237,7 +236,7 @@ export const RemovalLive: Layer.Layer<
     const users = yield* UsersRepo;
     const engine = yield* SessionEngine;
     const store = yield* Store;
-    const resources = yield* ResourcesRepo;
+    const resources = yield* ResourceRemoval;
     // What reading a change's standing asks for: landings, the worktree's files, origin.
     const standingServices = yield* Effect.context<StandingServices>();
 
@@ -485,6 +484,18 @@ export const RemovalLive: Layer.Layer<
             taken.id,
             Effect.gen(function* () {
               yield* step;
+              const resourceStatusLines = yield* resources
+                .worktree(project, current.id)
+                .pipe(
+                  Effect.mapError((error) =>
+                    refused(
+                      "worktree",
+                      [{ _tag: "ResourcePreservationFailed", message: error.message }],
+                      false,
+                    ),
+                  ),
+                );
+              yield* step;
               const { leftover } = yield* store.removeWorktreeForce(
                 project.storePath,
                 current.directory,
@@ -492,7 +503,11 @@ export const RemovalLive: Layer.Layer<
               yield* step;
               // Sessions, change, chain, and review artifacts cascade with the row.
               yield* worktrees.remove(current.id);
-              return new RemovalReport({ removed: true, leftover });
+              return new RemovalReport({
+                removed: true,
+                leftover,
+                ...(resourceStatusLines.length === 0 ? {} : { resourceStatusLines }),
+              });
             }),
           ).pipe(
             Effect.onError(() => fences.handOver(row, taken.id)),
@@ -513,9 +528,8 @@ export const RemovalLive: Layer.Layer<
     ) {
       const row = { kind: "project", id: target.id } as const;
       const notFound = new NotFound({ id: target.id });
-      // Resources keep their data only in their volumes (docs/adr/0019, "Durability"): a
-      // declaration made while this removal's mark stands is refused, so the names read here
-      // are every one there will be.
+      // Soft removal remains reversible. Resource containers and data are archived at purge,
+      // under its durable fence, before the first destructive step.
       const decide = Effect.gen(function* () {
         const openServices = yield* openServicesNow;
         const facts = yield* Effect.forEach(
@@ -525,7 +539,7 @@ export const RemovalLive: Layer.Layer<
         );
         return decideRemoval({
           kind: "project",
-          project: { worktrees: facts, resources: yield* resources.declaredNames(target.id) },
+          project: { worktrees: facts },
         });
       });
       const taken = yield* fences.take(row);
@@ -776,6 +790,12 @@ export const RemovalLive: Layer.Layer<
           taken.id,
           Effect.gen(function* () {
             yield* holding;
+            const resourceStatusLines = yield* resources
+              .project(kept.project)
+              .pipe(
+                Effect.mapError((error) => new ProjectPurgeIncomplete({ message: error.message })),
+              );
+            yield* holding;
             if (capture.enabled)
               yield* purgeProjectBlobs(
                 capture,
@@ -814,7 +834,10 @@ export const RemovalLive: Layer.Layer<
               id,
               purged: true,
               alreadyPurged: false,
-              message: `Purged ${kept.project.name}. Instance audit and backups are unchanged.`,
+              message: [
+                `Purged ${kept.project.name}. Instance audit and backups are unchanged.`,
+                ...resourceStatusLines,
+              ].join("\n"),
             });
           }),
         ).pipe(Effect.onError(() => fences.handOver(row, taken.id))),

@@ -13,6 +13,7 @@ import {
 } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import {
+  ResourceArchivesRepo,
   AuditEventsRepo,
   UsersRepo,
   InstanceRolesRepo,
@@ -351,6 +352,12 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         const found = yield* ownership(ORGANIZATION);
         const caller = yield* CurrentUser;
         return yield* saveOrganizationWorkspaceEnvironment(found, caller.user.id, payload);
+      }),
+    )
+    .handle("resourceArchives", () =>
+      Effect.gen(function* () {
+        const found = yield* ownership(ORGANIZATION);
+        return yield* (yield* ResourceArchivesRepo).list(found.organization.id);
       }),
     )
     .handle("audit", ({ query }) =>

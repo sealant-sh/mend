@@ -1,6 +1,7 @@
 import { invitationsGroup, organizationGroup } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import {
+  ResourceArchivesRepo,
   AuditEventsRepo,
   InstanceRolesRepo,
   InvitationUnknownError,
@@ -221,6 +222,13 @@ const organizationDefaultsStore = new Map<string, OrganizationSettings>();
 const reconciled: Array<string> = [];
 
 const dependencies = Layer.mergeAll(
+  Layer.mock(ResourceArchivesRepo, {
+    list: () =>
+      Effect.sync(() => {
+        writes.push("archives");
+        return [];
+      }),
+  }),
   authLayer,
   organizationsLayer,
   Layer.mock(InstanceRolesRepo, {
@@ -838,4 +846,14 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
     ]);
     expect(reconciled).toEqual(["p-carol", "p-carol"]);
   });
+});
+
+it("only organization owners read resource archives", async () => {
+  const member = await call("carol", "/api/organization/resource-archives");
+  expect(member.status).toBe(404);
+  expect(writes).not.toContain("archives");
+  const owner = await call("alice", "/api/organization/resource-archives");
+  expect(owner.status).toBe(200);
+  expect(await owner.json()).toEqual([]);
+  expect(writes).toContain("archives");
 });

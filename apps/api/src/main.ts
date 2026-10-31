@@ -37,6 +37,7 @@ import {
   ProjectLinksRepoLive,
   ProjectSecretsRepoLive,
   ProjectServiceRecipesRepoLive,
+  ResourceArchivesRepoLive,
   ResourcesRepoLive,
   ResourceLoadsRepoLive,
   SessionRepositoriesRepoLive,
@@ -190,6 +191,7 @@ import {
   ResourceLoadsLive,
   ResourceLoadsChannelLive,
   ResourceLoads,
+  ResourceRemovalLive,
   ResourceRuntimeLive,
   WorktreeServiceRestartsLive,
   ProtocolHostLive,
@@ -343,6 +345,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ProjectLinksRepoLive,
   ProjectSecretsRepoLive,
   ProjectServiceRecipesRepoLive,
+  ResourceArchivesRepoLive,
   ResourcesRepoLive,
   ResourceLoadsRepoLive,
   SessionRepositoriesRepoLive,
@@ -485,13 +488,9 @@ const CaptureStoreLayer: Layer.Layer<
 );
 // A project's resources on Sealant (docs/adr/0019): every launch prepares them, and the routes and
 // every session's channel act on the same runtime.
+const ResourceScopesLayer = ResourceScopesLive.pipe(Layer.provide(SealantEnv.layer));
 const ResourceRuntimeLayer = ResourceRuntimeLive.pipe(
-  Layer.provide(
-    Layer.merge(
-      ResourceImageResolverLive,
-      ResourceScopesLive.pipe(Layer.provide(SealantEnv.layer)),
-    ),
-  ),
+  Layer.provide(Layer.merge(ResourceImageResolverLive, ResourceScopesLayer)),
 );
 const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEngineLayer));
 // Landing's pull request step (docs/adr/0007-landing.md, "Where each step runs"): `gh` in the
@@ -964,7 +963,10 @@ const MainLive = Layer.unwrap(
           ResourcesLive.pipe(
             Layer.provide(Layer.merge(ResourceImageResolverLive, WorktreeServiceRestartsLive)),
           ),
-          RemovalLive.pipe(Layer.provide(landingGit)),
+          RemovalLive.pipe(
+            Layer.provide(landingGit),
+            Layer.provide(ResourceRemovalLive.pipe(Layer.provide(ResourceScopesLayer))),
+          ),
           TerminalProjectsLive,
         ),
       ),

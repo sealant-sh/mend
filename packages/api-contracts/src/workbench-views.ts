@@ -203,6 +203,7 @@ export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")(
 export class RemovalReport extends Schema.Class<RemovalReport>("RemovalReport")({
   removed: Schema.Boolean,
   leftover: Schema.NullOr(Schema.String),
+  resourceStatusLines: Schema.optional(Schema.Array(Schema.String)),
 }) {}
 
 /**
