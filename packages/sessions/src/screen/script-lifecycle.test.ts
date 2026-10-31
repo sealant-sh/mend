@@ -10,14 +10,24 @@ import { screenReapArgv } from "./script.ts";
 describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
   const { container, inside, asPerson, settled, xvncPid, start } = useScreenScript();
 
+  // A running xfwm4 process has not necessarily published or managed its first window yet.
+  const activeWindow = (display: number) =>
+    Effect.promise(() =>
+      expect
+        .poll(() => asPerson(display, "xprop -root _NET_ACTIVE_WINDOW"), { timeout: 10_000 })
+        .toMatch(/window id # 0x[1-9a-f][0-9a-f]*/i),
+    );
+
   it.live(
     "says degraded when the window manager dies, and leaves nothing once Xvnc ends",
     () =>
       Effect.gen(function* () {
         const other = start(10);
         yield* Effect.promise(() => other.said("mend-screen ready"));
+        yield* activeWindow(10);
         const screen = start(12);
         yield* Effect.promise(() => screen.said("mend-screen ready"));
+        yield* activeWindow(12);
         inside("pkill -STOP -x xfce4-session");
         const wm = asPerson(
           12,
@@ -35,11 +45,43 @@ describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
   );
 
   it.live(
+    "waits for a slow window manager before starting either encoder",
+    () =>
+      Effect.gen(function* () {
+        inside(
+          "mv /usr/bin/startxfce4 /usr/bin/startxfce4.real; " +
+            "printf '#!/bin/sh\nwhile [ ! -e /run/user/40001/start-xfce ]; do sleep 0.1; done\nexec /usr/bin/startxfce4.real\n' " +
+            "> /usr/bin/startxfce4; chmod 755 /usr/bin/startxfce4",
+        );
+        const screen = start(19);
+        yield* Effect.promise(() => screen.said("mend-screen degraded xfwm4"));
+        expect(inside("ps -eo comm=").split("\n")).not.toContain("ffmpeg");
+        inside("touch /run/user/40001/start-xfce", "person");
+        yield* Effect.promise(() => screen.said("mend-screen ready"));
+        yield* Effect.promise(() =>
+          expect
+            .poll(
+              () =>
+                inside("ps -eo comm=")
+                  .split("\n")
+                  .filter((name) => name === "ffmpeg"),
+              {
+                timeout: 10_000,
+              },
+            )
+            .toHaveLength(2),
+        );
+      }),
+    { timeout: 30_000 },
+  );
+
+  it.live(
     "ends everything it started when its terminal hangs up",
     () =>
       Effect.gen(function* () {
         const screen = start(11);
         yield* Effect.promise(() => screen.said("mend-screen ready"));
+        yield* activeWindow(11);
         inside(`kill -HUP -${xvncPid(11)}`);
         yield* Effect.promise(() => screen.exited);
         expect(yield* settled).toEqual(BASELINE);
@@ -53,6 +95,7 @@ describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
       Effect.gen(function* () {
         const screen = start(13);
         yield* Effect.promise(() => screen.said("mend-screen ready"));
+        yield* activeWindow(13);
         docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
         yield* Effect.promise(() => screen.exited);
         expect(yield* settled).toEqual(BASELINE);

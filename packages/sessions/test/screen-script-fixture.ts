@@ -3,7 +3,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 
 import { DisplayNumber } from "@mend/domain/workbench";
 import { Effect } from "effect";
-import { afterAll, beforeAll } from "vitest";
+import { afterEach, beforeAll, beforeEach } from "vitest";
 
 import { CHROMIUM_WRAPPER_SCRIPT } from "../src/screen/chromium.ts";
 import { screenArgv } from "../src/screen/script.ts";
@@ -19,7 +19,7 @@ export const docker = (...args: ReadonlyArray<string>) =>
 
 /** Registers setup and cleanup in the calling file's suite. */
 export const useScreenScript = (includeConfined = false) => {
-  const container = `ci-fix-screen-script-${process.pid}-${Date.now()}`;
+  const container = `ci-load-screen-script-${process.pid}-${Date.now()}`;
   const confined = `${container}-confined`;
   const inside = (command: string, user = "root", on = container) =>
     docker("exec", "-u", user, on, "sh", "-c", command);
@@ -118,8 +118,12 @@ export const useScreenScript = (includeConfined = false) => {
       on,
     );
 
+  let image: string;
   beforeAll(() => {
-    const image = fixtureImage("screen");
+    image = fixtureImage("screen");
+  }, 660_000);
+
+  beforeEach(() => {
     const containers = [
       [container, ["--security-opt", "seccomp=unconfined"]],
       ...(includeConfined ? [[confined, []] as const] : []),
@@ -152,10 +156,10 @@ export const useScreenScript = (includeConfined = false) => {
         { input: CHROMIUM_WRAPPER_SCRIPT, timeout: 30_000 },
       );
     }
-  }, 660_000);
+  }, 60_000);
 
   // Removing both containers has taken longer than vitest's default 10 s hook timeout.
-  afterAll(
+  afterEach(
     () =>
       void execFileSync("docker", ["rm", "-f", container, ...(includeConfined ? [confined] : [])], {
         stdio: "ignore",

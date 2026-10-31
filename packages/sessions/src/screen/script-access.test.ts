@@ -1,7 +1,7 @@
 import { DisplayNumber } from "@mend/domain/workbench";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Redacted } from "effect";
-import { describe, expect } from "vitest";
+import { beforeEach, describe, expect } from "vitest";
 
 import {
   FULL,
@@ -47,12 +47,15 @@ describe.skipIf(!dockerReady)("screen script access and input", () => {
       }
     });
 
+  beforeEach(async () => {
+    const screen = start(10);
+    await screen.said("mend-screen ready");
+  }, 60_000);
+
   it.live(
     "listens on loopback only, behind its passwords and its cookie, with neither in argv",
     () =>
       Effect.gen(function* () {
-        const screen = start(10);
-        yield* Effect.promise(() => screen.said("mend-screen ready"));
         yield* encoderReady(7910);
         yield* encoderReady(8110);
         const port = screenPort(DisplayNumber.make(10)).toString(16).toUpperCase().padStart(4, "0");
