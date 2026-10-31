@@ -287,3 +287,17 @@ describe("previewPhaseOf", () => {
     expect(previewPhaseOf(progress(null, "ready", "ready"))).toBeNull();
   });
 });
+
+it("describes an idle source, but a live attempt and a person's Stop take precedence", () => {
+  const facts: PreviewFacts = {
+    preview: web,
+    resolution: dormant,
+    observation: null,
+    attemptStartedAt: T0,
+    idleStop: { minutes: 30 },
+  };
+  expect(
+    previewStatusesOf(facts, null).map((status) => previewStatusLine(status, { now: T0 })),
+  ).toEqual(["preview · web · stopped after 30 min idle"]);
+  expect(previewStatusesOf({ ...facts, resolution: bound }, null)).toEqual([]);
+});

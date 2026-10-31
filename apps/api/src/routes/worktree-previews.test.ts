@@ -368,12 +368,27 @@ describe("GET /worktrees/:id/previews", () => {
         decidedAt,
       },
     });
-    const statusWith = async (preparation: PreviewPreparation) => {
+    const statusWith = async (
+      preparation: PreviewPreparation,
+      idleMinutes: number | null = null,
+    ) => {
       const api = await createTenancyApi(
         {},
         {
           implement: {
             previews: {
+              activityOf: () =>
+                Effect.succeed(
+                  idleMinutes === null
+                    ? null
+                    : {
+                        previewId: web.preview.id,
+                        lastAdmittedAt: null,
+                        idleStoppedAttemptId: SessionProcessId.make(target.process),
+                        idleStoppedAt: new Date(),
+                        idleMinutes,
+                      },
+                ),
               ensureForWorktree: () => Effect.succeed([web]),
               gatewaySnapshots: () => Effect.succeed(new Map([[web.preview.id, snapshot]])),
             },
@@ -396,6 +411,9 @@ describe("GET /worktrees/:id/previews", () => {
     };
 
     expect(await statusWith(refused(new Date("2000-01-01T00:00:00Z")))).toEqual([[]]);
+    expect(await statusWith(refused(new Date("2000-01-01T00:00:00Z")), 30)).toEqual([
+      ["preview · web · stopped after 30 min idle"],
+    ]);
     expect(await statusWith(refused(new Date(Date.now() + 86_400_000)))).toEqual([
       ["preview not prepared · web · setup failed"],
     ]);

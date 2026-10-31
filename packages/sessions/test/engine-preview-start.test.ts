@@ -51,11 +51,23 @@ const servicePlatform = () => {
   const opened: Array<ReadonlyArray<string>> = [];
   const closed: string[] = [];
   const dead = new Set<string>();
-  const control = { exitOnOpen: false, failClose: false };
+  const control = { exitOnOpen: false, failClose: false, workspaceStopped: false, restarts: 0 };
   const layer = Layer.effect(
     SealantClient,
     Effect.map(SealantClient, (client) => ({
       ...client,
+      getWorkspace: (id) =>
+        client.getWorkspace(id).pipe(
+          Effect.map((workspace) => ({
+            ...workspace,
+            status: async () => (control.workspaceStopped ? "stopped" : workspace.status()),
+            restart: async () => {
+              control.restarts += 1;
+              control.workspaceStopped = false;
+              return workspace;
+            },
+          })),
+        ),
       openSession: (workspace, argv, options) =>
         Effect.gen(function* () {
           if (isService(argv) && gate.current !== null) yield* Deferred.await(gate.current);
@@ -227,6 +239,72 @@ const until = (condition: () => boolean, what: string) =>
     return yield* Effect.die(`timed out waiting for ${what}`);
   });
 
+describe("a preview's idle deadline", () => {
+  it("stops only the preview at its deadline, records Idle, and an admitted request postpones it", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, session, service, preview, source } = yield* preparePreview(world, tmp);
+          const dependency = yield* engine.runService(
+            session.id,
+            ["pnpm", "database"],
+            5432,
+            "db",
+            "tcp",
+            null,
+          );
+          const repo = yield* PreviewsRepo.pipe(Effect.provide(previewsRepoOf(world)));
+          const idleMs = 30 * 60_000;
+          for (const [id, process] of world.processes) {
+            world.processes.set(
+              id,
+              new SessionProcess({
+                ...process,
+                ...(process.kind === "service"
+                  ? { createdAt: new Date(Date.now() - idleMs - 1_000) }
+                  : { exitedAt: now(), status: "exited" }),
+              }),
+            );
+          }
+          expect(dependency.service.currentAttemptId).not.toBeNull();
+          yield* repo.touchActivity(new Map([[preview.id, new Date()]]));
+          expect(yield* engine.stopIdlePreview(preview.id, source, idleMs, Effect.void)).toBe(
+            false,
+          );
+          expect(world.processes.get(source)?.exitedAt).toBeNull();
+          // Age the stored fixture, as if thirty minutes had elapsed since that request.
+          world.previewActivity.set(preview.id, {
+            previewId: preview.id,
+            lastAdmittedAt: new Date(Date.now() - idleMs - 1_000),
+            idleStoppedAttemptId: null,
+            idleStoppedAt: null,
+            idleMinutes: null,
+          });
+          expect(yield* engine.stopIdlePreview(preview.id, source, idleMs, Effect.void)).toBe(true);
+          expect(world.processes.get(source)?.exitedAt).not.toBeNull();
+          expect(yield* repo.activityOf(preview.id)).toMatchObject({
+            idleStoppedAttemptId: source,
+            idleMinutes: 30,
+          });
+          expect(world.previewControls.get(preview.id) ?? PREVIEW_CONTROL_INITIAL).toEqual(
+            PREVIEW_CONTROL_INITIAL,
+          );
+          expect(yield* engine.stopIdlePreview(preview.id, source, idleMs, Effect.void)).toBe(
+            false,
+          );
+          expect(world.services.get(service.id)?.currentAttemptId).toBeNull();
+          expect(world.services.get(dependency.service.id)?.currentAttemptId).toBe(
+            dependency.service.currentAttemptId,
+          );
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+});
+
 describe("a preview's control", () => {
   it("a person's Stop latches, a steerer's too, after a crash and when the close fails; the agent's own does not", async () => {
     const platform = servicePlatform();
@@ -393,6 +471,37 @@ describe("a preview's control between two same-named Services in one worktree", 
 });
 
 describe("ensurePreviewRunning", () => {
+  it("wakes a stopped co-located workspace once without starting an agent", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview, source } = yield* preparePreview(world, tmp);
+          yield* engine.stopService(service.id, idle);
+          platform.control.workspaceStopped = true;
+          const agentsBefore = [...world.processes.values()].filter(
+            (row) => row.kind !== "service",
+          ).length;
+          const request = requestFor(world, preview, source);
+          const [first, second] = yield* Effect.all(
+            [
+              engine.ensurePreviewRunning(request, Effect.void),
+              engine.ensurePreviewRunning(request, Effect.void),
+            ],
+            { concurrency: "unbounded" },
+          );
+          expect(first).toBe(second);
+          expect(platform.control.restarts).toBe(1);
+          expect(
+            [...world.processes.values()].filter((row) => row.kind !== "service"),
+          ).toHaveLength(agentsBefore);
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+
   it("two concurrent requests start one process, and a later one joins it", async () => {
     const platform = servicePlatform();
     const port = listeningPort(platform.dead);

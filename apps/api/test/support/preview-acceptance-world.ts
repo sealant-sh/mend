@@ -178,6 +178,7 @@ export const acceptanceGateway = (
     const settings: Omit<PreviewGatewaySettings, "trustedProxies"> = {
       bind: "127.0.0.1",
       port: options.port,
+      idleMs: PREVIEW_GATEWAY_DEFAULTS.idleMs,
       startHoldMs: options.startHoldMs ?? PREVIEW_GATEWAY_DEFAULTS.startHoldMs,
       bodyCap:
         options.bodyCapBytes === undefined

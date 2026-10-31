@@ -300,6 +300,10 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
     const byId = (id: string): Preview | null =>
       Object.values(PREVIEWS).find((preview) => preview.id === id) ?? null;
     const previewsRepo: PreviewsRepo["Service"] = {
+      touchActivity: () => Effect.void,
+      activityOf: () => Effect.succeed(null),
+      idleCandidates: () => Effect.succeed([]),
+      recordIdleStop: () => Effect.void,
       ensureForWorktree: () => Effect.die("unused"),
       readForWorktree: () => Effect.die("unused"),
       ensureNamed: () => Effect.die("unused"),
@@ -362,6 +366,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
         [PREVIEWS.web.id, bound()],
         [PREVIEWS.docs.id, bound({ serviceId: ServiceId.make("svc-docs") })],
       ]),
+      activity: new Map<PreviewId, Date>(),
       starts: new Array<PreviewStartRequest>(),
       failReads: false,
       beforeClaim: noGate(),
@@ -373,6 +378,12 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       ): Effect.Effect<SessionProcessId, PreviewStartFailed> => Effect.die("no start expected"),
     };
     const targetsLayer = Layer.succeed(PreviewTargets, {
+      touchActivity: (stamps) =>
+        Effect.sync(() => {
+          for (const [id, at] of stamps) targets.activity.set(id, at);
+        }),
+      idleCandidates: () => Effect.succeed([]),
+      stopIdle: () => Effect.succeed(false),
       snapshot: (id) =>
         Effect.suspend(() => {
           targets.snapshotReads += 1;

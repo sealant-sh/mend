@@ -1,4 +1,4 @@
-import { PreviewsRepo } from "@mend/db";
+import { type PreviewIdleCandidate, PreviewsRepo } from "@mend/db";
 import type { PreviewId, SessionProcessId } from "@mend/domain";
 import {
   type PreviewGatewayResolution,
@@ -17,6 +17,15 @@ export class PreviewStartFailed extends Schema.TaggedError<PreviewStartFailed>()
 export class PreviewTargets extends Context.Service<
   PreviewTargets,
   {
+    /** Only the gateway writes admitted activity, in batches. */
+    readonly touchActivity: (stamps: ReadonlyMap<PreviewId, Date>) => Effect.Effect<void>;
+    readonly idleCandidates: () => Effect.Effect<ReadonlyArray<PreviewIdleCandidate>>;
+    readonly stopIdle: (
+      id: PreviewId,
+      attemptId: SessionProcessId,
+      idleMs: number,
+      beforeStop: Effect.Effect<void>,
+    ) => Effect.Effect<boolean>;
     /** Null when no kept preview has this id. */
     readonly snapshot: (id: PreviewId) => Effect.Effect<PreviewGatewayResolution | null>;
     /** One read for many previews; an id with no kept preview is absent from the map. */
@@ -45,6 +54,9 @@ export const PreviewTargetsLive: Layer.Layer<PreviewTargets, never, PreviewsRepo
       const previews = yield* PreviewsRepo;
       const engine = yield* SessionEngine;
       return {
+        touchActivity: previews.touchActivity,
+        idleCandidates: previews.idleCandidates,
+        stopIdle: engine.stopIdlePreview,
         snapshot: (id) =>
           previews
             .gatewaySnapshot(id)

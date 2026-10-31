@@ -189,6 +189,32 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
       );
   });
 
+  it("keeps monotonic batched activity and the idle attempt across repository reads", () =>
+    run(
+      Effect.gen(function* () {
+        const { worktree } = yield* seed("activity");
+        const repo = yield* PreviewsRepo;
+        const id = yield* repo.ensureNamed(worktree, "web");
+        const recent = new Date("2026-10-31T10:00:00Z");
+        yield* repo.touchActivity(new Map([[id, recent]]));
+        yield* repo.touchActivity(new Map([[id, new Date(recent.getTime() - 1000)]]));
+        expect((yield* repo.activityOf(id))?.lastAdmittedAt).toEqual(recent);
+        const candidate = (yield* repo.idleCandidates()).find((row) => row.previewId === id);
+        expect(candidate?.lastAdmittedAt).toEqual(recent);
+        yield* repo.recordIdleStop(id, SessionProcessId.make("att-activity-2"), 30, recent);
+        expect(yield* repo.activityOf(id)).toMatchObject({
+          idleStoppedAttemptId: "att-activity-2",
+          idleMinutes: 30,
+          idleStoppedAt: recent,
+        });
+        yield* repo.touchActivity(new Map([[id, new Date(recent.getTime() + 1000)]]));
+        expect((yield* repo.activityOf(id))?.idleMinutes).toBe(30);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM previews WHERE id = ${id}`;
+        expect(yield* repo.activityOf(id)).toBeNull();
+      }),
+    ));
+
   it("holds the gateway on a leased preparation while the old attempt is dormant", () =>
     run(
       Effect.gen(function* () {

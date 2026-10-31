@@ -792,3 +792,72 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
       }),
     ));
 });
+
+describe("a visit wakes a recipe preview", () => {
+  it("answers failed setup without repeating it for the next visitor", () =>
+    withPreview((harness) =>
+      Effect.gen(function* () {
+        yield* harness.prepare(1);
+        const source = harness.world.services.get(harness.webOf())?.currentAttemptId;
+        if (source == null) return yield* Effect.die("missing source");
+        const previewId = harness.previewId();
+        yield* harness.engine.stopService(harness.webOf(), { kind: "system", reason: "idle" });
+        harness.write("pnpm-lock.yaml", LOCK_B);
+        harness.setup.exitCode = 1;
+        const request = {
+          previewId,
+          sourceAttemptId: source,
+          revision: harness.world.previewControls.get(previewId)?.revision ?? 0,
+          deadline: Date.now() + 20_000,
+        };
+        let claims = 0;
+        const claim = Effect.sync(() => {
+          claims += 1;
+        });
+        const before = harness.timeline.length;
+        for (let visit = 0; visit < 2; visit += 1) {
+          expect(
+            yield* harness.engine.ensurePreviewRunning(request, claim).pipe(Effect.result),
+          ).toMatchObject({ _tag: "Failure", failure: { reason: "command-failed" } });
+        }
+        expect(harness.timeline.slice(before)).toEqual(["setup:pnpm install --frozen-lockfile"]);
+        expect(claims).toBe(1);
+      }),
+    ));
+
+  it("shares setup and the current recipe between visitors, preserving the dependency", () =>
+    withPreview((harness) =>
+      Effect.gen(function* () {
+        yield* harness.prepare(1);
+        const service = harness.world.services.get(harness.webOf());
+        const source = service?.currentAttemptId;
+        if (source == null) return yield* Effect.die("missing source");
+        const previewId = harness.previewId();
+        yield* harness.engine.stopService(harness.webOf(), { kind: "system", reason: "idle" });
+        harness.write("pnpm-lock.yaml", LOCK_B);
+        harness.write("mend.toml", EDITED);
+        const request = {
+          previewId,
+          sourceAttemptId: source,
+          revision: harness.world.previewControls.get(previewId)?.revision ?? 0,
+          deadline: Date.now() + 20_000,
+        };
+        const before = harness.timeline.length;
+        const [first, second] = yield* Effect.all(
+          [
+            harness.engine.ensurePreviewRunning(request, Effect.void),
+            harness.engine.ensurePreviewRunning(request, Effect.void),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(first).toBe(second);
+        expect(harness.timeline.slice(before)).toEqual([
+          "setup:pnpm install --frozen-lockfile",
+          "pnpm dev --edited",
+        ]);
+        expect(
+          [...harness.world.services.values()].find((row) => row.name === "db")?.currentAttemptId,
+        ).not.toBeNull();
+      }),
+    ));
+});

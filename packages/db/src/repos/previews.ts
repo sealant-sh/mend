@@ -3,6 +3,7 @@ import {
   PreviewId,
   type PreviewLabel,
   type ServiceId,
+  type SessionProcessId,
   type WorktreeId,
 } from "@mend/domain";
 import {
@@ -28,6 +29,7 @@ import { Context, Crypto, DateTime, Effect, Layer, Schema } from "effect";
 import { type MendDatabase, MendDB } from "../client.ts";
 import {
   agentSessions,
+  previewActivity,
   previewControls,
   previewPorts,
   previewPreparations,
@@ -46,6 +48,21 @@ import { WorktreeNotFoundError } from "./worktrees.ts";
 export class PreviewsRepo extends Context.Service<
   PreviewsRepo,
   {
+    /** Gateway-only batched, monotonic admission stamps. */
+    readonly touchActivity: (stamps: ReadonlyMap<PreviewId, Date>) => Effect.Effect<void>;
+    /** Durable facts; absence means no admitted request and no idle stop yet. */
+    readonly activityOf: (
+      id: PreviewId,
+    ) => Effect.Effect<typeof previewActivity.$inferSelect | null>;
+    /** Kept previews with a live Service, for the gateway's idle sweep. */
+    readonly idleCandidates: () => Effect.Effect<ReadonlyArray<PreviewIdleCandidate>>;
+    /** Record only after the named attempt was observed stopped. */
+    readonly recordIdleStop: (
+      id: PreviewId,
+      attemptId: SessionProcessId,
+      minutes: number,
+      at: Date,
+    ) => Effect.Effect<void>;
     readonly ensureForWorktree: (
       id: WorktreeId,
     ) => Effect.Effect<ReadonlyArray<PreviewView>, WorktreeNotFoundError>;
@@ -148,6 +165,15 @@ export type PreviewControlRequest =
 export interface PreviewGatewaySnapshot {
   readonly preview: Preview;
   readonly resolution: PreviewGatewayResolution;
+}
+
+/** A live attempt's baseline, refreshed before the engine stops it. */
+export interface PreviewIdleCandidate {
+  readonly previewId: PreviewId;
+  readonly serviceId: ServiceId;
+  readonly attemptId: SessionProcessId;
+  readonly lastAdmittedAt: Date | null;
+  readonly startedAt: Date;
 }
 
 type Reader = Pick<MendDatabase, "select">;
@@ -730,7 +756,99 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         );
       }, Effect.orDie);
 
+      const touchActivity = (stamps: ReadonlyMap<PreviewId, Date>) =>
+        Effect.gen(function* () {
+          if (stamps.size === 0) return;
+          // Select the parents first: deleted identities are simply dropped from this batch.
+          const kept = yield* db
+            .select({ id: previews.id })
+            .from(previews)
+            .where(inArray(previews.id, [...stamps.keys()]));
+          const values = kept.flatMap(({ id }) => {
+            const at = stamps.get(id);
+            return at === undefined ? [] : [{ previewId: id, lastAdmittedAt: at }];
+          });
+          if (values.length === 0) return;
+          yield* db
+            .insert(previewActivity)
+            .values(values)
+            .onConflictDoUpdate({
+              target: previewActivity.previewId,
+              set: {
+                lastAdmittedAt: sql`greatest(${previewActivity.lastAdmittedAt}, excluded.last_admitted_at)`,
+              },
+            });
+        }).pipe(Effect.orDie);
+      const activityOf = (id: PreviewId) =>
+        db
+          .select()
+          .from(previewActivity)
+          .where(eq(previewActivity.previewId, id))
+          .pipe(
+            Effect.map(([row]) => row ?? null),
+            Effect.orDie,
+          );
+      const idleCandidates = () =>
+        db
+          .select({
+            previewId: previews.id,
+            serviceId: services.id,
+            attemptId: sessionProcesses.id,
+            lastAdmittedAt: previewActivity.lastAdmittedAt,
+            startedAt: sessionProcesses.createdAt,
+          })
+          .from(previews)
+          .innerJoin(agentSessions, eq(agentSessions.worktreeId, previews.worktreeId))
+          .innerJoin(
+            services,
+            and(eq(services.sessionId, agentSessions.id), eq(services.name, previews.serviceName)),
+          )
+          .innerJoin(
+            sessionProcesses,
+            and(
+              eq(sessionProcesses.id, services.currentAttemptId),
+              isNull(sessionProcesses.exitedAt),
+            ),
+          )
+          .leftJoin(previewActivity, eq(previewActivity.previewId, previews.id))
+          .pipe(Effect.orDie);
+      const recordIdleStop = (
+        id: PreviewId,
+        attemptId: SessionProcessId,
+        minutes: number,
+        at: Date,
+      ) =>
+        db
+          .insert(previewActivity)
+          .values({
+            previewId: id,
+            idleStoppedAttemptId: attemptId,
+            idleStoppedAt: at,
+            idleMinutes: minutes,
+          })
+          .onConflictDoUpdate({
+            target: previewActivity.previewId,
+            set: { idleStoppedAttemptId: attemptId, idleStoppedAt: at, idleMinutes: minutes },
+          })
+          .pipe(
+            Effect.andThen(
+              Effect.gen(function* () {
+                const preview = yield* byId(id);
+                if (preview?.worktreeId == null || preview.projectId === null) return;
+                yield* db.execute(
+                  sql`SELECT pg_notify('mend_events', ${JSON.stringify({ type: "worktree", worktreeId: preview.worktreeId, projectId: preview.projectId })})`,
+                );
+              }),
+            ),
+            Effect.asVoid,
+            Effect.orDie,
+          );
+
       return {
+        touchActivity,
+        activityOf,
+        idleCandidates,
+        recordIdleStop,
         assignTailnetPort,
         tailnetPorts,
         byTailnetPort,

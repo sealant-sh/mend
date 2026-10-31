@@ -2,6 +2,7 @@ import * as http from "node:http";
 import * as net from "node:net";
 
 import { SessionProcessId } from "@mend/domain";
+import { ForwardAdapter, portTarget } from "@mend/sessions";
 import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Exit, Fiber } from "effect";
 
@@ -72,6 +73,50 @@ const fetchAt = (port: number, host: string, cookie: string, path = "/") =>
 const statusOf = (raw: string) => raw.split("\r\n")[0] ?? "";
 
 describe("the preview gateway's listener", () => {
+  it.effect("only admitted application requests advance the batched activity clock", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { world, forwards } = yield* worldWithApp();
+        const cookie = world.cookieFor("carol", "web");
+        const host = world.hostOf("web");
+        // Signing in and an anonymous visit are gateway pages, not application traffic.
+        yield* Effect.promise(() => send(world.port, { host }));
+        yield* ForwardAdapter.use((adapter) =>
+          adapter.probe(portTarget(WORKSPACE, APP_PORT), { purpose: "readiness" }),
+        ).pipe(Effect.provide(forwards.layer));
+        yield* TestClock.adjust("10 seconds");
+        expect(world.targets.activity.size).toBe(0);
+        yield* Effect.promise(() =>
+          send(world.port, {
+            host,
+            headers: { cookie, "user-agent": "Slackbot-LinkExpanding 1.0" },
+          }),
+        );
+        yield* TestClock.adjust("10 seconds");
+        expect(world.targets.activity.size).toBe(0);
+        yield* Effect.promise(() =>
+          send(world.port, {
+            host,
+            path: "/sw.js",
+            headers: { cookie, "service-worker": "script" },
+          }),
+        );
+        yield* TestClock.adjust("10 seconds");
+        expect(world.targets.activity.size).toBe(0);
+        yield* fetchAt(world.port, host, cookie);
+        expect(world.targets.activity.size, "not one write per request").toBe(0);
+        yield* TestClock.adjust("10 seconds");
+        expect(world.targets.activity.has(PREVIEWS.web.id)).toBe(true);
+        const before = world.targets.activity.get(PREVIEWS.web.id)?.getTime();
+        yield* fetchAt(world.port, host, cookie);
+        yield* TestClock.adjust("10 seconds");
+        expect(world.targets.activity.get(PREVIEWS.web.id)?.getTime()).toBeGreaterThan(
+          before ?? -1,
+        );
+      }),
+    ),
+  );
+
   it.live("answers CONNECT 405 on the socket and closes it", () =>
     Effect.scoped(
       Effect.gen(function* () {

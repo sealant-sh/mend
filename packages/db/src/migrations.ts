@@ -4709,6 +4709,21 @@ const dropRecipeApprovalsMigration = Effect.gen(function* () {
     END)`;
 });
 
+const previewActivityMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE preview_activity (
+    preview_id text PRIMARY KEY REFERENCES previews(id) ON DELETE CASCADE,
+    last_admitted_at timestamptz,
+    idle_stopped_attempt_id text,
+    idle_stopped_at timestamptz,
+    idle_minutes integer,
+    CONSTRAINT preview_activity_idle_fact CHECK (
+      (idle_stopped_attempt_id IS NULL AND idle_stopped_at IS NULL AND idle_minutes IS NULL)
+      OR (idle_stopped_attempt_id IS NOT NULL AND idle_stopped_at IS NOT NULL AND idle_minutes IS NOT NULL AND idle_minutes > 0)
+    )
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4868,4 +4883,5 @@ export const migrations = {
   "0167_project_retention": projectRetentionMigration,
   "0168_turn_dispatch_attempt": turnDispatchAttemptMigration,
   "0170_drop_recipe_approvals": dropRecipeApprovalsMigration,
+  "0171_preview_activity": previewActivityMigration,
 };

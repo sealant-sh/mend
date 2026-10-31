@@ -3098,6 +3098,13 @@ export class SessionEngine extends Context.Service<
       ServiceView,
       ServiceNotFoundError | SealantPlatformError | ServiceStartError | ServiceBindError
     >;
+    /** Stop only the still-selected idle attempt, preserving person controls and active work. */
+    readonly stopIdlePreview: (
+      previewId: PreviewId,
+      attemptId: SessionProcessId,
+      idleMs: number,
+      beforeStop: Effect.Effect<void>,
+    ) => Effect.Effect<boolean>;
     /**
      * Stop a Service: end its current attempt, close its forward, release its lease. A Stop by a
      * person (`previewControlDecider`) records first that they stopped its preview, whatever the
@@ -3129,8 +3136,9 @@ export class SessionEngine extends Context.Service<
     ) => Effect.Effect<number, SessionNotFoundError>;
     /**
      * Start a stopped preview's Service for a request to it (ADR 0017): its source attempt's
-     * command, as its last starter, in its session's current live workspace, once per
-     * (preview, revision, source). Answers the attempt that runs it once it answered or left
+     * command (or its current recipe through setup and dependencies), as its last starter.
+     * Co-located workspaces can restart without an agent; capture-backed ones must already be live.
+     * Starts once per (preview, revision, source). Answers its attempt once it answered or left
      * `starting`; a start that was accepted keeps going after the caller's deadline.
      */
     readonly ensurePreviewRunning: (
@@ -25264,6 +25272,86 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.andThen(withServiceLifecycle(stopServiceUnlocked(serviceId))),
         );
 
+      const stopIdlePreview = (
+        previewId: PreviewId,
+        attemptId: SessionProcessId,
+        idleMs: number,
+        beforeStop: Effect.Effect<void>,
+      ) =>
+        ownedByProcess(attemptId)(
+          withServiceLifecycle(
+            Effect.gen(function* () {
+              const read = yield* previews.gatewaySnapshot(previewId);
+              if (
+                read?.resolution._tag !== "Bound" ||
+                read.resolution.attempt.attemptId !== attemptId
+              )
+                return false;
+              if ((yield* previews.controlOf(previewId))._tag === "Stopped") return false;
+              const attempt = yield* processes.byId(attemptId);
+              if (attempt === null || attempt.exitedAt !== null) return false;
+              const activity = yield* previews.activityOf(previewId);
+              const now = clock.currentTimeMillisUnsafe();
+              if (
+                now -
+                  Math.max(attempt.createdAt.getTime(), activity?.lastAdmittedAt?.getTime() ?? 0) <
+                idleMs
+              )
+                return false;
+              const service = yield* services.byId(read.resolution.attempt.serviceId);
+              if (service === null) return false;
+              const session = yield* sessions
+                .byId(service.sessionId)
+                .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+              if (session === null) return false;
+              for (const member of yield* sessions.listForWorktree(session.worktreeId)) {
+                if (member.captureDrain !== null) return false;
+                if (
+                  launchGate.underWay(member.id) ||
+                  creatingExecutors.has(member.id) ||
+                  (turnsBeingQueued.get(member.id) ?? 0) > 0
+                )
+                  return false;
+                if ((yield* conversations.openTurns(member.id)).length > 0) return false;
+              }
+              for (const live of yield* processes.listLiveForWorkspace(
+                attempt.sealantWorkspaceId,
+              )) {
+                if (live.kind === "service") continue;
+                if (live.kind !== "agent-protocol") return false;
+                if (!(yield* protocolHost.quiescence(live.id))?.quiescent) return false;
+              }
+              if (drains.has(attempt.sealantWorkspaceId)) return false;
+              if (
+                [...servicePlans.values()].some(
+                  (plan) => plan.sessionId === session.id && plan.progress.state === "running",
+                )
+              )
+                return false;
+              yield* beforeStop;
+              yield* recordStop(service.id, { kind: "system", reason: "idle" });
+              yield* stopServiceUnlocked(service.id);
+              if ((yield* processes.byId(attemptId))?.exitedAt == null) return false;
+              yield* previews.recordIdleStop(
+                previewId,
+                attemptId,
+                Math.ceil(idleMs / 60_000),
+                new Date(now),
+              );
+              return true;
+            }),
+          ),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("preview: idle stop could not complete").pipe(
+                  Effect.annotateLogs({ previewId, cause: Cause.pretty(cause) }),
+                  Effect.as(false),
+                ),
+          ),
+        );
+
       /** A Service holds its workspace while its attempt runs or its forward is open. */
       const serviceIsLive = Effect.fn("SessionEngine.serviceIsLive")(function* (service: Service) {
         const attempt =
@@ -25374,6 +25462,45 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      // A co-located worktree survives executor replacement on the host. Capture-backed
+      // workspaces need a new current capture source, which restart's old resolved spec cannot supply.
+      const workspaceForPreview = (session: Session, starter: string | null) =>
+        workspaceForSupportingProcess(session).pipe(
+          Effect.catchTag("SessionNotLiveError", () =>
+            Effect.gen(function* () {
+              if (capture !== null || session.sealantWorkspaceId === null)
+                return yield* previewRefused("workspace-not-live");
+              const workspaceId = session.sealantWorkspaceId;
+              const workspace = yield* sealant.getWorkspace(workspaceId);
+              yield* workspaceCaller.mayAct(workspaceId).pipe(
+                asSealantUser(starter),
+                Effect.mapError(() => previewRefused("starter-no-standing")),
+              );
+              const retired = yield* retirementRefusalFor(workspaceId, starter);
+              if (retired !== null) return yield* previewRefused("workspace-retiring", retired);
+              return yield* Effect.tryPromise({
+                try: async () => {
+                  if ((await workspace.status()) !== "stopped") return null;
+                  const restarted = await workspace.restart();
+                  return await restarted.ready();
+                },
+                catch: () => previewRefused("workspace-not-live"),
+              }).pipe(
+                Effect.flatMap((restarted) =>
+                  restarted === null
+                    ? previewRefused("workspace-not-live")
+                    : Effect.succeed(restarted),
+                ),
+              );
+            }),
+          ),
+          Effect.mapError((error) =>
+            error instanceof PreviewStartRefused
+              ? error
+              : previewRefused("workspace-not-live", error._tag),
+          ),
+        );
+
       const acceptPreviewStart = Effect.fn("SessionEngine.acceptPreviewStart")(function* (
         step: Extract<PreviewStartStep, { readonly _tag: "Start" }>,
         lookedUp: AttemptDependencies | null,
@@ -25383,11 +25510,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const session = yield* sessions
           .byId(service.sessionId)
           .pipe(Effect.mapError(() => previewRefused("preview-gone")));
-        const workspace = yield* workspaceForSupportingProcess(session).pipe(
-          Effect.mapError((error) => previewRefused("workspace-not-live", error._tag)),
-        );
-        const workspaceId = SealantWorkspaceId.make(workspace.id);
         const starter = (yield* services.startedByOf(service.id)) ?? session.ownerUserId;
+        const workspace = yield* workspaceForPreview(session, starter);
+        const workspaceId = SealantWorkspaceId.make(workspace.id);
         const retired = yield* retirementRefusalFor(workspaceId, starter);
         if (retired !== null) return yield* previewRefused("workspace-retiring", retired);
         yield* workspaceCaller.mayAct(workspaceId).pipe(
@@ -25542,6 +25667,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      const awaitPreviewRecipe = (plan: ServicePlan) =>
+        Effect.gen(function* () {
+          const ended = yield* Deferred.await(plan.done).pipe(
+            Effect.mapError((error) => previewRefused("command-failed", error.message)),
+          );
+          if (ended.outcome._tag !== "Ready" || ended.view.service.currentAttemptId === null)
+            return yield* previewRefused("command-failed");
+          return ended.view.service.currentAttemptId;
+        });
+
       const runPreviewStart = Effect.fn("SessionEngine.runPreviewStart")(function* (
         request: PreviewStartRequest,
         claim: Effect.Effect<void, PreviewStartDeclined, Scope.Scope>,
@@ -25550,6 +25685,57 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (step._tag === "Preparation") return yield* joinPreviewPreparation(request);
         if (step._tag === "Join")
           return yield* joinPreviewAttempt(step.attemptId, request.deadline);
+        const service = yield* services.byId(step.serviceId);
+        if (service === null) return yield* previewRefused("preview-gone");
+        if (
+          service.declarationSource === "recipe-file" ||
+          service.declarationSource === "recipe-project"
+        ) {
+          const kept = servicePlans.get(planKey(service.sessionId, previewStartId(request)));
+          if (kept !== undefined && kept.refused !== "claim-lost")
+            return yield* awaitPreviewRecipe(kept);
+          const session = yield* sessions
+            .byId(service.sessionId)
+            .pipe(Effect.mapError(() => previewRefused("preview-gone")));
+          const runsAs = (yield* services.startedByOf(service.id)) ?? session.ownerUserId;
+          yield* withServiceLifecycle(
+            Effect.gen(function* () {
+              const again = yield* previewStartStep(request);
+              if (again._tag !== "Start") return;
+              yield* claim;
+              yield* workspaceForPreview(session, runsAs);
+            }),
+          );
+          const planned = yield* recipePlanOf(session, service.name).pipe(
+            Effect.mapError((error) => previewRefused("command-failed", error.message)),
+          );
+          const follower: PlanFollower = {
+            progress: () => Effect.void,
+            admit: Effect.gen(function* () {
+              const control = yield* previews.controlOf(request.previewId);
+              return control._tag === "Stopped" || control.revision !== request.revision
+                ? "stopped"
+                : null;
+            }),
+          };
+          const plan = yield* withServiceLifecycle(
+            Effect.gen(function* () {
+              const again = yield* previewStartStep(request);
+              if (again._tag !== "Start") return null;
+              return yield* beginRecipePlan(
+                session,
+                service.name,
+                { kind: "system", runsAs },
+                previewStartId(request),
+                planned,
+                false,
+                follower,
+              ).pipe(Effect.mapError((error) => previewRefused("command-failed", error.message)));
+            }),
+          );
+          if (plan === null) return yield* joinPreviewPreparation(request);
+          return yield* awaitPreviewRecipe(plan);
+        }
         // Outside the permit: a docker dependency's address is a probe of the workspace.
         const lookedUp: AttemptDependencies = {
           attemptId: step.source.id,
@@ -27334,6 +27520,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.flatMap(acceptStart(cause), (accepted) => restartService(serviceId, accepted)),
             ),
           ),
+        stopIdlePreview,
         stopService: (serviceId, cause) => ownedByService(serviceId)(stopService(serviceId, cause)),
         stopServices: (sessionId, cause) => owned(sessionId)(stopServices(sessionId, cause)),
         stopServiceStarts: (sessionId, name, cause) =>
