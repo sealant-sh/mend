@@ -6,7 +6,7 @@ import {
   DotfilesRepository,
   dotfilesRepositoryUrlCredentialIssue,
   MendSettings,
-  SCREEN_PACKAGE_IDS,
+  screenPackageIds,
   screenRefusal,
   WorkspaceImage,
   workspaceImagePackages,
@@ -214,10 +214,19 @@ describe("a workspace image's screen", () => {
       expect(workspaceImagePackages(family(os, true))).toEqual([
         "git",
         "chromium",
-        ...SCREEN_PACKAGE_IDS.filter((id) => id !== "chromium"),
+        ...screenPackageIds(os).filter((id) => id !== "chromium"),
       ]);
       expect(workspaceImagePackages(family(os, false))).toEqual(["git", "chromium"]);
     }
+  });
+
+  it("asks for XFCE where the family has a session bus, and for ffmpeg where it has libx264", () => {
+    expect(screenPackageIds("arch")).toEqual(expect.arrayContaining(["xfce", "dbus", "ffmpeg"]));
+    expect(screenPackageIds("ubuntu")).toEqual(expect.arrayContaining(["xfce", "dbus", "ffmpeg"]));
+    expect(screenPackageIds("fedora")).toEqual(expect.arrayContaining(["xfce", "dbus"]));
+    expect(screenPackageIds("fedora")).not.toContain("ffmpeg");
+    expect(screenPackageIds("nix")).toEqual(expect.arrayContaining(["openbox"]));
+    expect(screenPackageIds("nix")).not.toContain("dbus");
   });
 
   it("is refused off x86_64 and allowed on an x86_64 family image", () => {

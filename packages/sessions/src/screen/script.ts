@@ -32,7 +32,12 @@ cookie=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')
 printf 'add %s . %s\\n' "$display" "$cookie" | xauth -q -f "$dir/auth" source -
 unset secret cookie
 export DISPLAY="$display" XAUTHORITY="$dir/auth"
+if command -v startxfce4 >/dev/null 2>&1 && command -v dbus-run-session >/dev/null 2>&1; then
+  wm=xfwm4
 ${XFCE_CONFIG_SCRIPT}
+else
+  wm=openbox
+fi
 (
   trap 'trap "" TERM; kill -TERM 0; exit 0' HUP
   tries=0
@@ -42,18 +47,27 @@ ${XFCE_CONFIG_SCRIPT}
     sleep 0.2
   done
   xset s off -dpms >/dev/null 2>&1 || true
-  dbus-run-session -- startxfce4 >"$dir/xfce.log" 2>&1 &
+  if [ "$wm" = xfwm4 ]; then
+    dbus-run-session -- startxfce4 >"$dir/xfce.log" 2>&1 &
+  else
+    openbox >/dev/null 2>&1 &
+    openbox=$!
+  fi
   ${CHROMIUM_WRAPPER_PATH} about:blank >/dev/null 2>&1 &
+  wm_alive() {
+    if [ "$wm" = openbox ]; then kill -0 "$openbox" 2>/dev/null; return; fi
+    [ -n "$(pgrep -u "$(id -u)" -x xfwm4 | while read -r pid; do
+      tr '\\0' '\\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "DISPLAY=$display" && echo "$pid"
+    done)" ]
+  }
   said=
   sandbox=
   while sleep 0.5 && kill -0 $$ 2>/dev/null; do
-    if [ -n "$(pgrep -u "$(id -u)" -x xfwm4 | while read -r pid; do
-      tr '\\0' '\\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "DISPLAY=$display" && echo "$pid"
-    done)" ]; then
+    if wm_alive; then
       [ "$said" = ready ] || { said=ready; echo "mend-screen ready"; }
     elif [ "$said" != degraded ]; then
       said=degraded
-      echo "mend-screen degraded xfwm4"
+      echo "mend-screen degraded $wm"
     fi
     if [ -z "$sandbox" ] && [ "$(cat "$dir/browser-sandbox" 2>/dev/null)" = off ]; then
       sandbox=off
@@ -196,7 +210,7 @@ export const screenReportOf = (line: string): ScreenReport | null => {
   const said = line.trim();
   if (said === "mend-screen ready") return { _tag: "Ready" };
   if (said === "mend-screen browser sandbox off") return { _tag: "BrowserSandboxOff" };
-  return said === "mend-screen degraded xfwm4"
+  return said === "mend-screen degraded xfwm4" || said === "mend-screen degraded openbox"
     ? { _tag: "Degraded", reason: "client-failed" }
     : null;
 };

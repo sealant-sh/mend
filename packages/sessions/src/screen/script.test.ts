@@ -47,6 +47,10 @@ describe("screenReportOf", () => {
       _tag: "Degraded",
       reason: "client-failed",
     });
+    expect(screenReportOf("mend-screen degraded openbox")).toEqual({
+      _tag: "Degraded",
+      reason: "client-failed",
+    });
     expect(screenReportOf("mend-screen browser sandbox off")).toEqual({
       _tag: "BrowserSandboxOff",
     });
