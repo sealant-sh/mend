@@ -214,6 +214,7 @@ function WorktreeNode({
           )}
           <ReviewLink group={group} />
           <NewWorktreeSession
+            projectId={group.worktree.projectId}
             worktreeId={group.worktree.id}
             worktreeName={name}
             sessions={group.members}

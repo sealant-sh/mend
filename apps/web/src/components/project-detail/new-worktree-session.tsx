@@ -10,6 +10,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { useState } from "react";
 
+import { ComposerResources } from "#/components/composer-resources";
 import type { SessionDto, WorktreeDto } from "#/lib/api";
 import { HARNESSES, startComposedSessionInWorktree, type Harness } from "#/lib/session-launch";
 import { useWorktreeJoinLine } from "#/lib/shared-workspace";
@@ -38,10 +39,13 @@ const WORKTREE_HARNESSES: ReadonlyArray<Harness> = HARNESSES.filter(
  * says so before the viewer joins its workspace (docs/adr/0016, decision 13).
  */
 export function NewWorktreeSession({
+  projectId,
   worktreeId,
   worktreeName,
   sessions = [],
 }: {
+  /** Its project, whose resources the menu says the worktree uses. */
+  readonly projectId?: string;
   readonly worktreeId: WorktreeDto["id"];
   readonly worktreeName?: string;
   readonly sessions?: ReadonlyArray<SessionDto>;
@@ -84,9 +88,15 @@ export function NewWorktreeSession({
               tells them apart, without repeating it in the visible row. */}
           {worktreeName !== undefined && <span className="sr-only"> in {worktreeName}</span>}
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className={joinLine === null ? "w-40" : "w-80"}>
+        <DropdownMenuContent
+          align="end"
+          className={joinLine === null && projectId === undefined ? "w-40" : "w-80"}
+        >
           {joinLine === null ? null : (
             <p className="px-2 pt-1.5 pb-2 text-[12px] leading-relaxed text-ink-2">{joinLine}</p>
+          )}
+          {projectId === undefined ? null : (
+            <ComposerResources projectId={projectId} worktreeId={worktreeId} readOnly />
           )}
           {WORKTREE_HARNESSES.map((harness) => (
             <DropdownMenuItem
