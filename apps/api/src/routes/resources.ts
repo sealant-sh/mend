@@ -76,30 +76,19 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
           );
       }),
     )
-    .handle("propose", ({ params, query, payload }) =>
+    .handle("add", ({ params, query, payload }) =>
       Effect.gen(function* () {
         const { project, viewer } = yield* visible(params.id);
         return yield* (yield* Resources)
-          .propose(project, viewer, payload, { now: new Date(), timeZone: query.timeZone })
+          .add(project, viewer, payload, { now: new Date(), timeZone: query.timeZone })
           .pipe(
             Effect.catchTags({
               ResourceActRefusedError: (error) => Effect.fail(denied(error)),
               ResourceDefinitionRefusedError: (error) =>
                 Effect.fail(rejected(error.name, error.refusals)),
+              ResourceImageRefusedError: (error) => Effect.fail(imageRefused(error)),
             }),
           );
-      }),
-    )
-    .handle("withdraw", ({ params }) =>
-      Effect.gen(function* () {
-        const { project, viewer } = yield* visible(params.id);
-        return yield* (yield* Resources).withdraw(project, viewer, params.proposalId).pipe(
-          Effect.catchTags({
-            ResourceActRefusedError: (error) => Effect.fail(denied(error)),
-            ResourceProposalNotFoundError: () =>
-              Effect.fail(new NotFound({ id: params.proposalId })),
-          }),
-        );
       }),
     )
     .handle("remove", ({ params, payload }) =>
@@ -118,31 +107,6 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
                     message: "the definition changed since you read it · nothing was removed",
                   }),
                 ),
-            }),
-          );
-      }),
-    )
-    .handle("approve", ({ params, query, payload }) =>
-      Effect.gen(function* () {
-        const { project, viewer } = yield* visible(params.id);
-        const { source } = payload;
-        for (const worktreeId of [
-          payload.worktreeId,
-          source.kind === "file" ? source.worktreeId : null,
-        ]) {
-          if (worktreeId !== null) yield* projectWorktree(project.id, worktreeId);
-        }
-        return yield* (yield* Resources)
-          .approve(project, viewer, payload, { now: new Date(), timeZone: query.timeZone })
-          .pipe(
-            Effect.catchTags({
-              ResourceActRefusedError: (error) => Effect.fail(denied(error)),
-              ResourceProposalNotFoundError: ({ id }) => Effect.fail(new NotFound({ id })),
-              ResourceDefinitionNotFoundError: ({ id }) => Effect.fail(new NotFound({ id })),
-              ResourceStaleReadError: ({ message }) => Effect.fail(new ResourceStale({ message })),
-              ResourceDefinitionRefusedError: (error) =>
-                Effect.fail(rejected(error.name, error.refusals)),
-              ResourceImageRefusedError: (error) => Effect.fail(imageRefused(error)),
             }),
           );
       }),
