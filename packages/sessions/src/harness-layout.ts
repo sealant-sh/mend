@@ -63,6 +63,8 @@ export interface LayoutDecisionInput {
   /** The worktree's head capture holds `harness/people/`: person, record or not. */
   readonly headHasPeople: boolean;
   readonly capability: LayoutCapability;
+  /** The image runs a screen, which only a person launch gets (ADR 0020). */
+  readonly screen?: boolean;
   /**
    * The launch claimed a standby, whose claim found it would run in this layout: the layout the
    * standby booted in (`HotWorkspace.harnessLayout`).
@@ -206,6 +208,12 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
       reason: `this image cannot run per-person users (${capability.missing.join(", ")}), so this workspace takes one person`,
       probe: capability.recheck === true,
     };
+  }
+  // A screen runs only in a person launch (ADR 0020), so an image with one tries person while its
+  // answer is unknown, as a person standby does: its prepare checks the image and falls back to
+  // shared on a fresh worktree. Otherwise the first session after Screen is turned on has none.
+  if (input.screen === true) {
+    return { kind: "launch", layout: "person", source: "flag", onMissing: "fallback" };
   }
   // Unknown means shared: the launch runs as before and its prepare records the answer, so the
   // next launch on this image can be person.
