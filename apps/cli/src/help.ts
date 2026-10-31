@@ -893,7 +893,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[--project <p>] [--worktree <w>] [--json]"],
     description: [
       "One status line per resource, then the image it runs and its id, as Sealant last observed its instance: the definitions project settings hold, each with whoever added it, and, with --worktree, that worktree's use of each (shared, its own database, its own instance or off) and the [resource.*] tables in its mend.toml with the keys it refuses or ignores. A table's line says whether settings hold it, hold it the same, or differ.",
-      "Inside a session's workspace, mend resource reads and acts for the session's own project and worktree, as the session's owner: list, add, remove, start, stop, use and env.",
+      "Inside a session's workspace, mend resource reads and acts for the session's own project and worktree, as the session's owner: list, add, remove, start, stop, use, reset and env.",
     ],
     options: [
       project(),
@@ -969,7 +969,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "choose how a worktree uses a project resource",
     synopsis: ["<name> <off|shared|own> --worktree <w> [--project <p>]"],
     description: [
-      "Stores the worktree's choice and prints the line it wrote: shared reaches the project's database app, own the worktree's own database on the same server (Postgres only), off none. The choice is the worktree's change owner's: the owner of its first session. Both databases stay. A process started before the choice keeps its env until it restarts; mend resource env prints the current one.",
+      "Stores the worktree's choice and prints the line it wrote: shared reaches the project's database app, own the worktree's own database on the same server (Postgres only), off none. The choice is the worktree's change owner's: the owner of its first session. Both databases stay. A switch restarts the worktree's running Services, and the line names them; an agent or a shell started before the choice keeps its env until it restarts, and mend resource env prints the current one.",
     ],
     options: [{ flag: "--worktree <w>", text: "the worktree, by name or id" }, project()],
     see: ["resource list"],
@@ -995,6 +995,22 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     options: [{ flag: "--worktree <w>", text: "the worktree, for a worktree resource" }, project()],
     see: ["resource start", "resource list"],
+  },
+  {
+    name: "resource reset",
+    section: "project setup",
+    summary: "save a Postgres database as a dump, then empty it",
+    synopsis: ["<name> --worktree <w> [--target <shared|own>] [--project <p>]"],
+    description: [
+      "Saves the database as a dump in the resource's dumps volume, checks the dump reads back, then makes it again: the worktree's own database is copied from shared again when shared has tables, and the shared one starts empty. The line names the time of the dump it saved. --target picks which one; without it, the one the worktree uses.",
+      "Resetting a worktree's own database is its change owner's; resetting the shared one is any member's, and every worktree on shared sees it. The instance must be running: a person's stop is never overridden for it.",
+    ],
+    options: [
+      { flag: "--worktree <w>", text: "the worktree, by name or id" },
+      { flag: "--target <t>", text: "shared or own. Default: what the worktree uses" },
+      project(),
+    ],
+    see: ["resource use", "resource list"],
   },
   {
     name: "resource env",
