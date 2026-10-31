@@ -35,5 +35,5 @@ fi
 for arg in "$@"; do
   case $arg in --headless* | --user-data-dir*) exec "$real" "$@" ;; esac
 done
-exec "$real" --user-data-dir="$screen/chromium" --no-first-run --no-default-browser-check "$@"
+exec "$real" --user-data-dir="$screen/chromium" --no-first-run --no-default-browser-check --start-maximized "$@"
 `;

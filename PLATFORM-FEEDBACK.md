@@ -7,6 +7,19 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-31 · 0.40.0-next.768 · XFCE and capture packages for a screen
+
+ADR 0020's styled XFCE screen asks for `tigervnc`, `xauth`, `xdpyinfo`, `xfce`, `dbus`, `ffmpeg`,
+`chromium` and `fonts-dejavu`. Core's catalog change is committed locally on `feat/catalog-xfce`; it
+must be deployed before Mend can resolve the new ids. No SDK contract change is needed.
+
+Installed in x86_64 containers, with aarch64 checked only in repository indexes. Arch starts the
+full screen. Fedora 41 starts XFCE but its `ffmpeg-free` lacks libx264, so Core refuses `ffmpeg`.
+Ubuntu 24.04 runs XFCE and the required ffmpeg, but still refuses the Chromium snap stub. Nixpkgs
+installs the components and a working `ffmpeg-full`, but `dbus-run-session` exits because
+`/etc/dbus-1/session.conf` is absent from the workspace image, so Core refuses `dbus` on nix. The
+original screen package request below is kept as the history of sealant#419.
+
 ## 2026-10-30 · 0.40.0-next.768 · A session's env cannot put a directory in front of PATH
 
 ADR 0020 puts a `chromium` wrapper, staged in `/run/mend/bin`, first on the PATH of a session with a

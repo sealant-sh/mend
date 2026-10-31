@@ -641,7 +641,7 @@ describe("the session's screen (ADR 0020)", () => {
           printed: [
             " vncext: listening",
             "mend-screen ready",
-            "mend-screen degraded openbox",
+            "mend-screen degraded xfwm4",
             "mend-screen browser sandbox off",
           ],
         },

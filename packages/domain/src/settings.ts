@@ -116,7 +116,9 @@ export const SCREEN_PACKAGE_IDS: ReadonlyArray<string> = [
   "tigervnc",
   "xauth",
   "xdpyinfo",
-  "openbox",
+  "xfce",
+  "dbus",
+  "ffmpeg",
   "chromium",
   "fonts-dejavu",
 ];

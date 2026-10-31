@@ -43,7 +43,7 @@ const fails = (run: () => unknown) => {
 describe("screenReportOf", () => {
   it("reads the script's status lines and nothing else", () => {
     expect(screenReportOf("mend-screen ready\r")).toEqual({ _tag: "Ready" });
-    expect(screenReportOf("mend-screen degraded openbox")).toEqual({
+    expect(screenReportOf("mend-screen degraded xfwm4")).toEqual({
       _tag: "Degraded",
       reason: "client-failed",
     });
@@ -55,7 +55,7 @@ describe("screenReportOf", () => {
 });
 
 describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a container", () => {
-  const container = `mend-screen-script-${process.pid}-${Date.now()}`;
+  const container = `task1-xfce-script-${process.pid}-${Date.now()}`;
   const confined = `${container}-confined`;
   const inside = (command: string, user = "root", on = container) =>
     docker("exec", "-u", user, on, "sh", "-c", command);
@@ -261,13 +261,74 @@ describe.skipIf(!dockerReady)("the screen's script, against TigerVNC Xvnc in a c
   );
 
   it.live(
+    "keeps the hand's keys and Unicode typing working with xfsettingsd running",
+    () =>
+      Effect.gen(function* () {
+        expect(asPerson(10, "pgrep -x xfsettingsd").trim()).not.toBe("");
+        docker(
+          "exec",
+          "-d",
+          "-u",
+          "person",
+          "-e",
+          "DISPLAY=:10",
+          "-e",
+          `XAUTHORITY=${RUNTIME}/mend-screen-10/auth`,
+          container,
+          "xterm",
+          "-title",
+          "mend-hand-keyboard",
+          "-e",
+          "sh",
+          "-c",
+          `cat > ${RUNTIME}/mend-screen-10/typed`,
+        );
+        for (let tries = 0; ; tries++) {
+          try {
+            asPerson(
+              10,
+              "xdotool windowfocus --sync $(xdotool search --name '^mend-hand-keyboard$' | head -1)",
+            );
+            break;
+          } catch (error) {
+            if (tries === 50) throw error;
+            yield* Effect.sleep("100 millis");
+          }
+        }
+        const hand = yield* openHand({
+          bytes: connectInside(container, screenPort(DisplayNumber.make(10))).bytes,
+          password: Redacted.make(FULL),
+          currentEpoch: Effect.succeed(1),
+        });
+        const plan = planActions([
+          { kind: "type", text: "discard" },
+          { kind: "key", combo: "ctrl+u" },
+          { kind: "type", text: "é€あ" },
+          { kind: "key", combo: "Return" },
+        ]);
+        if (plan._tag === "Unsupported") throw new Error(`unsupported ${plan.key}`);
+        expect((yield* hand.act(plan.steps, 1)).results).toEqual(["done", "done", "done", "done"]);
+        yield* Effect.sleep("200 millis");
+        expect(asPerson(10, `cat ${RUNTIME}/mend-screen-10/typed`)).toBe("é€あ\n");
+        asPerson(10, "pkill -x xterm");
+      }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
+    { timeout: 60_000 },
+  );
+
+  it.live(
     "says degraded when the window manager dies, and leaves nothing once Xvnc ends",
     () =>
       Effect.gen(function* () {
         const screen = start(12);
         yield* Effect.promise(() => screen.said("mend-screen ready"));
-        inside("pkill -x openbox");
-        yield* Effect.promise(() => screen.said("mend-screen degraded openbox"));
+        inside("pkill -STOP -x xfce4-session");
+        const wm = asPerson(
+          12,
+          "xdotool getwindowpid $(xprop -root _NET_SUPPORTING_WM_CHECK | awk '{print $NF}')",
+        ).trim();
+        inside(`kill ${wm}`);
+        yield* Effect.promise(() => screen.said("mend-screen degraded xfwm4"));
+        inside("pkill -CONT -x xfce4-session");
         inside(`kill ${xvncPid(12)}`);
         yield* Effect.promise(() => screen.exited);
         inside(`kill ${xvncPid(10)}`);
@@ -563,6 +624,11 @@ read go < /tmp/rekey-go
         for (const display of [14, 15]) {
           yield* shown(display, "about:blank");
           expect(browsersOf(display)).toHaveLength(1);
+          const [window] = windowsNamed(display, "about:blank");
+          if (window === undefined) throw new Error("the browser has a window");
+          const state = asSession(display, ["xprop", "-id", window, "_NET_WM_STATE"]);
+          expect(state).toContain("_NET_WM_STATE_MAXIMIZED_VERT");
+          expect(state).toContain("_NET_WM_STATE_MAXIMIZED_HORZ");
         }
 
         asSession(14, ["chromium", "http://127.0.0.1:8014/"]);

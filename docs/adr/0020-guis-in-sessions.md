@@ -857,6 +857,18 @@ started before the decisions, because none of them changed with an answer.
 
 What the build changed against this text, with the PR that carries each. Yiannis can overrule any.
 
+- **A screen starts a styled XFCE session** (2026-10-31). Someone opening any screen used to see a
+  black display and a narrow browser window. Every start now seeds its own XFCE configuration, a
+  full-bleed warm canvas gradient from DESIGN.md, a thin clock bar, and a small dock for Chromium,
+  Thunar and the terminal. Adwaita light windows use Mend's own traffic-light xfwm4 theme. Chromium
+  starts maximized. There are no setup dialogs, desktop icons, lockers, screensavers or clipboard
+  managers. XFCE does not manage the keyboard layout, so the hand keeps Xvnc's dynamic keysym
+  bindings. The probe observes this display's xfwm4, including its restarts by xfce4-session. Core's
+  portable `xfce`, `dbus` and `ffmpeg` ids replace `openbox` in the screen package request. Fedora
+  41 refuses `ffmpeg` because its repository build lacks libx264; Ubuntu still refuses the Chromium
+  snap stub. Nix refuses `dbus` because its workspace image lacks the session bus configuration. The
+  screen stays an X display with the same hand and screen log.
+
 - **The agent process names itself with an id, not a credential** (#1175). `MEND_AGENT_PROCESS_ID`
   in the launch env, sent by the helper and resolved against the session's process rows; the channel
   credential still authenticates. The SDK says a session's env is "not for secrets".
