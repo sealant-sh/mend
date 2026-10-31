@@ -54,13 +54,18 @@ fi
     done)" ]
   }
   if [ "$wm" = xfwm4 ]; then
-    # An XFCE session can stop while it starts (libwnck asserting on its default icon, seen
-    # in workspaces), so it is started again, a few times, until it runs.
+    # The workspace starts the screen with a capability its person keeps (CAP_FOWNER), and
+    # bwrap then fails with words glycin does not know, so glycin sandboxes every image load
+    # through a bwrap that cannot run: libwnck gets no default icon and XFCE stops at start.
+    # Without the capability bwrap says it has no namespaces, and glycin loads unsandboxed,
+    # as it does wherever bwrap cannot run. Started again a few times should it still stop.
     (
+      drop=
+      command -v setpriv >/dev/null 2>&1 && drop="setpriv --inh-caps=-all --ambient-caps=-all"
       starts=0
       while [ "$starts" -lt 5 ]; do
         starts=$((starts + 1))
-        dbus-run-session -- startxfce4 >>"$dir/xfce.log" 2>&1 || true
+        $drop dbus-run-session -- startxfce4 >>"$dir/xfce.log" 2>&1 || true
         sleep 1
       done
     ) &

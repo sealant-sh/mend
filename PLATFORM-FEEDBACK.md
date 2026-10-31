@@ -7,6 +7,20 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-31 · 0.37 · A person's session process keeps an effective capability
+
+- **Needed:** a screen's XFCE session (ADR 0020) to load images. GTK loads them through glycin,
+  which sandboxes loaders with bwrap and falls back only when bwrap says it cannot make namespaces.
+- **Today:** a session process opened as a person (ADR 0016) runs as their uid with
+  `CapEff 0000000000000008` (CAP_FOWNER). bwrap then fails with "Unexpected capabilities but not
+  setuid, old file caps config?", glycin keeps trying bwrap, every image load fails, and libwnck's
+  default-icon assertion stops xfce4-session, the panel and xfdesktop. Seen on the box, preview.37,
+  2026-10-31.
+- **Mend's workaround:** the screen script starts XFCE through
+  `setpriv --inh-caps=-all --ambient-caps=-all`.
+- **Suggested:** start person processes with no inheritable or ambient capabilities unless one is
+  asked for, or document the one they keep and why.
+
 ## 2026-10-31 · 0.40.0-next.768 · XFCE and capture packages for a screen
 
 ADR 0020's styled XFCE screen asks for `tigervnc`, `xauth`, `xdpyinfo`, `xfce`, `dbus`, `ffmpeg`,
