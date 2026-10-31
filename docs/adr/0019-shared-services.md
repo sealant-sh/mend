@@ -1,6 +1,8 @@
 # Resources: long-running services for a project or a worktree, on a project network
 
-Status: proposed 2026-10-29. Proposes **resources**. A resource is a long-running service that Mend
+Status: accepted 2026-10-31, as [amended that day](#amendment-of-2026-10-31). Where the amendment
+and a later section disagree, the amendment holds; each section it replaces says so in its first
+line. Proposed 2026-10-29. Proposes **resources**. A resource is a long-running service that Mend
 runs beside a project's sessions: an image, a command, ports, env and volumes. Each resource runs at
 **project** level, as one instance every worktree can use, or at **worktree** level, as one instance
 per worktree. The project's workspaces and its resources share a private **project network**, so a
@@ -21,6 +23,202 @@ resource).
 infrastructure. Its status says what was observed
 (`@db · running · answered SELECT 1 · observed 3 s ago`), never that the data is safe. Nothing here
 runs until Sealant has what [Platform feedback](#platform-feedback) asks for.
+
+## Amendment of 2026-10-31
+
+Yiannis approved nine user stories on 2026-10-31 and asked for all of them. They keep the product
+this ADR describes and drop most of the machinery it proposed for it. This section is the design
+that ships. Read against Mend `1c8583cd1e` and Sealant Core `15b15a3e80`.
+
+### The stories
+
+1. **Add one.** A member adds Postgres, Redis or any image to a project, from the web Resources
+   page, `mend resource add`, or `[resource.*]` in `mend.toml`, and it runs. There is no approval
+   step. The platform still refuses privileged mode, added capabilities, host network or mounts, the
+   Docker socket and devices.
+2. **The database is already there.** Every process in a worktree gets `MEND_RESOURCE_<NAME>_HOST`,
+   `_PORT` and `_URL`, plus `DATABASE_URL` and the `PG*` names for one Postgres and `REDIS_URL` for
+   one Redis, unless the project already sets them. The resource answers by name (`db:5432`).
+   Workspaces never reach each other on the network that carries it.
+3. **Shared, own or off, per worktree.** Postgres defaults to `own`: the worktree's own database on
+   the project's Postgres server, copied from shared when shared has data and empty otherwise. Redis
+   and other images default to `shared`. The composer shows the choice on one line with **change**.
+   A switch keeps both sides and restarts the worktree's Services.
+4. **One per branch.** A worktree resource, such as Mailpit, runs one instance per worktree. It
+   starts on first use and stops after 30 minutes idle. Neither worktree reaches the other's.
+5. **Data survives.** Stopping every session keeps every row. An idle stop keeps the data. Removing
+   a worktree dumps its own database before dropping it. Deleting a project keeps its resources'
+   volumes and lists them for the organization's owners.
+6. **Previews.** A Service with `depends = ["@db"]` gets the env, and the preview's wake starts the
+   resource.
+7. **One status line everywhere**, such as `@db · running · own database · observed 3 s ago`, on the
+   web app, the CLI, the phone, VS Code, Slack and the agent's workspace note, from the one
+   `resourceStatusLine`. It is a line in views that exist, not a new screen.
+8. **The agent can do everything its person can**: add, start, stop, switch, reset and load, through
+   `mend resource` inside the session.
+9. **Load data from another database**, Postgres only. The CLI loads a plain or custom-format dump
+   file, or a URL it dumps with `pg_dump` on the person's machine and streams up. The web Resources
+   page takes an uploaded dump, or a URL Mend's server can reach, which Mend pulls. The agent does
+   either from its session. The person picks the target, shared or this worktree's own database. A
+   load never loses data: when the target has data, Mend saves a dump of it first and says so
+   (`@db · loaded 120 MB from staging · previous data saved as a dump 14:02`). It shows size and
+   progress. A URL's password is never logged, recorded or shown back.
+
+### What it replaces
+
+| Section of this ADR                          | Now                                                                                                               |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Approving a definition; decisions G1, G4, S8 | No approval. Adding is running.                                                                                   |
+| The project network                          | One reach network per workspace executor, below. The product still says "the project network".                    |
+| Presets: grants, `pg_hba`, test databases    | One login per server, no password, and no test or shadow databases.                                               |
+| Env: credentials and rotation                | No credentials to carry, so none to rotate.                                                                       |
+| Lifecycle: leases and generation fences      | Idle is derived from which live workspace reaches an instance. A person's stop holds until a person starts it.    |
+| Durability: snapshots, backups, recovery     | Dumps before every destructive step, kept beside the data. No schedule, no snapshot, no point-in-time recovery.   |
+| Who may do what                              | Any member adds, starts, stops and loads. The agent acts as its session's owner. A table below.                   |
+| `own` for images that are not a database     | Later. `own` is a Postgres database. Other images offer `shared` and `off`, and MySQL does too until it gets own. |
+| Delivery                                     | The list at the end of this section.                                                                              |
+
+### Sealant runs the instances
+
+Core gains a resource instance under a project's resource domain (Core #420). It is a container from
+an image pinned by digest, with named volumes, a CPU and memory limit, and no harness, worktree or
+TTL. The SDK grows three members on `sealant.scopes.actAs(scopeId)`:
+
+```ts
+scope.instances.up(key, spec, { cause: "use" | "person" }); // create or update by key, start, wait for ready
+(scope.instances.get(key), scope.instances.list({ archived }));
+scope.instances.stop(key, { kind: "person", by }); // graceful; the container and volumes stay
+scope.instances.exec(key, { argv, user, stdin }); // streamed stdin, capped output, never recorded
+scope.instances.archive(key); // container removed, volumes kept and listed
+scope.workspaces.link(workspaceId, { worktreeKey }); // this workspace reaches the scope's instances
+scope.archive(); // every instance archived, every workspace unlinked
+```
+
+- **The spec cannot ask for what is refused.** It has no field for privileged mode, capabilities,
+  host network, host paths, devices, the Docker socket or shared namespaces, and Core's decoder
+  names each one it is sent. Volumes are named Docker volumes only. Every `VOLUME` the image
+  declares gets a named volume too, so no data lands in an anonymous volume that a removal deletes.
+  Core never runs `docker rm -v`, `docker volume rm` or a prune on them.
+- **Reach.** Each workspace executor that is linked to a scope gets an internal Docker network of
+  its own. Every instance the workspace may reach joins it under its alias, so `db` answers on it. A
+  project instance joins every linked executor's network. A worktree instance joins only the
+  networks of executors linked with its worktree key. Two workspaces never share one of these
+  networks, so they cannot reach each other on them, and a worktree's instance is unreachable from
+  another worktree. Reach is derived from two facts Core stores (an instance's alias and worktree
+  key, a workspace's link), and every launch, executor end and 30-second tick converges Docker to
+  it. An executor replacement gets a new network. Core allocates each network's subnet from its own
+  pool, so the Docker daemon's default pools do not run out.
+- **Egress.** Each instance also joins an egress network of its own, so it can reach what Mend's
+  server can (a staging database for a pull) and no other instance. The cloud-metadata route is
+  refused in it on every start.
+- **Idle.** An instance that no live executor reaches for 30 minutes stops, and keeps its volumes.
+  `up` with cause `use` (a launch, a preview's wake) never starts an instance a person stopped.
+  Cause `person` (a person's Start) does, and clears the hold.
+- **Exec** runs a command in a running instance with stdin streamed in and stdout and stderr
+  returned as capped tails. Nothing of its argv or stdin is logged or recorded. Mend uses it to
+  create, copy, dump and restore databases, so those bytes stay inside the instance.
+- **Archive** stops an instance, removes its container and keeps its volumes. A scope's archive does
+  it for every instance and unlinks every workspace.
+- **Docker only.** Another runtime refuses by name
+  (`@db · resources run on Docker; this Sealant runs kubernetes`).
+
+### Mend owns what people chose
+
+- **Definitions.** Adding pins the image to its digest and writes the definition. Nothing waits for
+  a manager. A project resource starts at once. A worktree resource starts in the current worktree,
+  when the add came from one, and in any other worktree on first use. A `[resource.*]` table in a
+  worktree's `mend.toml` adds a name the project lacks when a session in that worktree launches. It
+  never replaces a definition the project has, and the line then says
+  `mend.toml differs · project settings kept`, so a merge never changes what runs.
+- **One server, many databases.** A project Postgres is one instance, `db` on every reach network.
+  `shared` is its database `app`. `own` is a database on the same server whose name derives from the
+  worktree id (`own_<12 hex of sha256>`), so a switch to `own` always lands on the worktree's own
+  data, and a switch never moves a host name. A selection stores only the mode. A worktree's first
+  `own` copies `app` inside the instance (`pg_dump | pg_restore`) when `app` has tables, and starts
+  empty otherwise.
+- **No credentials.** Postgres runs with `POSTGRES_HOST_AUTH_METHOD=trust` and Redis without a
+  password. The reach network is the access boundary. A password in every process's plain env inside
+  that boundary would protect nothing more, and would need a secret channel that Sealant's
+  `sessions.open` does not have yet. The only secret on any resource path is a load URL's password.
+- **Env per process.** Before each process opens (the agent, a resume, a shell, a Service, a setup
+  command, the dependency install), `Resources.prepare` links the workspace, starts what the
+  worktree uses, makes its own database, and answers the env. The env is built from Mend's rows
+  alone, so a slow or failed start still gives the right names, and the line says the session
+  started without it. A name the project's env or secrets set is left alone
+  (`DATABASE_URL left as the project sets it`). A process started before a switch keeps its env
+  until it restarts. `mend resource env` prints the current exports for it.
+- **Switching** writes the mode and restarts the worktree's Services. Both databases stay.
+- **Reset** saves the target's data as a dump, then empties it (an own database is copied from
+  shared again when shared has tables).
+
+### Loading
+
+A load has one row, at most one live per target, and these steps, each of which a restart of Mend
+resumes from what exists:
+
+1. **Stage.** An upload (the CLI's file or local `pg_dump`, the web page's file, the agent's helper)
+   streams through Mend into the instance's dumps volume. A pull runs `pg_dump` inside the instance
+   against the URL, with the password on its stdin.
+2. **Restore** the staged dump into a new database beside the target. A custom-format dump goes
+   through `pg_restore --no-owner --no-acl`, a plain one through `psql`. A failure drops the new
+   database and leaves the target as it was.
+3. **Install.** Refuse new connections to the target, end the open ones, rename the target aside and
+   rename the new database into its name. Writes acknowledged before this step are in the old
+   database, which still exists.
+4. **Save.** Dump the old database into the dumps volume, check the dump reads back
+   (`pg_restore --list`), then drop the old database. The line names the dump's time.
+
+Progress counts bytes received and the phase. A source of unknown size shows bytes so far, not a
+percentage. A URL's password is parsed into a redacted value at the API boundary, goes only to the
+pull's stdin, and is stripped from every message, row and line. The line names the source by host
+and database.
+
+### Removal
+
+- **A worktree.** Before its store goes, each own database it has is dumped into the dumps volume,
+  checked and dropped. A server that is stopped is started for it. Its worktree instances are
+  archived.
+- **A project.** Mend archives the project's scope and keeps a row naming the organization, the
+  project, its creator and the kept volumes with their sizes. Organization owners see the list in
+  organization settings. Nothing deletes them.
+
+### Who may do what
+
+| Act                                       | Who                                                                  |
+| ----------------------------------------- | -------------------------------------------------------------------- |
+| Read status, add, start, stop, load       | any member who can see the project                                   |
+| Remove or replace a definition            | the person who added it, or a manager (`canManageProject`)           |
+| Switch a worktree's choice, reset its own | the worktree's change owner                                          |
+| Load into or reset the shared database    | any member who can see the project; the previous data is saved first |
+| Any of the above from inside a session    | the agent, as the session's owner                                    |
+
+### Later
+
+Recorded, not built: per-process leases and generation fences; per-person Postgres logins; secret
+rotation; `own` for images that are not a database (and for MySQL); nightly or off-machine backups;
+test and shadow databases; resource-to-resource reach; refusing connections that an instance opens
+to a workspace; narrowing `mend_default`; Compose apps in a workspace's Docker sidecar reaching a
+resource; the resource env in Remote-SSH logins; purging archived volumes.
+
+### Delivery
+
+One ready PR per step, each with the check that proves it. Sealant Core steps ship first; each push
+to Core main publishes an `@sealant/sdk-next` that Mend then pins.
+
+1. This amendment.
+2. Mend: no approval. A member's add pins the image and is the definition (migration 0173).
+3. Core: instance, link and network tables.
+4. Core: the Docker lowering (names, flags, refusals, volume cover), as pure code with golden tests.
+5. Core: the Docker runtime (up, stop, archive, exec, reach), with a real-daemon test that two
+   linked workspaces reach `db` and not each other, and a worktree instance only from its worktree.
+6. Core: routes and the SDK.
+7. Core: executor hooks, crash restart and the idle stop.
+8. Mend: pin the SDK, run resources, and give every process its env. Selections, own databases,
+   switch and reset. The agent acts as its owner.
+9. Mend: worktree removal dumps, project archive and the owners' list.
+10. Mend: load from a file, a local URL, an upload and a server-side URL.
+11. Mend: `@db` in a preview's `depends`, and the wake.
+12. Mend: the status line on the phone, VS Code, Slack and the workspace note.
 
 ## Context
 
@@ -236,6 +434,10 @@ Every resource declares its scope. This table is the one policy. Every example b
 
 ### The project network
 
+Its reach rules stand. Its Docker mechanism is replaced by the amendment's reach networks, and the
+rows for an instance opening connections, instance-to-instance reach, the sidecar and `mend_default`
+are later.
+
 Each project has one private network. Its members are the project's workspaces and the instances of
 its resources (decision S6). The reach rules are default-deny. Only the rows marked allowed pass, in
 either direction of a new connection.
@@ -286,6 +488,9 @@ A runtime without the contract refuses a resource by name, before any work start
 There is no fallback to `mend_default`, to an operator endpoint or to a relay.
 
 ### Presets
+
+Replaced in part by the amendment: one server per Postgres resource with `own` as a database on it,
+no password, no grants, no `pg_hba` rules and no test or shadow databases.
 
 A preset is a definition that Mend knows the inside of. It fixes the image family, the engine
 settings, the ready check and the exports, and it adds what a generic image cannot have.
@@ -391,6 +596,8 @@ $ mend resource use db shared
 
 ### Env
 
+Replaced in part by the amendment: the names stand, and there are no credentials to carry or rotate.
+
 Every process Mend starts in a worktree whose selection for a resource is `shared` or `own`, and
 every process in a worktree that uses a worktree resource, gets its address as process env: the
 agent, its shells and its Services. A process started before the worktree chose the resource gets it
@@ -437,6 +644,8 @@ through `mend resource exec -- <command>`. A worktree on `off` gets nothing.
 
 ### Approving a definition
 
+Replaced by the amendment: there is no approval. The refused options stand, refused by Sealant.
+
 A resource runs an image, so it is a command under ADR 0013, and it runs only after a person
 approves it.
 
@@ -457,6 +666,9 @@ approves it.
   `@db · stopped · memory limit reached` and warns at 80 % of the disk limit.
 
 ### Lifecycle
+
+Replaced by the amendment: no leases and no generation fence. Idle is derived from reach, and a
+person's stop holds against automatic starts.
 
 An instance starts on first need: a launch in a worktree that uses it, a preview's wake, or a
 person's **Start**. Concurrent starts from several worktrees coalesce on one operation key, so the
@@ -498,6 +710,9 @@ platform starts it once. A launch never starts an instance a person stopped. It 
 
 ### Durability
 
+Replaced by the amendment: dumps before every destructive step, no schedules, snapshots or
+point-in-time recovery.
+
 A resource's data lives in its volumes and nowhere else. It is never in a capture or in git.
 
 - **Backups go to a backup volume** of each instance, separate from its data volumes and from the
@@ -533,6 +748,8 @@ A resource's data lives in its volumes and nowhere else. It is never in a captur
   Purging a kept copy needs only the confirmation.
 
 ### Who may do what
+
+Replaced by the amendment's table.
 
 | Act                                                                                | Who                                                                                                                                 |
 | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -754,6 +971,8 @@ named, or by the decision named.
 - Tilt (0.38) can describe resources once they exist. This ADR does not depend on it.
 
 ## Delivery
+
+Replaced by the amendment's delivery list.
 
 One ready-for-review PR per step. Each ends in something a person can check. Sealant steps are
 marked **[Sealant]**. Steps 2 and 3 are needed for 0.37 and ship in its release chain (sealantd,

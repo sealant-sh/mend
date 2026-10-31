@@ -75,6 +75,10 @@ Openbox, Chromium and DejaVu fonts. Mend asks a family image for six portable id
 
 ## 2026-10-29 · 0.40.0-next.763 · A service resource
 
+- **2026-10-31:** being built in Core as ADR 0019's amendment describes: `scope.instances` (up, get,
+  list, stop, exec, archive) on Docker. Snapshots, backup volumes, the recovery instance, the
+  generation and the single-writer fence are not part of it.
+
 Resources (ADR 0019, proposed) are long-running services that Sealant runs once per project, or once
 per worktree, outside every workspace, whose volumes survive every executor replacement. A resource
 is any image with a command, ports, env and volumes. Postgres, Redis and MySQL are Mend presets on
@@ -105,6 +109,11 @@ top.
 
 ## 2026-10-29 · 0.40.0-next.763 · A project network
 
+- **2026-10-31:** being built in Core as one internal network per linked workspace executor
+  (`scope.workspaces.link`). Refusing connections an instance opens, instance-to-instance rules, the
+  sidecar's attachment and a narrowed `mend_default` are not part of it, and this entry keeps asking
+  for them.
+
 - **Today:** a forward's host is the closed set `127.0.0.1`, `localhost` or `docker`, and forwards
   go only into a workspace. Core keeps the set closed on purpose (Core #151, #153).
 - **Mend today:** a session in one worktree has no supported, authorized route to a server in
@@ -132,6 +141,9 @@ top.
 
 ## 2026-10-29 · 0.40.0-next.763 · A principal that is a project, not a person
 
+- **2026-10-31:** Core #420 to #423 shipped the scope, its members and its budget. A scope's archive
+  comes with the instances above.
+
 - **Today:** a Sealant principal is a user (`SealantPrincipalValue` is `user` or `none` in
   `packages/sealant`), and `CreateOptions` has no owner field.
 - **Mend today:** every workspace belongs to the person who created it, and lending ends when that
@@ -143,6 +155,9 @@ top.
   organization-owned archive, kept until a person purges them.
 
 ## 2026-10-29 · 0.40.0-next.763 · Secret env for one process
+
+- **2026-10-31:** resources no longer need it: ADR 0019's amendment runs them without credentials.
+  The ask stands for other per-process secrets.
 
 - **Today:** the SDK documents `SessionOptions.env` as "Extra environment for the session process
   (not for secrets — use `credentials`)" (Core `packages/sdk/src/types.ts`, `SessionOptions`). No
