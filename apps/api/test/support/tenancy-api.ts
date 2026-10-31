@@ -860,6 +860,7 @@ export const createTenancyApi = async (
     closeForUser: registry.closeForUser,
     closeForSession: registry.closeForSession,
     countFor: registry.countFor,
+    countOnSession: registry.countOnSession,
   });
   const authorization = Layer.mergeAll(
     ProjectAccessLive,

@@ -13,14 +13,34 @@ import { EventBus, type BusSignal } from "./events-bus.ts";
  * authenticated socket outlive the membership that authorized it.
  */
 /** What a long-lived connection is, for its per-account budget (docs/adr/0004, "Budgets"). */
-export type ConnectionKind = "event-stream" | "terminal" | "tunnel" | "key-bridge" | "preview";
+export type ConnectionKind =
+  | "event-stream"
+  | "terminal"
+  | "tunnel"
+  | "key-bridge"
+  | "preview"
+  | "screen";
+
+/**
+ * Whether a connection that names a session steers it. A screen's viewer only watches: anyone who
+ * can see the session watches its screen (ADR 0020, D2), so shared control going off leaves it.
+ */
+const STEERS: Readonly<Record<ConnectionKind, boolean>> = {
+  "event-stream": true,
+  terminal: true,
+  tunnel: true,
+  "key-bridge": true,
+  preview: true,
+  screen: false,
+};
 
 export class ConnectionRegistry extends Context.Service<
   ConnectionRegistry,
   {
     /**
-     * Hold `close` while the scope is open; removing the account runs it. A connection that steers
-     * a session names it, so turning off shared control closes it too.
+     * Hold `close` while the scope is open; removing the account runs it. A connection on a
+     * session names it: one that steers it closes when shared control turns off, and every one
+     * counts toward the session's own budgets.
      */
     readonly register: (
       userId: string,
@@ -30,9 +50,11 @@ export class ConnectionRegistry extends Context.Service<
     ) => Effect.Effect<void, never, Scope.Scope>;
     /** Connections of one kind this process holds for one account right now. */
     readonly countFor: (userId: string, kind: ConnectionKind) => Effect.Effect<number>;
+    /** Connections of one kind this process holds on one session right now, whoever holds them. */
+    readonly countOnSession: (sessionId: string, kind: ConnectionKind) => Effect.Effect<number>;
     /** Close this process's open connections of one account; answers how many there were. */
     readonly closeForUser: (userId: string) => Effect.Effect<number>;
-    /** Close the connections other accounts hold on a session; its owner's stay open. */
+    /** Close the connections other accounts hold to steer a session; its owner's stay open. */
     readonly closeForSession: (
       sessionId: string,
       ownerUserId: string | null,
@@ -122,13 +144,32 @@ export const makeConnectionRegistry = Effect.sync(() => {
     closeAll(
       [...open.entries()]
         .filter(([userId]) => userId !== ownerUserId)
-        .flatMap(([, held]) => [...held].filter((entry) => entry.sessionId === sessionId)),
+        .flatMap(([, held]) =>
+          [...held].filter(
+            (entry) => entry.sessionId === sessionId && (entry.kind === null || STEERS[entry.kind]),
+          ),
+        ),
     );
 
   const countFor = (userId: string, kind: ConnectionKind) =>
     Effect.sync(() => [...(open.get(userId) ?? [])].filter((entry) => entry.kind === kind).length);
 
-  return { register, closeForUser, closeForSession, countFor, accounts: () => [...open.keys()] };
+  const countOnSession = (sessionId: string, kind: ConnectionKind) =>
+    Effect.sync(
+      () =>
+        [...open.values()]
+          .flatMap((held) => [...held])
+          .filter((entry) => entry.sessionId === sessionId && entry.kind === kind).length,
+    );
+
+  return {
+    register,
+    closeForUser,
+    closeForSession,
+    countFor,
+    countOnSession,
+    accounts: () => [...open.keys()],
+  };
 });
 
 /**
@@ -191,6 +232,7 @@ export const ConnectionRegistryLive: Layer.Layer<
       closeForUser: registry.closeForUser,
       closeForSession: registry.closeForSession,
       countFor: registry.countFor,
+      countOnSession: registry.countOnSession,
     };
   }),
 );

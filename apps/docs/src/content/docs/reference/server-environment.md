@@ -175,6 +175,8 @@ See [Exposure and the public gate](/operate/exposure/) for what each item means.
 | `MEND_BUDGET_ACCOUNT_TERMINALS`                | `24`       |
 | `MEND_BUDGET_ACCOUNT_TUNNELS`                  | `24`       |
 | `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`              | `4`        |
+| `MEND_BUDGET_ACCOUNT_SCREEN_VIEWERS`           | `8`        |
+| `MEND_BUDGET_SCREEN_VIEWERS`                   | `16`       |
 | `MEND_BUDGET_ACCOUNT_RAW_READS`                | `128`      |
 | `MEND_BUDGET_RAW_READS`                        | `512`      |
 

@@ -30,11 +30,16 @@ export const UPGRADE_TICKET_TTL_MS = 30_000;
 export const UPGRADE_RENEWAL_TTL_MS = 12 * 60 * 60 * 1000;
 
 /**
- * What a ticket opens: every target a client may mint, plus the two only the server mints.
+ * What a ticket opens: every target a client may mint, plus the three only the server mints.
  * `tty-embed` opens the embed page, which exchanges it for a `tty` ticket and a `tty-renew` ticket;
- * `tty-renew` is exchanged the same way when the page reconnects.
+ * `tty-renew` is exchanged the same way when the page reconnects. `screen-embed` and
+ * `screen-renew` do the same for a screen's embed page and its `screen` socket.
  */
-export type UpgradeTicketTarget = ClientUpgradeTicketTarget | "tty-renew" | "preview";
+export type UpgradeTicketTarget =
+  | ClientUpgradeTicketTarget
+  | "tty-renew"
+  | "screen-renew"
+  | "preview";
 
 export const hashUpgradeTicket = (ticket: string): string =>
   createHash("sha256").update(ticket, "utf8").digest("hex");

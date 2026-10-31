@@ -140,6 +140,7 @@ const startServer = async () => {
       closeForUser: registry.closeForUser,
       closeForSession: registry.closeForSession,
       countFor: registry.countFor,
+      countOnSession: registry.countOnSession,
     })),
   );
   const websocketRoutes = WebSocketRoutes.pipe(
