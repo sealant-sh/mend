@@ -18,9 +18,6 @@ const text = (value: JsonObject, key: string): string | null => {
   return typeof field === "string" ? field : null;
 };
 
-// Claude names an MCP tool `mcp__<server>__<tool>`, and so does Codex without a namespace.
-const QUALIFIED_NAME = `mcp__${MEND_MCP_SERVER}__${HTML_RENDER_TOOL}`;
-
 // Codex gives an MCP tool's call a namespace of `mcp__<server>__` (or the bare server name when
 // it does not prefix MCP tools) beside the bare tool name (codex-rs `codex-mcp/src/tools.rs`).
 const MEND_NAMESPACES = new Set([
@@ -38,14 +35,19 @@ export interface ToolIdentity {
   readonly namespace: string | null;
 }
 
-export const isMendPageTool = ({ name, namespace }: ToolIdentity): boolean => {
+/** Whether a call names Mend's own MCP tool `tool`, in any form a harness writes it. */
+export const isMendTool = (tool: string, { name, namespace }: ToolIdentity): boolean => {
   if (name === null) return false;
   const bare = name.replace(IMPORTED, "");
+  // Claude names an MCP tool `mcp__<server>__<tool>`, and so does Codex without a namespace.
   return (
-    bare === QUALIFIED_NAME ||
-    (bare === HTML_RENDER_TOOL && (namespace === null || MEND_NAMESPACES.has(namespace)))
+    bare === `mcp__${MEND_MCP_SERVER}__${tool}` ||
+    (bare === tool && (namespace === null || MEND_NAMESPACES.has(namespace)))
   );
 };
+
+export const isMendPageTool = (identity: ToolIdentity): boolean =>
+  isMendTool(HTML_RENDER_TOOL, identity);
 
 const identityOf = (data: JsonObject): ToolIdentity | null => {
   switch (text(data, "type")) {

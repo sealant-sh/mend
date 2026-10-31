@@ -1,3 +1,4 @@
+import { UsersRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import { Effect, Layer, Schema } from "effect";
 import { McpServer, Tool, Toolkit } from "effect/ai";
@@ -5,6 +6,7 @@ import * as Context from "effect/Context";
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import type { SessionEngineLive } from "../engine.ts";
+import { Screens } from "../screen/screens.ts";
 import { type SessionChannelRegistry, SessionChannelRegistryLive } from "../session-channel.ts";
 import { asCaller, MEND_MCP_PATH } from "./caller.ts";
 import { MendMcp, mendMcpLayer } from "./server.ts";
@@ -100,13 +102,22 @@ describe("Mend's MCP server", () => {
             Layer.provide(
               Layer.succeed(SessionPages, { publish: () => Effect.die("not in this test") }),
             ),
+            Layer.provide(Layer.mock(Screens)({})),
+            Layer.provide(Layer.mock(UsersRepo)({})),
           ),
         ),
         Effect.scoped,
       ),
     );
     expect(answers[0]).toMatchObject({
-      result: { tools: [{ name: "html_render" }, { name: "greet" }] },
+      result: {
+        tools: [
+          { name: "html_render" },
+          { name: "screen_look" },
+          { name: "screen_act" },
+          { name: "greet" },
+        ],
+      },
     });
     expect(answers[1]).toMatchObject({
       result: { content: [{ type: "text", text: "Hello Anna, from maria" }] },
@@ -115,7 +126,7 @@ describe("Mend's MCP server", () => {
 
   it("needs what its toolkits need, and the engine does not need it, so a toolkit may need the engine", () => {
     expectTypeOf<Layer.Services<typeof extended>>().toEqualTypeOf<
-      SessionChannelRegistry | SessionPages | Greetings
+      SessionChannelRegistry | SessionPages | Screens | UsersRepo | Greetings
     >();
     expectTypeOf<Extract<Layer.Services<typeof SessionEngineLive>, MendMcp>>().toBeNever();
   });

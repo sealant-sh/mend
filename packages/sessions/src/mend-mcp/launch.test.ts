@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { conversationArgv } from "../conversation-home.ts";
 import { MEND_HELPER_PATH } from "../session-socket.ts";
 import { mendMcpFlags, withMendMcp } from "./launch.ts";
 
@@ -53,6 +54,33 @@ describe("withMendMcp", () => {
       ...mendMcpFlags("codex"),
       mendMcpFlags("claude")[0],
     ]);
+  });
+
+  it("lets every Claude launch call the screen tools without asking, beside its own --settings", () => {
+    const allowed = "--allowedTools=mcp__mend__screen_look,mcp__mend__screen_act";
+    const settings = JSON.stringify({ permissions: { allow: ["Bash(git status)"] } });
+    expect(withMendMcp(["claude", "-p", "--settings", settings])).toEqual([
+      "claude",
+      ...mendMcpFlags("claude"),
+      "-p",
+      "--settings",
+      settings,
+    ]);
+    expect(mendMcpFlags("claude")).toContain(allowed);
+    for (const terminal of [false, true]) {
+      const argv = conversationArgv({
+        harness: "claude",
+        argv: ["claude", "fix the build"],
+        resumePath: null,
+        terminal,
+      });
+      expect(argv.filter((arg) => arg === allowed)).toHaveLength(1);
+      expect(argv).toContain("--settings");
+    }
+    const [config] = mendMcpFlags("claude");
+    const before = ["claude", config ?? "", "-p"];
+    expect(withMendMcp(before)).toEqual(["claude", allowed, config, "-p"]);
+    expect(withMendMcp(["codex", "app-server"]).join(" ")).not.toContain("allowedTools");
   });
 
   it("is idempotent, and leaves every other command as it is", () => {

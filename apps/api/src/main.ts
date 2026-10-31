@@ -93,6 +93,7 @@ import {
   HarnessLayoutsRepoLive,
   UserEventsLive,
   MemberRevocationsRepoLive,
+  type UsersRepo,
   UsersRepoLive,
   UpgradeTicketsRepoLive,
 } from "@mend/db";
@@ -179,11 +180,13 @@ import {
   FollowUpLauncherLive,
   type MendMcp,
   MendMcpLive,
+  MendMcpWithoutScreensLive,
   ResourceImageResolverLive,
   ResourcesChannelLive,
   ResourcesLive,
   ProtocolHostLive,
   ScreenHostLive,
+  type Screens,
   ScreensLive,
   screenWorkersLayer,
   ServiceHostLive,
@@ -424,10 +427,19 @@ const ScreensLayer = ScreensLive.pipe(
   Layer.provide(ScreenHostLive),
   Layer.provide(screenWorkersLayer(SCREEN_WORKER)),
 );
-const MendMcpLayer: Layer.Layer<MendMcp, never, SessionPagesRepo> = MendMcpLive.pipe(
-  Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
-  Layer.provide(SessionChannelRegistryLayer),
-);
+// Its screen tools ask the one `Screens` beside the HTTP half.
+const MendMcpLayer: Layer.Layer<MendMcp, never, SessionPagesRepo | Screens | UsersRepo> =
+  MendMcpLive.pipe(
+    Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
+    Layer.provide(SessionChannelRegistryLayer),
+  );
+// A worker-only process builds no `Screens`, and still serves the channel of every session it
+// launches or resumes: its screen tools say where screens are driven.
+const MendMcpWorkerLayer: Layer.Layer<MendMcp, never, SessionPagesRepo> =
+  MendMcpWithoutScreensLive.pipe(
+    Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
+    Layer.provide(SessionChannelRegistryLayer),
+  );
 // The session-workspace authority (identity-keyed port over Store + ProjectsRepo) and the
 // identity-keyed worktree reads are selected at the boundary by MEND_SESSION_STORE (below):
 // the capture store by default, the deprecated co-located adapters only on request. The engine
@@ -892,16 +904,16 @@ const MainLive = Layer.unwrap(
       LandingDescriptionsLive,
     ).pipe(Layer.provide(PullRequestsLayer), Layer.provideMerge(landingGit));
     const screens = ScreensLayer.pipe(Layer.provide(captureStore));
+    const served = Layer.merge(ServerLive, MendMcpLayer.pipe(Layer.provideMerge(screens)));
     const parts =
       mode === "api"
-        ? Layer.merge(ServerLive, screens)
+        ? served
         : mode === "worker"
-          ? WorkerLive
-          : Layer.mergeAll(ServerLive, WorkerLive, screens);
+          ? Layer.merge(WorkerLive, MendMcpWorkerLayer)
+          : Layer.mergeAll(served, WorkerLive);
     return Layer.mergeAll(
       parts,
       SessionChannelNetworkLayer,
-      MendMcpLayer,
       ResourcesChannelLive.pipe(Layer.provide(SessionChannelRegistryLayer)),
     ).pipe(
       // Session steering, landing (docs/adr/0007-landing.md) for the landing routes, receiving a
