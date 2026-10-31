@@ -6,6 +6,7 @@ import {
   setupRefusalsOf,
 } from "@mend/domain/workbench";
 
+import { canonicalJson } from "./recipe-digest.ts";
 import { type LaunchSpec, recipeLaunch } from "./service-launch.ts";
 
 export interface PlannedRecipe {
@@ -25,6 +26,12 @@ export type RecipePlan =
       readonly steps: ReadonlyArray<PlannedRecipe>;
       readonly setup: PlanSetup;
     };
+
+type Launched = Pick<LaunchSpec, "argv" | "cwd" | "env" | "depends">;
+
+export const sameLaunch = (a: Launched, b: Launched): boolean =>
+  canonicalJson({ argv: a.argv, cwd: a.cwd, env: a.env, depends: a.depends }) ===
+  canonicalJson({ argv: b.argv, cwd: b.cwd, env: b.env, depends: b.depends });
 
 /** Dependencies first, depth first in the order each recipe names them, each once, then `name`. */
 const walkPlan = (

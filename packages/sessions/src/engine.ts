@@ -621,7 +621,13 @@ import {
 } from "./protocol-host.ts";
 import type { SteerTurnInput } from "./protocol-steer.ts";
 import { recipeDigestsOf } from "./recipe-digest.ts";
-import { type PlannedRecipe, type PlanSetup, planRecipeStart } from "./recipe-plan.ts";
+import {
+  type PlannedRecipe,
+  type PlanSetup,
+  planRecipeStart,
+  type RecipePlan,
+  sameLaunch,
+} from "./recipe-plan.ts";
 import {
   EMPTY_MEND_TOML,
   MEND_TOML,
@@ -3136,12 +3142,13 @@ export class SessionEngine extends Context.Service<
     ) => Effect.Effect<SessionProcessId, PreviewStartRefused | PreviewStartDeclined>;
     /**
      * After a turn that changed the worktree (ADR 0017, "After the agent is done"): start the
-     * worktree's `[preview]` Service from the file if nothing runs it, as the person who last
-     * started it. A preview already running gets nothing. Under the lifecycle permit, just before
-     * the Service's attempt begins, the start is admitted again: `hold` still holds, no person's
-     * Stop, nothing else running the preview. Answers once the start ended, however it ended; a
-     * call for a turn whose start is under way in this process follows that start, by its start id,
-     * to the same end.
+     * worktree's `[preview]` Service from the file if nothing runs it, as the turn's sender (else
+     * whoever last started it). A preview already running is left alone unless its recipe's
+     * launch changed, which starts it again from the file, as the same person. Under the
+     * lifecycle permit, just before the Service's attempt begins, the start is admitted again:
+     * `hold` still holds, no person's Stop, nothing else running the preview. Answers once the
+     * start ended, however it ended; a call for a turn whose start is under way in this process
+     * follows that start, by its start id, to the same end.
      */
     readonly preparePreview: (
       sessionId: SessionId,
@@ -23833,6 +23840,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
+      const runsLaunch = Effect.fn("SessionEngine.runsLaunch")(function* (
+        live: NonNullable<Effect.Success<ReturnType<typeof liveServiceNamed>>>,
+        launch: Parameters<typeof sameLaunch>[1],
+      ) {
+        if (live.attempt === null) return false;
+        const recorded = yield* processes.launchOf(live.attempt.id);
+        return recorded !== null && sameLaunch({ ...recorded, argv: live.attempt.argv }, launch);
+      });
+
       /**
        * One recipe of a plan, started or met: a dependency already live is waited for (never
        * started again), an adopt-only recipe is adopted and its port waited for, and anything else
@@ -24392,6 +24408,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         } as const;
       });
 
+      const staleRecipeService = Effect.fn("SessionEngine.staleRecipeService")(function* (
+        session: Session,
+        name: string,
+        recipePlan: Extract<RecipePlan, { readonly _tag: "Planned" }>,
+      ) {
+        const launch = recipePlan.steps.at(-1)?.launch ?? null;
+        if (launch === null) return null;
+        const live = yield* liveServiceNamed(session.id, name);
+        if (
+          live === null ||
+          live.attempt === null ||
+          (live.service.declarationSource !== "recipe-file" &&
+            live.service.declarationSource !== "recipe-project")
+        ) {
+          return null;
+        }
+        return (yield* runsLaunch(live, launch)) ? null : live.service;
+      });
+
       const workspaceLive = (session: Session) =>
         workspaceForSupportingProcess(session).pipe(
           Effect.as(true),
@@ -24492,7 +24527,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (seen._tag === "Stopped") {
           return { _tag: "Stopped", service: name, previewId } satisfies PreviewPrepared;
         }
-        if (seen._tag === "Running") {
+        const planned = yield* recipePlanFrom(session, read.file, name).pipe(Effect.result);
+        const changedService =
+          seen._tag === "Running" && Result.isSuccess(planned)
+            ? yield* withServiceLifecycle(
+                staleRecipeService(session, name, planned.success.recipePlan),
+              )
+            : null;
+        if (seen._tag === "Running" && changedService === null) {
           const declared = resolveDeclarations(
             read.file,
             yield* projectRecipes.listForProject(session.projectId),
@@ -24503,7 +24545,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : null;
           return { _tag: "Running", service: name, previewId, note } satisfies PreviewPrepared;
         }
-        const planned = yield* recipePlanFrom(session, read.file, name).pipe(Effect.result);
         if (Result.isFailure(planned)) {
           return {
             _tag: "Refused",
@@ -24521,6 +24562,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             note: null,
           } satisfies PreviewPrepared;
         }
+        const runsAs =
+          (yield* conversations.byTurnId(turnId))?.author ??
+          (changedService !== null
+            ? yield* services.startedByOf(changedService.id)
+            : seen._tag === "Free"
+              ? seen.startedBy
+              : null);
         let phase = firstPhaseOf(planned.success.recipePlan);
         const starting = (at: PreviewPhase) =>
           ({ _tag: "Starting", service: name, previewId, phase: at, note: null }) as const;
@@ -24544,10 +24592,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return now._tag === "Stopped" ? "stopped" : now._tag === "Running" ? "taken" : null;
           }),
         };
+        if (changedService !== null) {
+          yield* stopService(changedService.id, WORKSPACE_STOP).pipe(
+            Effect.catchTag("ServiceNotFoundError", () => Effect.void),
+          );
+        }
         const begun = yield* beginRecipePlan(
           session,
           name,
-          { kind: "system", runsAs: seen.startedBy },
+          { kind: "system", runsAs },
           startId,
           planned.success,
           false,

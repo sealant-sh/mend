@@ -1,8 +1,16 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { AgentTurnId, type PreviewId, type ServiceId, type SessionId } from "@mend/domain";
+import { AgentConversationRepo } from "@mend/db";
 import {
+  AgentTurnId,
+  type PreviewId,
+  type ServiceId,
+  SessionId,
+  SessionProcessId,
+} from "@mend/domain";
+import {
+  AgentTurn,
   type PreviewPhase,
   type PreviewPreparationHold,
   previewTurnStartId,
@@ -19,7 +27,13 @@ import { Deferred, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { provisionIn } from "./engine/capture-fixture.ts";
-import { sealantLaunchLayer, setup, withEngine, type World } from "./engine/fixture.ts";
+import {
+  agentConversationStub,
+  sealantLaunchLayer,
+  setup,
+  withEngine,
+  type World,
+} from "./engine/fixture.ts";
 
 const OWNER = "user-fixture";
 const STEERER = "user-maria";
@@ -116,6 +130,7 @@ interface Harness {
   readonly sibling: () => Effect.Effect<SessionId, unknown>;
   readonly previewId: () => PreviewId;
   readonly webOf: () => ServiceId;
+  readonly senderByTurn: Map<number, string>;
 }
 
 const withPreview = (run: (harness: Harness) => Effect.Effect<void, unknown, SessionEngine>) => {
@@ -124,6 +139,7 @@ const withPreview = (run: (harness: Harness) => Effect.Effect<void, unknown, Ses
   const spawned: ReadonlyArray<string>[] = [];
   const control: Harness["setup"] = { exitCode: 0, during: null };
   const workspace: Harness["workspace"] = { ended: false };
+  const senderByTurn = new Map<number, string>();
   return withEngine(
     (world, tmp) =>
       Effect.gen(function* () {
@@ -182,10 +198,36 @@ const withPreview = (run: (harness: Harness) => Effect.Effect<void, unknown, Ses
             return preview.id;
           },
           webOf,
+          senderByTurn,
         });
       }),
     {
       forwardAdapterLayer: answers200,
+      conversationLayer: Layer.succeed(AgentConversationRepo, {
+        ...agentConversationStub,
+        byTurnId: (id) =>
+          Effect.sync(() => {
+            const n = Number(id.replace("turn-", ""));
+            const author = senderByTurn.get(n);
+            return author === undefined
+              ? null
+              : new AgentTurn({
+                  id,
+                  sessionId: SessionId.make("session-of-the-turn"),
+                  processId: SessionProcessId.make("process-turns"),
+                  ordinal: n,
+                  author,
+                  input: "change it",
+                  status: "completed",
+                  providerTurnId: null,
+                  error: null,
+                  usage: null,
+                  createdAt: new Date(),
+                  startedAt: new Date(),
+                  endedAt: new Date(),
+                });
+          }),
+      }),
       sealantLayer: sealantLaunchLayer(
         created,
         undefined,
@@ -280,6 +322,37 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
           },
         ]);
         expect(commandsAfter(harness.timeline, before), "nothing ran again").toEqual([]);
+      }),
+    ));
+
+  it("starts a running preview again from the file once the turn changed its recipe, as the turn's sender", () =>
+    withPreview((harness) =>
+      Effect.gen(function* () {
+        yield* harness.engine.runServiceRecipe(harness.sessionId, "web", ownerStart);
+        const first = harness.webOf();
+        harness.write("mend.toml", EDITED);
+        harness.write("pnpm-lock.yaml", LOCK_B);
+        harness.senderByTurn.set(1, STEERER);
+        const before = harness.timeline.length;
+
+        const { outcome } = yield* harness.prepare(1);
+        const again = yield* harness.prepare(2);
+
+        expect(outcome).toEqual({
+          _tag: "Started",
+          service: "web",
+          previewId: harness.previewId(),
+          note: null,
+        });
+        expect(commandsAfter(harness.timeline, before), "db is reused").toEqual([
+          "setup:pnpm install --frozen-lockfile",
+          "pnpm dev --edited",
+        ]);
+        expect(harness.webOf()).toBe(first);
+        expect(harness.world.setupRuns.at(-1)).toMatchObject({ state: "done", runsAs: STEERER });
+        expect(again.outcome, "the next turn finds the file's launch running").toMatchObject({
+          _tag: "Running",
+        });
       }),
     ));
 
@@ -658,6 +731,27 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
 
         expect(outcome).toMatchObject({ _tag: "Started", service: "web", note: null });
         expect(commandsAfter(harness.timeline, before)).toEqual(["postgres", "pnpm dev --edited"]);
+      }),
+    ));
+
+  it("runs the recipe a steerer's turn changed, as the steerer", () =>
+    withPreview((harness) =>
+      Effect.gen(function* () {
+        yield* startedOnceThenAgentStopped(harness);
+        harness.write("mend.toml", EDITED);
+        harness.write("pnpm-lock.yaml", LOCK_B);
+        harness.senderByTurn.set(1, STEERER);
+        const before = harness.timeline.length;
+
+        const { outcome } = yield* harness.prepare(1);
+
+        expect(outcome).toMatchObject({ _tag: "Started", service: "web", note: null });
+        expect(commandsAfter(harness.timeline, before)).toEqual([
+          "setup:pnpm install --frozen-lockfile",
+          "postgres",
+          "pnpm dev --edited",
+        ]);
+        expect(harness.world.setupRuns.at(-1)).toMatchObject({ state: "done", runsAs: STEERER });
       }),
     ));
 
