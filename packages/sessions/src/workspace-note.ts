@@ -88,12 +88,13 @@ export const PREVIEWS_NOTE =
   `worktree's preview, a recipe with \`browserScheme = "http"\`:\n\n` +
   `\`\`\`toml\n[service.web]\nport = 3000\nbrowserScheme = "http"\n` +
   `command = "pnpm dev --host 0.0.0.0"\n\n[preview]\nservice = "web"\n\`\`\`\n\n` +
-  `\`mend service init\` scaffolds \`mend.toml\` from package.json and compose. After a ` +
-  `turn that changed the worktree, Mend starts the preview itself, and restarts it when ` +
-  `its recipe changed; don't start it with \`mend service run\` for that. Its address is ` +
-  `not visible from this workspace. People open it from Mend: **Open preview** on the ` +
-  `session's Slack status message, **Open** on the Services card on the web, or ` +
-  `**Preview** on the phone. When asked for the preview, say that and name the Service.\n\n`;
+  `To give a worktree a preview, write that \`mend.toml\` yourself (on their own machine a ` +
+  `person can scaffold one with \`mend service init\`; the workspace's \`mend\` has no ` +
+  `\`init\`). After a turn that changed the worktree, Mend prepares the preview for people ` +
+  `to open. Its address is not visible from this workspace. People open it from Mend: ` +
+  `**Open preview** on the session's Slack status message, **Open** on the Services card on ` +
+  `the web, or **Preview** on the phone. When asked for the preview, say that and name the ` +
+  `Service.\n\n`;
 
 /** The whole block for `body`: begin line, body, end line, each line ending in a newline. */
 export const workspaceNoteBlock = (body: string): string =>

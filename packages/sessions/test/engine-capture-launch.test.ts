@@ -769,7 +769,8 @@ describe("SessionEngine capture mode", () => {
           expect(note?.at(-1)).toContain("Declared Services (mend.toml + project): web");
           // It says what a preview is and where people open it: the agent cannot see its address.
           expect(note?.at(-1)).toContain("## Mend previews");
-          expect(note?.at(-1)).toContain("`mend service init` scaffolds `mend.toml`");
+          expect(note?.at(-1)).toContain("write that `mend.toml` yourself");
+          expect(note?.at(-1)).toContain("the workspace's `mend` has no `init`");
           expect(note?.at(-1)).toContain("**Open preview** on the session's Slack status message");
           expect(note?.at(-1)).toContain(
             "Refused in mend.toml (fix these before running them):\n\n- api · cwd · is absolute",
