@@ -47,19 +47,32 @@ fi
     sleep 0.2
   done
   xset s off -dpms >/dev/null 2>&1 || true
-  if [ "$wm" = xfwm4 ]; then
-    dbus-run-session -- startxfce4 >"$dir/xfce.log" 2>&1 &
-  else
-    openbox >/dev/null 2>&1 &
-    openbox=$!
-  fi
-  ${CHROMIUM_WRAPPER_PATH} about:blank >/dev/null 2>&1 &
   wm_alive() {
     if [ "$wm" = openbox ]; then kill -0 "$openbox" 2>/dev/null; return; fi
     [ -n "$(pgrep -u "$(id -u)" -x xfwm4 | while read -r pid; do
       tr '\\0' '\\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "DISPLAY=$display" && echo "$pid"
     done)" ]
   }
+  if [ "$wm" = xfwm4 ]; then
+    # An XFCE session can stop while it starts (libwnck asserting on its default icon, seen
+    # in workspaces), so it is started again, a few times, until it runs.
+    (
+      starts=0
+      while [ "$starts" -lt 5 ]; do
+        starts=$((starts + 1))
+        dbus-run-session -- startxfce4 >>"$dir/xfce.log" 2>&1
+        sleep 1
+      done
+    ) &
+  else
+    openbox >/dev/null 2>&1 &
+    openbox=$!
+  fi
+  # The browser opens once the window manager runs: a window that appears while the session
+  # starts is what it stopped on.
+  waited=0
+  until wm_alive || [ "$waited" -ge 50 ]; do waited=$((waited + 1)); sleep 0.2; done
+  ${CHROMIUM_WRAPPER_PATH} about:blank >/dev/null 2>&1 &
   said=
   sandbox=
   while sleep 0.5 && kill -0 $$ 2>/dev/null; do
