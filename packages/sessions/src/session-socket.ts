@@ -652,7 +652,11 @@ ${DOPPLER_HELPER_SCRIPT}
 
 const main = async () => {
   const [group, verb, ...rest] = process.argv.slice(2);
-  if (group === "doppler") { await dopplerCommand(verb, rest); return; }
+  if (group === "doppler") {
+    try { await dopplerCommand(verb, rest); }
+    catch (error) { fail(error.message); }
+    return;
+  }
   if (group === "mcp") {
     mcp();
     return;

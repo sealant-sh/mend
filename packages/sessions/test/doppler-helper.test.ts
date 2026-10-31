@@ -53,7 +53,7 @@ it.skipIf(realDoppler === undefined)(
 );
 
 describe("workspace mend doppler helper", () => {
-  const fixture = async () => {
+  const fixture = async (refusal?: string) => {
     const root = temp(),
       home = path.join(root, "home"),
       bin = path.join(root, "bin"),
@@ -75,6 +75,11 @@ describe("workspace mend doppler helper", () => {
       request.on("end", () => {
         const input = JSON.parse(body);
         calls.push(input);
+        if (refusal !== undefined) {
+          response.writeHead(422, { "content-type": "application/json" });
+          response.end(JSON.stringify({ message: refusal }));
+          return;
+        }
         response.writeHead(200, { "content-type": "application/json" });
         if (input.action === "projects")
           return response.end(
@@ -130,6 +135,29 @@ describe("workspace mend doppler helper", () => {
       close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     };
   };
+
+  it("prints a concise setup error when connect has no local login", async () => {
+    const f = await fixture();
+    try {
+      const refused = await f.run(["connect"], true);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toBe("mend: No local Doppler token found. Run doppler login first.\n");
+      expect(f.calls).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("prints a server refusal without an unhandled rejection or stack trace", async () => {
+    const f = await fixture("Connect Doppler first.");
+    try {
+      const refused = await f.run(["status"], true);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toBe("mend: Connect Doppler first.\n");
+    } finally {
+      await f.close();
+    }
+  });
 
   it("imports a resolved CLI token and says which project/config mapped; use defaults to the session and writes immediately", async () => {
     const f = await fixture();
@@ -197,6 +225,8 @@ describe("workspace mend doppler helper", () => {
       );
       const refused = await f.run(["use", "backend", "dev"], true);
       expect(refused.code).toBe(1);
+      expect(refused.stderr).toMatch(/^mend: /);
+      expect(refused.stderr).not.toContain("    at ");
       expect(
         JSON.parse(fs.readFileSync(path.join(f.repo, ".doppler.yaml"), "utf8")).scoped[
           "/workspace/repo"
