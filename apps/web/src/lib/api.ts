@@ -69,6 +69,10 @@ export type SessionAnnotationDto = ProjectDetailDto["annotations"][number];
 export type ChangeStatsDto = Outputs["changes"]["stats"];
 export type RemovalReportDto = Outputs["projects"]["remove"];
 export type SessionDetailDto = Outputs["sessions"]["detail"];
+/** A session's screen (docs/adr/0020-guis-in-sessions.md): its life and who holds its input. */
+export type ScreenReadDto = Outputs["screens"]["read"];
+export type LiveScreenDto = Extract<ScreenReadDto, { readonly _tag: "Screen" }>;
+export type ScreenControlDto = Outputs["screens"]["take"];
 /** What Mend did with a sent message, with its own sentence for it (`explanation`). */
 export type SessionMessageReceiptDto = Outputs["sessions"]["sendMessage"];
 export type CheckpointDto = SessionDetailDto["checkpoints"][number];
@@ -413,6 +417,10 @@ export const pasteSessionImage = (id: string, contentsBase64: string) =>
 export const resumeSession = (id: string, harness: string | null) =>
   orLogin(trpcClient.sessions.resume.mutate({ id, request: { harness } }));
 export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.mutate({ id }));
+/** Take over the screen on this viewer's connection, the one its socket's first frame named. */
+export const takeScreen = (id: string, connection: string) =>
+  orLogin(trpcClient.screens.take.mutate({ id, connection }));
+export const handBackScreen = (id: string) => orLogin(trpcClient.screens.handBack.mutate({ id }));
 /**
  * The owner's "discard unsaved and stop" (docs/adr/0002): ends the workspace while its captures
  * are still pending. What was not saved is gone; the page arms it with a second click.
