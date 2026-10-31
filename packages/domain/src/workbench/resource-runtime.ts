@@ -201,7 +201,7 @@ const renderExport = (def: ResourceDefinitionInput, template: string): string | 
 const envPart = (label: string) => label.toUpperCase().replaceAll("-", "_");
 
 /** One binding's env: its own names first, then the conventional ones when it is the only of its engine. */
-const bindingEnv = (
+export const resourceBindingEnv = (
   binding: ResourceBinding,
   worktreeId: WorktreeId,
   only: boolean,
@@ -287,7 +287,7 @@ export const resourceProcessEnv = (input: {
       def.preset !== null &&
       input.bindings.filter((other) => other.definition.preset === def.preset).length === 1;
     const kept: Array<string> = [];
-    for (const [name, value] of bindingEnv(binding, input.worktreeId, only)) {
+    for (const [name, value] of resourceBindingEnv(binding, input.worktreeId, only)) {
       if (input.projectEnvNames.has(name)) kept.push(name);
       else env[name] = value;
     }

@@ -100,3 +100,6 @@ export * from "./doppler.ts";
 
 export * from "./resource-load.ts";
 export * from "./resource-removal.ts";
+
+export * from "./service-dependency.ts";
+export * from "./service-resource-env.ts";
