@@ -281,7 +281,7 @@ describe("a recipe's launch", () => {
     );
   });
 
-  it("names the file's resource proposal notices when no recipe matches, in what the in-workspace helper prints", async () => {
+  it("names the file's resource table notices when no recipe matches, in what the in-workspace helper prints", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
       (world, tmp) =>

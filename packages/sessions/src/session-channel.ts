@@ -59,21 +59,18 @@ export type SessionResources = (
 ) => Effect.Effect<ResourcesStatus, { readonly message: string }>;
 
 /**
- * The act a helper request asks: `GET /resources` reads, `POST /resources` proposes,
- * `DELETE /resources/<name>` removes, `POST /resources/<name>/approval` approves and
- * `PUT /resources/<name>/selection` chooses. A workspace names no author, worktree or change
- * owner, so each is asked with none; the workspace's refusal is the same either way.
+ * The act a helper request asks: `GET /resources` reads, `POST /resources` adds,
+ * `DELETE /resources/<name>` removes and `PUT /resources/<name>/selection` chooses. A workspace
+ * names no adder, worktree or change owner, so each is asked with none; the workspace's refusal
+ * is the same either way.
  */
 const workspaceResourceAct = (route: string, pathname: string): ResourceAct | null => {
   if (route === "GET /resources") return { kind: "read" };
-  if (route === "POST /resources") return { kind: "propose" };
+  if (route === "POST /resources") return { kind: "add", replaces: null };
   const [name = "", tail, ...more] = pathname.slice("/resources/".length).split("/");
   if (!pathname.startsWith("/resources/") || name === "" || more.length > 0) return null;
   const method = route.slice(0, route.indexOf(" "));
-  if (method === "DELETE" && tail === undefined) return { kind: "remove-definition" };
-  if (method === "POST" && tail === "approval") {
-    return { kind: "approve", for: { kind: "project" }, replaces: false };
-  }
+  if (method === "DELETE" && tail === undefined) return { kind: "remove-definition", addedBy: "" };
   if (method === "PUT" && tail === "selection") return { kind: "use", changeOwner: null };
   return null;
 };

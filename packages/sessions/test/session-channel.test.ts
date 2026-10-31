@@ -929,9 +929,7 @@ describe("SessionChannelNetworkHost", () => {
               const refusal = resourceActRefusal(PROJECT_TENANCY, { kind: "workspace" }, act);
               if (refusal !== null) return yield* Effect.fail({ message: refusal });
               return {
-                statusLines: [
-                  "@mail · mailpit · project · proposed by \u001b[2JTom · waiting for approval",
-                ],
+                statusLines: ["@mail · mailpit · project · added by \u001b[2JTom · not started"],
                 file: {
                   kind: "read",
                   observed: "observed on the worktree",
@@ -955,7 +953,7 @@ describe("SessionChannelNetworkHost", () => {
           expect(yield* helper(["resource", "list"])).toEqual({
             code: 0,
             stdout:
-              "@mail · mailpit · project · proposed by \\x1b[2JTom · waiting for approval\n" +
+              "@mail · mailpit · project · added by \\x1b[2JTom · not started\n" +
               "mend.toml · observed on the worktree\n" +
               "  resource.mail.device · is ignored: this Mend does not read it\n",
             stderr: "",
@@ -967,7 +965,6 @@ describe("SessionChannelNetworkHost", () => {
           });
           for (const args of [
             ["resource", "remove", "db"],
-            ["resource", "approve", "db"],
             ["resource", "use", "db", "own"],
           ]) {
             expect((yield* helper(args)).stderr).toBe(`mend: ${WORKSPACE_RESOURCE_REFUSAL}\n`);
@@ -978,9 +975,8 @@ describe("SessionChannelNetworkHost", () => {
           ).toMatchObject({ status: 404 });
           expect(asked).toEqual([
             { sessionId: SESSION, act: "read", timeZone: "Europe/Athens" },
-            { sessionId: SESSION, act: "propose", timeZone: "Europe/Athens" },
+            { sessionId: SESSION, act: "add", timeZone: "Europe/Athens" },
             { sessionId: SESSION, act: "remove-definition", timeZone: "Europe/Athens" },
-            { sessionId: SESSION, act: "approve", timeZone: "Europe/Athens" },
             { sessionId: SESSION, act: "use", timeZone: "Europe/Athens" },
           ]);
 

@@ -46,7 +46,7 @@ const MAIL = [
 ];
 
 const refusedKeys = (file: MendTomlFile) => file.refused.map((refusal) => refusal.key);
-const proposed = (file: MendTomlFile) => file.resources.map((resource) => resource.name);
+const tableNames = (file: MendTomlFile) => file.resources.map((resource) => resource.name);
 
 describe("[resource.*] tables in mend.toml", () => {
   it("reads ADR 0019's queue as a definition, and still refuses @names in depends", () => {
@@ -270,7 +270,7 @@ describe("[resource.*] tables in mend.toml", () => {
     const file = parse([...lines, "", ...MAIL]);
     expect(refusedKeys(file)).toContain(key);
     expect(file.refused.every((refusal) => refusal.name === null)).toBe(true);
-    expect(proposed(file)).toEqual(["mail"]);
+    expect(tableNames(file)).toEqual(["mail"]);
   });
 
   it("lists a key it does not read as ignored, by its full key, and still declares the resource", () => {
@@ -284,7 +284,7 @@ describe("[resource.*] tables in mend.toml", () => {
       "limits = { gpu = 1 }",
     ]);
     expect(file.refused).toEqual([]);
-    expect(proposed(file)).toEqual(["queue"]);
+    expect(tableNames(file)).toEqual(["queue"]);
     expect(file.ignored.map((ignored) => ignored.key).toSorted()).toEqual([
       "resource.queue.env.PASS.rotate",
       "resource.queue.healthcheck",
@@ -431,7 +431,7 @@ describe("[resource.*] tables in mend.toml", () => {
       "ports = { pg = 5432 }",
     ]);
     expect(pinned.refused).toEqual([]);
-    expect(proposed(pinned)).toEqual(["db"]);
+    expect(tableNames(pinned)).toEqual(["db"]);
   });
 
   it("refuses both tables that would set the same env name, each at its own key", () => {
@@ -448,7 +448,7 @@ describe("[resource.*] tables in mend.toml", () => {
       "",
       ...MAIL,
     ]);
-    expect(proposed(file)).toEqual(["mail"]);
+    expect(tableNames(file)).toEqual(["mail"]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
       "mend.toml · resource.db.exports.MAIN_URL · sets MEND_RESOURCE_DB_MAIN_URL, as db-main does too",
       "mend.toml · resource.db-main.exports.URL · sets MEND_RESOURCE_DB_MAIN_URL, as db does too",

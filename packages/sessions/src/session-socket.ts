@@ -763,8 +763,8 @@ const main = async () => {
     return;
   }
   if (group === "resource") {
-    // The server decides: a workspace reads status, and Mend refuses its proposals and removals.
-    // Every line came from a proposal anyone could make, so its control characters print as text.
+    // The server decides: a workspace reads status, and Mend refuses its adds and removals.
+    // Every line came from a definition any member could add, so its control characters print as text.
     const printable = (text) =>
       String(text).replace(/[\\u0000-\\u001f\\u007f-\\u009f]/g, (c) => "\\\\x" + c.charCodeAt(0).toString(16).padStart(2, "0"));
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -779,12 +779,10 @@ const main = async () => {
             ? null
             : verb === "remove"
               ? ["DELETE", named("")]
-              : verb === "approve"
-                ? ["POST", named("/approval")]
-                : verb === "use"
-                  ? ["PUT", named("/selection")]
-                  : null;
-    if (asked === null) fail("this workspace helper speaks: mend resource list · mend resource add · mend resource remove|approve|use NAME");
+              : verb === "use"
+                ? ["PUT", named("/selection")]
+                : null;
+    if (asked === null) fail("this workspace helper speaks: mend resource list · mend resource add · mend resource remove|use NAME");
     let status;
     try {
       status = await request(asked[0], asked[1], asked[0] === "GET" || asked[0] === "DELETE" ? undefined : {}, 30 * 1000);
@@ -800,7 +798,7 @@ const main = async () => {
       for (const line of file.statusLines) lines.push(line);
       for (const notice of file.notices) lines.push("  " + notice);
     }
-    if (lines.length === 0) lines.push("no resources declared or proposed");
+    if (lines.length === 0) lines.push("no resources declared");
     for (const line of lines) console.log(printable(line));
     return;
   }
