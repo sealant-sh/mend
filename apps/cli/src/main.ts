@@ -107,6 +107,7 @@ import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
 import { parseProjectRetentionArgs } from "./project-retention.ts";
 import { isTerminalGone, leaveRawMode } from "./raw-mode.ts";
 import { missingRecipeLine, type ServiceDeclarationsDto } from "./recipe-refusals.ts";
+import { resourceLoadUpload } from "./resource-load.ts";
 import { resourceCommand } from "./resource.ts";
 import {
   beforeDeadline,
@@ -6448,7 +6449,12 @@ const main = async () => {
     case "memory":
       return memoryCommand(config, rest);
     case "resource":
-      return resourceCommand(boundApi(config), (explicit) => findProject(config, explicit), rest);
+      return resourceCommand(
+        boundApi(config),
+        (explicit) => findProject(config, explicit),
+        rest,
+        resourceLoadUpload(config),
+      );
     case "doppler": {
       const lines = await dopplerCommand(boundApi(config), rest).catch((error: unknown) =>
         fail(error instanceof Error ? error.message : String(error)),

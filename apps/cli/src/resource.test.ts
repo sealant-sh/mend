@@ -34,6 +34,7 @@ const db = {
   choice: null,
   canRemove: true,
   canChoose: false,
+  canLoadOwn: false,
   instance: "not-started",
   statusLine: "@db · postgres 17 · project · added by Maria · not started",
 };
@@ -487,7 +488,7 @@ describe("the command against a server", () => {
       resourceCommand(server({}).api, async () => shop, ["approve", "db"]),
     ).rejects.toThrow("exit 1");
     expect(err.join("")).toBe(
-      'mend: unknown resource command "approve" · try: add, list, remove, use, start, stop, reset, env\n',
+      'mend: unknown resource command "approve" · try: add, list, remove, use, start, stop, reset, load, env\n',
     );
   });
 });

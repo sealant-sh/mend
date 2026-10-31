@@ -13,6 +13,7 @@ import {
 import { Schema } from "effect";
 
 import type { ApiCall } from "./pair.ts";
+import { type ResourceLoadUpload, runResourceLoad } from "./resource-load.ts";
 import {
   jsonWithoutCredentials,
   paint,
@@ -194,6 +195,7 @@ export const resourceCommand = async (
   api: ApiCall,
   projectOf: (explicit: string | null) => Promise<ProjectRef>,
   args: ReadonlyArray<string>,
+  upload?: ResourceLoadUpload,
 ) => {
   const [first, ...after] = args;
   const verb = first?.startsWith("--") === true ? undefined : first;
@@ -304,6 +306,29 @@ export const resourceCommand = async (
       );
       return say(printable(answer.statusLine));
     }
+    case "load": {
+      if (name === null) return fail("name the resource: mend resource load db --from dump.sql");
+      const worktree = await worktreeOf();
+      const target = takeFlagValue(rest, "--target");
+      if (target !== null && target !== "shared" && target !== "own")
+        return fail("--target is shared or own");
+      if (upload === undefined) return fail("streaming uploads are unavailable here");
+      try {
+        return await runResourceLoad({
+          api,
+          upload,
+          base: `/projects/${project.id}/resource-loads?${zone}`,
+          name,
+          worktreeId: worktree?.id ?? null,
+          target,
+          from: takeFlagValue(rest, "--from"),
+          pull: takeFlagValue(rest, "--pull"),
+          say,
+        });
+      } catch (error) {
+        return fail(error instanceof Error ? error.message : "the load could not finish");
+      }
+    }
     case "reset": {
       if (name === null) return fail("name the resource: mend resource reset db --worktree <w>");
       const worktree = await worktreeOf();
@@ -333,7 +358,7 @@ export const resourceCommand = async (
     }
     default:
       return fail(
-        `unknown resource command "${printable(verb)}" · try: add, list, remove, use, start, stop, reset, env`,
+        `unknown resource command "${printable(verb)}" · try: add, list, remove, use, start, stop, reset, load, env`,
       );
   }
 };
