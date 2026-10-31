@@ -99,3 +99,4 @@ export * from "./project-retention.ts";
 export * from "./doppler.ts";
 
 export * from "./resource-load.ts";
+export * from "./resource-removal.ts";

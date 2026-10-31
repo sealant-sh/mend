@@ -214,7 +214,7 @@ describe("decideRemoval, a project", () => {
     ]);
   });
 
-  it("names a session of another project holding a worktree once, and declared resources", () => {
+  it("names a session holding a worktree, while resources no longer block removal", () => {
     const holder = {
       ...liveSession("s-x", kostas),
       role: "holder" as const,
@@ -224,10 +224,10 @@ describe("decideRemoval, a project", () => {
       kind: "project",
       project: project({ worktrees: [worktree({ sessions: [holder] })], resources: ["db"] }),
     });
-    expect(refusedBlockers(decision)).toEqual(["SessionLive", "ResourcesDeclared"]);
+    expect(refusedBlockers(decision)).toEqual(["SessionLive"]);
     if (decision._tag !== "Refuse") return;
     expect(projectRefusalWords(decision.blockers, "in-mend")).toBe(
-      "not removed · Kostas's session holding fix-auth is stopping · the project has resources (@db) · stop, land or remove those first, then remove the project again.",
+      "not removed · Kostas's session holding fix-auth is stopping · stop, land or remove those first, then remove the project again.",
     );
   });
 
