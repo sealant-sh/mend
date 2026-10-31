@@ -8,6 +8,7 @@ import { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
   ResourceAddInput,
+  ResourceName,
   ResourceSpecDigest,
   WorktreeChoice,
 } from "@mend/domain/workbench";
@@ -151,5 +152,31 @@ export const resourcesRouter = router({
           }),
         ),
       ),
+    ),
+  /** A person's Start or Stop; a worktree resource's names the worktree the card reads for. */
+  control: procedure
+    .input(
+      input(
+        Schema.Struct({
+          ...reader,
+          name: ResourceName,
+          worktreeId: Schema.NullOr(WorktreeId),
+          verb: Schema.Literals(["start", "stop"]),
+        }),
+      ),
+    )
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => {
+        const request = {
+          params: { id: i.projectId, name: i.name },
+          query: {
+            timeZone: i.timeZone,
+            ...(i.worktreeId === null ? {} : { worktreeId: i.worktreeId }),
+          },
+        };
+        return outcome(
+          i.verb === "start" ? api.resources.start(request) : api.resources.stop(request),
+        );
+      }),
     ),
 });

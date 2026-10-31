@@ -36,6 +36,21 @@ export const addResource = (
   addition: ResourceAddInput,
   worktreeId: WorktreeId | null,
 ) => orLogin(trpcClient.resources.add.mutate({ ...at(projectId), addition, worktreeId }));
+/** A person's Start or Stop of the instance the card's read reaches. */
+export const controlResource = (
+  projectId: string,
+  entry: ResourceSettingView,
+  worktreeId: WorktreeId | null,
+  verb: "start" | "stop",
+) =>
+  orLogin(
+    trpcClient.resources.control.mutate({
+      ...at(projectId),
+      name: entry.spec.name,
+      worktreeId,
+      verb,
+    }),
+  );
 export const removeResourceDefinition = (projectId: string, entry: ResourceSettingView) =>
   orLogin(
     trpcClient.resources.remove.mutate({
