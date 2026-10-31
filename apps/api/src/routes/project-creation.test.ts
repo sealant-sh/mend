@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
-import { ProjectNotFoundError, ProjectPublicationUnconfirmed, ProjectsRepo } from "@mend/db";
+import { ProjectPublicationUnconfirmed, ProjectsRepo } from "@mend/db";
 import { ProjectId } from "@mend/domain";
 import { GitAuthor, Project, ResolvedGitAuthor } from "@mend/domain/workbench";
 import { Store, StoreConfig, UNSETTLED_REPOSITORY_MARKER } from "@mend/store";
@@ -353,17 +353,27 @@ describe("repositories no project row claimed", () => {
               Layer.merge(
                 store,
                 Layer.mock(ProjectsRepo, {
-                  byId: (id) => {
-                    const project = f.api.world.projects.get(id);
-                    return project === undefined
-                      ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
-                      : Effect.succeed(project);
-                  },
+                  storeClaimed: (storePath) =>
+                    Effect.succeed(
+                      [...f.api.world.projects.values()].some(
+                        (project) => project.storePath === storePath,
+                      ),
+                    ),
                 }),
               ),
             ),
           ),
         );
+      const kept = [...f.api.world.projects.values()].find(
+        (project) => project.storePath === registered.storePath,
+      );
+      if (kept === undefined) throw new Error("registered project missing");
+      f.api.world.retainedProjects.set(kept.id, {
+        project: kept,
+        removedAt: new Date(),
+        removedByUserId: "alice",
+        state: "removed",
+      });
       await sweep();
       expect([unconfirmed, abandoned.storePath, registered.storePath].map(marked)).toEqual([
         true,

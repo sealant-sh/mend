@@ -7,7 +7,7 @@ import {
   ProjectSecretsSnapshot,
   validateProjectSecretName,
 } from "@mend/domain/workbench";
-import { asc, eq, sql as drizzleSql } from "drizzle-orm";
+import { and, asc, eq, sql as drizzleSql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -20,6 +20,7 @@ import {
   ProjectEnvironmentLimitError,
   ProjectEnvironmentStaleWriteError,
 } from "./project-environment.ts";
+import { projectListed } from "./projects.ts";
 import { ProjectNotFoundError } from "./projects.ts";
 
 export class ProjectSecretNotFoundError extends Schema.TaggedError<ProjectSecretNotFoundError>()(
@@ -136,7 +137,7 @@ const lockProject = (tx: Tx, projectId: ProjectId) =>
     const [row] = yield* tx
       .select({ secretRevision: projects.secretRevision })
       .from(projects)
-      .where(eq(projects.id, projectId))
+      .where(and(projectListed, eq(projects.id, projectId)))
       .for("update")
       .pipe(Effect.orDie);
     if (row === undefined) return yield* new ProjectNotFoundError({ projectId });
@@ -159,7 +160,7 @@ const bumpAggregate = (tx: Tx, projectId: ProjectId) =>
         secretRevision: drizzleSql`${projects.secretRevision} + 1`,
         updatedAt: yield* DateTime.nowAsDate,
       })
-      .where(eq(projects.id, projectId))
+      .where(and(projectListed, eq(projects.id, projectId)))
       .returning({ secretRevision: projects.secretRevision })
       .pipe(Effect.orDie);
     if (row === undefined) return yield* Effect.die("secret aggregate bump lost the project row");
@@ -181,7 +182,7 @@ export const ProjectSecretsRepoLive: Layer.Layer<
         .select({ secretRevision: projects.secretRevision, secret: projectSecrets })
         .from(projects)
         .leftJoin(projectSecrets, eq(projectSecrets.projectId, projects.id))
-        .where(eq(projects.id, projectId))
+        .where(and(projectListed, eq(projects.id, projectId)))
         .orderBy(asc(projectSecrets.name))
         .pipe(Effect.orDie);
 

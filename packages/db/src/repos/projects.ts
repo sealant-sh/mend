@@ -7,13 +7,13 @@ import {
   type GitAuthMode,
   type ProjectVisibility,
 } from "@mend/domain/workbench";
-import { and, asc, eq } from "drizzle-orm";
+import { type Column, and, asc, eq, inArray, isNull, isNotNull } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { MendDB } from "../client.ts";
+import { type MendDatabase, MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { projects, organizationMembers } from "../schema/workbench.ts";
+import { agentSessions, projects, organizationMembers } from "../schema/workbench.ts";
 import { isUniqueViolation, uniqueViolationConstraint } from "./unique-violation.ts";
 
 export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundError>()(
@@ -55,6 +55,26 @@ export class ScratchProjectPrivate extends Schema.TaggedError<ScratchProjectPriv
   {},
 ) {}
 
+export const projectListed = isNull(projects.removedAt);
+
+/** `sessionId` names a session of a listed project: what a sweep over sessions' work reads. */
+export const sessionInListedProject = (db: Pick<MendDatabase, "select">, sessionId: Column) =>
+  inArray(
+    sessionId,
+    db
+      .select({ id: agentSessions.id })
+      .from(agentSessions)
+      .innerJoin(projects, eq(projects.id, agentSessions.projectId))
+      .where(projectListed),
+  );
+
+export interface RetainedProject {
+  readonly project: Project;
+  readonly removedAt: Date;
+  readonly removedByUserId: string | null;
+  readonly state: "removed" | "purging" | "recovery-required";
+}
+
 export interface InitializedProject {
   readonly id: ProjectId;
   readonly organizationId: OrganizationId;
@@ -86,6 +106,12 @@ export interface NewProject {
 export class ProjectsRepo extends Context.Service<
   ProjectsRepo,
   {
+    readonly removedById: (id: ProjectId) => Effect.Effect<RetainedProject | null>;
+    readonly removedForOrganization: (
+      id: OrganizationId,
+    ) => Effect.Effect<ReadonlyArray<RetainedProject>>;
+    /** Whether any row, in any state, claims the store directory. */
+    readonly storeClaimed: (storePath: string) => Effect.Effect<boolean>;
     readonly byScratchOwner: (userId: string) => Effect.Effect<Project | null>;
     readonly publishInitialized: (
       project: InitializedProject,
@@ -177,8 +203,6 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       installEnabled: boolean,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
-    /** Hard delete — sessions and everything under them cascade. */
-    readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
 >()("@mend/db/ProjectsRepo") {}
 
@@ -190,6 +214,9 @@ const toProject = ({
   removalPhase: _phase,
   removalId: _id,
   removalSince: _since,
+  removedAt: _removedAt,
+  removedByUserId: _removedBy,
+  removalLegacy: _legacy,
   ...row
 }: typeof projects.$inferSelect): Project =>
   new Project({
@@ -204,6 +231,49 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
     Effect.gen(function* () {
       const db = yield* MendDB;
       const sql = yield* PgClient.PgClient;
+
+      /** Null for a listed row: the queries below read removed rows only. */
+      const retained = (row: typeof projects.$inferSelect): RetainedProject | null => {
+        if (row.removedAt === null) return null;
+        return {
+          project: toProject(row),
+          removedAt: row.removedAt,
+          removedByUserId: row.removedByUserId,
+          state: row.removalLegacy
+            ? "recovery-required"
+            : row.removalPhase === "deleting"
+              ? "purging"
+              : "removed",
+        };
+      };
+      const removedById = Effect.fn("ProjectsRepo.removedById")(function* (id: ProjectId) {
+        const [row] = yield* db
+          .select()
+          .from(projects)
+          .where(and(eq(projects.id, id), isNotNull(projects.removedAt)))
+          .pipe(Effect.orDie);
+        return row === undefined ? null : retained(row);
+      });
+      const removedForOrganization = Effect.fn("ProjectsRepo.removedForOrganization")(function* (
+        id: OrganizationId,
+      ) {
+        const rows = yield* db
+          .select()
+          .from(projects)
+          .where(and(eq(projects.organizationId, id), isNotNull(projects.removedAt)))
+          .orderBy(asc(projects.removedAt), asc(projects.id))
+          .pipe(Effect.orDie);
+        return rows.flatMap((row) => retained(row) ?? []);
+      });
+      const storeClaimed = Effect.fn("ProjectsRepo.storeClaimed")(function* (storePath: string) {
+        const rows = yield* db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(eq(projects.storePath, storePath))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return rows.length > 0;
+      });
 
       const create = Effect.fn("ProjectsRepo.create")(function* (project: NewProject) {
         const [row] = yield* db
@@ -227,7 +297,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .select()
           .from(projects)
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .limit(1)
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -241,7 +311,13 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .select()
           .from(projects)
-          .where(and(eq(projects.organizationId, organizationId), eq(projects.name, name)))
+          .where(
+            and(
+              projectListed,
+              eq(projects.organizationId, organizationId),
+              eq(projects.name, name),
+            ),
+          )
           .limit(1)
           .pipe(Effect.orDie);
         return row === undefined ? null : toProject(row);
@@ -251,7 +327,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .select()
           .from(projects)
-          .where(eq(projects.scratchOwnerUserId, userId))
+          .where(and(projectListed, eq(projects.scratchOwnerUserId, userId)))
           .limit(1)
           .pipe(Effect.orDie);
         return row === undefined ? null : toProject(row);
@@ -298,6 +374,8 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              if (purpose === "scratch")
+                yield* sql`SELECT 1 FROM "user" WHERE id = ${project.createdByUserId} FOR UPDATE`;
               const [member] = yield* db
                 .select()
                 .from(organizationMembers)
@@ -359,6 +437,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const rows = yield* db
           .select()
           .from(projects)
+          .where(projectListed)
           .orderBy(asc(projects.name))
           .pipe(Effect.orDie);
         return rows.map(toProject);
@@ -370,7 +449,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const rows = yield* db
           .select()
           .from(projects)
-          .where(eq(projects.organizationId, organizationId))
+          .where(and(projectListed, eq(projects.organizationId, organizationId)))
           .orderBy(asc(projects.name))
           .pipe(Effect.orDie);
         return rows.map(toProject);
@@ -386,7 +465,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ visibility, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -399,7 +478,8 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         id: ProjectId,
         userId: string,
       ) {
-        // Recovery transfers the content, not the departed person's scratch identity.
+        // Recovery transfers the content, not the departed person's scratch identity. A removed
+        // project is taken over too: only its new creator can then Restore or purge it.
         const [row] = yield* db
           .update(projects)
           .set({
@@ -434,7 +514,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
             ...(autoLand === undefined ? {} : { autoLand }),
             updatedAt: yield* DateTime.nowAsDate,
           })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -450,7 +530,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ autoLand: choice, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -466,7 +546,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ gitAuthMode: mode, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -482,7 +562,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ workspaceImage: image, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -498,7 +578,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ applyDotfiles, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -514,7 +594,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ defaultShellProfile, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -530,7 +610,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ inheritUserSkills, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -546,7 +626,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ hotSessions, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -562,7 +642,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ installCommand, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -578,7 +658,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .update(projects)
           .set({ installEnabled, updatedAt: yield* DateTime.nowAsDate })
-          .where(eq(projects.id, id))
+          .where(and(eq(projects.id, id), projectListed))
           .returning()
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
@@ -587,12 +667,10 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
-      const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
-        yield* db.delete(projects).where(eq(projects.id, id)).pipe(Effect.orDie);
-        yield* notifyEvent(sql, { type: "project", projectId: id });
-      });
-
       return {
+        removedById,
+        removedForOrganization,
+        storeClaimed,
         create,
         publishInitialized,
         byScratchOwner,
@@ -612,7 +690,6 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         setHotSessions,
         setInstallCommand,
         setInstallEnabled,
-        remove,
       };
     }),
   );

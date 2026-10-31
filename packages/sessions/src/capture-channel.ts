@@ -2250,6 +2250,20 @@ export const CaptureChannelLive: Layer.Layer<
               plans = plans.filter((plan) => !answered.has(plan.key));
               checkedSeals = record.sealedCaptures;
             }
+            // A URL bound to its bytes replaces nothing, yet lands them until it expires: purge
+            // waits that out, so its window is on record before it leaves Mend.
+            if (!unbound && plans.length > 0) {
+              recordedAt = epochMillis();
+              const admitted = yield* repo.recordUploadWindow(
+                worktreeId,
+                new Date(recordedAt + (ttlSeconds + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
+                { epoch: input.epoch, holder },
+              );
+              if (!admitted) {
+                yield* requireLease(input.epoch);
+                return yield* leaseLost();
+              }
+            }
             const urls: Record<string, string> = {};
             const multipart: Record<string, MultipartPlan> = {};
             for (const plan of plans) {
@@ -2347,12 +2361,12 @@ export const CaptureChannelLive: Layer.Layer<
                 part_urls: partUrls,
               };
             }
-            // The authority recorded above covers a URL for its lifetime plus the margin, counted
-            // from when it was recorded: URLs minted later than the margin allows could outlive it,
-            // so none of them leaves Mend — the executor asks again (review 2026-09-28 (10) #5).
+            // The authority or window recorded above covers a URL for its lifetime plus the margin,
+            // counted from when it was recorded: URLs minted later than the margin allows could
+            // outlive it, so none of them leaves Mend — the executor asks again (review 2026-09-28
+            // (10) #5).
             if (
               plans.length > 0 &&
-              unbound &&
               epochMillis() - recordedAt > (PUT_URL_CLOCK_MARGIN_SECONDS * 1000) / 2
             ) {
               return yield* Effect.die(

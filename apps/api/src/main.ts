@@ -96,7 +96,6 @@ import {
   type UsersRepo,
   UsersRepoLive,
   UpgradeTicketsRepoLive,
-  prettyCause,
 } from "@mend/db";
 import type { ChangeId, SessionId } from "@mend/domain";
 import { resolveAutomation } from "@mend/domain/workbench";
@@ -269,6 +268,7 @@ import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
 import { WorkspaceHostUserNamespacesLive } from "./routes/machine.ts";
 import { PreviewAuthRoutes } from "./routes/preview-auth.ts";
+import { TerminalProjectsLive } from "./routes/upgrade-tickets.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
@@ -521,7 +521,6 @@ const ServerLive = Layer.unwrap(
           sessionCookie: sessionCookiePolicy(network).name,
         }),
       ),
-      { formatCause: prettyCause },
     ).pipe(
       Layer.provide(ProjectCreationLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
@@ -927,6 +926,7 @@ const MainLive = Layer.unwrap(
           HandoffStartLive.pipe(Layer.provide(captureStore)),
           ResourcesLive.pipe(Layer.provide(ResourceImageResolverLive)),
           RemovalLive.pipe(Layer.provide(landingGit)),
+          TerminalProjectsLive,
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.

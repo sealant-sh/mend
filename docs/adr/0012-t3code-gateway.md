@@ -381,3 +381,12 @@ its own pull request.
   hand-over runs on without stopping work Mend waits for, so the promise names the start the gateway
   makes. The gateway also stopped offering the service tier: a thread launched on Fast ran on
   Standard and showed Fast. Mend core needs `speed` on the protocol path before the tier returns.
+
+### Removed projects and Restore (2026-10-30)
+
+Decided by recommendation; Yiannis to confirm: T3 Code's project removal calls Mend's retained
+removal. Mend keeps files and history indefinitely even though T3 Code v0.1.2's confirmation says
+removal cannot be undone. Restore and purge live in Mend's Projects → Removed projects and CLI. The
+gateway orders project reads against removal publications: an older read cannot revive a removed
+project or hide a restored one. A newer Mend event or refresh brings the restored project and its
+sessions back. Restore itself starts no work. Worktree removal is unchanged.

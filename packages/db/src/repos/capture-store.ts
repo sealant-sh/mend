@@ -1,8 +1,9 @@
 import { PgClient } from "@effect/sql-pg";
-import type { Sha, WorktreeId } from "@mend/domain";
+import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { asc, eq, inArray, sql as drizzleSql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
+import type { Statement } from "effect/sql";
 
 import { MendDB } from "../client.ts";
 import {
@@ -17,7 +18,10 @@ import {
   captureSummaries,
   packs,
   worktreeChain,
+  worktrees,
+  projects,
 } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 
 /**
  * The capture store's pointers (docs/adr/0002-session-capture-store.md "Postgres schema"):
@@ -442,6 +446,24 @@ export class CaptureStoreRepo extends Context.Service<
       checkedSeals?: ReadonlyArray<string>,
       holder?: LeaseHolder,
     ) => Effect.Effect<PutAuthorityRecord>;
+    /**
+     * Records until when a write Mend lets out could still land bytes under the worktree's
+     * prefixes: URLs bound to their bytes, or Mend's own put. Neither may replace an object, so no
+     * seal waits on it, but purge does. False, and nothing may be written: `lease` is given and no
+     * longer holds, or the project was removed.
+     */
+    readonly recordUploadWindow: (
+      worktreeId: WorktreeId,
+      until: Date,
+      lease?: { readonly epoch: number; readonly holder: LeaseHolder },
+    ) => Effect.Effect<boolean>;
+    /**
+     * The latest expiry of an upload URL handed out under any epoch of these worktrees, write
+     * authority or bound to its bytes.
+     */
+    readonly putAuthorityUntilFor: (
+      worktreeIds: ReadonlyArray<WorktreeId>,
+    ) => Effect.Effect<Date | null>;
     /** The latest expiry of an upload URL handed out under that epoch's prefix, or null. */
     readonly putAuthorityUntil: (
       worktreeId: WorktreeId,
@@ -549,6 +571,7 @@ export class CaptureStoreRepo extends Context.Service<
       ReadonlyArray<{
         readonly worktreeId: WorktreeId;
         readonly headCapture: string | null;
+        readonly retained?: boolean;
         readonly headN: number;
         /** Read before any row the caller computes liveness from; `condemn` takes it back. */
         readonly guard: number;
@@ -575,6 +598,30 @@ export class CaptureStoreRepo extends Context.Service<
       claim: DeletionClaim,
     ) => Effect.Effect<boolean>;
     /**
+     * Of `keys`, the stored objects of the worktrees `own` (and of project `projectId`'s own
+     * packs) that a capture or a summary of any other worktree still names, as a pack, its
+     * index, a tree under the same prefix, a manifest or a summary: what a purge keeps. Read in
+     * one statement over the names that fall under those prefixes; it may answer more than
+     * keysOfSections would, never less.
+     */
+    readonly referencedElsewhere: (input: {
+      readonly projectId: ProjectId;
+      readonly own: ReadonlyArray<WorktreeId>;
+      readonly keys: ReadonlyArray<string>;
+    }) => Effect.Effect<ReadonlySet<string>>;
+    /**
+     * A purge's `condemn` of a removed project's chain: authorized only while the project's
+     * `deleting` mark is `fenceId` and fresh, read under the project's lock.
+     */
+    readonly condemnForPurge: (input: {
+      readonly worktreeId: WorktreeId;
+      readonly guard: number;
+      readonly keys: ReadonlyArray<string>;
+      readonly claim: DeletionClaim;
+      readonly projectId: ProjectId;
+      readonly fenceId: string;
+    }) => Effect.Effect<boolean>;
+    /**
      * Retention, before it deletes: extend every claim `token` holds by `ttlSeconds`. Only while
      * none of them has lapsed — a lapsed one is renewed never, since a register may have brought
      * its key back. The number renewed: fewer than the keys condemned means stop deleting.
@@ -590,7 +637,7 @@ export class CaptureStoreRepo extends Context.Service<
     readonly deleteCaptures: (
       worktreeId: WorktreeId,
       captureIds: ReadonlyArray<string>,
-    ) => Effect.Effect<number>;
+    ) => Effect.Effect<ReadonlyArray<string>>;
     readonly listPacks: (state?: PackState) => Effect.Effect<ReadonlyArray<PackRow>>;
     readonly setPackState: (
       packIds: ReadonlyArray<string>,
@@ -904,11 +951,18 @@ export const CaptureStoreRepoLive: Layer.Layer<
             Effect.gen(function* () {
               // Subsequent statements must see changes committed while a row lock was waiting.
               yield* sql`SET TRANSACTION ISOLATION LEVEL READ COMMITTED`;
+              // A removed project's summary waits for its Restore: its row is held so a removal
+              // waits for this publication or refuses it.
+              const [parent] = yield* sql<{ readonly removed: boolean }>`
+                SELECT p.removed_at IS NOT NULL AS removed
+                  FROM projects p JOIN worktrees w ON w.project_id = p.id
+                 WHERE w.id = ${input.worktreeId} FOR SHARE OF p`;
+              if (parent?.removed !== false) return false;
               // Parent first, without blocking the FK key-share locks register/accept need. Then
               // chain before capture, matching register and preventing a head change at publication.
-              const worktrees =
+              const lockedWorktrees =
                 yield* sql`SELECT 1 FROM worktrees WHERE id = ${input.worktreeId} FOR NO KEY UPDATE`;
-              if (worktrees.length === 0) return false;
+              if (lockedWorktrees.length === 0) return false;
               const chains =
                 yield* sql`SELECT 1 FROM worktree_chain WHERE worktree_id = ${input.worktreeId} FOR UPDATE`;
               if (chains.length === 0) return false;
@@ -973,6 +1027,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const [chain] = yield* sql<{
         readonly worktreeId: WorktreeId;
         readonly headCapture: string | null;
+        readonly retained?: boolean;
         readonly headN: number;
         readonly headEpoch: number;
       }>`
@@ -1132,6 +1187,51 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return rows.length > 0;
     });
 
+    /**
+     * Whether an upload URL may leave under the epoch now. The lease first, held `FOR SHARE` (the
+     * order a register takes: lease, then the rest), and read as it is now: a claim or a release
+     * waits for this transaction, and one that committed while the request did its bucket reads is
+     * seen here. A removed project is issued no upload URL, its row held so a removal waits: purge
+     * refuses only while earlier ones are valid.
+     */
+    const uploadAdmitted = (worktreeId: WorktreeId, epoch: number, holder?: LeaseHolder) =>
+      Effect.gen(function* () {
+        if (holder !== undefined) {
+          const [lease] = yield* sql<{ readonly held: boolean }>`
+            SELECT (epoch = ${epoch} AND expires_at > now()
+                    AND executor_id = ${holder.executorId}
+                    AND (launch_id IS NULL OR launch_id = ${holder.launchId})) AS held
+              FROM worktree_leases WHERE worktree_id = ${worktreeId}
+               FOR SHARE`;
+          if (lease?.held !== true) return false;
+        }
+        const [parent] = yield* sql<{ readonly removed: boolean }>`
+          SELECT p.removed_at IS NOT NULL AS removed
+            FROM projects p JOIN worktrees w ON w.project_id = p.id
+           WHERE w.id = ${worktreeId} FOR SHARE OF p`;
+        return parent?.removed !== true;
+      });
+
+    const recordUploadWindow = Effect.fn("CaptureStoreRepo.recordUploadWindow")(function* (
+      worktreeId: WorktreeId,
+      until: Date,
+      lease?: { readonly epoch: number; readonly holder: LeaseHolder },
+    ) {
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            if (!(yield* uploadAdmitted(worktreeId, lease?.epoch ?? 0, lease?.holder)))
+              return false;
+            yield* sql`
+              INSERT INTO capture_upload_windows (worktree_id, until) VALUES (${worktreeId}, ${until})
+              ON CONFLICT (worktree_id) DO UPDATE
+                SET until = GREATEST(capture_upload_windows.until, EXCLUDED.until)`;
+            return true;
+          }),
+        )
+        .pipe(Effect.orDie);
+    });
+
     const recordPutAuthority = Effect.fn("CaptureStoreRepo.recordPutAuthority")(function* (
       worktreeId: WorktreeId,
       epoch: number,
@@ -1142,18 +1242,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            // The lease first, held `FOR SHARE` (the order a register takes: lease, then the
-            // rest), and read as it is now: a claim or a release waits for this transaction, and
-            // one that committed while the request did its bucket reads is seen here.
-            if (holder !== undefined) {
-              const [lease] = yield* sql<{ readonly held: boolean }>`
-                SELECT (epoch = ${epoch} AND expires_at > now()
-                        AND executor_id = ${holder.executorId}
-                        AND (launch_id IS NULL OR launch_id = ${holder.launchId})) AS held
-                  FROM worktree_leases WHERE worktree_id = ${worktreeId}
-                   FOR SHARE`;
-              if (lease?.held !== true) return { recorded: false, reason: "lease" } as const;
-            }
+            if (!(yield* uploadAdmitted(worktreeId, epoch, holder)))
+              return { recorded: false, reason: "lease" } as const;
             yield* lockPutAuthority(worktreeId, epoch);
             // Read after the lock: a seal marked while this waited is seen. Every seal whose
             // objects live under this prefix, whatever epoch or worktree it seals (0092).
@@ -1189,6 +1279,19 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
         SELECT expires_at FROM capture_put_authority
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}`.pipe(Effect.orDie);
+      return row?.expiresAt ?? null;
+    });
+
+    const putAuthorityUntilFor = Effect.fn("CaptureStoreRepo.putAuthorityUntilFor")(function* (
+      worktreeIds: ReadonlyArray<WorktreeId>,
+    ) {
+      if (worktreeIds.length === 0) return null;
+      const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
+        SELECT GREATEST(
+          (SELECT max(expires_at) FROM capture_put_authority
+            WHERE worktree_id IN ${sql.in([...worktreeIds])}),
+          (SELECT max(until) FROM capture_upload_windows
+            WHERE worktree_id IN ${sql.in([...worktreeIds])})) AS expires_at`.pipe(Effect.orDie);
       return row?.expiresAt ?? null;
     });
 
@@ -1457,12 +1560,16 @@ export const CaptureStoreRepoLive: Layer.Layer<
           headCapture: worktreeChain.headCapture,
           headN: worktreeChain.headN,
           guard: worktreeChain.guard,
+          retained: drizzleSql<boolean>`NOT (${projectListed}) OR removal_fence_marked(${projects.removalPhase}, ${projects.removalSince})`,
         })
         .from(worktreeChain)
+        .leftJoin(worktrees, eq(worktrees.id, worktreeChain.worktreeId))
+        .leftJoin(projects, eq(projects.id, worktrees.projectId))
         .pipe(Effect.orDie);
       return rows.map((row) => ({
         worktreeId: row.worktreeId,
         headCapture: row.headCapture,
+        retained: row.retained,
         headN: Number(row.headN),
         guard: Number(row.guard),
       }));
@@ -1498,20 +1605,38 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return { guards, tombstones: decoded.tombstones };
     });
 
-    const condemn = Effect.fn("CaptureStoreRepo.condemn")(function* (
+    const whileListed = <A>(worktreeId: WorktreeId, otherwise: A, action: Effect.Effect<A>) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`SELECT p.id FROM projects p JOIN worktrees w ON w.project_id = p.id
+        WHERE w.id = ${worktreeId} AND p.removed_at IS NULL
+          AND NOT removal_fence_marked(p.removal_phase, p.removal_since) FOR SHARE OF p`;
+            if (rows.length > 0) return yield* action;
+            const orphan =
+              yield* sql`SELECT 1 FROM worktree_chain WHERE worktree_id = ${worktreeId} AND orphaned FOR SHARE`;
+            return orphan.length === 0 ? otherwise : yield* action;
+          }),
+        )
+        .pipe(Effect.orDie);
+
+    /**
+     * Tombstones `keys` and holds `hold` on each, in one statement that lands only while the
+     * chain's guard still reads `guard` and `admitted` holds for it.
+     */
+    const condemnStatement = (
       worktreeId: WorktreeId,
       guard: number,
       keys: ReadonlyArray<string>,
       hold: DeletionClaim,
-    ) {
-      if (keys.length === 0) return true;
-      // A tombstone already there (a pass that condemned it and failed to delete, one whose
-      // bytes came back, or one another pass still holds) is condemned again: its bytes may be
-      // going now. The claim rows land in the same statement, only if the guard held.
-      const rows = yield* sql<{ readonly worktreeId: string }>`
+      admitted: Statement.Fragment,
+    ) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<{ readonly worktreeId: string }>`
         WITH ch AS (
           UPDATE worktree_chain SET guard = guard + 1
-           WHERE worktree_id = ${worktreeId} AND guard = ${guard}
+           WHERE worktree_id = ${worktreeId} AND guard = ${guard} AND ${admitted}
            RETURNING worktree_id
         ),
         t AS (
@@ -1528,8 +1653,97 @@ export const CaptureStoreRepoLive: Layer.Layer<
           ON CONFLICT (key, token) DO NOTHING
           RETURNING key
         )
-        SELECT worktree_id FROM ch`.pipe(Effect.orDie);
-      return rows.length > 0;
+        SELECT worktree_id FROM ch`;
+        return rows.length > 0;
+      });
+
+    const condemn = Effect.fn("CaptureStoreRepo.condemn")(function* (
+      worktreeId: WorktreeId,
+      guard: number,
+      keys: ReadonlyArray<string>,
+      hold: DeletionClaim,
+    ) {
+      if (keys.length === 0) return true;
+      // A tombstone already there (a pass that condemned it and failed to delete, one whose
+      // bytes came back, or one another pass still holds) is condemned again: its bytes may be
+      // going now. The claim rows land in the same statement, only if the guard held.
+      return yield* whileListed(
+        worktreeId,
+        false,
+        condemnStatement(
+          worktreeId,
+          guard,
+          keys,
+          hold,
+          sql`(orphaned OR EXISTS (SELECT 1 FROM worktrees w JOIN projects p ON p.id = w.project_id
+               WHERE w.id = ${worktreeId} AND p.removed_at IS NULL
+                 AND NOT removal_fence_marked(p.removal_phase, p.removal_since)))`,
+        ).pipe(Effect.orDie),
+      );
+    });
+
+    const referencedElsewhere = Effect.fn("CaptureStoreRepo.referencedElsewhere")(
+      function* (input: {
+        readonly projectId: ProjectId;
+        readonly own: ReadonlyArray<WorktreeId>;
+        readonly keys: ReadonlyArray<string>;
+      }) {
+        if (input.keys.length === 0) return new Set<string>();
+        // `_` in an id widens a pattern: more names read, never fewer.
+        const patterns = [
+          `projects/${input.projectId}/%`,
+          ...input.own.flatMap((id) => [`captures/${id}/%`, `changes/${id}/%`]),
+        ];
+        const own = [...input.own];
+        const rows = yield* sql<{ readonly key: string }>`
+        WITH names AS (
+          SELECT s #>> '{}' AS name
+            FROM captures c,
+                 jsonb_path_query(c.sections, 'strict $.** ? (@.type() == "string")') s
+           WHERE NOT (c.worktree_id = ANY(${own}::text[]))
+             AND (s #>> '{}') LIKE ANY(${patterns}::text[])
+          UNION SELECT c.manifest_key FROM captures c
+           WHERE NOT (c.worktree_id = ANY(${own}::text[])) AND c.manifest_key LIKE ANY(${patterns}::text[])
+          UNION SELECT k.key FROM capture_summaries k
+           WHERE NOT (k.worktree_id = ANY(${own}::text[])) AND k.key LIKE ANY(${patterns}::text[]))
+        SELECT key FROM unnest(${[...input.keys]}::text[]) AS key
+         WHERE EXISTS (SELECT 1 FROM names n WHERE n.name = key
+            OR (key LIKE '%.idx' AND n.name = left(key, -4))
+            OR (strpos(key, '/trees/') > 0
+                AND starts_with(n.name, left(key, strpos(key, '/trees/') + 6))))`.pipe(
+          Effect.orDie,
+        );
+        return new Set(rows.map((row) => row.key));
+      },
+    );
+
+    const condemnForPurge = Effect.fn("CaptureStoreRepo.condemnForPurge")(function* (input: {
+      readonly worktreeId: WorktreeId;
+      readonly guard: number;
+      readonly keys: ReadonlyArray<string>;
+      readonly claim: DeletionClaim;
+      readonly projectId: ProjectId;
+      readonly fenceId: string;
+    }) {
+      if (input.keys.length === 0) return true;
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const held = yield* sql`SELECT 1 FROM projects p JOIN worktrees w ON w.project_id = p.id
+              WHERE w.id = ${input.worktreeId} AND p.id = ${input.projectId}
+                AND p.removal_phase = 'deleting' AND p.removal_id = ${input.fenceId}
+                AND removal_fence_fresh(p.removal_since) FOR SHARE OF p`;
+            if (held.length === 0) return false;
+            return yield* condemnStatement(
+              input.worktreeId,
+              input.guard,
+              input.keys,
+              input.claim,
+              sql`true`,
+            );
+          }),
+        )
+        .pipe(Effect.orDie);
     });
 
     const renewDeletion = Effect.fn("CaptureStoreRepo.renewDeletion")(function* (
@@ -1565,17 +1779,26 @@ export const CaptureStoreRepoLive: Layer.Layer<
       worktreeId: WorktreeId,
       captureIds: ReadonlyArray<string>,
     ) {
-      if (captureIds.length === 0) return 0;
+      if (captureIds.length === 0) return [];
       // Never the head, whatever the caller computed: the chain pointer stays consistent.
-      const rows = yield* sql<{ readonly id: string }>`
+      return yield* whileListed(
+        worktreeId,
+        [],
+        Effect.gen(function* () {
+          const rows = yield* sql<{ readonly id: string }>`
         DELETE FROM captures c
          USING worktree_chain ch
          WHERE c.worktree_id = ${worktreeId}
            AND ch.worktree_id = c.worktree_id
            AND c.id <> ch.head_capture
+           AND EXISTS (SELECT 1 FROM worktrees w JOIN projects p ON p.id = w.project_id
+             WHERE w.id = c.worktree_id AND p.removed_at IS NULL
+               AND NOT removal_fence_marked(p.removal_phase, p.removal_since))
            AND c.id IN ${sql.in([...captureIds])}
          RETURNING c.id`.pipe(Effect.orDie);
-      return rows.length;
+          return rows.map((row) => row.id);
+        }),
+      );
     });
 
     const listPacks = Effect.fn("CaptureStoreRepo.listPacks")(function* (state?: PackState) {
@@ -1613,7 +1836,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
       sealedCompletion,
       recordSeal,
       recordPutAuthority,
+      recordUploadWindow,
       putAuthorityUntil,
+      putAuthorityUntilFor,
       putAuthorityUntilOver,
       sealAuthorityOver,
       noteLaunchAnswers,
@@ -1630,6 +1855,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
       listChains,
       referenceState,
       condemn,
+      condemnForPurge,
+      referencedElsewhere,
       renewDeletion,
       finishDeletion,
       deleteCaptures,

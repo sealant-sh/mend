@@ -57,6 +57,7 @@ import {
   type StoredUnsavedAnswer,
 } from "../schema/workbench.ts";
 import { lockAgentConversation } from "./agent-conversation.ts";
+import { projectListed } from "./projects.ts";
 
 export class SessionNotFoundError extends Schema.TaggedError<SessionNotFoundError>()(
   "SessionNotFoundError",
@@ -883,11 +884,21 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSession);
       });
 
+      const listedSession = inArray(
+        agentSessions.projectId,
+        db.select({ id: projects.id }).from(projects).where(projectListed),
+      );
+
       const listActive = Effect.fn("SessionsRepo.listActive")(function* () {
         const rows = yield* db
           .select()
           .from(agentSessions)
-          .where(inArray(agentSessions.status, ["starting", "running", "waiting", "idle"]))
+          .where(
+            and(
+              listedSession,
+              inArray(agentSessions.status, ["starting", "running", "waiting", "idle"]),
+            ),
+          )
           .orderBy(desc(agentSessions.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toSession);
@@ -931,7 +942,12 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const rows = yield* db
           .select(sessionViewColumns)
           .from(agentSessions)
-          .where(inArray(agentSessions.status, ["starting", "running", "waiting", "idle"]))
+          .where(
+            and(
+              listedSession,
+              inArray(agentSessions.status, ["starting", "running", "waiting", "idle"]),
+            ),
+          )
           .orderBy(desc(agentSessions.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toSessionView);
@@ -964,7 +980,13 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const rows = yield* db
           .select()
           .from(agentSessions)
-          .where(and(isNull(agentSessions.settledAt), ne(agentSessions.status, "starting")))
+          .where(
+            and(
+              listedSession,
+              isNull(agentSessions.settledAt),
+              ne(agentSessions.status, "starting"),
+            ),
+          )
           .orderBy(asc(agentSessions.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toSession);
@@ -999,7 +1021,13 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const rows = yield* db
           .select()
           .from(agentSessions)
-          .where(and(eq(agentSessions.ownerUserId, userId), isNull(agentSessions.settledAt)))
+          .where(
+            and(
+              listedSession,
+              eq(agentSessions.ownerUserId, userId),
+              isNull(agentSessions.settledAt),
+            ),
+          )
           .orderBy(asc(agentSessions.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toSession);
@@ -1010,7 +1038,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           const rows = yield* db
             .select({ count: sql<number>`count(*)::int` })
             .from(agentSessions)
-            .innerJoin(projects, eq(projects.id, agentSessions.projectId))
+            .innerJoin(projects, and(projectListed, eq(projects.id, agentSessions.projectId)))
             .where(
               and(eq(projects.organizationId, organizationId), isNull(agentSessions.settledAt)),
             )
@@ -1025,6 +1053,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .from(agentSessions)
           .where(
             and(
+              listedSession,
               isNotNull(agentSessions.settledAt),
               gt(agentSessions.settledAt, sql`now() - interval '24 hours'`),
               isNotNull(agentSessions.sealantWorkspaceId),
@@ -1150,7 +1179,13 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const rows = yield* db
           .select()
           .from(agentSessions)
-          .where(and(isNotNull(agentSessions.settledAt), isNull(agentSessions.hasTranscript)))
+          .where(
+            and(
+              listedSession,
+              isNotNull(agentSessions.settledAt),
+              isNull(agentSessions.hasTranscript),
+            ),
+          )
           .orderBy(asc(agentSessions.settledAt))
           .limit(limit)
           .pipe(Effect.orDie);
@@ -1565,6 +1600,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             and(
               eq(agentSessions.id, id),
               eq(agentSessions.captureDrain, "stop"),
+              listedSession,
               isNotNull(agentSessions.settledAt),
             ),
           )
@@ -2050,7 +2086,13 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .select()
           .from(agentSessions)
           .where(
-            or(isNotNull(agentSessions.captureDrain), isNotNull(agentSessions.captureDrainResume)),
+            and(
+              listedSession,
+              or(
+                isNotNull(agentSessions.captureDrain),
+                isNotNull(agentSessions.captureDrainResume),
+              ),
+            ),
           )
           .orderBy(asc(agentSessions.captureDrainRequestedAt))
           .pipe(Effect.orDie);
@@ -2143,7 +2185,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const rows = yield* db
           .select({ sessionId: agentSessions.id, key: agentSessions.executorCreateKey })
           .from(agentSessions)
-          .where(isNotNull(agentSessions.executorCreateKey))
+          .where(and(listedSession, isNotNull(agentSessions.executorCreateKey)))
           .pipe(Effect.orDie);
         return rows.flatMap((row) =>
           row.key === null ? [] : [{ sessionId: row.sessionId, key: row.key }],
@@ -2245,7 +2287,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             askerRole: roleIn(askerUserId),
           })
           .from(agentSessions)
-          .innerJoin(projects, eq(projects.id, agentSessions.projectId))
+          .innerJoin(projects, and(projectListed, eq(projects.id, agentSessions.projectId)))
           .where(
             and(
               eq(agentSessions.sealantWorkspaceId, workspaceId),
@@ -2287,7 +2329,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const rows = yield* db
           .select()
           .from(agentSessions)
-          .where(isNotNull(agentSessions.removalRequestedAt))
+          .where(and(listedSession, isNotNull(agentSessions.removalRequestedAt)))
           .orderBy(asc(agentSessions.removalRequestedAt))
           .pipe(Effect.orDie);
         return rows.map(toSession);

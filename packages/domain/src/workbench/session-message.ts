@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import { ClientMessageId, SessionMessageId, type AgentTurnId, type SessionId } from "../ids.ts";
 import { AgentTurn, type AgentTurnStatus } from "./agent-protocol.ts";
 import { AgentTurnSteer, type TurnSteerQueueReason } from "./agent-steer.ts";
+import { TURN_DELIVERY_UNCONFIRMED } from "./steering.ts";
 
 export const MessageInput = Schema.String.check(Schema.isPattern(/\S/)).pipe(
   Schema.brand("MessageInput"),
@@ -105,15 +106,17 @@ export function messageOutcome<const O extends MessageObservation>(
   reason: MessageTurnReason | null,
 ): O & { readonly explanation: string } {
   if (observation._tag === "Turn") {
-    const { status, startedAt } = observation.turn;
+    const { status, startedAt, error } = observation.turn;
     const why = reason === null ? "a new turn was recorded" : turnReasons[reason];
     const unsent = startedAt === null ? endedBeforeStart[status] : undefined;
     const explanation =
       unsent !== undefined
         ? `not sent · ${unsent}`
-        : status === "queued"
-          ? `sent as your next turn · ${why}`
-          : `sent as your next turn · ${why} · turn ${status} · observed`;
+        : status === "failed" && error === TURN_DELIVERY_UNCONFIRMED
+          ? "delivery not confirmed · Mend will not resend"
+          : status === "queued"
+            ? `sent as your next turn · ${why}`
+            : `sent as your next turn · ${why} · turn ${status} · observed`;
     return { ...observation, explanation };
   }
   const delivery = observation.steer.delivery;

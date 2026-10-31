@@ -25,6 +25,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { agentSessions, sessionProcesses } from "../schema/workbench.ts";
+import { sessionInListedProject } from "./projects.ts";
 
 export interface NewSessionProcess {
   readonly id?: SessionProcessId;
@@ -367,7 +368,12 @@ export const SessionProcessesRepoLive: Layer.Layer<
       const rows = yield* db
         .select()
         .from(sessionProcesses)
-        .where(isNull(sessionProcesses.exitedAt))
+        .where(
+          and(
+            isNull(sessionProcesses.exitedAt),
+            sessionInListedProject(db, sessionProcesses.sessionId),
+          ),
+        )
         .orderBy(asc(sessionProcesses.createdAt))
         .pipe(Effect.orDie);
       return rows.map(toSessionProcess);

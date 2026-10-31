@@ -205,10 +205,12 @@ export const UpgradeTicketsRepoLive: Layer.Layer<UpgradeTicketsRepo, never, Mend
  * `clock` for mint and consume. `clock` supplies the time when omitted: standalone callers get host
  * time, and `UpgradeTicketsRepoMemory` injects the Effect Clock it was built under. Credential
  * validity is supplied by `revoked`: credentials stand unless that test registry marks them revoked.
+ * `admit` runs before each mint, as migration 0167's trigger does: it dies for a removed project.
  */
 export const makeUpgradeTicketsMemory = (
   clock: () => number = Date.now,
   revoked: ReadonlySet<string> = new Set(),
+  admit: (scope: string) => Effect.Effect<void> = () => Effect.void,
 ): UpgradeTicketsRepo["Service"] => {
   const rows = new Map<
     string,
@@ -224,20 +226,23 @@ export const makeUpgradeTicketsMemory = (
     credential === null || !revoked.has(credential);
   return {
     mint: (input) =>
-      Effect.sync(() => {
-        const ticket = mintUpgradeTicket();
-        const expiresAt =
-          input.expiresAt?.getTime() ??
-          (input.now?.getTime() ?? clock()) + (input.ttlMs ?? UPGRADE_TICKET_TTL_MS);
-        rows.set(hashUpgradeTicket(ticket), {
-          userId: input.userId,
-          target: input.target,
-          scope: input.scope,
-          credential: input.credential,
-          expiresAt,
-        });
-        return { ticket, expiresAt: new Date(expiresAt) };
-      }),
+      Effect.andThen(
+        admit(input.scope),
+        Effect.sync(() => {
+          const ticket = mintUpgradeTicket();
+          const expiresAt =
+            input.expiresAt?.getTime() ??
+            (input.now?.getTime() ?? clock()) + (input.ttlMs ?? UPGRADE_TICKET_TTL_MS);
+          rows.set(hashUpgradeTicket(ticket), {
+            userId: input.userId,
+            target: input.target,
+            scope: input.scope,
+            credential: input.credential,
+            expiresAt,
+          });
+          return { ticket, expiresAt: new Date(expiresAt) };
+        }),
+      ),
     consume: (input) =>
       Effect.sync(() => {
         const key = hashUpgradeTicket(input.ticket);

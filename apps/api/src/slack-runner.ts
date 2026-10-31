@@ -11,7 +11,6 @@ import {
 import {
   AgentConversationRepo,
   AuditEventsRepo,
-  prettyCause,
   SessionControlEventsRepo,
   SessionProcessesRepo,
   SessionsRepo,
@@ -802,7 +801,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
                   organizationId: install.organizationId,
                   channelId: mention.channelId,
                   messageTs: mention.messageTs,
-                  cause: prettyCause(cause),
+                  cause: Cause.pretty(cause),
                 }),
               );
               if (Cause.hasInterruptsOnly(cause)) return undefined;

@@ -14,7 +14,7 @@ import {
   ReviewDiffView,
   SetCommentStateRequest,
 } from "./sessions.ts";
-import { StoreFailure } from "./workbench-views.ts";
+import { RemovalInProgress, StoreFailure } from "./workbench-views.ts";
 
 export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
   .add(
@@ -22,7 +22,7 @@ export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
       params: { id: ChangeId },
       payload: OpenReviewRequest,
       success: OpenReviewResult,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -41,7 +41,7 @@ export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
       params: { id: ChangeId, sliceId: ReviewSliceId },
       payload: NewSliceReviewCommentRequest,
       success: ReviewComment,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -71,7 +71,7 @@ export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
       params: { id: ChangeId, commentId: ReviewCommentId },
       payload: SetCommentStateRequest,
       success: ReviewComment,
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -80,7 +80,7 @@ export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
     HttpApiEndpoint.post("read", "/changes/:id/read", {
       params: { id: ChangeId },
       success: Schema.Struct({ queued: Schema.Boolean }),
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -95,7 +95,7 @@ export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
     HttpApiEndpoint.post("composeTour", "/changes/:id/tour", {
       params: { id: ChangeId },
       success: Schema.Struct({ queued: Schema.Boolean }),
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -104,7 +104,7 @@ export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
     HttpApiEndpoint.post("suggest", "/changes/:id/suggest", {
       params: { id: ChangeId },
       success: Schema.Struct({ queued: Schema.Boolean }),
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(

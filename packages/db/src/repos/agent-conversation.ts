@@ -6,6 +6,7 @@ import {
   AgentTurnSteerId,
   SessionMessageId,
   type ChangeLandingId,
+  type DispatchAttemptId,
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
@@ -26,6 +27,7 @@ import {
   turnSteerSender,
   type TurnSteerQueueReason,
   OPEN_AGENT_TURN_STATUSES,
+  TURN_DELIVERY_UNCONFIRMED,
   type AgentApprovalDecision,
   type AgentEventItem,
   type AgentEventRequest,
@@ -88,6 +90,35 @@ export const lockAgentConversation = (tx: Pick<MendDatabase, "execute">, session
     sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`,
   );
 
+/** Orders a process's running turn: its claim, a harness turn, and every move of a claim. */
+const lockAgentProcess = (tx: Pick<MendDatabase, "execute">, processId: SessionProcessId) =>
+  tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-process:${processId}`}))`);
+
+/** The row a dispatch claimed: its process, stamped with its attempt. */
+const heldBy = (claim: DispatchClaim): SQL | undefined =>
+  and(
+    eq(agentTurns.processId, claim.processId),
+    claim.attempt === null
+      ? isNull(agentTurns.dispatchAttemptId)
+      : eq(agentTurns.dispatchAttemptId, claim.attempt),
+  );
+
+/** Unbound, or bound only to the id the claim's own send may have bound. */
+const unsentOrBoundTo = (bound: string | null): SQL | undefined =>
+  bound === null
+    ? isNull(agentTurns.providerTurnId)
+    : or(isNull(agentTurns.providerTurnId), eq(agentTurns.providerTurnId, bound));
+
+const harnessTurnRow = (tx: ConversationTx, sessionId: SessionId, providerTurnId: string) =>
+  tx
+    .select()
+    .from(agentTurns)
+    .where(and(eq(agentTurns.sessionId, sessionId), eq(agentTurns.providerTurnId, providerTurnId)))
+    .limit(1);
+
+const recorded = (turn: AgentTurn): HarnessTurnOpening => ({ _tag: "Recorded", turn });
+const SLOT_HELD: HarnessTurnOpening = { _tag: "SlotHeld" };
+
 const steerKeyLockKey = (author: string, clientSteerId: string): string =>
   `mend:steer:${author}:${clientSteerId}`;
 
@@ -148,6 +179,54 @@ export interface AdmitTurnSteerInput {
   readonly author: string;
   readonly input: string;
   readonly clientSteerId: string | null;
+}
+
+/**
+ * The turn one dispatch claimed, as only that dispatch may move it while it is unsent. `attempt` is
+ * null only for a turn claimed before attempts were recorded (0168).
+ */
+export interface DispatchClaim {
+  readonly sessionId: SessionId;
+  readonly processId: SessionProcessId;
+  readonly attempt: DispatchAttemptId | null;
+}
+
+/** A turn the harness opened on its own, by its provider turn id. */
+export interface HarnessTurn {
+  readonly providerTurnId: string;
+  /** What the harness was answering. */
+  readonly reason: string;
+  /** Whose login the workspace held when the harness opened it. */
+  readonly payer: TurnPayer;
+}
+
+/** How a harness turn ended, for one recorded only once it had ended. */
+export interface HarnessTurnEnd {
+  readonly status: Exclude<AgentTurnStatus, "queued" | "running">;
+  readonly usage: AgentTurnUsage | null;
+  readonly error: string | null;
+}
+
+/** Recorded: the harness turn's row. SlotHeld: another turn runs on the process, so it has none. */
+export type HarnessTurnOpening =
+  | { readonly _tag: "Recorded"; readonly turn: AgentTurn }
+  | { readonly _tag: "SlotHeld" };
+
+/** What else a dispatch's release of its unsent turn settles in the same transaction. */
+export interface ClaimRelease {
+  /**
+   * A provider turn id the dispatch's own `turn.started` may have bound while its send was out,
+   * and that its send's answer showed was another turn: the binding is cleared.
+   */
+  readonly bound?: string | null;
+  /** A harness turn that waited for the slot: recorded running once the release frees it. */
+  readonly harness?: HarnessTurn | null;
+}
+
+/** The process's running turn no provider turn is bound to, and the dispatch that claimed it. */
+export interface UnsentClaim {
+  readonly turn: AgentTurn;
+  readonly attempt: DispatchAttemptId | null;
 }
 
 export class AgentControlJournalError extends Schema.TaggedError<AgentControlJournalError>()(
@@ -250,11 +329,15 @@ export class AgentConversationRepo extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<AgentProtocolControl>>;
     /** Every queued or running turn, oldest first. */
     readonly openTurns: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<AgentTurn>>;
-    readonly claimNextTurn: (processId: SessionProcessId) => Effect.Effect<AgentTurn | null>;
+    /** Take the process's next queued turn, stamped with `attempt`; null while a turn runs. */
+    readonly claimNextTurn: (
+      processId: SessionProcessId,
+      attempt: DispatchAttemptId,
+    ) => Effect.Effect<AgentTurn | null>;
     /**
-     * Record a turn the harness opened on its own, running. A turn of Mend's the process claimed
-     * but never sent goes back to the queue: the harness holds the conversation until its turn
-     * ends. Idempotent by provider turn id; null when another sent turn still runs.
+     * Record a turn the harness opened on its own, running, or ended when `ended` says how. It never
+     * moves another turn: while one runs on the process it is not recorded running (SlotHeld).
+     * Idempotent by provider turn id.
      */
     readonly openHarnessTurn: (
       sessionId: SessionId,
@@ -263,13 +346,35 @@ export class AgentConversationRepo extends Context.Service<
       reason: string,
       /** Whose login the workspace held when the harness opened it. */
       payer: TurnPayer,
-    ) => Effect.Effect<AgentTurn | null>;
-    /** Put back a claimed turn the harness would not take yet (it was busy in its own turn). */
-    readonly requeueClaimedTurn: (id: AgentTurnId) => Effect.Effect<void>;
-    readonly setProviderTurnId: (
-      id: AgentTurnId,
+      ended?: HarnessTurnEnd,
+    ) => Effect.Effect<HarnessTurnOpening>;
+    /** The process's running turn that no provider turn is bound to, with its claim; null if none. */
+    readonly unsentClaim: (processId: SessionProcessId) => Effect.Effect<UnsentClaim | null>;
+    /**
+     * Bind the claimed turn to the provider turn its send started, and record whose login it ran
+     * on. Only while it runs unbound (or bound to `replacing`); the same id again is a no-op that
+     * still answers the turn. Null when the claim no longer holds it.
+     */
+    readonly bindOwnSend: (
+      claim: DispatchClaim,
       providerTurnId: string,
-    ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
+      payer: TurnPayer,
+      replacing?: string | null,
+    ) => Effect.Effect<AgentTurn | null>;
+    /**
+     * Put the claimed, unsent turn back in the queue; null when the claim no longer holds it (a
+     * Stop, a hand-over or a restart decided first).
+     */
+    readonly putBackOwn: (
+      claim: DispatchClaim,
+      release?: ClaimRelease,
+    ) => Effect.Effect<AgentTurn | null>;
+    /** Fail the claimed, unsent turn with `error`; null when the claim no longer holds it. */
+    readonly failOwn: (
+      claim: DispatchClaim,
+      error: string,
+      release?: ClaimRelease,
+    ) => Effect.Effect<AgentTurn | null>;
     /**
      * Record whose login a sent turn ran on (docs/adr/0013, "Every turn records its payer"),
      * replacing what a previous send of the same turn recorded.
@@ -278,16 +383,19 @@ export class AgentConversationRepo extends Context.Service<
       id: AgentTurnId,
       payer: TurnPayer,
     ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
-    /** Correlate a provider notification with the one running Mend turn. */
-    readonly bindRunningProviderTurn: (
-      sessionId: SessionId,
-      processId: SessionProcessId,
-      providerTurnId: string,
-    ) => Effect.Effect<AgentTurn | null>;
+    /**
+     * Fail a queued or running turn, or reword a failed one; a turn that ended otherwise (a
+     * Stop's `cancelled`) is never moved, and reads as not found.
+     */
     readonly failTurn: (
       id: AgentTurnId,
       error: string,
     ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
+    /**
+     * Fail a running turn no provider turn is bound to, with `TURN_DELIVERY_UNCONFIRMED`; null when
+     * the harness's turn was bound to it or it ended meanwhile.
+     */
+    readonly failUnconfirmedTurn: (id: AgentTurnId) => Effect.Effect<AgentTurn | null>;
     /**
      * What the turn's request asked for (docs/adr/0007-landing.md), read once per turn and
      * replaced whole when read again.
@@ -593,13 +701,13 @@ export const AgentConversationRepoLive: Layer.Layer<
     const pg = yield* PgClient.PgClient;
 
     const notify = (sessionId: SessionId) => notifyAgentConversation(db, pg, sessionId);
-    /** A message already committed is this request's to deliver, whether or not feeds heard of it. */
-    const notifyAdmitted = (sessionId: SessionId) =>
+    /** A change already committed is its caller's to act on, whether or not feeds heard of it. */
+    const notifyCommitted = (sessionId: SessionId) =>
       notify(sessionId).pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)
             ? Effect.failCause(cause)
-            : Effect.logWarning("conversation: a message's change notification failed").pipe(
+            : Effect.logWarning("conversation: a committed change's notification failed").pipe(
                 Effect.annotateLogs({ sessionId }),
               ),
         ),
@@ -740,7 +848,7 @@ export const AgentConversationRepoLive: Layer.Layer<
             recoverCommitted(input, messageId, error, isSteerMessage),
           ),
         );
-      if (admitted._tag === "Created") yield* notifyAdmitted(input.sessionId);
+      if (admitted._tag === "Created") yield* notifyCommitted(input.sessionId);
       return admitted;
     });
 
@@ -775,7 +883,7 @@ export const AgentConversationRepoLive: Layer.Layer<
             recoverCommitted(input, messageId, error, isTurnMessage),
           ),
         );
-      if (admitted._tag === "Created") yield* notifyAdmitted(input.sessionId);
+      if (admitted._tag === "Created") yield* notifyCommitted(input.sessionId);
       return admitted;
     });
 
@@ -1227,13 +1335,12 @@ export const AgentConversationRepoLive: Layer.Layer<
 
     const claimNextTurn = Effect.fn("AgentConversationRepo.claimNextTurn")(function* (
       processId: SessionProcessId,
+      attempt: DispatchAttemptId,
     ) {
       const claimed = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-process:${processId}`}))`,
-            );
+            yield* lockAgentProcess(tx, processId);
             const [running] = yield* tx
               .select({ id: agentTurns.id })
               .from(agentTurns)
@@ -1251,15 +1358,52 @@ export const AgentConversationRepoLive: Layer.Layer<
             const now = yield* DateTime.nowAsDate;
             const [row] = yield* tx
               .update(agentTurns)
-              .set({ status: "running", startedAt: now })
+              .set({ status: "running", startedAt: now, dispatchAttemptId: attempt })
               .where(and(eq(agentTurns.id, queued.id), eq(agentTurns.status, "queued")))
               .returning();
             return row === undefined ? null : toTurn(row);
           }),
         )
         .pipe(Effect.orDie);
-      if (claimed !== null) yield* notify(claimed.sessionId);
+      if (claimed !== null) yield* notifyCommitted(claimed.sessionId);
       return claimed;
+    });
+
+    const insertHarnessTurn = Effect.fn("AgentConversationRepo.insertHarnessTurn")(function* (
+      tx: ConversationTx,
+      sessionId: SessionId,
+      processId: SessionProcessId,
+      harness: HarnessTurn,
+      ended: HarnessTurnEnd | null,
+    ) {
+      const [position] = yield* tx
+        .select({ value: max(agentTurns.ordinal) })
+        .from(agentTurns)
+        .where(eq(agentTurns.sessionId, sessionId));
+      const now = yield* DateTime.nowAsDate;
+      const [row] = yield* tx
+        .insert(agentTurns)
+        .values({
+          id: AgentTurnId.make(crypto.randomUUID()),
+          sessionId,
+          processId,
+          ordinal: (position?.value ?? -1) + 1,
+          author: null,
+          origin: "harness",
+          input: harness.reason,
+          status: ended?.status ?? "running",
+          providerTurnId: harness.providerTurnId,
+          usage: ended?.usage ?? null,
+          error: ended?.error ?? null,
+          billedUserId: harness.payer.userId,
+          billedAccountId: harness.payer.accountId,
+          billedAccountName: harness.payer.accountName,
+          startedAt: now,
+          endedAt: ended === null ? null : now,
+        })
+        .returning();
+      if (row === undefined) return yield* Effect.die("harness turn insert returned no row");
+      return toTurn(row);
     });
 
     const openHarnessTurn = Effect.fn("AgentConversationRepo.openHarnessTurn")(function* (
@@ -1268,74 +1412,159 @@ export const AgentConversationRepoLive: Layer.Layer<
       providerTurnId: string,
       reason: string,
       payer: TurnPayer,
+      ended?: HarnessTurnEnd,
     ) {
       const opened = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
             // The conversation lock orders the ordinal against submitTurn; the process lock
-            // orders the running turn against claimNextTurn.
+            // orders the running turn against claimNextTurn and the claim's own moves.
             yield* lockAgentConversation(tx, sessionId);
-            yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-process:${processId}`}))`,
+            yield* lockAgentProcess(tx, processId);
+            const [existing] = yield* harnessTurnRow(tx, sessionId, providerTurnId);
+            if (existing !== undefined) {
+              if (ended === undefined || existing.status !== "running")
+                return { opening: recorded(toTurn(existing)), changed: false };
+              const [row] = yield* tx
+                .update(agentTurns)
+                .set({ ...ended, endedAt: yield* DateTime.nowAsDate })
+                .where(eq(agentTurns.id, existing.id))
+                .returning();
+              if (row === undefined)
+                return yield* Effect.die("harness turn update returned no row");
+              return { opening: recorded(toTurn(row)), changed: true };
+            }
+            if (ended === undefined) {
+              const [running] = yield* tx
+                .select({ id: agentTurns.id })
+                .from(agentTurns)
+                .where(and(eq(agentTurns.processId, processId), eq(agentTurns.status, "running")))
+                .limit(1);
+              if (running !== undefined) return { opening: SLOT_HELD, changed: false };
+            }
+            const turn = yield* insertHarnessTurn(
+              tx,
+              sessionId,
+              processId,
+              { providerTurnId, reason, payer },
+              ended ?? null,
             );
-            const [existing] = yield* tx
-              .select()
-              .from(agentTurns)
-              .where(
-                and(
-                  eq(agentTurns.sessionId, sessionId),
-                  eq(agentTurns.providerTurnId, providerTurnId),
-                ),
-              )
-              .limit(1);
-            if (existing !== undefined) return { turn: toTurn(existing), created: false };
-            // Claimed but never sent: the adapter refuses a send while the harness's turn is open.
-            yield* tx
-              .update(agentTurns)
-              .set({ status: "queued", startedAt: null })
-              .where(
-                and(
-                  eq(agentTurns.processId, processId),
-                  eq(agentTurns.status, "running"),
-                  isNull(agentTurns.providerTurnId),
-                ),
-              );
-            const [running] = yield* tx
-              .select({ id: agentTurns.id })
-              .from(agentTurns)
-              .where(and(eq(agentTurns.processId, processId), eq(agentTurns.status, "running")))
-              .limit(1);
-            if (running !== undefined) return null;
-            const [position] = yield* tx
-              .select({ value: max(agentTurns.ordinal) })
-              .from(agentTurns)
-              .where(eq(agentTurns.sessionId, sessionId));
+            return { opening: recorded(turn), changed: true };
+          }),
+        )
+        .pipe(Effect.orDie);
+      if (opened.changed) yield* notifyCommitted(sessionId);
+      return opened.opening;
+    });
+
+    const unsentClaim = Effect.fn("AgentConversationRepo.unsentClaim")(function* (
+      processId: SessionProcessId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(agentTurns)
+        .where(
+          and(
+            eq(agentTurns.processId, processId),
+            eq(agentTurns.status, "running"),
+            isNull(agentTurns.providerTurnId),
+          ),
+        )
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : { turn: toTurn(row), attempt: row.dispatchAttemptId };
+    });
+
+    const bindOwnSend = Effect.fn("AgentConversationRepo.bindOwnSend")(function* (
+      claim: DispatchClaim,
+      providerTurnId: string,
+      payer: TurnPayer,
+      replacing: string | null = null,
+    ) {
+      const bound = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* lockAgentProcess(tx, claim.processId);
             const [row] = yield* tx
-              .insert(agentTurns)
-              .values({
-                id: AgentTurnId.make(crypto.randomUUID()),
-                sessionId,
-                processId,
-                ordinal: (position?.value ?? -1) + 1,
-                author: null,
-                origin: "harness",
-                input: reason,
-                status: "running",
+              .update(agentTurns)
+              .set({
                 providerTurnId,
                 billedUserId: payer.userId,
                 billedAccountId: payer.accountId,
                 billedAccountName: payer.accountName,
-                startedAt: yield* DateTime.nowAsDate,
               })
+              .where(
+                and(
+                  heldBy(claim),
+                  or(
+                    eq(agentTurns.providerTurnId, providerTurnId),
+                    and(eq(agentTurns.status, "running"), unsentOrBoundTo(replacing)),
+                  ),
+                ),
+              )
               .returning();
-            if (row === undefined) return yield* Effect.die("harness turn insert returned no row");
-            return { turn: toTurn(row), created: true };
+            return row === undefined ? null : toTurn(row);
           }),
         )
         .pipe(Effect.orDie);
-      if (opened === null) return null;
-      if (opened.created) yield* notify(sessionId);
-      return opened.turn;
+      if (bound !== null) yield* notifyCommitted(bound.sessionId);
+      return bound;
+    });
+
+    /**
+     * One move of a claimed, unsent turn by the dispatch that claimed it: a compare-and-set under
+     * the process lock, which frees the process for a harness turn that waited for it.
+     */
+    const releaseOwn = (
+      claim: DispatchClaim,
+      change: Partial<typeof agentTurns.$inferInsert>,
+      release: ClaimRelease,
+    ) =>
+      db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const harness = release.harness ?? null;
+            if (harness !== null) yield* lockAgentConversation(tx, claim.sessionId);
+            yield* lockAgentProcess(tx, claim.processId);
+            const [row] = yield* tx
+              .update(agentTurns)
+              .set({ ...change, providerTurnId: null })
+              .where(
+                and(
+                  heldBy(claim),
+                  eq(agentTurns.status, "running"),
+                  unsentOrBoundTo(release.bound ?? null),
+                ),
+              )
+              .returning();
+            if (row === undefined) return null;
+            if (harness !== null) {
+              const [existing] = yield* harnessTurnRow(tx, claim.sessionId, harness.providerTurnId);
+              if (existing === undefined)
+                yield* insertHarnessTurn(tx, claim.sessionId, claim.processId, harness, null);
+            }
+            return toTurn(row);
+          }),
+        )
+        .pipe(
+          Effect.orDie,
+          Effect.tap((turn) => (turn === null ? Effect.void : notifyCommitted(turn.sessionId))),
+        );
+
+    const putBackOwn = Effect.fn("AgentConversationRepo.putBackOwn")(function* (
+      claim: DispatchClaim,
+      release: ClaimRelease = {},
+    ) {
+      return yield* releaseOwn(claim, { status: "queued", startedAt: null }, release);
+    });
+
+    const failOwn = Effect.fn("AgentConversationRepo.failOwn")(function* (
+      claim: DispatchClaim,
+      error: string,
+      release: ClaimRelease = {},
+    ) {
+      const endedAt = yield* DateTime.nowAsDate;
+      return yield* releaseOwn(claim, { status: "failed", error, endedAt }, release);
     });
 
     const taskActivity = Effect.fn("AgentConversationRepo.taskActivity")(function* (
@@ -1350,39 +1579,6 @@ export const AgentConversationRepoLive: Layer.Layer<
         .where(and(eq(agentItems.processId, processId), eq(agentItems.kind, "task")))
         .pipe(Effect.orDie);
       return { running: row?.running ?? 0, lastUpdatedAt: row?.lastUpdatedAt ?? null };
-    });
-
-    const requeueClaimedTurn = Effect.fn("AgentConversationRepo.requeueClaimedTurn")(function* (
-      id: AgentTurnId,
-    ) {
-      const [row] = yield* db
-        .update(agentTurns)
-        .set({ status: "queued", startedAt: null })
-        .where(
-          and(
-            eq(agentTurns.id, id),
-            eq(agentTurns.status, "running"),
-            isNull(agentTurns.providerTurnId),
-          ),
-        )
-        .returning({ sessionId: agentTurns.sessionId })
-        .pipe(Effect.orDie);
-      if (row !== undefined) yield* notify(row.sessionId);
-    });
-
-    const setProviderTurnId = Effect.fn("AgentConversationRepo.setProviderTurnId")(function* (
-      id: AgentTurnId,
-      providerTurnId: string,
-    ) {
-      const [row] = yield* db
-        .update(agentTurns)
-        .set({ providerTurnId })
-        .where(eq(agentTurns.id, id))
-        .returning()
-        .pipe(Effect.orDie);
-      if (row === undefined) return yield* new AgentTurnNotFoundError({ turnId: id });
-      yield* notify(row.sessionId);
-      return toTurn(row);
     });
 
     const setTurnPayer = Effect.fn("AgentConversationRepo.setTurnPayer")(function* (
@@ -1404,29 +1600,6 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
-    const bindRunningProviderTurn = Effect.fn("AgentConversationRepo.bindRunningProviderTurn")(
-      function* (sessionId: SessionId, processId: SessionProcessId, providerTurnId: string) {
-        const existing = yield* byProviderTurnId(sessionId, providerTurnId);
-        if (existing !== null) return existing;
-        const [row] = yield* db
-          .update(agentTurns)
-          .set({ providerTurnId })
-          .where(
-            and(
-              eq(agentTurns.sessionId, sessionId),
-              eq(agentTurns.processId, processId),
-              eq(agentTurns.status, "running"),
-              isNull(agentTurns.providerTurnId),
-            ),
-          )
-          .returning()
-          .pipe(Effect.orDie);
-        if (row === undefined) return null;
-        yield* notify(sessionId);
-        return toTurn(row);
-      },
-    );
-
     const failTurn = Effect.fn("AgentConversationRepo.failTurn")(function* (
       id: AgentTurnId,
       error: string,
@@ -1434,11 +1607,37 @@ export const AgentConversationRepoLive: Layer.Layer<
       const [row] = yield* db
         .update(agentTurns)
         .set({ status: "failed", error, endedAt: yield* DateTime.nowAsDate })
-        .where(eq(agentTurns.id, id))
+        .where(
+          and(eq(agentTurns.id, id), inArray(agentTurns.status, ["queued", "running", "failed"])),
+        )
         .returning()
         .pipe(Effect.orDie);
       if (row === undefined) return yield* new AgentTurnNotFoundError({ turnId: id });
       yield* notify(row.sessionId);
+      return toTurn(row);
+    });
+
+    const failUnconfirmedTurn = Effect.fn("AgentConversationRepo.failUnconfirmedTurn")(function* (
+      id: AgentTurnId,
+    ) {
+      const [row] = yield* db
+        .update(agentTurns)
+        .set({
+          status: "failed",
+          error: TURN_DELIVERY_UNCONFIRMED,
+          endedAt: yield* DateTime.nowAsDate,
+        })
+        .where(
+          and(
+            eq(agentTurns.id, id),
+            eq(agentTurns.status, "running"),
+            isNull(agentTurns.providerTurnId),
+          ),
+        )
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return null;
+      yield* notifyCommitted(row.sessionId);
       return toTurn(row);
     });
 
@@ -2102,12 +2301,14 @@ export const AgentConversationRepoLive: Layer.Layer<
       openTurns,
       claimNextTurn,
       openHarnessTurn,
-      requeueClaimedTurn,
+      unsentClaim,
+      bindOwnSend,
+      putBackOwn,
+      failOwn,
       taskActivity,
-      setProviderTurnId,
       setTurnPayer,
-      bindRunningProviderTurn,
       failTurn,
+      failUnconfirmedTurn,
       setTurnIntent,
       claimTurnLanding,
       decideTurnLanding,

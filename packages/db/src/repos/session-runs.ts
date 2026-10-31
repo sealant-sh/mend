@@ -6,6 +6,7 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { sessionRuns } from "../schema/workbench.ts";
+import { sessionInListedProject } from "./projects.ts";
 import { uniqueViolationConstraint } from "./unique-violation.ts";
 
 /** One open run per session: the partial unique index on `session_id` where `settled_at` is null. */
@@ -209,7 +210,9 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
       const rows = yield* db
         .select()
         .from(sessionRuns)
-        .where(isNull(sessionRuns.settledAt))
+        .where(
+          and(isNull(sessionRuns.settledAt), sessionInListedProject(db, sessionRuns.sessionId)),
+        )
         .orderBy(asc(sessionRuns.createdAt))
         .pipe(Effect.orDie);
       return rows.map(toSessionRun);

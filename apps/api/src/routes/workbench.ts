@@ -70,6 +70,7 @@ import {
   SessionTranscript,
   TranscriptEvent,
   WorkspacePackageResolutionView,
+  RemovedProjectsDisk,
 } from "@mend/api-contracts";
 import {
   ProjectLinksRepo,
@@ -142,6 +143,7 @@ import {
   ServiceView,
   canChangeVisibility,
   canManageProject,
+  canSeeProject,
   canToggleSharedControl,
   OPENCODE_NOT_STEERABLE,
   captureDiscardAuditData,
@@ -517,6 +519,34 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
 
 export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (handlers) =>
   handlers
+    .handle("removedDisk", () =>
+      Effect.gen(function* () {
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        return viewer === null
+          ? new RemovedProjectsDisk({ projects: 0, bytes: 0, sharedBytes: 0 })
+          : yield* (yield* Removal).disk(viewer);
+      }),
+    )
+    .handle("removed", () =>
+      Effect.gen(function* () {
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        return viewer === null ? [] : yield* (yield* Removal).removed(viewer);
+      }),
+    )
+    .handle("restore", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        if (viewer === null) return yield* new NotFound({ id: params.id });
+        return yield* (yield* Removal).restore(params.id, viewer, payload.name);
+      }),
+    )
+    .handle("purge", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        if (viewer === null) return yield* new NotFound({ id: params.id });
+        return yield* (yield* Removal).purge(params.id, viewer, payload.confirm);
+      }),
+    )
     .handle("list", () =>
       Effect.gen(function* () {
         const access = yield* ProjectAccess;
@@ -1469,13 +1499,25 @@ export const ProjectLinksGroupLive = HttpApiBuilder.group(MendApi, "projectLinks
             message: `"${payload.name}" is not a usable link name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
-        const existing = yield* links.listForProject(params.id);
-        const clash = existing.find(
-          (link) => link.name === payload.name || link.linkedProjectId === payload.linkedProjectId,
+        // A link to a removed project still holds its name and its target until it is deleted.
+        const clash = (yield* links.listAllForProject(params.id)).find(
+          ({ link }) =>
+            link.name === payload.name || link.linkedProjectId === payload.linkedProjectId,
         );
+        if (clash !== undefined && !clash.targetListed) {
+          const removed = yield* (yield* ProjectsRepo).removedById(clash.link.linkedProjectId);
+          const viewer = yield* access.viewer();
+          const target =
+            removed !== null && viewer !== null && canSeeProject(removed.project, viewer)
+              ? `the removed project ${removed.project.name}`
+              : "a removed project";
+          return yield* new StoreFailure({
+            message: `The link ${clash.link.name} on this project points at ${target}. Delete that link, or Restore the project, then link again.`,
+          });
+        }
         if (clash !== undefined) {
           return yield* new StoreFailure({
-            message: `Already linked on this project: ${clash.name} (${linked.name})`,
+            message: `Already linked on this project: ${clash.link.name} (${linked.name})`,
           });
         }
         // The worktree bound at launch: a named one must exist; none named picks the linked

@@ -115,6 +115,7 @@ import {
 } from "./model-preferences.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
+import { makeProjectReadOrder } from "./project-read-order.ts";
 import * as Queueing from "./queue.ts";
 import {
   AMBIGUOUS_WORKTREE,
@@ -1646,7 +1647,7 @@ export const makePersonHub = (input: {
 
     const projects = new Map<string, ProjectEntry>();
     /** Projects removed from here: a read that began before the removal never brings one back. */
-    const removedProjects = new Set<string>();
+    const projectReadOrder = makeProjectReadOrder();
     const conversations = new Map<string, Conversation>();
     /**
      * Session id → the turns Mend answered `POST /turns` with that no read of Mend has shown yet. A
@@ -2492,6 +2493,7 @@ export const makePersonHub = (input: {
 
     /** Everything again: every project the person sees, and every thread's turns and requests. */
     const refreshAll: Effect.Effect<void, HubReadError> = Effect.gen(function* () {
+      const started = projectReadOrder.begin();
       const listed = yield* asPerson((token) => mend.listProjects(token)).pipe(
         Effect.catchTag(
           "MendNotFound",
@@ -2515,7 +2517,8 @@ export const makePersonHub = (input: {
       );
       const facts = people ?? active;
       const read = details.filter(
-        (entry): entry is ProjectEntry => entry !== null && !removedProjects.has(entry.project.id),
+        (entry): entry is ProjectEntry =>
+          entry !== null && !projectReadOrder.newerThan(entry.project.id, started),
       );
       const sessionIds = read.flatMap((entry) => projectableSessionIds(entry, launched));
       const [conversationsRead, retiredRead] = yield* Effect.all(
@@ -2534,10 +2537,20 @@ export const makePersonHub = (input: {
       yield* locked(
         Effect.gen(function* () {
           // A project removed while the reads above ran stays removed, with its threads.
-          const entries = read.filter((entry) => !removedProjects.has(entry.project.id));
+          const supersededSessions = new Set<string>();
+          const entries = read.filter((entry) => projectReadOrder.apply(entry.project.id, started));
+          for (const [id, current] of projects) {
+            if (projectReadOrder.newerThan(id, started)) {
+              entries.push(current);
+              for (const session of current.sessions) supersededSessions.add(session.id);
+            }
+          }
+          projectReadOrder.snapshot(started);
           const present = new Set(entries.flatMap((entry) => entry.sessions.map((s) => s.id)));
           const kept = <A>(rows: ReadonlyArray<readonly [string, A]>) =>
-            rows.filter(([sessionId]) => present.has(sessionId));
+            rows.filter(
+              ([sessionId]) => present.has(sessionId) && !supersededSessions.has(sessionId),
+            );
           projects.clear();
           for (const entry of entries) projects.set(entry.project.id, entry);
           seen(present);
@@ -2547,7 +2560,8 @@ export const makePersonHub = (input: {
           active = facts;
           applyRetirements(kept(retiredRead));
           const previous = new Map(conversations);
-          conversations.clear();
+          for (const id of previous.keys())
+            if (!supersededSessions.has(id)) conversations.delete(id);
           for (const [sessionId, conversation] of kept(conversationsRead)) {
             if (conversation !== null) {
               conversations.set(
@@ -2579,6 +2593,7 @@ export const makePersonHub = (input: {
       applied: () => void = () => {},
     ): Effect.Effect<void, HubReadError> =>
       Effect.gen(function* () {
+        const started = projectReadOrder.begin();
         // A process starting or ending re-reads the project: who is live in each executor with it.
         const [entry, people] = yield* Effect.all(
           [
@@ -2616,7 +2631,7 @@ export const makePersonHub = (input: {
         );
         yield* locked(
           Effect.gen(function* () {
-            if (removedProjects.has(projectId)) return;
+            if (!projectReadOrder.apply(projectId, started)) return;
             const previous = projects.get(projectId);
             if (entry === null) {
               projects.delete(projectId);
@@ -5514,7 +5529,7 @@ export const makePersonHub = (input: {
     const projectRemoved = (projectId: string) =>
       locked(
         Effect.gen(function* () {
-          removedProjects.add(projectId);
+          projectReadOrder.removed(projectId);
           const previous = projects.get(projectId);
           projects.delete(projectId);
           const finished: Array<string> = [];

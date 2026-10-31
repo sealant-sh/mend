@@ -17,6 +17,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
+import { RemovalInProgress } from "./workbench-views.ts";
 
 /**
  * A project's resources (ADR 0019): read them, propose one, remove a proposal or a definition,
@@ -85,14 +86,14 @@ export const resourcesGroup = HttpApiGroup.make("resources")
       payload: ResourceProposalInput,
       success: ResourceProposalEntry,
       // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.
-      error: [NotFound, ResourceDenied, ResourceRejected],
+      error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
     }),
   )
   .add(
     HttpApiEndpoint.delete("withdraw", "/projects/:id/resource-proposals/:proposalId", {
       params: { id: ProjectId, proposalId: ResourceProposalId },
       success: ResourceRemoved,
-      error: [NotFound, ResourceDenied],
+      error: [NotFound, ResourceDenied, RemovalInProgress],
     }),
   )
   .add(
@@ -100,7 +101,7 @@ export const resourcesGroup = HttpApiGroup.make("resources")
       params: { id: ProjectId, definitionId: ResourceDefinitionId },
       payload: Schema.Struct({ expectedDigest: ResourceSpecDigest }),
       success: ResourceRemoved,
-      error: [NotFound, ResourceDenied, ResourceStale],
+      error: [NotFound, ResourceDenied, ResourceStale, RemovalInProgress],
     }),
   )
   .add(
@@ -116,6 +117,7 @@ export const resourcesGroup = HttpApiGroup.make("resources")
         ResourceStale,
         ResourceRegistryUnavailable,
         ResourceManifestUnverifiable,
+        RemovalInProgress,
       ],
     }),
   )
@@ -128,14 +130,14 @@ export const resourcesGroup = HttpApiGroup.make("resources")
         query: { timeZone: ReaderTimeZone },
         payload: ResourceUseRequest,
         success: ResourceSelectionEntry,
-        error: [NotFound, ResourceDenied, ResourceRejected],
+        error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
       },
     ),
   )
   .add(
     HttpApiEndpoint.post("start", "/projects/:id/resources/:name/start", {
       params: { id: ProjectId, name: ResourceName },
-      error: [NotFound, ResourceRuntimeUnavailable],
+      error: [NotFound, ResourceRuntimeUnavailable, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

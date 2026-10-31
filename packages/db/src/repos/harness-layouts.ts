@@ -754,8 +754,10 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
 
       const worktreesAwaitingMigration = Effect.fn("HarnessLayoutsRepo.worktreesAwaitingMigration")(
         function* () {
+          // A removed project's worktree waits for its Restore: nothing of it runs till then.
           const rows = yield* sql<{ readonly id: string }>`
             SELECT w.id FROM worktrees w
+            JOIN projects p ON p.id = w.project_id AND p.removed_at IS NULL
             WHERE w.harness_layout = 'person'
               AND NOT EXISTS (SELECT 1 FROM pre_release_migrations m
                               WHERE m.worktree_id = w.id AND m.final)`.pipe(Effect.orDie);

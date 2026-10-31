@@ -14,6 +14,7 @@ import {
   type BackfillTurnInput,
 } from "../src/repos/agent-conversation.ts";
 import { SessionPagesRepo, SessionPagesRepoLive } from "../src/repos/session-pages.ts";
+import { newAttempt, sendNext } from "./dispatch.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
@@ -144,7 +145,10 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
           "before the switch",
           "alice",
         );
-        yield* conversation.claimNextTurn(SessionProcessId.make("p-items-old-protocol"));
+        yield* conversation.claimNextTurn(
+          SessionProcessId.make("p-items-old-protocol"),
+          newAttempt(),
+        );
       }),
     );
   }, 60_000);
@@ -169,8 +173,7 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
           "chart it",
           "alice",
         );
-        yield* conversation.claimNextTurn(PROTOCOL_PROCESS);
-        yield* conversation.setProviderTurnId(turn.id, "provider-turn-1");
+        yield* sendNext(PROTOCOL, PROTOCOL_PROCESS, "provider-turn-1");
         const before = yield* conversation.upsertItem({
           sessionId: PROTOCOL,
           processId: PROTOCOL_PROCESS,
@@ -339,7 +342,7 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
         const conversation = yield* AgentConversationRepo;
         const pages = yield* SessionPagesRepo;
         yield* conversation.completeTurn("provider-turn-1", PROTOCOL, "completed", null, null);
-        const turn = yield* conversation.claimNextTurn(PROTOCOL_PROCESS);
+        const turn = yield* conversation.claimNextTurn(PROTOCOL_PROCESS, newAttempt());
         if (turn === null) return yield* Effect.die("the queued turn was not claimed");
         const streamed = Effect.forEach(
           Array.from({ length: 12 }, (_, index) => index),
@@ -418,8 +421,7 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
             `turn that ends ${ending}`,
             "alice",
           );
-          yield* conversation.claimNextTurn(INTERRUPTED_PROCESS);
-          yield* conversation.setProviderTurnId(turn.id, `provider-${ending}`);
+          yield* sendNext(INTERRUPTED, INTERRUPTED_PROCESS, `provider-${ending}`);
           yield* conversation.completeTurn(`provider-${ending}`, INTERRUPTED, ending, null, null);
           const page = yield* pages.publish(newPage(INTERRUPTED, `call-${ending}`));
           landed.push({ turn: turn.id, page: page.id });
@@ -440,7 +442,7 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
         const turn = yield* conversation.submitTurn(REPAIRED, REPAIRED_PROCESS, "queued", "alice");
         const first = yield* pages.publish(newPage(REPAIRED, "call-early"));
         const before = yield* pageItems(REPAIRED);
-        yield* conversation.claimNextTurn(REPAIRED_PROCESS);
+        yield* conversation.claimNextTurn(REPAIRED_PROCESS, newAttempt());
         const retried = yield* Effect.all(
           Array.from({ length: 3 }, () => pages.publish(newPage(REPAIRED, "call-early"))),
           { concurrency: "unbounded" },
@@ -466,7 +468,7 @@ describe.skipIf(postgres.skip)("a published page in the conversation record", ()
         const conversation = yield* AgentConversationRepo;
         const pages = yield* SessionPagesRepo;
         const turn = yield* conversation.submitTurn(CONFLICT, CONFLICT_PROCESS, "go", "alice");
-        yield* conversation.claimNextTurn(CONFLICT_PROCESS);
+        yield* conversation.claimNextTurn(CONFLICT_PROCESS, newAttempt());
         yield* conversation.upsertItem({
           sessionId: CONFLICT,
           processId: CONFLICT_PROCESS,

@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ClientMessageId, SessionId, SessionProcessId } from "@mend/domain";
+import { TURN_DELIVERY_UNCONFIRMED } from "@mend/domain/workbench";
 import {
   DEFAULT_MESSAGE_SETTINGS,
   MessageInput,
@@ -18,6 +19,7 @@ import {
   AgentConversationRepoLive,
 } from "../src/repos/agent-conversation.ts";
 import { MessageSettingsRepo, MessageSettingsRepoLive } from "../src/repos/message-settings.ts";
+import { newAttempt, sendNext } from "./dispatch.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
@@ -53,8 +55,7 @@ const runningTurn = Effect.gen(function* () {
   const session = SessionId.make("sess-codex");
   const process = SessionProcessId.make("p-codex-1");
   const turn = yield* repo.submitTurn(session, process, "start", "user-1");
-  yield* repo.claimNextTurn(process);
-  yield* repo.setProviderTurnId(turn.id, "native");
+  yield* sendNext(session, process, "native");
   return { session, process, turn };
 });
 
@@ -345,6 +346,42 @@ describe.skipIf(postgres.skip)("message admission and settings against current m
     );
   });
 
+  it("settles an unconfirmed turn when its notification fails after the update", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const session = SessionId.make("sess-codex");
+        const process = SessionProcessId.make("p-codex-1");
+        const turn = yield* repo.submitTurn(session, process, "start", "user-1");
+        yield* repo.claimNextTurn(process, newAttempt());
+        const pg = yield* PgClient.PgClient;
+        const noNotify = new Proxy(pg, {
+          apply(target, thisArg, args: Parameters<typeof pg>) {
+            const [strings] = args;
+            if (Array.isArray(strings) && strings.join("").includes("pg_notify"))
+              return Effect.fail(
+                new SqlError({
+                  reason: new ConnectionError({
+                    cause: new Error("connection dropped"),
+                    message: "notify failed",
+                  }),
+                }),
+              );
+            return Reflect.apply(target, thisArg, args);
+          },
+        });
+        const settled = yield* Effect.flatMap(AgentConversationRepo, (conversations) =>
+          conversations.failUnconfirmedTurn(turn.id),
+        ).pipe(
+          Effect.provide(AgentConversationRepoLive, { local: true }),
+          Effect.provideService(PgClient.PgClient, noNotify),
+        );
+        expect(settled).toMatchObject({ status: "failed", error: TURN_DELIVERY_UNCONFIRMED });
+        expect(yield* repo.byTurnId(turn.id)).toMatchObject({ status: "failed" });
+      }),
+    );
+  });
+
   it("never withdraws a turn a successor claimed or moved", async () => {
     await withConversation(
       Effect.gen(function* () {
@@ -361,7 +398,7 @@ describe.skipIf(postgres.skip)("message admission and settings against current m
           status: "queued",
           processId: next,
         });
-        yield* repo.claimNextTurn(next);
+        yield* repo.claimNextTurn(next, newAttempt());
         expect(yield* repo.withdrawMessageTurn(a.result.turn.id, next)).toBe(false);
         expect(yield* repo.byTurnId(a.result.turn.id)).toMatchObject({ status: "running" });
         const b = yield* repo.admitTurnMessage(request(session), process, "queue-requested");

@@ -201,6 +201,9 @@ export const projectFor = (storePath: string, baseSha: string) =>
 
 export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
   Layer.succeed(ProjectsRepo, {
+    removedById: () => Effect.succeed(null),
+    removedForOrganization: () => Effect.succeed([]),
+    storeClaimed: () => Effect.succeed(true),
     byScratchOwner: () => Effect.succeed(null),
     publishInitialized: () => Effect.die("not in test"),
     create: () => Effect.die("not in test"),
@@ -223,7 +226,6 @@ export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
     listAll: () => Effect.succeed([project]),
     setAutomation: () => Effect.die("not in test"),
     setAutoLand: () => Effect.die("not in test"),
-    remove: () => Effect.die("not in test"),
   });
 
 export const worktreesFor = (rows: Map<string, Worktree>): Layer.Layer<WorktreesRepo> =>

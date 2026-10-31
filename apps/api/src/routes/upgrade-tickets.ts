@@ -9,13 +9,18 @@ import {
 } from "@mend/api-contracts";
 import type { Auth } from "@mend/auth";
 import {
+  isRemovedProject,
   OrganizationsRepo,
+  ProjectsRepo,
+  SessionProcessesRepo,
+  SessionsRepo,
   UPGRADE_RENEWAL_TTL_MS,
   UPGRADE_TICKET_TTL_MS,
   UpgradeTicketsRepo,
   upgradeTicketScope,
   type UpgradeTicketTarget,
 } from "@mend/db";
+import { SessionId, SessionProcessId } from "@mend/domain";
 import { Config, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpServerResponse } from "effect/http";
@@ -88,6 +93,49 @@ export const UpgradeTicketsGroupLive = HttpApiBuilder.group(MendApi, "upgradeTic
   ),
 );
 
+/** The address an embed page trades its ticket for: one terminal, by process or by session. */
+interface TerminalAddress {
+  readonly process?: string | undefined;
+  readonly session?: string | undefined;
+}
+
+/** Whether a terminal's session belongs to a listed project: a removed one opens nothing. */
+export class TerminalProjects extends Context.Service<
+  TerminalProjects,
+  { readonly listed: (address: TerminalAddress) => Effect.Effect<boolean> }
+>()("@mend/api/TerminalProjects") {}
+
+export const TerminalProjectsLive: Layer.Layer<
+  TerminalProjects,
+  never,
+  ProjectsRepo | SessionProcessesRepo | SessionsRepo
+> = Layer.effect(
+  TerminalProjects,
+  Effect.gen(function* () {
+    const projects = yield* ProjectsRepo;
+    const processes = yield* SessionProcessesRepo;
+    const sessions = yield* SessionsRepo;
+    const listed = Effect.fn("TerminalProjects.listed")(function* (address: TerminalAddress) {
+      const sessionId =
+        address.session !== undefined
+          ? SessionId.make(address.session)
+          : address.process !== undefined
+            ? ((yield* processes.byId(SessionProcessId.make(address.process)))?.sessionId ?? null)
+            : null;
+      if (sessionId === null) return false;
+      const session = yield* sessions
+        .byId(sessionId)
+        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+      if (session === null) return false;
+      return yield* projects.byId(session.projectId).pipe(
+        Effect.as(true),
+        Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(false)),
+      );
+    });
+    return { listed };
+  }),
+);
+
 export const UpgradeTicketExchangeGroupLive = HttpApiBuilder.group(
   MendApi,
   "upgradeTicketExchange",
@@ -114,24 +162,35 @@ export const UpgradeTicketExchangeGroupLive = HttpApiBuilder.group(
             scope,
             keep: true,
           }));
-        if (shown === null) return yield* new UpgradeTicketRefused();
+        if (shown === null || !(yield* (yield* TerminalProjects).listed(payload)))
+          return yield* new UpgradeTicketRefused();
         const { userId, credential } = shown;
-        const minted = yield* tickets.mint({ userId, credential, target: "tty", scope });
-        const renew =
-          first === null
-            ? payload.ticket
-            : (yield* tickets.mint({
-                userId,
-                credential,
-                target: "tty-renew",
-                scope,
-                // The HTTP mint always gives an embed ticket thirty seconds. Recover that
-                // original mint time from its immutable expiry, without reading another clock.
-                expiresAt: new Date(
-                  first.expiresAt.getTime() - UPGRADE_TICKET_TTL_MS + UPGRADE_RENEWAL_TTL_MS,
-                ),
-              })).ticket;
-        return new EmbedTickets({ ticket: minted.ticket, renew, expiresInSeconds });
+        // A removal that committed since the read above refuses each mint under the project's
+        // row lock (migration 0167), so no ticket outlives it into a Restore.
+        return yield* Effect.gen(function* () {
+          const minted = yield* tickets.mint({ userId, credential, target: "tty", scope });
+          const renew =
+            first === null
+              ? payload.ticket
+              : (yield* tickets.mint({
+                  userId,
+                  credential,
+                  target: "tty-renew",
+                  scope,
+                  // The HTTP mint always gives an embed ticket thirty seconds. Recover that
+                  // original mint time from its immutable expiry, without reading another clock.
+                  expiresAt: new Date(
+                    first.expiresAt.getTime() - UPGRADE_TICKET_TTL_MS + UPGRADE_RENEWAL_TTL_MS,
+                  ),
+                })).ticket;
+          return new EmbedTickets({ ticket: minted.ticket, renew, expiresInSeconds });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            isRemovedProject(cause)
+              ? Effect.fail(new UpgradeTicketRefused())
+              : Effect.failCause(cause),
+          ),
+        );
       }),
     ),
 );

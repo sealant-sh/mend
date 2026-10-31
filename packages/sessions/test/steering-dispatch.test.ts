@@ -1,4 +1,9 @@
-import { AgentConversationRepo, SessionProcessesRepo, SessionsRepo } from "@mend/db";
+import {
+  AgentConversationRepo,
+  AgentTurnNotFoundError,
+  SessionProcessesRepo,
+  SessionsRepo,
+} from "@mend/db";
 import {
   AgentItemId,
   AgentTurnId,
@@ -6,7 +11,7 @@ import {
   SessionId,
   SessionProcessId,
 } from "@mend/domain";
-import { AgentItem, AgentTurn, SessionProcess, type TurnPayer } from "@mend/domain/workbench";
+import { AgentItem, AgentTurn, SessionProcess } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSession } from "@sealant/sdk";
@@ -23,6 +28,7 @@ import {
   type SharedControlDecision,
   waitedOut,
 } from "../src/protocol-host.ts";
+import { makeDispatchStore } from "./support/dispatch-store.ts";
 import { makeSteerStore } from "./support/steer-store.ts";
 
 /**
@@ -77,6 +83,8 @@ const conversationWorld = () => {
     return next;
   };
   const ordered = () => [...turns.values()].toSorted((a, b) => a.ordinal - b.ordinal);
+  /** What happens just before a turn is failed: a Stop, say. */
+  const faults: { beforeFail: Effect.Effect<void> } = { beforeFail: Effect.void };
   const layer = Layer.mock(AgentConversationRepo, {
     ...makeSteerStore(turns),
     listTurns: () => Effect.sync(ordered),
@@ -107,55 +115,7 @@ const conversationWorld = () => {
       Effect.sync(() =>
         ordered().filter((turn) => turn.status === "queued" || turn.status === "running"),
       ),
-    claimNextTurn: (processId) =>
-      Effect.sync(() => {
-        const all = ordered();
-        if (all.some((turn) => turn.status === "running")) return null;
-        const queued = all.find((turn) => turn.status === "queued" && turn.processId === processId);
-        return queued === undefined
-          ? null
-          : update(queued.id, { status: "running", startedAt: now() });
-      }),
-    openHarnessTurn: (_session, processId, providerTurnId, reason, payer: TurnPayer) =>
-      Effect.sync(() => {
-        const existing = ordered().find((turn) => turn.providerTurnId === providerTurnId);
-        if (existing !== undefined) return existing;
-        for (const turn of ordered()) {
-          if (turn.status === "running" && turn.providerTurnId === null) {
-            update(turn.id, { status: "queued", startedAt: null });
-          }
-        }
-        if (ordered().some((turn) => turn.status === "running")) return null;
-        const turn = new AgentTurn({
-          id: AgentTurnId.make(`turn-${ordinal}`),
-          sessionId,
-          processId,
-          ordinal: ordinal++,
-          author: null,
-          origin: "harness",
-          input: reason,
-          status: "running",
-          providerTurnId,
-          error: null,
-          usage: null,
-          billedUserId: payer.userId,
-          billedAccountId: payer.accountId,
-          billedAccountName: payer.accountName,
-          createdAt: now(),
-          startedAt: now(),
-          endedAt: null,
-        });
-        turns.set(turn.id, turn);
-        return turn;
-      }),
-    requeueClaimedTurn: (id) =>
-      Effect.sync(() => {
-        const turn = turns.get(id);
-        if (turn?.status === "running" && turn.providerTurnId === null) {
-          update(id, { status: "queued", startedAt: null });
-        }
-      }),
-    setProviderTurnId: (id, providerTurnId) => Effect.sync(() => update(id, { providerTurnId })),
+    ...makeDispatchStore(turns, () => ordinal++),
     setTurnPayer: (id, payer) =>
       Effect.sync(() =>
         update(id, {
@@ -164,9 +124,14 @@ const conversationWorld = () => {
           billedAccountName: payer.accountName,
         }),
       ),
-    bindRunningProviderTurn: () => Effect.succeed(null),
     failTurn: (id, error) =>
-      Effect.sync(() => update(id, { status: "failed", error, endedAt: now() })),
+      Effect.suspend(() => faults.beforeFail).pipe(
+        Effect.flatMap(() =>
+          ["queued", "running", "failed"].includes(turns.get(id)?.status ?? "")
+            ? Effect.succeed(update(id, { status: "failed", error, endedAt: now() }))
+            : Effect.fail(new AgentTurnNotFoundError({ turnId: id })),
+        ),
+      ),
     completeTurn: (providerTurnId, _session, status, _usage, error) =>
       Effect.sync(() => {
         const turn = ordered().find((candidate) => candidate.providerTurnId === providerTurnId);
@@ -226,7 +191,7 @@ const conversationWorld = () => {
     saveProtocolCursor: () => Effect.void,
     resetSendingResponses: () => Effect.void,
   });
-  return { turns, layer, ordered, update };
+  return { turns, layer, ordered, update, faults };
 };
 
 /** A Claude or Codex on the far side of a pipe: says what the test pushes, records what Mend sends. */
@@ -1096,6 +1061,43 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
         expect(steered.world.turns.get(own.id)).toMatchObject({
           processId: steered.processA.id,
           billedUserId: ALICE,
+        });
+        yield* host.detach(steered.processA.id);
+      }).pipe(Effect.scoped, Effect.provide(steered.host));
+    },
+  );
+
+  it.live(
+    "a Stop that cancels B's waiting turn as its hand-over fails leaves the queue moving",
+    () => {
+      const steered = steeredWorld("claude");
+      const alice = claudePipe("pipe-a");
+      steered.preparation.during = Effect.fail(
+        new SealantPlatformError({
+          code: "person_login_not_written",
+          status: 502,
+          message: "bob's logins could not be written into this workspace.",
+          cause: null,
+        }),
+      );
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachAs(steered.processA, alice.pipe, steered.hooksFor(ALICE, Effect.void));
+        const bobs = yield* host.submitTurn(sessionId, "Bob's request", BOB);
+        const behind = yield* host.submitTurn(sessionId, "Bob's second request", BOB);
+        let stopped = false;
+        steered.world.faults.beforeFail = Effect.sync(() => {
+          if (stopped) return;
+          stopped = true;
+          steered.world.update(bobs.id, { status: "cancelled", endedAt: now() });
+        });
+        yield* waitUntil(
+          () => steered.world.turns.get(behind.id)?.status === "failed",
+          "the turn behind it refused",
+        );
+        expect(steered.world.turns.get(bobs.id)).toMatchObject({
+          status: "cancelled",
+          error: null,
         });
         yield* host.detach(steered.processA.id);
       }).pipe(Effect.scoped, Effect.provide(steered.host));

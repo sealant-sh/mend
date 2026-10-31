@@ -37,6 +37,7 @@ import {
   screens,
 } from "../schema/workbench.ts";
 import { notifyAgentConversation } from "./agent-conversation.ts";
+import { sessionInListedProject } from "./projects.ts";
 import { ensureScreenEpisode } from "./screen-episodes.ts";
 import { isForeignKeyViolation } from "./unique-violation.ts";
 
@@ -426,7 +427,7 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       const rows = yield* db
         .select()
         .from(screens)
-        .where(isNull(screens.releasedAt))
+        .where(and(isNull(screens.releasedAt), sessionInListedProject(db, screens.sessionId)))
         .orderBy(asc(screens.createdAt))
         .pipe(Effect.orDie);
       return rows.map(toScreen);

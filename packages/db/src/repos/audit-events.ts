@@ -42,6 +42,12 @@ export class AuditEventsRepo extends Context.Service<
      * `value`: a bundle tip the change's endpoint served this person, say.
      */
     readonly recorded: (query: AuditLookup) => Effect.Effect<boolean>;
+    /** The newest `action` recorded on `subjectId` in the organization, or null. */
+    readonly latest: (query: {
+      readonly organizationId: OrganizationId;
+      readonly action: AuditAction;
+      readonly subjectId: string;
+    }) => Effect.Effect<AuditEvent | null>;
   }
 >()("@mend/db/AuditEventsRepo") {}
 
@@ -123,6 +129,27 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
       return rows.length > 0;
     });
 
-    return { record, listForOrganization, recorded };
+    const latest = Effect.fn("AuditEventsRepo.latest")(function* (query: {
+      readonly organizationId: OrganizationId;
+      readonly action: AuditAction;
+      readonly subjectId: string;
+    }) {
+      const [row] = yield* db
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.organizationId, query.organizationId),
+            eq(auditEvents.action, query.action),
+            eq(auditEvents.subjectId, query.subjectId),
+          ),
+        )
+        .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : decodeEvent(row);
+    });
+
+    return { record, listForOrganization, recorded, latest };
   }),
 );

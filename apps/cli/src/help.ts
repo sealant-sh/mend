@@ -593,14 +593,19 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "projects",
     section: "sessions",
-    summary: "adopted projects and their live sessions",
+    summary: "list, remove, Restore or purge projects",
     synopsis: ["[--json]"],
     description: [
       "One line per project, with the sessions running in it.",
+      "mend projects rm <id> keeps files and history. mend projects removed lists them. mend projects restore <id> [--name <name>] brings one back without starting work. mend projects purge <id> --confirm <name> deletes it for good. Instance audit and backups are unchanged.",
       '--json prints them for scripts, stable like mend sessions --json: {"version": 1, "projects": [...]}, an empty list when there are none. Each project has id, name, originUrl (a string, or null), defaultBranch, storePath, liveSessions (a number) and current (true when the current directory is inside it).',
       "A repository URL is printed without its credentials: https://oauth2:TOKEN@github.com/acme/repo.git reads as https://github.com/acme/repo.git, here and in every line, message and JSON the CLI prints itself; an ssh URL keeps its user and loses only the password. A command's recorded output (mend run, mend logs, mend service logs, mend attach) and a file's contents (mend memory show) are printed as they are, and a session's record is readable by anyone who can read the project.",
     ],
-    options: [{ flag: "--json", text: "the projects as JSON" }],
+    options: [
+      { flag: "--json", text: "the projects as JSON" },
+      { flag: "--name <name>", text: "a new name when restoring" },
+      { flag: "--confirm <name>", text: "required exact project name for purge" },
+    ],
     see: ["adopt", "sessions"],
   },
   {

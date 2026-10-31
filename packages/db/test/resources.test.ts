@@ -349,7 +349,8 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
     const mark = (project: string, phase: "checking" | "deleting", secondsAgo = 0) =>
       execute(
         `UPDATE projects SET removal_phase = $2, removal_id = 'rmv_test',
-           removal_since = now() - make_interval(secs => $3) WHERE id = $1`,
+           removal_since = now() - make_interval(secs => $3),
+           removed_at = CASE WHEN $2 = 'deleting' THEN now() END WHERE id = $1`,
         [project, phase, secondsAgo],
       );
 
@@ -382,7 +383,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
       );
     });
 
-    it("keeps refusing while a removal that passed its checks still has to delete", async () => {
+    it("keeps refusing while a purge that stopped still has to delete", async () => {
       const project = await newProject();
       await mark(project, "deleting", MIGRATION_0166_LEASE_SECONDS + 5);
       expect(await failureOf((repo) => repo.declare(project, postgresDb(), "alice"))).toMatchObject(

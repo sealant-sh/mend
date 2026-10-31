@@ -351,7 +351,14 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       payload: PastedImageUpload,
       success: PastedImage,
       // SessionNotLive: capture mode places the image in the live workspace, and there is none.
-      error: [NotFound, SessionNotSteerable, StoreFailure, PastedImageRejected, SessionNotLive],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        StoreFailure,
+        PastedImageRejected,
+        SessionNotLive,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -389,7 +396,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("endBackgroundWork", "/sessions/:id/waiting/end", {
       params: { id: SessionId },
       payload: EndBackgroundWorkRequest,
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive],
+      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, RemovalInProgress],
     }),
   )
   .add(
@@ -411,7 +418,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     HttpApiEndpoint.post("interruptTurn", "/turns/:id/interrupt", {
       params: { id: AgentTurnId },
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive],
+      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, RemovalInProgress],
     }),
   )
   .add(
@@ -442,7 +449,13 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: AgentRequestId },
       payload: RespondAgentRequest,
       success: AgentRequest,
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, AgentRequestResolved],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        ProtocolSessionNotLive,
+        AgentRequestResolved,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -468,7 +481,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("stopShell", "/processes/:id/stop", {
       params: { id: SessionProcessId },
       success: SessionProcess,
-      error: [NotFound, SessionNotSteerable],
+      error: [NotFound, SessionNotSteerable, RemovalInProgress],
     }),
   )
   .add(
@@ -476,7 +489,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionProcessId },
       payload: RenameShellRequest,
       success: SessionProcess,
-      error: [NotFound, SessionNotSteerable, StoreFailure],
+      error: [NotFound, SessionNotSteerable, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -540,7 +553,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: Schema.Struct({ name: Schema.String }),
       success: Schema.Struct({ ended: Schema.Int }),
-      error: [NotFound, SessionNotSteerable],
+      error: [NotFound, SessionNotSteerable, RemovalInProgress],
     }),
   )
   .add(
@@ -603,7 +616,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("stopService", "/services/:id/stop", {
       params: { id: ServiceId },
       success: ServiceView,
-      error: [NotFound, SessionNotSteerable],
+      error: [NotFound, SessionNotSteerable, RemovalInProgress],
     }),
   )
   .add(
@@ -613,7 +626,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.delete("remove", "/sessions/:id", {
       params: { id: SessionId },
       success: RemovalReport,
-      error: [NotFound, SessionNotSteerable, SessionActive, StoreFailure],
+      error: [NotFound, SessionNotSteerable, SessionActive, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -621,14 +634,14 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: Schema.Struct({ label: Schema.NullOr(Schema.String) }),
       success: Session,
-      error: [NotFound, SessionNotSteerable],
+      error: [NotFound, SessionNotSteerable, RemovalInProgress],
     }),
   )
   .add(
     HttpApiEndpoint.post("stop", "/sessions/:id/stop", {
       params: { id: SessionId },
       success: Session,
-      error: [NotFound, SessionNotSteerable],
+      error: [NotFound, SessionNotSteerable, RemovalInProgress],
     }),
   )
   .add(
@@ -638,7 +651,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: DiscardUnsavedRequest,
       success: Session,
-      error: [NotFound, SessionNotSteerable, NothingUnsaved, StoreFailure],
+      error: [NotFound, SessionNotSteerable, NothingUnsaved, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
@@ -647,7 +660,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("stopServices", "/sessions/:id/services/stop", {
       params: { id: SessionId },
       success: SessionServicesStopped,
-      error: [NotFound, SessionNotSteerable],
+      error: [NotFound, SessionNotSteerable, RemovalInProgress],
     }),
   )
   .add(
@@ -657,7 +670,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: SharedControlRequest,
       success: Session,
-      error: [NotFound, SessionNotSteerable],
+      error: [NotFound, SessionNotSteerable, RemovalInProgress],
     }),
   )
   .add(
@@ -673,7 +686,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: CheckpointRequest,
       success: Checkpoint,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, RemovalInProgress],
     }),
   )
   .add(
