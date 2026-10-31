@@ -4,6 +4,7 @@ packages:
   - tooling/*
 
 catalog:
+  yaml: 2.9.0
   playwright-core: ^1.64.0
   "@types/ws": 8.18.1
   ws: 8.21.0

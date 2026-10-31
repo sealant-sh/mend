@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { DopplerRepo } from "@mend/db";
 import { ProjectNameTakenError } from "@mend/db";
 import {
   AuditEventsRepo,
@@ -163,6 +164,7 @@ import { CheckpointRequestLimit } from "../../src/routes/workbench.ts";
 import { RawReadStallLimit } from "../../src/routes/worktrees.ts";
 import { ScreenRtc } from "../../src/screen-rtc.ts";
 import { ScreenWatchLive } from "../../src/screen-watch.ts";
+import { DopplerApi } from "../../src/services/doppler.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
@@ -324,6 +326,8 @@ export const createTenancyApi = async (
       readonly sessionRepositories?: Layer.PartialEffectful<SessionRepositoriesRepo["Service"]>;
       readonly forwards?: Layer.PartialEffectful<ServiceForwardsRepo["Service"]>;
       readonly store?: Layer.PartialEffectful<Store["Service"]>;
+      readonly doppler?: Layer.PartialEffectful<DopplerRepo["Service"]>;
+      readonly dopplerApi?: Layer.PartialEffectful<DopplerApi["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
@@ -807,6 +811,8 @@ export const createTenancyApi = async (
       recording(HostEnvironment, "hostEnvironment", {}, calls),
       recording(PiProfilesRepo, "piProfiles", options.implement?.piProfiles ?? {}, calls),
       recording(AgentMemoryRepo, "agentMemory", options.implement?.agentMemory ?? {}, calls),
+      recording(DopplerRepo, "doppler", options.implement?.doppler ?? {}, calls),
+      recording(DopplerApi, "dopplerApi", options.implement?.dopplerApi ?? {}, calls),
       recording(SecretFilesRepo, "secretFiles", options.implement?.secretFiles ?? {}, calls),
       recording(SshKeyRevoker, "sshKeyRevoker", {}, calls),
       recording(MemberRevocationsRepo, "memberRevocations", {}, calls),

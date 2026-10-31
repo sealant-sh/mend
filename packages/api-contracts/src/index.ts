@@ -31,3 +31,5 @@ export * from "./api.ts";
 export * from "./client.ts";
 
 export * from "./project-retention.ts";
+
+export * from "./doppler.ts";

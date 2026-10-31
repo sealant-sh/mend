@@ -94,3 +94,5 @@ export * from "./tour.ts";
 export * from "./worktree.ts";
 export * from "./removal.ts";
 export * from "./project-retention.ts";
+
+export * from "./doppler.ts";

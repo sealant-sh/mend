@@ -5,6 +5,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { DopplerRepo } from "@mend/db";
 import {
   AgentConversationRepo,
   CheckpointOrdinalTakenError,
@@ -3806,6 +3807,7 @@ interface EngineOptions {
   readonly piProfilesLayer?: Layer.Layer<PiProfilesRepo>;
   readonly agentMemoryLayer?: Layer.Layer<AgentMemoryRepo>;
   readonly secretFilesLayer?: Layer.Layer<SecretFilesRepo>;
+  readonly dopplerLayer?: Layer.Layer<DopplerRepo>;
   /** The owner's dotfiles; none configured unless a test brings its own. */
   readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
   /** The owner's git author; `Account <id>` <`<id>@accounts.example`> unless a test says. */
@@ -4165,6 +4167,11 @@ export const withPreparedEngineEffect = <B, A, E>(
           options.piProfilesLayer ?? piProfilesLayerOf(),
           options.agentMemoryLayer ?? agentMemoryLayerOf(),
           options.secretFilesLayer ?? secretFilesLayerOf(),
+          options.dopplerLayer ??
+            Layer.mock(DopplerRepo, {
+              connection: () => Effect.succeed(null),
+              mappings: () => Effect.succeed([]),
+            }),
           options.pagesLayer ?? sessionPagesLayerOf(),
         ),
       ),

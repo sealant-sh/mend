@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { DopplerRepo } from "@mend/db";
 import { MessageSettingsRepo } from "@mend/db";
 import {
   SessionRepositoriesRepoMemory,
@@ -1102,6 +1103,7 @@ describe("SessionEngine", () => {
           piProfilesLayerOf(),
           agentMemoryLayerOf(),
           secretFilesLayerOf(),
+          Layer.mock(DopplerRepo, { connection: () => Effect.succeed(null) }),
           sessionPagesLayerOf(),
         ),
       ),
