@@ -521,7 +521,8 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
 
   it("opens a process past the bound with the same env, and the start goes on", async () => {
     sealant.upDelay = Duration.seconds(1);
-    const prepared = await prepare();
+    const prepared = await prepare([{ kind: "resource", name: "db", env: {} }]);
+    expect(prepared.notReady).toEqual(["@db not ready"]);
     expect(prepared.env["DATABASE_URL"]).toBe(`postgres://postgres@db:5432/${OWN}`);
     expect(prepared.views.map((view) => resourceStatusLine(view, clock)).toSorted()).toEqual([
       "@cache · starting · this session starts without it",

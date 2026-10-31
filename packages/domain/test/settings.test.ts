@@ -246,6 +246,11 @@ describe("a workspace image's screen", () => {
 
   it("cannot be asked of a custom base, whose package manager Mend cannot name packages for", () => {
     expect(custom).not.toHaveProperty("screen");
-    expect(workspaceImagePackages(custom)).toEqual(["git", "doppler"]);
+    expect(workspaceImagePackages(custom)).toEqual([
+      "git",
+      "doppler",
+      "postgresql-client",
+      "redis-cli",
+    ]);
   });
 });

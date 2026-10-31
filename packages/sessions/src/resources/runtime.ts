@@ -18,6 +18,7 @@ import {
   type ResourceInstanceObservation,
   resourceInstanceKey,
   resourceInstanceSpec,
+  RESOURCE_IDLE_STOP_SECONDS,
   resourceProcessEnv,
   resourceScopeKey,
   resourceSpecDigest,
@@ -31,7 +32,7 @@ import {
   type SealantPlatformError,
   unsupportedRuntimeOf,
 } from "@mend/sealant";
-import { Cause, Duration, Effect, Fiber, Layer, Option, Semaphore } from "effect";
+import { Cause, Config, Duration, Effect, Fiber, Layer, Option, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { WorktreeReads } from "../worktree-reads.ts";
@@ -211,11 +212,16 @@ const keyOf = (
   worktreeId: WorktreeId,
 ) => resourceInstanceKey(definition.id, binding.mode === "worktree" ? worktreeId : null);
 
-const specOf = (definition: StoredResourceDefinition, worktreeId: WorktreeId | null) =>
+const specOf = (
+  definition: StoredResourceDefinition,
+  worktreeId: WorktreeId | null,
+  idleStopAfterSeconds: number,
+) =>
   resourceInstanceSpec({
     definition: definition.spec,
     image: definition.image,
     worktreeId: definition.spec.scope === "worktree" ? worktreeId : null,
+    idleStopAfterSeconds,
   });
 
 type RuntimeNeeds =
@@ -229,6 +235,7 @@ type RuntimeNeeds =
 /** The runtime, waiting `waitFor` for a launch's resources before it opens without them. */
 export const resourceRuntimeLayer = (
   waitFor: Duration.Duration,
+  idleStopAfterSeconds = RESOURCE_IDLE_STOP_SECONDS,
 ): Layer.Layer<ResourceRuntime, never, RuntimeNeeds> =>
   Layer.effect(
     ResourceRuntime,
@@ -377,7 +384,11 @@ export const resourceRuntimeLayer = (
       ): Effect.Effect<ResourceStatusView | null> =>
         Effect.gen(function* () {
           const key = keyOf(definition, binding, worktreeId);
-          const instance = yield* client.up(key, specOf(definition, worktreeId), "use");
+          const instance = yield* client.up(
+            key,
+            specOf(definition, worktreeId, idleStopAfterSeconds),
+            "use",
+          );
           const observation = observationOf(instance);
           if (observation.kind !== "running") {
             return {
@@ -540,7 +551,9 @@ export const resourceRuntimeLayer = (
         return yield* bounded(
           asObserved(
             scopeOf(definition.projectId).pipe(
-              Effect.flatMap((client) => client.up(key, specOf(definition, worktreeId), "person")),
+              Effect.flatMap((client) =>
+                client.up(key, specOf(definition, worktreeId, idleStopAfterSeconds), "person"),
+              ),
             ),
           ),
         );
@@ -618,7 +631,11 @@ export const resourceRuntimeLayer = (
           target === "own" && !worktreeScoped ? ownDatabaseName(worktreeId) : SHARED_DATABASE;
         const run = Effect.gen(function* () {
           const client = yield* scopeOf(definition.projectId);
-          const instance = yield* client.up(key, specOf(definition, worktreeId), "use");
+          const instance = yield* client.up(
+            key,
+            specOf(definition, worktreeId, idleStopAfterSeconds),
+            "use",
+          );
           const observation = observationOf(instance);
           if (observation.kind !== "running") {
             return { kind: "not-running", instance: observation } satisfies ResetOutcome;
@@ -694,5 +711,14 @@ export const resourceRuntimeLayer = (
     }),
   );
 
-export const ResourceRuntimeLive: Layer.Layer<ResourceRuntime, never, RuntimeNeeds> =
-  resourceRuntimeLayer(PREPARE_BOUND);
+/** The operator's idle bound, in seconds; instances keep their data when it elapses. */
+export const ResourceRuntimeLive: Layer.Layer<ResourceRuntime, Config.ConfigError, RuntimeNeeds> =
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const seconds = yield* Config.schema(
+        Schema.Int.pipe(Schema.check(Schema.isBetween({ minimum: 1, maximum: 2_147_483_647 }))),
+        "MEND_RESOURCE_IDLE_STOP_SECONDS",
+      ).pipe(Config.withDefault(RESOURCE_IDLE_STOP_SECONDS));
+      return resourceRuntimeLayer(PREPARE_BOUND, seconds);
+    }),
+  );

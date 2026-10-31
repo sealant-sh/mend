@@ -125,6 +125,8 @@ export const resourceInstanceSpec = (input: {
   /** The image pinned to its digest: `postgres:17@sha256:…`. */
   readonly image: string;
   readonly worktreeId: WorktreeId | null;
+  /** Operator's idle bound; omitted callers use thirty minutes. */
+  readonly idleStopAfterSeconds?: number;
 }): ResourceInstanceSpec => {
   const def = input.definition;
   const dumps =
@@ -144,7 +146,7 @@ export const resourceInstanceSpec = (input: {
       memoryBytes: def.limits.memoryMiB * 1024 * 1024,
     },
     ready: readyOf(def),
-    idleStopAfterSeconds: RESOURCE_IDLE_STOP_SECONDS,
+    idleStopAfterSeconds: input.idleStopAfterSeconds ?? RESOURCE_IDLE_STOP_SECONDS,
   };
 };
 

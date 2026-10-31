@@ -53,6 +53,17 @@ const worktree = WorktreeId.make("wt-6f1c0e2a");
 const own = ownDatabaseName(worktree);
 
 describe("a worktree's own database", () => {
+  it("uses the operator's resource idle bound", () => {
+    expect(
+      resourceInstanceSpec({
+        definition: preset("db", "postgres"),
+        image: "postgres:17",
+        worktreeId: worktree,
+        idleStopAfterSeconds: 3,
+      }).idleStopAfterSeconds,
+    ).toBe(3);
+  });
+
   it("is own_ and the first 12 hex of the sha256 of the worktree id", () => {
     const hex = createHash("sha256").update("wt-6f1c0e2a").digest("hex").slice(0, 12);
     expect(own).toBe(`own_${hex}`);

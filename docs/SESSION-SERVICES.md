@@ -748,3 +748,7 @@ runs that full stack and ships something usable on its own.
 - The friendly-address lookup (`session:port`), if ever; this is presentation only.
 - Sharing setup's output across workspaces, once a project's restore has been measured against its
   install (ADR 0017, decision 4).
+
+Operators can set `MEND_RESOURCE_IDLE_STOP_SECONDS` to a positive integer number of seconds. The
+default is `1800`. It sets each resource instance's idle stop bound; the data stays, and a Service
+start or preview wake starts an instance stopped by idle. A person's stop still holds.
