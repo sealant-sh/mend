@@ -187,6 +187,7 @@ import {
   ResourcesChannelLive,
   ResourcesLive,
   ResourceRuntimeLive,
+  WorktreeServiceRestartsLive,
   ProtocolHostLive,
   ScreenHostLive,
   type Screens,
@@ -948,7 +949,9 @@ const MainLive = Layer.unwrap(
           SessionSteeringLive,
           landing,
           HandoffStartLive.pipe(Layer.provide(captureStore)),
-          ResourcesLive.pipe(Layer.provide(ResourceImageResolverLive)),
+          ResourcesLive.pipe(
+            Layer.provide(Layer.merge(ResourceImageResolverLive, WorktreeServiceRestartsLive)),
+          ),
           RemovalLive.pipe(Layer.provide(landingGit)),
           TerminalProjectsLive,
         ),

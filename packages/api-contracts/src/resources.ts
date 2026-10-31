@@ -59,6 +59,13 @@ export class ResourceManifestUnverifiable extends Schema.TaggedError<ResourceMan
   { httpApiStatus: 502 },
 ) {}
 
+/** A reset that did not happen: not Postgres, not running, or failed; nothing was emptied. */
+export class ResourceNotReset extends Schema.TaggedError<ResourceNotReset>()(
+  "ResourceNotReset",
+  { message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
 export const ResourceRemoved = Schema.Struct({ statusLine: Schema.String });
 export type ResourceRemoved = typeof ResourceRemoved.Type;
 
@@ -125,6 +132,18 @@ export const resourcesGroup = HttpApiGroup.make("resources")
       query: { timeZone: ReaderTimeZone, worktreeId: Schema.optional(WorktreeId) },
       success: ResourceControlled,
       error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("reset", "/projects/:id/worktrees/:worktreeId/resources/:name/reset", {
+      params: { id: ProjectId, worktreeId: WorktreeId, name: ResourceName },
+      // Which database: the worktree's own or the shared one; what the worktree uses when absent.
+      query: {
+        timeZone: ReaderTimeZone,
+        target: Schema.optional(Schema.Literals(["shared", "own"])),
+      },
+      success: Schema.Struct({ statusLine: Schema.String }),
+      error: [NotFound, ResourceDenied, ResourceNotReset, RemovalInProgress],
     }),
   )
   .add(
