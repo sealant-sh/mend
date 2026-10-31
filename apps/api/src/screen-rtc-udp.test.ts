@@ -85,3 +85,40 @@ it("announces one port for two peers and authenticates STUN before routing any b
   expect(received).toHaveLength(count);
   a.close();
 });
+
+it("answers nothing but an authenticated Binding request, even from a tuple it routes", async () => {
+  const peerSocket = await openSocket();
+  const browser = await openSocket();
+  const reserved = await openSocket();
+  const port = reserved.address().port;
+  reserved.close();
+  sockets.splice(sockets.indexOf(reserved), 1);
+  const mux = new ScreenRtcUdp(port, "localhost");
+  muxes.push(mux);
+  const answer = await mux.register(sdp(peerSocket.address().port, "only"));
+  const received: Array<string> = [];
+  peerSocket.on("message", (data, from) => {
+    received.push(data.toString("hex"));
+    peerSocket.send(Buffer.alloc(72), from.port, from.address);
+  });
+  const replies: Array<number> = [];
+  browser.on("message", (data) => replies.push(data.length));
+  browser.send(stun("only", "password-only"), port, "127.0.0.1");
+  await delay();
+  expect(replies).toEqual([72]);
+  // An unsigned non-Binding STUN request (Allocate, 0x0003) from the routed tuple.
+  const allocate = Buffer.alloc(20);
+  allocate.writeUInt16BE(0x0003);
+  allocate.writeUInt32BE(0x2112a442, 4);
+  // An unsigned Binding indication (0x0011) and a Binding response (0x0101) as well.
+  const indication = Buffer.from(allocate);
+  indication.writeUInt16BE(0x0011);
+  const response = Buffer.from(allocate);
+  response.writeUInt16BE(0x0101);
+  const before = received.length;
+  for (const message of [allocate, indication, response]) browser.send(message, port, "127.0.0.1");
+  await delay();
+  expect(received).toHaveLength(before);
+  expect(replies).toEqual([72]);
+  answer.close();
+});

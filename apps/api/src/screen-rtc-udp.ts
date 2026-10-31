@@ -41,7 +41,12 @@ export class ScreenRtcUdp {
   #receive(data: Buffer, from: RemoteInfo): void {
     const key = addressKey(from.address, from.port);
     let peer = this.#remotes.get(key);
-    if (data.length >= 20 && data.readUInt32BE(4) === 0x2112a442 && data.readUInt16BE(0) === 1) {
+    // On a public port, any STUN but an authenticated Binding request goes unanswered: a peer
+    // would answer an unsigned request with a larger error, a reflector anyone could scan for.
+    const isStun =
+      data.length >= 20 && (data[0] ?? 0xff) < 4 && data.readUInt32BE(4) === 0x2112a442;
+    if (isStun && data.readUInt16BE(0) !== 1) return;
+    if (isStun) {
       // A USERNAME alone is public. Authenticate MESSAGE-INTEGRITY before remembering a tuple.
       let username = "";
       peer = undefined;
