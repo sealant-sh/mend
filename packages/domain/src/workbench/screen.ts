@@ -157,13 +157,17 @@ export type ScreenInput = typeof ScreenInput.Type;
 export const SCREEN_INPUT_INITIAL: ScreenInput = { _tag: "AwaitingAgent", epoch: 0 };
 
 /**
- * Who holds a screen's input, as watchers see it: the input state without its epoch or the
- * holder's connection. `awaiting`: the agent takes it at its next look. `taking`: the person's
- * takeover is being fenced.
+ * Who holds a screen's input, as watchers see it: the input state without its epoch. A person's
+ * `connection` is the viewer the input goes to, so a tab can tell it holds the input itself.
+ * `awaiting`: the agent takes it at its next look. `taking`: the person's takeover is being fenced.
  */
 export const ScreenHolder = Schema.Union([
   Schema.TaggedStruct("Agent", { awaiting: Schema.Boolean }),
-  Schema.TaggedStruct("Person", { userId: Schema.String, taking: Schema.Boolean }),
+  Schema.TaggedStruct("Person", {
+    userId: Schema.String,
+    connection: ViewerConnectionId,
+    taking: Schema.Boolean,
+  }),
   Schema.TaggedStruct("Paused", { reason: ScreenLapse }),
 ]);
 export type ScreenHolder = typeof ScreenHolder.Type;
@@ -175,10 +179,10 @@ export const screenHolderOf = (input: ScreenInput): ScreenHolder => {
     case "AwaitingAgent":
       return { _tag: "Agent", awaiting: true };
     case "Person":
-      return { _tag: "Person", userId: input.userId, taking: false };
+      return { _tag: "Person", userId: input.userId, connection: input.connection, taking: false };
     case "Fencing":
       return input.to._tag === "Person"
-        ? { _tag: "Person", userId: input.by, taking: true }
+        ? { _tag: "Person", userId: input.by, connection: input.to.connection, taking: true }
         : { _tag: "Agent", awaiting: true };
     case "Paused":
       return { _tag: "Paused", reason: input.reason };

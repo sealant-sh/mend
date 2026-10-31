@@ -14,27 +14,22 @@ import {
 import { ScreenChannel, screenCloseWords, screenSocketUrl } from "#/lib/screen-socket";
 import { useTRPC } from "#/lib/trpc";
 
-/**
- * This viewer's socket to the screen. `took`: Take over succeeded on this connection, so while the
- * owner holds the input, it is held here and not in another tab.
- */
+/** This viewer's socket to the screen; `connection` is the id the server named it. */
 export type ScreenWire =
   | { readonly _tag: "Connecting" }
-  | { readonly _tag: "Watching"; readonly connection: ViewerConnectionId; readonly took: boolean }
+  | { readonly _tag: "Watching"; readonly connection: ViewerConnectionId }
   | { readonly _tag: "Closed"; readonly words: string };
 
 type Pending = "take" | "hand-back" | null;
 
-/** Whether this viewer's own connection holds the input: only then do its keys reach the screen. */
-export const heldHere = (
-  screen: LiveScreenDto,
-  wire: ScreenWire,
-  viewerId: string | null,
-): boolean =>
+/**
+ * Whether this viewer's own connection holds the input, as the server last reported: only then do
+ * its keys reach the screen. A takeover from another tab names that tab's connection.
+ */
+export const heldHere = (screen: LiveScreenDto, wire: ScreenWire): boolean =>
   wire._tag === "Watching" &&
-  wire.took &&
   screen.holder._tag === "Person" &&
-  screen.holder.userId === viewerId;
+  screen.holder.connection === wire.connection;
 
 /** What Take over or Hand back answered, when it did not simply happen. */
 export const screenControlNotice = (result: ScreenControlDto): string | null => {
@@ -194,7 +189,7 @@ export function ScreenPane({
   const [notice, setNotice] = useState<string | null>(null);
   const rfb = useRef<RFB | null>(null);
   const owner = viewerId !== null && viewerId === screen.ownerUserId;
-  const held = heldHere(screen, wire, viewerId);
+  const held = heldHere(screen, wire);
 
   // noVNC is an imperative widget bound to its element: it opens with the element, at each
   // Reconnect (a new key), and closes with it. It reads `window` as it loads, so it loads here,
@@ -211,7 +206,7 @@ export function ScreenPane({
         const socket = new WebSocket(screenSocketUrl(sessionId, window.location.origin));
         const channel = new ScreenChannel(socket, {
           hello: (connection) => {
-            if (!disposed) setWire({ _tag: "Watching", connection, took: false });
+            if (!disposed) setWire({ _tag: "Watching", connection });
           },
           closed: (close) => {
             if (!disposed) setWire({ _tag: "Closed", words: screenCloseWords(close) });
@@ -245,7 +240,7 @@ export function ScreenPane({
   const send = (
     kind: "take" | "hand-back",
     request: Promise<ScreenControlDto>,
-    then: (result: ScreenControlDto) => void,
+    then?: (result: ScreenControlDto) => void,
   ) => {
     setPending(kind);
     setNotice(null);
@@ -258,7 +253,7 @@ export function ScreenPane({
           );
         }
         setNotice(screenControlNotice(result));
-        then(result);
+        then?.(result);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Mend did not answer.");
       } finally {
@@ -272,22 +267,10 @@ export function ScreenPane({
     if (wire._tag !== "Watching") return;
     const { connection } = wire;
     send("take", takeScreen(sessionId, connection), (result) => {
-      // Unchanged: this connection already held it, or was being handed it.
-      const took =
-        (result._tag === "Changed" && result.holder._tag === "Person") ||
-        result._tag === "Unchanged";
-      setWire((current) =>
-        current._tag === "Watching" && current.connection === connection
-          ? { ...current, took }
-          : current,
-      );
-      if (took) rfb.current?.focus();
+      if (result._tag === "Changed" || result._tag === "Unchanged") rfb.current?.focus();
     });
   };
-  const handBack = () =>
-    send("hand-back", handBackScreen(sessionId), () =>
-      setWire((current) => (current._tag === "Watching" ? { ...current, took: false } : current)),
-    );
+  const handBack = () => send("hand-back", handBackScreen(sessionId));
 
   return (
     <ScreenPaneView

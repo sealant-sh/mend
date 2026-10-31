@@ -15,7 +15,10 @@ import {
 
 const OWNER = "u-owner";
 const connection = ViewerConnectionId.make("vc_one");
-const watching: ScreenWire = { _tag: "Watching", connection, took: false };
+const otherTab = ViewerConnectionId.make("vc_two");
+const watching: ScreenWire = { _tag: "Watching", connection };
+const heldBy = (holder: ViewerConnectionId) =>
+  screen({ holder: { _tag: "Person", userId: OWNER, connection: holder, taking: false } });
 
 const screen = (overrides: Partial<LiveScreenDto> = {}): LiveScreenDto => ({
   _tag: "Screen",
@@ -67,14 +70,24 @@ describe("ScreenPaneView", () => {
 
   it("offers Hand back, and no Take over, while this viewer holds the input", () => {
     const html = render({
-      screen: screen({ holder: { _tag: "Person", userId: OWNER, taking: false } }),
+      screen: heldBy(connection),
       statusLine: "screen · Yiannis has input",
-      wire: { ...watching, took: true },
       held: true,
     });
     expect(html).toContain("Hand back");
     expect(html).not.toContain("Take over");
     expect(html).toContain("Your keys and clicks reach the screen.");
+  });
+
+  it("offers Take over again once the owner's other tab took the input", () => {
+    const elsewhere = heldBy(otherTab);
+    const html = render({
+      screen: elsewhere,
+      statusLine: "screen · Yiannis has input",
+      held: heldHere(elsewhere, watching),
+    });
+    expect(html).toContain("Take over");
+    expect(html).not.toContain("Your keys and clicks reach the screen.");
   });
 
   it("reads the status line when the input is paused, and lets the owner take over or hand back", () => {
@@ -124,14 +137,14 @@ describe("ScreenPaneView", () => {
 });
 
 describe("heldHere", () => {
-  const held = screen({ holder: { _tag: "Person", userId: OWNER, taking: false } });
-
-  it("is true only on the connection Take over succeeded on", () => {
-    expect(heldHere(held, { ...watching, took: true }, OWNER)).toBe(true);
-    // The owner's other tab: the person holds it, this connection does not.
-    expect(heldHere(held, watching, OWNER)).toBe(false);
-    expect(heldHere(screen(), { ...watching, took: true }, OWNER)).toBe(false);
-    expect(heldHere(held, { _tag: "Closed", words: "the screen stopped" }, OWNER)).toBe(false);
+  it("is true only while the server names this viewer's own connection as the holder", () => {
+    expect(heldHere(heldBy(connection), watching)).toBe(true);
+    // The same owner took over in another tab: the person holds it, this connection does not.
+    expect(heldHere(heldBy(otherTab), watching)).toBe(false);
+    expect(heldHere(screen(), watching)).toBe(false);
+    expect(heldHere(heldBy(connection), { _tag: "Closed", words: "the screen stopped" })).toBe(
+      false,
+    );
   });
 });
 

@@ -153,7 +153,12 @@ describe("screenStatusLine", () => {
     expect(
       screenStatusLine({
         life: live,
-        holder: { _tag: "Person", userId: "u-yiannis", taking: false },
+        holder: {
+          _tag: "Person",
+          userId: "u-yiannis",
+          connection: ViewerConnectionId.make("vc_yiannis"),
+          taking: false,
+        },
         viewers: 0,
         now,
         nameOf: String,
