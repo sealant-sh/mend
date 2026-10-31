@@ -3,6 +3,9 @@ import { PreviewId, PreviewLabel, SessionProcessId } from "@mend/domain";
 import {
   type Preview,
   PREVIEW_CONTROL_INITIAL,
+  isWakeShell,
+  protocolIdleReading,
+  protocolIdleStopDue,
   previewStartId,
   type PreviewStartRequest,
   serviceStartCorrelation,
@@ -10,7 +13,7 @@ import {
   SessionProcess,
   type ServiceStopCause,
 } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
+import { SealantPlatformError, SealantClient, SealantPrincipal } from "@mend/sealant";
 import {
   PreviewStartDeclined,
   type PreviewStartRefused,
@@ -22,6 +25,8 @@ import type { CreateOptions } from "@sealant/sdk";
 import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
+import { shipCaptureFiles } from "./engine/capture-fixture.ts";
 import {
   now,
   previewsRepoOf,
@@ -49,17 +54,45 @@ const servicePlatform = () => {
     waiting: 0,
   };
   const opened: Array<ReadonlyArray<string>> = [];
+  const allOpened: Array<ReadonlyArray<string>> = [];
+  const creators: string[] = [];
+  const created: CreateOptions[] = [];
   const closed: string[] = [];
   const dead = new Set<string>();
-  const control = { exitOnOpen: false, failClose: false, workspaceStopped: false, restarts: 0 };
+  const control = {
+    exitOnOpen: false,
+    failClose: false,
+    workspaceStopped: false,
+    restarts: 0,
+    creates: 0,
+    failCreate: false,
+  };
   const layer = Layer.effect(
     SealantClient,
     Effect.map(SealantClient, (client) => ({
       ...client,
+      createWorkspace: (options, launch) =>
+        Effect.gen(function* () {
+          control.creates += 1;
+          const principal = yield* SealantPrincipal;
+          if (principal.kind === "user") creators.push(principal.userId);
+          if (control.failCreate)
+            return yield* new SealantPlatformError({
+              code: "resume_failed",
+              status: 503,
+              message: "resume failed",
+              cause: null,
+            });
+          created.push(options);
+          const workspace = yield* client.createWorkspace(options, launch);
+          control.workspaceStopped = false;
+          return { ...workspace, id: `workspace-${control.creates}` };
+        }),
       getWorkspace: (id) =>
         client.getWorkspace(id).pipe(
           Effect.map((workspace) => ({
             ...workspace,
+            id,
             status: async () => (control.workspaceStopped ? "stopped" : workspace.status()),
             restart: async () => {
               control.restarts += 1;
@@ -71,6 +104,7 @@ const servicePlatform = () => {
       openSession: (workspace, argv, options) =>
         Effect.gen(function* () {
           if (isService(argv) && gate.current !== null) yield* Deferred.await(gate.current);
+          allOpened.push(argv);
           const pty = yield* client.openSession(workspace, argv, options);
           if (!isService(argv)) return pty;
           opened.push(argv);
@@ -99,7 +133,7 @@ const servicePlatform = () => {
         ),
     })),
   ).pipe(Layer.provide(sealantLaunchLayer(Array<CreateOptions>())));
-  return { layer, gate, closing, opened, closed, control, dead };
+  return { layer, gate, closing, opened, allOpened, creators, created, closed, control, dead };
 };
 
 const flakyServiceHost = () => {
@@ -501,6 +535,108 @@ describe("ensurePreviewRunning", () => {
       { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
     );
   });
+
+  for (const outcome of ["restored", "paused", "failed"]) {
+    it(`capture preview wake: ${outcome}, with no agent launch`, async () => {
+      const captured = makeMemoryCaptureStore();
+      const platform = servicePlatform();
+      const port = listeningPort(platform.dead);
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            port.state.world = world;
+            const { engine, session, service, preview, source } = yield* preparePreview(world, tmp);
+            yield* engine.stopService(service.id, idle);
+            const lease = captured.leases.get(session.worktreeId);
+            if (lease === undefined) return yield* Effect.die("missing lease");
+            yield* shipCaptureFiles(tmp, captured, session.worktreeId, lease.epoch, {
+              "src/preview.txt": "latest saved preview edit",
+            });
+            const savedHead = captured.chains.get(session.worktreeId)?.headCapture;
+            lease.expiresAt = 0;
+            world.serviceStarters.set(service.id, STEERER);
+            platform.allOpened.length = 0;
+            platform.control.workspaceStopped = outcome !== "paused";
+            platform.control.failCreate = outcome === "failed";
+            const before = platform.control.creates;
+            const agentsBefore = [...world.processes.values()].filter(
+              (row) => row.kind !== "service",
+            ).length;
+            const request = requestFor(world, preview, source);
+            const results = yield* Effect.all(
+              [
+                Effect.result(engine.ensurePreviewRunning(request, Effect.void)),
+                Effect.result(engine.ensurePreviewRunning(request, Effect.void)),
+              ],
+              { concurrency: "unbounded" },
+            );
+            if (outcome === "failed") {
+              for (const result of results) {
+                expect(Result.isFailure(result)).toBe(true);
+                if (Result.isFailure(result))
+                  expect(result.failure).toMatchObject({ reason: "workspace-not-live" });
+              }
+              yield* Effect.result(engine.ensurePreviewRunning(request, Effect.void));
+            } else {
+              for (const result of results) expect(Result.isSuccess(result)).toBe(true);
+              expect(results[0]).toEqual(results[1]);
+              expect((yield* resolutionOf(world, preview))?._tag).toBe("Bound");
+            }
+            expect(platform.control.creates - before).toBe(outcome === "paused" ? 0 : 1);
+            expect(platform.control.restarts).toBe(0);
+            expect(captured.chains.get(session.worktreeId)?.headCapture).toBe(savedHead);
+            if (outcome === "restored") {
+              expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-2");
+              expect(platform.created.at(-1)?.source).toMatchObject({
+                kind: "capture",
+                worktreeId: session.worktreeId,
+              });
+            }
+            if (outcome !== "paused") expect(platform.creators.at(-1)).toBe(STEERER);
+            if (outcome === "restored") {
+              expect(platform.allOpened).toHaveLength(2);
+              expect(platform.allOpened[0]?.at(-1)).toBe("zsh");
+              expect(platform.allOpened[1]).toEqual(["pnpm", "dev"]);
+            } else {
+              expect(platform.allOpened).toEqual(outcome === "failed" ? [] : [["pnpm", "dev"]]);
+            }
+            expect(
+              [...world.processes.values()].filter((row) => row.kind !== "service"),
+            ).toHaveLength(agentsBefore + (outcome === "restored" ? 1 : 0));
+            if (outcome === "restored") {
+              const liveShells = [...world.processes.values()].filter(
+                (row) => row.kind === "shell" && row.exitedAt === null,
+              );
+              expect(liveShells.every(isWakeShell)).toBe(true);
+              const running = world.services.get(service.id)?.currentAttemptId;
+              if (running == null) return yield* Effect.die("no current service attempt");
+              expect(yield* engine.stopIdlePreview(preview.id, running, 0, Effect.void)).toBe(true);
+              const wokenSession = world.sessions.get(session.id);
+              if (wokenSession === undefined) return yield* Effect.die("no session");
+              const reading = protocolIdleReading({
+                session: wokenSession,
+                processes: [...world.processes.values()].filter(
+                  (process) => process.sessionId === session.id,
+                ),
+                turns: [],
+                requests: [],
+                liveServices: 0,
+              });
+              expect(reading.kind).toBe("idle");
+              if (reading.kind !== "idle") return yield* Effect.die("wake held idle stop");
+              expect(protocolIdleStopDue(reading, reading.since.getTime() + 15 * 60_000, 15)).toBe(
+                true,
+              );
+              yield* engine.stop(session.id, "idle · stopped after 15 min · reply to resume");
+              expect([...world.processes.values()].filter((row) => row.exitedAt === null)).toEqual(
+                [],
+              );
+            }
+          }),
+        { captured, sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+      );
+    });
+  }
 
   it("two concurrent requests start one process, and a later one joins it", async () => {
     const platform = servicePlatform();

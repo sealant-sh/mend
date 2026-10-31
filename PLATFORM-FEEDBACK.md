@@ -2529,8 +2529,9 @@ and source trail (M2) build on the typed kinds.
   a fresh runtime from the same resolved spec and explicitly promises no filesystem carry-over.
   `recover()` drains a retained executor and then removes it. None is a resume of a stopped
   workspace with the worktree's latest saved capture and current person layout.
-- **Requested:** A service-only resume that accepts the current capture/worktree and person layout,
-  returns a workspace handle, and makes retained or unsaved work an explicit refusal.
-- **Mend behavior:** Wake runs setup and Services when the workspace is live. Otherwise the gateway
-  returns 503 and asks the person to resume the session in Mend, then reopen the preview. It does
-  not restart a fresh runtime against the old resolved spec or launch an agent for a visit.
+- **Resolved in Mend, 2026-10-31:** The existing session provisioning path already uses public SDK
+  creation with the current capture and person layout. Preview wake now reuses that path and returns
+  with an attachable wake shell that does not hold idle stop, skipping agent launch and harness
+  warm-up. Screen and preview use the same `wakeWorkspace` entry point. No new SDK capability is
+  required. `restart()` remains limited to co-located worktrees. Unsaved or retained executor
+  refusals from the session restore path still reach the gateway as a failed resume.

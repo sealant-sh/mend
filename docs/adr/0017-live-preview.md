@@ -473,10 +473,19 @@ visitors share a start. Recipe Services run the current recipe through setup and
 `services.started_by`, falling back to the session owner for older rows. A person's Stop remains in
 force. A failed start answers 503 without automatically retrying the request.
 
-A stopped workspace still needs the person to resume its session in Mend. The SDK's `restart()` uses
-a fresh runtime with no filesystem carry-over, not the latest worktree capture. The 503 page says to
-resume the session, then reopen the preview; the missing service-only resume is recorded in
-`PLATFORM-FEEDBACK.md`. Workspace wake is therefore still incomplete in delivery step 12.
+**Amendment to decision 5 and delivery step 12, Yiannis, 2026-10-31.** Opening a preview whose
+session workspace stopped resumes that workspace as `services.started_by`, falling back to the
+session owner for older rows. Capture mode uses the session's fenced restore path with the current
+capture and person layout through `wakeWorkspace`, shared with screen wake. It opens only a marked
+wake shell, with no agent, turn or inference request. The shell does not hold workspace or preview
+idle stop. The Service then starts through the existing start wave while visitors see the starting
+page, with the existing three-minute hold. A live executor with a paused lease is reused while its
+heartbeat is pending; a second executor is never created over it. Co-located workspaces keep their
+restart path.
+
+Only a failed workspace resume answers the page asking the person to resume the session in Mend and
+open the preview again. Failed-wake deduplication prevents repeated visits from looping the same
+failed start. A person's Stop and the existing start budgets still apply.
 
 ### Exposure
 

@@ -25371,7 +25371,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               for (const live of yield* processes.listLiveForWorkspace(
                 attempt.sealantWorkspaceId,
               )) {
-                if (live.kind === "service") continue;
+                if (live.kind === "service" || isWakeShell(live)) continue;
                 if (live.kind !== "agent-protocol") return false;
                 if (!(yield* protocolHost.quiescence(live.id))?.quiescent) return false;
               }
@@ -25516,13 +25516,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
-      // A co-located worktree survives executor replacement on the host. Capture-backed
-      // workspaces need a new current capture source, which restart's old resolved spec cannot supply.
+      // Capture wakes share the screen's workspace resume. Live executors work
+      // with a paused lease too; co-located worktrees keep their restart path.
       const workspaceForPreview = (session: Session, starter: string | null) =>
         workspaceForSupportingProcess(session).pipe(
+          Effect.catchTag("SealantPlatformError", (error) =>
+            Effect.fail(
+              workspaceMissing(error) ? new SessionNotLiveError({ sessionId: session.id }) : error,
+            ),
+          ),
           Effect.catchTag("SessionNotLiveError", () =>
             Effect.gen(function* () {
-              if (capture !== null || session.sealantWorkspaceId === null)
+              if (capture !== null) {
+                if (starter === null) return yield* previewRefused("starter-no-standing");
+                if (session.sealantWorkspaceId !== null) {
+                  yield* workspaceCaller.mayAct(session.sealantWorkspaceId).pipe(
+                    asSealantUser(starter),
+                    Effect.mapError(() => previewRefused("starter-no-standing")),
+                  );
+                  const retired = yield* retirementRefusalFor(session.sealantWorkspaceId, starter);
+                  if (retired !== null) return yield* previewRefused("workspace-retiring", retired);
+                }
+                return yield* oneLaunch(session.id)(
+                  wakeWorkspace(session.id, { reason: "preview", runsAs: starter }),
+                ).pipe(Effect.flatMap(workspaceForSupportingProcess));
+              }
+              if (session.sealantWorkspaceId === null)
                 return yield* previewRefused("workspace-not-live");
               const workspaceId = session.sealantWorkspaceId;
               const workspace = yield* sealant.getWorkspace(workspaceId);
@@ -25565,7 +25584,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .byId(service.sessionId)
           .pipe(Effect.mapError(() => previewRefused("preview-gone")));
         const starter = (yield* services.startedByOf(service.id)) ?? session.ownerUserId;
-        const workspace = yield* workspaceForPreview(session, starter);
+        const workspace = yield* workspaceForSupportingProcess(session).pipe(
+          Effect.mapError(() => previewRefused("workspace-not-live")),
+        );
         const workspaceId = SealantWorkspaceId.make(workspace.id);
         const retired = yield* retirementRefusalFor(workspaceId, starter);
         if (retired !== null) return yield* previewRefused("workspace-retiring", retired);
@@ -25741,26 +25762,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* joinPreviewAttempt(step.attemptId, request.deadline);
         const service = yield* services.byId(step.serviceId);
         if (service === null) return yield* previewRefused("preview-gone");
+        const session = yield* sessions
+          .byId(service.sessionId)
+          .pipe(Effect.mapError(() => previewRefused("preview-gone")));
+        const runsAs = (yield* services.startedByOf(service.id)) ?? session.ownerUserId;
+        const kept = servicePlans.get(planKey(service.sessionId, previewStartId(request)));
+        if (kept !== undefined && kept.refused !== "claim-lost")
+          return yield* awaitPreviewRecipe(kept);
+        const admitted = yield* withServiceLifecycle(
+          Effect.gen(function* () {
+            const current = yield* previewStartStep(request);
+            if (current._tag === "Start") yield* claim;
+            return current;
+          }),
+        );
+        if (admitted._tag === "Preparation") return yield* joinPreviewPreparation(request);
+        if (admitted._tag === "Join")
+          return yield* joinPreviewAttempt(admitted.attemptId, request.deadline);
+        // Resume may drain old Services, so it cannot hold their lifecycle permit.
+        yield* workspaceForPreview(session, runsAs);
+        const resumed = yield* sessions
+          .byId(service.sessionId)
+          .pipe(Effect.mapError(() => previewRefused("preview-gone")));
         if (
           service.declarationSource === "recipe-file" ||
           service.declarationSource === "recipe-project"
         ) {
-          const kept = servicePlans.get(planKey(service.sessionId, previewStartId(request)));
-          if (kept !== undefined && kept.refused !== "claim-lost")
-            return yield* awaitPreviewRecipe(kept);
-          const session = yield* sessions
-            .byId(service.sessionId)
-            .pipe(Effect.mapError(() => previewRefused("preview-gone")));
-          const runsAs = (yield* services.startedByOf(service.id)) ?? session.ownerUserId;
-          yield* withServiceLifecycle(
-            Effect.gen(function* () {
-              const again = yield* previewStartStep(request);
-              if (again._tag !== "Start") return;
-              yield* claim;
-              yield* workspaceForPreview(session, runsAs);
-            }),
-          );
-          const planned = yield* recipePlanOf(session, service.name).pipe(
+          const planned = yield* recipePlanOf(resumed, service.name).pipe(
             Effect.mapError((error) => previewRefused("command-failed", error.message)),
           );
           const follower: PlanFollower = {
@@ -25777,7 +25805,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const again = yield* previewStartStep(request);
               if (again._tag !== "Start") return null;
               return yield* beginRecipePlan(
-                session,
+                resumed,
                 service.name,
                 { kind: "system", runsAs },
                 previewStartId(request),
@@ -25805,7 +25833,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             const again = yield* previewStartStep(request);
             if (again._tag !== "Start") return again;
-            yield* claim;
             return yield* acceptPreviewStart(again, lookedUp);
           }),
         );
