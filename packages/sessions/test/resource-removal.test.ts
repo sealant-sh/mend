@@ -109,13 +109,20 @@ const scope: ResourceScope = {
       const instance = instances.get(key);
       if (instance)
         instances.set(key, { ...instance, state: { kind: "archived", at: new Date() } });
+      return (instance?.volumes ?? []).map((volume) => ({
+        ...volume,
+        instanceKey: key,
+        bytes: 4096,
+      }));
     }),
   archiveScope: () =>
     Effect.sync(() => {
       scopeArchives += 1;
-      return [...instances.values()].flatMap((instance) =>
-        instance.volumes.map((volume) => ({ ...volume, instanceKey: instance.key, bytes: 8192 })),
-      );
+      return [...instances.values()]
+        .filter((instance) => instance.state.kind !== "archived")
+        .flatMap((instance) =>
+          instance.volumes.map((volume) => ({ ...volume, instanceKey: instance.key, bytes: 8192 })),
+        );
     }),
 };
 const scopes = Layer.succeed(ResourceScopes, { of: () => Effect.succeed(scope) });
@@ -145,7 +152,7 @@ const seed = () =>
   runtime.runPromise(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`TRUNCATE resource_archives, resource_definitions CASCADE`;
+      yield* sql`TRUNCATE resource_archives, resource_kept_volumes, resource_definitions CASCADE`;
       const repo = yield* ResourcesRepo;
       const definitions = [];
       for (const name of ["db", "other"]) {
@@ -296,6 +303,30 @@ describe.skipIf(postgres.skip)("resource preservation before removal", () => {
     expect(archivedKeys).toEqual([ownKey]);
     expect(instances.get(ownKey)?.volumes).toHaveLength(1);
     expect(instances.get(otherKey)?.state.kind).toBe("running");
+    const kept = await runtime.runPromise(
+      Effect.flatMap(ResourceArchivesRepo, (repo) => repo.keptVolumes(PROJECT)),
+    );
+    expect(kept).toEqual([expect.objectContaining({ instanceKey: ownKey, bytes: 4096 })]);
+    await runtime.runPromise(
+      Effect.flatMap(ResourceArchivesRepo, (repo) =>
+        repo.rememberVolumes(
+          PROJECT,
+          kept.map((volume) => ({ ...volume, bytes: null })),
+        ),
+      ),
+    );
+    const project = await runtime.runPromise(
+      Effect.flatMap(ProjectsRepo, (repo) => repo.byId(PROJECT)),
+    );
+    await runtime.runPromise(
+      Effect.flatMap(ResourceRemoval, (removal) => removal.project(project)),
+    );
+    const archived = await runtime.runPromise(
+      Effect.flatMap(ResourceArchivesRepo, (repo) => repo.byProject(PROJECT)),
+    );
+    expect(archived?.archive.volumes).toContainEqual(
+      expect.objectContaining({ instanceKey: ownKey, bytes: 4096 }),
+    );
   });
 
   it("records the project inventory before archiving, retains measured sizes and never archives twice", async () => {

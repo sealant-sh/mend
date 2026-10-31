@@ -199,6 +199,7 @@ const fakeScope: ResourceScope = {
     Effect.sync(() => {
       sealant.calls.push(`archive ${key}`);
       sealant.instances.delete(key);
+      return [];
     }),
   link: (workspaceId, worktreeKey) =>
     Effect.sync(() => {

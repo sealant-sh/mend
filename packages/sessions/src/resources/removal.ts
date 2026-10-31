@@ -250,13 +250,20 @@ const make: Effect.Effect<
       ),
     );
     for (const instance of instances.filter((each) => each.worktreeKey === worktreeId)) {
-      yield* client.archive(instance.key).pipe(
+      const measured = yield* client.archive(instance.key).pipe(
         Effect.mapError(
           (error) =>
             new ResourceRemovalRefused({
               message: `@${instance.alias} · not archived · ${error.message}`,
             }),
         ),
+      );
+      yield* archives.rememberVolumes(
+        project.id,
+        measured.map((volume) => ({
+          ...volume,
+          resourceName: instance.alias,
+        })),
       );
       const definition = definitions.find(
         (def) => resourceInstanceKey(def.id, worktreeId) === instance.key,
@@ -291,7 +298,7 @@ const make: Effect.Effect<
           projectName: project.name,
           createdByUserId: project.createdByUserId,
           archivedAt: at,
-          volumes: mergeArchivedVolumes([], volumes),
+          volumes: mergeArchivedVolumes(volumes, yield* archives.keptVolumes(project.id)),
         });
         stored = yield* archives.byProject(project.id);
       }
