@@ -1,5 +1,6 @@
 import { changesRouter } from "./changes.ts";
 import { devicesRouter } from "./devices.ts";
+import { dopplerRouter } from "./doppler.ts";
 import { environmentRouter } from "./environment.ts";
 import { foldersRouter } from "./folders.ts";
 import { gitRouter } from "./git.ts";
@@ -34,6 +35,7 @@ import { worktreesRouter } from "./worktrees.ts";
 export const appRouter = router({
   changes: changesRouter,
   devices: devicesRouter,
+  doppler: dopplerRouter,
   environment: environmentRouter,
   folders: foldersRouter,
   git: gitRouter,
