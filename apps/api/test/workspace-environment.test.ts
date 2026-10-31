@@ -64,6 +64,8 @@ describe("resolveWorkspaceEnvironment", () => {
       { packageName: "gh", os: "arch" },
       { packageName: "github-cli", os: "arch" },
       { packageName: "doppler", os: "arch" },
+      { packageName: "postgresql-client", os: "arch" },
+      { packageName: "redis-cli", os: "arch" },
     ]);
     expect(result.workspaceImage).toEqual({
       mode: "family",
@@ -89,7 +91,7 @@ describe("resolveWorkspaceEnvironment", () => {
     );
 
     expect(result.workspaceImage).toBeNull();
-    expect(result.resolutions).toHaveLength(3);
+    expect(result.resolutions).toHaveLength(5);
   });
 
   it("refuses a name outside the catalog that the platform matched to another project", async () => {
@@ -175,7 +177,13 @@ describe("resolveWorkspaceEnvironment", () => {
       ),
     );
 
-    expect(asked).toEqual(["gh", "doppler", ...screenPackageIds("arch")]);
+    expect(asked).toEqual([
+      "gh",
+      "doppler",
+      "postgresql-client",
+      "redis-cli",
+      ...screenPackageIds("arch"),
+    ]);
     expect(result.workspaceImage).toMatchObject({ packages: ["github-cli"], screen: true });
   });
 
@@ -191,6 +199,8 @@ describe("resolveWorkspaceEnvironment", () => {
     expect(result.workspaceImage).toBeNull();
     expect(result.resolutions.filter((r) => !r.supported).map((r) => r.requested)).toEqual([
       "doppler",
+      "postgresql-client",
+      "redis-cli",
       ...screenPackageIds("arch"),
     ]);
   });
@@ -314,6 +324,8 @@ describe("workspace environment save boundaries", () => {
       { requested: "pnpm", status: "resolved" },
       { requested: "missing", status: "not-found" },
       { requested: "doppler", status: "resolved" },
+      { requested: "postgresql-client", status: "resolved" },
+      { requested: "redis-cli", status: "resolved" },
     ]);
     expect({ saves, current }).toEqual({ saves: 0, current: initial });
   });

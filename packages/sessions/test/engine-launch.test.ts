@@ -198,7 +198,13 @@ describe("SessionEngine", () => {
           expect(created).toHaveLength(1);
           expect(created[0]?.os).toBe("nix");
           // Mend adds its Doppler CLI to the person's configured image packages.
-          expect(created[0]?.packages).toEqual(["bat", "lazygit", "doppler"]);
+          expect(created[0]?.packages).toEqual([
+            "bat",
+            "lazygit",
+            "doppler",
+            "postgresql-client",
+            "redis-cli",
+          ]);
           expect(created[0]?.services).toEqual({ docker: true });
           // The owner's own Claude login rides along, so the agent can run `claude` on it.
           expect(created[0]?.credentials).toEqual({ codex: true, claude: true, github: true });

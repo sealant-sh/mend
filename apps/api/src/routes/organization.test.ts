@@ -799,10 +799,13 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
     await expect(rejected.json()).resolves.toMatchObject({
       saved: false,
       settings: { organization: { workspaceImage: null } },
-      // Validation includes Mend's Doppler CLI even when a configured package is rejected.
+      // Validation includes the packages Mend adds to every image even when a configured one is
+      // rejected: the Doppler CLI and the Postgres and Redis clients.
       resolutions: [
         { requested: "nope", status: "not-found" },
         { requested: "doppler", status: "resolved", canonicalId: "doppler-canonical" },
+        { requested: "postgresql-client", status: "resolved" },
+        { requested: "redis-cli", status: "resolved" },
       ],
     });
     expect(writes).toEqual([]);
