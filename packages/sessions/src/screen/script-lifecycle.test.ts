@@ -75,6 +75,27 @@ describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
     { timeout: 30_000 },
   );
 
+  it(
+    "waits for the initial browser window before reporting ready",
+    { timeout: 30_000 },
+    async () => {
+      inside(
+        "mv /run/mend/bin/chromium /run/mend/bin/chromium.real; " +
+          "printf '#!/bin/sh\\nwhile [ ! -e /run/user/40001/start-browser ]; do sleep 0.1; done\\nexec /run/mend/bin/chromium.real \"$@\"\\n' " +
+          "> /run/mend/bin/chromium; chmod 755 /run/mend/bin/chromium",
+      );
+      const screen = start(18);
+      await expect.poll(() => inside("pgrep -x xfwm4").trim(), { timeout: 10_000 }).not.toBe("");
+      // Let the status loop run while the browser is deliberately held before its first window.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      expect(screen.lines).not.toContain("mend-screen ready");
+      expect(inside("ps -eo comm=").split("\n")).not.toContain("ffmpeg");
+      inside("touch /run/user/40001/start-browser", "person");
+      await screen.said("mend-screen ready");
+      expect(asPerson(18, "xdotool search --onlyvisible --class Chromium").trim()).not.toBe("");
+    },
+  );
+
   it.live(
     "ends everything it started when its terminal hangs up",
     () =>

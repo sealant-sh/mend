@@ -84,33 +84,49 @@ MEND_BWRAP
   waited=0
   until wm_alive || [ "$waited" -ge 50 ]; do waited=$((waited + 1)); sleep 0.2; done
   ${CHROMIUM_WRAPPER_PATH} about:blank >/dev/null 2>&1 &
+  browser=$!
+  browser_wait=0
+  browser_ready() {
+    command -v xprop >/dev/null 2>&1 || return 0
+    for window in $(xprop -root _NET_CLIENT_LIST 2>/dev/null | sed 's/.*#//; s/,/ /g'); do
+      xprop -id "$window" WM_CLASS 2>/dev/null | grep -qi '"Chromium"' && return 0
+    done
+    return 1
+  }
   encoders=
   said=
   sandbox=
   while sleep 0.5 && kill -0 $$ 2>/dev/null; do
     if wm_alive; then
-      [ "$said" = ready ] || { said=ready; echo "mend-screen ready"; }
-      # XFCE can take longer than the initial wait on a slow machine.
-      if [ -z "$encoders" ]; then
-        encoders=started
-        if command -v ffmpeg >/dev/null 2>&1; then
-          # Separate listeners let a person see only their local pointer.
-          # Displays are 10..99: 8100+n never overlaps the pointer listeners at 7900+n.
-          for mouse in 1 0; do
-            (
-              if [ "$mouse" -eq 1 ]; then port=$((7900 + n)); else port=$((8100 + n)); fi
-              while :; do
-                # X11 already supplies its format; probe one frame and discard it before accepting a viewer.
-                ffmpeg -nostdin -loglevel error -fflags nobuffer -probesize 32 -analyzeduration 0 -f x11grab -draw_mouse "$mouse" -framerate 30 \\
-                  -video_size "$2" -i "$display" -c:v libx264 -threads 2 -preset ultrafast \\
-                  -tune zerolatency -profile:v baseline -level:v 3.1 -pix_fmt yuv420p \\
-                  -vf scale=out_color_matrix=bt709 -colorspace bt709 -color_primaries bt709 -color_trc bt709 \\
-                  -g 30 -keyint_min 30 -bf 0 -x264-params aud=1:repeat-headers=1 \\
-                  -f h264 "tcp://127.0.0.1:$port?listen=1" 2>"$dir/stream-$mouse.log" || true
-                sleep 0.2
-              done
-            ) &
-          done
+      # The wrapper probes Chromium's sandbox before opening its first window. Reporting ready
+      # sooner lets that delayed window cover the agent's first app, including live video.
+      # A missing or failed browser must not prevent the display from becoming usable.
+      if [ -z "$encoders" ] && [ "$browser_wait" -lt 20 ] && kill -0 "$browser" 2>/dev/null && ! browser_ready; then
+        browser_wait=$((browser_wait + 1))
+      else
+        [ "$said" = ready ] || { said=ready; echo "mend-screen ready"; }
+        # XFCE can take longer than the initial wait on a slow machine.
+        if [ -z "$encoders" ]; then
+          encoders=started
+          if command -v ffmpeg >/dev/null 2>&1; then
+            # Separate listeners let a person see only their local pointer.
+            # Displays are 10..99: 8100+n never overlaps the pointer listeners at 7900+n.
+            for mouse in 1 0; do
+              (
+                if [ "$mouse" -eq 1 ]; then port=$((7900 + n)); else port=$((8100 + n)); fi
+                while :; do
+                  # X11 already supplies its format; probe one frame and discard it before accepting a viewer.
+                  ffmpeg -nostdin -loglevel error -fflags nobuffer -probesize 32 -analyzeduration 0 -f x11grab -draw_mouse "$mouse" -framerate 30 \\
+                    -video_size "$2" -i "$display" -c:v libx264 -threads 2 -preset ultrafast \\
+                    -tune zerolatency -profile:v baseline -level:v 3.1 -pix_fmt yuv420p \\
+                    -vf scale=out_color_matrix=bt709 -colorspace bt709 -color_primaries bt709 -color_trc bt709 \\
+                    -g 30 -keyint_min 30 -bf 0 -x264-params aud=1:repeat-headers=1 \\
+                    -f h264 "tcp://127.0.0.1:$port?listen=1" 2>"$dir/stream-$mouse.log" || true
+                  sleep 0.2
+                done
+              ) &
+            done
+          fi
         fi
       fi
     elif [ "$said" != degraded ]; then
