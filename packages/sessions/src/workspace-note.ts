@@ -92,7 +92,8 @@ export const PREVIEWS_NOTE =
   `person can scaffold one with \`mend service init\`; the workspace's \`mend\` has no ` +
   `\`init\`). In a conversation session (Slack, the web, the phone), Mend prepares the preview ` +
   `after a turn that changed the worktree; in a terminal session, start it yourself with ` +
-  `\`mend service run <name>\`. Its address is not visible from this workspace. People open it from Mend: ` +
+  `\`mend service run <name>\`. Mend starts or restarts it only after the turn ends, so during ` +
+  `a turn it may not be running yet: don't report it as down. Its address is not visible from this workspace. People open it from Mend: ` +
   `**Open preview** on the session's Slack status message, **Open** on the Services card on ` +
   `the web, or **Preview** on the phone. When asked for the preview, say that and name the ` +
   `Service.\n\n`;

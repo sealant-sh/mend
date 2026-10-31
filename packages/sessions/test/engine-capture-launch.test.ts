@@ -774,6 +774,7 @@ describe("SessionEngine capture mode", () => {
           expect(note?.at(-1)).toContain(
             "in a terminal session, start it yourself with `mend service run <name>`",
           );
+          expect(note?.at(-1)).toContain("don't report it as down");
           expect(note?.at(-1)).toContain("**Open preview** on the session's Slack status message");
           expect(note?.at(-1)).toContain(
             "Refused in mend.toml (fix these before running them):\n\n- api · cwd · is absolute",
