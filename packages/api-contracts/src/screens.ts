@@ -1,5 +1,5 @@
 import { SessionId, Timestamp, ViewerConnectionId } from "@mend/domain";
-import { DisplayNumber, ScreenLapse, ScreenLife } from "@mend/domain/workbench";
+import { DisplayNumber, ScreenHolder, ScreenLife } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -48,17 +48,6 @@ export const SCREEN_SOCKET_CLOSE = {
   /** The screen could not be dialled or signed in to. */
   unreachable: 4502,
 } as const;
-
-/** Who holds a screen's input, as watchers see it. */
-export const ScreenHolder = Schema.Union([
-  /** The agent holds it, or waits for its next look to take it (`awaiting`). */
-  Schema.TaggedStruct("Agent", { awaiting: Schema.Boolean }),
-  /** A person holds it, or is being handed it (`taking`). */
-  Schema.TaggedStruct("Person", { userId: Schema.String, taking: Schema.Boolean }),
-  /** The holder lapsed; the agent waits until the owner takes over, hands back, or the timeout. */
-  Schema.TaggedStruct("Paused", { reason: ScreenLapse }),
-]);
-export type ScreenHolder = typeof ScreenHolder.Type;
 
 export const ScreenRead = Schema.Union([
   Schema.TaggedStruct("NoScreen", {}),

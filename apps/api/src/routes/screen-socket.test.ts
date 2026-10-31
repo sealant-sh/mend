@@ -424,7 +424,7 @@ describe("the screen socket", () => {
     expect(server.taken).toEqual([]);
     expect(await answer("carol", "/take", { connection: carol.connection })).toEqual({
       _tag: "Changed",
-      holder: { _tag: "Person", userId: "carol", taking: false },
+      holder: { _tag: "Person", userId: "carol", connection: carol.connection, taking: false },
     });
     expect(server.taken).toEqual([carol.connection]);
     carol.client.close();

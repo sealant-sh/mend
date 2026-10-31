@@ -17,6 +17,7 @@ import { ProjectCrumbs } from "#/components/breadcrumb";
 import { FollowUpBanner } from "#/components/follow-up";
 import { SummaryText } from "#/components/host-user-namespaces";
 import { SessionLandingLineView } from "#/components/land-panel";
+import { ScreenPane } from "#/components/screen-pane";
 import { ServicesCard } from "#/components/services-card";
 import { SessionMessageInput } from "#/components/session-message-input";
 import { SessionPages } from "#/components/session-pages";
@@ -64,6 +65,9 @@ export const Route = createFileRoute("/sessions/$sessionId")({
 
 const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
 
+/** Who holds a screen's input has no event of its own, so a session with a screen reads it often. */
+const SCREEN_READ_MS = 3_000;
+
 /** The harnesses a settled session resumes with; another than its own receives the distilled conversation. */
 const RESUME_HARNESSES = ["claude", "codex", "opencode", "pi"] as const;
 
@@ -109,6 +113,18 @@ function SessionPage() {
   // Another person's process live in this executor (docs/adr/0016, decision 13).
   const sharedLine =
     viewer === undefined ? null : sharedWorkspaceLine(session.livePeople, viewer?.userId ?? null);
+  // Anyone who can see the session watches its screen (docs/adr/0020, D2). A session without one
+  // shows no pane, and its session events read the answer again.
+  const screenRead = useQuery(
+    trpc.screens.read.queryOptions(
+      { id: sessionId },
+      {
+        retry: false,
+        refetchInterval: (query) => (query.state.data?._tag === "Screen" ? SCREEN_READ_MS : false),
+      },
+    ),
+  ).data;
+  const screen = screenRead?._tag === "Screen" ? screenRead : null;
   const followUp = useSuspenseQuery(
     trpc.sessions.pendingFollowUp.queryOptions({ id: sessionId }),
   ).data;
@@ -481,6 +497,18 @@ function SessionPage() {
                   <SessionMessageInput key={sessionId} sessionId={sessionId} />
                 )}
               </>
+            )}
+            {screen !== null && (
+              <div className="mt-8">
+                <ScreenPane
+                  key={sessionId}
+                  sessionId={sessionId}
+                  screen={screen}
+                  viewerId={viewer?.userId ?? null}
+                  ownerName={ownerName ?? "its owner"}
+                  nameOf={(userId) => names?.get(userId) ?? "a member"}
+                />
+              </div>
             )}
           </section>
 

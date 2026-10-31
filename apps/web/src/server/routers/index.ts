@@ -11,6 +11,7 @@ import { platformRouter } from "./platform.ts";
 import { projectsRouter } from "./projects.ts";
 import { queueRouter } from "./queue.ts";
 import { resourcesRouter } from "./resources.ts";
+import { screensRouter } from "./screens.ts";
 import { servicesRouter } from "./services.ts";
 import { sessionsRouter } from "./sessions.ts";
 import { settingsRouter } from "./settings.ts";
@@ -26,9 +27,9 @@ import { worktreesRouter } from "./worktrees.ts";
  * carries the Type side to the browser intact.
  *
  * Raw data planes stay OUTSIDE tRPC by design: the terminal WebSocket
- * (/api/tty), the service tunnel, the keys bridge, and the SSE event stream
- * are held connections that tRPC's request/response model does not fit; the
- * web server proxies them verbatim.
+ * (/api/tty), the screen socket (/api/screen-socket), the service tunnel, the
+ * keys bridge, and the SSE event stream are held connections that tRPC's
+ * request/response model does not fit; the web server proxies them verbatim.
  */
 export const appRouter = router({
   changes: changesRouter,
@@ -44,6 +45,7 @@ export const appRouter = router({
   projects: projectsRouter,
   queue: queueRouter,
   resources: resourcesRouter,
+  screens: screensRouter,
   services: servicesRouter,
   sessions: sessionsRouter,
   worktrees: worktreesRouter,

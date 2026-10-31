@@ -156,6 +156,39 @@ export type ScreenInput = typeof ScreenInput.Type;
 
 export const SCREEN_INPUT_INITIAL: ScreenInput = { _tag: "AwaitingAgent", epoch: 0 };
 
+/**
+ * Who holds a screen's input, as watchers see it: the input state without its epoch. A person's
+ * `connection` is the viewer the input goes to, so a tab can tell it holds the input itself.
+ * `awaiting`: the agent takes it at its next look. `taking`: the person's takeover is being fenced.
+ */
+export const ScreenHolder = Schema.Union([
+  Schema.TaggedStruct("Agent", { awaiting: Schema.Boolean }),
+  Schema.TaggedStruct("Person", {
+    userId: Schema.String,
+    connection: ViewerConnectionId,
+    taking: Schema.Boolean,
+  }),
+  Schema.TaggedStruct("Paused", { reason: ScreenLapse }),
+]);
+export type ScreenHolder = typeof ScreenHolder.Type;
+
+export const screenHolderOf = (input: ScreenInput): ScreenHolder => {
+  switch (input._tag) {
+    case "Agent":
+      return { _tag: "Agent", awaiting: false };
+    case "AwaitingAgent":
+      return { _tag: "Agent", awaiting: true };
+    case "Person":
+      return { _tag: "Person", userId: input.userId, connection: input.connection, taking: false };
+    case "Fencing":
+      return input.to._tag === "Person"
+        ? { _tag: "Person", userId: input.by, connection: input.to.connection, taking: true }
+        : { _tag: "Agent", awaiting: true };
+    case "Paused":
+      return { _tag: "Paused", reason: input.reason };
+  }
+};
+
 /** `NotStarted`: the display is reserved and no screen has run on it yet. */
 export const ScreenLife = Schema.Union([
   Schema.TaggedStruct("NotStarted", {}),
@@ -415,27 +448,22 @@ const DEGRADED: Record<ScreenDegraded, string> = {
   "decoder-refused": "degraded · screen stream refused",
 };
 
-const inputLine = (input: ScreenInput, nameOf: (userId: string) => string): string => {
-  switch (input._tag) {
+const holderLine = (holder: ScreenHolder, nameOf: (userId: string) => string): string => {
+  switch (holder._tag) {
     case "Agent":
-      return "agent has input";
-    case "Fencing":
-      return input.to._tag === "Person"
-        ? `${nameOf(input.by)} taking over`
-        : "handing back to the agent";
+      return holder.awaiting ? "waiting for the agent's next look" : "agent has input";
     case "Person":
-      return `${nameOf(input.userId)} has input`;
+      return `${nameOf(holder.userId)} ${holder.taking ? "taking over" : "has input"}`;
     case "Paused":
-      return `input paused · ${PAUSED[input.reason]}`;
-    case "AwaitingAgent":
-      return "waiting for the agent's next look";
+      return `input paused · ${PAUSED[holder.reason]}`;
   }
 };
 
 export interface ScreenStatusFacts {
   readonly life: ScreenLife;
-  readonly input: ScreenInput;
-  readonly lastFrameAt: Date | null;
+  readonly holder: ScreenHolder;
+  /** Omitted by a surface that has not read the screen's frames: the line then names none. */
+  readonly lastFrameAt?: Date | null;
   readonly viewers: number;
   readonly now: Date;
   readonly nameOf: (userId: string) => string;
@@ -448,10 +476,14 @@ export const screenStatusLine = (facts: ScreenStatusFacts): string => {
   if (facts.life._tag === "Ended") return `screen · ${ENDED[facts.life.reason]}`;
   return [
     "screen",
-    inputLine(facts.input, facts.nameOf),
-    facts.lastFrameAt === null
-      ? "no frame yet"
-      : `frame ${observedAgo(facts.lastFrameAt, facts.now)}`,
+    holderLine(facts.holder, facts.nameOf),
+    ...(facts.lastFrameAt === undefined
+      ? []
+      : [
+          facts.lastFrameAt === null
+            ? "no frame yet"
+            : `frame ${observedAgo(facts.lastFrameAt, facts.now)}`,
+        ]),
     ...(facts.life.degraded === null ? [] : [DEGRADED[facts.life.degraded]]),
     ...(facts.life.browserSandboxOff ? ["browser sandbox off"] : []),
     ...(facts.viewers > 0 ? [`${facts.viewers} watching`] : []),

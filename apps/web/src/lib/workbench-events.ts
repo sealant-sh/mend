@@ -189,6 +189,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           break;
         case "session":
           void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+          void queryClient.invalidateQueries(trpc.screens.pathFilter());
           if (event.projectId !== undefined) {
             void queryClient.invalidateQueries(trpc.projects.pathFilter());
           }
