@@ -52,9 +52,20 @@ const imageRefused = ({ name, refusal, reason, message }: ResourceImageRefusedEr
       ? new ResourceManifestUnverifiable({ message })
       : rejected(name, [refusal]);
 
+/** The worktree a request names, when it names one, checked to be the project's. */
+const namedWorktree = Effect.fn("resources.namedWorktree")(function* (
+  projectId: ProjectId,
+  worktreeId: WorktreeId | undefined,
+) {
+  if (worktreeId === undefined) return null;
+  yield* projectWorktree(projectId, worktreeId);
+  return worktreeId;
+});
+
 /**
  * A project's resources (ADR 0019). Every caller here is a person, whatever device their token is
- * on: a workspace reaches resources through its session's socket or channel, which only reads.
+ * on; the agent in a session reaches the same acts through its session's channel, as the
+ * session's owner.
  */
 export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (handlers) =>
   handlers
@@ -64,7 +75,7 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
         const worktreeId = query.worktreeId ?? null;
         if (worktreeId !== null) yield* projectWorktree(project.id, worktreeId);
         return yield* (yield* Resources)
-          .list(project, { kind: "person", viewer }, worktreeId, {
+          .list(project, viewer, worktreeId, {
             now: new Date(),
             timeZone: query.timeZone,
           })
@@ -79,8 +90,9 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
     .handle("add", ({ params, query, payload }) =>
       Effect.gen(function* () {
         const { project, viewer } = yield* visible(params.id);
+        const worktreeId = yield* namedWorktree(project.id, query.worktreeId);
         return yield* (yield* Resources)
-          .add(project, viewer, payload, { now: new Date(), timeZone: query.timeZone })
+          .add(project, viewer, payload, worktreeId, { now: new Date(), timeZone: query.timeZone })
           .pipe(
             Effect.catchTags({
               ResourceActRefusedError: (error) => Effect.fail(denied(error)),
@@ -131,8 +143,8 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
           );
       }),
     )
-    // No runtime runs resources yet, so every start of one, by anyone who sees the project, is
-    // refused before anything is created.
+    // A person's start comes in a later step, so every start of one, by anyone who sees the
+    // project, is refused before anything is created.
     .handle("start", ({ params }) =>
       Effect.gen(function* () {
         yield* visible(params.id);

@@ -79,7 +79,8 @@ export const resourcesGroup = HttpApiGroup.make("resources")
   .add(
     HttpApiEndpoint.post("add", "/projects/:id/resources", {
       params: { id: ProjectId },
-      query: { timeZone: ReaderTimeZone },
+      // The worktree the add came from: a worktree resource starts there at once.
+      query: { timeZone: ReaderTimeZone, worktreeId: Schema.optional(WorktreeId) },
       payload: ResourceAddInput,
       success: ResourceAdded,
       // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.

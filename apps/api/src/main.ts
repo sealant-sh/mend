@@ -158,7 +158,9 @@ import { serveObserved } from "@mend/network/http-observation";
 import {
   asSealantUser,
   PersonLayoutPlatformLive,
+  ResourceScopesLive,
   type SealantClients,
+  SealantEnv,
   SealantLiveFromEnv,
 } from "@mend/sealant";
 import {
@@ -184,6 +186,7 @@ import {
   ResourceImageResolverLive,
   ResourcesChannelLive,
   ResourcesLive,
+  ResourceRuntimeLive,
   ProtocolHostLive,
   ScreenHostLive,
   type Screens,
@@ -473,6 +476,16 @@ const CaptureStoreLayer: Layer.Layer<
   GitOpsRunnerLive.pipe(Layer.provideMerge(BlobStoreLive.pipe(Layer.provide(BlobStoreConfigLive)))),
   CaptureStoreRepoLive,
   StoreRefsRepoLive,
+);
+// A project's resources on Sealant (docs/adr/0019): every launch prepares them, and the routes and
+// every session's channel act on the same runtime.
+const ResourceRuntimeLayer = ResourceRuntimeLive.pipe(
+  Layer.provide(
+    Layer.merge(
+      ResourceImageResolverLive,
+      ResourceScopesLive.pipe(Layer.provide(SealantEnv.layer)),
+    ),
+  ),
 );
 const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEngineLayer));
 // Landing's pull request step (docs/adr/0007-landing.md, "Where each step runs"): `gh` in the
@@ -964,8 +977,9 @@ const MainLive = Layer.unwrap(
       Layer.provide(JobRunner.pgBossLayer),
       // Follow-up delivery owns persistence → process acceptance → correlation.
       Layer.provide(FollowUpDeliveryLayer),
-      // The session engine and store serve both the API handlers and the worker.
-      Layer.provide(SessionEngineLayer),
+      // The session engine and store serve both the API handlers and the worker; the resource
+      // runtime under it serves the routes too, as one.
+      Layer.provide(SessionEngineLayer.pipe(Layer.provideMerge(ResourceRuntimeLayer))),
       // The store kind's adapters (MEND_SESSION_STORE): authority, reads, capture runtime. The
       // workspace git hooks ride here, below the engine that reports into them and the worker
       // that registers what runs, so both hold the same one.
