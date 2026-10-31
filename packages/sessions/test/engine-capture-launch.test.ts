@@ -774,7 +774,21 @@ describe("SessionEngine capture mode", () => {
           expect(note?.at(-1)).toContain(
             "in a terminal session, start it yourself with `mend service run <name>`",
           );
-          expect(note?.at(-1)).toContain("don't report it as down");
+          expect(note?.at(-1)).toContain(
+            "After a turn that changed the worktree, Mend starts the preview if it isn't running.",
+          );
+          expect(note?.at(-1)).toContain(
+            "It restarts a running preview only when its recipe in `mend.toml` changed.",
+          );
+          expect(note?.at(-1)).toContain(
+            "It doesn't restart one for code changes, because dev servers hot-reload.",
+          );
+          expect(note?.at(-1)).toContain(
+            "If this app doesn't hot-reload, run `mend service restart <name>` yourself after your change.",
+          );
+          expect(note?.at(-1)).toContain(
+            "During a turn it may not be running yet: don't report it as down.",
+          );
           expect(note?.at(-1)).toContain("**Open preview** on the session's Slack status message");
           expect(note?.at(-1)).toContain(
             "Refused in mend.toml (fix these before running them):\n\n- api · cwd · is absolute",
