@@ -4,11 +4,10 @@ import {
   ResourceRejected,
   ResourceStale,
 } from "@mend/api-contracts";
-import { ProjectId, ResourceDefinitionId, ResourceProposalId, WorktreeId } from "@mend/domain";
+import { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
-  ResourceApprovalRequest,
-  ResourceProposalInput,
+  ResourceAddInput,
   ResourceSpecDigest,
   WorktreeChoice,
 } from "@mend/domain/workbench";
@@ -80,39 +79,21 @@ export const resourcesRouter = router({
         }),
       ),
     ),
-  propose: procedure
-    .input(input(Schema.Struct({ ...reader, proposal: ResourceProposalInput })))
+  add: procedure
+    .input(input(Schema.Struct({ ...reader, addition: ResourceAddInput })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => {
         const at = { params: { id: i.projectId }, query: { timeZone: i.timeZone } };
         // The derived client takes its union payload as one request type per member, so each
         // member is narrowed before it is sent.
-        const { proposal } = i;
-        switch (proposal.kind) {
+        const { addition } = i;
+        switch (addition.kind) {
           case "preset":
-            return outcome(api.resources.propose({ ...at, payload: proposal }));
+            return outcome(api.resources.add({ ...at, payload: addition }));
           case "definition":
-            return outcome(api.resources.propose({ ...at, payload: proposal }));
+            return outcome(api.resources.add({ ...at, payload: addition }));
         }
       }),
-    ),
-  /**
-   * A proposal another removal took first is gone, which the card says beside a reload. A project
-   * the reader no longer sees is not found too, and stays an error: its id is not the proposal's.
-   */
-  withdraw: procedure
-    .input(input(Schema.Struct({ projectId: ProjectId, proposalId: ResourceProposalId })))
-    .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) =>
-        api.resources.withdraw({ params: { id: i.projectId, proposalId: i.proposalId } }).pipe(
-          Effect.map((result) => ({ ok: true as const, result })),
-          Effect.catchTag("NotFound", (missing) =>
-            missing.id === i.proposalId
-              ? Effect.succeed({ ok: false as const, kind: "gone" as const })
-              : Effect.fail(missing),
-          ),
-        ),
-      ),
     ),
   remove: procedure
     .input(
@@ -130,19 +111,6 @@ export const resourcesRouter = router({
           api.resources.remove({
             params: { id: i.projectId, definitionId: i.definitionId },
             payload: { expectedDigest: i.expectedDigest },
-          }),
-        ),
-      ),
-    ),
-  approve: procedure
-    .input(input(Schema.Struct({ ...reader, request: ResourceApprovalRequest })))
-    .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) =>
-        outcome(
-          api.resources.approve({
-            params: { id: i.projectId },
-            query: { timeZone: i.timeZone },
-            payload: i.request,
           }),
         ),
       ),

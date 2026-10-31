@@ -12,10 +12,10 @@ import { describe, expect, it } from "vitest";
 import {
   choiceInUse,
   choiceWords,
+  additionOf,
   EMPTY_DRAFT,
-  type ProposalDraft,
   fieldOf,
-  proposalOf,
+  type ResourceDraft,
   type ResourceSettingView,
 } from "./resources.ts";
 
@@ -43,25 +43,25 @@ const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingV
   id: ResourceDefinitionId.make("rdef_db"),
   digest,
   spec: db,
-  approvals: { project: null, worktree: null },
-  approve: { project: { kind: "denied", message: "is a manager's to approve" }, worktree: null },
+  image: `postgres:17@sha256:${"c".repeat(64)}`,
+  addedBy: "maria",
   choice: null,
   canRemove: true,
   canChoose: false,
-  statusLine: "@db · postgres 17 · project · waiting for approval",
+  statusLine: "@db · postgres 17 · project · added by Maria · not started",
   ...overrides,
 });
 
-describe("proposing a resource from the form", () => {
+describe("adding a resource from the form", () => {
   it("sends a preset at its version, as the CLI does", () => {
-    expect(proposalOf({ ...EMPTY_DRAFT, name: " db ", version: "17" })).toEqual({
+    expect(additionOf({ ...EMPTY_DRAFT, name: " db ", version: "17" })).toEqual({
       ok: true,
-      proposal: { kind: "preset", name: "db", preset: "postgres", version: "17", scope: "project" },
+      addition: { kind: "preset", name: "db", preset: "postgres", version: "17", scope: "project" },
     });
   });
 
   it("sends an image with its ports, volumes, a literal and a secret by name", () => {
-    const sent = proposalOf({
+    const sent = additionOf({
       ...EMPTY_DRAFT,
       kind: "image",
       name: "mail",
@@ -76,7 +76,7 @@ describe("proposing a resource from the form", () => {
     });
     expect(sent).toMatchObject({
       ok: true,
-      proposal: {
+      addition: {
         kind: "definition",
         spec: {
           scope: "worktree",
@@ -93,7 +93,7 @@ describe("proposing a resource from the form", () => {
   });
 
   it("refuses a shape the rules cannot read, keyed by the field it names", () => {
-    const refused = proposalOf({
+    const refused = additionOf({
       ...EMPTY_DRAFT,
       kind: "image",
       name: "mail",
@@ -108,7 +108,7 @@ describe("proposing a resource from the form", () => {
   });
 
   it("refuses two env rows of one name, by that name, before anything is sent", () => {
-    const refused = proposalOf({
+    const refused = additionOf({
       ...EMPTY_DRAFT,
       kind: "image",
       name: "mail",
@@ -126,7 +126,7 @@ describe("proposing a resource from the form", () => {
   });
 
   it("refuses an env row with a value and no name, and skips one left wholly blank", () => {
-    const draft: ProposalDraft = {
+    const draft: ResourceDraft = {
       ...EMPTY_DRAFT,
       kind: "image",
       name: "mail",
@@ -134,10 +134,10 @@ describe("proposing a resource from the form", () => {
       ports: "smtp=1025",
     };
     expect(
-      proposalOf({ ...draft, env: [{ key: "   ", from: "literal", value: "must-not-disappear" }] }),
+      additionOf({ ...draft, env: [{ key: "   ", from: "literal", value: "must-not-disappear" }] }),
     ).toEqual({ ok: false, refusals: [{ key: "env", message: "has a value with no name" }] });
-    const blank = proposalOf({ ...draft, env: [{ key: " ", from: "literal", value: " " }] });
-    expect(blank.ok && blank.proposal.kind === "definition" && blank.proposal.spec.env).toEqual({});
+    const blank = additionOf({ ...draft, env: [{ key: " ", from: "literal", value: " " }] });
+    expect(blank.ok && blank.addition.kind === "definition" && blank.addition.spec.env).toEqual({});
   });
 
   it("puts each server key under its field, and the rest under the form", () => {

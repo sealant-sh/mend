@@ -2,9 +2,8 @@ import type { WorktreeId } from "@mend/domain";
 import {
   defaultChoiceFor,
   isDatabasePreset,
-  type ResourceApprovalRequest,
+  ResourceAddInput,
   type ResourceDefinitionInput,
-  ResourceProposalInput,
   type ResourceRefusal,
   type WorktreeChoice,
 } from "@mend/domain/workbench";
@@ -16,29 +15,24 @@ import { orLogin, trpcClient } from "./trpc.ts";
 
 /**
  * The project's resources as the setup card reads and changes them (ADR 0019). The server decides
- * every act, sends every status line and builds every approval request; this module builds the
- * proposal the card sends and sorts the server's refusals onto the fields they name.
+ * every act, sends every status line and says which `mend.toml` tables the reader may add; this
+ * module builds the definition the card adds and sorts the server's refusals onto the fields they
+ * name.
  */
 
 type Outputs = inferRouterOutputs<AppRouter>["resources"];
 export type ResourcesPageView = Outputs["list"];
 export type ResourceSettingView = ResourcesPageView["settings"][number];
-export type ResourceProposalView = ResourcesPageView["proposals"][number];
 export type ResourceFileView = ResourcesPageView["file"];
-export type ResourceFileTableView = Extract<
-  ResourceFileView,
-  { kind: "read" }
->["proposals"][number];
+export type ResourceFileTableView = Extract<ResourceFileView, { kind: "read" }>["tables"][number];
 
 /** The reader's zone, which every clock time in a status line reads in. */
 export const readerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 const at = (projectId: string) => ({ projectId, timeZone: readerZone() });
 
-export const proposeResource = (projectId: string, proposal: ResourceProposalInput) =>
-  orLogin(trpcClient.resources.propose.mutate({ ...at(projectId), proposal }));
-export const withdrawResourceProposal = (projectId: string, proposalId: string) =>
-  orLogin(trpcClient.resources.withdraw.mutate({ projectId, proposalId }));
+export const addResource = (projectId: string, addition: ResourceAddInput) =>
+  orLogin(trpcClient.resources.add.mutate({ ...at(projectId), addition }));
 export const removeResourceDefinition = (projectId: string, entry: ResourceSettingView) =>
   orLogin(
     trpcClient.resources.remove.mutate({
@@ -47,9 +41,6 @@ export const removeResourceDefinition = (projectId: string, entry: ResourceSetti
       expectedDigest: entry.digest,
     }),
   );
-/** Posts a request the server built for one target (an item's `approve`), as it was given. */
-export const approveResource = (projectId: string, request: ResourceApprovalRequest) =>
-  orLogin(trpcClient.resources.approve.mutate({ ...at(projectId), request }));
 export const chooseResource = (
   projectId: string,
   worktreeId: WorktreeId,
@@ -95,7 +86,7 @@ export const choiceInUse = (
   return fallback === null ? null : { choice: fallback, stored: false };
 };
 
-// ── Proposing ────────────────────────────────────────────────────────────────
+// ── Adding ───────────────────────────────────────────────────────────────────
 
 export interface EnvRow {
   readonly key: string;
@@ -103,8 +94,8 @@ export interface EnvRow {
   readonly value: string;
 }
 
-/** The proposal form as typed. Ports and volumes are one per line: `smtp=1025`, `data=/data`. */
-export interface ProposalDraft {
+/** The add form as typed. Ports and volumes are one per line: `smtp=1025`, `data=/data`. */
+export interface ResourceDraft {
   readonly kind: "preset" | "image";
   readonly name: string;
   readonly scope: "project" | "worktree";
@@ -116,7 +107,7 @@ export interface ProposalDraft {
   readonly env: ReadonlyArray<EnvRow>;
 }
 
-export const EMPTY_DRAFT: ProposalDraft = {
+export const EMPTY_DRAFT: ResourceDraft = {
   kind: "preset",
   name: "",
   scope: "project",
@@ -129,7 +120,7 @@ export const EMPTY_DRAFT: ProposalDraft = {
 };
 
 /** The form field a refusal's key belongs under; anything else is shown under the whole form. */
-export type ProposalField = "name" | "scope" | "version" | "image" | "ports" | "volumes" | "env";
+export type DraftField = "name" | "scope" | "version" | "image" | "ports" | "volumes" | "env";
 
 const FIELDS: ReadonlySet<string> = new Set([
   "name",
@@ -141,9 +132,9 @@ const FIELDS: ReadonlySet<string> = new Set([
   "env",
 ]);
 
-const isField = (value: string): value is ProposalField => FIELDS.has(value);
+const isField = (value: string): value is DraftField => FIELDS.has(value);
 
-export const fieldOf = (key: string): ProposalField | null => {
+export const fieldOf = (key: string): DraftField | null => {
   const [head = ""] = key.split(".");
   return isField(head) ? head : null;
 };
@@ -169,7 +160,7 @@ const volumeOf = (raw: string) => {
     : { name: raw.slice(0, equals).trim(), mountPath: raw.slice(equals + 1).trim() };
 };
 
-const proposalCheck = Schema.toStandardSchemaV1(ResourceProposalInput);
+const additionCheck = Schema.toStandardSchemaV1(ResourceAddInput);
 
 /** A path's field: `["spec", "ports", 0, "port"]` is `ports`. */
 const keyOf = (path: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }>): string =>
@@ -180,13 +171,13 @@ const keyOf = (path: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }>)
     .join(".");
 
 /**
- * What the form proposes, or the refusals its shape draws before anything is sent, keyed as the
+ * What the form adds, or the refusals its shape draws before anything is sent, keyed as the
  * server keys its own. The rules across fields are the server's, which answer by key too.
  */
-export const proposalOf = (
-  draft: ProposalDraft,
+export const additionOf = (
+  draft: ResourceDraft,
 ):
-  | { readonly ok: true; readonly proposal: ResourceProposalInput }
+  | { readonly ok: true; readonly addition: ResourceAddInput }
   | { readonly ok: false; readonly refusals: ReadonlyArray<ResourceRefusal> } => {
   const name = draft.name.trim();
   const typed = draft.env.map((row) => ({ ...row, key: row.key.trim() }));
@@ -235,15 +226,17 @@ export const proposalOf = (
       };
     }
   }
-  const checked = proposalCheck["~standard"].validate(body);
+  const checked = additionCheck["~standard"].validate(body);
   if (checked instanceof Promise) {
-    throw new Error("the proposal's schema checks asynchronously, which this form cannot wait for");
+    throw new Error(
+      "the definition's schema checks asynchronously, which this form cannot wait for",
+    );
   }
-  if (checked.issues === undefined) return { ok: true, proposal: checked.value };
+  if (checked.issues === undefined) return { ok: true, addition: checked.value };
   return {
     ok: false,
     refusals: checked.issues.map((issue) => ({
-      key: keyOf(issue.path ?? []) || "proposal",
+      key: keyOf(issue.path ?? []) || "resource",
       message: issue.message,
     })),
   };
