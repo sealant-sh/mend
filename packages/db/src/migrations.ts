@@ -4724,6 +4724,21 @@ const previewActivityMigration = Effect.gen(function* () {
   )`;
 });
 
+/** ADR 0014: one encrypted token per person and one selection per person/project. */
+const dopplerMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE user_doppler_connections (
+    user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE, sealed_token text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`;
+  yield* sql`CREATE TABLE user_doppler_projects (
+    user_id text NOT NULL REFERENCES user_doppler_connections(user_id) ON DELETE CASCADE,
+    project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    doppler_project text NOT NULL, config text NOT NULL,
+    CONSTRAINT user_doppler_projects_user_project_key UNIQUE(user_id, project_id)
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4884,4 +4899,5 @@ export const migrations = {
   "0168_turn_dispatch_attempt": turnDispatchAttemptMigration,
   "0170_drop_recipe_approvals": dropRecipeApprovalsMigration,
   "0171_preview_activity": previewActivityMigration,
+  "0172_doppler": dopplerMigration,
 };

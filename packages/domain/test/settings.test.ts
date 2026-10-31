@@ -214,9 +214,10 @@ describe("a workspace image's screen", () => {
       expect(workspaceImagePackages(family(os, true))).toEqual([
         "git",
         "chromium",
+        "doppler",
         ...screenPackageIds(os).filter((id) => id !== "chromium"),
       ]);
-      expect(workspaceImagePackages(family(os, false))).toEqual(["git", "chromium"]);
+      expect(workspaceImagePackages(family(os, false))).toEqual(["git", "chromium", "doppler"]);
     }
   });
 
@@ -237,6 +238,6 @@ describe("a workspace image's screen", () => {
 
   it("cannot be asked of a custom base, whose package manager Mend cannot name packages for", () => {
     expect(custom).not.toHaveProperty("screen");
-    expect(workspaceImagePackages(custom)).toEqual(["git"]);
+    expect(workspaceImagePackages(custom)).toEqual(["git", "doppler"]);
   });
 });

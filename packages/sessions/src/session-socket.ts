@@ -14,6 +14,7 @@ import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import type { SessionCaptureApi } from "./capture-channel.ts";
+import { DOPPLER_HELPER_SCRIPT } from "./doppler-helper.ts";
 import { GIT_CREDENTIAL_HELPER_SCRIPT } from "./git-credential.ts";
 import {
   GIT_SSH_SHIM_SCRIPT,
@@ -73,6 +74,7 @@ const MCP_BRIDGE_ASK_FOR_MS = (MEND_MCP_TOOL_TIMEOUT_SECONDS - 10) * 1000;
 
 /** What the engine serves over a session's socket — every closure pre-scoped. */
 export interface SessionSocketApi {
+  readonly doppler?: ((input: unknown) => Effect.Effect<unknown, Error>) | undefined;
   readonly recipes: () => Effect.Effect<unknown>;
   readonly listServices: () => Effect.Effect<unknown>;
   readonly runServiceRecipe: (name: string) => Effect.Effect<unknown>;
@@ -646,8 +648,15 @@ const mcp = () => {
   });
 };
 
+${DOPPLER_HELPER_SCRIPT}
+
 const main = async () => {
   const [group, verb, ...rest] = process.argv.slice(2);
+  if (group === "doppler") {
+    try { await dopplerCommand(verb, rest); }
+    catch (error) { fail(error.message); }
+    return;
+  }
   if (group === "mcp") {
     mcp();
     return;

@@ -342,6 +342,11 @@ export const handleSessionRequest = async (
         viewOnly: Redacted.value(passwords.viewOnly),
       });
     }
+    if (route === "POST /doppler") {
+      if (api.doppler === undefined)
+        return respond(403, { message: "Doppler requires your own session channel" });
+      return respond(200, await Effect.runPromise(api.doppler(await readBody(request))));
+    }
     if (route === "GET /recipes") return respond(200, await Effect.runPromise(api.recipes()));
     if (route === "GET /services") return respond(200, await Effect.runPromise(api.listServices()));
     if (route === "POST /services/recipe") {

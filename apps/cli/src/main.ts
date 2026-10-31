@@ -64,6 +64,7 @@ import { configuredGitAuth } from "./dashboard-adoption.ts";
 import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
 import { doctorBundleCommand } from "./doctor-bundle.ts";
 import { doctorCommand, formatCheck, onPath, runChecks } from "./doctor.ts";
+import { dopplerCommand } from "./doppler.ts";
 import {
   dotfilesRepositoryFacts,
   parseDotfilesRepoArgs,
@@ -6448,6 +6449,9 @@ const main = async () => {
       return memoryCommand(config, rest);
     case "resource":
       return resourceCommand(boundApi(config), (explicit) => findProject(config, explicit), rest);
+    case "doppler":
+      for (const line of await dopplerCommand(boundApi(config), rest)) say(line);
+      return;
     case "secrets":
       return secretsCommand(config, rest);
     case "accounts":

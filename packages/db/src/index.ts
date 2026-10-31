@@ -79,3 +79,5 @@ export * from "./repos/session-runs.ts";
 export * from "./repos/settings.ts";
 export * from "./repos/session-pages.ts";
 export * from "./repos/screens.ts";
+
+export * from "./repos/doppler.ts";

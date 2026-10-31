@@ -250,13 +250,18 @@ export const decodeSecretFilesRecord = (
  */
 export const secretFilesRemoveExec = (
   files: ReadonlyArray<{ readonly path: string; readonly sha256: string }>,
+  managedDoppler = false,
 ): ReadonlyArray<string> => [
   "sh",
   "-c",
   PATH_FUNCTION +
     'while [ "$#" -gt 1 ]; do if secret_path "$1" >/dev/null; then ' +
     `if [ ! -e "$T" ]; then printf 'absent\\t%s\\n' "$1"; ` +
-    `elif [ -f "$T" ] && [ "$(sha256sum < "$T" | cut -d" " -f1)" = "$2" ]; then ` +
+    `elif [ -f "$T" ] && { [ "$(sha256sum < "$T" | cut -d" " -f1)" = "$2" ]` +
+    (managedDoppler
+      ? ` || { [ "$1" = ".doppler/.doppler.yaml" ] && node -e 'try { const f=require("node:fs"), c=require("node:crypto"), v=JSON.parse(f.readFileSync(process.argv[1],"utf8")); process.exit(v["mend-delivery"] === c.createHash("sha256").update(JSON.stringify(v.scoped)).digest("hex") ? 0 : 1); } catch { process.exit(1); }' "$T"; }`
+      : "") +
+    `; }; then ` +
     `{ rm -f "$T" && printf 'removed\\t%s\\n' "$1"; } || printf 'kept\\t%s\\n' "$1"; ` +
     `else printf 'kept\\t%s\\n' "$1"; fi; else printf 'kept\\t%s\\n' "$1"; fi; shift 2; done; exit 0`,
   "mend-secret-files",

@@ -148,6 +148,11 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "secretFiles.list",
   "secretFiles.save",
   "secretFiles.remove",
+  "doppler.status",
+  "doppler.save",
+  "doppler.disconnect",
+  "doppler.projects",
+  "doppler.configs",
   // The machine's model catalog: the same list for every account (harness-models.test.ts).
   "harnessModels.list",
   "gitKeys.show",
@@ -262,6 +267,25 @@ const workspaceImage = Schema.encodeSync(WorkspaceImage)(defaultWorkspaceImage);
 const settings = Schema.encodeSync(MendSettings)(defaultSettings);
 
 const CASES: ReadonlyArray<AccessCase> = [
+  {
+    endpoint: "doppler.use",
+    rule: "project-read",
+    call: (target) => ({
+      method: "PUT",
+      path: `/api/me/doppler/projects/${ids(target).project}`,
+      id: ids(target).project,
+      body: { dopplerProject: "backend", config: "dev" },
+    }),
+  },
+  {
+    endpoint: "doppler.removeMapping",
+    rule: "project-read",
+    call: (target) => ({
+      method: "DELETE",
+      path: `/api/me/doppler/projects/${ids(target).project}`,
+      id: ids(target).project,
+    }),
+  },
   // ── Machine settings and the retired queue: the operator's ──
   fixed(
     "operator",
@@ -884,6 +908,8 @@ const ADMITTED: Readonly<
       fetchedAt: null,
     },
   },
+  "doppler.use": { status: 500, calls: ["doppler.connection"] },
+  "doppler.removeMapping": { status: 500, calls: ["doppler.removeMapping"] },
   "agentMemory.list": { status: 500, calls: ["agentMemory.list"] },
   "agentMemory.file": { status: 500, calls: ["agentMemory.read"] },
   "agentMemory.remove": { status: 500, calls: ["agentMemory.remove"] },

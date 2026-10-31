@@ -52,6 +52,7 @@ import {
   PiProfilesRepoLive,
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
+  DopplerRepoLive,
   SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
@@ -273,6 +274,7 @@ import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { ScreenRtcLive } from "./screen-rtc.ts";
 import { ScreenWatchLive } from "./screen-watch.ts";
+import { DopplerApiLive } from "./services/doppler.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { SessionStartLive } from "./session-start.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
@@ -355,6 +357,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   PiProfilesRepoLive,
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
+  DopplerRepoLive,
   SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
@@ -998,7 +1001,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(KeysLive),
       // Sealed secrets, and Slack's Web API that the Slack routes check tokens against and that
       // the Slack runner and reporter talk through (docs/adr/0006-slack.md).
-      Layer.provide(Layer.merge(SecretCipherLayer, SlackApiLive)),
+      Layer.provide(Layer.mergeAll(SecretCipherLayer, SlackApiLive, DopplerApiLive)),
       // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.
       Layer.provide(BridgeLive),
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).

@@ -5,6 +5,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { pipeline } from "node:stream/promises";
 
+import { DopplerRepo } from "@mend/db";
 import {
   InstanceRolesRepo,
   RemovalFencesRepo,
@@ -83,6 +84,12 @@ import {
   workspaceImagePackages,
   WorktreeId,
 } from "@mend/domain";
+import {
+  DOPPLER_CONFIG_PATH,
+  dopplerConfigContents,
+  dopplerTokenIssue,
+  dopplerSelectionIssue,
+} from "@mend/domain/workbench";
 import type {
   SendMessageInput,
   SessionMessageResult,
@@ -320,6 +327,7 @@ import {
   Layer,
   Option,
   Result,
+  Redacted,
   Schedule,
   Schema,
   type Scope,
@@ -3417,6 +3425,7 @@ type SessionEngineRequirements =
   | PiProfilesRepo
   | AgentMemoryRepo
   | SecretFilesRepo
+  | DopplerRepo
   | SessionRunsRepo
   | SessionProcessesRepo
   | SessionPagesRepo
@@ -3527,38 +3536,42 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
       /** The in-workspace socket's closures, each run as the session owner. */
-      const ownedSocketApi = (sessionId: SessionId, api: SessionSocketApi): SessionSocketApi => ({
-        recipes: () => owned(sessionId)(api.recipes()),
-        listServices: () => owned(sessionId)(api.listServices()),
-        runServiceRecipe: (name) => owned(sessionId)(api.runServiceRecipe(name)),
-        runService: (argv, port, name, protocol, browserScheme) =>
-          owned(sessionId)(api.runService(argv, port, name, protocol, browserScheme)),
-        addService: (port, name, protocol, browserScheme) =>
-          owned(sessionId)(api.addService(port, name, protocol, browserScheme)),
-        stopService: (reference) => owned(sessionId)(api.stopService(reference)),
-        restartService: (reference) => owned(sessionId)(api.restartService(reference)),
-        stopSession: () => owned(sessionId)(api.stopSession()),
-        land: () => owned(sessionId)(api.land()),
-        agentHook: (report) => owned(sessionId)(api.agentHook(report)),
-        mcpCaller: api.mcpCaller,
-        resourceSession: api.resourceSession,
-        listRepositories: () => owned(sessionId)(api.listRepositories()),
-        addableProjects: () => owned(sessionId)(api.addableProjects()),
-        addRepository: (input) => owned(sessionId)(api.addRepository(input)),
-        gitTransport: (input) => owned(sessionId)(api.gitTransport(input)),
-        gitTransportDone: (opId, exitCode, refUpdates) =>
-          owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
-        // The capture routes pass through as they are, the launch-bound ones included: the
-        // network channel serves a token only the routes of the launch it was issued for
-        // (cross-repo decision 5, review 2026-09-28 (4) #10).
-        ...(api.capture === undefined ? {} : { capture: api.capture }),
-        ...(api.captureAs === undefined ? {} : { captureAs: api.captureAs }),
-        // Pickups pass through too: a ticket names its session, person and launch already.
-        ...(api.pickup === undefined ? {} : { pickup: api.pickup }),
-        ...(api.pickupAs === undefined ? {} : { pickupAs: api.pickupAs }),
-        ...(api.channelFor === undefined ? {} : { channelFor: api.channelFor }),
-        ...(api.screenSecret === undefined ? {} : { screenSecret: api.screenSecret }),
-      });
+      const ownedSocketApi = (sessionId: SessionId, api: SessionSocketApi): SessionSocketApi => {
+        const doppler = api.doppler;
+        return {
+          doppler: doppler === undefined ? undefined : (input) => owned(sessionId)(doppler(input)),
+          recipes: () => owned(sessionId)(api.recipes()),
+          listServices: () => owned(sessionId)(api.listServices()),
+          runServiceRecipe: (name) => owned(sessionId)(api.runServiceRecipe(name)),
+          runService: (argv, port, name, protocol, browserScheme) =>
+            owned(sessionId)(api.runService(argv, port, name, protocol, browserScheme)),
+          addService: (port, name, protocol, browserScheme) =>
+            owned(sessionId)(api.addService(port, name, protocol, browserScheme)),
+          stopService: (reference) => owned(sessionId)(api.stopService(reference)),
+          restartService: (reference) => owned(sessionId)(api.restartService(reference)),
+          stopSession: () => owned(sessionId)(api.stopSession()),
+          land: () => owned(sessionId)(api.land()),
+          agentHook: (report) => owned(sessionId)(api.agentHook(report)),
+          mcpCaller: api.mcpCaller,
+          resourceSession: api.resourceSession,
+          listRepositories: () => owned(sessionId)(api.listRepositories()),
+          addableProjects: () => owned(sessionId)(api.addableProjects()),
+          addRepository: (input) => owned(sessionId)(api.addRepository(input)),
+          gitTransport: (input) => owned(sessionId)(api.gitTransport(input)),
+          gitTransportDone: (opId, exitCode, refUpdates) =>
+            owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
+          // The capture routes pass through as they are, the launch-bound ones included: the
+          // network channel serves a token only the routes of the launch it was issued for
+          // (cross-repo decision 5, review 2026-09-28 (4) #10).
+          ...(api.capture === undefined ? {} : { capture: api.capture }),
+          ...(api.captureAs === undefined ? {} : { captureAs: api.captureAs }),
+          // Pickups pass through too: a ticket names its session, person and launch already.
+          ...(api.pickup === undefined ? {} : { pickup: api.pickup }),
+          ...(api.pickupAs === undefined ? {} : { pickupAs: api.pickupAs }),
+          ...(api.channelFor === undefined ? {} : { channelFor: api.channelFor }),
+          ...(api.screenSecret === undefined ? {} : { screenSecret: api.screenSecret }),
+        };
+      };
       const conversations = yield* AgentConversationRepo;
       const messageSettings = yield* MessageSettingsRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
@@ -8287,6 +8300,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const piProfiles = yield* PiProfilesRepo;
       const agentMemory = yield* AgentMemoryRepo;
       const secretFiles = yield* SecretFilesRepo;
+      const doppler = yield* DopplerRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
       const sessionPages = yield* SessionPagesRepo;
@@ -14525,7 +14539,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ).pipe(Effect.annotateLogs({ sessionId: session.id }));
         }
         const before = record?.files ?? [];
-        if (sealed.length === 0 && before.length === 0) return;
+        const connection = yield* doppler.connection(person);
+        if (sealed.length === 0 && before.length === 0 && connection === null) return;
         const unsealed = yield* Effect.forEach(
           sealed,
           (file) =>
@@ -14545,6 +14560,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           { concurrency: 1 },
         );
+        if (connection !== null) {
+          const selection =
+            (yield* doppler.mappings(person)).find(
+              (mapping) => mapping.projectId === session.projectId,
+            ) ?? null;
+          const token = yield* secretCipher.decrypt(connection.sealedToken).pipe(
+            Effect.mapError(
+              () =>
+                new WorkspaceFileError({
+                  path: DOPPLER_CONFIG_PATH,
+                  message: "Doppler token could not be unsealed",
+                }),
+            ),
+          );
+          // Only the one pickup owns these bytes. No Doppler calls or CLI checks at launch.
+          const contents = dopplerConfigContents(token, "/workspace/repo", selection);
+          const existing = unsealed.findIndex((file) => file.path === DOPPLER_CONFIG_PATH);
+          if (existing !== -1) unsealed.splice(existing, 1);
+          unsealed.push({ path: DOPPLER_CONFIG_PATH, bytes: new TextEncoder().encode(contents) });
+        }
         const plan = planSecretFiles(unsealed);
         const outcomes: Array<SecretFileOutcome> = [...plan.refused];
         // One delivery's own staging names, and its staging files gone whatever ends it early.
@@ -14595,7 +14630,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const stale = before.filter((file) => !digests.has(file.path));
         if (stale.length > 0) {
-          const removed = yield* run(secretFilesRemoveExec(stale));
+          const removed = yield* run(secretFilesRemoveExec(stale, true));
           outcomes.push(...parseSecretFileOutcomes(removed.stdout));
         }
         const written = new Set(
@@ -24910,7 +24945,85 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * command runs only if they may run one in the session and then runs as them, and `mend
        * land` lands only for the change's owner.
        */
+      const dopplerRequest = Schema.Struct({
+        action: Schema.Literals(["status", "connect", "disconnect", "use", "projects"]),
+        token: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)),
+        project: Schema.optionalKey(Schema.String),
+        dopplerProject: Schema.optionalKey(Schema.String),
+        config: Schema.optionalKey(Schema.String),
+      });
+      const sessionDoppler = (sessionId: SessionId, actor: string | null, input: unknown) =>
+        Effect.gen(function* () {
+          const parsed = Schema.decodeUnknownExit(dopplerRequest)(input);
+          if (parsed._tag === "Failure")
+            return yield* Effect.fail(new Error("Invalid Doppler request"));
+          const request = parsed.value;
+          const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
+          const person = actor ?? session.ownerUserId;
+          if (person === null)
+            return yield* Effect.fail(new Error("Doppler requires your own account"));
+          const project = yield* projects.byId(session.projectId).pipe(Effect.orDie);
+          const role = yield* organizations.roleOf(project.organizationId, person);
+          if (role === null) return yield* Effect.fail(new Error("Project is not available"));
+          const visible = (yield* projects.listForOrganization(project.organizationId)).filter(
+            (row) => row.visibility === "shared" || row.createdByUserId === person,
+          );
+          if (request.action === "projects")
+            return {
+              projects: visible.map((row) => ({
+                id: row.id,
+                name: row.name,
+                originUrl: row.originUrl,
+              })),
+            };
+          if (request.action === "connect") {
+            if (request.token === undefined)
+              return yield* Effect.fail(new Error("A Doppler token is required"));
+            const issue = dopplerTokenIssue(Redacted.value(request.token));
+            if (issue !== null) return yield* Effect.fail(new Error(issue));
+            const sealed = yield* secretCipher
+              .encrypt(Redacted.value(request.token))
+              .pipe(Effect.mapError(() => new Error("Doppler token could not be encrypted")));
+            yield* doppler.save(person, sealed);
+            return { connected: true };
+          }
+          if (request.action === "disconnect")
+            return { removed: yield* doppler.disconnect(person) };
+          const connection = yield* doppler.connection(person);
+          if (request.action === "use") {
+            if (connection === null) return yield* Effect.fail(new Error("Connect Doppler first."));
+            const target =
+              request.project === undefined
+                ? project
+                : visible.find((row) => row.id === request.project || row.name === request.project);
+            if (target === undefined || !visible.some((row) => row.id === target.id))
+              return yield* Effect.fail(new Error("Project is not available"));
+            const selection = {
+              dopplerProject: request.dopplerProject ?? "",
+              config: request.config ?? "",
+            };
+            const issue = dopplerSelectionIssue(selection);
+            if (issue !== null) return yield* Effect.fail(new Error(issue));
+            yield* doppler.use(person, target.id, selection);
+            return {
+              ...selection,
+              projectName: target.name,
+              current: target.id === session.projectId,
+            };
+          }
+          const mappings = (yield* doppler.mappings(person)).flatMap((mapping) => {
+            const target = visible.find((row) => row.id === mapping.projectId);
+            return target === undefined ? [] : [{ ...mapping, projectName: target.name }];
+          });
+          return {
+            connected: connection !== null,
+            name: null,
+            updatedAt: connection?.updatedAt ?? null,
+            mappings,
+          };
+        });
       const socketClosures = (sessionId: SessionId, actor: string | null): SessionSocketApi => ({
+        doppler: (input) => sessionDoppler(sessionId, actor, input),
         // Pickups (`pickup-tickets.ts`): over the socket, the session's own; over the channel, for
         // the launch and the person the token names. A person's grant binds its own person, so
         // their token never redeems anyone else's ticket.

@@ -129,14 +129,14 @@ export const screenPackageIds = (os: WorkspaceImageOs): ReadonlyArray<string> =>
 export const imageHasScreen = (image: WorkspaceImage | null): boolean =>
   image?.mode === "family" && image.screen;
 
-/** Every package an image installs: its own, then those of the screen's it lacks. */
-export const workspaceImagePackages = (image: WorkspaceImage): ReadonlyArray<string> =>
-  image.mode === "family" && image.screen
-    ? [
-        ...image.packages,
-        ...screenPackageIds(image.os).filter((id) => !image.packages.includes(id)),
-      ]
-    : image.packages;
+/** Every image requests Doppler from Core's catalog, including custom bases. */
+export const workspaceImagePackages = (image: WorkspaceImage): ReadonlyArray<string> => [
+  ...image.packages,
+  ...[
+    "doppler",
+    ...(image.mode === "family" && image.screen ? screenPackageIds(image.os) : []),
+  ].filter((id) => !image.packages.includes(id)),
+];
 
 export type ImageArchitecture = "x86_64" | "aarch64";
 
