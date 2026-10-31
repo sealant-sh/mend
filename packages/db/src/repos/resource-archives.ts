@@ -1,11 +1,11 @@
 import type { OrganizationId, ProjectId } from "@mend/domain";
 import { ArchivedResourceVolume, ResourceArchive } from "@mend/domain/workbench";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
-import { resourceArchives } from "../schema/workbench.ts";
+import { resourceArchives, resourceKeptVolumes } from "../schema/workbench.ts";
 
 /** A saved inventory and whether Sealant's archive has finished. */
 export interface StoredResourceArchive {
@@ -17,6 +17,14 @@ export interface StoredResourceArchive {
 export class ResourceArchivesRepo extends Context.Service<
   ResourceArchivesRepo,
   {
+    /** Retains measurements from earlier worktree archives until the project inventory takes them. */
+    readonly rememberVolumes: (
+      projectId: ProjectId,
+      volumes: ReadonlyArray<ArchivedResourceVolume>,
+    ) => Effect.Effect<void>;
+    readonly keptVolumes: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyArray<ArchivedResourceVolume>>;
     readonly byProject: (projectId: ProjectId) => Effect.Effect<StoredResourceArchive | null>;
     /** Writes the inventory once, before any container is archived. */
     readonly begin: (archive: ResourceArchive) => Effect.Effect<void>;
@@ -33,6 +41,8 @@ export class ResourceArchivesRepo extends Context.Service<
 
 const decode = Schema.decodeUnknownEffect(ResourceArchive);
 const encodeVolumes = Schema.encodeEffect(Schema.Array(ArchivedResourceVolume));
+const encodeVolume = Schema.encodeEffect(ArchivedResourceVolume);
+const decodeVolume = Schema.decodeUnknownEffect(ArchivedResourceVolume);
 
 /** PostgreSQL archive inventory, with no transaction held across platform calls. */
 export const ResourceArchivesRepoLive: Layer.Layer<ResourceArchivesRepo, never, MendDB> =
@@ -40,6 +50,38 @@ export const ResourceArchivesRepoLive: Layer.Layer<ResourceArchivesRepo, never, 
     ResourceArchivesRepo,
     Effect.gen(function* () {
       const db = yield* MendDB;
+      const rememberVolumes = Effect.fn("ResourceArchivesRepo.rememberVolumes")(function* (
+        projectId: ProjectId,
+        volumes: ReadonlyArray<ArchivedResourceVolume>,
+      ) {
+        for (const volume of volumes) {
+          yield* db
+            .insert(resourceKeptVolumes)
+            .values({
+              projectId,
+              dockerName: volume.dockerName,
+              volume: yield* encodeVolume(volume).pipe(Effect.orDie),
+            })
+            .onConflictDoUpdate({
+              target: [resourceKeptVolumes.projectId, resourceKeptVolumes.dockerName],
+              set: {
+                volume: sql`CASE WHEN excluded.volume->'bytes' = 'null'::jsonb
+              THEN ${resourceKeptVolumes.volume} ELSE excluded.volume END`,
+              },
+            })
+            .pipe(Effect.orDie);
+        }
+      });
+      const keptVolumes = Effect.fn("ResourceArchivesRepo.keptVolumes")(function* (
+        projectId: ProjectId,
+      ) {
+        const rows = yield* db
+          .select()
+          .from(resourceKeptVolumes)
+          .where(eq(resourceKeptVolumes.projectId, projectId))
+          .pipe(Effect.orDie);
+        return yield* Effect.forEach(rows, (row) => decodeVolume(row.volume).pipe(Effect.orDie));
+      });
       const byProject = Effect.fn("ResourceArchivesRepo.byProject")(function* (
         projectId: ProjectId,
       ) {
@@ -87,6 +129,6 @@ export const ResourceArchivesRepoLive: Layer.Layer<ResourceArchivesRepo, never, 
           .pipe(Effect.orDie);
         return yield* Effect.forEach(rows, (row) => decode(row).pipe(Effect.orDie));
       });
-      return { byProject, begin, finish, list };
+      return { rememberVolumes, keptVolumes, byProject, begin, finish, list };
     }),
   );

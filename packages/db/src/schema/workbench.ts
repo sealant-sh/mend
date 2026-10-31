@@ -763,6 +763,20 @@ export const resourceOwnDatabases = pgTable(
   ],
 );
 
+/** Measurements from worktree archives, retained until the project archive takes them. */
+export const resourceKeptVolumes = pgTable(
+  "resource_kept_volumes",
+  {
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    dockerName: text().notNull(),
+    volume: jsonbOf(ArchivedResourceVolume).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.dockerName] })],
+);
+
 /** An archive outlives its project. The inventory is saved before calling Sealant. */
 export const resourceArchives = pgTable(
   "resource_archives",

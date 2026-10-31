@@ -4814,6 +4814,14 @@ const resourceLoadsMigration = Effect.gen(function* () {
 /** Story 5: resource data and its inventory survive worktree and project deletion. */
 const resourceRemovalMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  // A worktree can archive an instance long before its project is purged. Sealant's scope
+  // archive answers only the instances it archives then, so retain each earlier measurement.
+  yield* sql`CREATE TABLE resource_kept_volumes (
+    project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    docker_name text NOT NULL,
+    volume jsonb NOT NULL CHECK (jsonb_typeof(volume) = 'object'),
+    PRIMARY KEY (project_id, docker_name)
+  )`;
   yield* sql`ALTER TABLE resource_own_databases
     ADD COLUMN removal_dump_name text,
     ADD COLUMN removal_dump_at timestamptz,
