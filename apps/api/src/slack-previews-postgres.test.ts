@@ -410,9 +410,9 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
         ["preview · web · answered HTTP 200 · observed"],
         ["preview · web · stopped by Maria"],
       ]);
-      // The web's Open rule: the gateway serves a preview whose Service has no live attempt,
-      // so it opens through setup, once answered, and after a person's Stop.
-      expect(opensOf(statusTs)).toEqual([[open], [open], [open]]);
+      // Open through setup and once answered; a person's Stop is never woken, so Slack offers no
+      // Open after it (Yiannis, 2026-10-31) and the line says who stopped it.
+      expect(opensOf(statusTs)).toEqual([[open], [open], []]);
     }
     expect(JSON.stringify(slack.calls)).not.toMatch(/ticket|preview\.test|__mend/u);
     expect(editsOf(ELSEWHERE.statusTs)).toEqual([]);

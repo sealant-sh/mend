@@ -283,6 +283,16 @@ const SECTION_TEXT_LIMIT = 3_000;
 /** Slack's limit on a button's label. */
 const BUTTON_TEXT_LIMIT = 75;
 
+/** A person's Stop is never woken, so its preview offers no Open in Slack; its line says who. */
+const stoppedByPerson = (notice: PreviewNotice): boolean =>
+  notice.facts.some((fact) => fact._tag === "Stopped" && fact.by._tag === "Person");
+
+/** Answering or on its way: the Open is the message's call to action. */
+const running = (notice: PreviewNotice): boolean =>
+  notice.facts.some(
+    (fact) => (fact._tag === "Observed" && fact.reachable) || fact._tag === "Starting",
+  );
+
 /** A preview with neither a fact nor an Open says nothing. */
 const previewParts = (
   previews: WorktreePreviews,
@@ -302,10 +312,12 @@ const previewParts = (
   const escaped = entries
     .slice(0, PREVIEWS_LISTED)
     .map(({ notice, lines }) => ({ notice, lines: lines.map(escapeSlack) }));
-  const named = escaped.filter(({ notice }) => notice?.openable === true).length > 1;
+  const offered = (notice: PreviewNotice | null): notice is PreviewNotice =>
+    notice !== null && notice.openable && !stoppedByPerson(notice);
+  const named = escaped.filter(({ notice }) => offered(notice)).length > 1;
   const sections = escaped.map(({ notice, lines }): SectionBlock => {
     const text = clip(lines.join("\n"), SECTION_TEXT_LIMIT);
-    return notice === null || !notice.openable
+    return !offered(notice)
       ? { type: "section", text: { type: "mrkdwn", text } }
       : {
           type: "section",
@@ -317,6 +329,7 @@ const previewParts = (
               clip(named ? `Open preview · ${notice.service}` : "Open preview", BUTTON_TEXT_LIMIT),
             ),
             url: previewUrl(previews.appUrl, notice.id),
+            ...(running(notice) ? { style: "primary" as const } : {}),
           },
         };
   });

@@ -205,7 +205,9 @@ Mend posts only into the thread the request came from.
 - Under the status line, the worktree's previews, when the preview gateway is on: one line each,
   such as `preview · web · starting · setup`, `preview · web · answered HTTP 200 · observed`,
   `preview · web · stopped by Maria` or `preview not prepared · web · setup exited 1`, and an **Open
-  preview** button for each preview Mend can open. The button names its Service
+  preview** button for each preview Mend can open: the message's main button while the preview
+  answers or starts, and gone after a person stops it (a person's Stop is never woken; the line says
+  who stopped it, and the web's Services card has Start). The button names its Service
   (`Open preview · docs`) when the worktree has more than one. It opens Mend's sign-in for the
   preview, which checks that you can see the project before it opens it. The link holds no
   credential. The message moves as a preview prepares, starts, fails or stops.
