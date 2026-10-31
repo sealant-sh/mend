@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import type * as net from "node:net";
 import * as path from "node:path";
+import { gzipSync } from "node:zlib";
 
 import type { SessionId, SessionProcessId } from "@mend/domain";
 import type {
@@ -905,13 +906,13 @@ const stageScripts = (dir: string): void => {
   fs.writeFileSync(path.join(dir, "bin", "chromium"), CHROMIUM_WRAPPER_SCRIPT, { mode: 0o755 });
 };
 
-const encoded = (script: string) => Buffer.from(script).toString("base64");
+const encoded = (script: string) => gzipSync(Buffer.from(script)).toString("base64");
 
 /**
  * Shell that writes the helper and the shim into `<dir>/bin` from inside a workspace. A captured
  * workspace mounts nothing (ADR-0002), so the socket dir `stageScripts` fills never reaches it;
- * the scripts then talk to this machine over the session endpoint. The payload is base64, so the
- * command carries no quoting of its own beyond the fixed program.
+ * the scripts then talk to this machine over the session endpoint. Gzip keeps the shared helper
+ * within the launch argument budget; base64 needs no quoting beyond the fixed program.
  */
 export const workspaceScriptStaging = (
   dir: string,
@@ -936,7 +937,7 @@ export const workspaceScriptStaging = (
     `node -e 'const fs=require("fs");const [d,...s]=process.argv.slice(1);` +
     `fs.mkdirSync(d+"/bin",{recursive:true});` +
     `${JSON.stringify(names)}.forEach((n,i)=>{const f=d+"/bin/"+n;` +
-    `fs.writeFileSync(f+".new",Buffer.from(s[i],"base64"),{mode:0o755});fs.renameSync(f+".new",f)})' ` +
+    `fs.writeFileSync(f+".new",require("node:zlib").gunzipSync(Buffer.from(s[i],"base64")),{mode:0o755});fs.renameSync(f+".new",f)})' ` +
     `'${dir.replaceAll("'", "'\\''")}' ${scripts.map(encoded).join(" ")}`
   );
 };
