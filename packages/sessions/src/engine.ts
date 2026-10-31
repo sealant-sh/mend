@@ -32,7 +32,6 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   ServicesRepo,
-  RecipeApprovalsRepo,
   type SetupRunAgain,
   SetupRunsRepo,
   SessionGitOpsRepo,
@@ -117,12 +116,7 @@ import type {
 } from "@mend/domain/workbench";
 import {
   DEFAULT_SERVICE_LAUNCH,
-  type RecipeApproval,
-  recipeApprovalStateOf,
-  recipeChangedLine,
   RecipeDigestView,
-  type RecipeSpec,
-  recipeUnapprovedLine,
   ServiceDeclarations,
   ServiceStartProgress,
   ServiceStartSetup,
@@ -626,18 +620,15 @@ import {
   type TurnSteerError,
 } from "./protocol-host.ts";
 import type { SteerTurnInput } from "./protocol-steer.ts";
+import { recipeDigestsOf } from "./recipe-digest.ts";
 import {
-  overlayApproved,
   type PlannedRecipe,
   type PlanSetup,
   planRecipeStart,
-  type RecipeAuthority,
-  recipeAuthorityOf,
+  type RecipePlan,
   sameLaunch,
-} from "./recipe-approval.ts";
-import { recipeDigestsOf } from "./recipe-digest.ts";
+} from "./recipe-plan.ts";
 import {
-  recipesBeforeDependsCheck,
   EMPTY_MEND_TOML,
   MEND_TOML,
   type MendTomlFile,
@@ -1659,15 +1650,6 @@ interface AttemptDependencies {
   readonly addresses: ReadonlyArray<DependencyAddress>;
 }
 
-type RestartGate =
-  | { readonly _tag: "Replay" }
-  | { readonly _tag: "ReplayAttempt"; readonly attemptId: SessionProcessId }
-  | {
-      readonly _tag: "RunApproval";
-      readonly attemptId: SessionProcessId;
-      readonly approved: RecipeSpec;
-    };
-
 /** What the reaper writes when a lease lapsed and the platform no longer answers. */
 const EXECUTOR_LOST_SUMMARY = "executor lost · lease expired";
 /** The key an executor create is asked under: the session, when it was asked, a nonce. */
@@ -2531,6 +2513,7 @@ type AcceptedStart =
 const PREVIEW_JOIN_POLL_MS = 250;
 
 type PreviewStartStep =
+  | { readonly _tag: "Preparation" }
   | { readonly _tag: "Join"; readonly attemptId: SessionProcessId }
   | {
       readonly _tag: "Start";
@@ -3079,8 +3062,7 @@ export class SessionEngine extends Context.Service<
       name: string,
       /**
        * Who asked: a person runs it as them in a person-layout executor, restarts too (docs/adr/
-       * 0016), and their Start lets requests start its preview again (ADR 0017). It also
-       * decides what may run of the recipe (`recipeAuthorityOf`).
+       * 0016), and their Start lets requests start its preview again (ADR 0017).
        */
       cause: ServiceStartCause,
       /** The client's id for this start; the attempt carries `serviceStartCorrelation(startId)`. */
@@ -3161,12 +3143,13 @@ export class SessionEngine extends Context.Service<
     ) => Effect.Effect<SessionProcessId, PreviewStartRefused | PreviewStartDeclined>;
     /**
      * After a turn that changed the worktree (ADR 0017, "After the agent is done"): start the
-     * worktree's `[preview]` Service if nothing runs it, the way an automatic start does, as the
-     * person who last started it and only at the owner's approved digest. A preview already
-     * running gets nothing. Under the lifecycle permit, just before the Service's attempt begins,
-     * the start is admitted again: `hold` still holds, no person's Stop, nothing else running the
-     * preview. Answers once the start ended, however it ended; a call for a turn whose start is
-     * under way in this process follows that start, by its start id, to the same end.
+     * worktree's `[preview]` Service from the file if nothing runs it, as the turn's sender (else
+     * whoever last started it). A preview already running is left alone unless its recipe's
+     * launch changed, which starts it again from the file, as the same person. Under the
+     * lifecycle permit, just before the Service's attempt begins, the start is admitted again:
+     * `hold` still holds, no person's Stop, nothing else running the preview. Answers once the
+     * start ended, however it ended; a call for a turn whose start is under way in this process
+     * follows that start, by its start id, to the same end.
      */
     readonly preparePreview: (
       sessionId: SessionId,
@@ -3394,7 +3377,6 @@ type SessionEngineRequirements =
   | SessionPagesRepo
   | ServicesRepo
   | SetupRunsRepo
-  | RecipeApprovalsRepo
   | ServiceForwardsRepo
   | ServiceObservationsRepo
   | ServiceHost
@@ -8829,7 +8811,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const services = yield* ServicesRepo;
       const setupRuns = yield* SetupRunsRepo;
-      const recipeApprovals = yield* RecipeApprovalsRepo;
       const setupRunner = yield* makeSetupRunner;
       const serviceForwards = yield* ServiceForwardsRepo;
       const serviceObservations = yield* ServiceObservationsRepo;
@@ -22580,11 +22561,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return resolveDeclarations(file, yield* projectRecipes.listForProject(session.projectId));
       });
 
-      const ownerApprovalsOf = (session: Session) =>
-        session.ownerUserId === null
-          ? Effect.succeed(new Map<string, RecipeApproval>())
-          : recipeApprovals.forWorktree(session.worktreeId, session.ownerUserId);
-
       const listServiceRecipes = (sessionId: SessionId) =>
         Effect.map(
           Effect.flatMap(sessions.byId(sessionId), declarationsOf),
@@ -22596,7 +22572,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const session = yield* sessions.byId(sessionId);
         const declared = yield* declarationsOf(session);
-        const approvals = yield* ownerApprovalsOf(session);
         const digests = recipeDigestsOf(declared);
         return new ServiceDeclarations({
           ...declared,
@@ -22605,15 +22580,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (recipe.shadowedBy !== null || recipe.command === null || digest === undefined) {
               return [];
             }
-            const approval = approvals.get(recipe.name);
-            return [
-              new RecipeDigestView({
-                name: recipe.name,
-                digest,
-                state: recipeApprovalStateOf(digest, approval),
-                approvedBy: approval?.approvedBy ?? null,
-              }),
-            ];
+            return [new RecipeDigestView({ name: recipe.name, digest })];
           }),
         });
       });
@@ -23860,13 +23827,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const attemptDependencyAddressesOf = (
         attemptId: SessionProcessId | null,
         sessionId: SessionId,
-        approved: RecipeSpec | null = null,
       ) =>
-        (approved !== null
-          ? Effect.succeed(approved.depends.map((dependency) => dependency.name))
-          : attemptId === null
-            ? Effect.succeed([])
-            : Effect.map(processes.launchOf(attemptId), (launch) => launch?.depends ?? [])
+        (attemptId === null
+          ? Effect.succeed([])
+          : Effect.map(processes.launchOf(attemptId), (launch) => launch?.depends ?? [])
         ).pipe(
           Effect.flatMap((names) => dependencyAddressesOf(sessionId, names)),
           Effect.mapError(
@@ -23885,30 +23849,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const recorded = yield* processes.launchOf(live.attempt.id);
         return recorded !== null && sameLaunch({ ...recorded, argv: live.attempt.argv }, launch);
       });
-
-      const refuseUnapprovedLive = (
-        live: NonNullable<Effect.Success<ReturnType<typeof liveServiceNamed>>>,
-        step: PlannedRecipe,
-      ) =>
-        step.runs._tag === "File"
-          ? Effect.void
-          : step.launch === null
-            ? live.attempt === null
-              ? Effect.void
-              : Effect.fail(
-                  new ServiceStartError({
-                    message: `the running ${step.recipe.name} runs a command its approved version does not, and is left running`,
-                  }),
-                )
-            : Effect.flatMap(runsLaunch(live, step.launch), (runs) =>
-                runs
-                  ? Effect.void
-                  : Effect.fail(
-                      new ServiceStartError({
-                        message: `the running ${step.recipe.name} is not the version its approval names, and is left running`,
-                      }),
-                    ),
-              );
 
       /**
        * One recipe of a plan, started or met: a dependency already live is waited for (never
@@ -23934,7 +23874,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? null
             : yield* withServiceLifecycle(liveServiceNamed(sessionId, recipe.name));
         if (live !== null) {
-          yield* refuseUnapprovedLive(live, step);
           yield* onBegun(live.service);
           return {
             view: yield* readServiceView(live.service.id),
@@ -24012,7 +23951,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const { recipe } = step;
         const serviceId = yield* Deferred.await(launching);
         const live = yield* withServiceLifecycle(liveServiceNamed(sessionId, recipe.name));
-        if (live !== null) yield* refuseUnapprovedLive(live, step);
         return {
           view: yield* readServiceView(serviceId),
           outcome:
@@ -24249,11 +24187,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { view: started.view, outcome } satisfies PlanEnd;
       });
 
-      /** What `name`'s start runs, as `authority` lets it: the one plan starts and restarts check. */
       const recipePlanOf = Effect.fn("SessionEngine.recipePlanOf")(function* (
         session: Session,
         name: string,
-        authority: RecipeAuthority,
       ) {
         const file = yield* mendTomlOf(session).pipe(
           Effect.catchTags({
@@ -24272,22 +24208,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.fail(new ServiceStartError({ message: error.message })),
           }),
         );
-        return yield* recipePlanFrom(session, file, name, authority);
+        return yield* recipePlanFrom(session, file, name);
       });
 
       const recipePlanFrom = Effect.fn("SessionEngine.recipePlanFrom")(function* (
         session: Session,
         file: MendTomlFile,
         name: string,
-        authority: RecipeAuthority,
       ) {
-        const project = yield* projectRecipes.listForProject(session.projectId);
-        const declared = resolveDeclarations(file, project);
-        const refusals = declared.refused.filter(
-          (refusal) =>
-            refusal.name === name &&
-            (authority._tag !== "ApprovedOnly" || refusal.key !== "depends"),
+        const declared = resolveDeclarations(
+          file,
+          yield* projectRecipes.listForProject(session.projectId),
         );
+        const refusals = declared.refused.filter((refusal) => refusal.name === name);
         // The in-workspace helper prints this message as is, so it carries the file's notices.
         const notRun = (line: string) =>
           new ServiceStartError({
@@ -24298,18 +24231,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `mend.toml refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
           );
         }
-        const gated = planRecipeStart({
-          declarations: declared,
-          recipesBeforeDependsCheck: recipesBeforeDependsCheck(file, project),
-          name,
-          authority,
-          approvals:
-            authority._tag === "ApprovedOnly" ? yield* ownerApprovalsOf(session) : new Map(),
-        });
-        if (gated._tag === "Refused") {
-          return yield* notRun(gated.message);
+        const recipePlan = planRecipeStart(declared, name);
+        if (recipePlan._tag === "Refused") {
+          return yield* notRun(recipePlan.message);
         }
-        return { declared, gated };
+        return { declared, recipePlan };
       });
 
       /**
@@ -24327,8 +24253,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         follower: PlanFollower | null,
       ) {
         const sessionId = session.id;
-        const { declared, gated } = planned;
-        const { steps, setup } = gated;
+        const { declared, recipePlan } = planned;
+        const { steps, setup } = recipePlan;
+        if (setup._tag === "Refused" && cause.kind === "system") {
+          return yield* new ServiceStartError({
+            message: `mend.toml refuses [setup], so ${name} is not started automatically: ${setup.line}`,
+          });
+        }
         const key = planKey(sessionId, startId ?? crypto.randomUUID());
         const kept = servicePlans.get(key);
         if (kept !== undefined && kept.refused !== "claim-lost") {
@@ -24372,7 +24303,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           follower,
           refused: null,
         };
-        yield* recipeApprovals.approve(session.worktreeId, gated.approvals);
         servicePlans.set(key, plan);
         yield* runPlan(
           plan,
@@ -24408,13 +24338,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         setupAgain = false,
       ) {
         const session = yield* sessions.byId(sessionId);
-        const planned = yield* recipePlanOf(
-          session,
-          name,
-          recipeAuthorityOf(cause, session.ownerUserId),
-        );
-        const target = planned.gated.steps.at(-1)?.runs;
-        const approvedVersion = target?._tag === "Approval" && !target.matchesFile;
+        const planned = yield* recipePlanOf(session, name);
         const plan = yield* beginRecipePlan(
           session,
           name,
@@ -24428,7 +24352,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.timeoutOption(Duration.millis(SERVICE_START_HOLD_MS)),
         );
         const withSetup = (view: ServiceView) =>
-          new ServiceView({ ...view, setup: plan.progress.setup, approvedVersion });
+          new ServiceView({ ...view, setup: plan.progress.setup });
         if (Option.isSome(settled)) return withSetup(settled.value.view);
         // Held long enough: the start goes on without its request.
         if (plan.target !== null) return withSetup(yield* readServiceView(plan.target));
@@ -24452,19 +24376,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const service = yield* services.byName(holder.id, name);
           const runsAs = service === null ? null : yield* services.startedByOf(service.id);
           yield* runServiceRecipe(holder.id, name, { kind: "system", runsAs }, null).pipe(
-            Effect.flatMap((view) =>
-              view.approvedVersion
-                ? Effect.logInfo(
-                    "session engine: a mend.toml Service started again at its approved version",
-                  ).pipe(
-                    Effect.annotateLogs({
-                      sessionId: holder.id,
-                      service: name,
-                      why: recipeChangedLine(name),
-                    }),
-                  )
-                : Effect.void,
-            ),
             Effect.catch((error) =>
               Effect.logInfo(
                 "session engine: a mend.toml Service was not started again after the replacement",
@@ -24481,21 +24392,43 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         name: string,
         previewId: PreviewId | null,
       ) {
-        const snapshot = previewId === null ? null : yield* previews.gatewaySnapshot(previewId);
-        const resolution = snapshot?.resolution ?? null;
-        if (resolution?._tag === "Bound" || resolution?._tag === "Starting") {
+        // Admission observes attempts, not the preparation's own gateway hold.
+        const view = previewId === null ? null : yield* previews.resolveById(previewId);
+        if (view?.binding._tag === "Bound") {
           return { _tag: "Running" } as const;
         }
         const control = previewId === null ? null : yield* previews.controlOf(previewId);
         if (control?._tag === "Stopped") return { _tag: "Stopped" } as const;
+        const snapshot = previewId === null ? null : yield* previews.gatewaySnapshot(previewId);
         const sourceId =
-          resolution?._tag === "Dormant"
-            ? resolution.source.serviceId
+          snapshot?.resolution._tag === "Dormant"
+            ? snapshot.resolution.source.serviceId
             : ((yield* services.byName(session.id, name))?.id ?? null);
         return {
           _tag: "Free",
           startedBy: sourceId === null ? null : yield* services.startedByOf(sourceId),
         } as const;
+      });
+
+      const staleRecipeService = Effect.fn("SessionEngine.staleRecipeService")(function* (
+        previewId: PreviewId | null,
+        recipePlan: Extract<RecipePlan, { readonly _tag: "Planned" }>,
+      ) {
+        const launch = recipePlan.steps.at(-1)?.launch ?? null;
+        if (launch === null) return null;
+        const view = previewId === null ? null : yield* previews.resolveById(previewId);
+        if (view?.binding._tag !== "Bound") return null;
+        const service = yield* services.byId(view.binding.serviceId);
+        if (service === null) return null;
+        const live = { service, attempt: yield* processes.byId(view.binding.attemptId) };
+        if (
+          live.attempt === null ||
+          (live.service.declarationSource !== "recipe-file" &&
+            live.service.declarationSource !== "recipe-project")
+        ) {
+          return null;
+        }
+        return (yield* runsLaunch(live, launch)) ? null : live.service;
       });
 
       const workspaceLive = (session: Session) =>
@@ -24521,7 +24454,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         name: string,
         previewId: PreviewId | null,
-        note: PreviewPreparationNote | null,
         plan: ServicePlan,
         ended: Exit.Exit<PlanEnd, PlanFailure>,
       ) {
@@ -24529,7 +24461,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (Exit.isSuccess(ended)) {
           return ended.value.outcome._tag === "Ended"
             ? stopped
-            : ({ _tag: "Started", service: name, previewId, note } as const);
+            : ({ _tag: "Started", service: name, previewId, note: null } as const);
         }
         switch (plan.refused) {
           case "stopped":
@@ -24595,33 +24527,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const previewId = yield* previews
           .ensureNamed(session.worktreeId, name)
           .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(null)));
-        const approval = (yield* ownerApprovalsOf(session)).get(name);
         const seen = yield* withServiceLifecycle(previewNow(session, name, previewId));
         if (seen._tag === "Stopped") {
           return { _tag: "Stopped", service: name, previewId } satisfies PreviewPrepared;
         }
-        if (seen._tag === "Running") {
+        const planned = yield* recipePlanFrom(session, read.file, name).pipe(Effect.result);
+        const changedService =
+          seen._tag === "Running" && Result.isSuccess(planned)
+            ? yield* withServiceLifecycle(staleRecipeService(previewId, planned.success.recipePlan))
+            : null;
+        if (seen._tag === "Running" && changedService === null) {
           const declared = resolveDeclarations(
             read.file,
             yield* projectRecipes.listForProject(session.projectId),
           );
-          const digest = recipeDigestsOf(declared).get(name);
           const note: PreviewPreparationNote | null =
-            approval !== undefined && digest !== undefined && approval.digest !== digest
-              ? "recipe-changed"
-              : declared.setup !== null &&
-                  (yield* runningSetupInputsChanged(session, declared.setup))
-                ? "setup-inputs-changed"
-                : null;
+            declared.setup !== null && (yield* runningSetupInputsChanged(session, declared.setup))
+              ? "setup-inputs-changed"
+              : null;
           return { _tag: "Running", service: name, previewId, note } satisfies PreviewPrepared;
         }
-        if (approval === undefined) {
-          return { _tag: "NotApproved", service: name, previewId } satisfies PreviewPrepared;
-        }
-        const startId = previewTurnStartId(turnId);
-        const planned = yield* recipePlanFrom(session, read.file, name, {
-          _tag: "ApprovedOnly",
-        }).pipe(Effect.result);
         if (Result.isFailure(planned)) {
           return {
             _tag: "Refused",
@@ -24630,15 +24555,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             reason: planned.failure.message,
           } satisfies PreviewPrepared;
         }
-        const target = planned.success.gated.steps.at(-1)?.runs;
-        const note: PreviewPreparationNote | null =
-          target?._tag === "Approval" && !target.matchesFile ? "recipe-changed" : null;
-        if (yield* startedUnder(session, name, startId)) {
-          return { _tag: "Started", service: name, previewId, note } satisfies PreviewPrepared;
+        const startSession =
+          changedService === null ? session : yield* sessions.byId(changedService.sessionId);
+        const startId = previewTurnStartId(turnId);
+        if (yield* startedUnder(startSession, name, startId)) {
+          return {
+            _tag: "Started",
+            service: name,
+            previewId,
+            note: null,
+          } satisfies PreviewPrepared;
         }
-        let phase = firstPhaseOf(planned.success.gated);
+        const runsAs =
+          (yield* conversations.byTurnId(turnId))?.author ??
+          (changedService !== null
+            ? yield* services.startedByOf(changedService.id)
+            : seen._tag === "Free"
+              ? seen.startedBy
+              : null);
+        let phase = firstPhaseOf(planned.success.recipePlan);
         const starting = (at: PreviewPhase) =>
-          ({ _tag: "Starting", service: name, previewId, phase: at, note }) as const;
+          ({ _tag: "Starting", service: name, previewId, phase: at, note: null }) as const;
         if (!(yield* hold.report(starting(phase)))) {
           return {
             _tag: "Skipped",
@@ -24659,10 +24596,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return now._tag === "Stopped" ? "stopped" : now._tag === "Running" ? "taken" : null;
           }),
         };
+        if (changedService !== null) {
+          yield* stopService(changedService.id, WORKSPACE_STOP).pipe(
+            Effect.catchTag("ServiceNotFoundError", () => Effect.void),
+          );
+        }
         const begun = yield* beginRecipePlan(
-          session,
+          startSession,
           name,
-          { kind: "system", runsAs: seen.startedBy },
+          { kind: "system", runsAs },
           startId,
           planned.success,
           false,
@@ -24681,7 +24623,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.onInterrupt(() => abandonPlan(plan, follower)),
           Effect.exit,
         );
-        return yield* previewStartOutcome(session, name, previewId, note, plan, ended);
+        return yield* previewStartOutcome(session, name, previewId, plan, ended);
       });
 
       const runningSetupInputsChanged = Effect.fn("SessionEngine.runningSetupInputsChanged")(
@@ -24707,15 +24649,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         cause: AcceptedStart,
         filePreview: string | null,
         dependencies: ReadonlyArray<DependencyAddress>,
-        gate: RestartGate,
       ) {
         const service = yield* services.byId(serviceId);
         if (service === null) return yield* new ServiceNotFoundError({ processId: serviceId });
-        if (gate._tag !== "Replay" && gate.attemptId !== service.currentAttemptId) {
-          return yield* new ServiceStartError({
-            message: `${service.name} started again while its restart was asked · nothing restarted · ask again`,
-          });
-        }
         const previous =
           service.currentAttemptId === null
             ? null
@@ -24752,81 +24688,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ...((yield* processes.launchOf(previous.id)) ?? DEFAULT_SERVICE_LAUNCH),
           argv: previous.argv,
         };
-        const launch =
-          gate._tag === "RunApproval" ? overlayApproved(replayed, gate.approved) : replayed;
         const opened = yield* openServiceAttemptAsOwner({
           session,
           workspace,
           service,
-          argv: launch.argv,
-          launch,
+          argv: replayed.argv,
+          launch: replayed,
           filePreview,
           dependencies,
           runsAs: yield* services.startedByOf(service.id),
           launchCorrelationId: null,
         });
         yield* clearStop(service.id, cause);
-        const approvedVersion = !sameLaunch(launch, replayed);
-        return { ...opened, service, approvedVersion };
-      });
-
-      /** ADR 0017 decision log 4: a turn may have started the attempt from an edited file. */
-      const restartGateOf = Effect.fn("SessionEngine.restartGateOf")(function* (
-        service: Service,
-        cause: AcceptedStart,
-      ) {
-        const attemptId = service.currentAttemptId;
-        const session = yield* sessions
-          .byId(service.sessionId)
-          .pipe(
-            Effect.mapError(
-              () => new ServiceStartError({ message: "The Service's session no longer exists." }),
-            ),
-          );
-        if (
-          attemptId === null ||
-          recipeAuthorityOf(cause, session.ownerUserId)._tag !== "ApprovedOnly"
-        ) {
-          return { _tag: "Replay" } satisfies RestartGate;
-        }
-        const source = (yield* processes.launchOf(attemptId))?.source ?? "unrecorded";
-        if (source === "command") return { _tag: "ReplayAttempt", attemptId } satisfies RestartGate;
-        if (source === "unrecorded") {
-          return yield* new ServiceStartError({
-            message: `${service.name} · started before Mend recorded what launched it · the owner's restart runs it`,
-          });
-        }
-        const { steps } = (yield* recipePlanOf(session, service.name, { _tag: "ApprovedOnly" }))
-          .gated;
-        const target = steps.at(-1)?.runs;
-        if (target?._tag !== "Approval") {
-          return yield* new ServiceStartError({ message: recipeUnapprovedLine(service.name) });
-        }
-        for (const step of steps.slice(0, -1)) {
-          const live = yield* liveServiceNamed(service.sessionId, step.recipe.name);
-          if (live === null) continue;
-          yield* refuseUnapprovedLive(live, step).pipe(
-            Effect.mapError(
-              (error) =>
-                new ServiceStartError({
-                  message: `${service.name} was not restarted · ${error.message}`,
-                }),
-            ),
-          );
-        }
-        return {
-          _tag: "RunApproval",
-          attemptId,
-          approved: target.spec,
-        } satisfies RestartGate;
+        return { ...opened, service };
       });
 
       const restartService = (serviceId: ServiceId, cause: AcceptedStart) =>
         Effect.gen(function* () {
           // The file is read before the permit: in capture mode that is an exec in the workspace.
           const service = yield* services.byId(serviceId);
-          const gate: RestartGate =
-            service === null ? { _tag: "Replay" } : yield* restartGateOf(service, cause);
           const filePreview =
             service === null || service.browserScheme === "http"
               ? null
@@ -24837,21 +24717,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const dependencies =
             service === null
               ? []
-              : yield* attemptDependencyAddressesOf(
-                  service.currentAttemptId,
-                  service.sessionId,
-                  gate._tag === "RunApproval" ? gate.approved : null,
-                );
+              : yield* attemptDependencyAddressesOf(service.currentAttemptId, service.sessionId);
           const started = yield* withServiceLifecycle(
-            restartServiceUnlocked(serviceId, cause, filePreview, dependencies, gate),
+            restartServiceUnlocked(serviceId, cause, filePreview, dependencies),
           );
           const verdict = yield* awaitAttemptReady(started);
           const { view } = yield* withServiceLifecycle(
             finishServiceStart(started, verdict, "keep-bound"),
           );
-          return started.approvedVersion
-            ? new ServiceView({ ...view, approvedVersion: true })
-            : view;
+          return view;
         });
 
       const agentWaitChanges = makeWindowLimiter();
@@ -25457,6 +25331,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (resolution._tag !== "Refused" && resolution.revision !== request.revision) {
           return yield* previewRefused("control-changed");
         }
+        if (resolution._tag === "Starting" && resolution.attemptId === null) {
+          return { _tag: "Preparation" } satisfies PreviewStartStep;
+        }
         const source = yield* processes.byId(request.sourceAttemptId);
         if (source === null || source.serviceId === null) {
           return yield* previewRefused("preview-gone", "the source attempt is not recorded");
@@ -25479,7 +25356,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           case "Bound":
             return joinStep(resolution.attempt.attemptId);
           case "Starting":
-            return joinStep(resolution.attemptId);
+            return resolution.attemptId === null
+              ? yield* previewRefused("start-expired")
+              : joinStep(resolution.attemptId);
           case "Dormant":
             if (resolution.source.sourceAttemptId !== request.sourceAttemptId) {
               return yield* previewRefused("control-changed");
@@ -25642,11 +25521,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      const joinPreviewPreparation = Effect.fn("SessionEngine.joinPreviewPreparation")(function* (
+        request: PreviewStartRequest,
+      ) {
+        for (;;) {
+          const snapshot = yield* previews.gatewaySnapshot(request.previewId);
+          if (snapshot === null) return yield* previewRefused("preview-gone");
+          const resolution = snapshot.resolution;
+          if (resolution._tag === "Stopped") return yield* previewRefused("stopped");
+          if (resolution._tag === "Refused") return yield* previewRefused("command-failed");
+          if (resolution.revision !== request.revision)
+            return yield* previewRefused("control-changed");
+          if (resolution._tag === "Bound") return resolution.attempt.attemptId;
+          if (resolution._tag === "Dormant") return yield* previewRefused("command-failed");
+          if (resolution.attemptId !== null)
+            return yield* joinPreviewAttempt(resolution.attemptId, request.deadline);
+          const left = previewRemainingMs(request.deadline);
+          if (left === 0) return yield* previewRefused("start-expired");
+          yield* Effect.sleep(Duration.millis(Math.min(PREVIEW_JOIN_POLL_MS, left)));
+        }
+      });
+
       const runPreviewStart = Effect.fn("SessionEngine.runPreviewStart")(function* (
         request: PreviewStartRequest,
         claim: Effect.Effect<void, PreviewStartDeclined, Scope.Scope>,
       ) {
         const step = yield* previewStartStep(request);
+        if (step._tag === "Preparation") return yield* joinPreviewPreparation(request);
         if (step._tag === "Join")
           return yield* joinPreviewAttempt(step.attemptId, request.deadline);
         // Outside the permit: a docker dependency's address is a probe of the workspace.
@@ -25663,12 +25564,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* previewRefused("start-expired", "other Service work held the start");
             }
             const again = yield* previewStartStep(request);
-            if (again._tag === "Join") return again;
+            if (again._tag !== "Start") return again;
             yield* claim;
             return yield* acceptPreviewStart(again, lookedUp);
           }),
         );
         if ("_tag" in accepted) {
+          if (accepted._tag === "Preparation") return yield* joinPreviewPreparation(request);
           return yield* joinPreviewAttempt(accepted.attemptId, request.deadline);
         }
         return yield* finishPreviewStart(request, accepted);

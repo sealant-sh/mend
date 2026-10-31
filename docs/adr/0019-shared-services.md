@@ -109,8 +109,8 @@ Services on `localhost`.
   own (ADR 0017, "Services shared between worktrees", decision log 7). A missing SDK feature is a
   `PLATFORM-FEEDBACK.md` entry, not a workaround (AGENTS.md).
 - **Commands are the owner's.** Only a session's owner runs a command or a recipe. A steerer may
-  restart or stop (ADR 0013). An automatic start runs only a recipe digest the owner approved (ADR
-  0017, "After the agent is done").
+  restart or stop (ADR 0013). A preview's start after a turn runs the recipe as the turn's sender,
+  whoever changed it (ADR 0017, decision log 4, reversed 2026-10-31).
 - **Losing a person's data is a blocker.** For a resource, that includes everything on its volumes.
 - **A preview's `depends` names a Service of its own session or a shared service of the project**,
   and either resolves to an address and credentials in the preview Service's env (ADR 0017, decision

@@ -327,7 +327,7 @@ describe("GET /worktrees/:id/previews", () => {
     }
   });
 
-  it("drops a refusal once the owner's Start began an attempt after it, though the preview now sleeps", async () => {
+  it("drops a refusal once a Start began an attempt after it, though the preview now sleeps", async () => {
     const target = ids("shared-a");
     const web: PreviewView = {
       preview: {
@@ -352,14 +352,19 @@ describe("GET /worktrees/:id/previews", () => {
         workspaceId: null,
       },
     };
-    const notApproved = (decidedAt: Date): PreviewPreparation => ({
+    const refused = (decidedAt: Date): PreviewPreparation => ({
       turnId: AgentTurnId.make("turn-1"),
       sessionId: SessionId.make(target.session),
       worktreeId: WorktreeId.make(target.worktree),
       claimedAt: decidedAt,
       state: {
         _tag: "Decided",
-        decision: { _tag: "NotApproved", service: "web", previewId: web.preview.id },
+        decision: {
+          _tag: "Refused",
+          service: "web",
+          previewId: web.preview.id,
+          reason: "setup failed",
+        },
         decidedAt,
       },
     });
@@ -390,9 +395,9 @@ describe("GET /worktrees/:id/previews", () => {
       }
     };
 
-    expect(await statusWith(notApproved(new Date("2000-01-01T00:00:00Z")))).toEqual([[]]);
-    expect(await statusWith(notApproved(new Date(Date.now() + 86_400_000)))).toEqual([
-      ["preview not prepared · web · recipe not approved · the owner's Start runs it"],
+    expect(await statusWith(refused(new Date("2000-01-01T00:00:00Z")))).toEqual([[]]);
+    expect(await statusWith(refused(new Date(Date.now() + 86_400_000)))).toEqual([
+      ["preview not prepared · web · setup failed"],
     ]);
   });
   it("says that a start is under way until it settles", async () => {

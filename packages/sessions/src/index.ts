@@ -38,7 +38,7 @@ export { screenWorkersLayer } from "./screen/screen-workers.ts";
 export * from "./forward-node.ts";
 export * from "./service-host.ts";
 export * from "./service-launch.ts";
-export * from "./recipe-approval.ts";
+export * from "./recipe-plan.ts";
 export * from "./recipe-digest.ts";
 export * from "./recipes.ts";
 export * from "./setup.ts";

@@ -33,7 +33,7 @@ export type PreviewRoute =
 
 export interface StartFrom {
   readonly revision: number;
-  readonly sourceAttemptId: PreviewBoundAttempt["attemptId"];
+  readonly sourceAttemptId: PreviewBoundAttempt["attemptId"] | null;
 }
 
 export type WaveOutcome = Exclude<PreviewRoute, { readonly _tag: "Start" }>;
@@ -155,32 +155,46 @@ export const makeStartWaves = (startHoldMs: number) =>
       viewerId: string,
     ): Effect.Effect<void> => {
       const declined: { answer: PreviewAnswer | null } = { answer: null };
-      const started: Effect.Effect<Settled> = targets
-        .ensureRunning(
-          {
-            previewId: preview.id,
-            revision: from.revision,
-            sourceAttemptId: from.sourceAttemptId,
-            deadline: wave.deadline,
-          },
-          claimFor(viewerId, declined),
-        )
-        .pipe(
-          Effect.andThen(targets.snapshot(preview.id)),
-          Effect.map((read): Settled => startedOutcome(preview, read)),
-          Effect.catchTags({
-            PreviewStartFailed: (failed) =>
-              failed.reason === "stopped"
-                ? Effect.map(targets.snapshot(preview.id), (read) => startedOutcome(preview, read))
-                : Effect.succeed(didNotStart(preview, previewStartReasonOf(failed.reason))),
-            PreviewStartDeclined: () =>
-              Effect.succeed<Settled>(
-                declined.answer === null
-                  ? { _tag: "ElsewhereDeclined" }
-                  : { _tag: "ClaimerDeclined", by: viewerId, answer: declined.answer },
-              ),
-          }),
-        );
+      const waiting = Effect.gen(function* () {
+        for (;;) {
+          const read = yield* targets.snapshot(preview.id);
+          if (read?._tag !== "Starting") return startedOutcome(preview, read);
+          if (read.revision !== from.revision)
+            return didNotStart(preview, "preview is unavailable");
+          yield* Effect.sleep("50 millis");
+        }
+      });
+      const started: Effect.Effect<Settled> =
+        from.sourceAttemptId === null
+          ? waiting
+          : targets
+              .ensureRunning(
+                {
+                  previewId: preview.id,
+                  revision: from.revision,
+                  sourceAttemptId: from.sourceAttemptId,
+                  deadline: wave.deadline,
+                },
+                claimFor(viewerId, declined),
+              )
+              .pipe(
+                Effect.andThen(targets.snapshot(preview.id)),
+                Effect.map((read): Settled => startedOutcome(preview, read)),
+                Effect.catchTags({
+                  PreviewStartFailed: (failed) =>
+                    failed.reason === "stopped"
+                      ? Effect.map(targets.snapshot(preview.id), (read) =>
+                          startedOutcome(preview, read),
+                        )
+                      : Effect.succeed(didNotStart(preview, previewStartReasonOf(failed.reason))),
+                  PreviewStartDeclined: () =>
+                    Effect.succeed<Settled>(
+                      declined.answer === null
+                        ? { _tag: "ElsewhereDeclined" }
+                        : { _tag: "ClaimerDeclined", by: viewerId, answer: declined.answer },
+                    ),
+                }),
+              );
       const bounded = Effect.suspend(() =>
         started.pipe(
           Effect.timeoutOption(

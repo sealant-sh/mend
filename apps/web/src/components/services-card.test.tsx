@@ -551,17 +551,22 @@ describe("the mounted Services card", () => {
 
     previews = read({
       previews: [
-        preview("web", [{ _tag: "NotPrepared", service: "web", why: { _tag: "NotApproved" } }], {
-          unbound: "no-live-attempt",
-          open: true,
-        }),
+        preview(
+          "web",
+          [
+            {
+              _tag: "NotPrepared",
+              service: "web",
+              why: { _tag: "Refused", words: "setup failed" },
+            },
+          ],
+          { unbound: "no-live-attempt", open: true },
+        ),
       ],
     });
     mounted.say(moved);
     await wait(10);
-    expect(lines(mounted.page)).toContain(
-      "preview not prepared · web · recipe not approved · the owner's Start runs it",
-    );
+    expect(lines(mounted.page)).toContain("preview not prepared · web · setup failed");
     expect(mounted.previewReads()).toBe(3);
   });
 

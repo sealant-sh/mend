@@ -4683,6 +4683,32 @@ const turnDispatchAttemptMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS dispatch_attempt_id uuid`;
 });
 
+/** 0170: recipe approvals go (ADR 0017, decision log 4, reversed 2026-10-31). */
+const dropRecipeApprovalsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DROP TABLE recipe_approvals`;
+  yield* sql`ALTER TABLE session_processes DROP COLUMN launch_source`;
+  yield* sql`UPDATE preview_preparations
+    SET state = 'skipped', reason = 'the recipe was not approved', service_name = NULL,
+      preview_id = NULL
+    WHERE state = 'not-approved'`;
+  yield* sql`UPDATE preview_preparations SET note = NULL WHERE note = 'recipe-changed'`;
+  yield* sql`ALTER TABLE preview_preparations
+    DROP CONSTRAINT preview_preparations_state_check,
+    DROP CONSTRAINT preview_preparations_note_check,
+    DROP CONSTRAINT preview_preparations_service_facts,
+    ADD CONSTRAINT preview_preparations_state_check CHECK (state IN (
+      'claimed', 'starting', 'skipped', 'superseded', 'no-change', 'not-captured', 'no-preview',
+      'session-ended', 'stopped', 'refused', 'running', 'started'
+    )),
+    ADD CONSTRAINT preview_preparations_note_check CHECK (note IN ('setup-inputs-changed')),
+    ADD CONSTRAINT preview_preparations_service_facts CHECK (CASE
+      WHEN state IN ('starting', 'stopped', 'running', 'started') THEN service_name IS NOT NULL
+      WHEN state = 'refused' THEN true
+      ELSE service_name IS NULL
+    END)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4841,4 +4867,5 @@ export const migrations = {
   "0166_worktree_removal": worktreeRemovalMigration,
   "0167_project_retention": projectRetentionMigration,
   "0168_turn_dispatch_attempt": turnDispatchAttemptMigration,
+  "0170_drop_recipe_approvals": dropRecipeApprovalsMigration,
 };

@@ -1,5 +1,4 @@
 import {
-  RecipeSpec,
   type ServiceDeclarations,
   type ServiceRecipe,
   type SetupDeclaration,
@@ -18,10 +17,6 @@ export const canonicalJson = (value: Canonical): string => {
 
 export const RECIPE_DIGEST_PREFIX = "mend-recipe/v1\0";
 
-/**
- * ADR 0017, decision log 4. Each dependency counts by its own digest, so that editing `db`'s
- * command changes the digest of a `web` that depends on it.
- */
 export const recipeDigest = (input: {
   readonly command: string | null;
   readonly cwd: string | null;
@@ -74,25 +69,4 @@ export const recipeDigestsOf = (declarations: ServiceDeclarations): ReadonlyMap<
   };
   for (const recipe of runnable.values()) digestOf(recipe);
   return digests;
-};
-
-export const recipeSpecOf = (
-  recipe: ServiceRecipe,
-  setup: SetupDeclaration | null,
-  digests: ReadonlyMap<string, string>,
-): RecipeSpec | null => {
-  if (recipe.command === null) return null;
-  const depends: Array<{ readonly name: string; readonly digest: string }> = [];
-  for (const name of recipe.depends) {
-    const digest = digests.get(name);
-    if (digest === undefined) return null;
-    depends.push({ name, digest });
-  }
-  return new RecipeSpec({
-    argv: ["sh", "-c", recipe.command],
-    cwd: recipe.cwd,
-    env: recipe.env,
-    depends,
-    setup: setupOf(recipe, setup),
-  });
 };

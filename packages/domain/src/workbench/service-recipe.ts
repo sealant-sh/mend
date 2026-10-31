@@ -162,54 +162,10 @@ export class SetupDeclaration extends Schema.Class<SetupDeclaration>("SetupDecla
   inputs: Schema.Array(RepoRelativePath),
 }) {}
 
-/**
- * ADR 0017, decision log 4: an approval keeps this, so an automatic start can run the approved
- * version after a turn changed the file.
- */
-export class RecipeSpec extends Schema.Class<RecipeSpec>("RecipeSpec")({
-  argv: Schema.NonEmptyArray(Schema.String),
-  cwd: Schema.NullOr(RepoRelativePath),
-  env: RecipeEnv,
-  depends: Schema.Array(Schema.Struct({ name: Schema.String, digest: Schema.String })),
-  setup: Schema.NullOr(SetupDeclaration),
-}) {}
-
-export interface RecipeApproval {
-  readonly serviceName: string;
-  readonly digest: string;
-  readonly approvedBy: string;
-  readonly approvedAt: Date;
-  readonly spec: RecipeSpec;
-}
-
-/**
- * Where a recipe's digest stands against its approval: the one approved, a changed one (an
- * automatic start runs the approved version), or never approved (an automatic start refuses).
- */
-export const RecipeApprovalState = Schema.Literals(["approved", "changed", "unapproved"]);
-export type RecipeApprovalState = typeof RecipeApprovalState.Type;
-
 export class RecipeDigestView extends Schema.Class<RecipeDigestView>("RecipeDigestView")({
   name: Schema.String,
   digest: Schema.String,
-  state: RecipeApprovalState,
-  approvedBy: Schema.NullOr(Schema.String),
 }) {}
-
-export const recipeApprovalStateOf = (
-  digest: string,
-  approval: Pick<RecipeApproval, "digest"> | undefined,
-): RecipeApprovalState =>
-  approval === undefined ? "unapproved" : approval.digest === digest ? "approved" : "changed";
-
-export const recipeChangedLine = (name: string): string =>
-  `${name} · recipe changed · the owner's Start runs it`;
-
-export const recipeUnapprovedLine = (name: string): string =>
-  `${name} · recipe not approved · the owner's Start runs it`;
-
-export const ServiceLaunchSource = Schema.Literals(["recipe", "command"]);
-export type ServiceLaunchSource = typeof ServiceLaunchSource.Type;
 
 /** `[preview]`: the Service a worktree's preview shows. */
 export class PreviewDeclaration extends Schema.Class<PreviewDeclaration>("PreviewDeclaration")({
@@ -230,7 +186,7 @@ export class ServiceDeclarations extends Schema.Class<ServiceDeclarations>("Serv
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
-  /** Each runnable recipe with a command: its digest, and its approval in this worktree. */
+  /** Each runnable recipe with a command, and its digest. */
   digests: Schema.Array(RecipeDigestView).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed([])),
     Schema.withConstructorDefault(Effect.succeed([])),
@@ -322,7 +278,6 @@ export interface ServiceLaunch {
   readonly env: RecipeEnv;
   readonly ready: RecipeReady;
   readonly depends: ReadonlyArray<string>;
-  readonly source: ServiceLaunchSource | "unrecorded";
 }
 
 /** An explicit `mend service run` and an attempt from before 0143 launch this way. */
@@ -331,5 +286,4 @@ export const DEFAULT_SERVICE_LAUNCH: ServiceLaunch = {
   env: {},
   ready: DEFAULT_RECIPE_READY,
   depends: [],
-  source: "unrecorded",
 };

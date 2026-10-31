@@ -114,7 +114,9 @@ without a restart. So in a terminal session only the owner types, even while con
 - **Shells and commands are the owner's.** `openShell`, `runService` and `runServiceRecipe` require
   the owner. A shell or a command runs on whatever login the workspace holds, so a steerer's would
   spend the owner's. A steerer still restarts and stops running Services, adopts a listening port,
-  and stores an image for a conversation's turn.
+  and stores an image for a conversation's turn. A preview's start after a turn is not one of these
+  commands: it runs the recipe as the turn's sender, whoever changed it (ADR 0017, decision log 4,
+  reversed 2026-10-31).
 - **Starting a terminal with someone's words is typing.** A launch other than `protocol` (a verbatim
   `argv` included), a resume that reopens a terminal, and a review follow-up to a session whose
   agent is not a conversation require the owner. The engine refuses a follow-up that would start a

@@ -193,9 +193,8 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
           env: { WP_ENV: "local" },
           ready: { _tag: "Http", path: "/wp-login.php", timeoutMs: 120_000 },
           depends: ["db", "cache"],
-          source: "recipe",
         });
-        const command = yield* attempt({ ...DEFAULT_SERVICE_LAUNCH, source: "command" });
+        const command = yield* attempt(DEFAULT_SERVICE_LAUNCH);
         const explicit = yield* attempt(null);
         yield* sql`
           INSERT INTO services (id, session_id, name, declaration_source, workspace_port)
@@ -204,7 +203,7 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
           service: (yield* services.byId(service.id)) ?? null,
           older: (yield* services.byId(ServiceId.make("svc-older"))) ?? null,
           launch: yield* processes.launchOf(launched.id),
-          command: (yield* processes.launchOf(command.id))?.source,
+          command: yield* processes.launchOf(command.id),
           explicit: yield* processes.launchOf(explicit.id),
         };
       }),
@@ -219,9 +218,8 @@ describe.skipIf(postgres.skip)("Services that keep a workspace up, in Postgres",
       env: { WP_ENV: "local" },
       ready: { _tag: "Http", path: "/wp-login.php", timeoutMs: 120_000 },
       depends: ["db", "cache"],
-      source: "recipe",
     });
-    expect(result.command).toBe("command");
+    expect(result.command).toEqual(DEFAULT_SERVICE_LAUNCH);
     expect(result.explicit, "an attempt with no recorded launch").toBeNull();
   });
 });

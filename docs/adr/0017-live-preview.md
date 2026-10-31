@@ -306,10 +306,12 @@ GET  https://k7f2….<preview domain>/pricing                 no grant cookie, a
     so Mend has none of it. It is lost unless the browser kept it: Back may restore a form's fields,
     and an app's own `fetch` sees the 503 and decides for itself. This is the one remaining case in
     which a write is lost, and the page says so plainly.
-  - **Who it runs as.** A start from a held request runs the approved recipe digest as its last
-    starter, exactly as an owner's **Start** does, and one start runs however many requests arrive.
-    Starts count against a wake budget per account. A preview a person stopped with **Stop** is not
-    started by a request, and the request gets a page that says who stopped it (Decision log 6).
+  - **Who it runs as.** A start from a held request runs the recipe as whoever last started it or
+    last changed its recipe, and one start runs however many requests arrive. (Superseded
+    2026-10-31: this first said it ran "the approved recipe digest as its last starter, exactly as
+    an owner's **Start** does". Decision log 4 is reversed.) Starts count against a wake budget per
+    account. A preview a person stopped with **Stop** is not started by a request, and the request
+    gets a page that says who stopped it (Decision log 6).
 - **The phone.** The Mend app mints the ticket with its device token and opens the preview host in
   an in-app browser (`expo-web-browser`), so the person does not sign in again. The `/tty-embed`
   ticket flow is the precedent (`apps/mobile/src/components/ghostty-terminal.tsx:232-298`). A link
@@ -387,15 +389,17 @@ the proposal's reading of "after the agent is done". A question changes nothing 
   conversation tables, until a mode switch backfills them. Terminal sessions get the trigger in a
   later step, from their completion hook written to a durable row.
 - **Not running:** setup if its fingerprint changed, then `depends`, then the Service, then the HTTP
-  readiness check. **Running:** nothing, because hot reload already has the change.
-- **Command authority stays ADR 0013's.** A recipe is a command, and the worktree's copy can be
-  edited by any turn. So the owner approves a **recipe digest**: a hash over the Service's command,
-  cwd, env, `depends`, and the `[setup]` steps and inputs that it runs. An automatic start or
-  restart runs only an approved digest. When a turn changes the digest, the preview keeps running
-  the approved version and says `preview · recipe changed · the owner's Start runs it`. The owner's
-  Start approves the new digest. A steerer may restart the approved digest, the right a steerer has
-  today. A steerer's turn never starts a changed command under the owner's name. Setup and the
-  Service run as the person the Service runs as, which is the person who last started it (ADR 0016).
+  readiness check. **Running:** nothing, because hot reload already has the change, unless the turn
+  changed the Service's command, `cwd`, `env` or `depends`. Hot reload never picks those up, so the
+  preview's Service stops and starts again from the file, setup first if its fingerprint changed. A
+  running dependency is reused as it runs.
+- **Any recipe runs, whoever added or changed it.** A recipe start reads the worktree's `mend.toml`
+  as it is now, for the owner's **Start**, the agent's own start, a turn's start and a restart
+  alike. Nobody spends another person's login: a turn's start or restart runs as the turn's sender,
+  a **Start** as the person who pressed it, and a wake as whoever last started the preview or last
+  changed its recipe (ADR 0016). (Superseded 2026-10-31: this bullet first said that command
+  authority stays ADR 0013's, that the owner approves a recipe digest, and that an automatic start
+  or restart runs only an approved digest. Decision log 4 is reversed.)
 
 ### Where the link shows up
 
@@ -925,7 +929,14 @@ may overturn any of them without touching the rest.
    most domain options, and the rule costs nothing under the rest.
 4. **Automatic runs only of a recipe digest the owner approved.** Taken, to keep ADR 0013's command
    rule while any turn can edit `mend.toml`. Rejected: running the edited recipe on a steerer's
-   turn.
+   turn. **Reversed by Yiannis, 2026-10-31:** "No matter who added the recipe, it should always be
+   able to run … There is no good reason when someone can just go to the webapp and press start to
+   not be able to do the same via their agent, in any interface (including slack). So this behaviour
+   shouldn't exist under any circumstances." A recipe start runs the file as the worktree has it,
+   and runs as the person who caused it: a turn's sender, the person who pressed **Start**, or, for
+   a wake, whoever last started the preview or last changed its recipe. A running preview whose
+   recipe changed starts again after the turn. Migration `0170_drop_recipe_approvals` drops the
+   approvals. The recipe digest stays, listed by `GET /sessions/:id/declarations`.
 5. **A stop ends the preview's Service, never its stateful dependencies.** Taken, so that what a
    reviewer typed into the app survives.
 6. **A preview a person stopped is not started by a request.** Decided by Yiannis, 2026-10-25, as

@@ -179,8 +179,8 @@ add a recipe as part of its change and Review shows that edit.
 
 **Nothing autostarts.** Declaring, claiming a hot workspace, resuming and reconnecting start no
 Service. The one start Mend makes on its own is when it replaces an executor: it starts again the
-recipe Services that were running in the one it replaced, each as the person who last started it and
-only at a digest its owner approved (below).
+recipe Services that were running in the one it replaced, each as the person who last started it,
+from the file as it reads now (below).
 
 Transport and browser behavior are separate. `protocol` remains `tcp | udp`; `browserScheme` is
 optional `http | https`. Mend shows Open only when a browser scheme exists. Other Services show Copy
@@ -314,59 +314,27 @@ its setup went too, so `mend service run` says a refused `[setup]` it went on wi
 
 **What a restart runs.** An attempt records its command, `cwd`, the recipe's `env` and its `ready`
 rule. A restart replays those, never the file as it reads now, so a turn that edited `mend.toml`
-changes nothing until a new start. `PORT`, `MEND_PREVIEW_URL`, the dependencies' addresses and the
-person's names are worked out again at each start. A steerer's restart of a recipe runs its approved
-version instead, as the next section says.
+changes nothing until a new start, except for the preview, which a changed turn starts again
+(below). `PORT`, `MEND_PREVIEW_URL`, the dependencies' addresses and the person's names are worked
+out again at each start.
 
-**Who approves a recipe.** A recipe is a command, and any turn can edit `mend.toml`. So Mend keeps,
-for each worktree, Service name and session owner, the recipe digest that owner last started, with
-what it runs (`recipe_approvals`; ADR 0017, decision log 4). Only an approved digest starts without
-the owner.
+**Who runs a recipe.** Any recipe runs, whoever added or changed it (ADR 0017, decision log 4,
+reversed 2026-10-31). Every start reads `mend.toml` as the worktree has it now: the owner's Start,
+the agent's own start, a turn's start, Mend's start after an executor replacement and a restart
+alike. A recipe runs as the person who caused it, so nobody spends another person's login: the
+person who pressed Start, a turn's sender, and for a wake whoever last started the preview or last
+changed its recipe. `services.started_by` records it.
 
-- The digest is the sha256 of `mend-recipe/v1\0` followed by the canonical JSON (keys sorted, no
-  whitespace) of the recipe's `command`, `cwd`, `env`, `depends` and `setup`. `depends` lists each
-  dependency's own digest, so editing `db`'s command changes the digest of a `web` that depends on
-  `db`. `setup` is the `[setup]` `run` and `inputs` that a start of the recipe runs, or null for an
-  adopt-only recipe. `port`, `protocol`, `browserScheme`, `host`, `address` and `ready` change no
-  command, so the digest leaves them out. Setup's inputs count by their paths, not their bytes: a
-  changed lockfile runs setup again and needs no new approval.
-- The owner's start approves. A start of a recipe by the session's owner (`mend service run <name>`,
-  the web, the phone) records the digest of every recipe in its plan, with the owner as
-  `approved_by` and each dependency's digest beside its name, before anything of it runs.
-- The agent's own start, through its session channel, runs the file as it reads now and approves
-  nothing.
-- Every other start runs only what the session's owner approved: Mend's own (an executor
-  replacement's, and later the preview's wake) and a start by anyone but the owner. Another person's
-  approval in the same worktree, from their own session, never runs for this one.
-- Such a start runs approvals as one graph. Each recipe with a command runs its approved command,
-  `cwd` and `env`, with `port`, `ready`, `host` and `address` from the file. A recipe whose digest
-  changed since, or that a turn left without its command, runs its approved version, and the start
-  says `web · recipe changed · the owner's Start runs it`. A recipe that was never approved is
-  refused: `web · recipe not approved · the owner's Start runs it`. An adopt-only recipe runs
-  nothing, so it needs no approval.
-- Each dependency runs at the digest its dependent was approved with. If the owner approved `db`
-  again on its own since, the start is refused:
-  `web · its approved version runs with a db the owner has approved again since · the owner's Start runs it`.
-  The approved graph is followed, not the file's: a dependency a turn added to `depends`, even one
-  that `mend.toml` now refuses, is never started.
-- `[setup]` is the one every approval in the plan names. Approvals that name different setups are
-  refused, and so is a `[setup]` that `mend.toml` refuses.
-- A dependency already running is used only if its attempt runs the launch its approval names: the
-  same command, `cwd`, `env` and dependencies. Otherwise the start is refused and the running
-  Service is left as it is:
-  `db did not start, so web was not started · the running db is not the version its approval names, and is left running`.
-- A restart is decided by the attempt it replaces. Each attempt records what launched it: a recipe
-  or a command. A steerer's restart of a recipe's attempt runs the approved version, never the
-  attempt, which a turn may have started from an edited file, and only beside dependencies that run
-  their approved launch. A command's attempt is replayed, whichever recipe the Service ran before.
-  An attempt from before Mend recorded what launched it is refused. The owner's restart and the
-  agent's replay the attempt.
-- `GET /sessions/:id/declarations` lists each runnable recipe that has a command, with its digest,
-  whether the session's owner approved it (`approved`, `changed` or `unapproved`), and who approved
-  it. `mend service restart` says `recipe changed` when a restart ran the approved version. Mend's
-  own start after an executor replacement says it in the server log.
-- Nothing is approved by an upgrade: after it, an automatic start of a recipe is refused until its
-  owner starts it once. Removing a worktree removes its approvals.
+- Each runnable recipe with a command has a digest: the sha256 of `mend-recipe/v1\0` followed by the
+  canonical JSON (keys sorted, no whitespace) of its `command`, `cwd`, `env`, `depends` and `setup`.
+  `depends` lists each dependency's own digest, so editing `db`'s command changes the digest of a
+  `web` that depends on `db`. `setup` is the `[setup]` `run` and `inputs` that a start of the recipe
+  runs, or null for an adopt-only recipe. `port`, `protocol`, `browserScheme`, `host`, `address` and
+  `ready` change no command, so the digest leaves them out. `GET /sessions/:id/declarations` lists
+  each one with its digest.
+- A restart replays the attempt it replaces, whoever asks.
+- Migration `0170_drop_recipe_approvals` drops the approvals Mend kept before, with each attempt's
+  launch source.
 
 **The preview after a turn.** When a turn in a protocol session completes having changed the
 worktree, in a project whose `mend.toml` names a `[preview]`, Mend starts that preview unless
@@ -381,11 +349,13 @@ something already runs it (ADR 0017, "After the agent is done").
   capture, records `preview not prepared · change not captured`, never "no change". A question that
   changed nothing starts nothing, and Mend reads `mend.toml` only once a turn changed something.
 - Not running: setup if its fingerprint changed, then each `depends`, then the Service, then its
-  ready check. It is an automatic start, so it runs only the owner's approved digest, as the person
-  who last started the Service. A changed digest runs the approved version and the preview says
-  `preview · web · recipe changed · the owner's Start runs it`.
-- Running: nothing. Hot reload has the change. When the turn changed `[setup]`'s inputs, the preview
-  says `setup inputs changed · restart to apply`. Mend never restarts it by itself.
+  ready check, from the file as the turn left it, as the turn's sender. A turn with no recorded
+  sender runs it as the person who last started the Service.
+- Running: nothing, since hot reload has the change, unless the turn changed the Service's command,
+  `cwd`, `env` or `depends`. Then the Service stops and starts again from the file, as the turn's
+  sender, setup first if its fingerprint changed; a running dependency is reused as it runs. When
+  the turn changed only `[setup]`'s inputs, the preview says
+  `setup inputs changed · restart to apply`.
 - A person's Stop holds, a Stop of a start whose setup still runs included (the start's Stop, or
   Stop Services): it holds on the preview before the Service has a row. The agent's own
   `mend service stop` does not hold it.
@@ -404,13 +374,11 @@ something already runs it (ADR 0017, "After the agent is done").
   attempt of its Service began after it. The lines are `previewStatusLine`'s, the same on every
   surface: `preview · web · answered HTTP 200 · observed 4 s ago`,
   `preview · web · starting · setup`, `preview · web · stopped by Maria`,
-  `preview not prepared · web · recipe not approved · the owner's Start runs it`.
+  `preview not prepared · web · setup failed`.
 
-It never starts a recipe the owner did not approve, a preview a person stopped, or anything for a
-question, and it never restarts a running preview. Its limits until later delivery steps:
+It never starts a preview a person stopped, or anything for a question, and it restarts a running
+preview only for a changed command. Its limits until later delivery steps:
 
-- The first preview needs the owner's Start: until then the line says
-  `preview not prepared · web · recipe not approved · the owner's Start runs it`.
 - A session that ended before its turn was prepared is not started: the line says
   `preview not prepared · session ended`. Step 12 starts a workspace for Services alone.
 - A Service started this way holds the protocol idle stop, as any running Service does, until step
@@ -419,8 +387,8 @@ question, and it never restarts a running preview. Its limits until later delive
   only sessions that have not ended.
 - Terminal sessions' turns, including history a mode switch copies in, start nothing (step 13).
 - The web Open on an ended Service row goes through the gateway, whose start on a request (step 7)
-  runs the Service's last command without the recipe approval a turn's preparation asks for, until
-  step 12. Any request to the preview's address does the same, so the link adds no reach.
+  runs the Service's last command as whoever last started it, until step 12. Any request to the
+  preview's address does the same, so the link adds no reach.
 
 Project recipes, the machine-local ones the web app adds, keep their four fields: no `cwd`, `env`,
 `ready`, `host`, `address` or `depends`.
