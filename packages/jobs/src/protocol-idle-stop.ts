@@ -12,6 +12,7 @@ import {
   DEFAULT_PROTOCOL_IDLE_STOP_MINUTES,
   idleStopSummary,
   isLiveProcess,
+  isWakeShell,
   protocolIdleReading,
   protocolIdleStopDue,
   screenHeldByPerson,
@@ -54,10 +55,11 @@ export const protocolIdleStopMinutes = Config.Int("MEND_PROTOCOL_IDLE_STOP_MINUT
   Config.withDefault(DEFAULT_PROTOCOL_IDLE_STOP_MINUTES),
 );
 
-/** The live protocol agent a session's idle reading concerns, or null for any other session. */
+/** The live protocol agent, or a wake shell when no agent runs in the workspace. */
 const liveProtocolAgent = (rows: ReadonlyArray<SessionProcess>): SessionProcess | null => {
   const agent = currentAgentProcess(rows);
-  return agent !== null && agent.kind === "agent-protocol" && isLiveProcess(agent) ? agent : null;
+  if (agent !== null && isLiveProcess(agent)) return agent.kind === "agent-protocol" ? agent : null;
+  return rows.find((row) => isWakeShell(row) && isLiveProcess(row)) ?? null;
 };
 
 const screenLive = (rows: ReadonlyArray<SessionProcess>): boolean =>
@@ -101,7 +103,9 @@ export const ProtocolIdleStopLive: Layer.Layer<
         turns: yield* conversations.listTurns(session.id),
         requests: yield* conversations.listRequests(session.id, false),
         liveServices,
-        tasks: yield* conversations.taskActivity(agent.id),
+        tasks: isWakeShell(agent)
+          ? { running: 0, lastUpdatedAt: null }
+          : yield* conversations.taskActivity(agent.id),
         screenHeld: screen !== null && screenHeldByPerson(screen.input),
       };
       if (!protocolIdleStopDue(protocolIdleReading(facts), nowMs, minutes)) return false;

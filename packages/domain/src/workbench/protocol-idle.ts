@@ -1,6 +1,6 @@
 import { OPEN_AGENT_TURN_STATUSES, type AgentRequest, type AgentTurn } from "./agent-protocol.ts";
 import { currentAgentProcess, isLiveProcess } from "./session-fold.ts";
-import type { SessionProcess } from "./session-process.ts";
+import { isWakeShell, type SessionProcess } from "./session-process.ts";
 
 /**
  * The idle stop (docs/SELF-HOSTING.md, "Idle agents"): a protocol agent stays up
@@ -77,7 +77,10 @@ const latest = (dates: ReadonlyArray<Date | null>): Date | null =>
 export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReading => {
   if (facts.session.settledAt !== null) return { kind: "not-protocol" };
   const agent = currentAgentProcess(facts.processes);
-  if (agent === null || agent.kind !== "agent-protocol" || !isLiveProcess(agent)) {
+  const wakeOnly =
+    facts.processes.some((process) => isWakeShell(process) && isLiveProcess(process)) &&
+    (agent === null || !isLiveProcess(agent));
+  if (!wakeOnly && (agent === null || agent.kind !== "agent-protocol" || !isLiveProcess(agent))) {
     return { kind: "not-protocol" };
   }
   if (facts.turns.some((turn) => OPEN_AGENT_TURN_STATUSES.has(turn.status))) {
@@ -88,7 +91,11 @@ export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReadi
     return { kind: "held", by: "request" };
   }
   if (facts.liveServices > 0) return { kind: "held", by: "services" };
-  if (facts.processes.some((process) => process.kind === "shell" && isLiveProcess(process))) {
+  if (
+    facts.processes.some(
+      (process) => process.kind === "shell" && !isWakeShell(process) && isLiveProcess(process),
+    )
+  ) {
     return { kind: "held", by: "shell" };
   }
   if (facts.screenHeld === true) return { kind: "held", by: "screen" };

@@ -185,6 +185,9 @@ import {
   isAgentProcessKind,
   isLiveAgentProcess,
   isLiveProcess,
+  isWakeShell,
+  isWorkspaceWakeLaunch,
+  workspaceWakeLaunchId,
   agentProcessOutcome,
   type SessionProcessKind,
   type ServiceBrowserScheme,
@@ -3191,11 +3194,25 @@ export class SessionEngine extends Context.Service<
       | DotfilesResolveError
     >;
     /**
-     * Open the session's workspace with no agent in it: its owner's login shell holds it, and is
-     * what the session's terminal attaches to. Admitted under the session's launch gate, and only
-     * for a session nothing was ever launched for; any other, or one another launch verb holds,
-     * is answered as it stands and nothing is settled. Capture mode only.
+     * Restore a stopped workspace with an attachable wake shell, no agent or turn.
+     * A live workspace is reused. Concurrent launches refuse with `session_starting`.
+     * Wake shells do not hold the idle stop; `runsAs` defaults to the session owner.
      */
+    readonly wakeWorkspace: (
+      sessionId: SessionId,
+      options: { readonly reason: "screen" | "preview"; readonly runsAs?: string },
+    ) => Effect.Effect<
+      Session,
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | LegacyBenchReadOnlyError
+      | ProjectNotFoundError
+      | SealantPlatformError
+      | HarnessStateError
+      | SessionLaunchSetupError
+      | DotfilesResolveError
+    >;
+    /** Hold a never-launched session with its owner's ordinary shell. */
     readonly holdWorkspace: (
       sessionId: SessionId,
       slot: LaunchSlot,
@@ -5905,7 +5922,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (discards.has(workspaceId)) return false;
         if (queueClosed.has(workspaceId)) return false;
         const processLeases = (yield* processes.listLiveForWorkspace(workspaceId)).filter(
-          (process) => holdsWorkspace(process.kind),
+          (process) => holdsWorkspace(process.kind) && !isWakeShell(process),
         );
         const forwardLeases = (yield* serviceForwards.listOpen()).filter(
           (forward) => forward.sealantWorkspaceId === workspaceId,
@@ -6395,8 +6412,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: SealantWorkspaceId,
       ) {
         return (
-          (yield* processes.listLiveForWorkspace(workspaceId)).filter((process) =>
-            holdsWorkspace(process.kind),
+          (yield* processes.listLiveForWorkspace(workspaceId)).filter(
+            (process) => holdsWorkspace(process.kind) && !isWakeShell(process),
           ).length +
           (yield* serviceForwards.listOpen()).filter(
             (forward) => forward.sealantWorkspaceId === workspaceId,
@@ -7864,7 +7881,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // A correlation id a process already carries is spent (one process per id): the
           // relaunch plan takes the fresh one before the old executor drains (`launchInternal`).
           const correlation =
-            correlated === null ? plan.launchCorrelationId : `relaunch:${crypto.randomUUID()}`;
+            correlated === null
+              ? plan.launchCorrelationId
+              : isWorkspaceWakeLaunch(plan.launchCorrelationId)
+                ? `${plan.launchCorrelationId}:${crypto.randomUUID()}`
+                : `relaunch:${crypto.randomUUID()}`;
           // The harness's saved state when there is one; a process that ended before anything
           // harvested it leaves none, and the opening prompt still goes (a protocol start resumes
           // by its own id).
@@ -10641,7 +10662,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* closeWorkspaceServiceForwards(workspaceId);
           } else {
             const processLeases = (yield* processes.listLiveForWorkspace(workspaceId)).filter(
-              (process) => holdsWorkspace(process.kind),
+              (process) => holdsWorkspace(process.kind) && !isWakeShell(process),
             );
             const forwardLeases = (yield* serviceForwards.listOpen()).filter(
               (forward) => forward.sealantWorkspaceId === workspaceId,
@@ -17563,6 +17584,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             sealantSessionId: agent.sealantSessionId,
             sealantRunId: agent.sealantRunId ?? null,
             kind: "shell",
+            launchCorrelationId: agent.launchCorrelationId ?? null,
             label: "shell 1",
             argv: agent.argv,
             runsAs: agent.runsAs ?? null,
@@ -17600,8 +17622,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const launchInternalBody = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
-        plan: LaunchPlan,
+        requested: LaunchPlan,
       ) {
+        const waking = isWorkspaceWakeLaunch(requested.launchCorrelationId);
+        const plan: LaunchPlan = waking ? { ...requested, role: "hold", state: null } : requested;
         const {
           argv,
           nativeImport,
@@ -17670,7 +17694,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A bash launch (shell session, shell resume) is an open workbench:
         // shape by what actually launches, not the session's harness identity.
         const shapedAs = argv[0] === "bash" ? "shell" : session.harness;
-        const selectedOnly = yield* selectedOnlyOf(session.ownerUserId, shapedAs);
+        const selectedOnly = yield* selectedOnlyOf(
+          waking ? (plan.protocolAuthor ?? session.ownerUserId) : session.ownerUserId,
+          shapedAs,
+        );
         const shape = platformShape(shapedAs, selectedOnly);
         // An explicit null skips both the read and the restore (a shell
         // resume tolerates a session that never harvested state).
@@ -17785,9 +17812,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ),
             ),
           );
-        // Everything runs as the OWNER: the account stamped at provision. A session with no owner
-        // has nobody to act as and never borrows another account (docs/adr/0003).
-        const ownerUserId = session.ownerUserId;
+        // Agent launches use the session owner. A wake may name its initiating account;
+        // neither borrows an account when none is recorded.
+        const ownerUserId = waking
+          ? (plan.protocolAuthor ?? session.ownerUserId)
+          : session.ownerUserId;
         if (ownerUserId === null) {
           return yield* settleOnFailure(
             Effect.fail(
@@ -18107,7 +18136,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               executorStartedAt,
               launch,
             );
-            yield* workspaceCaller.recorded(workspace.id, session.ownerUserId);
+            yield* workspaceCaller.recorded(workspace.id, ownerUserId);
             yield* noteExecutorResource(sessionId, workspace);
           });
         const abandonExecutor = (workspace: Workspace, message: string) =>
@@ -18190,7 +18219,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             abandon: abandonExecutor,
             launchId: key,
             watchCreate: watchLaunchPhase(sessionId),
-            warmHarness: session.harness,
+            ...(waking ? {} : { warmHarness: session.harness }),
             ...(capture === null
               ? {}
               : {
@@ -18363,7 +18392,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   launchEndWords(failure === undefined ? message : failure),
                 ).pipe(Effect.ignore),
               abandon: abandonExecutor,
-              warmHarness: session.harness,
+              ...(waking ? {} : { warmHarness: session.harness }),
               ...(launchLayout.layout === "person" ||
               (launchLayout.layout === "shared" && launchLayout.recorded)
                 ? {
@@ -21625,7 +21654,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           const held =
             (yield* processes.listLiveForWorkspace(workspaceId)).filter(
-              (process) => holdsWorkspace(process.kind) && !ending.has(process.id),
+              (process) =>
+                holdsWorkspace(process.kind) && !isWakeShell(process) && !ending.has(process.id),
             ).length +
             (yield* serviceForwards.listOpen()).filter(
               (forward) => forward.sealantWorkspaceId === workspaceId,
@@ -22535,6 +22565,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* new SessionNotLiveError({ sessionId: session.id });
         }
         return workspace;
+      });
+
+      /** Bring back only the workspace and an attachable, non-holding wake shell. */
+      const wakeWorkspace = Effect.fn("SessionEngine.wakeWorkspace")(function* (
+        sessionId: SessionId,
+        options: { readonly reason: "screen" | "preview"; readonly runsAs?: string },
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const starter = options.runsAs ?? session.ownerUserId;
+        const launch = () =>
+          launchInternal(sessionId, {
+            ...HOLD_LAUNCH,
+            launchCorrelationId: workspaceWakeLaunchId(options.reason, crypto.randomUUID()),
+            protocolAuthor: starter,
+          });
+        yield* workspaceForSupportingProcess(session).pipe(
+          Effect.catchTags({
+            SessionNotLiveError: launch,
+            SealantPlatformError: (error) =>
+              workspaceMissing(error) ? launch() : Effect.fail(error),
+          }),
+          asSealantUser(starter),
+        );
+        return yield* sessions.byId(sessionId);
       });
 
       /**
@@ -27467,6 +27521,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         flushCaptures: (sessionId, why) => owned(sessionId)(flushCaptures(sessionId, why)),
         stop: (sessionId, summary) => owned(sessionId)(stop(sessionId, summary ?? null)),
         openShell: (sessionId, openedBy) => owned(sessionId)(openShell(sessionId, openedBy)),
+        wakeWorkspace: (sessionId, options) =>
+          oneLaunch(sessionId)(wakeWorkspace(sessionId, options)),
         startScreen: (sessionId) => owned(sessionId)(screenProcess.start(sessionId)),
         stopScreen: (sessionId, reason) => owned(sessionId)(screenProcess.stop(sessionId, reason)),
         screenPasswords: (sessionId) => Effect.sync(() => screenPasswords.of(sessionId)),

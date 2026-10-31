@@ -8,7 +8,11 @@ import {
   protocolIdleStopDue,
   type ProtocolIdleFacts,
 } from "../src/workbench/protocol-idle.ts";
-import { SessionProcess, type SessionProcessKind } from "../src/workbench/session-process.ts";
+import {
+  workspaceWakeLaunchId,
+  SessionProcess,
+  type SessionProcessKind,
+} from "../src/workbench/session-process.ts";
 
 const T0 = new Date("2026-09-26T10:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -201,5 +205,26 @@ describe("protocolIdleStopDue", () => {
   it("words the stop with the configured minutes", () => {
     expect(idleStopSummary(15)).toBe("idle · stopped after 15 min · reply to resume");
     expect(idleStopSummary(30)).toBe("idle · stopped after 30 min · reply to resume");
+  });
+});
+
+it("a wake shell allows idle stop without an agent, while an ordinary shell still holds it", () => {
+  const shell = new SessionProcess({
+    ...process("shell", true),
+    launchCorrelationId: workspaceWakeLaunchId("screen", "one"),
+  });
+  const facts = idleFacts({ processes: [shell], turns: [] });
+  const reading = protocolIdleReading(facts);
+  expect(reading).toEqual({ kind: "idle", since: T0 });
+  expect(protocolIdleStopDue(reading, at(15).getTime(), 15)).toBe(true);
+  expect(
+    protocolIdleReading({
+      ...facts,
+      processes: [shell, process("shell", true, { id: "ordinary" })],
+    }),
+  ).toEqual({ kind: "held", by: "shell" });
+  expect(protocolIdleReading({ ...facts, liveServices: 1 })).toEqual({
+    kind: "held",
+    by: "services",
   });
 });

@@ -20,6 +20,7 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import {
+  workspaceWakeLaunchId,
   AgentRequest,
   AgentTurn,
   Session,
@@ -411,4 +412,16 @@ describe("the protocol idle stop", () => {
     expect(w.state.idleStoppedAt).toBeNull();
     expect(w.state.control).toEqual([]);
   });
+});
+
+it("the idle worker stops a screen wake with no agent or turn", async () => {
+  const w = world({ turns: [] });
+  w.state.processes = [
+    new SessionProcess({
+      ...processRow("shell", true),
+      launchCorrelationId: workspaceWakeLaunchId("screen", "one"),
+    }),
+  ];
+  expect(await w.sweep(w.worker())).toEqual([SESSION]);
+  expect(w.state.session.status).toBe("stopped");
 });
