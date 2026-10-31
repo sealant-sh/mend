@@ -45,7 +45,9 @@ export interface ResourceScope {
     },
   ) => Effect.Effect<ScopeExecResult, SealantPlatformError>;
   /** Stop it and remove its container; every volume stays. */
-  readonly archive: (key: string) => Effect.Effect<void, SealantPlatformError>;
+  readonly archive: (
+    key: string,
+  ) => Effect.Effect<ReadonlyArray<ScopeArchivedVolume>, SealantPlatformError>;
   /** Archives every instance and unlinks every workspace; all volumes stay. */
   readonly archiveScope: () => Effect.Effect<
     ReadonlyArray<ScopeArchivedVolume>,
@@ -124,7 +126,8 @@ export const ResourceScopesLive: Layer.Layer<ResourceScopes, never, SealantEnv> 
               ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
             }),
           ),
-        archive: (key) => wrap(() => client.instances.archive(key)).pipe(Effect.asVoid),
+        archive: (key) =>
+          wrap(() => client.instances.archive(key)).pipe(Effect.map((answer) => answer.volumes)),
         link: (workspaceId, worktreeKey) =>
           wrap(() => client.workspaces.link(workspaceId, { worktreeKey })).pipe(Effect.asVoid),
       };
