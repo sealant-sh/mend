@@ -83,3 +83,4 @@ export * from "./repos/screens.ts";
 export * from "./repos/doppler.ts";
 
 export * from "./repos/resource-loads.ts";
+export * from "./repos/resource-archives.ts";

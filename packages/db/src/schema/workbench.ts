@@ -88,6 +88,7 @@ import type {
   ServiceHostPolicy,
 } from "@mend/domain/workbench";
 import {
+  ArchivedResourceVolume,
   AuditData,
   HotWorkspaceEnvironment,
   RecordLink,
@@ -187,7 +188,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { Schema } from "effect";
+import { Schema } from "effect";
 
 /**
  * Tie a jsonb column's TS shape to the schema that decodes it at the seam:
@@ -688,7 +689,7 @@ export const previewControls = pgTable("preview_controls", {
  * preset are copied out of it, and a CHECK in the migration holds them equal. `specDigest` is the
  * spec's digest when it was added, so a later Mend that reads the spec differently still matches
  * what its readers saw. `imageDigest` pins the image: the digest its tag resolved to when the
- * definition was added. The project is not deleted while one exists.
+ * definition was added. Deletion cascades only after the project archive has been recorded.
  */
 export const resourceDefinitions = pgTable(
   "resource_definitions",
@@ -697,7 +698,7 @@ export const resourceDefinitions = pgTable(
     projectId: text()
       .$type<ProjectId>()
       .notNull()
-      .references(() => projects.id, { onDelete: "restrict" }),
+      .references(() => projects.id, { onDelete: "cascade" }),
     name: text().notNull(),
     scope: text().$type<ResourceScope>().notNull(),
     preset: text().$type<ResourcePreset>(),
@@ -751,11 +752,33 @@ export const resourceOwnDatabases = pgTable(
       .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
     origin: text().$type<"empty" | "copied" | "loaded">().notNull(),
     madeAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    removalDumpName: text(),
+    removalDumpAt: timestamp({ mode: "date", withTimezone: true }),
+    removalCheckedAt: timestamp({ mode: "date", withTimezone: true }),
+    removedAt: timestamp({ mode: "date", withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.worktreeId, table.definitionId] }),
     index("resource_own_databases_definition_idx").on(table.definitionId),
   ],
+);
+
+/** An archive outlives its project. The inventory is saved before calling Sealant. */
+export const resourceArchives = pgTable(
+  "resource_archives",
+  {
+    projectId: text().$type<ProjectId>().primaryKey(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    projectName: text().notNull(),
+    createdByUserId: text(),
+    archivedAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    volumes: jsonbOf(Schema.Array(ArchivedResourceVolume)).notNull(),
+    complete: boolean().notNull().default(false),
+  },
+  (table) => [index("resource_archives_organization_idx").on(table.organizationId)],
 );
 
 /**

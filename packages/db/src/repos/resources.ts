@@ -3,6 +3,7 @@ import {
   changesWhatOwnIs,
   type ImageDigest,
   type OwnDatabaseOrigin,
+  type OwnDatabaseRemoval,
   pinImage,
   resourceDeclarationRefusals,
   ResourceDefinitionInput,
@@ -14,7 +15,7 @@ import {
   type SettingsDefinition,
   type WorktreeChoice,
 } from "@mend/domain/workbench";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -143,8 +144,7 @@ export class ResourcesRepo extends Context.Service<
     ) => Effect.Effect<StoredResourceDefinition | null>;
     /**
      * The names of the project's definitions, by name; a spec that no longer decodes is named too.
-     * Nothing archives a resource yet, so a project that has one is not removed (ADR 0019, step
-     * 4). A declaration made while the project's removal mark stands is refused, so a removal
+     * A declaration made while the project's removal mark stands is refused, so a removal
      * that took its mark first reads every name that will exist.
      */
     readonly declaredNames: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
@@ -163,6 +163,29 @@ export class ResourcesRepo extends Context.Service<
     readonly ownDatabases: (
       worktreeId: WorktreeId,
     ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, OwnDatabaseOrigin>>;
+    /** Removal progress, including rows whose worktree has gone. */
+    readonly ownDatabaseRemovals: (
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<ReadonlyArray<OwnDatabaseRemoval>>;
+    /** Reserves the same dump name and timestamp on every retry. */
+    readonly reserveRemovalDump: (
+      worktreeId: WorktreeId,
+      definitionId: ResourceDefinitionId,
+      dumpName: string,
+      at: Date,
+    ) => Effect.Effect<void>;
+    /** Records a checked dump before any database is dropped. */
+    readonly checkRemovalDump: (
+      worktreeId: WorktreeId,
+      definitionId: ResourceDefinitionId,
+      at: Date,
+    ) => Effect.Effect<void>;
+    /** Marks a database removed only after its checked dump was recorded. */
+    readonly removeOwnDatabase: (
+      worktreeId: WorktreeId,
+      definitionId: ResourceDefinitionId,
+      at: Date,
+    ) => Effect.Effect<void>;
     /** Records how an own database Mend made, or made again on a reset, began. */
     readonly recordOwnDatabase: (
       worktreeId: WorktreeId,
@@ -205,6 +228,12 @@ const toSelection = (row: SelectionRow): StoredSelection => ({
   chosenBy: row.chosenBy,
   chosenAt: row.chosenAt,
 });
+
+const ownKey = (worktreeId: WorktreeId, definitionId: ResourceDefinitionId) =>
+  and(
+    eq(resourceOwnDatabases.worktreeId, worktreeId),
+    eq(resourceOwnDatabases.definitionId, definitionId),
+  );
 
 /** A typed failure survives a transaction; a database error is a defect. */
 const queryErrorsDie = {
@@ -624,7 +653,12 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       const rows = yield* db
         .select()
         .from(resourceOwnDatabases)
-        .where(eq(resourceOwnDatabases.worktreeId, worktreeId))
+        .where(
+          and(
+            eq(resourceOwnDatabases.worktreeId, worktreeId),
+            isNull(resourceOwnDatabases.removedAt),
+          ),
+        )
         .pipe(Effect.orDie);
       return new Map(
         rows.map((row): readonly [ResourceDefinitionId, OwnDatabaseOrigin] => [
@@ -633,6 +667,56 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         ]),
       );
     });
+
+    const ownDatabaseRemovals = (worktreeId: WorktreeId) =>
+      db
+        .select()
+        .from(resourceOwnDatabases)
+        .where(eq(resourceOwnDatabases.worktreeId, worktreeId))
+        .pipe(
+          Effect.orDie,
+          Effect.map((rows) =>
+            rows.map((row) => ({
+              worktreeId: row.worktreeId,
+              definitionId: row.definitionId,
+              dumpName: row.removalDumpName,
+              dumpAt: row.removalDumpAt,
+              checkedAt: row.removalCheckedAt,
+              removedAt: row.removedAt,
+            })),
+          ),
+        );
+    const reserveRemovalDump = (
+      worktreeId: WorktreeId,
+      definitionId: ResourceDefinitionId,
+      dumpName: string,
+      at: Date,
+    ) =>
+      db
+        .update(resourceOwnDatabases)
+        .set({ removalDumpName: dumpName, removalDumpAt: at })
+        .where(and(ownKey(worktreeId, definitionId), isNull(resourceOwnDatabases.removalDumpName)))
+        .pipe(Effect.orDie, Effect.asVoid);
+    const checkRemovalDump = (
+      worktreeId: WorktreeId,
+      definitionId: ResourceDefinitionId,
+      at: Date,
+    ) =>
+      db
+        .update(resourceOwnDatabases)
+        .set({ removalCheckedAt: at })
+        .where(and(ownKey(worktreeId, definitionId), isNull(resourceOwnDatabases.removalCheckedAt)))
+        .pipe(Effect.orDie, Effect.asVoid);
+    const removeOwnDatabase = (
+      worktreeId: WorktreeId,
+      definitionId: ResourceDefinitionId,
+      at: Date,
+    ) =>
+      db
+        .update(resourceOwnDatabases)
+        .set({ removedAt: at })
+        .where(and(ownKey(worktreeId, definitionId), isNull(resourceOwnDatabases.removedAt)))
+        .pipe(Effect.orDie, Effect.asVoid);
 
     const recordOwnDatabase = Effect.fn("ResourcesRepo.recordOwnDatabase")(function* (
       worktreeId: WorktreeId,
@@ -660,6 +744,10 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       setSelection,
       ownDatabases,
       recordOwnDatabase,
+      ownDatabaseRemovals,
+      reserveRemovalDump,
+      checkRemovalDump,
+      removeOwnDatabase,
     };
   }),
 );
