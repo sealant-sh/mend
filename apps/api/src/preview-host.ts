@@ -63,7 +63,8 @@ export const previewExchangeUrl = (
 ): string =>
   `${issued.origin}${EXCHANGE}?ticket=${encodeURIComponent(Redacted.value(issued.ticket))}&path=${encodeURIComponent(path)}`;
 
-const browserOf = (head: PreviewRequestHead): BrowserHead => ({
+/** Browser metadata shared by admission and startup-page negotiation. */
+export const browserOf = (head: PreviewRequestHead): BrowserHead => ({
   method: head.method,
   upgrade: valuesOf(head.headers, "upgrade").length > 0,
   origins: valuesOf(head.headers, "origin"),
@@ -71,9 +72,16 @@ const browserOf = (head: PreviewRequestHead): BrowserHead => ({
   fetchMode: valuesOf(head.headers, "sec-fetch-mode")[0],
   fetchDest: valuesOf(head.headers, "sec-fetch-dest")[0],
   sentFetchMetadata: head.headers.some(([name]) => name.toLowerCase().startsWith("sec-fetch-")),
-  acceptsHtml: membersOf(head.headers, "accept").some(
-    (member) => member.split(";")[0]?.trim() === "text/html",
-  ),
+  acceptsHtml: (() => {
+    const accepted = membersOf(head.headers, "accept").map((member) => {
+      const [type, ...parameters] = member.split(";");
+      const quality = parameters.find((part) => part.trim().startsWith("q="));
+      const q = quality === undefined ? 1 : Number(quality.trim().slice(2));
+      return { type: type?.trim(), q: Number.isFinite(q) && q >= 0 && q <= 1 ? q : 0 };
+    });
+    const html = accepted.find(({ type }) => type === "text/html")?.q ?? 0;
+    return html > 0 && accepted.every(({ q }) => q <= html);
+  })(),
 });
 
 const exchange = (head: PreviewRequestHead, routing: PreviewRouting, origin: PreviewOrigin) =>
@@ -152,7 +160,10 @@ export const servePreviewRequest = <E, R>(
     const pathname = URL.parse(head.target, origin)?.pathname ?? "";
     if (pathname === EXCHANGE) return yield* exchange(head, routing, origin);
     if (pathname === COOKIE_CHECK) return checkCookieKept(head, routing, origin);
-    if (mustNotForward(pathname)) return answer(404, "No such preview path.");
+    if (pathname === "/__mend/status" && (head.method !== "GET" || browser.upgrade))
+      return answer(405, "Method not allowed.", { allow: "GET" });
+    if (pathname !== "/__mend/status" && mustNotForward(pathname))
+      return answer(404, "No such preview path.");
     const grant = readGrantCookie(
       valuesOf(head.headers, "cookie"),
       grantCookieOf(routing, origin).name,
