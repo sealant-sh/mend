@@ -158,6 +158,20 @@ their findings by this rule too. A finding that doesn't meet it is an issue to f
 review. This rule overrides older rules that call a problem a blocker without asking how often
 people hit it.
 
+## Check Features on the Box
+
+A feature merges only after an agent that didn't write it has used it on the box, our live Mend
+server, the way a person would. That means real logins, through a `mend` CLI and browser already
+signed in as a person, on a `-next` or preview build cut for the PR when the box doesn't run the
+code yet. Never sign that CLI in or out, and never read its token. The verdict goes on the PR. It
+names the build, the sessions it ran and what it saw. For a feature, a local stack with fake
+accounts, a unit test, green CI or reading the code is not a verdict. Test, CI and docs PRs don't
+need one.
+
+Spend tokens on that check, not on review panels. Run `interrogate` only when two designs a reviewer
+could defend are genuinely in dispute. Otherwise the box check is the feature's one review, graded
+by Fix Now or File.
+
 ## Effect Best Practices
 
 **IMPORTANT:** Always consult effect-solutions before writing Effect code.
