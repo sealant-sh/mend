@@ -195,11 +195,24 @@ export const makeStartWaves = (startHoldMs: number) =>
                 Effect.map((read): Settled => startedOutcome(preview, read)),
                 Effect.catchTags({
                   PreviewStartFailed: (failed) =>
-                    failed.reason === "stopped"
-                      ? Effect.map(targets.snapshot(preview.id), (read) =>
-                          startedOutcome(preview, read),
+                    failed.resourceStopped !== undefined
+                      ? Effect.succeed(
+                          refused(
+                            gatewayPage(
+                              503,
+                              notDelivered(
+                                preview.serviceName,
+                                `@${failed.resourceStopped.name} stopped by ${failed.resourceStopped.by}`,
+                              ),
+                              preview.back,
+                            ),
+                          ),
                         )
-                      : Effect.succeed(didNotStart(preview, previewStartReasonOf(failed.reason))),
+                      : failed.reason === "stopped"
+                        ? Effect.map(targets.snapshot(preview.id), (read) =>
+                            startedOutcome(preview, read),
+                          )
+                        : Effect.succeed(didNotStart(preview, previewStartReasonOf(failed.reason))),
                   PreviewStartDeclined: () =>
                     Effect.succeed<Settled>(
                       declined.answer === null

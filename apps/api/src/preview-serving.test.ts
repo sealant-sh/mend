@@ -5,6 +5,7 @@ import { Auth } from "@mend/auth";
 import type { TicketCredential } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { ForwardSessionOwner } from "@mend/sealant";
+import { ResourceRuntimeNone } from "@mend/sessions";
 import { SessionEngine, WorkspaceCaller } from "@mend/sessions";
 import { Effect, Layer, Option } from "effect";
 import { HttpRouter } from "effect/http";
@@ -116,6 +117,7 @@ describe.skipIf(postgres.skip)("the API's HTTP tier with previews on", () => {
       Layer.provide(EventBusLive),
       Layer.provide(
         Layer.mergeAll(
+          ResourceRuntimeNone,
           authFor(credentials),
           lendingToEveryone,
           forwards.layer,

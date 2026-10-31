@@ -2,7 +2,7 @@ import { PreviewsRepo } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { PreviewId, SessionProcessId } from "@mend/domain";
 import { PreviewStartRefusal, type PreviewStartRequest } from "@mend/domain/workbench";
-import { PreviewStartRefused, SessionEngine } from "@mend/sessions";
+import { PreviewStartRefused, ResourceRuntimeNone, SessionEngine } from "@mend/sessions";
 import { Effect, Exit, Layer } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -41,7 +41,11 @@ const run = <A, E>(
   });
   return Effect.runPromise(
     effect.pipe(
-      Effect.provide(PreviewTargetsLive.pipe(Layer.provideMerge(Layer.merge(repos, engine)))),
+      Effect.provide(
+        PreviewTargetsLive.pipe(
+          Layer.provideMerge(Layer.mergeAll(repos, engine, ResourceRuntimeNone)),
+        ),
+      ),
       Effect.scoped,
     ),
   );

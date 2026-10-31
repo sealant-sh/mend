@@ -1,5 +1,16 @@
-import type { PreviewGrantsRepo, PreviewsRepo, UpgradeTicketsRepo } from "@mend/db";
-import type { ForwardAdapter, SessionEngine, WorkspaceCaller } from "@mend/sessions";
+import type {
+  PreviewGrantsRepo,
+  PreviewsRepo,
+  UpgradeTicketsRepo,
+  SessionsRepo,
+  SessionProcessesRepo,
+} from "@mend/db";
+import type {
+  ForwardAdapter,
+  ResourceRuntime,
+  SessionEngine,
+  WorkspaceCaller,
+} from "@mend/sessions";
 import { Layer } from "effect";
 
 import type { ProjectAccess } from "./access.ts";
@@ -12,6 +23,9 @@ import { PreviewConfig, type PreviewIdentity } from "./preview-identity.ts";
 import { PreviewTargetsLive } from "./preview-targets.ts";
 
 type GatewayNeeds =
+  | ResourceRuntime
+  | SessionsRepo
+  | SessionProcessesRepo
   | PreviewIdentity
   | PreviewConfig
   | PreviewsRepo

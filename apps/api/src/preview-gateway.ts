@@ -255,11 +255,35 @@ export const makePreviewGatewayLayer = (
       ): Effect.Effect<WaveOutcome> =>
         Effect.gen(function* () {
           const cached = entry.resolution();
-          if (cached?._tag === "Bound") return { _tag: "Bound", resolution: cached };
+          if (cached?._tag === "Bound") {
+            const stopped = yield* targets.resourceStopOf(cached.attempt.attemptId);
+            if (stopped !== null)
+              return {
+                _tag: "Refused",
+                answer: gatewayPage(
+                  503,
+                  notDelivered(preview.serviceName, `@${stopped.name} stopped by ${stopped.by}`),
+                  backOf(preview),
+                ),
+              };
+            return { _tag: "Bound", resolution: cached };
+          }
           const read = yield* readResolution(preview.id);
           if (Option.isNone(read)) return { _tag: "Refused", answer: UNAVAILABLE };
           entry.remember(read.value);
           const route = routeOf(preview.serviceName, read.value, backOf(preview));
+          if (route._tag === "Bound") {
+            const stopped = yield* targets.resourceStopOf(route.resolution.attempt.attemptId);
+            if (stopped !== null)
+              return {
+                _tag: "Refused",
+                answer: gatewayPage(
+                  503,
+                  notDelivered(preview.serviceName, `@${stopped.name} stopped by ${stopped.by}`),
+                  backOf(preview),
+                ),
+              };
+          }
           if (route._tag !== "Start") return route;
           if (
             route.workspaceId !== null &&
