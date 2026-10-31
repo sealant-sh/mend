@@ -152,8 +152,16 @@ The fields, and what Mend refuses in each:
 - `depends` names recipes of the same session to start first, in order. One already running is not
   started again, but Mend waits for it to answer its own `ready` first. The first that fails or
   never answers stops the start and says which, and the ones already started keep running. A name no
-  recipe has, the recipe itself, and a cycle are refused. Shared services (`"@db"`,
-  `{ shared = "db" }`, `{ resource = "db" }`) are not available yet, and say so.
+  recipe has, the recipe itself, and a cycle are refused.
+- `depends = ["@db"]` requires a project resource. It starts before the Service, which gets the
+  worktree's resource env, including `DATABASE_URL` for one Postgres. Map another name with
+  `depends = [{ shared = "db", env = { TEST_DATABASE_URL = "url" } }]`. `resource` is a synonym for
+  `shared`. Exports include `url`, `host`, `port`, `port.<name>`, `database`, `username` and the
+  definition's own exports. Duplicate mapped names and recipe env that shadows a binding are refused
+  by name. A missing resource, or one the worktree has off, refuses only that Service. Mend waits up
+  to 30 seconds for the resource's ready check, then starts the Service anyway and says
+  `@db not ready`. A preview wake starts an idle resource again. A person's stop holds, and the
+  preview page says who stopped it. Stopping a preview leaves its resources running.
 - `[preview]` names the Service the worktree's preview shows. It must be a recipe with
   `browserScheme = "http"`.
 - `[setup]` is what a start runs before anything else: `run` is a list of shell commands, run in
