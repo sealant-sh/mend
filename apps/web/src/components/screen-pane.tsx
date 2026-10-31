@@ -174,14 +174,14 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {props.steer && screen.life._tag === "Ended" && (
+          {props.steer && screen.life._tag === "Ended" && pending !== "wake" && (
             <button
               type="button"
               disabled={pending !== null}
               onClick={props.onWake}
               className={BUTTON_FILLED}
             >
-              {pending === "wake" ? "Starting…" : "Wake the screen"}
+              Wake the screen
             </button>
           )}
           {takeShows && (
@@ -268,12 +268,23 @@ export function ScreenPane({
   const [attempt, setAttempt] = useState(0);
   const [wire, setWire] = useState<ScreenWire>({ _tag: "Connecting" });
   const [pending, setPending] = useState<Pending>(null);
+  const [wakeFrom, setWakeFrom] = useState<{
+    readonly sessionId: string;
+    readonly processId: LiveScreenDto["processId"];
+  } | null>(null);
+  const wakeInFlight = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
   const rfb = useRef<RFB | null>(null);
   const rtc = useRef<ScreenRtcView | null>(null);
   const heldRef = useRef(false);
   const owner = viewerId !== null && viewerId === screen.ownerUserId;
   const held = heldHere(screen, wire);
+  // A successful POST does not make an older poll current. Wait for Live or a different start
+  // ending, including a start that ended between polls without this pane ever reading Starting.
+  const waking =
+    wakeFrom?.sessionId === sessionId &&
+    screen.life._tag !== "Live" &&
+    !(screen.life._tag === "Ended" && screen.processId !== wakeFrom.processId);
 
   // noVNC is an imperative widget bound to its element: it opens with the element, at each
   // Reconnect (a new key), and closes with it. It reads `window` as it loads, so it loads here,
@@ -384,14 +395,19 @@ export function ScreenPane({
     void answer();
   };
   const wake = async () => {
+    if (wakeInFlight.current || waking || pending !== null || screen.life._tag !== "Ended") return;
+    wakeInFlight.current = true;
     setPending("wake");
+    setWakeFrom({ sessionId, processId: screen.processId });
     setNotice(null);
     try {
       await wakeScreen(sessionId);
       await queryClient.invalidateQueries({ queryKey: screenKey });
     } catch (error) {
+      setWakeFrom(null);
       setNotice(error instanceof Error ? error.message : "The screen did not start. Try again.");
     } finally {
+      wakeInFlight.current = false;
       setPending(null);
       void queryClient.invalidateQueries(trpc.sessions.pathFilter());
     }
@@ -423,7 +439,7 @@ export function ScreenPane({
       steer={steer}
       ownerName={ownerName}
       held={held}
-      pending={pending}
+      pending={screen.life._tag === "Live" && pending === "wake" ? null : waking ? "wake" : pending}
       notice={notice}
       onWake={() => void wake()}
       onTake={take}

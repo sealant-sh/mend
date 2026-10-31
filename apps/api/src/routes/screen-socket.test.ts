@@ -477,6 +477,7 @@ describe("the screen socket", () => {
     expect(await response.json()).toEqual({
       _tag: "Screen",
       display: 12,
+      processId: null,
       width: 1280,
       height: 800,
       life: { _tag: "Live", degraded: null, browserSandboxOff: false },

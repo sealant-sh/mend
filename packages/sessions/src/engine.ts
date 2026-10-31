@@ -2965,7 +2965,10 @@ export class SessionEngine extends Context.Service<
       | ScreenDisplaysFullError
       | ScreenNeedsPersonError
     >;
-    /** Wake the workspace and start its screen, with no agent process or turn (ADR 0020). */
+    /**
+     * Wake the workspace and start its screen, with no agent process or turn (ADR 0020).
+     * Concurrent wakes wait their turn and read the workspace and screen again, starting each once.
+     */
     readonly wakeScreen: (
       sessionId: SessionId,
     ) => Effect.Effect<
@@ -27575,7 +27578,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           oneLaunch(sessionId)(wakeWorkspace(sessionId, options)),
         startScreen: (sessionId) => owned(sessionId)(screenProcess.start(sessionId)),
         wakeScreen: (sessionId) =>
-          detached(owned(sessionId)(oneLaunch(sessionId)(wakeScreen(sessionId)))),
+          detached(owned(sessionId)(queuedLaunch(sessionId)(wakeScreen(sessionId)))),
         stopScreen: (sessionId, reason) => owned(sessionId)(screenProcess.stop(sessionId, reason)),
         screenPasswords: (sessionId) => Effect.sync(() => screenPasswords.of(sessionId)),
         rekeyScreen: (sessionId) => owned(sessionId)(screenProcess.rekey(sessionId)),

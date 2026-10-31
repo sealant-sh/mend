@@ -1,5 +1,6 @@
 import { makeScreensMemory } from "@mend/db";
 import { SealantWorkspaceId, SessionProcessId } from "@mend/domain";
+import { SessionProcess } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -66,6 +67,32 @@ describe("wake a session's screen", () => {
     const api = await createTenancyApi(
       {},
       {
+        processes: [
+          new SessionProcess({
+            id: SessionProcessId.make("screen-woken"),
+            sessionId,
+            sealantWorkspaceId: SealantWorkspaceId.make("workspace-woken"),
+            sealantSessionId: "pty-screen-woken",
+            sealantRunId: null,
+            launchCorrelationId: null,
+            serviceId: null,
+            attemptOrdinal: null,
+            kind: "screen",
+            harness: null,
+            providerSessionId: null,
+            protocolOptions: null,
+            label: "screen",
+            argv: ["mend-screen"],
+            status: "stopped",
+            exitCode: 0,
+            workspacePort: null,
+            protocol: "tcp",
+            hostPort: null,
+            createdAt: new Date("2026-10-31T13:31:51Z"),
+            exitedAt: new Date("2026-10-31T13:31:52Z"),
+            updatedAt: new Date("2026-10-31T13:31:52Z"),
+          }),
+        ],
         implement: {
           screensRepo: screens,
           engine: {
@@ -94,12 +121,27 @@ describe("wake a session's screen", () => {
         expect(stopped.status).toBe(200);
         expect(await stopped.json()).toMatchObject({
           _tag: "Screen",
+          processId: null,
           life: { _tag: "Ended", reason: "idle" },
         });
       }
       expect((await api.request("alice", "POST", route)).status).toBe(200);
       const starting = await api.request("alice", "GET", `/api/sessions/${sessionId}/screen`);
-      expect(await starting.json()).toMatchObject({ _tag: "Screen", life: { _tag: "Starting" } });
+      expect(await starting.json()).toMatchObject({
+        _tag: "Screen",
+        processId: "screen-woken",
+        life: { _tag: "Starting" },
+      });
+      const current = await Effect.runPromise(screens.ofSession(sessionId));
+      if (current === null) throw new Error("no screen after wake");
+      await Effect.runPromise(
+        screens.setLife(current.id, { life: { _tag: "Ended", reason: "idle" } }),
+      );
+      const ended = await api.request("alice", "GET", `/api/sessions/${sessionId}/screen`);
+      expect(await ended.json()).toMatchObject({
+        processId: "screen-woken",
+        life: { _tag: "Ended", reason: "idle" },
+      });
     } finally {
       await api.dispose();
     }

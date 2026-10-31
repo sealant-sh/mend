@@ -10,7 +10,7 @@ import {
   type ScreenSocketHello,
 } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
-import { OrganizationsRepo, ScreensRepo, UpgradeTicketsRepo } from "@mend/db";
+import { OrganizationsRepo, ScreensRepo, SessionProcessesRepo, UpgradeTicketsRepo } from "@mend/db";
 import { SessionId, ViewerConnectionId } from "@mend/domain";
 import { SCREEN_LIMITS, type ScreenLogBody, screenHolderOf } from "@mend/domain/workbench";
 import { type ScreenControlAnswer, Screens, type ViewerBytes, type WatchEnd } from "@mend/sessions";
@@ -59,6 +59,8 @@ export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handle
       Effect.gen(function* () {
         const session = yield* (yield* ProjectAccess).session(params.id);
         const repo = yield* ScreensRepo;
+        // Read starts first: a later start must not turn an older Ended snapshot into a failure.
+        const processes = yield* (yield* SessionProcessesRepo).listForSession(session.id);
         const screen =
           (yield* repo.ofSession(session.id)) ?? (yield* repo.latestForSession(session.id));
         if (screen === null) return NO_SCREEN;
@@ -66,6 +68,12 @@ export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handle
         const read: ScreenRead = {
           _tag: "Screen",
           display: screen.display,
+          processId:
+            screen.processId ??
+            processes.findLast(
+              (row) => row.kind === "screen" && row.sealantWorkspaceId === screen.workspaceId,
+            )?.id ??
+            null,
           width: SCREEN_LIMITS.width,
           height: SCREEN_LIMITS.height,
           life: screen.life,

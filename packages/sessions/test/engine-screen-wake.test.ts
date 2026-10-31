@@ -1,12 +1,75 @@
 import { isWakeShell } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
-import { it } from "@mend/test-ci/effect-vitest";
-import { Effect } from "effect";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
+import { Deferred, Effect, Exit, Fiber } from "effect";
 import { describe, expect } from "vitest";
 
-import { screenRows, withScreens } from "./engine/screen-fixture.ts";
+import { launched, screenRows, withScreens } from "./engine/screen-fixture.ts";
 
 describe("wake a stopped screen without an agent turn (ADR 0020)", () => {
+  it.effect(
+    "accepts concurrent wakes and repeats while Starting or Live, opening one workspace and screen",
+    () =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let waking = false;
+        yield* withScreens(
+          (world, platform) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launched(world);
+              const before = yield* engine.startScreen(session.id);
+              yield* engine.stopScreen(session.id, "idle");
+              yield* engine.stop(session.id);
+              yield* Effect.promise(async () => {
+                for (let attempt = 0; attempt < 100; attempt++) {
+                  const current = world.sessions.get(session.id);
+                  if (
+                    world.finalFlushed.get(session.id) === before.workspaceId &&
+                    current?.captureDrain === null &&
+                    current.status === "stopped"
+                  )
+                    return;
+                  await new Promise((resolve) => setTimeout(resolve, 10));
+                }
+                throw new Error("the workspace did not stop");
+              });
+              const opened = platform.spawned.length;
+              waking = true;
+              const first = yield* Effect.forkChild(engine.wakeScreen(session.id));
+              yield* Deferred.await(entered);
+              expect(engine.launchUnderWay(session.id)).toBe(true);
+              const repeated = yield* Effect.forkChild(engine.wakeScreen(session.id));
+              yield* TestClock.adjust(0);
+              yield* Deferred.succeed(release, undefined);
+              yield* Fiber.join(first);
+              const answer = yield* Fiber.await(repeated);
+              expect(Exit.isSuccess(answer)).toBe(true);
+              yield* engine.wakeScreen(session.id);
+              const after = yield* world.screens.ofSession(session.id);
+              if (after === null || after.processId === null)
+                throw new Error("no screen after wake");
+              expect(after.workspaceId).not.toBe(before.workspaceId);
+              expect(after.life._tag).toBe("Starting");
+              yield* world.screens.setLife(after.id, {
+                life: { _tag: "Live", degraded: null, browserSandboxOff: false },
+                processId: after.processId,
+              });
+              yield* engine.wakeScreen(session.id);
+              expect(platform.spawned.slice(opened)).toHaveLength(2);
+              expect(screenRows(world).filter((row) => row.exitedAt === null)).toHaveLength(1);
+            }),
+          {
+            distinctWorkspaces: true,
+            aroundOpen: () =>
+              waking
+                ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+                : Effect.void,
+          },
+        );
+      }),
+  );
+
   it.effect(
     "reopens a stopped workspace as a shell, reserves its display and starts only the screen",
     () =>
