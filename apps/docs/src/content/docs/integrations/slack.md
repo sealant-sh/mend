@@ -221,8 +221,11 @@ Mend posts only into the thread the request came from.
   summary is labelled
   `summary · written by Mend using inference on the diff and the session record`. The reply ends
   with the previews as they read when it was posted; the status message is the one that stays
-  current. A session started from Slack always gets a review tour when it settles with a change,
-  even where the project's automatic tour is off.
+  current. The latest turn reply with **Push and open pull request** also gains an **Open preview**
+  button when its preview answers. That reply is edited as previews change: green while answering or
+  starting, kept after an idle stop, and removed after a person stops it. A session started from
+  Slack always gets a review tour when it settles with a change, even where the project's automatic
+  tour is off.
 
 The status message states what was observed and gives no verdict. When a channel thread's project is
 made private, Mend edits the status message to `not shown · the project is private`, which names no
