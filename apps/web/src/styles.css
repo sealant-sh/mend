@@ -128,3 +128,25 @@
   --diffs-token-constant: #a996c9;
   --diffs-token-link: #7d9fd6;
 }
+
+/* The fitted element keeps pointer coordinates aligned with the 16:10 screen in fullscreen. */
+.screen-panel:fullscreen {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+}
+
+.screen-panel:fullscreen .screen-stage {
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: auto;
+  container-type: size;
+}
+
+.screen-panel:fullscreen .screen-viewport {
+  width: min(100cqw, 160cqh);
+  height: min(100cqh, 62.5cqw);
+  margin: auto;
+}

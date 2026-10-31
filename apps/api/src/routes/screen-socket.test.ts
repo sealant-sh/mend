@@ -714,7 +714,7 @@ describe.skipIf(!dockerReady)(
     const blobs = mkdtempSync(join(tmpdir(), "mend-screen-socket-blobs-"));
     const passwords = { full: "socket-full", viewOnly: "socket-view" };
     beforeAll(() => {
-      xvnc = startXvnc(`ci-fix-rtc-socket-${process.pid}-${Date.now()}`);
+      xvnc = startXvnc(`handback-socket-${process.pid}-${Date.now()}`);
       xvnc.signWith(passwords.full, passwords.viewOnly);
     }, 660_000);
     afterAll(() => {
@@ -862,10 +862,9 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
     let xvnc: Xvnc;
     let browser: Browser;
     let clientScript = "";
-    let encoderPort = 0;
-    let encoderAddress = "127.0.0.1";
-    let proxy: net.Server;
-    const container = `ci-fix-rtc-video-${process.pid}`;
+    const encoderPorts = new Map<number, number>();
+    const proxies: Array<net.Server> = [];
+    const container = `handback-video-${process.pid}`;
     const blobs = mkdtempSync(join(tmpdir(), "task2-rtc-blobs-"));
     beforeAll(async () => {
       const bundledClient = await build({
@@ -880,30 +879,35 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
       });
       clientScript = bundledClient.outputFiles?.[0]?.text ?? "";
       xvnc = startXvnc(container);
-      xvnc.start(
-        "sh",
-        "-c",
-        'while :; do ffmpeg -nostdin -loglevel error -f x11grab -draw_mouse 1 -framerate 30 -video_size 1280x800 -i :0 -c:v libx264 -threads 2 -preset ultrafast -tune zerolatency -profile:v baseline -level:v 3.1 -pix_fmt yuv420p -vf scale=out_color_matrix=bt709 -colorspace bt709 -color_primaries bt709 -color_trc bt709 -g 30 -keyint_min 30 -bf 0 -x264-params aud=1:repeat-headers=1 -f h264 "tcp://0.0.0.0:7900?listen=1"; sleep 0.2; done',
-      );
+      for (const [mouse, port] of [
+        [1, 7900],
+        [0, 8100],
+      ] as const)
+        xvnc.start(
+          "sh",
+          "-c",
+          `while :; do ffmpeg -nostdin -loglevel error -fflags nobuffer -f x11grab -draw_mouse ${mouse} -framerate 30 -video_size 1280x800 -i :0 -c:v libx264 -threads 2 -preset ultrafast -tune zerolatency -profile:v baseline -level:v 3.1 -pix_fmt yuv420p -vf scale=out_color_matrix=bt709 -colorspace bt709 -color_primaries bt709 -color_trc bt709 -g 30 -keyint_min 30 -bf 0 -x264-params aud=1:repeat-headers=1 -f h264 "tcp://0.0.0.0:${port}?listen=1"; sleep 0.2; done`,
+        );
       const address = execFileSync(
         "docker",
         ["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container],
         { encoding: "utf8" },
       ).trim();
-      encoderPort = 7900;
-      encoderAddress = address;
-      proxy = net.createServer((client) => {
-        const upstream = net.connect(7900, encoderAddress);
-        upstream.on("error", () => client.destroy());
-        client.on("error", () => upstream.destroy());
-        client.on("close", () => upstream.destroy());
-        client.pipe(upstream).pipe(client);
-      });
-      await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-      const proxyAddress = proxy.address();
-      if (proxyAddress === null || typeof proxyAddress === "string")
-        throw new Error("no encoder proxy");
-      encoderPort = proxyAddress.port;
+      for (const port of [7900, 8100]) {
+        const proxy = net.createServer((client) => {
+          const upstream = net.connect(port, address);
+          upstream.on("error", () => client.destroy());
+          client.on("error", () => upstream.destroy());
+          client.on("close", () => upstream.destroy());
+          client.pipe(upstream).pipe(client);
+        });
+        proxies.push(proxy);
+        await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+        const proxyAddress = proxy.address();
+        if (proxyAddress === null || typeof proxyAddress === "string")
+          throw new Error("no encoder proxy");
+        encoderPorts.set(port, proxyAddress.port);
+      }
       browser = await chromium.launch({
         executablePath: chromiumPath,
         headless: true,
@@ -912,7 +916,7 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
     }, 660_000);
     afterAll(async () => {
       await browser?.close();
-      proxy?.close();
+      for (const proxy of proxies) proxy.close();
       xvnc?.remove();
       rmSync(blobs, { recursive: true, force: true });
     });
@@ -938,15 +942,23 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
       });
       let videoDials = 0;
       let videoCloses = 0;
+      const videoPorts: Array<number> = [];
       const forwards = Layer.mock(ForwardAdapter, {
         open: (target, options) =>
           Effect.gen(function* () {
             expect(options.purpose).toBe("screen");
             expect(target.binding).toEqual({ kind: "session", session: "rtc-pty" });
             const encoder = target.port >= 7900;
-            if (encoder) videoDials++;
+            if (encoder) {
+              videoDials++;
+              videoPorts.push(target.port - screen.display);
+            }
             const pipe = yield* Effect.acquireRelease(
-              Effect.promise(() => connect(encoder ? encoderPort : xvnc.port)),
+              Effect.promise(() =>
+                connect(
+                  encoder ? (encoderPorts.get(target.port - screen.display) ?? 0) : xvnc.port,
+                ),
+              ),
               (opened) =>
                 Effect.sync(() => {
                   opened.cut();
@@ -1131,6 +1143,67 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
         await rtcInput(watcher, 250, 250);
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(pointer()).toBe("100,100");
+        // Measure actual decoded-frame gaps across both switches for both existing viewers.
+        for (const page of [owner, watcher])
+          await page.evaluate(() => {
+            const video = document.querySelector("video");
+            if (video === null) throw new Error("missing video");
+            const canvas = document.createElement("canvas");
+            canvas.width = 1280;
+            canvas.height = 800;
+            const context = canvas.getContext("2d");
+            if (context === null) throw new Error("missing canvas context");
+            let previous = performance.now();
+            video.dataset.maxGap = "0";
+            video.dataset.frames = "0";
+            const decoded = (now: number) => {
+              video.dataset.maxGap = String(Math.max(Number(video.dataset.maxGap), now - previous));
+              video.dataset.frames = String(Number(video.dataset.frames) + 1);
+              previous = now;
+              if (video.dataset.handBackFrames !== undefined) {
+                context.drawImage(video, 0, 0);
+                const rgb = Array.from(context.getImageData(10, 10, 1, 1).data).slice(0, 3);
+                video.dataset.handBackFrames += `${rgb.join(",")};`;
+              }
+              video.requestVideoFrameCallback(decoded);
+            };
+            video.requestVideoFrameCallback(decoded);
+          });
+        const decodedAfterSwitch = async () => {
+          for (const page of [owner, watcher]) {
+            const before = await page.evaluate(() =>
+              Number(document.querySelector("video")?.dataset.frames),
+            );
+            await page.waitForFunction(
+              (count) => Number(document.querySelector("video")?.dataset.frames) >= count + 5,
+              before,
+            );
+            expect(
+              await page.evaluate(() => Number(document.querySelector("video")?.dataset.maxGap)),
+            ).toBeLessThan(1000);
+          }
+        };
+        const paint = async (colour: string, expected: Array<number>) => {
+          xvnc.x(`xsetroot -solid '${colour}'`);
+          for (const page of [owner, watcher])
+            await page.waitForFunction(
+              (rgbExpected) => {
+                const video = document.querySelector("video");
+                if (video === null) return false;
+                const canvas = document.createElement("canvas");
+                canvas.width = 1280;
+                canvas.height = 800;
+                const context = canvas.getContext("2d");
+                if (context === null) return false;
+                context.drawImage(video, 0, 0);
+                const rgb = context.getImageData(10, 10, 1, 1).data;
+                return rgbExpected.every((value, i) => Math.abs(value - (rgb[i] ?? 0)) < 25);
+              },
+              expected,
+              { polling: 10, timeout: 5000 },
+            );
+        };
+        await paint("#e02030", [224, 32, 48]);
         const took = await server.post("carol", "/take", { connection: carol.connection });
         expect(await took.json()).toMatchObject({
           _tag: "Changed",
@@ -1147,6 +1220,20 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
         expect(
           await (await server.post("alice", "/take", { connection: alice.connection })).json(),
         ).toMatchObject({ _tag: "Refused", why: "owner-only" });
+        await until(
+          () => videoDials === 2 && videoCloses === 1,
+          "no-pointer encoder replaced the pointer encoder",
+        );
+        await decodedAfterSwitch();
+        // Let the disconnected pointer listener restart while the screen is still red.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await paint("#20d040", [32, 208, 64]);
+        for (const page of [owner, watcher])
+          await page.evaluate(() => {
+            const video = document.querySelector("video");
+            if (video === null) throw new Error("missing video");
+            video.dataset.handBackFrames = "";
+          });
         await server.post("carol", "/hand-back", {});
         await owner.evaluate(() =>
           document.dispatchEvent(new CustomEvent("rtc-held", { detail: false })),
@@ -1154,6 +1241,27 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
         await rtcInput(owner, 500, 500);
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(pointer()).toBe("400,300");
+        await until(
+          () => videoDials === 3 && videoCloses === 2,
+          "pointer encoder returned after hand back",
+        );
+        await decodedAfterSwitch();
+        for (const page of [owner, watcher]) {
+          const samples = await page.evaluate(() =>
+            (document.querySelector("video")?.dataset.handBackFrames ?? "")
+              .split(";")
+              .filter(Boolean)
+              .map((rgb) => rgb.split(",").map(Number)),
+          );
+          expect(samples.length).toBeGreaterThanOrEqual(5);
+          expect(
+            samples.filter((rgb) =>
+              [224, 32, 48].every((value, i) => Math.abs(value - (rgb[i] ?? 0)) < 25),
+            ),
+            "no decoded frame after hand back may show the pre-take-over red screen",
+          ).toEqual([]);
+        }
+        expect(videoPorts).toEqual([7900, 8100, 7900]);
         const latencies: Array<number> = [];
         for (const colour of ["#e02030", "#20d040", "#3050e0"]) {
           const started = performance.now();
@@ -1193,11 +1301,11 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
         );
         await owner.evaluate(() => document.dispatchEvent(new Event("rtc-close")));
         await ownerContext.close();
-        expect(videoCloses, "watcher still holds the upstream").toBe(0);
+        expect(videoCloses, "watcher still holds the upstream").toBe(2);
         // A visibility loss closes the remaining RTC viewer through the same access recheck.
         server.revoked.add("session:alice");
         await server.publish(event({ type: "user", userId: "alice", facet: "access" }));
-        await until(() => videoCloses === 1, "last RTC viewer released the encoder", 15_000);
+        await until(() => videoCloses === 3, "last RTC viewer released the encoder", 15_000);
         await expect
           .poll(() => Effect.runPromise(registry.countOnSession(SESSION, "screen")))
           .toBe(0);
@@ -1205,7 +1313,7 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
         await ownerContext.close();
         await watcherContext.close();
       }
-    }, 120_000);
+    }, 55_000);
     it("falls back when RTC is unavailable, or has not connected within five seconds", async () => {
       for (const unavailable of [true, false]) {
         const page = await browser.newPage();

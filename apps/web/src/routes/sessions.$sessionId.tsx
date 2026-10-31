@@ -22,6 +22,7 @@ import { ServicesCard } from "#/components/services-card";
 import { SessionMessageInput } from "#/components/session-message-input";
 import { SessionPages } from "#/components/session-pages";
 import { TranscriptPane } from "#/components/session-transcript";
+import { SessionWorkspace, sessionWorkspaceSearch } from "#/components/session-workspace";
 import {
   PreReleaseMemoryNote,
   SharedControlConfirmDialog,
@@ -55,6 +56,7 @@ import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
   ssr: false,
+  validateSearch: sessionWorkspaceSearch,
   loader: async ({ context, params }) => {
     await context.queryClient.ensureQueryData(
       context.trpc.sessions.detail.queryOptions({ id: params.sessionId }),
@@ -73,6 +75,7 @@ const RESUME_HARNESSES = ["claude", "codex", "opencode", "pi"] as const;
 
 function SessionPage() {
   const { sessionId } = Route.useParams();
+  const { view } = Route.useSearch();
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const {
@@ -425,91 +428,108 @@ function SessionPage() {
               viewerId={viewer?.userId ?? null}
               steer={control.steer}
             />
-            {agentPty === null && agentLive && !conversationLive ? (
-              <>
-                <p className="text-xs font-medium text-label">Terminal</p>
-                <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
-                  <div className="border-b border-rule-faint bg-secondary px-4 py-2">
-                    <p className="font-mono text-[11.5px] text-muted-foreground">
-                      provisioning workspace — a first launch builds the harness image (can take
-                      minutes)…
-                    </p>
-                  </div>
-                  <p className="p-4 font-mono text-xs text-faint">
-                    The terminal attaches here the moment the PTY is live.
-                  </p>
-                </div>
-              </>
-            ) : terminalShows ? (
-              <>
-                <p className="text-xs font-medium text-label">Terminal</p>
-                <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
-                  <div className="flex items-center gap-2 border-b border-rule-faint bg-secondary px-4 py-2">
-                    <span className="size-1.5 animate-pulse rounded-full bg-[var(--sw-red)]" />
-                    <p className="font-mono text-[11.5px] text-muted-foreground">
-                      {control.terminalInput
-                        ? `run ${session.sealantRunId} · live — the same session your terminal holds`
-                        : `run ${session.sealantRunId} · live · read-only`}
-                    </p>
-                  </div>
-                  {/* Only the owner types in a terminal, even while control is shared
-                      (docs/adr/0013): everyone else reads it. */}
-                  {!control.terminalInput && (
-                    <p className="border-b border-rule-faint px-4 py-2 font-sans text-[12.5px] text-ink-2">
-                      {terminalReadOnlyLine(ownerName ?? "its owner")}
-                    </p>
-                  )}
-                  {/* Keyed on the PLATFORM session: `mend continue` reopens the
-                      session with a fresh PTY, and the pane must reconnect. */}
-                  {/* Keyed on theme too: the terminal snapshots CSS variables at
-                      attach, and a remount replays the record into the new palette. */}
-                  <SessionTerminal
-                    key={`${agentPty}:${dark ? "dark" : "light"}`}
-                    sessionId={session.id}
-                    startingLabel={session.harness}
-                    starting={agentStartingFacts(currentAgent, processes, Date.now())}
-                    readOnly={!control.terminalInput}
+            <SessionWorkspace
+              view={view}
+              onViewChange={(next) =>
+                void navigate({
+                  to: "/sessions/$sessionId",
+                  params: { sessionId },
+                  search: next === "desktop" ? { view: "desktop" } : {},
+                  replace: true,
+                  resetScroll: false,
+                })
+              }
+              screen={
+                screen === null ? null : (
+                  <ScreenPane
+                    key={sessionId}
+                    sessionId={sessionId}
+                    active={view === "desktop"}
+                    screen={screen}
+                    viewerId={viewer?.userId ?? null}
+                    ownerName={ownerName ?? "its owner"}
+                    nameOf={(userId) => names?.get(userId) ?? "a member"}
                   />
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="text-xs font-medium text-label">Record</p>
-                <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
-                  <div className="border-b border-rule-faint bg-secondary px-4 py-2">
-                    <p className="font-mono text-[11.5px] text-muted-foreground">
-                      {session.sealantRunId === null
-                        ? noRunWords(session.status).header
-                        : conversationLive
-                          ? `run ${session.sealantRunId} · live conversation; the record updates as the session runs`
-                          : agentLive
-                            ? `run ${session.sealantRunId} · the owner's terminal; the record updates as the session runs`
-                            : `run ${session.sealantRunId} · the durable record`}
-                    </p>
-                  </div>
-                  {session.sealantRunId === null ? (
-                    <p className="p-4 font-mono text-xs text-faint">Nothing was recorded.</p>
-                  ) : (
-                    <TranscriptPane sessionId={sessionId} />
-                  )}
-                </div>
-                {conversationLive && control.steer && viewer != null && (
-                  <SessionMessageInput key={sessionId} sessionId={sessionId} />
-                )}
-              </>
-            )}
-            {screen !== null && (
-              <div className="mt-8">
-                <ScreenPane
-                  key={sessionId}
-                  sessionId={sessionId}
-                  screen={screen}
-                  viewerId={viewer?.userId ?? null}
-                  ownerName={ownerName ?? "its owner"}
-                  nameOf={(userId) => names?.get(userId) ?? "a member"}
-                />
-              </div>
-            )}
+                )
+              }
+              terminal={
+                agentPty === null && agentLive && !conversationLive ? (
+                  <>
+                    {screen === null && <p className="text-xs font-medium text-label">Terminal</p>}
+                    <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
+                      <div className="border-b border-rule-faint bg-secondary px-4 py-2">
+                        <p className="font-mono text-[11.5px] text-muted-foreground">
+                          provisioning workspace — a first launch builds the harness image (can take
+                          minutes)…
+                        </p>
+                      </div>
+                      <p className="p-4 font-mono text-xs text-faint">
+                        The terminal attaches here the moment the PTY is live.
+                      </p>
+                    </div>
+                  </>
+                ) : terminalShows ? (
+                  <>
+                    {screen === null && <p className="text-xs font-medium text-label">Terminal</p>}
+                    <div
+                      className={`${screen === null ? "mt-3" : ""} overflow-hidden rounded-2xl bg-card shadow-sm`}
+                    >
+                      <div className="flex items-center gap-2 border-b border-rule-faint bg-secondary px-4 py-2">
+                        <span className="size-1.5 animate-pulse rounded-full bg-[var(--sw-red)]" />
+                        <p className="font-mono text-[11.5px] text-muted-foreground">
+                          {control.terminalInput
+                            ? `run ${session.sealantRunId} · live — the same session your terminal holds`
+                            : `run ${session.sealantRunId} · live · read-only`}
+                        </p>
+                      </div>
+                      {/* Only the owner types in a terminal, even while control is shared
+                      (docs/adr/0013): everyone else reads it. */}
+                      {!control.terminalInput && (
+                        <p className="border-b border-rule-faint px-4 py-2 font-sans text-[12.5px] text-ink-2">
+                          {terminalReadOnlyLine(ownerName ?? "its owner")}
+                        </p>
+                      )}
+                      {/* Keyed on the PLATFORM session: `mend continue` reopens the
+                      session with a fresh PTY, and the pane must reconnect. */}
+                      {/* Keyed on theme too: the terminal snapshots CSS variables at
+                      attach, and a remount replays the record into the new palette. */}
+                      <SessionTerminal
+                        key={`${agentPty}:${dark ? "dark" : "light"}`}
+                        sessionId={session.id}
+                        startingLabel={session.harness}
+                        starting={agentStartingFacts(currentAgent, processes, Date.now())}
+                        readOnly={!control.terminalInput}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs font-medium text-label">Record</p>
+                    <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
+                      <div className="border-b border-rule-faint bg-secondary px-4 py-2">
+                        <p className="font-mono text-[11.5px] text-muted-foreground">
+                          {session.sealantRunId === null
+                            ? noRunWords(session.status).header
+                            : conversationLive
+                              ? `run ${session.sealantRunId} · live conversation; the record updates as the session runs`
+                              : agentLive
+                                ? `run ${session.sealantRunId} · the owner's terminal; the record updates as the session runs`
+                                : `run ${session.sealantRunId} · the durable record`}
+                        </p>
+                      </div>
+                      {session.sealantRunId === null ? (
+                        <p className="p-4 font-mono text-xs text-faint">Nothing was recorded.</p>
+                      ) : (
+                        <TranscriptPane sessionId={sessionId} />
+                      )}
+                    </div>
+                    {conversationLive && control.steer && viewer != null && (
+                      <SessionMessageInput key={sessionId} sessionId={sessionId} />
+                    )}
+                  </>
+                )
+              }
+            />
           </section>
 
           <section>

@@ -2,8 +2,10 @@ import type { ViewerConnectionId } from "@mend/domain";
 import { screenStatusLine } from "@mend/domain/workbench";
 import type RFB from "@novnc/novnc";
 import { useQueryClient } from "@tanstack/react-query";
+import { Info, Maximize } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
+import { StatusDot } from "#/components/status";
 import {
   handBackScreen,
   type LiveScreenDto,
@@ -58,6 +60,7 @@ const BUTTON_FILLED =
 const BUTTON_OUTLINE =
   "rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50";
 
+/** Screen facts and controls, independent of the video or noVNC transport. */
 export interface ScreenPaneViewProps {
   readonly screen: LiveScreenDto;
   /** `screenStatusLine`: who holds the screen, as Mend observed it. */
@@ -72,94 +75,142 @@ export interface ScreenPaneViewProps {
   readonly onTake: () => void;
   readonly onHandBack: () => void;
   readonly onReconnect: () => void;
-  /** The element noVNC draws into, while the screen is live. */
+  /** The live video or noVNC viewer. */
   readonly viewer?: ReactNode;
 }
 
-/** A session's screen beside its terminal or record (docs/adr/0020, "How people watch and take over"). */
+/** A screen's controls and fitted viewport, including the same header in fullscreen. */
 export function ScreenPaneView(props: ScreenPaneViewProps) {
   const { screen, wire, owner, held, pending } = props;
-  // Only a live screen is watched: no socket opens on one starting, not started or ended.
+  const panel = useRef<HTMLDivElement>(null);
+  const [fullscreenNotice, setFullscreenNotice] = useState<string | null>(null);
   const live = screen.life._tag === "Live";
   const takeShows = owner && live && wire._tag === "Watching" && !held;
-  const handBackShows = owner && screen.holder._tag !== "Agent";
+  const handBackShows = owner && live && wire._tag === "Watching" && held;
+  // Keep the domain's reasons, leaving frame/viewer metadata and sandbox notes out of the label.
+  const words =
+    props.statusLine
+      .replace(/^screen · /, "")
+      .split(" · degraded")[0]
+      ?.split(" · browser sandbox off")[0] ?? "";
+  const status: { tone: "red" | "hollow" | "amber" | "accent" | "green"; word: string } =
+    screen.life._tag === "Ended"
+      ? { tone: "red", word: words.replace(/^ended(?: · | )?/, "Closed · ") }
+      : !live || wire._tag === "Connecting"
+        ? { tone: "hollow", word: "Connecting" }
+        : wire._tag === "Closed"
+          ? { tone: "red", word: `Closed · ${wire.words}` }
+          : screen.holder._tag === "Paused"
+            ? { tone: "amber", word: words.replace(/^input paused · /, "Paused · ") }
+            : screen.holder._tag === "Person"
+              ? { tone: "accent", word: held ? "You have input" : words }
+              : { tone: "green", word: words.charAt(0).toUpperCase() + words.slice(1) };
+  const fullscreen = async () => {
+    setFullscreenNotice(null);
+    try {
+      if (panel.current?.requestFullscreen === undefined) {
+        setFullscreenNotice("Fullscreen is unavailable in this browser.");
+        return;
+      }
+      await panel.current.requestFullscreen();
+      if (held) panel.current.querySelector<HTMLElement>("video, canvas")?.focus();
+    } catch {
+      setFullscreenNotice("Fullscreen did not open. Try again from this screen.");
+    }
+  };
+  const notice = props.notice ?? fullscreenNotice;
   return (
-    <>
-      <p className="text-xs font-medium text-label">Screen</p>
-      <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
-        <div className="flex min-h-10 flex-wrap items-center justify-between gap-3 border-b border-rule-faint bg-secondary px-4 py-2">
-          <div className="flex min-w-0 items-center gap-2">
-            {live && wire._tag === "Watching" && (
-              <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-[var(--sw-red)]" />
-            )}
-            <p className="font-mono text-[11.5px] text-muted-foreground">{props.statusLine}</p>
-          </div>
-          {(takeShows || handBackShows) && (
-            <div className="flex items-center gap-2">
-              {takeShows && (
-                <button
-                  type="button"
-                  disabled={pending !== null}
-                  onClick={props.onTake}
-                  className={BUTTON_FILLED}
-                >
-                  {pending === "take" ? "Taking over…" : "Take over"}
-                </button>
-              )}
-              {handBackShows && (
-                <button
-                  type="button"
-                  disabled={pending !== null}
-                  onClick={props.onHandBack}
-                  className={held ? BUTTON_FILLED : BUTTON_OUTLINE}
-                >
-                  {pending === "hand-back" ? "Handing back…" : "Hand back"}
-                </button>
-              )}
-            </div>
+    <div
+      ref={panel}
+      className="screen-panel overflow-hidden rounded-2xl bg-card shadow-sm"
+      onKeyDownCapture={(event) => {
+        if (event.key !== "Escape" || document.fullscreenElement !== event.currentTarget) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void document.exitFullscreen().catch(() => {
+          setFullscreenNotice("Fullscreen did not close. Try Esc again.");
+        });
+      }}
+    >
+      <div className="flex min-h-13 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+          <StatusDot tone={status.tone} word={status.word} />
+          {!owner && (
+            <span className="text-xs text-muted-foreground">
+              Only {props.ownerName} controls this screen
+            </span>
+          )}
+          {live && screen.life._tag === "Live" && screen.life.browserSandboxOff && (
+            <button
+              type="button"
+              aria-label="Browser sandbox off"
+              title="Browser sandbox off: the workspace could not start Chromium's sandbox."
+              className="text-muted-foreground"
+            >
+              <Info className="size-3.5" aria-hidden="true" />
+            </button>
+          )}
+          {live && screen.life._tag === "Live" && screen.life.degraded !== null && (
+            <span className="text-xs text-muted-foreground" title={props.statusLine}>
+              An app or stream did not start
+            </span>
+          )}
+          {notice !== null && (
+            <span role="status" className="text-xs text-muted-foreground">
+              {notice}
+            </span>
           )}
         </div>
-        {!owner && (
-          <p className="border-b border-rule-faint px-4 py-2 font-sans text-[12.5px] text-ink-2">
-            Only {props.ownerName} puts input on this screen.
-          </p>
-        )}
-        {held && (
-          <p className="border-b border-rule-faint px-4 py-2 font-sans text-[12.5px] text-ink-2">
-            Your keys and clicks reach the screen. The agent waits until you hand back.
-          </p>
-        )}
-        {props.notice !== null && (
-          <p className="border-b border-rule-faint px-4 py-2 font-sans text-[12.5px] text-ink-2">
-            {props.notice}
-          </p>
-        )}
-        <div className="relative aspect-[1280/800] w-full bg-sunken">
+        <div className="flex shrink-0 items-center gap-2">
+          {takeShows && (
+            <button
+              type="button"
+              disabled={pending !== null}
+              onClick={props.onTake}
+              className={BUTTON_OUTLINE}
+            >
+              {pending === "take" ? "Taking over…" : "Take over"}
+            </button>
+          )}
+          {handBackShows && (
+            <button
+              type="button"
+              disabled={pending !== null}
+              onClick={props.onHandBack}
+              className={BUTTON_FILLED}
+            >
+              {pending === "hand-back" ? "Handing back…" : "Hand back"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void fullscreen()}
+            className="inline-flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-[13px] text-muted-foreground hover:text-foreground"
+          >
+            <Maximize className="size-3.5" aria-hidden="true" />
+            Fullscreen
+          </button>
+          {wire._tag === "Closed" && (
+            <button type="button" onClick={props.onReconnect} className={BUTTON_OUTLINE}>
+              Reconnect
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="screen-stage relative aspect-[8/5] w-full bg-sunken">
+        <div className="screen-viewport absolute inset-0">
           {live ? (
             props.viewer
           ) : (
-            <p className="absolute inset-0 flex items-center justify-center p-6 text-center font-mono text-xs text-faint">
+            <p className="absolute inset-0 flex items-center justify-center p-6 text-center text-xs text-muted-foreground">
               {screen.life._tag === "Starting"
-                ? "starting…"
+                ? "Starting…"
                 : "The agent's next screen look starts it."}
             </p>
           )}
         </div>
-        {live && wire._tag === "Connecting" && (
-          <p className="border-t border-rule-faint px-4 py-2 font-mono text-[11.5px] text-faint">
-            connecting…
-          </p>
-        )}
-        {live && wire._tag === "Closed" && (
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-rule-faint px-4 py-2">
-            <p className="font-mono text-[11.5px] text-faint">connection closed · {wire.words}</p>
-            <button type="button" onClick={props.onReconnect} className={BUTTON_OUTLINE}>
-              Reconnect
-            </button>
-          </div>
-        )}
       </div>
-    </>
+    </div>
   );
 }
 
@@ -171,12 +222,14 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
  */
 export function ScreenPane({
   sessionId,
+  active = true,
   screen,
   viewerId,
   ownerName,
   nameOf,
 }: {
   readonly sessionId: string;
+  readonly active?: boolean;
   readonly screen: LiveScreenDto;
   readonly viewerId: string | null;
   readonly ownerName: string;
@@ -240,7 +293,7 @@ export function ScreenPane({
         video.playsInline = true;
         video.tabIndex = 0;
         video.setAttribute("aria-label", "Session screen");
-        video.className = "h-full w-full outline-none";
+        video.className = "block h-full w-full object-contain outline-none";
         element.append(video);
         stream = openScreenRtc(video, sessionId, {
           watching: (connection) => {
@@ -269,7 +322,11 @@ export function ScreenPane({
     heldRef.current = held;
     rtc.current?.setHeld(held);
     if (rfb.current !== null) rfb.current.viewOnly = !held;
-  }, [held]);
+    if (held && active) {
+      rfb.current?.focus();
+      rtc.current?.focus();
+    }
+  }, [held, active]);
 
   const screenKey = trpc.screens.read.queryKey({ id: sessionId });
   const send = (

@@ -34,7 +34,10 @@ export class ScreenH264 {
         this.#units = [];
         this.#size = 0;
         frames.push({
-          idr: units.some((unit) => ((unit[0] ?? 0) & 31) === 5),
+          // A switch or a fresh viewer needs the parameter sets with the IDR.
+          idr: [5, 7, 8].every((required) =>
+            units.some((unit) => ((unit[0] ?? 0) & 31) === required),
+          ),
           packets: this.#packetizer.packetize(
             Buffer.concat(units.flatMap((unit) => [START, unit])),
             this.#timestamp,

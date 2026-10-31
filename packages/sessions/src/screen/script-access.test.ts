@@ -1,7 +1,7 @@
 import { DisplayNumber } from "@mend/domain/workbench";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Redacted } from "effect";
-import { describe, expect } from "vitest";
+import { beforeEach, describe, expect } from "vitest";
 
 import {
   FULL,
@@ -29,30 +29,35 @@ describe.skipIf(!dockerReady)("screen script access and input", () => {
   const { container, inside, asPerson, xvncPid, start } = useScreenScript();
 
   // Observing LISTEN does not connect and consume ffmpeg's one-viewer socket.
-  const encoderReady = Effect.gen(function* () {
-    const address = `0100007F:${(7910).toString(16).toUpperCase()}`;
-    const deadline = Date.now() + 10_000;
-    for (;;) {
-      const listening = inside("cat /proc/net/tcp | awk '$4 == \"0A\" { print $2 }'")
-        .trim()
-        .split("\n");
-      if (listening.includes(address)) return;
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `encoder did not listen: ${inside(`cat ${RUNTIME}/mend-screen-10/stream.log`)}`,
-        );
+  const encoderReady = (encoderPort: number) =>
+    Effect.gen(function* () {
+      const address = `0100007F:${encoderPort.toString(16).toUpperCase()}`;
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const listening = inside("cat /proc/net/tcp | awk '$4 == \"0A\" { print $2 }'")
+          .trim()
+          .split("\n");
+        if (listening.includes(address)) return;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `encoder did not listen: ${inside(`cat ${RUNTIME}/mend-screen-10/stream-*.log`)}`,
+          );
+        }
+        yield* Effect.sleep("50 millis");
       }
-      yield* Effect.sleep("50 millis");
-    }
-  });
+    });
+
+  beforeEach(async () => {
+    const screen = start(10);
+    await screen.said("mend-screen ready");
+  }, 60_000);
 
   it.live(
     "listens on loopback only, behind its passwords and its cookie, with neither in argv",
     () =>
       Effect.gen(function* () {
-        const screen = start(10);
-        yield* Effect.promise(() => screen.said("mend-screen ready"));
-        yield* encoderReady;
+        yield* encoderReady(7910);
+        yield* encoderReady(8110);
         const port = screenPort(DisplayNumber.make(10)).toString(16).toUpperCase().padStart(4, "0");
         const listening = inside(
           "cat /proc/net/tcp /proc/net/tcp6 | awk '$4 == \"0A\" { print $2 }'",
@@ -64,7 +69,16 @@ describe.skipIf(!dockerReady)("screen script access and input", () => {
             `00000000000000000000000001000000:${port}`,
             `0100007F:${port}`,
             `0100007F:${(7910).toString(16).toUpperCase()}`,
+            `0100007F:${(8110).toString(16).toUpperCase()}`,
           ].toSorted(),
+        );
+        const encoders = inside("ps -eo args= | grep '^ffmpeg '").trim().split("\n");
+        expect(encoders).toHaveLength(2);
+        expect(encoders.find((line) => line.includes("-draw_mouse 1 "))).toContain(
+          "tcp://127.0.0.1:7910?listen=1",
+        );
+        expect(encoders.find((line) => line.includes("-draw_mouse 0 "))).toContain(
+          "tcp://127.0.0.1:8110?listen=1",
         );
         expect(asPerson(10, "xdpyinfo | head -1")).toContain(":10");
         expect(fails(() => asPerson(10, "xdpyinfo", "/nonexistent"))).toBe(true);
@@ -84,15 +98,72 @@ describe.skipIf(!dockerReady)("screen script access and input", () => {
   );
 
   it.live(
-    "starts the encoder on connection and listens again when its last viewer leaves",
+    "starts each encoder on connection and listens again when its last viewer leaves",
     () =>
       Effect.gen(function* () {
-        const receive = () =>
-          inside("socat -u TCP:127.0.0.1:7910 STDOUT | head -c6 | od -An -tx1").replace(/\s/g, "");
-        yield* encoderReady;
-        expect(receive()).toBe("000000010910");
-        yield* encoderReady;
-        expect(receive()).toBe("000000010910");
+        for (const encoderPort of [7910, 8110]) {
+          const receive = () =>
+            inside(`socat -u TCP:127.0.0.1:${encoderPort} STDOUT | head -c6 | od -An -tx1`).replace(
+              /\s/g,
+              "",
+            );
+          yield* encoderReady(encoderPort);
+          expect(receive()).toBe("000000010910");
+          yield* encoderReady(encoderPort);
+          expect(receive()).toBe("000000010910");
+        }
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.live(
+    "discards probe frames captured before an encoder viewer connects",
+    () =>
+      Effect.gen(function* () {
+        for (const port of [7910, 8110]) yield* encoderReady(port);
+        docker(
+          "exec",
+          "-d",
+          "-u",
+          "person",
+          "-e",
+          "DISPLAY=:10",
+          "-e",
+          `XAUTHORITY=${RUNTIME}/mend-screen-10/auth`,
+          container,
+          "xterm",
+          "-title",
+          "handback-live",
+          "-geometry",
+          "200x60+0+0",
+          "-bg",
+          "#20d040",
+          "-e",
+          "sleep",
+          "30",
+        );
+        for (let tries = 0; ; tries++) {
+          if (!fails(() => asPerson(10, "xdotool search --onlyvisible --name '^handback-live$'")))
+            break;
+          if (tries === 50) throw new Error("live colour window did not open");
+          yield* Effect.sleep("50 millis");
+        }
+        yield* Effect.sleep("100 millis");
+        for (const port of [7910, 8110]) {
+          const pixels = asPerson(
+            10,
+            `ffmpeg -nostdin -loglevel error -i tcp://127.0.0.1:${port} -frames:v 6 -vf crop=2:2:100:100,scale=1:1 -f rawvideo -pix_fmt rgb24 pipe:1 | od -An -tu1`,
+          )
+            .trim()
+            .split(/\s+/)
+            .map(Number);
+          expect(pixels).toHaveLength(18);
+          expect(
+            pixels.every((value, i) => Math.abs(value - ([32, 208, 64][i % 3] ?? 0)) < 25),
+            "every decoded frame must show the live window, including the first IDR",
+          ).toBe(true);
+        }
+        asPerson(10, "xdotool search --name '^handback-live$' windowclose");
       }),
     { timeout: 20_000 },
   );
