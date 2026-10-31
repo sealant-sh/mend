@@ -72,6 +72,7 @@ export * from "./resource-access.ts";
 export * from "./resource-settings.ts";
 export * from "./resource-status.ts";
 export * from "./resource-runtime.ts";
+export * from "./resource-command.ts";
 export * from "./review-comment.ts";
 export * from "./review-slice.ts";
 export * from "./review-target.ts";
