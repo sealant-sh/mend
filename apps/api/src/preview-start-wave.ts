@@ -12,14 +12,13 @@ import { budgetMessage, Budgets } from "./budgets.ts";
 import {
   budgetPage,
   CEILING_RETRY_SECONDS,
-  gatewayPage,
   notDelivered,
   REFUSED,
   undeliveredAnswer,
 } from "./preview-headers.ts";
 import { PreviewNotFound } from "./preview-identity.ts";
 import type { BoundResolution } from "./preview-pools.ts";
-import { type PreviewAnswer, refusalAnswer } from "./preview-requests.ts";
+import { gatewayPage, type PreviewAnswer, refusalAnswer } from "./preview-requests.ts";
 import { PreviewTargets } from "./preview-targets.ts";
 
 export type PreviewRoute =
@@ -45,16 +44,17 @@ const NOT_FOUND = refusalAnswer(new PreviewNotFound());
 export const routeOf = (
   serviceName: string,
   resolution: PreviewGatewayResolution | null,
+  back: string | null,
 ): PreviewRoute => {
   if (resolution === null) return refused(NOT_FOUND);
   switch (resolution._tag) {
     case "Stopped":
       return refused(
-        undeliveredAnswer(serviceName, { _tag: "Stopped", by: resolution.control.byName }),
+        undeliveredAnswer(serviceName, { _tag: "Stopped", by: resolution.control.byName }, back),
       );
     case "Refused": {
       const reason = REFUSED[resolution.reason];
-      return refused(gatewayPage(reason.status, notDelivered(serviceName, reason.fact)));
+      return refused(gatewayPage(reason.status, notDelivered(serviceName, reason.fact), back));
     }
     case "Bound":
       return { _tag: "Bound", resolution };
@@ -86,6 +86,8 @@ interface Wave {
 export interface PreviewToStart {
   readonly id: PreviewId;
   readonly serviceName: string;
+  /** Where in Mend its project is, for the pages the gateway answers itself. */
+  readonly back: string | null;
 }
 
 export interface StartWaves {
@@ -110,18 +112,18 @@ export const makeStartWaves = (startHoldMs: number) =>
 
     const didNotStart = (preview: PreviewToStart, reason: PreviewStartReason): WaveOutcome =>
       refused(
-        undeliveredAnswer(preview.serviceName, {
-          _tag: "DidNotStart",
-          holdMs: startHoldMs,
-          reason,
-        }),
+        undeliveredAnswer(
+          preview.serviceName,
+          { _tag: "DidNotStart", holdMs: startHoldMs, reason },
+          preview.back,
+        ),
       );
 
     const startedOutcome = (
       preview: PreviewToStart,
       resolution: PreviewGatewayResolution | null,
     ): WaveOutcome => {
-      const route = routeOf(preview.serviceName, resolution);
+      const route = routeOf(preview.serviceName, resolution, preview.back);
       return route._tag === "Start" ? didNotStart(preview, "process exited") : route;
     };
 

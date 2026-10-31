@@ -766,7 +766,9 @@ describe("the preview gateway relays to the app", () => {
           world.lending.refused.add("carol");
           const reply = yield* getAs(world, cookie, "/");
           expect(reply.status, "carol's next request is refused").toBe(404);
-          expect(reply.body, "the refusal says no such preview").toBe("No such preview.");
+          expect(reply.body, "the refusal says no such preview").toContain(
+            "<p>No such preview.</p>",
+          );
           expect(
             yield* Effect.promise(() => happensWithin(2_000, stream.ended)),
             "carol's open stream ends",

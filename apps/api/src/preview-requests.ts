@@ -5,6 +5,7 @@ import {
   NO_SUCH_PREVIEW,
   siblingRequestAdmitted,
 } from "@mend/network";
+import { type PageTheme, pageThemes } from "@mend/ui/page-theme";
 import { Brand } from "effect";
 
 import type {
@@ -110,6 +111,52 @@ export const answer = (
   body,
 });
 
+const escapeHtml = (text: string) =>
+  text.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
+
+const themeVariables = (theme: PageTheme) =>
+  `color-scheme:${theme.appearance};${Object.entries(theme.variables)
+    .map(([name, value]) => `${name}:${value};`)
+    .join("")}`;
+
+// Self-contained: no font, script or stylesheet is fetched, so the page reads the same on a preview
+// host that serves nothing else and under any edge's Content-Security-Policy.
+const GATEWAY_PAGE_CSS =
+  `:root{${themeVariables(pageThemes.light)}}` +
+  `@media (prefers-color-scheme: dark){:root{${themeVariables(pageThemes.dark)}}}` +
+  "*{box-sizing:border-box}" +
+  "body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;" +
+  "background:var(--background);color:var(--foreground);font:14px/1.5 var(--font-sans)}" +
+  "main{max-width:560px;width:100%;padding:20px 24px;border:1px solid var(--border);" +
+  "border-radius:16px;background:var(--card)}" +
+  "h1{margin:0 0 8px;font:500 12px/1.4 var(--font-mono);letter-spacing:.06em;" +
+  "text-transform:uppercase;color:var(--muted-foreground)}" +
+  "p{margin:0;font:13px/1.6 var(--font-mono);overflow-wrap:anywhere}" +
+  "a{display:inline-block;margin-top:14px;color:var(--primary);text-decoration:none;font-weight:500}" +
+  "a:hover{text-decoration:underline}";
+
+/** `back`: where in Mend the preview's project is, so a person can Start it; null when unknown. */
+export const gatewayPage = (
+  status: number,
+  text: string,
+  back: string | null = null,
+): PreviewAnswer => {
+  const line = escapeHtml(text);
+  const link = back === null ? "" : `<a href="${escapeHtml(back)}">Open in Mend</a>`;
+  return answer(
+    status,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+      `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+      `<title>${line}</title><style>${GATEWAY_PAGE_CSS}</style></head>` +
+      `<body><main><h1>Mend preview · ${status}</h1><p>${line}</p>${link}</main></body></html>`,
+    {
+      "cache-control": "no-store, private",
+      "content-type": "text/html; charset=utf-8",
+      "x-robots-tag": "noindex",
+    },
+  );
+};
+
 export const redirect = (
   status: 302 | 303,
   location: string,
@@ -128,11 +175,11 @@ export const refusalAnswer = (
 ): PreviewAnswer => {
   switch (error._tag) {
     case "PreviewNoIdentity":
-      return answer(401, "Not signed in to this preview.");
+      return gatewayPage(401, "Not signed in to this preview.");
     case "PreviewNotFound":
-      return answer(404, NO_SUCH_PREVIEW);
+      return gatewayPage(404, NO_SUCH_PREVIEW);
     case "PreviewUnavailable":
-      return answer(503, "Previews are unavailable right now.");
+      return gatewayPage(503, "Previews are unavailable right now.");
     case "PreviewPoolFull":
       return answer(
         503,

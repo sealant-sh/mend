@@ -8,7 +8,7 @@ import {
 import type { ForwardIssueReason } from "@mend/sealant";
 
 import {
-  answer,
+  gatewayPage,
   type HeaderPair,
   membersOf,
   type PreviewAnswer,
@@ -159,24 +159,11 @@ export const forwardResponseHead = (
   ];
 };
 
-const escapeHtml = (text: string) =>
-  text.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
-
-export const gatewayPage = (status: number, text: string): PreviewAnswer => {
-  const line = escapeHtml(text);
-  return answer(
-    status,
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${line}</title></head><body><p>${line}</p></body></html>`,
-    {
-      "cache-control": "no-store, private",
-      "content-type": "text/html; charset=utf-8",
-      "x-robots-tag": "noindex",
-    },
-  );
-};
-
-export const undeliveredAnswer = (service: string, why: PreviewNotDelivered): PreviewAnswer =>
-  gatewayPage(503, previewUndeliveredLine(service, why));
+export const undeliveredAnswer = (
+  service: string,
+  why: PreviewNotDelivered,
+  back: string | null = null,
+): PreviewAnswer => gatewayPage(503, previewUndeliveredLine(service, why), back);
 
 export const notDelivered = (service: string, fact: string): string =>
   `${previewFactLine(service, fact)} · your request was not delivered`;

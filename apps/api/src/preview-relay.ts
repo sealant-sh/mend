@@ -16,10 +16,10 @@ import {
   type ForwardRequest,
   forwardRequestHead,
   forwardResponseHead,
-  gatewayPage,
   notDelivered,
 } from "./preview-headers.ts";
 import {
+  gatewayPage,
   type HeaderPair,
   membersOf,
   type PreviewAnswer,

@@ -22,12 +22,11 @@ import {
   budgetPage,
   CEILING_RETRY_SECONDS,
   DIAL_DISPOSITION,
-  gatewayPage,
   notDelivered,
 } from "./preview-headers.ts";
 import { PreviewNotFound } from "./preview-identity.ts";
 import type { ForwardLease } from "./preview-relay.ts";
-import { type PreviewAnswer, refusalAnswer } from "./preview-requests.ts";
+import { gatewayPage, type PreviewAnswer, refusalAnswer } from "./preview-requests.ts";
 import { PreviewTargets } from "./preview-targets.ts";
 
 /** Dev servers close idle keep-alive connections after about 5 s (Node's `keepAliveTimeout`). */

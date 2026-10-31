@@ -303,7 +303,7 @@ describe("the page for a request the gateway did not deliver", () => {
     });
     expect(page.body).not.toMatch(/<script|http-equiv|refresh/i);
     const visible = page.body
-      .match(/<body>(.*)<\/body>/)?.[1]
+      .match(/<p>(.*)<\/p>/)?.[1]
       ?.replace(/<[^>]+>/g, "")
       .replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(Number(code)));
     expect(visible).toBe(
@@ -312,5 +312,23 @@ describe("the page for a request the gateway did not deliver", () => {
         : "preview · api's · <Maria> stopped the preview · your request was not delivered",
     );
     expect(page.body).not.toContain("<dev>");
+  });
+
+  it("is a page in Mend's look that fetches nothing, light and dark", () => {
+    const page = undeliveredAnswer("web", { _tag: "Stopped", by: "Maria" });
+    expect(page.body).not.toMatch(/<script|<link|<img|src=|href=|url\(|@import|https?:\/\//i);
+    expect(page.body).toContain("<style>");
+    expect(page.body).toMatch(/:root\{color-scheme:light;[^}]*--background:/);
+    expect(page.body).toMatch(
+      /@media \(prefers-color-scheme: dark\)\{:root\{color-scheme:dark;[^}]*--background:/,
+    );
+    expect(page.body).toContain("<h1>Mend preview · 503</h1>");
+  });
+
+  it("links back to the preview's project in Mend when the gateway knows it, escaped", () => {
+    const back = 'https://mend.test/projects/p"1';
+    const linked = undeliveredAnswer("web", { _tag: "Stopped", by: "Maria" }, back);
+    expect(linked.body).toContain('<a href="https://mend.test/projects/p&#34;1">Open in Mend</a>');
+    expect(undeliveredAnswer("web", { _tag: "Stopped", by: "Maria" }).body).not.toContain("<a ");
   });
 });
