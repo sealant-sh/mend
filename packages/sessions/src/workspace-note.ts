@@ -78,6 +78,26 @@ export const WORKSPACE_NOTE_FILES = [
   ".pi/agent/AGENTS.md",
 ] as const;
 
+/**
+ * The note's section on previews: what `[preview]` is, how to scaffold `mend.toml`, and where people
+ * open the preview, since its address is not visible from inside the workspace.
+ */
+export const PREVIEWS_NOTE =
+  `## Mend previews\n\n` +
+  `A \`[preview]\` table in \`mend.toml\` names the Service people open as this ` +
+  `worktree's preview, a recipe with \`browserScheme = "http"\`:\n\n` +
+  `\`\`\`toml\n[service.web]\nport = 3000\nbrowserScheme = "http"\n` +
+  `command = "pnpm dev --host 0.0.0.0"\n\n[preview]\nservice = "web"\n\`\`\`\n\n` +
+  `To give a worktree a preview, write that \`mend.toml\` yourself (on their own machine a ` +
+  `person can scaffold one with \`mend service init\`; the workspace's \`mend\` has no ` +
+  `\`init\`). In a conversation session (Slack, the web, the phone), Mend prepares the preview ` +
+  `after a turn that changed the worktree; in a terminal session, start it yourself with ` +
+  `\`mend service run <name>\`. Mend starts or restarts it only after the turn ends, so during ` +
+  `a turn it may not be running yet: don't report it as down. Its address is not visible from this workspace. People open it from Mend: ` +
+  `**Open preview** on the session's Slack status message, **Open** on the Services card on ` +
+  `the web, or **Preview** on the phone. When asked for the preview, say that and name the ` +
+  `Service.\n\n`;
+
 /** The whole block for `body`: begin line, body, end line, each line ending in a newline. */
 export const workspaceNoteBlock = (body: string): string =>
   `${BEGIN_LINE}\n${body.endsWith("\n") ? body : `${body}\n`}${END_LINE}\n`;
