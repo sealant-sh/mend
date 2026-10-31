@@ -13,6 +13,9 @@ import { input, procedure, router } from "./trpc.ts";
 /** The signed-in account's organization (docs/adr/0003-organizations-and-tenancy.md). */
 export const organizationRouter = router({
   current: procedure.query(({ ctx }) => run(ctx, (api) => api.organization.current())),
+  resourceArchives: procedure.query(({ ctx }) =>
+    run(ctx, (api) => api.organization.resourceArchives()),
+  ),
   members: procedure.query(({ ctx }) => run(ctx, (api) => api.organization.members())),
   invitations: procedure.query(({ ctx }) => run(ctx, (api) => api.organization.invitations())),
   createInvitation: procedure

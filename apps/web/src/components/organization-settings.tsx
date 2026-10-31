@@ -51,6 +51,7 @@ export function OrganizationSettings() {
       {owner ? <InvitationsPanel /> : null}
       <FoldersPanel view={view} />
       {owner ? <OrphanedProjectsPanel /> : null}
+      {owner ? <ResourceArchivesPanel /> : null}
       {owner ? <AuditPanel /> : null}
     </>
   );
@@ -847,5 +848,79 @@ function AuditPanel() {
       ) : null}
       <ErrorLine error={error} />
     </Panel>
+  );
+}
+
+/** Owner-only inventory of the resource volumes kept after project purge. */
+function ResourceArchivesPanel() {
+  const trpc = useTRPC();
+  const archives = useQuery(trpc.organization.resourceArchives.queryOptions());
+  return (
+    <Panel
+      id="resource-archives"
+      title="Archived resources"
+      description="Project removal keeps resource volumes. Their data stays here after the project is purged."
+    >
+      {archives.error ? <ErrorLine error={describe(archives.error)} /> : null}
+      {archives.isPending ? <Empty>Reading archived resources…</Empty> : null}
+      {archives.data !== undefined ? <ResourceArchivesList archives={archives.data} /> : null}
+    </Panel>
+  );
+}
+
+/** The kept volumes and their observed sizes, without a deletion action. */
+export function ResourceArchivesList({
+  archives,
+}: {
+  readonly archives: ReadonlyArray<{
+    readonly projectId: string;
+    readonly projectName: string;
+    readonly archivedAt: string | Date;
+    readonly createdByUserId: string | null;
+    readonly volumes: ReadonlyArray<{
+      readonly instanceKey: string;
+      readonly resourceName: string;
+      readonly name: string;
+      readonly dockerName: string;
+      readonly bytes: number | null;
+    }>;
+  }>;
+}) {
+  if (archives.length === 0) return <Empty>No archived resources.</Empty>;
+  return (
+    <div className="space-y-6">
+      {archives.map((archive) => (
+        <article key={archive.projectId} aria-label={`${archive.projectName} archived resources`}>
+          <h3 className="text-sm font-medium">{archive.projectName}</h3>
+          <p className="mt-1 font-mono text-xs text-muted-foreground">
+            Archived {new Date(archive.archivedAt).toISOString().replace("T", " ").slice(0, 16)} UTC
+          </p>
+          {archive.volumes.length === 0 ? (
+            <Empty>No volumes were declared.</Empty>
+          ) : (
+            <ul className="mt-3 space-y-3">
+              {archive.volumes.map((volume) => (
+                <li
+                  key={volume.dockerName}
+                  className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1"
+                >
+                  <div>
+                    <p className="text-[13px]">
+                      @{volume.resourceName} · {volume.name}
+                    </p>
+                    <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                      {volume.dockerName}
+                    </p>
+                  </div>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {volume.bytes === null ? "size not observed" : formatBytes(volume.bytes)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </article>
+      ))}
+    </div>
   );
 }
