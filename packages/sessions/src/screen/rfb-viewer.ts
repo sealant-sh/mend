@@ -1,6 +1,50 @@
 import { ENCODING, type Input, setEncodings } from "./rfb-client.ts";
 import { type ByteQueue, view } from "./rfb-queue.ts";
 
+/** What the relay says first: the server side of RFB 3.8. */
+export const VIEWER_GREETING: Uint8Array = Buffer.from("RFB 003.008\n", "latin1");
+
+/** Security type None: a viewer's access is its Mend sign-in and the ticket it upgraded with. */
+const SECURITY_NONE = 1;
+
+export type ViewerHelloStep =
+  | { readonly _tag: "Pending" | "Ready"; readonly send: ReadonlyArray<Uint8Array> }
+  | { readonly _tag: "Refused" };
+
+/**
+ * The server side of the RFB 3.8 handshake toward a viewer, after the greeting, up to and
+ * including its ClientInit. Its shared flag is not read: the relay's own connection is shared.
+ */
+export class ViewerHello {
+  private step: "version" | "security" | "init" = "version";
+
+  read(queue: ByteQueue): ViewerHelloStep {
+    const send: Uint8Array[] = [];
+    for (;;) {
+      switch (this.step) {
+        case "version":
+          if (queue.length < 12) return { _tag: "Pending", send };
+          if (Buffer.from(queue.take(12)).toString("latin1") !== "RFB 003.008\n") {
+            return { _tag: "Refused" };
+          }
+          send.push(Uint8Array.of(1, SECURITY_NONE));
+          this.step = "security";
+          break;
+        case "security":
+          if (queue.length < 1) return { _tag: "Pending", send };
+          if (queue.take(1)[0] !== SECURITY_NONE) return { _tag: "Refused" };
+          send.push(new Uint8Array(4));
+          this.step = "init";
+          break;
+        case "init":
+          if (queue.length < 1) return { _tag: "Pending", send };
+          queue.take(1);
+          return { _tag: "Ready", send };
+      }
+    }
+  }
+}
+
 export const VIEWER_CUT_TEXT_CEILING = 65_536;
 export const VIEWER_ENCODINGS_CEILING = 64;
 

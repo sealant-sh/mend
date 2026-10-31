@@ -30,6 +30,7 @@ const handOf = (held: {
       return Uint8Array.of(1, 2, 3);
     }),
     relay: () => Effect.void,
+    paste: () => Effect.succeed(true),
     release: Effect.void,
     ended: Effect.never,
   };

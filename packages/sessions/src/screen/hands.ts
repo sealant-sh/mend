@@ -12,6 +12,30 @@ import { ScreenWorkers } from "./screen-workers.ts";
 /** Xvnc listens on `127.0.0.1:5900+n` for display `:n`. */
 const XVNC_PORT_BASE = 5900;
 
+/**
+ * A connection to the screen's Xvnc, as the session's owner and bound to the screen process's
+ * PTY, with the passwords to sign in; null when this process holds none for the screen.
+ */
+export const dialScreen = Effect.fnUntraced(function* (screen: Screen) {
+  const host = yield* ScreenHost;
+  const forward = yield* ForwardAdapter;
+  const pty = screen.processId === null ? null : yield* host.ptyOf(screen.processId);
+  const passwords = yield* host.passwords(screen.sessionId);
+  if (pty === null || passwords === null) return null;
+  const owner = yield* host.ownerOf(screen.sessionId);
+  const { bytes } = yield* forward
+    .open(
+      {
+        workspaceId: screen.workspaceId,
+        port: XVNC_PORT_BASE + screen.display,
+        binding: { kind: "session", session: ForwardSessionOwner.make(pty) },
+      },
+      { purpose: "screen" },
+    )
+    .pipe(asSealantUser(owner));
+  return { bytes, passwords };
+});
+
 export interface Hands {
   /** The live screen's hand, dialled when it has none; null when it cannot have one now. */
   readonly of: (screen: Screen) => Effect.Effect<Hand | null>;
@@ -44,26 +68,18 @@ export const makeHands = Effect.fnUntraced(function* (
 
   const dial = (screen: Screen) =>
     Effect.gen(function* () {
-      const pty = screen.processId === null ? null : yield* host.ptyOf(screen.processId);
-      const passwords = yield* host.passwords(screen.sessionId);
-      if (pty === null || passwords === null) return null;
-      const owner = yield* host.ownerOf(screen.sessionId);
-      const { bytes } = yield* forward
-        .open(
-          {
-            workspaceId: screen.workspaceId,
-            port: XVNC_PORT_BASE + screen.display,
-            binding: { kind: "session", session: ForwardSessionOwner.make(pty) },
-          },
-          { purpose: "screen" },
-        )
-        .pipe(asSealantUser(owner));
+      const dialled = yield* dialScreen(screen);
+      if (dialled === null) return null;
       return yield* openHand({
-        bytes,
-        password: passwords.full,
+        bytes: dialled.bytes,
+        password: dialled.passwords.full,
         currentEpoch: Effect.map(screens.byId(screen.id), (now) => now?.input.epoch ?? -1),
       });
-    }).pipe(Effect.provideService(ScreenWorkers, workers));
+    }).pipe(
+      Effect.provideService(ScreenWorkers, workers),
+      Effect.provideService(ScreenHost, host),
+      Effect.provideService(ForwardAdapter, forward),
+    );
 
   const hold = (screen: Screen, answer: Deferred.Deferred<Hand | null>) =>
     Effect.gen(function* () {
