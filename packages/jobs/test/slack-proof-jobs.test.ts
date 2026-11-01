@@ -80,7 +80,6 @@ const artifact = (capture: ProofCapture = screenshot, sessionId = SessionId.make
     turnId: null,
     title: "Task board",
     caption: "The task appears in Done.",
-    side: "after",
     source: { _tag: "Unknown", reason: "No checkpoint" },
     capture,
     launch: null,

@@ -56,7 +56,6 @@ const artifact = (id: string, recording = false) =>
     turnId: AgentTurnId.make("proof-turn"),
     title: "Task board",
     caption: "Completed task",
-    side: "after",
     source: {
       _tag: "Checkpoint",
       checkpointId: CheckpointId.make("checkpoint"),
@@ -124,6 +123,30 @@ describe.skipIf(postgres.skip)("proof artifacts in Postgres", () => {
     );
   });
 
+  it("0181 removes the deployed side constraint, retains captures and permits new inserts", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* ProofArtifactsRepo;
+        const retained = yield* repo.insert(artifact("proof-deployed"), "deployed");
+        yield* sql`ALTER TABLE proof_artifacts ADD COLUMN side text NOT NULL DEFAULT 'after' CHECK (side IN ('before', 'after'))`;
+        yield* sql`ALTER TABLE proof_artifacts ALTER COLUMN side DROP DEFAULT`;
+        expect(yield* sql`SELECT side FROM proof_artifacts WHERE id = ${retained.id}`).toEqual([
+          { side: "after" },
+        ]);
+        yield* migrations["0181_proof_artifacts_without_side"];
+        const columns = yield* sql`SELECT column_name FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'proof_artifacts' AND column_name = 'side'`;
+        expect(columns).toEqual([]);
+        expect(yield* repo.byId(retained.id)).toEqual(retained);
+        const inserted = yield* repo.insert(artifact("proof-without-side"), "without-side");
+        expect(yield* repo.byId(inserted.id)).toEqual(inserted);
+        yield* migrations["0181_proof_artifacts_without_side"];
+        expect(yield* repo.byId(inserted.id)).toEqual(inserted);
+      }),
+    );
+  });
+
   it("inserts one artifact and one feed item for a retried call, even concurrently", async () => {
     await run(
       Effect.gen(function* () {
@@ -147,7 +170,8 @@ describe.skipIf(postgres.skip)("proof artifacts in Postgres", () => {
         expect(Schema.decodeUnknownSync(ProofRef)(rows[0]?.data)).toMatchObject({
           artifactId: first.id,
           state: "not-captured",
-          label: "Task board · after · checkpoint #2 · not captured · Missing test account",
+          label:
+            "Task board · checkpoint #2 · not captured · Missing test account · observed 14:02 UTC",
         });
         expect(yield* repo.byId(first.id)).toEqual(first);
         expect((yield* repo.listForChange(first.changeId)).map((row) => row.id)).toContain(
@@ -222,7 +246,7 @@ describe.skipIf(postgres.skip)("proof artifacts in Postgres", () => {
           artifactId: recording.id,
           state: "not-captured",
           label:
-            "Task board · after · checkpoint #2 · not captured · Mend restarted while recording",
+            "Task board · checkpoint #2 · not captured · Mend restarted while recording · observed 14:02 UTC",
         });
         yield* repo.settleStaleRecordings();
         expect((yield* repo.byId(recording.id))?.capture._tag).toBe("NotCaptured");

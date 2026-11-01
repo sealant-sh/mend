@@ -213,10 +213,10 @@ A follow-up in a channel is refused when the session's project has been made pri
 
 Mend posts only into the thread the request came from.
 
-Selected proof screenshots are uploaded as PNG files and the after video as an MP4 file. Each
-carries its before or after label, source, observation time and the agent's caption. Uploaded copies
-follow Slack's access rules. A capture that could not be taken gets a text reply with its reason; a
-file that could not be delivered is named with the reason. Slack Connect threads receive no proof
+Selected proof screenshots are uploaded as PNG files and the video as an MP4 file. Each carries its
+checkpoint or unknown source, observation time and the agent's caption. Uploaded copies follow
+Slack's access rules. A capture that could not be taken gets a text reply with its reason; a file
+that could not be delivered is named with the reason. Slack Connect threads receive no proof
 artifacts, even when other agent messages are enabled there.
 
 - A reaction on the request: ⏳ while the session runs, ✅ when it completes, ❌ when it fails or

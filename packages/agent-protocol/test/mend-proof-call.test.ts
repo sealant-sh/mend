@@ -13,7 +13,7 @@ import {
 const IMAGE = "iVBORw0KGgo-proof-binary";
 const reference = {
   artifactId: "proof-1",
-  label: "Task board · before · base abcdef1 · observed 14:02 UTC",
+  label: "Task board · checkpoint #2 · observed 14:02 UTC",
   message: "Recorded the screen as observed.",
 };
 const output = {
@@ -32,35 +32,33 @@ const item = (name = "proof_screenshot"): AgentEventItem => ({
   data: {
     type: "tool_use",
     name: `mcp__mend__${name}`,
-    input: { title: "Board", caption: "Task visible", side: "before" },
+    input: { title: "Board", caption: "Task visible" },
     result: output,
   },
 });
 
 describe("proof tool catalog and compaction", () => {
-  it("bounds metadata and refuses an absent side or missing reason", () => {
-    const valid = { title: "Board", caption: "Visible task", side: "before" };
+  it("bounds metadata and requires a missing-capture reason", () => {
+    const valid = { title: "Board", caption: "Visible task" };
     expect(Schema.is(ProofScreenshotParams)(valid)).toBe(true);
     expect(Schema.is(ProofScreenshotParams)({ ...valid, title: "a".repeat(121) })).toBe(false);
     expect(Schema.is(ProofScreenshotParams)({ ...valid, caption: "a".repeat(1001) })).toBe(false);
-    expect(Schema.is(ProofScreenshotParams)({ ...valid, side: "unknown" })).toBe(false);
     expect(
       Schema.is(ProofMissingParams)({
         title: "Board",
-        side: "before",
         kind: "screenshot",
         reason: "",
       }),
     ).toBe(false);
   });
-  it("bounds after video metadata and accepts an empty stop", () => {
+  it("bounds video metadata and accepts an empty stop", () => {
     const valid = { title: "Board", caption: "Visible task" };
     expect(Schema.is(ProofVideoStartParams)(valid)).toBe(true);
     expect(Schema.is(ProofVideoStartParams)({ ...valid, title: "a".repeat(121) })).toBe(false);
     expect(Schema.is(ProofVideoStartParams)({ ...valid, caption: "a".repeat(1001) })).toBe(false);
     expect(Schema.is(ProofVideoStopParams)({})).toBe(true);
     expect(Schema.is(ProofVideoStopParams)(42)).toBe(false);
-    expect(Schema.is(ProofVideoStopParams)({ side: "before" })).toBe(false);
+    expect(Schema.is(ProofVideoStopParams)({ unexpected: true })).toBe(false);
   });
   it.each(["proof_video_start", "proof_video_stop"])(
     "compacts %s with its artifact label",

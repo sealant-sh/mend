@@ -134,9 +134,9 @@ by an older gateway no longer reads files, which now need a permission of their 
 
 ## What t3code can do with Mend
 
-Proof screenshots and the after video show inline in the session's thread, where the agent captured
-them, with their source, observation time and caption. A video says "recording" until it finishes. A
-copy displayed or downloaded in T3 Code follows T3 Code's own client and thread rules. Revoking Mend
+Proof screenshots and the video show inline in the session's thread, where the agent captured them,
+with their source, observation time and caption. A video says "recording" until it finishes. A copy
+displayed or downloaded in T3 Code follows T3 Code's own client and thread rules. Revoking Mend
 access does not recall a copy already delivered.
 
 | In t3code                          | What happens in Mend                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |

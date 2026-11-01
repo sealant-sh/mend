@@ -15,7 +15,7 @@ export interface RecordingScreen {
   readonly display: number;
 }
 
-/** A playable after video; an interrupted ending must remain visible beside it. */
+/** A playable video; an interrupted ending must remain visible beside it. */
 export interface RecordedVideo {
   readonly mp4: Uint8Array;
   readonly durationMs: number;

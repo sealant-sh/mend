@@ -82,7 +82,6 @@ const digest = createHash("sha256").update(png).digest("hex");
 const params = {
   title: "Task board",
   caption: "A completed task",
-  side: "before",
 } satisfies Parameters<ProofCaptures["Service"]["screenshot"]>[1];
 
 const fixture = (
@@ -301,7 +300,7 @@ const run = <A>(
 ) => Effect.runPromise(Effect.flatMap(ProofCaptures, body).pipe(Effect.provide(world.layer)));
 
 describe("proof captures on the session's screen", () => {
-  it("records before from the base, keeps its own PNG, and retries without another look", async () => {
+  it("pins a checkpoint, keeps its own PNG, and retries without another look", async () => {
     const world = fixture();
     await run(world, (captures) =>
       Effect.gen(function* () {
@@ -311,9 +310,14 @@ describe("proof captures on the session's screen", () => {
         expect(first.structuredContent).toBeUndefined();
         expect(first.content[0]).toMatchObject({ type: "image", data: png, mimeType: "image/png" });
         expect(world.looks()).toBe(1);
-        expect(world.checkpoints()).toBe(0);
+        expect(world.checkpoints()).toBe(1);
         const stored = [...world.artifacts.values()][0];
-        expect(stored?.source).toEqual({ _tag: "Base", commit: base });
+        expect(stored?.source).toEqual({
+          _tag: "Checkpoint",
+          checkpointId: checkpoint.id,
+          ordinal: 4,
+          commit: checkpoint.sha,
+        });
         expect(stored?.capture).toMatchObject({
           _tag: "Screenshot",
           moment: { screenId: SCREEN, seq: 7 },
@@ -327,15 +331,12 @@ describe("proof captures on the session's screen", () => {
       }),
     );
   });
-  it("pins after to a checkpoint, and concurrent retries keep one artifact", async () => {
+  it("pins a checkpoint, and concurrent retries keep one artifact", async () => {
     const world = fixture();
     await run(world, (captures) =>
       Effect.gen(function* () {
         const replies = yield* Effect.all(
-          [
-            captures.screenshot(caller, { ...params, side: "after" }),
-            captures.screenshot(caller, { ...params, side: "after" }),
-          ],
+          [captures.screenshot(caller, params), captures.screenshot(caller, params)],
           { concurrency: "unbounded" },
         );
         expect(replies[0]).toEqual(replies[1]);
@@ -351,11 +352,9 @@ describe("proof captures on the session's screen", () => {
       }),
     );
   });
-  it("still captures after when checkpointing fails, labelled source unknown", async () => {
+  it("still captures when checkpointing fails, labelled source unknown", async () => {
     const world = fixture({ checkpointFailed: true });
-    const result = await run(world, (captures) =>
-      captures.screenshot(caller, { ...params, side: "after" }),
-    );
+    const result = await run(world, (captures) => captures.screenshot(caller, params));
     expect(result.isError).not.toBe(true);
     expect([...world.artifacts.values()][0]?.source).toMatchObject({ _tag: "Unknown" });
     expect(JSON.stringify(result.content)).toContain("source unknown");
@@ -394,19 +393,18 @@ describe("proof captures on the session's screen", () => {
     expect(world.artifacts.size).toBe(1);
     expect(world.copied).toHaveLength(0);
   });
-  it("records missing before with its reason and no look or blob", async () => {
+  it("records missing capture with its reason and no look or blob", async () => {
     const world = fixture();
     const result = await run(world, (captures) =>
       captures.missing(caller, {
         title: "Board",
-        side: "before",
         kind: "screenshot",
         reason: "Missing test account",
       }),
     );
     expect(result.isError).not.toBe(true);
     expect(world.looks()).toBe(0);
-    expect(world.checkpoints()).toBe(0);
+    expect(world.checkpoints()).toBe(1);
     expect([...world.artifacts.values()][0]?.capture).toEqual({
       _tag: "NotCaptured",
       kind: "screenshot",
@@ -438,7 +436,6 @@ describe("proof videos on the session's screen", () => {
         expect(world.checkpoints()).toBe(1);
         const recording = [...world.artifacts.values()][0];
         expect(recording).toMatchObject({
-          side: "after",
           source: { _tag: "Checkpoint", ordinal: 4 },
           capture: { _tag: "Recording", screenId: SCREEN, fromSeq: 7 },
           launch: videoParams.launch,
@@ -450,7 +447,7 @@ describe("proof videos on the session's screen", () => {
         expect(stopped.isError).not.toBe(true);
         expect(stopped.content).toHaveLength(1);
         expect(stopped.content[0]?.type).toBe("text");
-        expect(JSON.stringify(stopped.content)).toContain("after · checkpoint #4 · observed");
+        expect(JSON.stringify(stopped.content)).toContain("checkpoint #4 · observed");
         expect(yield* captures.videoStop(stopCaller)).toEqual(stopped);
         expect(yield* captures.videoStart(caller, videoParams)).toEqual(stopped);
         const stored = [...world.artifacts.values()][0];
@@ -585,7 +582,7 @@ describe("proof videos on the session's screen", () => {
           expect(
             (yield* captures.missing(
               { ...caller, callKey: "missing" },
-              { title: "Board", side: "before", kind: "screenshot", reason: "No account" },
+              { title: "Board", kind: "screenshot", reason: "No account" },
             )).isError,
           ).not.toBe(true);
         }),

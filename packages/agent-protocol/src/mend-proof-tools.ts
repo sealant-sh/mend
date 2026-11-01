@@ -5,7 +5,6 @@ import {
   PROOF_VIDEO_START_TOOL,
   PROOF_VIDEO_STOP_TOOL,
   ProofKind,
-  ProofSide,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
@@ -15,7 +14,6 @@ const title = Schema.String.check(Schema.isBetweenLength(1, PROOF_LIMITS.titleCh
 const note = Schema.String.check(Schema.isMaxLength(PROOF_LIMITS.noteChars));
 export const ProofScreenshotParams = Schema.Struct({
   title,
-  side: ProofSide,
   caption: Schema.String.check(Schema.isMaxLength(PROOF_LIMITS.captionChars)),
   launch: Schema.optionalKey(note),
   differences: Schema.optionalKey(note),
@@ -23,7 +21,6 @@ export const ProofScreenshotParams = Schema.Struct({
 export type ProofScreenshotParams = typeof ProofScreenshotParams.Type;
 export const ProofMissingParams = Schema.Struct({
   title,
-  side: ProofSide,
   kind: ProofKind,
   reason: Schema.String.check(Schema.isBetweenLength(1, PROOF_LIMITS.noteChars)),
 });
@@ -39,11 +36,11 @@ export type ProofVideoStartParams = typeof ProofVideoStartParams.Type;
 export const ProofVideoStopParams = Schema.Record(Schema.String, Schema.Never);
 
 const GUIDANCE =
-  "Choose what a person needs to see using .mend/features.md and .mend/verify.md when present. For before, run the base app from a side copy on another port, with its own writable data; never check out the base in /workspace/repo. Labels describe observations, never verdicts that a change works. Never put secret values, signed cookies or tokens in tool arguments. If before cannot run, record proof_missing with the reason; never relabel an after capture as before.";
-export const PROOF_SCREENSHOT_DESCRIPTION = `Capture a labelled before or after PNG of the user's web app on this session's screen and attach it to the change. Start the app and open it with chromium first. After pins a checkpoint; record launch commands, port overrides and fixture differences. ${GUIDANCE}`;
+  "Capture the app with the change as a person would see it. Choose what a person needs to see using .mend/features.md and .mend/verify.md when present. Labels describe observations, never verdicts that a change works. Never put secret values, signed cookies or tokens in tool arguments. When a capture cannot be taken, record proof_missing with the reason.";
+export const PROOF_SCREENSHOT_DESCRIPTION = `Capture a labelled PNG of the user's web app on this session's screen and attach it to the change. Start the app and open it with chromium first. Mend takes a checkpoint when capture starts; record launch commands and known differences from the verification instructions. ${GUIDANCE}`;
 export const PROOF_MISSING_DESCRIPTION = `Record a screenshot or video that could not be captured, with its reason, on this session's change. ${GUIDANCE}`;
 
-export const PROOF_VIDEO_START_DESCRIPTION = `Start a labelled after video of the user's web app on this session's screen, attached to the change and pinned to a checkpoint. Start the app and open it with chromium first. Drive the flow with screen_act while recording; screen_look can observe between batches. Keep it under about a minute and call proof_video_stop within 60 seconds. Mend ends and stores it at the limit even if you forget to stop. Record launch commands, port overrides and fixture differences. Labels describe observations, never verdicts that a change works. Never put secret values, signed cookies or tokens in tool arguments.`;
+export const PROOF_VIDEO_START_DESCRIPTION = `Start a labelled video of the user's web app on this session's screen, attached to the change and pinned to a checkpoint. Start the app and open it with chromium first. Drive the flow with screen_act while recording; screen_look can observe between batches. Keep it under about a minute and call proof_video_stop within 60 seconds. Mend ends and stores it at the limit even if you forget to stop. Record launch commands and known differences from the verification instructions. ${GUIDANCE}`;
 export const PROOF_VIDEO_STOP_DESCRIPTION = `Stop this session's proof video and store its playable MP4 on the change. Returns its source and observation label, including a time limit or interruption when observed. If it already finished, returns that artifact. Never put secret values in tool arguments.`;
 
 export type MendProofTool =

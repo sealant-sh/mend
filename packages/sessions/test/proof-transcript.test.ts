@@ -6,7 +6,7 @@ import { withPages } from "../src/transcript-pages.ts";
 const image = "iVBORw0KGgo-proof-payload";
 const text = {
   artifactId: "proof-1",
-  label: "Board · before · base abcdef1 · observed 14:02 UTC",
+  label: "Board · checkpoint #2 · observed 14:02 UTC",
   message: "Recorded the screen as observed.",
 };
 
@@ -15,7 +15,7 @@ describe("proof tools in the native transcript", () => {
     const event = {
       kind: "tool",
       name: "mcp__mend__proof_screenshot",
-      args: '{"title":"Board","side":"before","caption":"Empty board"}',
+      args: '{"title":"Board","caption":"Empty board"}',
       argsFormat: "json",
       command: null,
       output: JSON.stringify([

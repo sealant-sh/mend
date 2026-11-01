@@ -62,7 +62,7 @@ export const slackProofFilename = (artifact: ProofArtifact): string => {
       .replaceAll(/[^a-zA-Z0-9_-]+/g, "-")
       .replaceAll(/^-|-$/g, "")
       .slice(0, 80) || "proof";
-  return `${title}-${artifact.side}-${artifact.id}.${artifact.capture._tag === "Video" ? "mp4" : "png"}`;
+  return `${title}-${artifact.id}.${artifact.capture._tag === "Video" ? "mp4" : "png"}`;
 };
 
 const observedAt = (at: Date): string => `${at.toISOString().slice(11, 16)} UTC`;

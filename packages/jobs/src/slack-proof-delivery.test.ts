@@ -6,6 +6,7 @@ import {
 } from "@mend/db";
 import {
   ChangeId,
+  CheckpointId,
   OrganizationId,
   ProjectId,
   ProofArtifactId,
@@ -57,8 +58,12 @@ const artifactOf = (capture: ProofCapture = png) =>
     turnId: null,
     title: "Completed task on board",
     caption: "The task appears in Done.",
-    side: "before",
-    source: { _tag: "Base", commit: Sha.make("1a2b3c4".padEnd(40, "0")) },
+    source: {
+      _tag: "Checkpoint",
+      checkpointId: CheckpointId.make("checkpoint"),
+      ordinal: 2,
+      commit: Sha.make("1a2b3c4".padEnd(40, "0")),
+    },
     capture,
     launch: null,
     differences: null,
@@ -189,7 +194,7 @@ describe("Slack proof delivery", () => {
             channelId: "C1",
             threadTs: "1.0",
             initialComment:
-              "Completed task on board · before · base 1a2b3c4 · observed 14:02 UTC\nThe task appears in Done.",
+              "Completed task on board · checkpoint #2 · observed 14:02 UTC\nThe task appears in Done.",
           },
         });
         yield* deliverProofToSlack(h.input);
@@ -206,17 +211,17 @@ describe("Slack proof delivery", () => {
       durationMs: 9000,
       ending: "stopped",
     });
-    const h = harness(new ProofArtifact({ ...artifact, side: "after" }));
+    const h = harness(artifact);
     return Effect.gen(function* () {
       yield* deliverProofToSlack(h.input);
       expect(h.slack.calls[0]).toMatchObject({
-        input: { filename: expect.stringMatching(/-after-.*\.mp4$/), length: 4 },
+        input: { filename: expect.stringMatching(/\.mp4$/), length: 4 },
       });
       expect(
         h.slack.calls[0]?.kind === "filesGetUploadUrl" && h.slack.calls[0].input,
       ).not.toHaveProperty("altText");
       expect(h.slack.calls[2]).toMatchObject({
-        input: { initialComment: expect.stringContaining(" · after · ") },
+        input: { initialComment: expect.stringContaining(" · checkpoint #2 · ") },
       });
     }).pipe(Effect.provide(h.layer));
   });
@@ -358,7 +363,7 @@ describe("Slack proof delivery", () => {
 
   it.effect("posts a not-captured label once, recovering a lost text receipt", () => {
     const h = harness(
-      artifactOf({ _tag: "NotCaptured", kind: "screenshot", reason: "The base does not run." }),
+      artifactOf({ _tag: "NotCaptured", kind: "screenshot", reason: "The app does not run." }),
     );
     h.failNextSave((progress) => progress.state === "shared");
     return Effect.gen(function* () {
@@ -389,9 +394,7 @@ describe("Slack proof delivery", () => {
         kind: "postMessage",
         input: {
           threadTs: "1.0",
-          text: expect.stringContaining(
-            "before · base 1a2b3c4 · not captured · The base does not run.",
-          ),
+          text: expect.stringContaining("checkpoint #2 · not captured · The app does not run."),
         },
       });
     }).pipe(Effect.provide(h.layer));
