@@ -10,3 +10,5 @@ ffmpeg -nostdin -loglevel error -f lavfi -i color=c=0x316ca8:s=1280x800:r=30:d=2
 ```
 
 The tests append an AUD delimiter to expose the last complete access unit to the incremental parser.
+
+`proof-region.h264` uses the same command with `s=640x300` for the dedicated region encoder tests.

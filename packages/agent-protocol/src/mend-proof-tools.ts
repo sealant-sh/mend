@@ -5,6 +5,7 @@ import {
   PROOF_VIDEO_START_TOOL,
   PROOF_VIDEO_STOP_TOOL,
   ProofKind,
+  ProofRegion,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
@@ -17,6 +18,7 @@ export const ProofScreenshotParams = Schema.Struct({
   caption: Schema.String.check(Schema.isMaxLength(PROOF_LIMITS.captionChars)),
   launch: Schema.optionalKey(note),
   differences: Schema.optionalKey(note),
+  region: Schema.optionalKey(ProofRegion),
 });
 export type ProofScreenshotParams = typeof ProofScreenshotParams.Type;
 export const ProofMissingParams = Schema.Struct({
@@ -31,16 +33,20 @@ export const ProofVideoStartParams = Schema.Struct({
   caption: Schema.String.check(Schema.isMaxLength(PROOF_LIMITS.captionChars)),
   launch: Schema.optionalKey(note),
   differences: Schema.optionalKey(note),
+  region: Schema.optionalKey(ProofRegion),
 });
 export type ProofVideoStartParams = typeof ProofVideoStartParams.Type;
 export const ProofVideoStopParams = Schema.Record(Schema.String, Schema.Never);
 
+const FRAMING =
+  "Make the page fill the screen first: use F11 through screen_act, then ctrl+plus to enlarge the relevant content. From the last screen_look, pass a region {x,y,width,height} around the change, at least 160×120 inside the 1280×800 screen. Use the same region for related captures.";
+
 const GUIDANCE =
   "Capture the app with the change as a person would see it. Choose what a person needs to see using .mend/features.md and .mend/verify.md when present. Labels describe observations, never verdicts that a change works. Never put secret values, signed cookies or tokens in tool arguments. When a capture cannot be taken, record proof_missing with the reason.";
-export const PROOF_SCREENSHOT_DESCRIPTION = `Capture a labelled PNG of the user's web app on this session's screen and attach it to the change. Start the app and open it with chromium first. Mend takes a checkpoint when capture starts; record launch commands and known differences from the verification instructions. ${GUIDANCE}`;
+export const PROOF_SCREENSHOT_DESCRIPTION = `Capture a labelled PNG of the user's web app on this session's screen and attach it to the change. Start the app and open it with chromium first. Mend takes a checkpoint when capture starts; record launch commands and known differences from the verification instructions. ${FRAMING} ${GUIDANCE}`;
 export const PROOF_MISSING_DESCRIPTION = `Record a screenshot or video that could not be captured, with its reason, on this session's change. ${GUIDANCE}`;
 
-export const PROOF_VIDEO_START_DESCRIPTION = `Start a labelled video of the user's web app on this session's screen, attached to the change and pinned to a checkpoint. Start the app and open it with chromium first. Drive the flow with screen_act while recording; screen_look can observe between batches. Keep it under about a minute and call proof_video_stop within 60 seconds. Mend ends and stores it at the limit even if you forget to stop. Record launch commands and known differences from the verification instructions. ${GUIDANCE}`;
+export const PROOF_VIDEO_START_DESCRIPTION = `Start a labelled video of the user's web app on this session's screen, attached to the change and pinned to a checkpoint. Start the app and open it with chromium first. Drive the flow with screen_act while recording; screen_look can observe between batches. Keep it under about a minute and call proof_video_stop within 60 seconds. Mend ends and stores it at the limit even if you forget to stop. Region dimensions round down to even pixels; if its encoder is unavailable, the video uses the full screen. Record launch commands and known differences from the verification instructions. ${FRAMING} ${GUIDANCE}`;
 export const PROOF_VIDEO_STOP_DESCRIPTION = `Stop this session's proof video and store its playable MP4 on the change. Returns its source and observation label, including a time limit or interruption when observed. If it already finished, returns that artifact. Never put secret values in tool arguments.`;
 
 export type MendProofTool =

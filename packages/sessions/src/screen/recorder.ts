@@ -1,5 +1,5 @@
 import type { ScreenId, SessionId, SessionProcessId } from "@mend/domain";
-import type { ProofVideoEnding } from "@mend/domain/workbench";
+import type { ProofRegion, ProofVideoEnding } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -13,6 +13,7 @@ export interface RecordingScreen {
   readonly sessionId: SessionId;
   readonly processId: SessionProcessId;
   readonly display: number;
+  readonly region?: ProofRegion;
 }
 
 /** A playable video; an interrupted ending must remain visible beside it. */
@@ -20,6 +21,7 @@ export interface RecordedVideo {
   readonly mp4: Uint8Array;
   readonly durationMs: number;
   readonly ending: ProofVideoEnding;
+  readonly region?: ProofRegion | null;
 }
 
 /** Expected capture admission failures; missing encoders include a five-second IDR timeout. */
@@ -33,7 +35,7 @@ export class RecordingUnavailable extends Schema.TaggedError<RecordingUnavailabl
   { reason: Schema.Literals(["not_found", "invalid_media"]) },
 ) {}
 
-/** The HTTP process supplies the recorder beside Screens; no workspace encoder is started here. */
+/** The HTTP process supplies the recorder beside Screens; region encoders live only for the recording. */
 export class ScreenRecorder extends Context.Service<
   ScreenRecorder,
   {

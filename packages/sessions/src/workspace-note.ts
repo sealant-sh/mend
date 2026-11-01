@@ -107,6 +107,8 @@ export const proofArtifactsNote = (): string =>
   `## Proof artifacts\n\n` +
   `Capture the app with the change as a person would see it when a user flow benefits from a screenshot or short video. ` +
   `Read .mend/features.md and .mend/verify.md when present. Start the app and open it with chromium on this session's screen. ` +
+  `Make the page fill the screen first: F11 through screen_act, then ctrl+plus until the relevant content is large. ` +
+  `From the last screen_look, pass a region {x,y,width,height} around the change, at least 160×120 inside the 1280×800 screen. Use the same region for related captures. ` +
   `Use proof_screenshot for a selected observation. For a video, call proof_video_start, drive with screen_act, then proof_video_stop within 60 seconds. ` +
   `Mend takes a checkpoint when capture starts and stores the video at the limit if you forget to stop. ` +
   `If a capture cannot be taken, call proof_missing with the reason. ` +

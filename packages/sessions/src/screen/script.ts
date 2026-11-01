@@ -1,4 +1,9 @@
-import { SCREEN_LIMITS, type DisplayNumber, type ScreenDegraded } from "@mend/domain/workbench";
+import {
+  SCREEN_LIMITS,
+  type DisplayNumber,
+  type ProofRegion,
+  type ScreenDegraded,
+} from "@mend/domain/workbench";
 
 import { privateRuntimeOf } from "../harness-layout.ts";
 import {
@@ -278,3 +283,35 @@ export const screenReportOf = (line: string): ScreenReport | null => {
     ? { _tag: "Degraded", reason: "client-failed" }
     : null;
 };
+
+/** A recording owns one listener; a watchdog also bounds an encoder whose open answer was lost. */
+export const screenRegionArgv = (
+  display: DisplayNumber,
+  dir: string,
+  region: ProofRegion,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  `set -eu
+export DISPLAY="$1" XAUTHORITY="$2/auth"
+(sleep 70; kill -TERM $$ 2>/dev/null) &
+watchdog=$!
+trap 'kill "$watchdog" 2>/dev/null || true' EXIT
+ffmpeg -nostdin -loglevel error -fflags nobuffer -probesize 32 -analyzeduration 0 \\
+  -f x11grab -draw_mouse 1 -framerate 30 -video_size "$3" -i "$1+$4,$5" \\
+  -c:v libx264 -threads 2 -preset ultrafast -tune zerolatency -profile:v baseline \\
+  -level:v 3.1 -pix_fmt yuv420p -vf scale=out_color_matrix=bt709 -colorspace bt709 \\
+  -color_primaries bt709 -color_trc bt709 -g 30 -keyint_min 30 -bf 0 \\
+  -x264-params aud=1:repeat-headers=1 -t 65 -f h264 "tcp://127.0.0.1:$6?listen=1" &
+encoder=$!
+trap 'kill "$encoder" "$watchdog" 2>/dev/null || true' EXIT
+trap 'exit 0' HUP INT TERM
+wait "$encoder"`,
+  "mend-proof-region",
+  `:${display}`,
+  dir,
+  `${region.width}x${region.height}`,
+  String(region.x),
+  String(region.y),
+  String(8300 + display),
+];

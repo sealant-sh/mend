@@ -1,9 +1,19 @@
 import { ScreenRtcUnavailable } from "@mend/api-contracts";
 import { ScreensRepo } from "@mend/db";
-import type { Screen } from "@mend/domain/workbench";
+import type { ProofRegion, Screen } from "@mend/domain/workbench";
 import { asSealantUser, ForwardSessionOwner } from "@mend/sealant";
 import { ForwardAdapter, ScreenHost } from "@mend/sessions";
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Semaphore, type Scope } from "effect";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Schedule,
+  Semaphore,
+  type Scope,
+} from "effect";
 import * as Context from "effect/Context";
 
 import { streamScreenVideo, type ScreenVideoFrame } from "./screen-video.ts";
@@ -21,7 +31,8 @@ export class ScreenVideoSource extends Context.Service<
     readonly subscribe: (
       screen: Screen,
       subscriber: ScreenVideoSubscriber,
-    ) => Effect.Effect<void, ScreenRtcUnavailable, Scope.Scope>;
+      region?: ProofRegion,
+    ) => Effect.Effect<ProofRegion | null, ScreenRtcUnavailable, Scope.Scope>;
   }
 >()("@mend/api/ScreenVideoSource") {}
 
@@ -44,7 +55,74 @@ const make: Effect.Effect<
   const joining = yield* Semaphore.make(1);
 
   return ScreenVideoSource.of({
-    subscribe: Effect.fn("ScreenVideoSource.subscribe")(function* (screen, subscriber) {
+    subscribe: Effect.fn("ScreenVideoSource.subscribe")(function* (screen, subscriber, region) {
+      if (region !== undefined) {
+        const actual = {
+          ...region,
+          width: region.width - (region.width % 2),
+          height: region.height - (region.height % 2),
+        };
+        const ready = yield* Deferred.make<void, ScreenRtcUnavailable>();
+        let started = false;
+        const pump = Effect.scoped(
+          Effect.gen(function* () {
+            const encoder = yield* host
+              .regionEncoder(screen, actual)
+              .pipe(Effect.mapError(() => new ScreenRtcUnavailable()));
+            const owner = yield* host.ownerOf(screen.sessionId);
+            yield* streamScreenVideo({
+              pointer: Effect.gen(function* () {
+                const now = yield* repo.ofSession(screen.sessionId);
+                if (
+                  now?.id !== screen.id ||
+                  now.life._tag !== "Live" ||
+                  now.processId !== screen.processId
+                )
+                  return yield* new ScreenRtcUnavailable();
+                return true;
+              }),
+              open: () =>
+                forward
+                  .open(
+                    {
+                      workspaceId: screen.workspaceId,
+                      port: encoder.port,
+                      binding: { kind: "session", session: ForwardSessionOwner.make(encoder.pty) },
+                    },
+                    { purpose: "screen", timeoutMs: 3000 },
+                  )
+                  .pipe(
+                    asSealantUser(owner),
+                    Effect.retry({ times: 20, schedule: Schedule.spaced("100 millis") }),
+                    Effect.map(({ bytes }) => bytes),
+                    Effect.mapError(() => new ScreenRtcUnavailable()),
+                  ),
+              emit: (frame) => {
+                started = true;
+                Deferred.doneUnsafe(ready, Exit.void);
+                subscriber.frame(frame);
+              },
+            });
+          }),
+        ).pipe(
+          Effect.catch(() => Effect.void),
+          Effect.ensuring(
+            Effect.sync(() => {
+              Deferred.doneUnsafe(ready, Exit.fail(new ScreenRtcUnavailable()));
+              if (started) subscriber.ended();
+            }),
+          ),
+        );
+        const fiber = yield* Effect.forkScoped(pump);
+        yield* Deferred.await(ready).pipe(
+          Effect.timeoutOrElse({
+            duration: "5 seconds",
+            orElse: () => Effect.fail(new ScreenRtcUnavailable()),
+          }),
+          Effect.onError(() => Fiber.interrupt(fiber)),
+        );
+        return actual;
+      }
       const key = `${screen.id}:${screen.processId}`;
       const held = yield* Effect.acquireRelease(
         joining.withPermit(
@@ -129,6 +207,7 @@ const make: Effect.Effect<
           orElse: () => Effect.fail(new ScreenRtcUnavailable()),
         }),
       );
+      return null;
     }),
   });
 });

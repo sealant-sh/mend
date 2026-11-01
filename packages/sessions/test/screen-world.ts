@@ -142,6 +142,7 @@ export const screenHostLayer = (world: ScreenWorld) =>
       const issued = makeScreenPasswords();
       const issue = (sessionId: SessionId) => world.signWith?.(issued.issue(sessionId, OWNER));
       return {
+        regionEncoder: () => Effect.die("no region encoder in screen fixture"),
         ownerOf: () => Effect.succeed(OWNER),
         start: (sessionId) =>
           Effect.gen(function* () {

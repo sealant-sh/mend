@@ -19,7 +19,7 @@ import {
   WorktreeId,
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
-import { ScreenMoment, ScreenSpan } from "./screen.ts";
+import { SCREEN_LIMITS, ScreenMoment, ScreenSpan } from "./screen.ts";
 
 export const PROOF_SCREENSHOT_TOOL = "proof_screenshot";
 export const PROOF_VIDEO_START_TOOL = "proof_video_start";
@@ -33,6 +33,22 @@ export const PROOF_LIMITS = {
   /** ADR 0021 D7: a video runs under about a minute; Mend ends it here. */
   videoMs: 60_000,
 } as const;
+
+/** Screen pixels selected for artifact media; the screen log retains the full frame. */
+export const ProofRegion = Schema.Struct({
+  x: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: SCREEN_LIMITS.width - 160 })),
+  y: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: SCREEN_LIMITS.height - 120 })),
+  width: Schema.Int.check(Schema.isBetween({ minimum: 160, maximum: SCREEN_LIMITS.width })),
+  height: Schema.Int.check(Schema.isBetween({ minimum: 120, maximum: SCREEN_LIMITS.height })),
+}).check(
+  Schema.makeFilter((region) =>
+    region.x + region.width <= SCREEN_LIMITS.width &&
+    region.y + region.height <= SCREEN_LIMITS.height
+      ? undefined
+      : "region must fit inside the 1280×800 screen",
+  ),
+);
+export type ProofRegion = typeof ProofRegion.Type;
 
 export const ProofKind = Schema.Literals(["screenshot", "video"]);
 export type ProofKind = typeof ProofKind.Type;
@@ -72,11 +88,20 @@ export type ProofVideoEnding = typeof ProofVideoEnding.Type;
  * artifact the agent could not capture, with the reason, such as a missing test account.
  */
 export const ProofCapture = Schema.Union([
-  Schema.TaggedStruct("Screenshot", { moment: ScreenMoment, media: ProofMedia }),
-  Schema.TaggedStruct("Recording", { screenId: ScreenId, fromSeq: Schema.Int }),
+  Schema.TaggedStruct("Screenshot", {
+    moment: ScreenMoment,
+    media: ProofMedia,
+    region: Schema.optionalKey(Schema.NullOr(ProofRegion)),
+  }),
+  Schema.TaggedStruct("Recording", {
+    screenId: ScreenId,
+    fromSeq: Schema.Int,
+    region: Schema.optionalKey(Schema.NullOr(ProofRegion)),
+  }),
   Schema.TaggedStruct("Video", {
     span: ScreenSpan,
     media: ProofMedia,
+    region: Schema.optionalKey(Schema.NullOr(ProofRegion)),
     durationMs: Schema.Int,
     ending: ProofVideoEnding,
   }),

@@ -25,6 +25,7 @@ import {
   Checkpoint,
   DisplayNumber,
   ProofArtifact,
+  type ProofRegion,
   type ProofVideoEnding,
   ScreenLogEntry,
 } from "@mend/domain/workbench";
@@ -33,8 +34,10 @@ import { Deferred, Effect, Layer, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { SessionEngine } from "../engine.ts";
+import { encodePng } from "../screen/png.ts";
 import {
   type RecordedVideo,
+  type RecordingScreen,
   RecorderRefusal,
   RecordingId,
   RecordingUnavailable,
@@ -77,7 +80,7 @@ const checkpoint = new Checkpoint({
   trigger: "proof-capture",
   createdAt: new Date(),
 });
-const png = new Uint8Array([137, 80, 78, 71, 1, 2]);
+const png = encodePng(new Uint8Array(1280 * 800 * 4).fill(180), 1280, 800);
 const digest = createHash("sha256").update(png).digest("hex");
 const params = {
   title: "Task board",
@@ -92,6 +95,7 @@ const fixture = (
     readonly frameNotStored?: boolean;
     readonly recorderRefusal?: RecorderRefusal["reason"];
     readonly mediaUnavailable?: boolean;
+    readonly recordedRegion?: ProofRegion;
     readonly blobFailed?: boolean;
     readonly insertFailed?: boolean;
   } = {},
@@ -103,6 +107,7 @@ const fixture = (
   let looks = 0;
   let checkpoints = 0;
   let starts = 0;
+  const recordingInputs: Array<RecordingScreen> = [];
   let stops = 0;
   let writes = 0;
   let inserts = 0;
@@ -117,6 +122,7 @@ const fixture = (
           mp4,
           durationMs: ending === "time-limit" ? 60_000 : 1_500,
           ending,
+          region: options.recordedRegion ?? null,
         });
   const layer = ProofCapturesLive.pipe(
     Layer.provide(
@@ -127,6 +133,7 @@ const fixture = (
               expect(checkpoints).toBeGreaterThan(0);
               expect(screen).toMatchObject({ screenId: SCREEN, sessionId: SESSION, display: 12 });
               starts += 1;
+              recordingInputs.push(screen);
               return options.recorderRefusal !== undefined
                 ? Effect.fail(new RecorderRefusal({ reason: options.recorderRefusal }))
                 : Effect.succeed(RecordingId.make("recording"));
@@ -286,6 +293,7 @@ const fixture = (
     setSeq: (next: number) => {
       seq = next;
     },
+    recordingInputs,
     starts: () => starts,
     stops: () => stops,
     writes: () => writes,
@@ -614,4 +622,52 @@ describe("proof videos on the session's screen", () => {
       }),
     );
   });
+});
+
+it("returns and stores the cropped PNG while leaving the logged full frame intact", async () => {
+  const world = fixture();
+  await run(world, (captures) =>
+    Effect.gen(function* () {
+      const region = { x: 320, y: 200, width: 640, height: 300 };
+      const answer = yield* captures.screenshot(caller, { ...params, region });
+      const artifact = [...world.artifacts.values()][0];
+      expect(artifact?.capture).toMatchObject({
+        _tag: "Screenshot",
+        region,
+        moment: { screenId: SCREEN, seq: 7 },
+      });
+      if (artifact?.capture._tag !== "Screenshot") throw new Error("no screenshot");
+      const media = world.blobs.get(artifact.capture.media.blobKey);
+      expect(media).toBeDefined();
+      if (media === undefined) throw new Error("no PNG");
+      expect(Buffer.from(media).readUInt32BE(16)).toBe(640);
+      expect(Buffer.from(media).readUInt32BE(20)).toBe(300);
+      expect(answer.content).toContainEqual({ type: "image", mimeType: "image/png", data: media });
+      expect(world.blobs.get(`screen-frames/${SCREEN}/${digest}.png`)).toEqual(png);
+      expect(world.copied).toEqual([]);
+      expect(yield* captures.screenshot(caller, { ...params, region })).toEqual(answer);
+      expect(world.looks()).toBe(1);
+    }),
+  );
+});
+
+it("passes the video region to the recorder and stores the region it actually encoded", async () => {
+  const requested = { x: 320, y: 200, width: 641, height: 301 };
+  const actual = { ...requested, width: 640, height: 300 };
+  const world = fixture({ recordedRegion: actual });
+  await run(world, (captures) =>
+    Effect.gen(function* () {
+      yield* captures.videoStart(caller, { ...videoParams, region: requested });
+      expect(world.recordingInputs[0]?.region).toEqual(requested);
+      expect([...world.artifacts.values()][0]?.capture).toMatchObject({
+        _tag: "Recording",
+        region: requested,
+      });
+      yield* captures.videoStop(stopCaller);
+      expect([...world.artifacts.values()][0]?.capture).toMatchObject({
+        _tag: "Video",
+        region: actual,
+      });
+    }),
+  );
 });

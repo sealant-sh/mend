@@ -36,7 +36,9 @@ export class ProofVideoBuffer {
   }
 
   /** No re-encode: mediabunny converts Annex-B to AVCC and writes moov before mdat. */
-  async finish(): Promise<{ mp4: Uint8Array; durationMs: number }> {
+  async finish(
+    size: { readonly width: number; readonly height: number } = SCREEN_LIMITS,
+  ): Promise<{ mp4: Uint8Array; durationMs: number }> {
     const frames = this.#frames.splice(0);
     this.#bytes = 0;
     const first = frames[0];
@@ -73,8 +75,8 @@ export class ProofVideoBuffer {
             ? {
                 decoderConfig: {
                   codec: "avc1.42e01f",
-                  codedWidth: SCREEN_LIMITS.width,
-                  codedHeight: SCREEN_LIMITS.height,
+                  codedWidth: size.width,
+                  codedHeight: size.height,
                 },
               }
             : undefined,

@@ -25,6 +25,7 @@ import { McpSchema } from "effect/ai";
 
 import { SessionEngine } from "../engine.ts";
 import { screenFrameBlobKey } from "../screen/frames.ts";
+import { cropPng } from "../screen/png.ts";
 import {
   ScreenRecorder,
   type RecordingId,
@@ -170,6 +171,7 @@ export const ProofCapturesLive: Layer.Layer<
                 },
                 durationMs: video.durationMs,
                 ending: video.ending,
+                region: video.region ?? null,
               });
             }).pipe(
               Effect.catchCause(() =>
@@ -295,6 +297,7 @@ export const ProofCapturesLive: Layer.Layer<
               sessionId: caller.sessionId,
               processId: screen.processId,
               display: screen.display,
+              ...(params.region === undefined ? {} : { region: params.region }),
             }),
           );
           if (started._tag === "Failure") {
@@ -312,6 +315,7 @@ export const ProofCapturesLive: Layer.Layer<
             recordingId = started.success;
             capture = {
               _tag: "Recording",
+              region: params.region ?? null,
               screenId: screen.id,
               fromSeq: yield* lastSeq(screen.id).pipe(
                 Effect.onError(() => recorder.stop(started.success).pipe(Effect.ignore)),
@@ -327,11 +331,14 @@ export const ProofCapturesLive: Layer.Layer<
               look._tag === "Refused" ? look.refusal : "observation_unavailable",
               "The screen did not return an observation. No proof artifact was recorded.",
             );
-          png = look.png;
+          const region = params.region;
+          png =
+            region === undefined ? look.png : yield* Effect.try(() => cropPng(look.png, region));
           observedAt = look.observedAt;
           const digest = createHash("sha256").update(png).digest("hex");
           const key = proofBlobKey(change.id, id, "image/png");
-          if (look.frameId === null) yield* blobs.put(key, png, { ifAbsent: true });
+          if (look.frameId === null || params.region !== undefined)
+            yield* blobs.put(key, png, { ifAbsent: true });
           else
             yield* blobs.copy(
               screenFrameBlobKey(look.receipt.screenId, FrameDigest.make(digest)),
@@ -339,6 +346,7 @@ export const ProofCapturesLive: Layer.Layer<
             );
           capture = {
             _tag: "Screenshot",
+            region: params.region ?? null,
             moment: { screenId: look.receipt.screenId, seq: look.receipt.seq },
             media: { blobKey: key, mimeType: "image/png", bytes: png.length, sha256: digest },
           };

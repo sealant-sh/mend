@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import type { ProofVideoEnding } from "@mend/domain/workbench";
-import { PROOF_LIMITS } from "@mend/domain/workbench";
+import type { ProofRegion, ProofVideoEnding } from "@mend/domain/workbench";
+import { PROOF_LIMITS, SCREEN_LIMITS } from "@mend/domain/workbench";
 import {
   type RecordedVideo,
   RecorderRefusal,
@@ -15,6 +15,7 @@ import { Clock, Deferred, Effect, Exit, Layer, type Scope } from "effect";
 
 import { ProofVideoBuffer } from "./proof-video.ts";
 import { ScreenVideoSource } from "./screen-video-source.ts";
+import type { ScreenVideoFrame } from "./screen-video.ts";
 
 interface Recording {
   readonly id: RecordingId;
@@ -41,7 +42,9 @@ const make: Effect.Effect<
   const run = (input: RecordingScreen, recording: Recording) =>
     Effect.gen(function* () {
       const buffer = new ProofVideoBuffer();
+      const firstFrame = yield* Deferred.make<void>();
       let startedAt: number | undefined;
+      let region: ProofRegion | null = null;
       const capture = Effect.scoped(
         Effect.gen(function* () {
           const state = yield* screens.state(input.sessionId);
@@ -53,38 +56,49 @@ const make: Effect.Effect<
             screen.display !== input.display
           )
             return yield* new RecorderRefusal({ reason: "no_screen" });
-          yield* video
-            .subscribe(screen, {
-              frame: (frame) => {
-                if (Deferred.isDoneUnsafe(recording.ended)) return;
-                if (startedAt === undefined && !frame.keyframe) return;
-                const admitted = buffer.push(frame);
-                if (admitted !== true) {
-                  Deferred.doneUnsafe(recording.ended, Exit.succeed(admitted));
-                  return;
-                }
-                if (startedAt === undefined) {
-                  startedAt = frame.receivedAt;
-                  Deferred.doneUnsafe(recording.ready, Exit.succeed(recording.id));
-                }
-              },
-              ended: () => {
-                Deferred.doneUnsafe(recording.ended, Exit.succeed("interrupted"));
-              },
-            })
-            .pipe(Effect.mapError(() => new RecorderRefusal({ reason: "no_encoder" })));
+          const subscriber = {
+            frame: (frame: ScreenVideoFrame) => {
+              if (Deferred.isDoneUnsafe(recording.ended)) return;
+              if (startedAt === undefined && !frame.keyframe) return;
+              const admitted = buffer.push(frame);
+              if (admitted !== true) {
+                Deferred.doneUnsafe(recording.ended, Exit.succeed(admitted));
+                return;
+              }
+              if (startedAt === undefined) {
+                startedAt = frame.receivedAt;
+                Deferred.doneUnsafe(firstFrame, Exit.void);
+              }
+            },
+            ended: () => {
+              Deferred.doneUnsafe(recording.ended, Exit.succeed("interrupted"));
+            },
+          };
+          region = yield* video
+            .subscribe(screen, subscriber, input.region)
+            .pipe(
+              Effect.catch(() =>
+                input.region === undefined
+                  ? Effect.fail(new RecorderRefusal({ reason: "no_encoder" }))
+                  : video
+                      .subscribe(screen, subscriber)
+                      .pipe(Effect.mapError(() => new RecorderRefusal({ reason: "no_encoder" }))),
+              ),
+            );
           // A shared upstream may already be ready; this subscriber still needs its own IDR.
-          yield* Effect.raceFirst(
-            Deferred.await(recording.ready),
-            Deferred.await(recording.ended).pipe(
-              Effect.andThen(Effect.fail(new RecorderRefusal({ reason: "no_encoder" }))),
-            ),
-          ).pipe(
-            Effect.timeoutOrElse({
-              duration: "5 seconds",
-              orElse: () => Effect.fail(new RecorderRefusal({ reason: "no_encoder" })),
-            }),
-          );
+          if (startedAt === undefined)
+            yield* Effect.raceFirst(
+              Deferred.await(firstFrame),
+              Deferred.await(recording.ended).pipe(
+                Effect.andThen(Effect.fail(new RecorderRefusal({ reason: "no_encoder" }))),
+              ),
+            ).pipe(
+              Effect.timeoutOrElse({
+                duration: "5 seconds",
+                orElse: () => Effect.fail(new RecorderRefusal({ reason: "no_encoder" })),
+              }),
+            );
+          yield* Deferred.succeed(recording.ready, recording.id);
           const ending = yield* Effect.raceFirst(
             Deferred.await(recording.ended),
             Effect.sleep(
@@ -116,10 +130,10 @@ const make: Effect.Effect<
         return;
       }
       const result = yield* Effect.tryPromise({
-        try: () => buffer.finish(),
+        try: () => buffer.finish(region ?? SCREEN_LIMITS),
         catch: () => new RecordingUnavailable({ reason: "invalid_media" }),
       }).pipe(
-        Effect.map((media): RecordedVideo => ({ ...media, ending: ending.success })),
+        Effect.map((media): RecordedVideo => ({ ...media, ending: ending.success, region })),
         Effect.exit,
       );
       yield* Deferred.done(recording.result, result);
