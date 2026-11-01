@@ -39,6 +39,7 @@ import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 
 import { modelPreferencesUpdateOf } from "./model-preferences.ts";
+import { parseProofMediaPath } from "./proof-media.ts";
 
 /**
  * The scope each RPC requires, as t3code's own server declares it at the pinned tag
@@ -247,16 +248,19 @@ const decodeSettingsUpdate = Schema.decodeUnknownOption(
   }),
 );
 
-/** A workspace or media file behind an asset URL is a filesystem read, as t3code rules. */
+/** Virtual proof paths read the conversation, like pages; actual files read the filesystem. */
 const assetUrlScopes = (payload: unknown): ReadonlyArray<AuthEnvironmentScope> =>
   Option.match(decodeAssetUrlInput(payload), {
     onNone: () => [AuthOrchestrationReadScope],
-    onSome: ({ resource }) =>
-      resource._tag === "workspace-file" ||
-      resource._tag === "media-file" ||
-      resource._tag === "draft-workspace-file"
+    onSome: ({ resource }) => {
+      if (resource._tag === "workspace-file" || resource._tag === "media-file")
+        return parseProofMediaPath(resource.path).kind === "outside"
+          ? [AuthFilesystemReadScope]
+          : [AuthOrchestrationReadScope];
+      return resource._tag === "draft-workspace-file"
         ? [AuthFilesystemReadScope]
-        : [AuthOrchestrationReadScope],
+        : [AuthOrchestrationReadScope];
+    },
   });
 
 /** Project id → the project actions to keep for it, or null to let go of them. */

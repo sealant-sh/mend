@@ -747,10 +747,14 @@ export class FakeWorkbench {
     return item;
   }
 
-  updateItem(item: FakeItem, patch: Partial<Pick<FakeItem, "text" | "status" | "title">>): void {
+  updateItem(
+    item: FakeItem,
+    patch: Partial<Pick<FakeItem, "text" | "status" | "title" | "data">>,
+  ): void {
     if (patch.text !== undefined) item.text = patch.text;
     if (patch.status !== undefined) item.status = patch.status;
     if (patch.title !== undefined) item.title = patch.title;
+    if (patch.data !== undefined) item.data = patch.data;
     item.seq = ++this.seq;
     item.updatedAt = tick();
     this.conversationChanged(item.sessionId);
