@@ -1589,6 +1589,32 @@ export const slackThreads = pgTable(
   ],
 );
 
+/** Durable proof file delivery, independent of the ordinary reporter's claimed replies. */
+export const slackProofDeliveries = pgTable(
+  "slack_proof_deliveries",
+  {
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    artifactId: text().$type<ProofArtifactId>().notNull(),
+    slackFileId: text(),
+    uploadUrl: text(),
+    state: text()
+      .$type<"reserved" | "uploaded" | "shared" | "withheld" | "failed">()
+      .notNull()
+      .default("reserved"),
+    messageTs: text(),
+    errorCode: text(),
+    attempts: integer().notNull().default(0),
+    completionStartedAt: timestamp({ mode: "date", withTimezone: true }),
+    replyStartedAt: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.sessionId, table.artifactId] })],
+);
+
 /** A reply the thread reporter posted, by key: the first worker to insert the key posts it. */
 export const slackThreadPosts = pgTable(
   "slack_thread_posts",

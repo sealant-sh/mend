@@ -1,6 +1,7 @@
 import { ProjectId } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
+import { slackUploadNotice } from "./slack.ts";
 import {
   SLACK_DISPLAY_SETTINGS,
   SLACK_REMOVAL_FACTS,
@@ -92,5 +93,15 @@ describe("Slack copy", () => {
       linkedLine("Acme", false),
     ].join("\n");
     expect(copy).not.toMatch(/\b(done|looks good|safe|success(ful)?|great)\b/i);
+  });
+});
+
+describe("Slack upload scope notice", () => {
+  it("tells an owner how to update an app whose observed grants lack files:write", () => {
+    expect(slackUploadNotice(["files:read", "chat:write"])).toBe(
+      "This Slack app can't upload files. Add the files:write scope in the app's settings, or paste the current manifest, then reinstall it to the workspace.",
+    );
+    expect(slackUploadNotice(["files:write"])).toBeNull();
+    expect(slackUploadNotice(null)).toBeNull();
   });
 });

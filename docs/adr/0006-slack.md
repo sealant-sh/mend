@@ -101,6 +101,7 @@ The manifest asks for the bot scopes Cursor asks for, less what Mend does not us
   sits in.
 - `chat:write` posts status and replies, and `im:write` opens a direct message.
 - `reactions:write` marks the request with ⏳, ✅ or ❌.
+- `files:write` uploads proof screenshots and video into the session's thread.
 - `files:read` reads screenshots in the thread.
 - `users:read` shows who wrote each message.
 

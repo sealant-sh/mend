@@ -86,3 +86,4 @@ export * from "./repos/resource-loads.ts";
 export * from "./repos/resource-archives.ts";
 
 export * from "./repos/proof-artifacts.ts";
+export * from "./repos/slack-proof-deliveries.ts";

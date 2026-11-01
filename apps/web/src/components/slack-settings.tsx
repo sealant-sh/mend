@@ -26,6 +26,7 @@ import {
   SLACK_REMOVAL_FACTS,
   defaultProjectOptions,
   slackLinkLine,
+  slackUploadNotice,
 } from "#/lib/slack";
 import { useTRPC } from "#/lib/trpc";
 
@@ -72,7 +73,7 @@ const useRefresh = () => {
 
 function SlackAppSection() {
   const trpc = useTRPC();
-  const status = useQuery(trpc.slack.app.queryOptions());
+  const status = useQuery(trpc.slack.app.queryOptions(undefined, { staleTime: 60_000 }));
   if (status.data === undefined) return <Empty>reading…</Empty>;
   const app = status.data.app;
   if (app === null) return <ConnectForm replacing={null} />;
@@ -129,8 +130,8 @@ function ConnectForm({
         <p className="text-[13px] leading-relaxed text-muted-foreground">
           Each organization runs its own Slack app, made from this manifest. It asks for Socket
           Mode, the <span className="font-mono text-[12px]">app_mention</span> and{" "}
-          <span className="font-mono text-[12px]">message.im</span> events and ten bot scopes, and
-          names no URL.
+          <span className="font-mono text-[12px]">message.im</span> events and eleven bot scopes,
+          and names no URL.
         </p>
       ) : (
         <p className="text-[13px] leading-relaxed text-muted-foreground">
@@ -226,9 +227,35 @@ function ConnectForm({
   );
 }
 
+function ConnectedManifest() {
+  const trpc = useTRPC();
+  const manifest = useQuery(trpc.slack.manifest.queryOptions());
+  const [copied, setCopied] = useState(false);
+  if (manifest.data === undefined) return <Empty>reading manifest…</Empty>;
+  return (
+    <div className="mt-4 rounded-xl bg-sunken p-4">
+      <div className="flex items-center justify-between gap-4">
+        <span className="ev-eyebrow">manifest.json</span>
+        <QuietButton
+          onClick={() =>
+            void navigator.clipboard.writeText(manifest.data.manifest).then(() => setCopied(true))
+          }
+        >
+          {copied ? "Copied" : "Copy"}
+        </QuietButton>
+      </div>
+      <pre className="mt-3 max-h-56 overflow-auto font-mono text-[12px] leading-relaxed text-ink-2">
+        {manifest.data.manifest}
+      </pre>
+    </div>
+  );
+}
+
 function AppFacts({ app }: { readonly app: SlackAppDto }) {
   const refresh = useRefresh();
   const [mode, setMode] = useState<"idle" | "replace" | "remove">("idle");
+  const [manifestOpen, setManifestOpen] = useState(false);
+  const uploadNotice = slackUploadNotice(app.grantedScopes);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -257,11 +284,18 @@ function AppFacts({ app }: { readonly app: SlackAppDto }) {
         </div>
         {mode === "idle" ? (
           <div className="flex shrink-0 items-center gap-4">
+            <QuietButton onClick={() => setManifestOpen(!manifestOpen)}>Manifest</QuietButton>
             <QuietButton onClick={() => setMode("replace")}>Replace tokens…</QuietButton>
             <QuietButton onClick={() => setMode("remove")}>Remove…</QuietButton>
           </div>
         ) : null}
       </div>
+      {uploadNotice !== null ? (
+        <p className="mt-4 border-l-2 border-warning pl-3 text-[13px] leading-relaxed text-ink-2">
+          {uploadNotice}
+        </p>
+      ) : null}
+      {manifestOpen ? <ConnectedManifest /> : null}
       {mode === "remove" ? (
         <div
           role="group"

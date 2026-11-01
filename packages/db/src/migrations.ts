@@ -4938,6 +4938,25 @@ const proofArtifactsMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX proof_artifacts_change_idx ON proof_artifacts(change_id)`;
 });
 
+const slackProofDeliveriesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE slack_proof_deliveries (
+    session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    artifact_id text NOT NULL,
+    slack_file_id text,
+    upload_url text,
+    state text NOT NULL DEFAULT 'reserved' CHECK (state IN ('reserved', 'uploaded', 'shared', 'withheld', 'failed')),
+    message_ts text,
+    error_code text,
+    attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    completion_started_at timestamptz,
+    reply_started_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, artifact_id)
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5105,4 +5124,5 @@ export const migrations = {
   "0176_resource_removal": resourceRemovalMigration,
   "0177_resource_levels": resourceLevelsMigration,
   "0178_proof_artifacts": proofArtifactsMigration,
+  "0179_slack_proof_deliveries": slackProofDeliveriesMigration,
 };

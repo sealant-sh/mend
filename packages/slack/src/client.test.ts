@@ -1,3 +1,5 @@
+import { Readable } from "node:stream";
+
 import { Effect, Fiber } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -11,7 +13,10 @@ interface Sent {
 }
 
 /** A Slack that answers each method from a table, and records what it was sent. */
-const fakeFetch = (answers: Record<string, ReadonlyArray<unknown>>) => {
+const fakeFetch = (
+  answers: Record<string, ReadonlyArray<unknown>>,
+  responseHeaders: Record<string, string> = {},
+) => {
   const sent: Array<Sent> = [];
   const served = new Map<string, number>();
   const fetch: typeof globalThis.fetch = async (input, init) => {
@@ -26,7 +31,7 @@ const fakeFetch = (answers: Record<string, ReadonlyArray<unknown>>) => {
     const answer = pages[Math.min(index, pages.length - 1)];
     return new Response(JSON.stringify(answer), {
       status: 200,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...responseHeaders },
     });
   };
   return { fetch, sent };
@@ -601,5 +606,193 @@ describe("the fake Slack", () => {
     expect(result._tag).toBe("Success");
     if (result._tag !== "Success") return;
     expect(result.success.map((entry) => entry.ts)).toEqual(["1.3", "1.4"]);
+  });
+});
+
+describe("Slack file upload transport", () => {
+  it("reads the granted OAuth scopes header through the SDK", async () => {
+    const transport = fakeFetch(
+      { "auth.test": [{ ok: true, team_id: "T1", team: "Team", user_id: "UBOT", bot_id: "B1" }] },
+      { "x-oauth-scopes": "chat:write,files:read,files:write" },
+    );
+    const api = makeSlackApi({ fetch: transport.fetch });
+    expect(await Effect.runPromise(api.authTest("bot"))).toMatchObject({
+      grantedScopes: ["chat:write", "files:read", "files:write"],
+    });
+  });
+
+  it("reads the block identity used to reconcile a plain reply", async () => {
+    const transport = fakeFetch({
+      "conversations.replies": [
+        {
+          ok: true,
+          messages: [
+            {
+              ts: "2.0",
+              user: "UBOT",
+              bot_id: "B1",
+              text: "not captured",
+              blocks: [{ type: "section", block_id: "receipt-1" }],
+            },
+          ],
+        },
+      ],
+    });
+    const api = makeSlackApi({ fetch: transport.fetch });
+    expect(
+      await Effect.runPromise(api.conversationsReplies("bot", { channel: "C1", ts: "1.0" })),
+    ).toMatchObject([{ ts: "2.0", blockIds: ["receipt-1"], isBot: true }]);
+  });
+
+  it("gets a ticket, completes one file with its comment, and reads only shares in the requested channel", async () => {
+    const transport = fakeFetch({
+      "files.getUploadURLExternal": [
+        { ok: true, upload_url: "https://files.slack.com/upload/ticket", file_id: "F1" },
+      ],
+      "files.completeUploadExternal": [{ ok: true, files: [{ id: "F1" }] }],
+      "files.info": [
+        {
+          ok: true,
+          file: {
+            id: "F1",
+            shares: {
+              public: { C1: [{ ts: "2.0", thread_ts: "1.0" }], C2: [{ ts: "3.0" }] },
+              private: { C1: [{ ts: "4.0", thread_ts: "1.0" }] },
+            },
+          },
+        },
+      ],
+    });
+    const api = makeSlackApi({ fetch: transport.fetch });
+    expect(
+      await Effect.runPromise(
+        api.filesGetUploadUrl("bot", { filename: "proof.png", length: 4, altText: "before" }),
+      ),
+    ).toEqual({ uploadUrl: "https://files.slack.com/upload/ticket", fileId: "F1" });
+    await Effect.runPromise(
+      api.filesCompleteUpload("bot", {
+        fileId: "F1",
+        title: "Board",
+        channelId: "C1",
+        threadTs: "1.0",
+        initialComment: "before\ncaption",
+      }),
+    );
+    expect(transport.sent[0]?.body.get("length")).toBe("4");
+    expect(transport.sent[0]?.body.get("alt_txt")).toBe("before");
+    expect(transport.sent[1]?.body.get("files")).toBe(
+      JSON.stringify([{ id: "F1", title: "Board" }]),
+    );
+    expect(transport.sent[1]?.body.get("thread_ts")).toBe("1.0");
+    expect(transport.sent[1]?.body.get("channel_id")).toBe("C1");
+    expect(transport.sent[1]?.body.get("initial_comment")).toBe("before\ncaption");
+    expect(await Effect.runPromise(api.filesInfo("bot", "F1", "C1"))).toEqual([
+      { ts: "2.0", threadTs: "1.0" },
+      { ts: "4.0", threadTs: "1.0" },
+    ]);
+  });
+
+  it.each(["bytes", "stream"])(
+    "uploads %s with a known length, no token and no redirects",
+    async (kind) => {
+      const sent: Array<{ readonly init: RequestInit; readonly bytes: Uint8Array }> = [];
+      const fetch: typeof globalThis.fetch = async (_url, init) => {
+        if (init === undefined) throw new Error("expected upload options");
+        const bytes = new Uint8Array(await new Response(init.body).arrayBuffer());
+        sent.push({ init, bytes });
+        return new Response("OK");
+      };
+      const body =
+        kind === "bytes"
+          ? new Uint8Array([1, 2, 3])
+          : Readable.from([Buffer.from([1, 2]), Buffer.from([3])]);
+      await Effect.runPromise(
+        makeSlackApi({ fetch }).filesUpload("https://files.slack.com/upload/ticket", {
+          body,
+          length: 3,
+        }),
+      );
+      expect(sent[0]?.bytes).toEqual(new Uint8Array([1, 2, 3]));
+      expect(sent[0]?.init).toMatchObject({
+        method: "POST",
+        redirect: "error",
+        headers: { "content-length": "3", "content-type": "application/octet-stream" },
+      });
+      expect(new Headers(sent[0]?.init.headers).has("authorization")).toBe(false);
+    },
+  );
+
+  it("rejects off-Slack tickets before sending bytes", async () => {
+    let requests = 0;
+    const fetch: typeof globalThis.fetch = async () => {
+      requests += 1;
+      return new Response("OK");
+    };
+    for (const url of [
+      "https://slack.com.attacker.test/upload",
+      "http://files.slack.com/upload",
+      "garbage",
+    ]) {
+      expect(
+        await run(makeSlackApi({ fetch }).filesUpload(url, { body: new Uint8Array(1), length: 1 })),
+      ).toMatchObject({ _tag: "Failure", failure: { code: "not_slack_host" } });
+    }
+    expect(requests).toBe(0);
+  });
+
+  it("rejects a mismatched length and closes a failed stream reader", async () => {
+    let transfers = 0;
+    const fetch: typeof globalThis.fetch = async (_url, init) => {
+      transfers += 1;
+      await new Response(init?.body).arrayBuffer();
+      return new Response("OK");
+    };
+    const api = makeSlackApi({ fetch });
+    expect(
+      await run(
+        api.filesUpload("https://files.slack.com/upload/ticket", {
+          body: new Uint8Array(2),
+          length: 3,
+        }),
+      ),
+    ).toMatchObject({ _tag: "Failure", failure: { code: "invalid_length" } });
+    const stream = Readable.from([Buffer.from([1, 2])]);
+    expect(
+      await run(
+        api.filesUpload("https://files.slack.com/upload/ticket", { body: stream, length: 3 }),
+      ),
+    ).toMatchObject({ _tag: "Failure", failure: { code: "invalid_length" } });
+    expect(stream.destroyed).toBe(true);
+    expect(transfers).toBe(1);
+  });
+
+  it("reports a failed byte transfer and does not retry completion after a dropped response", async () => {
+    let calls = 0;
+    const fetch: typeof globalThis.fetch = async (url) => {
+      if (String(url).includes("upload/ticket")) return new Response("gone", { status: 410 });
+      calls += 1;
+      throw new Error("response lost");
+    };
+    const api = makeSlackApi({ fetch });
+    expect(
+      await run(
+        api.filesUpload("https://files.slack.com/upload/ticket", {
+          body: new Uint8Array(1),
+          length: 1,
+        }),
+      ),
+    ).toMatchObject({ _tag: "Failure", failure: { code: "http_410" } });
+    expect(
+      await run(
+        api.filesCompleteUpload("bot", {
+          fileId: "F1",
+          title: "Board",
+          channelId: "C1",
+          threadTs: "1.0",
+          initialComment: "caption",
+        }),
+      ),
+    ).toMatchObject({ _tag: "Failure", failure: { code: "request_failed" } });
+    expect(calls).toBe(1);
   });
 });
