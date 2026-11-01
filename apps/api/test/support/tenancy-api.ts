@@ -33,6 +33,7 @@ import {
   ProjectServiceRecipesRepo,
   type ProjectsRepo,
   ResourcesRepo,
+  ResourceLoadsRepo,
   PreviewPreparationsRepo,
   PreviewsRepo,
   PushDevice,
@@ -90,6 +91,7 @@ import {
   ResourceImageResolver,
   ResourceRuntime,
   ResourcesLive,
+  ResourceLoads,
   Screens,
   ServiceHost,
   SessionEngine,
@@ -343,6 +345,7 @@ export const createTenancyApi = async (
       readonly devices?: Layer.PartialEffectful<DevicesRepo["Service"]>;
       readonly images?: Layer.PartialEffectful<ResourceImageResolver["Service"]>;
       /** What runs a project's resources on Sealant (docs/adr/0019). */
+      readonly resourceLoads?: Layer.PartialEffectful<ResourceLoads["Service"]>;
       readonly resourceRuntime?: Layer.PartialEffectful<ResourceRuntime["Service"]>;
       /** What restarts a worktree's Services after a switch; none run here. */
       readonly serviceRestarts?: Layer.PartialEffectful<WorktreeServiceRestarts["Service"]>;
@@ -769,6 +772,8 @@ export const createTenancyApi = async (
         },
         calls,
       ),
+      Layer.mock(ResourceLoadsRepo, { latest: () => Effect.succeed([]) }),
+      recording(ResourceLoads, "resourceLoads", options.implement?.resourceLoads ?? {}, calls),
       recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
       recording(ResourceImageResolver, "images", options.implement?.images ?? {}, calls),
       // Nothing runs on Sealant here: a start runs, a stop holds as its person's, and every read
@@ -1056,13 +1061,19 @@ export const createTenancyApi = async (
     request: (user, method, path, body, extraHeaders) => {
       const headers = new Headers(extraHeaders);
       if (user !== null) headers.set("authorization", `Bearer ${user}`);
-      if (body !== undefined) headers.set("content-type", "application/json");
+      if (body !== undefined)
+        headers.set(
+          "content-type",
+          body instanceof Uint8Array ? "application/octet-stream" : "application/json",
+        );
       return handler(
         new Request(`http://api.internal${path}`, {
           method,
           headers,
           ...(options.requestSignal === undefined ? {} : { signal: options.requestSignal }),
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          ...(body === undefined
+            ? {}
+            : { body: body instanceof Uint8Array ? new Uint8Array(body) : JSON.stringify(body) }),
         }),
         context,
       );

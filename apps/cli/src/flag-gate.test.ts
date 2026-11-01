@@ -216,6 +216,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "shared.ts gitCurrentBranch": CHILD,
   "shared.ts gitTopLevel": CHILD,
   "organization.ts inviteCommand": { pages: ["invite"] },
+  "resource-load.ts localDumpPlan": CHILD,
   "resource.ts resourceCommand": {
     pages: [
       "resource list",
@@ -225,6 +226,7 @@ const READS: Readonly<Record<string, Reads>> = {
       "resource start",
       "resource stop",
       "resource reset",
+      "resource load",
       "resource env",
     ],
   },

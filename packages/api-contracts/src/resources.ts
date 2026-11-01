@@ -1,6 +1,8 @@
-import { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
+import { ProjectId, ResourceDefinitionId, ResourceLoadId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
+  ResourceLoadAnswer,
+  ResourceLoadSource,
   ResourceAddInput,
   ResourceAdded,
   ResourceControlled,
@@ -68,6 +70,14 @@ export class ResourceNotReset extends Schema.TaggedError<ResourceNotReset>()(
 
 export const ResourceRemoved = Schema.Struct({ statusLine: Schema.String });
 export type ResourceRemoved = typeof ResourceRemoved.Type;
+
+/** A load request is parsed by its raw handler so validation cannot echo a source credential. */
+export const BeginResourceLoadRequest = Schema.Struct({
+  name: ResourceName,
+  worktreeId: Schema.NullOr(WorktreeId),
+  target: Schema.NullOr(Schema.Literals(["shared", "own"])),
+  source: ResourceLoadSource,
+});
 
 export const resourcesGroup = HttpApiGroup.make("resources")
   .add(
@@ -152,6 +162,31 @@ export const resourcesGroup = HttpApiGroup.make("resources")
       query: { timeZone: ReaderTimeZone },
       success: ResourceEnvAnswer,
       error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("beginLoad", "/projects/:id/resource-loads", {
+      params: { id: ProjectId },
+      query: { timeZone: ReaderTimeZone },
+      payload: BeginResourceLoadRequest,
+      success: ResourceLoadAnswer,
+      error: [NotFound, ResourceDenied, ResourceStale, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("readLoad", "/projects/:id/resource-loads/:loadId", {
+      params: { id: ProjectId, loadId: ResourceLoadId },
+      query: { timeZone: ReaderTimeZone },
+      success: ResourceLoadAnswer,
+      error: [NotFound, ResourceDenied, ResourceStale],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("feedLoad", "/projects/:id/resource-loads/:loadId/body", {
+      params: { id: ProjectId, loadId: ResourceLoadId },
+      query: { timeZone: ReaderTimeZone },
+      success: ResourceLoadAnswer,
+      error: [NotFound, ResourceDenied, ResourceStale, RemovalInProgress],
     }),
   )
   .middleware(AuthMiddleware);

@@ -1013,6 +1013,26 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["resource use", "resource list"],
   },
   {
+    name: "resource load",
+    section: "project setup",
+    summary: "replace a Postgres database from a dump or another database",
+    synopsis: [
+      "<name> (--from <path|postgres-url> | --pull <postgres-url>) [--target <shared|own>] [--worktree <w>] [--project <p>]",
+    ],
+    description: [
+      "A file is streamed to Mend, with bytes received out of its total. A URL with --from runs pg_dump on this machine and streams its stdout. --pull asks Mend to dump the source inside the resource instead. URL passwords are never printed and never passed in pg_dump's argv.",
+      "Mend restores beside the target, installs it, then saves the previous data as a checked dump. A failed restore leaves the target unchanged. The line reports receiving, pulling, restoring, installing and saving. Without --target, the worktree's choice applies, or shared when no worktree is named.",
+    ],
+    options: [
+      { flag: "--from <source>", text: "a plain SQL or custom-format file, or a URL dumped here" },
+      { flag: "--pull <url>", text: "a Postgres URL reachable from the resource server" },
+      { flag: "--target <t>", text: "shared or own" },
+      { flag: "--worktree <w>", text: "the worktree, by name or id" },
+      project(),
+    ],
+    see: ["resource list", "resource reset"],
+  },
+  {
     name: "resource env",
     section: "project setup",
     summary: "the env a worktree's processes get from its resources",

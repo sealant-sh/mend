@@ -38,6 +38,7 @@ export interface ResourceScope {
       readonly argv: ReadonlyArray<string>;
       readonly user: string;
       readonly timeoutMs: number;
+      readonly stdin?: AsyncIterable<Uint8Array>;
     },
   ) => Effect.Effect<ScopeExecResult, SealantPlatformError>;
   /** Stop it and remove its container; every volume stays. */
@@ -110,6 +111,7 @@ export const ResourceScopesLive: Layer.Layer<ResourceScopes, never, SealantEnv> 
               argv: options.argv,
               user: options.user,
               timeoutMs: options.timeoutMs,
+              ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
             }),
           ),
         archive: (key) => wrap(() => client.instances.archive(key)).pipe(Effect.asVoid),

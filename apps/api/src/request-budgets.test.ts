@@ -703,4 +703,23 @@ describe("requests are counted per address and per credential", () => {
     expect(api.reached).toHaveLength(53);
     expect((await api.send("/api/health", { headers })).status).toBe(200);
   });
+  it("streams resource dumps under a separate 20 GiB limit while load JSON stays bounded", async () => {
+    const api = serve({ bodyBytes: 16, uploadBodyBytes: 32 });
+    const path = "/api/projects/p/resource-loads/l/body";
+    expect((await api.send(path, { method: "PUT", body: "x".repeat(1024) })).status).toBe(200);
+    const refused = await api.send(path, {
+      method: "PUT",
+      headers: { "content-length": String(20 * 1024 ** 3 + 1) },
+    });
+    expect(refused.status).toBe(413);
+    expect(api.reached).toHaveLength(1);
+    expect(
+      (
+        await api.send("/api/projects/p/resource-loads", {
+          method: "POST",
+          headers: { "content-length": "1024" },
+        })
+      ).status,
+    ).toBe(413);
+  });
 });

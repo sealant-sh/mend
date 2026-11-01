@@ -58,6 +58,7 @@ const entry = (
   choice: null,
   canRemove: false,
   canChoose: true,
+  canLoadOwn: true,
   instance: "running",
   statusLine: `@${name} · running`,
   ...overrides,

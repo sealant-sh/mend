@@ -51,6 +51,7 @@ const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingV
   choice: "shared",
   canRemove: false,
   canChoose: false,
+  canLoadOwn: false,
   instance: "not-started",
   statusLine: "@db · postgres 17 · project · added by Alice · shared database · not started",
   ...overrides,

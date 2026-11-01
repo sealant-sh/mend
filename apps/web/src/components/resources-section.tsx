@@ -38,6 +38,8 @@ import {
 } from "#/lib/resources-card";
 import { useTRPC } from "#/lib/trpc";
 
+import { ResourceLoadForm } from "./resource-load-form";
+
 /**
  * A project's resources in its setup (ADR 0019): the definitions settings hold and a chosen
  * worktree's `mend.toml` tables, each on the one status line the server sends. Every control
@@ -269,6 +271,7 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
       >
         {(page, readWorktree) => (
           <ResourcesView
+            projectId={projectId}
             page={page}
             worktreeId={readWorktree}
             worktreeName={readName(readWorktree)}
@@ -356,6 +359,7 @@ export interface ResourceHandlers {
 }
 
 export interface ResourcesViewProps {
+  readonly projectId?: string;
   readonly page: ResourcesPageView;
   /** The worktree this page was read for; every action on it is for that worktree. */
   readonly worktreeId: WorktreeId | null;
@@ -437,14 +441,28 @@ export function ResourcesView(props: ResourcesViewProps) {
                   </button>
                 ) : null}
               </>,
-              worktreeId === null ? null : (
-                <ChoiceLine
-                  entry={entry}
-                  worktreeName={worktreeName ?? ""}
-                  busy={busy.has(key)}
-                  onChoose={(mode) => handlers.choose(entry, worktreeId, mode)}
-                />
-              ),
+              <>
+                {worktreeId === null ? null : (
+                  <ChoiceLine
+                    entry={entry}
+                    worktreeName={worktreeName ?? ""}
+                    busy={busy.has(key)}
+                    onChoose={(mode) => handlers.choose(entry, worktreeId, mode)}
+                  />
+                )}
+                {entry.spec.preset === "postgres" &&
+                props.projectId !== undefined &&
+                (entry.spec.scope === "project" || (worktreeId !== null && entry.canLoadOwn)) ? (
+                  <ResourceLoadForm
+                    key={`${entry.id}:${worktreeId ?? "shared"}`}
+                    projectId={props.projectId}
+                    name={entry.spec.name}
+                    worktreeId={worktreeId}
+                    mayLoadOwn={entry.canLoadOwn}
+                    worktreeResource={entry.spec.scope === "worktree"}
+                  />
+                ) : null}
+              </>,
             );
           })}
         </Group>

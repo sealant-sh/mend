@@ -568,6 +568,22 @@ const CASES: ReadonlyArray<AccessCase> = [
       body: { mode: "own" },
     }),
   },
+  project("project-read", "POST", "/resource-loads?timeZone=UTC", {
+    name: "db",
+    worktreeId: null,
+    target: "shared",
+    source: { kind: "upload", label: "staging.sql", bytesTotal: null },
+  })("resources.beginLoad"),
+  project(
+    "project-read",
+    "GET",
+    "/resource-loads/11111111-1111-1111-1111-111111111111?timeZone=UTC",
+  )("resources.readLoad"),
+  project(
+    "project-read",
+    "PUT",
+    "/resource-loads/11111111-1111-1111-1111-111111111111/body?timeZone=UTC",
+  )("resources.feedLoad"),
   project("project-read", "POST", "/resources/db/start?timeZone=UTC")("resources.start"),
   project("project-read", "POST", "/resources/db/stop?timeZone=UTC")("resources.stop"),
   {
@@ -979,6 +995,9 @@ const ADMITTED: Readonly<
   // What the worktree used before decides whether its Services restart, so it is read first.
   "resources.use": { status: 500, calls: ["resources.listWithChoices"] },
   // A start or stop finds the definition by name first.
+  "resources.beginLoad": { status: 500, calls: ["resourceLoads.begin"] },
+  "resources.readLoad": { status: 500, calls: ["resourceLoads.read"] },
+  "resources.feedLoad": { status: 500, calls: ["resourceLoads.feed"] },
   "resources.start": { status: 500, calls: ["resources.byName"] },
   "resources.stop": { status: 500, calls: ["resources.byName"] },
   "resources.reset": { status: 500, calls: ["resources.byName"] },

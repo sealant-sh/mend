@@ -97,6 +97,8 @@ export const ResourceSettingEntry = Schema.Struct({
   canRemove: Schema.Boolean,
   /** For the reader, choosing how the read worktree uses it; false when no worktree was read. */
   canChoose: Schema.Boolean,
+  /** The reader owns the selected worktree and may replace its own database. */
+  canLoadOwn: Schema.Boolean,
   /**
    * What Sealant last observed of the instance the read reaches, which the Start and Stop
    * controls follow: `none` for a worktree resource read for no worktree, or one the worktree has

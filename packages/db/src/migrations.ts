@@ -4791,6 +4791,26 @@ const resourceRuntimeMigration = Effect.gen(function* () {
     ON resource_own_databases (definition_id)`;
 });
 
+/** Story 9: one live load for each database on one resource instance. */
+const resourceLoadsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE resource_own_databases DROP CONSTRAINT resource_own_databases_origin_check`;
+  yield* sql`ALTER TABLE resource_own_databases ADD CONSTRAINT resource_own_databases_origin_check CHECK (origin IN ('empty','copied','loaded'))`;
+  yield* sql`CREATE TABLE resource_loads (
+    id text PRIMARY KEY,
+    project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    definition_id text NOT NULL REFERENCES resource_definitions(id) ON DELETE CASCADE,
+    worktree_id text, instance_key text NOT NULL, database text NOT NULL,
+    target text NOT NULL CHECK (target IN ('shared', 'own')),
+    label text NOT NULL, started_by text NOT NULL,
+    phase text NOT NULL CHECK (phase IN ('receiving','pulling','restoring','installing','saving','done','failed')),
+    bytes_done bigint NOT NULL DEFAULT 0 CHECK (bytes_done >= 0), bytes_total bigint CHECK (bytes_total >= 0),
+    saved_path text, saved_at timestamptz, message text, created_at timestamptz NOT NULL DEFAULT now()
+  )`;
+  yield* sql`CREATE UNIQUE INDEX resource_loads_live_target ON resource_loads(instance_key, database)
+    WHERE phase IN ('receiving','pulling','restoring','installing','saving')`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4954,4 +4974,5 @@ export const migrations = {
   "0172_doppler": dopplerMigration,
   "0173_drop_resource_approvals": dropResourceApprovalsMigration,
   "0174_resource_runtime": resourceRuntimeMigration,
+  "0175_resource_loads": resourceLoadsMigration,
 };

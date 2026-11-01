@@ -1,4 +1,5 @@
 import { observedAgo } from "./landing.ts";
+import { loadBytes, type ResourceLoadPhase } from "./resource-load.ts";
 import { imageReference, isDatabasePreset, type ResourceDefinitionInput } from "./resource.ts";
 
 /** Why an instance is stopped: idle, or a person, whose stop holds until a person starts it. */
@@ -24,7 +25,8 @@ export type ResourceInstanceObservation =
 /** How a worktree's own database began. */
 export type OwnDatabaseOrigin =
   | { readonly kind: "empty"; readonly at: Date }
-  | { readonly kind: "copied"; readonly at: Date };
+  | { readonly kind: "copied"; readonly at: Date }
+  | { readonly kind: "loaded"; readonly at: Date };
 
 /** What a read is for: one worktree's use of a resource, or the project as a whole. */
 export type ResourceUse =
@@ -48,6 +50,17 @@ export type ResourceDeclaration = {
 
 /** The status line's input. The line reads a definition's name, image and scope, never its env. */
 export type ResourceStatusView =
+  | {
+      readonly kind: "load";
+      readonly definition: ResourceDefinitionInput;
+      readonly target: "shared" | "own";
+      readonly phase: ResourceLoadPhase;
+      readonly label: string;
+      readonly bytesDone: number;
+      readonly bytesTotal: number | null;
+      readonly savedAt: Date | null;
+      readonly message: string | null;
+    }
   | {
       readonly kind: "observed";
       readonly definition: ResourceDefinitionInput;
@@ -176,7 +189,9 @@ const useParts = (
           ? ["not made yet"]
           : use.origin.kind === "copied"
             ? [`copied from shared ${clock(use.origin.at)}`]
-            : [`started empty ${clock(use.origin.at)}`]),
+            : use.origin.kind === "loaded"
+              ? [`loaded ${clock(use.origin.at)}`]
+              : [`started empty ${clock(use.origin.at)}`]),
       ];
     case "off":
       return ["off"];
@@ -235,6 +250,26 @@ export const resourceStatusLine = (
   const clock = clockIn(at.now, at.timeZone);
   const parts = ((): ReadonlyArray<string> => {
     switch (view.kind) {
+      case "load":
+        if (view.phase === "done")
+          return [
+            `loaded ${loadBytes(view.bytesDone)} from ${view.label}`,
+            view.savedAt === null
+              ? "it had no data"
+              : `previous data saved as a dump ${clock(view.savedAt)}`,
+            `${view.target} database`,
+          ];
+        if (view.phase === "failed")
+          return [
+            "load failed",
+            view.message ?? "the load did not finish",
+            "the database was not changed",
+          ];
+        return [
+          `loading ${view.label}`,
+          `${view.phase} ${loadBytes(view.bytesDone)}${view.bytesTotal === null ? "" : ` of ${loadBytes(view.bytesTotal)}`}`,
+          `${view.target} database`,
+        ];
       case "declared":
         return [engineOf(def), def.scope, "in mend.toml", AGAINST_SETTINGS[view.source.settings]];
       case "launched-without":

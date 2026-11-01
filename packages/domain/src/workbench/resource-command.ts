@@ -36,6 +36,8 @@ export const RESOURCE_VALUE_FLAGS: ReadonlyArray<string> = [
   "--scope",
   "--definition",
   "--target",
+  "--from",
+  "--pull",
 ];
 
 /** The arguments that are not flags or a flag's value. */

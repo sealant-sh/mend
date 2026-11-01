@@ -1,3 +1,4 @@
+import type { ResourceLoadId } from "@mend/domain";
 import {
   type ProjectLinkId,
   type ScreenFrameId,
@@ -70,6 +71,7 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
+import type { ResourceLoadPhase } from "@mend/domain/workbench";
 import type {
   MessageTurnReason,
   CapturePosition,
@@ -747,7 +749,7 @@ export const resourceOwnDatabases = pgTable(
       .$type<ResourceDefinitionId>()
       .notNull()
       .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
-    origin: text().$type<"empty" | "copied">().notNull(),
+    origin: text().$type<"empty" | "copied" | "loaded">().notNull(),
     madeAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -3076,3 +3078,29 @@ export const userDopplerProjects = pgTable(
   },
   (table) => [unique("user_doppler_projects_user_project_key").on(table.userId, table.projectId)],
 );
+
+/** A source label and resumable phase only, never a URL or its credentials. */
+export const resourceLoads = pgTable("resource_loads", {
+  id: text().$type<ResourceLoadId>().primaryKey(),
+  projectId: text()
+    .$type<ProjectId>()
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  definitionId: text()
+    .$type<ResourceDefinitionId>()
+    .notNull()
+    .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
+  worktreeId: text().$type<WorktreeId>(),
+  instanceKey: text().notNull(),
+  database: text().notNull(),
+  target: text().$type<"shared" | "own">().notNull(),
+  label: text().notNull(),
+  startedBy: text().notNull(),
+  phase: text().$type<ResourceLoadPhase>().notNull(),
+  bytesDone: bigint({ mode: "number" }).notNull().default(0),
+  bytesTotal: bigint({ mode: "number" }),
+  savedPath: text(),
+  savedAt: timestamp({ mode: "date", withTimezone: true }),
+  message: text(),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});

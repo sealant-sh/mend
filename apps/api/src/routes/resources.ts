@@ -1,5 +1,6 @@
 import {
   MendApi,
+  BeginResourceLoadRequest,
   NotFound,
   ResourceDenied,
   ResourceManifestUnverifiable,
@@ -15,8 +16,9 @@ import {
   type ResourceNameNotFoundError,
   type ResourceWorktreeNeededError,
   Resources,
+  ResourceLoads,
 } from "@mend/sessions";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
@@ -204,6 +206,43 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
                 Effect.fail(new ResourceNotReset({ message: error.message })),
             }),
           );
+      }),
+    )
+    .handleRaw("beginLoad", ({ params, query, request }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        const input = yield* request.json.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(BeginResourceLoadRequest)),
+          Effect.mapError(
+            () =>
+              new ResourceStale({
+                message: "a load needs a resource, target and dump file or Postgres URL",
+              }),
+          ),
+        );
+        if (input.worktreeId !== null) yield* projectWorktree(project.id, input.worktreeId);
+        return yield* (yield* ResourceLoads)
+          .begin(project, viewer, input, { now: new Date(), timeZone: query.timeZone })
+          .pipe(Effect.mapError((error) => new ResourceStale({ message: error.message })));
+      }),
+    )
+    .handle("readLoad", ({ params, query }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        return yield* (yield* ResourceLoads)
+          .read(project, viewer, params.loadId, { now: new Date(), timeZone: query.timeZone })
+          .pipe(Effect.mapError((error) => new ResourceStale({ message: error.message })));
+      }),
+    )
+    .handleRaw("feedLoad", ({ params, query, request }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        return yield* (yield* ResourceLoads)
+          .feed(project, viewer, params.loadId, request.stream, {
+            now: new Date(),
+            timeZone: query.timeZone,
+          })
+          .pipe(Effect.mapError((error) => new ResourceStale({ message: error.message })));
       }),
     )
     .handle("env", ({ params, query }) =>
