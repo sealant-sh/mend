@@ -132,8 +132,8 @@ the default branch plus whatever is running, including resources whose tables ha
 
 A running project resource remembers the definition it started from. If a worktree's file differs,
 its status line says `@db · project · definition differs from this worktree`. Starting it again from
-that worktree asks whether to restart it with the new definition. A file edit alone cannot restart
-it. Removing its table cannot remove its data or stop it.
+that worktree asks whether to restart it with the new definition, and names the worktrees that use
+it; the agent answers with `--restart`. A file edit alone cannot restart it. Removing its table cannot remove its data or stop it.
 
 A name is a lowercase DNS label, with digits and hyphens allowed after the first letter and no
 trailing hyphen. Existing network names remain reserved. A name whose generated env collides with
@@ -399,16 +399,24 @@ November 1 amendments and supersede the earlier recommendations.
 | G11 | Visibility                  | Project resources visible by default; project setting controls new worktrees; each worktree can turn each one off. A same-name worktree resource wins locally.                              |
 | G12 | Levels                      | Every definition can run at both project and worktree levels at once. There is no session level.                                                                                            |
 
-## Open questions
+## Decided edge cases
 
-- Which worktree receives a table when someone uses the web's Add without having selected a
-  worktree? The write must go to a worktree's `.mend/mend.toml`, never a settings definition.
-- How should a worktree start report a Postgres definition that differs from the running project
-  server's definition? Its own database must stay on that server. The product needs wording and a
-  restart choice that makes the effect on other worktrees clear, rather than silently starting a
-  second server or changing one already running.
-- How should a Service start report a `${MEND_*}` reference whose resource variable is unavailable?
-  The expansion must not silently supply a conventional variable on the app's behalf.
+- **The web's Add asks for a worktree.** It lists the project's worktrees, the person's most recent
+  first, and writes the table into that worktree's `.mend/mend.toml`. A project with no worktree
+  shows the table to copy instead of writing anywhere. Add never writes a settings definition and
+  never commits to a branch.
+- **A worktree start on a differing Postgres definition uses the running server.** The worktree's
+  own database is made on the project's server as it runs, and the start says so:
+  `@db · own database on the project server (postgres:16) · this worktree's file asks postgres:17`.
+  Running the new definition means restarting the project server, which is a separate, explicit
+  start at project level. In a terminal it names the worktrees that use the server before it asks;
+  the agent passes `--project --restart`. Mend never starts a second Postgres server for a worktree
+  to avoid the difference.
+- **A Service whose `${MEND_*}` reference has no value does not start.** The Service start fails
+  with the resource to start:
+  `web needs MEND_DB_URL · @db is not running for this worktree · mend resource start db --project or --worktree`.
+  Mend never starts the resource for it, never leaves the variable empty, and never substitutes a
+  conventional name.
 
 ## Platform boundary and delivery
 

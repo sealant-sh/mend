@@ -95,7 +95,16 @@ worktree. The project resource keeps running for everyone else.
 
 A running project resource remembers the definition it started from. If your worktree's file
 differs, its status line says so. Starting it again from that worktree asks whether to restart it
-with the new definition. Editing the file alone never restarts it.
+with the new definition, and names the worktrees that use it; the agent passes `--restart`. Editing
+the file alone never restarts it.
+
+A worktree's own Postgres database always lives on the project's running server, even when your
+file asks for a different version. The start says so, and testing the new version means restarting
+the project server for everyone.
+
+A Service whose recipe references a `MEND_*` variable that has no value does not start. It names
+the resource to start instead (`web needs MEND_DB_URL · @db is not running for this worktree`).
+Mend never starts the resource for it and never leaves the variable empty.
 
 ## Choose what each worktree sees
 
