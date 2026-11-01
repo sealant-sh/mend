@@ -54,6 +54,8 @@ import { useTRPC } from "#/lib/trpc";
 import { ownerLine, useViewerState } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
+import { ResourceStatusLines } from "../components/resource-status-lines";
+
 export const Route = createFileRoute("/sessions/$sessionId")({
   ssr: false,
   validateSearch: sessionWorkspaceSearch,
@@ -283,6 +285,7 @@ function SessionPage() {
         {sharedLine === null ? null : (
           <p className="mt-1 font-mono text-xs break-words text-ink-2">{sharedLine}</p>
         )}
+        <ResourceStatusLines lines={session.resourceStatusLines} />
         <PreReleaseMemoryNote memory={preReleaseMemory} />
         {sessionDotfilesLines(session.dotfiles).map((line) => (
           <p
