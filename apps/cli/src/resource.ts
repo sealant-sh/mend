@@ -37,6 +37,10 @@ import {
 
 const dim = paint("2");
 const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
+/** A server answer of several lines prints as lines; each is still made printable on its own. */
+const sayLines = (text: string) => {
+  for (const line of text.split("\n")) say(printable(line));
+};
 const fail = (message: string): never => {
   process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
@@ -180,8 +184,7 @@ export const resourceCommand = async (
         { mode },
       );
       say(printable(answer.statusLine));
-      if (answer.message !== null && answer.message !== answer.statusLine)
-        say(printable(answer.message));
+      if (answer.message !== null && answer.message !== answer.statusLine) sayLines(answer.message);
       return;
     }
     case "start":
@@ -212,7 +215,7 @@ export const resourceCommand = async (
           worktreeId: worktree?.id ?? null,
         });
         say(printable(answer.statusLine));
-        if (answer.message !== null) say(printable(answer.message));
+        if (answer.message !== null) sayLines(answer.message);
         return;
       }
       if (worktree === null) return fail("name the worktree: --worktree-id <w>");
@@ -247,7 +250,7 @@ export const resourceCommand = async (
         });
       }
       say(printable(answer.statusLine));
-      if (answer.kind === "started" && answer.message !== null) say(printable(answer.message));
+      if (answer.kind === "started" && answer.message !== null) sayLines(answer.message);
       return;
     }
     case "load": {

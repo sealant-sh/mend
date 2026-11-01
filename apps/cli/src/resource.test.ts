@@ -120,6 +120,18 @@ describe("resource command levels", () => {
     expect(s.calls.at(-1)?.route).toContain("/resources/db/selection?");
     expect(out.join("")).toContain("switched");
   });
+  it("prints a switch answer of several lines as lines, not an escaped newline", async () => {
+    const out = output();
+    const s = server({
+      statusLine: "@db · worktree",
+      message: "@db switched from project to worktree.\nthe agent in s1 runs in a terminal",
+    });
+    await resourceCommand(s.api, async () => project, ["use", "db", "own", "--worktree-id", "wt"]);
+    expect(out.join("")).toContain(
+      "@db switched from project to worktree.\nthe agent in s1 runs in a terminal\n",
+    );
+    expect(out.join("")).not.toContain("\\x0a");
+  });
   it("removes one named level", async () => {
     output();
     const s = server({ statusLine: "archived" });
