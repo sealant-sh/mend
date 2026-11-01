@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 
-import { Effect, Fiber } from "effect";
+import { Effect, Fiber, Logger, References } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeFakeSlack, makeSlackApi, updateRefusalOf, type FakeSlackWorkspace } from "./client.ts";
@@ -671,8 +671,7 @@ describe("Slack file upload transport", () => {
     ).toEqual({ uploadUrl: "https://files.slack.com/upload/ticket", fileId: "F1" });
     await Effect.runPromise(
       api.filesCompleteUpload("bot", {
-        fileId: "F1",
-        title: "Board",
+        files: [{ id: "F1", title: "Board" }],
         channelId: "C1",
         threadTs: "1.0",
         initialComment: "before\ncaption",
@@ -690,6 +689,104 @@ describe("Slack file upload transport", () => {
       { ts: "2.0", threadTs: "1.0" },
       { ts: "4.0", threadTs: "1.0" },
     ]);
+  });
+
+  it("completes multiple files in one thread message and omits image alt text from a video ticket", async () => {
+    const transport = fakeFetch({
+      "files.getUploadURLExternal": [
+        { ok: true, upload_url: "https://files.slack.com/upload/ticket", file_id: "F2" },
+      ],
+      "files.completeUploadExternal": [{ ok: true, files: [{ id: "F1" }, { id: "F2" }] }],
+    });
+    const api = makeSlackApi({ fetch: transport.fetch });
+    await Effect.runPromise(
+      api.filesGetUploadUrl("bot", { filename: "proof.mp4", length: 1_072_344 }),
+    );
+    const files = [
+      { id: "F1", title: "Board" },
+      { id: "F2", title: "Interaction" },
+    ];
+    await Effect.runPromise(
+      api.filesCompleteUpload("bot", {
+        files,
+        channelId: "D1",
+        threadTs: "1.0",
+        initialComment: "The app with the change.",
+      }),
+    );
+    expect(transport.sent[0]?.body.has("alt_txt")).toBe(false);
+    expect(transport.sent[1]?.body.get("files")).toBe(JSON.stringify(files));
+    expect(transport.sent[1]?.body.get("channel_id")).toBe("D1");
+    expect(transport.sent[1]?.body.get("thread_ts")).toBe("1.0");
+    expect(transport.sent).toHaveLength(2);
+  });
+
+  it("keeps a DM video's absent shares distinct from a thread share and logs only allowlisted metadata", async () => {
+    const file = {
+      id: "FV",
+      mimetype: "video/mp4",
+      filetype: "mp4",
+      mode: "hosted",
+      size: 1_072_344,
+      is_external: false,
+      media_display_type: "video",
+      duration_ms: 27_726,
+      mp4: "https://files.slack.com/private-secret",
+      hls: "https://files.slack.com/private-hls",
+      ims: ["D1"],
+      has_more_shares: false,
+      skipped_shares: false,
+      title: "Private app title",
+      url_private: "https://files.slack.com/private-original",
+    };
+    const transport = fakeFetch({
+      "files.info": [
+        { ok: true, file },
+        {
+          ok: true,
+          file: { ...file, shares: { private: { D1: [{ ts: "2.0", thread_ts: "1.0" }] } } },
+        },
+      ],
+    });
+    const logs: Array<Record<string, unknown>> = [];
+    const logger = Logger.layer([
+      Logger.make((options) => {
+        logs.push(options.fiber.getRef(References.CurrentLogAnnotations));
+      }),
+    ]);
+    const api = makeSlackApi({ fetch: transport.fetch });
+    expect(
+      await Effect.runPromise(
+        api.filesInfo("secret-bot-token", "FV", "D1").pipe(Effect.provide(logger)),
+      ),
+    ).toEqual([]);
+    expect(
+      await Effect.runPromise(
+        api.filesInfo("secret-bot-token", "FV", "D1").pipe(Effect.provide(logger)),
+      ),
+    ).toEqual([{ ts: "2.0", threadTs: "1.0" }]);
+    expect(logs).toEqual([
+      expect.objectContaining({
+        slackFileId: "FV",
+        mimetype: "video/mp4",
+        filetype: "mp4",
+        mode: "hosted",
+        size: 1_072_344,
+        isExternal: false,
+        mediaDisplayType: "video",
+        hasMp4: true,
+        hasHls: true,
+        durationMs: 27_726,
+        sharesPresent: false,
+        sharedInIm: true,
+        channelShareCount: 0,
+      }),
+      expect.objectContaining({ sharesPresent: true, channelShareCount: 1 }),
+    ]);
+    const logged = JSON.stringify(logs);
+    expect(logged).not.toContain("secret");
+    expect(logged).not.toContain("Private app");
+    expect(logged).not.toContain("https://");
   });
 
   it.each(["bytes", "stream"])(
@@ -785,8 +882,7 @@ describe("Slack file upload transport", () => {
     expect(
       await run(
         api.filesCompleteUpload("bot", {
-          fileId: "F1",
-          title: "Board",
+          files: [{ id: "F1", title: "Board" }],
           channelId: "C1",
           threadTs: "1.0",
           initialComment: "caption",

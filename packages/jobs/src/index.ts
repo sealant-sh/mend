@@ -16,3 +16,4 @@ export * from "./push-sender.ts";
 export * from "./expo-push-sender.ts";
 
 export * from "./slack-proof-delivery.ts";
+export * from "./slack-proof-jobs.ts";

@@ -77,6 +77,7 @@ import {
   SlackInstallsRepoLive,
   SlackLinksRepoLive,
   SlackThreadsRepoLive,
+  SlackProofDeliveriesRepoLive,
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
   RemovalFencesRepoLive,
@@ -139,6 +140,8 @@ import {
   InstallRunnerEngineLive,
   Dispatcher,
   JobRunner,
+  ProofArtifactsWithSlackDeliveryLive,
+  SlackProofWorkerLive,
   ProtocolIdleStopLive,
   ProtocolIdleStopScheduleLive,
   ReviewPrepLive,
@@ -367,6 +370,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SlackLinksRepoLive,
   SlackDefaultsRepoLive,
   SlackThreadsRepoLive,
+  SlackProofDeliveriesRepoLive,
   SlackEventClaimsRepoLive,
   InferenceCallsRepoLive,
   FollowUpsRepoLive,
@@ -808,7 +812,11 @@ const InferenceWorkersLive = Layer.effectDiscard(
  * Slack (docs/adr/0006-slack.md): a Socket Mode connection per install, and the mention that
  * waited for a link. One runner serves both, and starts sessions through SessionStart.
  */
-const SlackWorkerLive = Layer.merge(SlackSocketsLive, SlackLinkedMentionWorkerLive).pipe(
+const SlackWorkerLive = Layer.mergeAll(
+  SlackSocketsLive,
+  SlackLinkedMentionWorkerLive,
+  SlackProofWorkerLive,
+).pipe(
   Layer.provide(SlackRunnerLive.pipe(Layer.provide(SessionStartLive))),
   Layer.provide(SlackSocketLive),
 );
@@ -1039,7 +1047,9 @@ const MainLive = Layer.unwrap(
         ),
       ),
       // Shared by the API (enqueue on comment) and the workers (one instance).
-      Layer.provide(JobRunner.pgBossLayer),
+      Layer.provide(
+        ProofArtifactsWithSlackDeliveryLive.pipe(Layer.provideMerge(JobRunner.pgBossLayer)),
+      ),
       // Follow-up delivery owns persistence → process acceptance → correlation.
       Layer.provide(FollowUpDeliveryLayer),
       // The session engine and store serve both the API handlers and the worker; the resource

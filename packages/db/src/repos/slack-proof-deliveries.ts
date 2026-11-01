@@ -63,6 +63,10 @@ export interface SlackProofDeliveryStore {
 export class SlackProofDeliveriesRepo extends Context.Service<
   SlackProofDeliveriesRepo,
   {
+    /** Settled artifacts in Slack threads without a terminal delivery, ordered for recovery. */
+    readonly pendingSince: (
+      since: Date,
+    ) => Effect.Effect<ReadonlyArray<ProofArtifactId>, SlackProofDeliveryError>;
     readonly withDelivery: <A, E, R>(
       key: SlackProofDeliveryKey,
       use: (store: SlackProofDeliveryStore) => Effect.Effect<A, E, R>,
@@ -139,6 +143,29 @@ export const SlackProofDeliveriesRepoLive: Layer.Layer<
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return SlackProofDeliveriesRepo.of({
+      pendingSince: (since) =>
+        sql`SELECT a.id FROM proof_artifacts a
+          JOIN slack_threads t ON t.session_id = a.session_id
+          WHERE a.created_at >= ${since}
+            AND a.capture->>'_tag' IN ('Screenshot', 'Video', 'NotCaptured')
+            AND NOT EXISTS (
+              SELECT 1 FROM slack_proof_deliveries d
+              WHERE d.session_id = a.session_id AND d.artifact_id = a.id
+                AND d.state IN ('shared', 'withheld', 'failed')
+            )
+          ORDER BY a.created_at, a.id`.pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: ProofArtifactId }))),
+          ),
+          Effect.map((rows) => rows.map((row) => row.id)),
+          Effect.mapError(
+            () =>
+              new SlackProofDeliveryError({
+                operation: "pendingSince",
+                message: "Slack proof deliveries could not be reconciled.",
+              }),
+          ),
+        ),
       withDelivery: (key, use) =>
         Effect.scoped(
           Effect.gen(function* () {

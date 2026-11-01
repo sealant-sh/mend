@@ -145,7 +145,8 @@ export interface SlackUploadTicket {
 export interface SlackUploadInput {
   readonly filename: string;
   readonly length: number;
-  readonly altText: string;
+  /** Slack documents alt_txt for images only. */
+  readonly altText?: string;
 }
 
 /** A fresh reader is needed on every upload attempt. */
@@ -155,8 +156,7 @@ export interface SlackUploadBody {
 }
 
 export interface SlackCompleteUploadInput {
-  readonly fileId: string;
-  readonly title: string;
+  readonly files: ReadonlyArray<{ readonly id: string; readonly title: string }>;
   readonly channelId: string;
   readonly threadTs: string;
   readonly initialComment: string;
@@ -230,7 +230,7 @@ export class SlackApi extends Context.Service<
       url: string,
       input: SlackUploadBody,
     ) => Effect.Effect<void, SlackApiError>;
-    /** One file per call so its label and caption stay with that file. Never auto-retried. */
+    /** Completes and shares these files together. Never auto-retried. */
     readonly filesCompleteUpload: (
       token: string,
       input: SlackCompleteUploadInput,
@@ -280,6 +280,19 @@ const FileShares = Schema.Record(
 const FileInfoResult = Schema.Struct({
   file: Schema.Struct({
     id: Schema.String,
+    mimetype: OptionalString,
+    filetype: OptionalString,
+    mode: OptionalString,
+    size: Schema.optional(Schema.NullOr(Schema.Number)),
+    is_external: Schema.optional(Schema.NullOr(Schema.Boolean)),
+    media_display_type: OptionalString,
+    file_access: OptionalString,
+    duration_ms: Schema.optional(Schema.NullOr(Schema.Number)),
+    mp4: OptionalString,
+    hls: OptionalString,
+    ims: Schema.optional(Schema.Array(Schema.String)),
+    has_more_shares: Schema.optional(Schema.Boolean),
+    skipped_shares: Schema.optional(Schema.Boolean),
     shares: Schema.optional(
       Schema.Struct({ public: Schema.optional(FileShares), private: Schema.optional(FileShares) }),
     ),
@@ -701,7 +714,11 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
       call(
         "files.getUploadURLExternal",
         token,
-        { filename: input.filename, length: input.length, alt_txt: input.altText },
+        {
+          filename: input.filename,
+          length: input.length,
+          ...(input.altText === undefined ? {} : { alt_txt: input.altText }),
+        },
         UploadUrlResult,
       ).pipe(Effect.map((answer) => ({ uploadUrl: answer.upload_url, fileId: answer.file_id }))),
     filesUpload: (url, { body, length }) =>
@@ -738,16 +755,29 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
               signal: AbortSignal.any([signal, AbortSignal.timeout(uploadTimeoutMs)]),
             } satisfies RequestInit & { readonly duplex: "half" };
             const response = await fetchFn(url, init);
-            await response.body?.cancel();
-            if (!response.ok)
+            if (!response.ok) {
+              await response.body?.cancel();
               throw new SlackApiError({
                 method,
                 code: `http_${response.status}`,
                 message: `Slack answered ${response.status} for the upload.`,
               });
+            }
+            const acknowledgment = /^OK\s*-\s*(\d+)\s*$/u.exec(await response.text());
+            return acknowledgment === null ? null : Number(acknowledgment[1]);
           },
           catch: (cause) => (cause instanceof SlackApiError ? cause : slackApiError(method, cause)),
-        });
+        }).pipe(
+          Effect.tap((acknowledgedBytes) =>
+            Effect.logInfo("slack file: upload bytes accepted").pipe(
+              Effect.annotateLogs({
+                length,
+                streamed: !(body instanceof Uint8Array),
+                acknowledgedBytes,
+              }),
+            ),
+          ),
+        );
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
@@ -762,7 +792,7 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
           CompleteUploadResult,
           completionClient.apiCall("files.completeUploadExternal", {
             token,
-            files: [{ id: input.fileId, title: input.title }],
+            files: input.files,
             channel_id: input.channelId,
             thread_ts: input.threadTs,
             initial_comment: input.initialComment,
@@ -771,6 +801,31 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
       ).pipe(Effect.asVoid),
     filesInfo: (token, fileId, channelId) =>
       call("files.info", token, { file: fileId }, FileInfoResult).pipe(
+        Effect.tap(({ file }) =>
+          Effect.logInfo("slack file: observed metadata").pipe(
+            Effect.annotateLogs({
+              slackFileId: file.id,
+              channelId,
+              mimetype: file.mimetype ?? null,
+              filetype: file.filetype ?? null,
+              mode: file.mode ?? null,
+              size: file.size ?? null,
+              isExternal: file.is_external ?? null,
+              mediaDisplayType: file.media_display_type ?? null,
+              fileAccess: file.file_access ?? null,
+              durationMs: file.duration_ms ?? null,
+              hasMp4: present(file.mp4) !== null,
+              hasHls: present(file.hls) !== null,
+              sharesPresent: file.shares !== undefined,
+              channelShareCount:
+                (file.shares?.public?.[channelId]?.length ?? 0) +
+                (file.shares?.private?.[channelId]?.length ?? 0),
+              sharedInIm: file.ims?.includes(channelId) ?? false,
+              hasMoreShares: file.has_more_shares ?? null,
+              skippedShares: file.skipped_shares ?? null,
+            }),
+          ),
+        ),
         Effect.map(({ file }) =>
           [
             ...(file.shares?.public?.[channelId] ?? []),
@@ -1110,14 +1165,20 @@ export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): Fa
           Effect.suspend(() => {
             const error = fileError("files.completeUploadExternal");
             if (error !== undefined) return Effect.fail(error);
-            const file = uploadedFiles.get(input.fileId);
-            if (file === undefined || file.teamId !== workspace.teamId)
-              return refuse("files.completeUploadExternal", "file_not_found");
-            if (file.shared) return refuse("files.completeUploadExternal", "already_complete");
-            if (!file.uploaded) return refuse("files.completeUploadExternal", "file_not_found");
-            file.shared = true;
-            file.channelId = input.channelId;
-            file.shares.push({ ts: nextTs(), threadTs: input.threadTs });
+            for (const { id } of input.files) {
+              const file = uploadedFiles.get(id);
+              if (file === undefined || file.teamId !== workspace.teamId || !file.uploaded)
+                return refuse("files.completeUploadExternal", "file_not_found");
+              if (file.shared) return refuse("files.completeUploadExternal", "already_complete");
+            }
+            const ts = nextTs();
+            for (const { id } of input.files) {
+              const file = uploadedFiles.get(id);
+              if (file === undefined) return Effect.die("validated upload disappeared");
+              file.shared = true;
+              file.channelId = input.channelId;
+              file.shares.push({ ts, threadTs: input.threadTs });
+            }
             calls.push({ kind: "filesCompleteUpload", teamId: workspace.teamId, input });
             return Effect.void;
           }),

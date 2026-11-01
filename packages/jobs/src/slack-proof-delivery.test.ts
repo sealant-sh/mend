@@ -21,8 +21,8 @@ import {
   SlackApiError,
   type FakeSlackWorkspace,
 } from "@mend/slack/client";
-import { it } from "@mend/test-ci/effect-vitest";
-import { Effect, Layer, Semaphore } from "effect";
+import { it, TestClock } from "@mend/test-ci/effect-vitest";
+import { DateTime, Effect, Layer, Semaphore } from "effect";
 import { describe, expect } from "vitest";
 
 import {
@@ -73,6 +73,7 @@ const harness = (artifact = artifactOf(), slackWorkspace = workspace) => {
   const lock = Semaphore.makeUnsafe(1);
   let refuseSave: ((progress: SlackProofDeliveryProgress) => boolean) | null = null;
   const repo = SlackProofDeliveriesRepo.of({
+    pendingSince: () => Effect.succeed([]),
     withDelivery: (key, use) =>
       lock.withPermit(
         Effect.suspend(() => {
@@ -94,25 +95,25 @@ const harness = (artifact = artifactOf(), slackWorkspace = workspace) => {
           return use({
             read: () => Effect.succeed(row),
             startAttempt: () =>
-              Effect.sync(() => {
-                row = { ...row, attempts: row.attempts + 1 };
+              Effect.gen(function* () {
+                row = { ...row, attempts: row.attempts + 1, updatedAt: yield* DateTime.nowAsDate };
                 rows.set(id, row);
                 return row;
               }),
             save: (progress) =>
-              Effect.suspend(() => {
+              Effect.gen(function* () {
                 if (refuseSave?.(progress) === true) {
                   refuseSave = null;
-                  return Effect.fail(
+                  return yield* Effect.fail(
                     new SlackProofDeliveryError({
                       operation: "save",
                       message: "database unavailable",
                     }),
                   );
                 }
-                row = { ...row, ...progress };
+                row = { ...row, ...progress, updatedAt: yield* DateTime.nowAsDate };
                 rows.set(id, row);
-                return Effect.succeed(row);
+                return row;
               }),
           });
         }),
@@ -211,6 +212,9 @@ describe("Slack proof delivery", () => {
       expect(h.slack.calls[0]).toMatchObject({
         input: { filename: expect.stringMatching(/-after-.*\.mp4$/), length: 4 },
       });
+      expect(
+        h.slack.calls[0]?.kind === "filesGetUploadUrl" && h.slack.calls[0].input,
+      ).not.toHaveProperty("altText");
       expect(h.slack.calls[2]).toMatchObject({
         input: { initialComment: expect.stringContaining(" · after · ") },
       });
@@ -526,4 +530,169 @@ describe("Slack proof delivery", () => {
       expect(h.slack.calls.filter((call) => call.kind === "filesCompleteUpload")).toHaveLength(0);
     }).pipe(Effect.provide(h.layer));
   });
+
+  it.effect(
+    "keeps an accepted DM video pending after seven checks, then observes its share without uploading again",
+    () => {
+      const h = harness(
+        artifactOf({
+          _tag: "Video",
+          span: { screenId: ScreenId.make("screen"), fromSeq: 1, toSeq: 5 },
+          media: { blobKey: "video.mp4", mimeType: "video/mp4", bytes: 4, sha256: "a".repeat(64) },
+          durationMs: 28_000,
+          ending: "stopped",
+        }),
+        { ...workspace, threads: { "D1:1.0": [] } },
+      );
+      const input: SlackProofDeliveryInput<never, never> = {
+        ...h.input,
+        attemptLimit: 7,
+        thread: { ...h.input.thread, channelId: "D1" },
+        project: { ...h.input.project, visibility: "private" },
+      };
+      let visible = false;
+      let checks = 0;
+      const slack: SlackApi["Service"] = {
+        ...h.slack.service,
+        filesInfo: (token, fileId, channelId) =>
+          Effect.suspend(() => {
+            checks += 1;
+            return visible
+              ? h.slack.service.filesInfo(token, fileId, channelId)
+              : Effect.succeed([]);
+          }),
+      };
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(now.getTime());
+        for (let attempt = 1; attempt < 7; attempt++)
+          expect(yield* deliverProofToSlack(input).pipe(Effect.flip)).toMatchObject({
+            code: "share_not_observed",
+          });
+        expect(yield* deliverProofToSlack(input)).toMatchObject({
+          state: "uploaded",
+          errorCode: "share_not_observed",
+          attempts: 7,
+        });
+        const posts = h.slack.calls.filter((call) => call.kind === "postMessage");
+        expect(posts).toHaveLength(1);
+        expect(posts[0]?.input.text).toContain("Slack accepted the upload");
+        expect(posts[0]?.input.text).not.toContain("not delivered");
+        expect(checks).toBe(7);
+        yield* deliverProofToSlack(input);
+        expect(checks).toBe(7);
+        yield* TestClock.adjust("5 minutes");
+        visible = true;
+        expect(yield* deliverProofToSlack(input)).toMatchObject({
+          state: "shared",
+          errorCode: null,
+          attempts: 8,
+        });
+        expect(checks).toBe(8);
+        expect(h.slack.calls.filter((call) => call.kind === "filesCompleteUpload")).toHaveLength(1);
+        expect(h.slack.calls.filter((call) => call.kind === "filesUpload")).toHaveLength(1);
+        expect(h.slack.calls.filter((call) => call.kind === "postMessage")).toHaveLength(1);
+        expect(h.slack.calls.find((call) => call.kind === "update")).toMatchObject({
+          input: { text: expect.stringContaining("File shown in thread") },
+        });
+      }).pipe(Effect.provideService(SlackApi, slack), Effect.provide(h.layer));
+    },
+  );
+
+  it.effect(
+    "stops checking after an hour without claiming the accepted file was not delivered",
+    () => {
+      const h = harness();
+      const input = { ...h.input, attemptLimit: 1 };
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(now.getTime());
+        expect(yield* deliverProofToSlack(input)).toMatchObject({ state: "uploaded" });
+        yield* TestClock.adjust("1 hour");
+        expect(yield* deliverProofToSlack(input)).toMatchObject({
+          state: "failed",
+          errorCode: "share_not_observed",
+        });
+        const updates = h.slack.calls.filter((call) => call.kind === "update");
+        expect(updates).toHaveLength(1);
+        expect(updates[0]?.input.text).toContain("Mend has stopped checking");
+        expect(updates[0]?.input.text).not.toContain("not delivered");
+      }).pipe(
+        Effect.provideService(SlackApi, {
+          ...h.slack.service,
+          filesInfo: () => Effect.succeed([]),
+        }),
+        Effect.provide(h.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "observes an accepted completion after its response was lost at the fast retry limit",
+    () => {
+      const h = harness();
+      const input = { ...h.input, attemptLimit: 1 };
+      const slack: SlackApi["Service"] = {
+        ...h.slack.service,
+        filesCompleteUpload: (token, upload) =>
+          h.slack.service.filesCompleteUpload(token, upload).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new SlackApiError({
+                  method: "files.completeUploadExternal",
+                  code: "request_failed",
+                  message: "Response lost",
+                }),
+              ),
+            ),
+          ),
+      };
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(now.getTime());
+        expect(yield* deliverProofToSlack(input)).toMatchObject({
+          state: "uploaded",
+          errorCode: "share_not_observed",
+        });
+        const notice = h.slack.calls.find((call) => call.kind === "postMessage");
+        expect(notice?.input.text).toContain("Slack accepted the upload");
+        yield* TestClock.adjust("5 minutes");
+        expect(yield* deliverProofToSlack(input)).toMatchObject({ state: "shared", attempts: 2 });
+        expect(h.slack.calls.filter((call) => call.kind === "filesCompleteUpload")).toHaveLength(1);
+      }).pipe(Effect.provideService(SlackApi, slack), Effect.provide(h.layer));
+    },
+  );
+
+  it.effect(
+    "records an observed share even if updating its earlier visibility notice fails",
+    () => {
+      const h = harness();
+      const input = { ...h.input, attemptLimit: 1 };
+      let visible = false;
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(now.getTime());
+        expect(yield* deliverProofToSlack(input)).toMatchObject({ state: "uploaded" });
+        yield* TestClock.adjust("5 minutes");
+        visible = true;
+        expect(yield* deliverProofToSlack(input)).toMatchObject({
+          state: "shared",
+          errorCode: null,
+        });
+      }).pipe(
+        Effect.provideService(SlackApi, {
+          ...h.slack.service,
+          filesInfo: (token, fileId, channelId) =>
+            Effect.suspend(() =>
+              visible ? h.slack.service.filesInfo(token, fileId, channelId) : Effect.succeed([]),
+            ),
+          update: () =>
+            Effect.fail(
+              new SlackApiError({
+                method: "chat.update",
+                code: "request_failed",
+                message: "Response lost",
+              }),
+            ),
+        }),
+        Effect.provide(h.layer),
+      );
+    },
+  );
 });
