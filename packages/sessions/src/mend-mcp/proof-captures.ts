@@ -210,36 +210,30 @@ export const ProofCapturesLive: Layer.Layer<
           }),
       );
 
-    const sourceOf = (
-      caller: Caller,
-      side: "before" | "after",
-      base: ProofArtifact["source"] & { readonly _tag: "Base" },
-    ) =>
-      side === "before"
-        ? Effect.succeed<ProofSource>(base)
-        : engine.checkpointNow(caller.sessionId, "proof-capture").pipe(
-            Effect.map(
-              (checkpoint): ProofSource => ({
-                _tag: "Checkpoint",
-                checkpointId: checkpoint.id,
-                ordinal: checkpoint.ordinal,
-                commit: checkpoint.sha,
-              }),
-            ),
-            Effect.catch((error) =>
-              Effect.succeed<ProofSource>({
-                _tag: "Unknown",
-                reason: `Checkpoint unavailable (${error._tag})`,
-              }),
-            ),
-          );
+    const sourceOf = (caller: Caller) =>
+      engine.checkpointNow(caller.sessionId, "proof-capture").pipe(
+        Effect.map(
+          (checkpoint): ProofSource => ({
+            _tag: "Checkpoint",
+            checkpointId: checkpoint.id,
+            ordinal: checkpoint.ordinal,
+            commit: checkpoint.sha,
+          }),
+        ),
+        Effect.catch((error) =>
+          Effect.succeed<ProofSource>({
+            _tag: "Unknown",
+            reason: `Checkpoint unavailable (${error._tag})`,
+          }),
+        ),
+      );
 
     const answer = (
       caller: Caller,
       params:
         | ProofScreenshotParams
         | ProofMissingParams
-        | (ProofVideoStartParams & { readonly side: "after"; readonly video: true }),
+        | (ProofVideoStartParams & { readonly video: true }),
     ) =>
       Effect.gen(function* () {
         const refusal = yield* screens.authorize(caller);
@@ -272,10 +266,7 @@ export const ProofCapturesLive: Layer.Layer<
         const change = yield* changes.bySession(caller.sessionId);
         if (change === null)
           return refused("no_change", "This session has no change to attach proof to.");
-        const source = yield* sourceOf(caller, params.side, {
-          _tag: "Base",
-          commit: change.baseSha,
-        });
+        const source = yield* sourceOf(caller);
         const turns = yield* conversation.listTurns(caller.sessionId);
         const processId = caller.agentProcess?.id;
         const turn = turns
@@ -362,7 +353,6 @@ export const ProofCapturesLive: Layer.Layer<
           turnId: turn?.id ?? null,
           title: params.title,
           caption: "caption" in params ? params.caption : "",
-          side: params.side,
           source,
           capture,
           launch: "launch" in params ? (params.launch ?? null) : null,
@@ -459,8 +449,7 @@ export const ProofCapturesLive: Layer.Layer<
         ),
       ).pipe(Effect.forkIn(scope), Effect.flatMap(Fiber.join));
     return {
-      videoStart: (caller, params) =>
-        videoCall(caller, answer(caller, { ...params, side: "after", video: true })),
+      videoStart: (caller, params) => videoCall(caller, answer(caller, { ...params, video: true })),
       videoStop: (caller) => videoCall(caller, stop(caller)),
       screenshot: (caller, params) => serially(caller, answer(caller, params)),
       missing: (caller, params) => serially(caller, answer(caller, params)),

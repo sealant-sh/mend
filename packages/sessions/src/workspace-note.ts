@@ -23,8 +23,6 @@
  * A symlinked file is written at its target; a file with several hard links is written in place.
  */
 
-import type { Sha } from "@mend/domain";
-
 import { shellQuote } from "./workspace-files.ts";
 
 /** The line that opens Mend's block. Recognised by this prefix, so the hint may change. */
@@ -104,26 +102,15 @@ export const PREVIEWS_NOTE =
   `the web, or **Preview** on the phone. When asked for the preview, say that and name the ` +
   `Service.\n\n`;
 
-/** Capture instructions name the immutable base without changing the session's checkout. */
-export const proofArtifactsNote = (base: Sha): string =>
+/** Guidance for selecting observations of the app with the change. */
+export const proofArtifactsNote = (): string =>
   `## Proof artifacts\n\n` +
-  `Use proof_screenshot, proof_video_start, proof_video_stop and proof_missing for selected observations of the user's web app. ` +
-  `Read .mend/features.md and .mend/verify.md when present. The change's base is ${base}. ` +
-  `For before, create a side copy; never check out or reset the base in /workspace/repo:\n\n` +
-  `\`dir=$(mktemp -d -t mend-before.XXXXXX); git -C /workspace/repo archive ${base} | tar -x -C "$dir"\`\n\n` +
-  `Read the base recipe with \`git -C /workspace/repo show ${base}:.mend/mend.toml\` ` +
-  `(root \`mend.toml\` fallback). Use its lockfiles and separate writable test data; ` +
-  `never share the after app's database for writes. Start the base from "$dir" with ` +
-  `\`mend service run --port <a free port> --name before --http -- <command>\`; ` +
-  `make <command> change directory to "$dir" before launching. Open ` +
-  `\`chromium http://127.0.0.1:<port>\` in a new tab on this screen, then call ` +
-  `\`proof_screenshot side=before\`. Record the launch, port and fixture differences. ` +
-  `After capture, run \`mend service stop before\`, list "$dir", then remove only that directory. ` +
-  `If base or auth prerequisites are unavailable, call proof_missing with the reason. ` +
-  `For an after video, call proof_video_start, drive with screen_act, then proof_video_stop within 60 seconds. ` +
-  `Mend stores it at the limit if you forget to stop. Never relabel after as before. After pins a checkpoint; use a side copy of it when other ` +
-  `sessions keep writing. Captions describe observations, never verdicts. Keep secret values ` +
-  `out of tool arguments.\n\n`;
+  `Capture the app with the change as a person would see it when a user flow benefits from a screenshot or short video. ` +
+  `Read .mend/features.md and .mend/verify.md when present. Start the app and open it with chromium on this session's screen. ` +
+  `Use proof_screenshot for a selected observation. For a video, call proof_video_start, drive with screen_act, then proof_video_stop within 60 seconds. ` +
+  `Mend takes a checkpoint when capture starts and stores the video at the limit if you forget to stop. ` +
+  `If a capture cannot be taken, call proof_missing with the reason. ` +
+  `Captions describe observations, never verdicts. Keep secret values out of tool arguments.\n\n`;
 
 /** The whole block for `body`: begin line, body, end line, each line ending in a newline. */
 export const workspaceNoteBlock = (body: string): string =>

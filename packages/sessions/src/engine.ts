@@ -13540,10 +13540,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           resourceWorktreeId === null
             ? ""
             : resourcesNote(yield* resourceStatus.forWorktree(project.id, resourceWorktreeId));
-        const proofChange =
-          proofScreen && resourceWorktreeId !== null
-            ? yield* changes.byWorktree(resourceWorktreeId)
-            : null;
         const note =
           `## Mend mounts\n\nMounted beside the repo:\n\n` +
           referencesSection +
@@ -13554,7 +13550,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           servicesSection +
           resourceSection +
           PREVIEWS_NOTE +
-          (proofChange === null ? "" : proofArtifactsNote(proofChange.baseSha));
+          (proofScreen && resourceWorktreeId !== null ? proofArtifactsNote() : "");
         const notWritten = (detail: Record<string, unknown>) =>
           Effect.logWarning("session engine: the workspace note was not written").pipe(
             Effect.annotateLogs({ workspaceId: workspace.id, ...detail }),

@@ -110,8 +110,7 @@ test account. It lists the exact project secret or Doppler names and the command
 the example above. You do not have to guess where an account comes from or which secret to add.
 
 Every screen starts with a fresh browser profile. After it ends, the agent repeats the documented
-auth preparation for the next screen. For before and after captures, it prepares the account and
-session against each copy's own data. Missing runtime prerequisites are named as `not captured`, not
+auth preparation for the next screen. Missing runtime prerequisites are named as `not captured`, not
 replaced with an anonymous page. Writing the script does not execute it during setup.
 
 ## Recipes and resources
@@ -166,13 +165,14 @@ of project or worktree level, as the resource guide describes.
 
 Later sessions use these files to find the relevant user flow, prepare a signed-in test user and
 choose [proof artifacts](/guides/proof-artifacts/). Mend uploads the selected screenshots and video
-into the session's Slack thread and shows them inline in T3 Code. Landing embeds them in the PR
-body; Review and the phone show them beside the change. Once posted, copies live under Slack's, T3
-Code's or GitHub's access rules. Media on a public repository is visible to anyone.
+into the session's Slack thread and shows them inline in T3 Code. Planned landing delivery will
+embed them in the PR body; the planned review page and phone will show them beside the change. Once
+posted, copies live under Slack's, T3 Code's or GitHub's access rules. Media on a public repository
+is visible to anyone.
 
 ## Build order
 
-1. Before and after screenshots and the after video, with the base side copy.
+1. Screenshots and a short video of the app with the change.
 2. Delivery to Slack and inline display in T3 Code.
 3. The setup session, including auth preparation.
 4. Embedded media in the PR body.

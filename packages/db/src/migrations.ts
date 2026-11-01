@@ -4925,7 +4925,6 @@ const proofArtifactsMigration = Effect.gen(function* () {
       call_key text,
       title text NOT NULL,
       caption text NOT NULL,
-      side text NOT NULL CHECK (side IN ('before', 'after')),
       source jsonb NOT NULL,
       capture jsonb NOT NULL,
       launch text,
@@ -4955,6 +4954,12 @@ const slackProofDeliveriesMigration = Effect.gen(function* () {
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (session_id, artifact_id)
   )`;
+});
+
+const proofArtifactsWithoutSideMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  // Deployed 0178 tables still require the withdrawn capture side.
+  yield* sql`ALTER TABLE proof_artifacts DROP COLUMN IF EXISTS side`;
 });
 
 export const migrations = {
@@ -5125,4 +5130,5 @@ export const migrations = {
   "0177_resource_levels": resourceLevelsMigration,
   "0178_proof_artifacts": proofArtifactsMigration,
   "0179_slack_proof_deliveries": slackProofDeliveriesMigration,
+  "0181_proof_artifacts_without_side": proofArtifactsWithoutSideMigration,
 };

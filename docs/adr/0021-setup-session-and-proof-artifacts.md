@@ -1,8 +1,22 @@
 # Setup sessions and recorded proof artifacts
 
-Status: agreed design for 0.37, not yet built. Yiannis supplied the setup and capture stories on
-2026-11-01 and has decided delivery, authentication, withdrawal and build order. Those decisions
-replace the earlier open questions in this ADR. This document changes no runtime behavior.
+## Amendment
+
+2026-11-01: before captures dropped by Yiannis, since a base copy may not boot.
+
+Captures show the app with the change only. The side copy, D6 and the before half of the pair are
+withdrawn. Screenshots and the short video use the checkpoint Mend takes when capture starts, or
+`source unknown` with a reason. Labels read
+`Completed task on board · checkpoint #2 · observed 17:58 UTC`, with capture state when needed.
+Agents use `.mend/features.md` and `.mend/verify.md` when present and record `proof_missing` with a
+reason when capture is unavailable. Captures, Slack file uploads and inline display in T3 Code are
+built; setup, PR body embeds, Review and phone remain planned. Historical sections below retain the
+original decision and are marked where superseded.
+
+Original status, superseded by the amendment: agreed design for 0.37, not yet built. Yiannis
+supplied the setup and capture stories on 2026-11-01 and has decided delivery, authentication,
+withdrawal and build order. Those decisions replace the earlier open questions in this ADR. This
+document changes no runtime behavior.
 
 ## What people get
 
@@ -56,6 +70,9 @@ its turn, not that Mend has observed the app running.
 
 ### Review a UI change with before and after pictures
 
+The paired-capture story and its labels are superseded by the 2026-11-01 amendment; capture only the
+app with the change.
+
 A later session changes how the task board displays a completed task. The agent reads the feature
 map and verification file, chooses the relevant flow and captures the user's web app on the
 session's screen. It attaches before and after screenshots and a short video of the after flow to
@@ -97,6 +114,9 @@ The local file contains the values and stays outside the repository. These are e
 writes the names and commands the actual app needs, including the selected Doppler project and
 config. No secret value, signed cookie or session token is written into `.mend/`.
 
+The per-copy auth preparation below is superseded by the 2026-11-01 amendment; prepare auth only for
+the app with the change.
+
 ADR 0020 D10 still gives every screen a fresh browser profile, discarded when the screen ends. On
 restart the agent repeats the documented test-session script or password sign-in. It runs the auth
 preparation against each capture's own data and source, so a base copy does not use the after app's
@@ -111,6 +131,8 @@ account for what the session record retains. The app's visible account data stil
 capture, so the project uses test data suitable for its delivery audiences.
 
 ## Where this comes from
+
+The original paired-capture request quoted here is superseded by the 2026-11-01 amendment.
 
 Yiannis described the wanted artifacts as:
 
@@ -145,6 +167,8 @@ The product contract gains two terms:
   screen, attached to a change with its source and observation time. "Proof" names the material a
   person can inspect, never a verdict that the change works.
 
+This source-side terminology is superseded by the 2026-11-01 amendment.
+
 `Before` and `after` describe an artifact's source. They are not new product objects. A feature map
 and a verification file are repository documents, not new session kinds or a context pack.
 
@@ -173,6 +197,9 @@ The verification file says what a person or agent must explicitly start, which l
 what data the flow changes. Setup grants no permission to execute those instructions by itself.
 
 ### Before runs beside the change
+
+This section is superseded by the 2026-11-01 amendment; all side-copy preparation and capture are
+withdrawn.
 
 The agent runs the app's recipe at the change's base commit in a side copy on another port. It never
 checks out the base over the working files, resets the worktree, or changes its branch. The base
@@ -208,6 +235,9 @@ source cannot be established, label it `source unknown` rather than attaching it
 exact proof. Later work does not silently update an earlier capture.
 
 ### ADR 0020's artifact seam
+
+Source-side metadata and after-only wording here are superseded by the 2026-11-01 amendment; use
+capture checkpoints or an explicit unknown source.
 
 [ADR 0020](0020-guis-in-sessions.md#the-seam-for-recorded-proof-artifacts) already addresses a frame
 with `ScreenMoment {screenId, seq}` and a log range with `ScreenSpan {screenId, fromSeq, toSeq}`. A
@@ -247,10 +277,16 @@ including after access is revoked; knowing a blob key grants no access. Artifact
 change even if the source session has different visibility. The operator gets no default read access
 to organization content.
 
+The paired-image presentation below is superseded by the 2026-11-01 amendment; planned Review and
+phone show selected screenshots and video.
+
 Review shows paired images and a video player beside the diff, with labels visible before opening
 media. The phone offers the same captures in its review. These designs remain unchanged.
 
 ### Delivery to Slack and T3 Code
+
+The source-side labels here are superseded by the 2026-11-01 amendment; delivery uses checkpoint and
+observation labels.
 
 Slack receives files, not a list of links. Mend uploads each selected screenshot and the after video
 into the session's Slack thread through its Slack app, with the source and observation caption. A
@@ -284,6 +320,9 @@ Revoking Mend access does not recall a copy already delivered. On a public repos
 the GitHub media. These external copies are separate from Mend's change-lifetime retention.
 
 ### Embedded media in the PR body
+
+The paired-file example here is superseded by the 2026-11-01 amendment; planned embeds contain only
+captures of the app with the change.
 
 Landing uploads the selected media as GitHub-native attachments in the same repository as the PR.
 Use the existing landing workspace and the change owner's GitHub login, with a `gh` version that
@@ -322,6 +361,9 @@ landing reports media delivery unavailable rather than silently publishing a lin
 
 ## Decisions and alternatives
 
+D6 and the source pairing in D7 are superseded by the 2026-11-01 amendment; the video remains
+bounded to about 60 seconds.
+
 | Decision                            | Design                                                                                                                                                                                                                                                                  | Alternative considered and why it was not chosen                                                                                            |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | D1. Consent and cost                | Ask on adoption, require yes, retain **Set up this project** later. The starter's own agent login pays.                                                                                                                                                                 | Automatic setup on adoption spends a person's login before they choose it.                                                                  |
@@ -342,6 +384,9 @@ landing reports media delivery unavailable rather than silently publishing a lin
 
 ## Build order
 
+Step 1 is superseded by the 2026-11-01 amendment; capture screenshots and a short video of the app
+with the change.
+
 1. Capture before and after screenshots and the after video, with the base side copy.
 2. Deliver files to Slack and show the captures inline in T3 Code.
 3. Build the setup session, including auth preparation and its `.mend/` instructions and scripts.
@@ -353,6 +398,9 @@ the setup session writes them. This order does not make setup an automatic prere
 capture.
 
 ## Implementation boundary and checks for the later build
+
+The side-copy requirements and base-capture checks here are superseded by the 2026-11-01 amendment;
+check captures of the app with the change.
 
 This PR is documentation only. Mend continues to use the public `@sealant/sdk`; missing support for
 side copies, media capture or blob transfer belongs in platform feedback before implementation, not

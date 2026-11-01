@@ -1,35 +1,33 @@
 ---
 title: Review proof artifacts
-description:
-  Inspect before and after screenshots and a short video of your web app on a session's screen.
+description: Inspect screenshots and a short video of your web app on a session's screen.
 sidebar:
   order: 1.5
 ---
 
-:::note[Agreed design, not yet built] This guide describes recorded proof artifacts designed for
-Mend 0.37. The captures and review controls described here are not yet built. The first version
+:::note[Partly built] Captures, Slack file uploads and inline display in T3 Code are built. The
+setup session, PR body embeds, the review page and the phone are not yet built. The first version
 covers web apps. :::
 
 A proof artifact is a selected screenshot or short video of your web app running on a session's
-screen, attached to its change. You can inspect it beside the diff without starting the app
-yourself. Its label says what it shows, which source ran and when Mend observed it. A picture is
-evidence to inspect, not a verdict that the change works.
+screen, attached to its change. You can inspect the captures without starting the app yourself. Its
+label says what it shows, which source ran and when Mend observed it. A picture is evidence to
+inspect, not a verdict that the change works.
 
-## What you see in Review
+## What a capture shows
 
-Suppose an agent changes how your task board displays completed tasks. The review page keeps the
-diff primary and shows **Proof artifacts** beside it:
+Suppose an agent changes how your task board displays completed tasks. Mend labels the selected
+screenshots and short video:
 
-| Capture           | Label and source                                                                             |
-| ----------------- | -------------------------------------------------------------------------------------------- |
-| Before screenshot | Completed task on board · before · base `<commit>` · observed `<time>`                       |
-| After screenshot  | Completed task on board · after · checkpoint `<checkpoint>` · observed `<time>`              |
-| After video       | Complete a task and reload the board · after · checkpoint `<checkpoint>` · observed `<time>` |
+| Capture    | Label and source                                                                     |
+| ---------- | ------------------------------------------------------------------------------------ |
+| Screenshot | Completed task on board · checkpoint #2 · observed 17:58 UTC                         |
+| Video      | Complete a task and reload the board · checkpoint `<checkpoint>` · observed `<time>` |
 
-Open the paired screenshots to compare them. Play the short video to see the after flow, under about
-60 seconds. Each item links to the session and the moment or span in its screen log. Its details
-name the recipe, source and known differences in test data. The agent's caption describes what is
-visible; you decide what it establishes.
+Open a screenshot to inspect the app with the change. Play the short video to see the flow, under
+about 60 seconds. Each item links to the session and the moment or span in its screen log. Its
+details name the recipe, source and known differences from the verification instructions. The
+agent's caption describes what is visible; you decide what it establishes.
 
 The agent chooses relevant captures using your
 [feature map and verification instructions](/guides/setup-session/). You can ask for more in the
@@ -41,26 +39,18 @@ The new captures join the change without replacing earlier observations. If the 
 again, an old capture keeps its original checkpoint label. It does not silently become evidence for
 the newer code.
 
-## Where before and after come from
+## Source and observation time
 
-Before runs the app's recipe at the change's base commit in a side copy on another port. The agent
-opens that app on the session's screen. It never checks out the base over your working files or
-resets your change.
+Captures show the app with the change as a person would see it. Mend takes a checkpoint when a
+screenshot or video capture starts. Each label names that checkpoint and the time Mend observed the
+screen. If checkpointing is unavailable, the label says `source unknown` and the metadata records
+why. Later edits keep the capture's original label.
 
-The side copy uses separate writable data. For Postgres, that means a temporary worktree with its
-own database on the project's server. Other resources use worktree instances where the flow writes
-to them. The agent starts these explicitly and cleans up only what it started. Declaring a resource
-or starting a session does not perform its first start. See [Resources](/guides/resources/).
-
-After runs the app at a pinned checkpoint. If other sessions are still editing the worktree, the
-agent uses a copy of that checkpoint too. It tries to use the same route, viewport, account role and
-starting fixtures for both captures, and records differences. "Before" means base source; it does
-not mean the screenshot was necessarily taken earlier.
-
-If the base has no recipe, the agent records the launch command it used instead. If the base cannot
-run, you see `before · not captured` and the reason. Missing credentials, unavailable resources,
-incomplete video and unknown source are stated too. A missing image is never filled with an after
-image labelled before.
+The agent uses `.mend/features.md` and `.mend/verify.md` when present, starts the app and opens it
+on the session's screen. It records its launch command and any known differences from those
+instructions. Labels describe observations, never verdicts. When the app cannot boot or a capture
+cannot be taken, the agent records `proof_missing` with the reason. Missing credentials, unavailable
+resources and incomplete video remain explicit.
 
 ## Apps that require sign-in
 
@@ -84,28 +74,28 @@ documents the app's actual names, seed or sign-up steps, and selected Doppler co
 
 No secret value, signed cookie or session token is written into `.mend/`. Scripts read their inputs
 at runtime. Every screen has a fresh browser profile, discarded when it ends, so the agent repeats
-this preparation after a screen restart. The base and after copies use their own data and sessions.
-If a required secret or test user is missing, the capture names that missing prerequisite.
+this preparation after a screen restart. If a required secret or test user is missing, the capture
+names that missing prerequisite.
 
 Use test accounts and data suitable for the delivery audience. Screenshots and videos show the app's
 visible account data; storing a login as a secret does not hide those pixels.
 
 ## Slack, T3 Code, phone and the landed PR
 
-Mend uploads the screenshots and the after video into the session's Slack thread as files. You see
-the pictures and play the video there, with their source and observation captions. You can ask the
+Mend uploads the screenshots and the video into the session's Slack thread as files. You see the
+pictures and play the video there, with their source and observation captions. You can ask the
 session for another capture using its normal steering permissions.
 
 T3 Code shows the same images and video inline in the session's thread through Mend's T3 Code
-gateway. You do not have to follow a link to Mend to see them. The phone's review keeps the same
-paired screenshots, labels and video as Review.
+gateway. You do not have to follow a link to Mend to see them. The planned phone review will show
+the same screenshots, labels and video as the planned review page.
 
-When the change's owner lands it, Mend uploads the selected media as GitHub-native attachments to
-the PR's repository. The PR body embeds the screenshots and a video player in Mend's section. It
-names the source, observation time and landed checkpoint, and says when a capture comes from an
-older checkpoint. Your text outside Mend's section stays intact. The design uses GitHub CLI's
-attachment upload support, not a raw URL to a special Git ref. GitHub documents that readers of a
-private repository can see its attachments; public-repository uploads need no authentication.
+The planned landing delivery uploads the selected media as GitHub-native attachments to the PR's
+repository. The PR body embeds the screenshots and a video player in Mend's section. It names the
+source, observation time and landed checkpoint, and says when a capture comes from an older
+checkpoint. Your text outside Mend's section stays intact. The design uses GitHub CLI's attachment
+upload support, not a raw URL to a special Git ref. GitHub documents that readers of a private
+repository can see its attachments; public-repository uploads need no authentication.
 
 Anyone who can see the change can see its artifacts in Mend. Once posted, a copy lives in Slack, T3
 Code or GitHub under that service's access rules. People with access there can see the delivered
@@ -124,12 +114,10 @@ Unrelated frames still expire, so the surrounding screen log can contain expired
 selected artifact remains available. A frame that already expired cannot be recovered by selecting
 it later.
 
-## Build order
+## Remaining work
 
-1. Before and after screenshots and the after video, with the base side copy.
-2. File delivery to Slack and inline display in T3 Code.
-3. The setup session, including auth preparation.
-4. Embedded media in the PR body.
-5. The review page and phone presentation.
+1. The setup session, including auth preparation.
+2. Embedded media in the PR body.
+3. The review page and phone presentation.
 
 Withdrawing a capture is deferred to later work.

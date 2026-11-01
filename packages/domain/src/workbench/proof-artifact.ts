@@ -30,24 +30,18 @@ export const PROOF_LIMITS = {
   titleChars: 120,
   captionChars: 1_000,
   noteChars: 1_000,
-  /** ADR 0021 D7: the after video runs under about a minute; Mend ends it here. */
+  /** ADR 0021 D7: a video runs under about a minute; Mend ends it here. */
   videoMs: 60_000,
 } as const;
-
-/** `before` and `after` name the source an artifact shows, not when it was taken. */
-export const ProofSide = Schema.Literals(["before", "after"]);
-export type ProofSide = typeof ProofSide.Type;
 
 export const ProofKind = Schema.Literals(["screenshot", "video"]);
 export type ProofKind = typeof ProofKind.Type;
 
 /**
- * The source the app ran. `Base` is the change's base commit, for `before`. `Checkpoint` is the
- * checkpoint Mend took when an `after` capture began. `Unknown` says why neither holds. A screen
+ * The checkpoint Mend took when capture began. `Unknown` says why it is unavailable. A screen
  * entry's `ObservedAfter` link never stands in for a source.
  */
 export const ProofSource = Schema.Union([
-  Schema.TaggedStruct("Base", { commit: Sha }),
   Schema.TaggedStruct("Checkpoint", {
     checkpointId: CheckpointId,
     ordinal: Schema.Int,
@@ -75,8 +69,7 @@ export type ProofVideoEnding = typeof ProofVideoEnding.Type;
 
 /**
  * What the artifact holds. `Recording` is a video still being captured; `NotCaptured` is an
- * artifact the agent could not capture, with the reason (a base that does not run, a missing test
- * account). An after capture is never relabeled before to fill a gap.
+ * artifact the agent could not capture, with the reason, such as a missing test account.
  */
 export const ProofCapture = Schema.Union([
   Schema.TaggedStruct("Screenshot", { moment: ScreenMoment, media: ProofMedia }),
@@ -103,12 +96,11 @@ export class ProofArtifact extends Schema.Class<ProofArtifact>("ProofArtifact")(
   title: Schema.String,
   /** The agent's description of what is visible. */
   caption: Schema.String,
-  side: ProofSide,
   source: ProofSource,
   capture: ProofCapture,
   /** The recipe or launch command and port the app ran with, as the agent reported it. */
   launch: Schema.NullOr(Schema.String),
-  /** Known differences in data, account or route between before and after. */
+  /** Known differences from the documented data, account or route. */
   differences: Schema.NullOr(Schema.String),
   observedFrom: Timestamp,
   observedTo: Schema.NullOr(Timestamp),
@@ -120,7 +112,6 @@ export class ProofRef extends Schema.Class<ProofRef>("ProofRef")({
   artifactId: ProofArtifactId,
   sessionId: SessionId,
   kind: ProofKind,
-  side: ProofSide,
   title: Schema.String,
   caption: Schema.String,
   label: Schema.String,
@@ -154,8 +145,6 @@ export const proofKindOf = (capture: ProofCapture): ProofKind => {
 
 const sourceLabel = (source: ProofSource): string => {
   switch (source._tag) {
-    case "Base":
-      return `base ${source.commit.slice(0, 7)}`;
     case "Checkpoint":
       return `checkpoint #${source.ordinal}`;
     case "Unknown":
@@ -181,21 +170,18 @@ const stateLabel = (capture: ProofCapture): string | null => {
 };
 
 /**
- * The one line every client shows: `Completed task on board · before · base 1a2b3c4 · observed
+ * The one line every client shows: `Completed task on board · checkpoint #2 · observed
  * 14:02 UTC`. `observedAt` formats the observation time for the reader's surface.
  */
 export const proofLabel = (
-  artifact: Pick<ProofArtifact, "title" | "side" | "source" | "capture" | "observedFrom">,
+  artifact: Pick<ProofArtifact, "title" | "source" | "capture" | "observedFrom">,
   observedAt: (at: Date) => string,
 ): string =>
   [
     artifact.title,
-    artifact.side,
     sourceLabel(artifact.source),
     stateLabel(artifact.capture),
-    artifact.capture._tag === "NotCaptured"
-      ? null
-      : `observed ${observedAt(artifact.observedFrom)}`,
+    `observed ${observedAt(artifact.observedFrom)}`,
   ]
     .filter((part): part is string => part !== null)
     .join(" · ");

@@ -440,7 +440,7 @@ describe("proof tools on the screen-enabled MCP server", () => {
     const seen: Array<unknown> = [];
     const reference = {
       artifactId: "proof-1",
-      label: "Board · before · base abcdef1 · observed 14:02 UTC",
+      label: "Board · checkpoint #2 · observed 14:02 UTC",
       message: "Recorded the screen as observed.",
     };
     const proof: ProofCaptures["Service"] = {
@@ -475,14 +475,14 @@ describe("proof tools on the screen-enabled MCP server", () => {
           }),
         ),
     };
-    const params = { title: "Board", side: "before", caption: "Empty board" };
+    const params = { title: "Board", caption: "Empty board" };
     const { listed, replies } = await serve({ answer: Effect.succeed(answered()), proof }, [
       { name: "proof_screenshot", arguments: params },
       { name: "proof_video_start", arguments: { title: "Board", caption: "Completed task" } },
       { name: "proof_video_stop", arguments: {} },
       {
         name: "proof_missing",
-        arguments: { title: "Board", side: "before", kind: "screenshot", reason: "No account" },
+        arguments: { title: "Board", kind: "screenshot", reason: "No account" },
       },
     ]);
     expect(listed).toEqual(

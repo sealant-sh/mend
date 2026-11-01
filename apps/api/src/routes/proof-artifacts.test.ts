@@ -26,6 +26,7 @@ import {
 import { postgresTestConfig } from "@mend/db/testing";
 import {
   ChangeId,
+  CheckpointId,
   ProjectId,
   ProofArtifactId,
   ScreenId,
@@ -135,9 +136,13 @@ describe.skipIf(postgres.skip)("proof artifact reads", () => {
             sessionId: SessionId.make("proof-http-session"),
             turnId: null,
             title: "Task board",
-            caption: "Before completion",
-            side: "before",
-            source: { _tag: "Base", commit: Sha.make("abcdef123") },
+            caption: "Completed task on board",
+            source: {
+              _tag: "Checkpoint",
+              checkpointId: CheckpointId.make("checkpoint"),
+              ordinal: 2,
+              commit: Sha.make("abcdef123"),
+            },
             capture: {
               _tag: "Screenshot",
               moment: { screenId: ScreenId.make("screen"), seq: 3 },
@@ -171,7 +176,8 @@ describe.skipIf(postgres.skip)("proof artifact reads", () => {
     const response = await request(`/proof-artifacts/${ID}`);
     expect(response.status).toBe(200);
     const view = Schema.decodeUnknownSync(ProofArtifactView)(await response.json());
-    expect(view.label).toBe("Task board · before · base abcdef1 · observed 14:02 UTC");
+    expect(view.label).toBe("Task board · checkpoint #2 · observed 14:02 UTC");
+    expect(Schema.encodeSync(ProofArtifactView)(view).artifact).not.toHaveProperty("side");
     expect(view.mediaPath).toBe(`/api/proof-artifacts/${ID}/media`);
     const list = await request(`/changes/${CHANGE}/proof-artifacts`);
     expect(await list.json()).toEqual([Schema.encodeSync(ProofArtifactView)(view)]);

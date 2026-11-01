@@ -69,7 +69,6 @@ const refOf = (artifact: ProofArtifact, sessionId: SessionId) => {
       title: artifact.title,
       caption: artifact.caption,
       kind: proofKindOf(capture),
-      side: artifact.side,
       label: proofLabel(artifact, (at) => `${at.toISOString().slice(11, 16)} UTC`),
       state:
         media !== null ? "stored" : capture._tag === "Recording" ? "recording" : "not-captured",

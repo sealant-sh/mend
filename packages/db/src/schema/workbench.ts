@@ -2127,7 +2127,6 @@ export const proofArtifacts = pgTable(
     callKey: text(),
     title: text().notNull(),
     caption: text().notNull(),
-    side: text().$type<"before" | "after">().notNull(),
     source: jsonbOf(ProofSource).notNull(),
     capture: jsonbOf(ProofCapture).notNull(),
     launch: text(),

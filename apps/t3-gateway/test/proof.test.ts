@@ -26,7 +26,7 @@ import { applyOrchestrationV2ProjectionEvent } from "./support/upstream/steering
 
 const THREAD = ThreadId.make("session-1");
 const ID = ProofArtifactId.make("c57e0440-1ef8-4f54-9c63-f4c8ef64f41c");
-const LABEL = "Completed task on board · before · base 1a2b3c4 · observed 14:02 UTC";
+const LABEL = "Completed task on board · checkpoint #2 · observed 14:02 UTC";
 const CAPTION = "The completed task is visible in the Done column.";
 const BYTES = Uint8Array.from({ length: 256 }, (_, i) => i);
 const reference = (patch: Partial<ProofRef> = {}) =>
@@ -36,7 +36,6 @@ const reference = (patch: Partial<ProofRef> = {}) =>
     title: "Completed task on board",
     caption: CAPTION,
     kind: "screenshot",
-    side: "before",
     label: LABEL,
     state: "stored",
     mimeType: "image/png",
@@ -81,17 +80,16 @@ describe("proof in the session's T3 Code thread", () => {
         Effect.gen(function* () {
           const turn = mend.workbench.addTurn("session-1", "Capture the board", "completed");
           mend.workbench.addItem(turn, { kind: "assistant-message", text: "Capturing the app." });
-          const videoLabel = "Completed task on board · after · checkpoint #2 · observed 14:03 UTC";
+          const videoLabel = "Completed task on board · checkpoint #2 · observed 14:03 UTC";
           const recordingLabel =
-            "Completed task on board · after · checkpoint #2 · recording · observed 14:03 UTC";
+            "Completed task on board · checkpoint #2 · recording · observed 14:03 UTC";
           const missingLabel =
-            "Completed task on board · before · source unknown · not captured · base does not run";
+            "Completed task on board · source unknown · not captured · app does not run · observed 14:03 UTC";
           const cases = [
             { ref: reference(), text: `${LABEL}\n\n${CAPTION}\n\n![](/mend-proof/${ID}.png)` },
             {
               ref: reference({
                 kind: "video",
-                side: "after",
                 mimeType: "video/mp4",
                 label: videoLabel,
               }),
@@ -100,7 +98,6 @@ describe("proof in the session's T3 Code thread", () => {
             {
               ref: reference({
                 kind: "video",
-                side: "after",
                 state: "recording",
                 mimeType: null,
                 label: recordingLabel,
@@ -312,7 +309,7 @@ describe("proof in the session's T3 Code thread", () => {
   it.live("replaces the recording item and message in place, live and after reconnect", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
-        const turn = mend.workbench.addTurn("session-1", "Record the after flow");
+        const turn = mend.workbench.addTurn("session-1", "Record the flow");
         const ref = reference({
           kind: "video",
           state: "recording",
