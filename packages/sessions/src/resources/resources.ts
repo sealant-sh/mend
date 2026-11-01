@@ -947,7 +947,7 @@ export const ResourcesLive: Layer.Layer<
               lines:
                 done.kind === "needs-restart"
                   ? [done.statusLine, ...done.worktrees.map((row) => row.name), done.hint]
-                  : [done.statusLine, ...(done.message === null ? [] : [done.message])],
+                  : [done.statusLine, ...(done.message === null ? [] : done.message.split("\n"))],
             };
           }
           case "stop": {
@@ -958,7 +958,9 @@ export const ResourcesLive: Layer.Layer<
               { worktreeId, ...(level === null ? {} : { level }) },
               clock,
             );
-            return { lines: [done.statusLine, ...(done.message === null ? [] : [done.message])] };
+            return {
+              lines: [done.statusLine, ...(done.message === null ? [] : done.message.split("\n"))],
+            };
           }
           case "remove": {
             if (level === null)
@@ -976,9 +978,15 @@ export const ResourcesLive: Layer.Layer<
                 `name a choice: mend resource use ${name} project|worktree|off`,
               );
             return {
-              lines: [
-                (yield* use(project, viewer, worktreeId, name, mode, clock, sessionId)).statusLine,
-              ],
+              lines: (yield* use(
+                project,
+                viewer,
+                worktreeId,
+                name,
+                mode,
+                clock,
+                sessionId,
+              )).statusLine.split("\n"),
             };
           }
           case "reset": {

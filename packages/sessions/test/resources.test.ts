@@ -232,6 +232,7 @@ let loadRows: ReadonlyArray<StoredResourceLoad> = [];
 /** Each worktree whose Services a switch restarted, and by whom; it ran `web`. */
 const restarted: Array<string> = [];
 const told: Array<{ message: string; except: SessionId | null }> = [];
+const tellFailures: string[] = [];
 const restarts = Layer.succeed(WorktreeServiceRestarts, {
   restart: (worktreeId, by) =>
     Effect.sync(() => {
@@ -241,7 +242,7 @@ const restarts = Layer.succeed(WorktreeServiceRestarts, {
   tell: (_, __, message, except) =>
     Effect.sync(() => {
       told.push({ message, except });
-      return [];
+      return tellFailures;
     }),
 });
 let appended: { readonly name: string; readonly table: string } | null = null;
@@ -359,6 +360,7 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     sealant.instances.clear();
     restarted.length = 0;
     told.length = 0;
+    tellFailures.length = 0;
     sealant.upDelay = Duration.zero;
     sealant.failDumpOf = "";
     file = {
@@ -597,6 +599,20 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     expect(answer.join(" ")).toContain("Printing values does not update your shell.");
     expect(told).toEqual([{ message: answer[0], except: SESSION }]);
     expect(restarted).toEqual([`${WORKTREE} u-tom`]);
+  });
+
+  it("returns separate helper lines for starts and choices with switch notifications", async () => {
+    const terminal =
+      "the agent in other agent runs in a terminal, so Mend did not type this into it · pass it on or restart that session";
+    tellFailures.push(terminal);
+    const started = await fromSession("start", "db", "--worktree");
+    expect(started).toHaveLength(3);
+    expect(started[0]).toContain("running");
+    expect(started[1]).toBe(told.at(-1)?.message);
+    expect(started[2]).toBe(terminal);
+    const selected = await fromSession("use", "db", "project");
+    expect(selected).toEqual([told.at(-1)?.message, terminal]);
+    expect([...started, ...selected].every((line) => !line.includes("\n"))).toBe(true);
   });
 
   it("resolves Service references and refuses missing or person-stopped dependencies", async () => {
