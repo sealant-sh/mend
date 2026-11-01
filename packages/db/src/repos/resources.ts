@@ -133,15 +133,18 @@ export class ResourcesRepo extends Context.Service<
     ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, number>>;
     readonly ownDatabases: (
       worktreeId: WorktreeId,
+      purpose?: "own" | "base",
     ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, OwnDatabaseOrigin>>;
     readonly ownDatabaseRemovals: (
       worktreeId: WorktreeId,
     ) => Effect.Effect<ReadonlyArray<OwnDatabaseRemoval>>;
-    /** Active own databases on one project server, including the worktree names for refusals. */
-    readonly ownDatabasesForResource: (
-      definitionId: ResourceDefinitionId,
-    ) => Effect.Effect<
-      ReadonlyArray<{ readonly worktreeId: WorktreeId; readonly worktreeName: string }>
+    /** Active own and base databases on a project server, including names for archive refusals. */
+    readonly ownDatabasesForResource: (definitionId: ResourceDefinitionId) => Effect.Effect<
+      ReadonlyArray<{
+        readonly worktreeId: WorktreeId;
+        readonly worktreeName: string;
+        readonly purpose: "own" | "base";
+      }>
     >;
     /** Reserves a retry path; archive refresh invalidates an earlier check before saving live data. */
     readonly reserveRemovalDump: (
@@ -150,21 +153,25 @@ export class ResourcesRepo extends Context.Service<
       dumpName: string,
       at: Date,
       refresh?: boolean,
+      purpose?: "own" | "base",
     ) => Effect.Effect<void>;
     readonly checkRemovalDump: (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       at: Date,
+      purpose?: "own" | "base",
     ) => Effect.Effect<void>;
     readonly removeOwnDatabase: (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       at: Date,
+      purpose?: "own" | "base",
     ) => Effect.Effect<void>;
     readonly recordOwnDatabase: (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       origin: OwnDatabaseOrigin["kind"],
+      purpose?: "own" | "base",
     ) => Effect.Effect<void>;
   }
 >()("@mend/db/ResourcesRepo") {}
@@ -176,10 +183,15 @@ const instanceWhere = (id: ResourceDefinitionId, worktreeId: WorktreeId | null) 
       ? isNull(resourceInstances.worktreeId)
       : eq(resourceInstances.worktreeId, worktreeId),
   );
-const ownKey = (worktreeId: WorktreeId, definitionId: ResourceDefinitionId) =>
+const ownKey = (
+  worktreeId: WorktreeId,
+  definitionId: ResourceDefinitionId,
+  purpose: "own" | "base",
+) =>
   and(
     eq(resourceOwnDatabases.worktreeId, worktreeId),
     eq(resourceOwnDatabases.definitionId, definitionId),
+    eq(resourceOwnDatabases.purpose, purpose),
   );
 const decodeSpec = Schema.decodeUnknownEffect(ResourceDefinition);
 const toInstance = Effect.fnUntraced(function* (
@@ -418,6 +430,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         .pipe(Effect.catchTags(queryErrorsDie));
     const ownDatabases = Effect.fn("ResourcesRepo.ownDatabases")(function* (
       worktreeId: WorktreeId,
+      purpose: "own" | "base" = "own",
     ) {
       const rows = yield* db
         .select()
@@ -425,6 +438,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         .where(
           and(
             eq(resourceOwnDatabases.worktreeId, worktreeId),
+            eq(resourceOwnDatabases.purpose, purpose),
             isNull(resourceOwnDatabases.removedAt),
           ),
         )
@@ -448,6 +462,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
             rows.map((row) => ({
               worktreeId: row.worktreeId,
               definitionId: row.definitionId,
+              purpose: row.purpose,
               dumpName: row.removalDumpName,
               dumpAt: row.removalDumpAt,
               checkedAt: row.removalCheckedAt,
@@ -457,7 +472,11 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         );
     const ownDatabasesForResource = (definitionId: ResourceDefinitionId) =>
       db
-        .select({ worktreeId: worktrees.id, worktreeName: worktrees.name })
+        .select({
+          worktreeId: worktrees.id,
+          worktreeName: worktrees.name,
+          purpose: resourceOwnDatabases.purpose,
+        })
         .from(resourceOwnDatabases)
         .innerJoin(worktrees, eq(worktrees.id, resourceOwnDatabases.worktreeId))
         .where(
@@ -474,6 +493,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       dumpName: string,
       at: Date,
       refresh = false,
+      purpose: "own" | "base" = "own",
     ) =>
       db
         .update(resourceOwnDatabases)
@@ -484,7 +504,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         })
         .where(
           and(
-            ownKey(worktreeId, definitionId),
+            ownKey(worktreeId, definitionId, purpose),
             isNull(resourceOwnDatabases.removedAt),
             ...(refresh ? [] : [isNull(resourceOwnDatabases.removalDumpName)]),
           ),
@@ -494,34 +514,55 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       at: Date,
+      purpose: "own" | "base" = "own",
     ) =>
       db
         .update(resourceOwnDatabases)
         .set({ removalCheckedAt: at })
-        .where(and(ownKey(worktreeId, definitionId), isNull(resourceOwnDatabases.removalCheckedAt)))
+        .where(
+          and(
+            ownKey(worktreeId, definitionId, purpose),
+            isNull(resourceOwnDatabases.removalCheckedAt),
+          ),
+        )
         .pipe(Effect.orDie, Effect.asVoid);
     const removeOwnDatabase = (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       at: Date,
+      purpose: "own" | "base" = "own",
     ) =>
       db
         .update(resourceOwnDatabases)
         .set({ removedAt: at })
-        .where(and(ownKey(worktreeId, definitionId), isNull(resourceOwnDatabases.removedAt)))
+        .where(
+          and(ownKey(worktreeId, definitionId, purpose), isNull(resourceOwnDatabases.removedAt)),
+        )
         .pipe(Effect.orDie, Effect.asVoid);
 
     const recordOwnDatabase = Effect.fn("ResourcesRepo.recordOwnDatabase")(function* (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       origin: OwnDatabaseOrigin["kind"],
+      purpose: "own" | "base" = "own",
     ) {
       yield* db
         .insert(resourceOwnDatabases)
-        .values({ worktreeId, definitionId, origin })
+        .values({ worktreeId, definitionId, origin, purpose })
         .onConflictDoUpdate({
-          target: [resourceOwnDatabases.worktreeId, resourceOwnDatabases.definitionId],
-          set: { origin, madeAt: sql`now()` },
+          target: [
+            resourceOwnDatabases.worktreeId,
+            resourceOwnDatabases.definitionId,
+            resourceOwnDatabases.purpose,
+          ],
+          set: {
+            origin,
+            madeAt: sql`now()`,
+            removalDumpName: null,
+            removalDumpAt: null,
+            removalCheckedAt: null,
+            removedAt: null,
+          },
         })
         .pipe(Effect.orDie);
     });
@@ -588,7 +629,11 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
           eq(resourceDefinitions.id, resourceOwnDatabases.definitionId),
         )
         .where(
-          and(eq(resourceDefinitions.projectId, projectId), isNull(resourceOwnDatabases.removedAt)),
+          and(
+            eq(resourceDefinitions.projectId, projectId),
+            eq(resourceOwnDatabases.purpose, "own"),
+            isNull(resourceOwnDatabases.removedAt),
+          ),
         )
         .groupBy(resourceOwnDatabases.definitionId)
         .pipe(

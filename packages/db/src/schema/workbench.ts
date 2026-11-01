@@ -771,6 +771,7 @@ export const resourceOwnDatabases = pgTable(
       .$type<ResourceDefinitionId>()
       .notNull()
       .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
+    purpose: text().$type<"own" | "base">().notNull().default("own"),
     origin: text().$type<"empty" | "copied" | "loaded">().notNull(),
     madeAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     removalDumpName: text(),
@@ -779,7 +780,7 @@ export const resourceOwnDatabases = pgTable(
     removedAt: timestamp({ mode: "date", withTimezone: true }),
   },
   (table) => [
-    primaryKey({ columns: [table.worktreeId, table.definitionId] }),
+    primaryKey({ columns: [table.worktreeId, table.definitionId, table.purpose] }),
     index("resource_own_databases_definition_idx").on(table.definitionId),
   ],
 );

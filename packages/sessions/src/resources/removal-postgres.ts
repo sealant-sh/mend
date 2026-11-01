@@ -1,5 +1,10 @@
 import type { WorktreeId } from "@mend/domain";
-import { DUMPS_MOUNT, OWN_DATABASE, POSTGRES_USER, ownDatabaseName } from "@mend/domain/workbench";
+import {
+  DUMPS_MOUNT,
+  WORKTREE_DATABASE,
+  POSTGRES_USER,
+  worktreeDatabaseName,
+} from "@mend/domain/workbench";
 import type { ResourceScope, ScopeExecResult } from "@mend/sealant";
 import { Effect, Schema } from "effect";
 
@@ -44,11 +49,11 @@ export const removalDatabaseArgv = (
   dumpName: string,
 ): ReadonlyArray<string> => {
   if (
-    !OWN_DATABASE.test(database) ||
-    !/^own_[a-f0-9]{12}-removed-\d{8}T\d{6}Z\.dump$/.test(dumpName) ||
+    !WORKTREE_DATABASE.test(database) ||
+    !/^(?:own|base)_[a-f0-9]{12}-removed-\d{8}T\d{6}Z\.dump$/.test(dumpName) ||
     !dumpName.startsWith(`${database}-removed-`)
   ) {
-    throw new Error("invalid own database removal path");
+    throw new Error("invalid worktree database removal path");
   }
   return [
     "sh",
@@ -81,6 +86,7 @@ export const saveRemovalDump: (
   worktreeId: WorktreeId,
   dumpName: string,
   refresh?: boolean,
+  purpose?: "own" | "base",
 ) => Effect.Effect<void, OwnDatabaseDumpFailed> = Effect.fn("saveRemovalDump")(
   function* (
     scope: ResourceScope,
@@ -88,6 +94,7 @@ export const saveRemovalDump: (
     worktreeId: WorktreeId,
     dumpName: string,
     refresh = false,
+    purpose: "own" | "base" = "own",
   ) {
     const ready = removalExecFailure(
       yield* scope.exec(key, { argv: DUMPS_READY_ARGV, user: "root", timeoutMs: 30_000 }),
@@ -98,7 +105,7 @@ export const saveRemovalDump: (
       yield* scope.exec(key, {
         argv: removalDatabaseArgv(
           refresh ? "refresh" : "save",
-          ownDatabaseName(worktreeId),
+          worktreeDatabaseName(worktreeId, purpose),
           dumpName,
         ),
         user: "postgres",

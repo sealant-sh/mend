@@ -28,6 +28,7 @@ export type ResourceArchive = typeof ResourceArchive.Type;
 export interface OwnDatabaseRemoval {
   readonly worktreeId: WorktreeId;
   readonly definitionId: ResourceDefinitionId;
+  readonly purpose: "own" | "base";
   readonly dumpName: string | null;
   readonly dumpAt: Date | null;
   readonly checkedAt: Date | null;

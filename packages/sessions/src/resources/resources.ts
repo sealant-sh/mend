@@ -28,6 +28,9 @@ import {
   resourceTableNotices,
   resourceListEntries,
   shellExports,
+  resourceBindingEnv,
+  resourceInstanceKey,
+  baseDatabaseName,
   type Viewer,
   type WorktreeChoice,
   type ResourceLevel,
@@ -217,7 +220,7 @@ const flagOf = (args: ReadonlyArray<string>, flag: string): string | null => {
   return value === undefined || value.startsWith("--") ? null : value;
 };
 const SESSION_USAGE =
-  "mend resource list · add <name> --preset <p> --version <v> or --image <ref> --port name=port[/udp] · start <name> --project|--worktree [--restart] · stop <name> [--project|--worktree] · use <name> project|worktree|off · remove <name> --project|--worktree · reset <name> [--target shared|own] · load <name> · env";
+  "mend resource list · add <name> --preset <p> --version <v> or --image <ref> --port name=port[/udp] · start <name> --project|--worktree [--restart] · stop <name> [--project|--worktree] · use <name> project|worktree|off · remove <name> --project|--worktree · reset <name> [--target shared|own] · load <name> · base <name> [--empty|--drop] · env";
 
 const controlled = (
   definition: StoredResourceInstance,
@@ -928,8 +931,21 @@ export const ResourcesLive: Layer.Layer<
             ),
           };
         }
-        if (verb === "list")
-          return { lines: pageLines(yield* list(project, viewer, worktreeId, clock)) };
+        if (verb === "list") {
+          const lines = pageLines(yield* list(project, viewer, worktreeId, clock));
+          const bases = yield* repo.ownDatabases(worktreeId, "base");
+          const identities = yield* repo.listIdentities(project.id);
+          return {
+            lines: [
+              ...lines,
+              ...identities
+                .filter((row) => bases.has(row.id))
+                .map(
+                  (row) => `@${row.name} · base copy database · ${baseDatabaseName(worktreeId)}`,
+                ),
+            ],
+          };
+        }
         if (verb === "env") {
           const current = yield* env(project, viewer, worktreeId, clock);
           return { lines: [...current.exports, ...current.statusLines.map((line) => `# ${line}`)] };
@@ -937,6 +953,73 @@ export const ResourcesLive: Layer.Layer<
         if (name === undefined)
           return yield* refused(`name the resource: mend resource ${verb} db`);
         switch (verb) {
+          case "base": {
+            if (
+              resourcePositionals(rest).length !== 1 ||
+              rest.some((arg) => arg.startsWith("--") && arg !== "--empty" && arg !== "--drop") ||
+              (rest.includes("--empty") && rest.includes("--drop"))
+            )
+              return yield* refused("use mend resource base <name> [--empty|--drop]");
+            yield* decide(project, viewer, { kind: "read" });
+            yield* checkedWorktree(project, worktreeId);
+            yield* mayChoose(project, viewer, worktreeId);
+            const definition = yield* instanceAt(project.id, name, null);
+            if (definition === null) {
+              const read = yield* readWorktreeTables(reads, project.id, worktreeId);
+              if (read.kind === "unavailable" || read.kind === "unparsed")
+                return yield* refused(read.message);
+              const declared = tablesOf(read).find((spec) => spec.name === name);
+              if (declared === undefined) return yield* new ResourceNameNotFoundError({ name });
+              if (declared.preset !== "postgres")
+                return yield* refused(`@${name} · base copy databases need Postgres`);
+              return yield* refused(
+                `@${name} · project resource not started · mend resource start ${name} --project`,
+              );
+            }
+            if (definition.spec.preset !== "postgres")
+              return yield* refused(`@${name} · base copy databases need Postgres`);
+            const drop = rest.includes("--drop");
+            const failure = yield* runtime.baseDatabase(definition, worktreeId, {
+              empty: rest.includes("--empty"),
+              drop,
+            });
+            if (failure !== null)
+              return yield* refused(`@${name} · base copy database · ${failure}`);
+            if (drop) {
+              const removed = (yield* repo.ownDatabaseRemovals(worktreeId)).find(
+                (row) => row.definitionId === definition.id && row.purpose === "base",
+              );
+              return {
+                lines: [
+                  removed?.dumpAt === undefined || removed.dumpAt === null
+                    ? `@${name} · base copy database · not present`
+                    : resourceStatusLine(
+                        {
+                          kind: "own-removed",
+                          purpose: "base",
+                          definition: definition.spec,
+                          savedAt: removed.dumpAt,
+                          startedForRemoval: false,
+                        },
+                        clock,
+                      ),
+                ],
+              };
+            }
+            return {
+              lines: shellExports(
+                Object.fromEntries(
+                  resourceBindingEnv({
+                    definition: definition.spec,
+                    resourceId: definition.id,
+                    instanceKey: resourceInstanceKey(definition.id, null),
+                    level: "project",
+                    database: baseDatabaseName(worktreeId),
+                  }),
+                ),
+              ),
+            };
+          }
           case "start": {
             if (level === null) return yield* refused(resourceLevelHint(name));
             const done = yield* start(

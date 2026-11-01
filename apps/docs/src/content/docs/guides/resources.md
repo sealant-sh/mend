@@ -212,6 +212,31 @@ Mend shows size and progress and names the saved dump of the previous data. A so
 is never logged, recorded or shown back. A load into shared replaces the data other worktrees on
 shared use; choose your own database when that is where you want the data.
 
+## A database for before captures
+
+Inside a session, `mend resource base db` makes a separate Postgres database for the base copy on
+the project's already-running `@db` server. It copies the shared `app` database when it has tables,
+as an own database does. Use `--empty` to start empty. Running the command again keeps the existing
+base database and prints the same `MEND_DB_*` shell exports.
+
+Apply those exports only to the base app's launch, mapping `MEND_DB_URL` to its database variable.
+For example, in a subshell:
+
+```sh
+(
+  base_env=$(mend resource base db) || exit
+  eval "$base_env"
+  DATABASE_URL=$MEND_DB_URL pnpm --dir "$dir" dev --port 3001
+)
+mend resource base db --drop
+```
+
+Stop the base app before dropping its database. Drop saves and checks a dump first. The base
+database appears as `base copy database` in `mend resource list`; removing the worktree also saves
+and drops it if the agent forgets. This command does not change the after app's database selection
+or start a resource. It refuses resources other than Postgres and project servers that are not
+running.
+
 ## Read the status line
 
 A resource is written with its `@`, so `@db` cannot be confused with a session's Service:

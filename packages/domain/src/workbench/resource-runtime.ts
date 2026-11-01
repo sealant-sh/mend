@@ -38,6 +38,17 @@ export const OWN_DATABASE = /^own_[0-9a-f]{12}$/;
 export const ownDatabaseName = (worktreeId: WorktreeId): string =>
   `own_${bytesToHex(sha256(utf8ToBytes(worktreeId))).slice(0, 12)}`;
 
+/** A base copy stays separate from the after app's own database. */
+export const baseDatabaseName = (worktreeId: WorktreeId): string =>
+  `base_${bytesToHex(sha256(utf8ToBytes(worktreeId))).slice(0, 12)}`;
+
+/** Only derived worktree database names may enter copy and removal scripts. */
+export const WORKTREE_DATABASE = /^(own|base)_[0-9a-f]{12}$/;
+
+/** Selects a tracked database without changing the worktree's resource binding. */
+export const worktreeDatabaseName = (worktreeId: WorktreeId, purpose: "own" | "base"): string =>
+  purpose === "base" ? baseDatabaseName(worktreeId) : ownDatabaseName(worktreeId);
+
 /** The Sealant scope a project's resources run in. */
 export const resourceScopeKey = (projectId: ProjectId): string => `mend:${projectId}`;
 

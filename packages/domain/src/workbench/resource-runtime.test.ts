@@ -6,6 +6,9 @@ import { describe, expect, it } from "vitest";
 import { ProjectId, ResourceDefinitionId, WorktreeId } from "../ids.ts";
 import {
   ownDatabaseName,
+  baseDatabaseName,
+  worktreeDatabaseName,
+  WORKTREE_DATABASE,
   resourceBindings,
   reachAliases,
   type ResourceBindingRows,
@@ -57,6 +60,17 @@ describe("a worktree's own database", () => {
         idleStopAfterSeconds: 3,
       }).idleStopAfterSeconds,
     ).toBe(3);
+  });
+
+  it("keeps base and own names distinct for the same worktree", () => {
+    const base = baseDatabaseName(worktree);
+    expect(base).toMatch(/^base_[0-9a-f]{12}$/);
+    expect(base.slice(5)).toBe(own.slice(4));
+    expect(base).not.toBe(own);
+    expect(worktreeDatabaseName(worktree, "base")).toBe(base);
+    expect(worktreeDatabaseName(worktree, "own")).toBe(own);
+    expect(WORKTREE_DATABASE.test(base)).toBe(true);
+    expect(WORKTREE_DATABASE.test("base_x; DROP DATABASE app")).toBe(false);
   });
 
   it("is own_ and the first 12 hex of the sha256 of the worktree id", () => {

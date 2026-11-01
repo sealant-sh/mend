@@ -54,6 +54,7 @@ export type ResourceStatusView =
     }
   | {
       readonly kind: "own-removed";
+      readonly purpose?: "own" | "base";
       readonly definition: { readonly name: string };
       readonly savedAt: Date;
       readonly startedForRemoval: boolean;
@@ -253,7 +254,7 @@ export const resourceStatusLine = (
   if (view.kind === "own-removed")
     return [
       `@${view.definition.name}`,
-      `its own database saved as a dump ${clock(view.savedAt)}${view.savedWhenArchived ? "" : " and dropped"}`,
+      `${view.purpose === "base" ? "base copy database" : "its own database"} saved as a dump ${clock(view.savedAt)}${view.savedWhenArchived ? "" : " and dropped"}`,
       ...(view.savedWhenArchived ? [`saved when @${view.definition.name} was archived`] : []),
       ...(view.startedForRemoval ? ["removal started its server"] : []),
     ].join(" · ");

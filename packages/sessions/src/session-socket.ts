@@ -839,7 +839,7 @@ const main = async () => {
     }
     let answer;
     try {
-      answer = await request("POST", "/resources?timeZone=" + encodeURIComponent(zone), { argv: [verb ?? "list", ...rest] }, 5 * 60 * 1000);
+      answer = await request("POST", "/resources?timeZone=" + encodeURIComponent(zone), { argv: [verb ?? "list", ...rest] }, verb === "base" ? 11 * 60 * 1000 : 5 * 60 * 1000);
     } catch (error) {
       fail(printable(error.message));
     }
@@ -847,7 +847,7 @@ const main = async () => {
     return;
   }
   if (group !== "service") {
-    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend resource list · start <name> --project|--worktree [--restart] · stop <name> · use <name> project|worktree|off · remove <name> --project|--worktree · reset · load · env · mend land · mend stop · mend hook <claude|codex> · mend mcp");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend resource list · start <name> --project|--worktree [--restart] · stop <name> · use <name> project|worktree|off · remove <name> --project|--worktree · reset · load · base <name> [--empty|--drop] · env · mend land · mend stop · mend hook <claude|codex> · mend mcp");
   }
   try {
     switch (verb) {

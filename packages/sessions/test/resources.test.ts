@@ -38,6 +38,7 @@ import {
   AgentTurn,
   ImageDigest,
   ownDatabaseName,
+  baseDatabaseName,
   presetDefinition,
   PresetVersion,
   ResourceName,
@@ -615,6 +616,125 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     expect([...started, ...selected].every((line) => !line.includes("\n"))).toBe(true);
   });
 
+  it("makes the base database once, prints scoped env, and leaves the after binding alone", async () => {
+    await start("db", "worktree");
+    sealant.commands.length = 0;
+    const before = await fromSession("env");
+    const first = await fromSession("base", "db");
+    expect(first).toEqual([
+      `export MEND_DB_DATABASE='${baseDatabaseName(WORKTREE)}'`,
+      "export MEND_DB_HOST='db'",
+      "export MEND_DB_PASSWORD=''",
+      "export MEND_DB_PORT='5432'",
+      `export MEND_DB_URL='postgres://postgres@db:5432/${baseDatabaseName(WORKTREE)}'`,
+      "export MEND_DB_USER='postgres'",
+    ]);
+    expect(await fromSession("base", "db")).toEqual(first);
+    expect(sealant.commands).toHaveLength(1);
+    expect(sealant.commands[0]?.slice(4)).toEqual([baseDatabaseName(WORKTREE), "app", "1"]);
+    expect(await fromSession("env")).toEqual(before);
+    expect((await fromSession("list")).join("\n")).toContain(
+      `@db · base copy database · ${baseDatabaseName(WORKTREE)}`,
+    );
+    expect(
+      await runtime.runPromise(
+        Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabases(WORKTREE)),
+      ),
+    ).toHaveProperty("size", 1);
+  });
+
+  it("starts an empty base only once, saves then drops, and can create it again", async () => {
+    await start();
+    expect((await fromSession("base", "db", "--empty"))[0]).toContain("export MEND_DB_DATABASE=");
+    expect(sealant.commands.at(-1)?.slice(4)).toEqual([baseDatabaseName(WORKTREE), "app", "0"]);
+    sealant.commands.length = 0;
+    expect((await fromSession("base", "db", "--drop")).join(" ")).toContain(
+      "base copy database saved as a dump",
+    );
+    const phases = sealant.commands
+      .filter((argv) => argv[2]?.includes("pg_restore"))
+      .map((argv) => (argv[2]?.includes("pg_dump") ? "save" : "drop"));
+    expect(phases).toEqual(["save", "drop"]);
+    const rows = await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabaseRemovals(WORKTREE)),
+    );
+    expect(rows).toEqual([
+      expect.objectContaining({
+        purpose: "base",
+        checkedAt: expect.any(Date),
+        removedAt: expect.any(Date),
+        dumpName: expect.stringContaining(`${baseDatabaseName(WORKTREE)}-removed-`),
+      }),
+    ]);
+    expect((await fromSession("list")).join(" ")).not.toContain("base copy database");
+    sealant.commands.length = 0;
+    await fromSession("base", "db", "--drop");
+    expect(sealant.commands).toEqual([]);
+    await fromSession("base", "db");
+    expect(sealant.commands).toHaveLength(1);
+    expect(
+      await runtime.runPromise(
+        Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabases(WORKTREE, "base")),
+      ),
+    ).toHaveProperty("size", 1);
+    expect(
+      await runtime.runPromise(
+        Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabases(WORKTREE)),
+      ),
+    ).toHaveProperty("size", 0);
+  });
+
+  it("keeps a base database when its dump fails and retries the drop", async () => {
+    await start();
+    await fromSession("base", "db");
+    sealant.commands.length = 0;
+    sealant.failDumpOf = baseDatabaseName(WORKTREE);
+    expect((await fromSession("base", "db", "--drop")).join(" ")).toContain(
+      "dump or dump check failed",
+    );
+    expect(sealant.commands.some((argv) => argv[2]?.includes("drop database"))).toBe(false);
+    expect(
+      await runtime.runPromise(
+        Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabases(WORKTREE, "base")),
+      ),
+    ).toHaveProperty("size", 1);
+    sealant.failDumpOf = "";
+    expect((await fromSession("base", "db", "--drop")).join(" ")).toContain("and dropped");
+  });
+
+  it("refuses a missing definition, non-Postgres, missing/stopped project server and invalid flags", async () => {
+    expect(await fromSession("base", "missing")).toEqual([
+      "refused: no @missing in this project · mend resource list shows them",
+    ]);
+    expect(await fromSession("base", "cache")).toEqual([
+      "refused: @cache · base copy databases need Postgres",
+    ]);
+    await start("cache");
+    expect(await fromSession("base", "cache")).toEqual([
+      "refused: @cache · base copy databases need Postgres",
+    ]);
+    expect((await fromSession("base", "db")).join(" ")).toContain(
+      "project resource is not started",
+    );
+    await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.removeInstance(db.id, null)),
+    );
+    expect((await fromSession("base", "db")).join(" ")).toContain("project resource not started");
+    await start();
+    await fromSession("stop", "db", "--project");
+    expect((await fromSession("base", "db")).join(" ")).toContain("project resource is stopped");
+    expect((await fromSession("base", "db", "--drop")).join(" ")).toContain(
+      "project resource is stopped",
+    );
+    expect(await fromSession("base", "db", "--empty", "--drop")).toEqual([
+      "refused: use mend resource base <name> [--empty|--drop]",
+    ]);
+    expect(await fromSession("base", "db", "--typo")).toEqual([
+      "refused: use mend resource base <name> [--empty|--drop]",
+    ]);
+    expect(sealant.commands).toEqual([]);
+  });
+
   it("resolves Service references and refuses missing or person-stopped dependencies", async () => {
     const resolved = await prepare([{ kind: "resource", name: "db", env: {} }], {
       DATABASE_URL: "${MEND_DB_URL}",
@@ -683,6 +803,28 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     runtime.runPromise(
       Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabaseRemovals(worktreeId)),
     );
+
+  it("preserves the base database when archiving the project server", async () => {
+    await start();
+    await fromSession("base", "db");
+    sealant.commands.length = 0;
+    await archiveDb();
+    expect(
+      sealant.commands.filter((argv) => argv[2]?.includes("pg_dump")).map((argv) => argv[4]),
+    ).toEqual([baseDatabaseName(WORKTREE)]);
+    expect(await ownRows(WORKTREE)).toEqual([
+      expect.objectContaining({
+        purpose: "base",
+        checkedAt: expect.any(Date),
+        removedAt: null,
+      }),
+    ]);
+    const result = await runtime.runPromise(
+      Effect.flatMap(ResourceRemoval, (removal) => removal.worktree(awaitedProject, WORKTREE)),
+    );
+    expect(result.join(" ")).toContain("base copy database saved as a dump");
+    expect(result.join(" ")).toContain("saved when @db was archived");
+  });
 
   it("checks both own databases before archiving, removes their worktrees without a server, then archives the project", async () => {
     await seedOwnDatabases();

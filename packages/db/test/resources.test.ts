@@ -277,6 +277,44 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
     ]);
   });
 
+  it("tracks own and base databases independently and clears removal progress only on recreation", async () => {
+    const project = await newProject();
+    const worktree = await newWorktree(project);
+    const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
+    await withRepo((repo) =>
+      Effect.gen(function* () {
+        yield* repo.recordOwnDatabase(worktree, db.id, "copied");
+        yield* repo.recordOwnDatabase(worktree, db.id, "empty", "base");
+        const at = new Date("2026-11-01T12:00:00Z");
+        yield* repo.reserveRemovalDump(worktree, db.id, "base.dump", at, false, "base");
+        yield* repo.checkRemovalDump(worktree, db.id, at, "base");
+        yield* repo.removeOwnDatabase(worktree, db.id, at, "base");
+        expect(
+          (yield* repo.ownDatabaseRemovals(worktree)).find((row) => row.purpose === "own"),
+        ).toMatchObject({
+          dumpName: null,
+          checkedAt: null,
+          removedAt: null,
+        });
+        expect((yield* repo.ownDatabases(worktree)).get(db.id)?.kind).toBe("copied");
+        expect((yield* repo.ownDatabases(worktree, "base")).size).toBe(0);
+        yield* repo.recordOwnDatabase(worktree, db.id, "copied", "base");
+        expect((yield* repo.ownDatabases(worktree, "base")).get(db.id)?.kind).toBe("copied");
+        expect(
+          (yield* repo.ownDatabaseRemovals(worktree)).find((row) => row.purpose === "base"),
+        ).toMatchObject({
+          dumpName: null,
+          dumpAt: null,
+          checkedAt: null,
+          removedAt: null,
+        });
+        expect((yield* repo.bindingRows(project, worktree)).ownDatabases.size).toBe(1);
+        expect((yield* repo.ownSelections(project)).get(db.id)).toBe(1);
+        expect(yield* repo.ownDatabasesForResource(db.id)).toHaveLength(2);
+      }),
+    );
+  });
+
   it("lists only active own databases for archive and refreshes a checked reservation before saving again", async () => {
     const project = await newProject();
     const first = await newWorktree(project);
@@ -290,7 +328,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
         yield* repo.checkRemovalDump(first, db.id, at);
         yield* repo.removeOwnDatabase(first, db.id, at);
         expect(yield* repo.ownDatabasesForResource(db.id)).toEqual([
-          { worktreeId: second, worktreeName: second },
+          { worktreeId: second, worktreeName: second, purpose: "own" },
         ]);
         yield* repo.reserveRemovalDump(second, db.id, "second.dump", at);
         yield* repo.checkRemovalDump(second, db.id, at);
@@ -300,6 +338,7 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
           {
             worktreeId: second,
             definitionId: db.id,
+            purpose: "own",
             dumpName: "new.dump",
             dumpAt: later,
             checkedAt: null,

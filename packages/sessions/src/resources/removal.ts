@@ -3,7 +3,7 @@ import type { WorktreeId } from "@mend/domain";
 import {
   type ArchivedResourceVolume,
   mergeArchivedVolumes,
-  ownDatabaseName,
+  worktreeDatabaseName,
   type Project,
   resourceInstanceKey,
   resourceInstanceSpec,
@@ -78,6 +78,7 @@ const make: Effect.Effect<
 
     const databaseCommand = (
       definition: StoredResourceInstance,
+      purpose: "own" | "base",
       run: (
         scope: ResourceScope,
         key: string,
@@ -90,7 +91,7 @@ const make: Effect.Effect<
             {
               kind: "removal-refused",
               definition: definition.spec,
-              database: ownDatabaseName(worktreeId),
+              database: worktreeDatabaseName(worktreeId, purpose),
               reason,
             },
             clock,
@@ -142,12 +143,13 @@ const make: Effect.Effect<
       const identity = identities.find((each) => each.id === row.definitionId);
       if (identity === undefined) continue;
       if (row.removedAt === null)
-        yield* repo.removeOwnDatabase(worktreeId, row.definitionId, yield* now);
-      savedWhenArchived.add(row.definitionId);
+        yield* repo.removeOwnDatabase(worktreeId, row.definitionId, yield* now, row.purpose);
+      savedWhenArchived.add(`${row.definitionId}/${row.purpose}`);
       lines.push(
         resourceStatusLine(
           {
             kind: "own-removed",
+            purpose: row.purpose,
             definition: { name: identity.name },
             savedAt: row.dumpAt,
             startedForRemoval: false,
@@ -160,29 +162,33 @@ const make: Effect.Effect<
 
     // Reserve all paths durably. A retry refreshes live data or reuses the dump of a completed drop.
     for (const row of held) {
-      if (row.removedAt !== null || savedWhenArchived.has(row.definitionId)) continue;
+      if (row.removedAt !== null || savedWhenArchived.has(`${row.definitionId}/${row.purpose}`))
+        continue;
       yield* repo.reserveRemovalDump(
         worktreeId,
         row.definitionId,
-        removalDumpName(ownDatabaseName(worktreeId), at),
+        removalDumpName(worktreeDatabaseName(worktreeId, row.purpose), at),
         at,
+        false,
+        row.purpose,
       );
     }
     const planned = yield* repo.ownDatabaseRemovals(worktreeId);
     for (const row of planned) {
-      if (row.removedAt !== null || savedWhenArchived.has(row.definitionId)) continue;
+      if (row.removedAt !== null || savedWhenArchived.has(`${row.definitionId}/${row.purpose}`))
+        continue;
       const definition = definitions.find(
         (def) => def.id === row.definitionId && def.worktreeId === null,
       );
       if (definition === undefined || row.dumpName === null || row.dumpAt === null) {
         return yield* new ResourceRemovalRefused({
-          message: `database ${ownDatabaseName(worktreeId)} · not removed · its definition or reserved dump is missing`,
+          message: `database ${worktreeDatabaseName(worktreeId, row.purpose)} · not removed · its definition or reserved dump is missing`,
         });
       }
       const dumpName = row.dumpName;
-      yield* databaseCommand(definition, (scope, key) =>
+      yield* databaseCommand(definition, row.purpose, (scope, key) =>
         Effect.gen(function* () {
-          yield* saveRemovalDump(scope, key, worktreeId, dumpName).pipe(
+          yield* saveRemovalDump(scope, key, worktreeId, dumpName, false, row.purpose).pipe(
             Effect.mapError(
               (error) =>
                 new ResourceRemovalRefused({
@@ -190,7 +196,7 @@ const make: Effect.Effect<
                     {
                       kind: "removal-refused",
                       definition: definition.spec,
-                      database: ownDatabaseName(worktreeId),
+                      database: worktreeDatabaseName(worktreeId, row.purpose),
                       reason: error.message,
                     },
                     clock,
@@ -198,23 +204,27 @@ const make: Effect.Effect<
                 }),
             ),
           );
-          yield* repo.checkRemovalDump(worktreeId, definition.id, at);
+          yield* repo.checkRemovalDump(worktreeId, definition.id, at, row.purpose);
         }),
       );
     }
     // No drop is reachable until every database has a checked dump recorded.
     for (const row of planned) {
-      if (savedWhenArchived.has(row.definitionId)) continue;
+      if (savedWhenArchived.has(`${row.definitionId}/${row.purpose}`)) continue;
       const definition = definitions.find(
         (def) => def.id === row.definitionId && def.worktreeId === null,
       );
       if (definition === undefined || row.dumpName === null || row.dumpAt === null) continue;
       if (row.removedAt === null) {
         const dumpName = row.dumpName;
-        yield* databaseCommand(definition, (scope, key) =>
+        yield* databaseCommand(definition, row.purpose, (scope, key) =>
           Effect.gen(function* () {
             const result = yield* scope.exec(key, {
-              argv: removalDatabaseArgv("drop", ownDatabaseName(worktreeId), dumpName),
+              argv: removalDatabaseArgv(
+                "drop",
+                worktreeDatabaseName(worktreeId, row.purpose),
+                dumpName,
+              ),
               user: "postgres",
               timeoutMs: OWN_DATABASE_TIMEOUT_MS,
             });
@@ -225,13 +235,13 @@ const make: Effect.Effect<
                   {
                     kind: "removal-refused",
                     definition: definition.spec,
-                    database: ownDatabaseName(worktreeId),
+                    database: worktreeDatabaseName(worktreeId, row.purpose),
                     reason: `checked dump kept · ${failure}`,
                   },
                   clock,
                 ),
               });
-            yield* repo.removeOwnDatabase(worktreeId, definition.id, yield* now);
+            yield* repo.removeOwnDatabase(worktreeId, definition.id, yield* now, row.purpose);
           }),
         );
       }
@@ -239,6 +249,7 @@ const make: Effect.Effect<
         resourceStatusLine(
           {
             kind: "own-removed",
+            purpose: row.purpose,
             definition: definition.spec,
             savedAt: row.dumpAt,
             startedForRemoval: started.has(resourceInstanceKey(definition.id, null)),

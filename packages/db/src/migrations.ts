@@ -4957,6 +4957,14 @@ const slackProofDeliveriesMigration = Effect.gen(function* () {
   )`;
 });
 
+const resourceBaseDatabasesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE resource_own_databases ADD COLUMN purpose text NOT NULL DEFAULT 'own'
+    CHECK (purpose IN ('own', 'base'))`;
+  yield* sql`ALTER TABLE resource_own_databases DROP CONSTRAINT resource_own_databases_pkey`;
+  yield* sql`ALTER TABLE resource_own_databases ADD PRIMARY KEY (worktree_id, definition_id, purpose)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5125,4 +5133,5 @@ export const migrations = {
   "0177_resource_levels": resourceLevelsMigration,
   "0178_proof_artifacts": proofArtifactsMigration,
   "0179_slack_proof_deliveries": slackProofDeliveriesMigration,
+  "0180_resource_base_databases": resourceBaseDatabasesMigration,
 };

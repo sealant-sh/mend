@@ -113,7 +113,7 @@ export const proofArtifactsNote = (base: Sha): string =>
   `\`dir=$(mktemp -d -t mend-before.XXXXXX); git -C /workspace/repo archive ${base} | tar -x -C "$dir"\`\n\n` +
   `Read the base recipe with \`git -C /workspace/repo show ${base}:.mend/mend.toml\` ` +
   `(root \`mend.toml\` fallback). Use its lockfiles and separate writable test data; ` +
-  `never share the after app's database for writes. Start the base from "$dir" with ` +
+  `never share the after app's database for writes. For Postgres, run \`mend resource base <name>\` and pass its MEND_<NAME>_* exports to the base app, mapping its URL to the app's database variable; use \`--empty\` for empty fixtures. After stopping the base app, run \`mend resource base <name> --drop\` to save a dump and drop that database. Start the base from "$dir" with ` +
   `\`mend service run --port <a free port> --name before --http -- <command>\`; ` +
   `make <command> change directory to "$dir" before launching. Open ` +
   `\`chromium http://127.0.0.1:<port>\` in a new tab on this screen, then call ` +

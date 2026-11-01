@@ -14,6 +14,7 @@ import { OrganizationId, ProjectId, WorktreeId } from "@mend/domain";
 import {
   ImageDigest,
   ownDatabaseName,
+  baseDatabaseName,
   presetDefinition,
   PresetVersion,
   ResourceName,
@@ -241,6 +242,37 @@ describe.skipIf(postgres.skip)("resource preservation before removal", () => {
     calls.length = 0;
     expect(Result.isSuccess(await remove())).toBe(true);
     expect(calls).toEqual([]);
+  });
+
+  it("saves a forgotten base database beside own databases before dropping any of them", async () => {
+    const [definition] = await seed();
+    if (definition === undefined) throw new Error("missing fixture");
+    await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) =>
+        repo.recordOwnDatabase(WORKTREE, definition.id, "copied", "base"),
+      ),
+    );
+    const result = await remove();
+    expect(Result.isSuccess(result) && result.success.join(" ")).toContain(
+      "base copy database saved as a dump",
+    );
+    const commands = calls.filter((call) => call.argv[2]?.includes("pg_restore"));
+    expect(commands.map((call) => (call.argv[2]?.includes("pg_dump") ? "save" : "drop"))).toEqual([
+      "save",
+      "save",
+      "save",
+      "drop",
+      "drop",
+      "drop",
+    ]);
+    const base = commands.filter((call) => call.argv[4] === baseDatabaseName(WORKTREE));
+    expect(base).toHaveLength(2);
+    expect(base[0]?.argv[5]).toContain(`${baseDatabaseName(WORKTREE)}-removed-`);
+    const rows = await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabaseRemovals(WORKTREE)),
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.removedAt !== null && row.checkedAt !== null)).toBe(true);
   });
 
   it("a failed check for the second database refuses removal and drops nothing; retry uses the reserved dumps", async () => {

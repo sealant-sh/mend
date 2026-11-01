@@ -9,6 +9,8 @@ import {
 import type { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
   ownDatabaseName,
+  baseDatabaseName,
+  worktreeDatabaseName,
   type ResourceBinding,
   type ServiceDependency,
   type ResourceDependencyStopped,
@@ -46,7 +48,12 @@ import {
   resetArgv,
   resetOutcome,
 } from "./postgres-ops.ts";
-import { removalDumpName, saveRemovalDump } from "./removal-postgres.ts";
+import {
+  removalDumpName,
+  saveRemovalDump,
+  removalDatabaseArgv,
+  removalExecFailure,
+} from "./removal-postgres.ts";
 import { readWorktreeTables, tablesOf } from "./worktree-tables.ts";
 
 /**
@@ -127,11 +134,17 @@ export class ResourceRuntime extends Context.Service<
       definition: StoredResourceInstance,
       worktreeId: WorktreeId,
     ) => Effect.Effect<string | null>;
+    /** Creates or preserves and drops the base copy's database on an already running project server. */
+    readonly baseDatabase: (
+      definition: StoredResourceInstance,
+      worktreeId: WorktreeId,
+      options: { readonly empty: boolean; readonly drop: boolean },
+    ) => Effect.Effect<string | null>;
     /** Reconcile reach for every live workspace after starts or choices change. */
     readonly relink: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
     /** Every instance of the project as Sealant observed it, in one call. */
     readonly observe: (projectId: ProjectId) => Effect.Effect<ProjectObservation>;
-    /** Saves all active own databases before archiving this instance; volumes stay. */
+    /** Saves all active own and base databases before archiving this instance; volumes stay. */
     readonly archive: (definition: StoredResourceInstance) => Effect.Effect<ArchiveOutcome>;
     /**
      * Saves a Postgres database as a dump in its dumps volume, checks the dump reads back, then
@@ -181,6 +194,7 @@ export const ResourceRuntimeNone: Layer.Layer<ResourceRuntime> = Layer.succeed(R
     }),
   archive: () => Effect.succeed({ kind: "archived", startedForArchive: false }),
   ensureOwnDatabase: () => Effect.succeed(null),
+  baseDatabase: () => Effect.succeed("no runtime runs resources here"),
   relink: () => Effect.succeed([]),
   reset: () => Effect.succeed({ kind: "failed", message: "no runtime runs resources here" }),
 });
@@ -344,19 +358,21 @@ export const resourceRuntimeLayer = (
         });
       });
 
-      /** Makes the worktree's own database on its server once, and records how it began. */
+      /** Makes the tracked worktree database once and records how it began. */
       const makeOwnDatabase = Effect.fn("ResourceRuntime.ensureOwnDatabase")(function* (
         client: ResourceScope,
         key: string,
         definitionId: ResourceDefinitionId,
         worktreeId: WorktreeId,
+        purpose: "own" | "base" = "own",
+        empty = false,
       ) {
-        const own = ownDatabaseName(worktreeId);
+        const own = worktreeDatabaseName(worktreeId, purpose);
         return yield* gateOf(`${key}/${own}`).withPermits(1)(
           Effect.gen(function* () {
-            if ((yield* repo.ownDatabases(worktreeId)).has(definitionId)) return null;
+            if ((yield* repo.ownDatabases(worktreeId, purpose)).has(definitionId)) return null;
             const result = yield* client.exec(key, {
-              argv: ownDatabaseArgv(own),
+              argv: ownDatabaseArgv(own, empty),
               user: "postgres",
               timeoutMs: OWN_DATABASE_TIMEOUT_MS,
             });
@@ -372,6 +388,7 @@ export const resourceRuntimeLayer = (
               worktreeId,
               definitionId,
               outcome === "exists" ? "empty" : outcome,
+              purpose,
             );
             return null;
           }),
@@ -624,19 +641,30 @@ export const resourceRuntimeLayer = (
             }
             const failures: Array<{ readonly name: string; readonly reason: string }> = [];
             for (const row of own) {
-              const dumpName = removalDumpName(ownDatabaseName(row.worktreeId), at);
+              const dumpName = removalDumpName(
+                worktreeDatabaseName(row.worktreeId, row.purpose),
+                at,
+              );
               // Refresh even a previously checked dump: a refused archive left this database live.
-              yield* repo.reserveRemovalDump(row.worktreeId, definition.id, dumpName, at, true);
+              yield* repo.reserveRemovalDump(
+                row.worktreeId,
+                definition.id,
+                dumpName,
+                at,
+                true,
+                row.purpose,
+              );
               const result = yield* saveRemovalDump(
                 client,
                 key,
                 row.worktreeId,
                 dumpName,
                 true,
+                row.purpose,
               ).pipe(Effect.result);
               if (result._tag === "Failure")
                 failures.push({ name: row.worktreeName, reason: result.failure.message });
-              else yield* repo.checkRemovalDump(row.worktreeId, definition.id, at);
+              else yield* repo.checkRemovalDump(row.worktreeId, definition.id, at, row.purpose);
             }
             if (failures.length > 0)
               return {
@@ -675,6 +703,72 @@ export const resourceRuntimeLayer = (
           ),
           Effect.catch((error: SealantPlatformError) => Effect.succeed(error.message)),
         );
+
+      const baseDatabase = Effect.fn("ResourceRuntime.baseDatabase")(function* (
+        definition: StoredResourceInstance,
+        worktreeId: WorktreeId,
+        options: { readonly empty: boolean; readonly drop: boolean },
+      ) {
+        return yield* Effect.gen(function* () {
+          const client = yield* scopeOf(definition.projectId);
+          const key = resourceInstanceKey(definition.id, null);
+          const instance = yield* client.get(key);
+          if (instance?.state.kind !== "running")
+            return `project resource is ${instance?.state.kind ?? "not started"} · mend resource start ${definition.spec.name} --project`;
+          if (!options.drop)
+            return yield* makeOwnDatabase(
+              client,
+              key,
+              definition.id,
+              worktreeId,
+              "base",
+              options.empty,
+            );
+          const database = baseDatabaseName(worktreeId);
+          return yield* gateOf(`${key}/${database}`).withPermits(1)(
+            Effect.gen(function* () {
+              const row = (yield* repo.ownDatabaseRemovals(worktreeId)).find(
+                (each) => each.definitionId === definition.id && each.purpose === "base",
+              );
+              if (row === undefined || row.removedAt !== null) return null;
+              const at = new Date(yield* Clock.currentTimeMillis);
+              yield* repo.reserveRemovalDump(
+                worktreeId,
+                definition.id,
+                removalDumpName(database, at),
+                at,
+                false,
+                "base",
+              );
+              const reserved = (yield* repo.ownDatabaseRemovals(worktreeId)).find(
+                (each) => each.definitionId === definition.id && each.purpose === "base",
+              );
+              if (reserved?.dumpName === null || reserved?.dumpName === undefined)
+                return "the removal dump was not reserved";
+              const dumpName = reserved.dumpName;
+              const saved = yield* saveRemovalDump(
+                client,
+                key,
+                worktreeId,
+                dumpName,
+                false,
+                "base",
+              ).pipe(Effect.result);
+              if (saved._tag === "Failure") return saved.failure.message;
+              yield* repo.checkRemovalDump(worktreeId, definition.id, at, "base");
+              const result = yield* client.exec(key, {
+                argv: removalDatabaseArgv("drop", database, dumpName),
+                user: "postgres",
+                timeoutMs: OWN_DATABASE_TIMEOUT_MS,
+              });
+              const failure = removalExecFailure(result);
+              if (failure !== null) return `checked dump kept · ${failure}`;
+              yield* repo.removeOwnDatabase(worktreeId, definition.id, at, "base");
+              return null;
+            }),
+          );
+        }).pipe(Effect.catch((error: SealantPlatformError) => Effect.succeed(error.message)));
+      });
 
       const reset = Effect.fn("ResourceRuntime.reset")(function* (input: {
         readonly definition: StoredResourceInstance;
@@ -780,6 +874,7 @@ export const resourceRuntimeLayer = (
         archive,
         reset,
         ensureOwnDatabase,
+        baseDatabase,
         relink,
       };
     }),
