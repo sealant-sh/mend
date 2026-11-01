@@ -54,7 +54,7 @@ describe("the retirement line (docs/adr/0016, decision 14)", () => {
     expect(view?.stops).toEqual([
       "Checked at 12:05 UTC: Mend's records, the processes in the workspace and its running containers",
       "terminal session (ends resumable) · fix-auth",
-      "Mend starts the launching session's mend.toml Services again.",
+      "Mend starts the launching session's .mend/mend.toml Services again.",
     ]);
     expect(view?.seen).toBe("fp-1");
   });
@@ -74,7 +74,7 @@ describe("the retirement line (docs/adr/0016, decision 14)", () => {
       "Checked: Mend's records only · processes Mend did not start and running containers not checked yet",
       "running container",
       "could not check",
-      "Mend starts the launching session's mend.toml Services again.",
+      "Mend starts the launching session's .mend/mend.toml Services again.",
     ]);
   });
 
