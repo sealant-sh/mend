@@ -203,6 +203,7 @@ export interface StatusInput {
 }
 
 export interface StatusMessageInput extends StatusInput {
+  readonly resourceStatusLines?: ReadonlyArray<string>;
   readonly previews: WorktreePreviews;
 }
 
@@ -238,7 +239,9 @@ export const statusLine = (input: StatusInput): string =>
  * (docs/adr/0007-landing.md, "What the thread sees"), and a later landing edits them in place.
  */
 export const statusMessage = (input: StatusMessageInput): SlackMessage => {
-  const line = [statusLine(input), ...(input.landing ?? [])].map(escapeSlack).join("\n");
+  const line = [statusLine(input), ...(input.resourceStatusLines ?? []), ...(input.landing ?? [])]
+    .map(escapeSlack)
+    .join("\n");
   const switchSession = input.switchSession ?? null;
   const switching: ReadonlyArray<ActionsBlock> =
     switchSession === null

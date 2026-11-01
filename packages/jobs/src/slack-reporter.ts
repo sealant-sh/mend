@@ -31,7 +31,7 @@ import {
   type Session,
   type SlackStatusKey,
 } from "@mend/domain/workbench";
-import { WorktreeReads } from "@mend/sessions";
+import { ResourceStatusReads, WorktreeReads } from "@mend/sessions";
 import {
   agentMessage,
   approvalMessage,
@@ -306,6 +306,7 @@ interface Queued {
 
 export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
   Effect.gen(function* () {
+    const resourceStatus = yield* ResourceStatusReads;
     const threads = yield* SlackThreadsRepo;
     const installs = yield* SlackInstallsRepo;
     const sessions = yield* SessionsRepo;
@@ -667,6 +668,10 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         landing: landingStatusLines({ landings: look.landings, latestTurn: look.decided }),
         summary: session.summary,
         capture: captureStatusLine(session),
+        resourceStatusLines: (yield* resourceStatus.forWorktree(
+          session.projectId,
+          session.worktreeId,
+        )).map((each) => each.statusLine),
       };
       yield* moveStatus(token, look, receipt, recount, statusMessage({ ...status, previews }), {
         base: statusKey(statusMessage({ ...status, previews: NO_PREVIEWS })),
@@ -1172,6 +1177,7 @@ export const SlackReportsLive: Layer.Layer<
   | SlackThreadsRepo
   | WorktreeChangesRepo
   | WorktreeReads
+  | ResourceStatusReads
 > = Layer.effect(
   SlackReports,
   Effect.gen(function* () {

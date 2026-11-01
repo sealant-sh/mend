@@ -1246,3 +1246,10 @@ describe("a worktree's previews in a message (docs/adr/0017-live-preview.md)", (
     ).toBe(null);
   });
 });
+
+it("puts the session's resource observation in the thread status and fallback text", () => {
+  const line = "@db · running · own database · observed 3 s ago";
+  const message = statusMessage({ ...status, previews: NO_PREVIEWS, resourceStatusLines: [line] });
+  expect(message.text).toContain(line);
+  expect(JSON.stringify(message.blocks)).toContain(line);
+});
