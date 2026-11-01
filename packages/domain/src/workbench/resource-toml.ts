@@ -5,12 +5,12 @@ import {
   presetDefinition,
   PresetVersion,
   RESOURCE_LIMIT_DEFAULTS,
-  type ResourceDefinitionInput,
+  type ResourceDefinition,
   ResourceName,
 } from "./resource.ts";
 
 /** A file declaration has no execution level. */
-export type ResourceTableFields = Omit<ResourceDefinitionInput, "scope">;
+export type ResourceTableFields = ResourceDefinition;
 
 /** The defaults an omitted preset command, port and volume receive from the file reader. */
 export const resourceTablePresetDefaults = (
@@ -23,7 +23,6 @@ export const resourceTablePresetDefaults = (
     name: ResourceName.make("resource"),
     preset,
     version: PresetVersion.make(tag),
-    scope: "project" as const,
   };
   return presetDefinition(input);
 };

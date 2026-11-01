@@ -30,7 +30,6 @@ describe("resourceTableToml", () => {
       name: ResourceName.make("db"),
       preset: "postgres" as const,
       version: PresetVersion.make("17"),
-      scope: "project" as const,
     };
     expect(resourceTableToml(presetDefinition(input))).toBe(
       '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\n',

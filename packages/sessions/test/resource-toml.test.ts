@@ -33,7 +33,6 @@ const presets = (["postgres", "redis", "mysql"] as const).flatMap((preset) =>
       name: ResourceName.make("db"),
       preset,
       version: PresetVersion.make(version),
-      scope: "project",
     }),
   ),
 );
