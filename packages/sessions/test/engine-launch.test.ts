@@ -1111,6 +1111,7 @@ describe("SessionEngine", () => {
           stop: () => Effect.die("not in this test"),
           observe: () => Effect.die("not in this test"),
           archive: () => Effect.die("not in this test"),
+          reset: () => Effect.die("not in this test"),
         }),
       },
     );

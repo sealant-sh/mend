@@ -22,7 +22,7 @@ import {
 } from "./shared.ts";
 
 /**
- * `mend resource add|list|remove|use|start|stop|env` (docs/adr/0019-shared-services.md): a
+ * `mend resource add|list|remove|use|start|stop|reset|env` (docs/adr/0019-shared-services.md): a
  * project's resources from a person's terminal. What a member adds is the project's, and runs.
  * The server decides every act; these commands print its status lines as they come. Anything a
  * definition stores is someone else's text, so it reaches the terminal through `printable`.
@@ -304,6 +304,21 @@ export const resourceCommand = async (
       );
       return say(printable(answer.statusLine));
     }
+    case "reset": {
+      if (name === null) return fail("name the resource: mend resource reset db --worktree <w>");
+      const worktree = await worktreeOf();
+      if (worktree === null)
+        return fail("name the worktree whose database to reset: --worktree <w>");
+      const target = takeFlagValue(rest, "--target");
+      if (target !== null && target !== "shared" && target !== "own") {
+        return fail("--target is shared or own");
+      }
+      const answer = await api<{ readonly statusLine: string }>(
+        "POST",
+        `/projects/${project.id}/worktrees/${encodeURIComponent(worktree.id)}/resources/${encodeURIComponent(name)}/reset?${zone}${target === null ? "" : `&target=${target}`}`,
+      );
+      return say(printable(answer.statusLine));
+    }
     case "env": {
       const worktree = await worktreeOf();
       if (worktree === null) return fail("name the worktree whose env to print: --worktree <w>");
@@ -318,7 +333,7 @@ export const resourceCommand = async (
     }
     default:
       return fail(
-        `unknown resource command "${printable(verb)}" · try: add, list, remove, use, start, stop, env`,
+        `unknown resource command "${printable(verb)}" · try: add, list, remove, use, start, stop, reset, env`,
       );
   }
 };

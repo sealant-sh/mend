@@ -224,6 +224,7 @@ const READS: Readonly<Record<string, Reads>> = {
       "resource use",
       "resource start",
       "resource stop",
+      "resource reset",
       "resource env",
     ],
   },

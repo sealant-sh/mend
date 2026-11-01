@@ -7,6 +7,7 @@ import { ChevronDown } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { ComposerResources } from "#/components/composer-resources";
 import { ComposerTargetPicker } from "#/components/composer-target-picker";
 import { NewWorktreeDialog } from "#/components/project-detail/new-worktree-dialog";
 import type { ProjectDto, WorktreeDto } from "#/lib/api";
@@ -194,6 +195,9 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
         </div>
         {joinLine === null ? null : (
           <p className="px-5 pt-2 text-[12.5px] leading-relaxed text-ink-2">{joinLine}</p>
+        )}
+        {worktree === undefined ? null : (
+          <ComposerResources key={worktree.id} projectId={projectId} worktreeId={worktree.id} />
         )}
         <textarea
           disabled={busy}

@@ -44,6 +44,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ResourceImageResolver } from "../src/resources/image-resolver.ts";
 import { Resources, ResourcesChannelLive, ResourcesLive } from "../src/resources/resources.ts";
 import { ResourceRuntime, resourceRuntimeLayer } from "../src/resources/runtime.ts";
+import { WorktreeServiceRestarts } from "../src/resources/service-restarts.ts";
 import {
   handleSessionRequest,
   SessionChannelRegistry,
@@ -218,7 +219,16 @@ const images = Layer.succeed(ResourceImageResolver, {
 const runtimeLayer = resourceRuntimeLayer(Duration.millis(300)).pipe(
   Layer.provideMerge(Layer.mergeAll(repos, reads, images, scopes)),
 );
-const resources = ResourcesLive.pipe(Layer.provideMerge(runtimeLayer));
+/** Each worktree whose Services a switch restarted, and by whom; it ran `web`. */
+const restarted: Array<string> = [];
+const restarts = Layer.succeed(WorktreeServiceRestarts, {
+  restart: (worktreeId, by) =>
+    Effect.sync(() => {
+      restarted.push(`${worktreeId} ${by}`);
+      return ["web"];
+    }),
+});
+const resources = ResourcesLive.pipe(Layer.provideMerge(Layer.merge(runtimeLayer, restarts)));
 const channel = ResourcesChannelLive.pipe(
   Layer.provideMerge(Layer.merge(resources, SessionChannelRegistryLive)),
 );
@@ -470,7 +480,13 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
       expect.stringMatching(/^@db · postgres 17 · project · added by Maria · running · /),
     ]);
     // Tom owns the worktree's first session, so its choices are his.
-    expect(await fromSession("use", "cache", "off")).toEqual(["@cache · off"]);
+    expect(await fromSession("use", "cache", "off")).toEqual([
+      "@cache · off · agents and shells keep their env until they restart",
+    ]);
+    expect(restarted).toEqual(["wt-res u-tom"]);
+    // The same choice again changes nothing, so nothing restarts.
+    await fromSession("use", "cache", "off");
+    expect(restarted).toEqual(["wt-res u-tom"]);
     expect(await fromSession("use", "db", "copy")).toEqual([
       "refused: name a choice: mend resource use db shared|own|off",
     ]);
@@ -481,6 +497,34 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     expect(await fromSession("stop", "nope")).toEqual([
       "refused: no @nope in this project · mend resource list shows them",
     ]);
+  });
+
+  it("resets a worktree's own database: saves a dump, then copies shared again", async () => {
+    sealant.execAnswer = "saved copied";
+    const lines = await fromSession("reset", "db");
+    expect(lines).toEqual([
+      expect.stringMatching(
+        /^@db · own database reset · copied from shared · previous data saved as a dump .+$/,
+      ),
+    ]);
+    expect(sealant.calls.filter((call) => call.startsWith("exec"))).toEqual([
+      `exec ${db.id} root `,
+      expect.stringMatching(
+        new RegExp(
+          `^exec ${db.id} postgres ${OWN} app 1 /mend/dumps/${OWN}-\\d{8}T\\d{6}Z\\.dump$`,
+        ),
+      ),
+    ]);
+    sealant.execAnswer = "saved empty";
+    expect(await fromSession("reset", "db", "--target", "shared")).toEqual([
+      expect.stringMatching(
+        /^@db · shared database reset · empty · previous data saved as a dump /,
+      ),
+    ]);
+    expect(await fromSession("reset", "cache")).toEqual([
+      "refused: @cache · a reset saves and empties a Postgres database, and @cache is not one",
+    ]);
+    sealant.execAnswer = "copied";
   });
 
   it("answers a file that does not parse over HTTP with its stamp and position, never its source", async () => {

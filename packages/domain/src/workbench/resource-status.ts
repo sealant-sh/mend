@@ -76,6 +76,27 @@ export type ResourceStatusView =
       readonly definition: ResourceDefinitionInput;
       readonly message: string;
     }
+  /**
+   * A worktree's switch: the use it has now and the Services it restarted. Agents and shells keep
+   * the env they opened with until they restart.
+   */
+  | {
+      readonly kind: "switched";
+      readonly definition: ResourceDefinitionInput;
+      readonly use: ResourceUse;
+      readonly restarted: ReadonlyArray<string>;
+    }
+  /**
+   * A database emptied by a reset: which one, how it begins again, and when the dump of what it
+   * held was saved (null: it held nothing yet).
+   */
+  | {
+      readonly kind: "reset";
+      readonly definition: ResourceDefinitionInput;
+      readonly target: "shared" | "own";
+      readonly origin: "empty" | "copied";
+      readonly savedAt: Date | null;
+    }
   /** A `mend.toml` table whose name settings hold with another spec: settings were kept. */
   | { readonly kind: "file-kept"; readonly definition: ResourceDefinitionInput }
   /** A `mend.toml` table as read, with no instance behind it. */
@@ -226,6 +247,26 @@ export const resourceStatusLine = (
         return ["own database not made", view.message, "the next launch tries again"];
       case "file-kept":
         return ["mend.toml differs", "project settings kept"];
+      case "switched":
+        return [
+          ...useParts(def, view.use, clock),
+          ...(view.use.kind === "off"
+            ? []
+            : [
+                view.restarted.length === 0
+                  ? "no Service was running"
+                  : `restarted ${view.restarted.join(", ")}`,
+              ]),
+          "agents and shells keep their env until they restart",
+        ];
+      case "reset":
+        return [
+          `${view.target === "own" ? "own" : "shared"} database reset`,
+          view.origin === "copied" ? "copied from shared" : "empty",
+          view.savedAt === null
+            ? "it held no data to save"
+            : `previous data saved as a dump ${clock(view.savedAt)}`,
+        ];
       case "observed":
         if (view.use.kind === "off") return ["off"];
         return view.use.kind === "project"

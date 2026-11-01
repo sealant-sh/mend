@@ -439,6 +439,30 @@ describe("the command against a server", () => {
     );
   });
 
+  it("resets a worktree's database and prints the line naming the dump it saved", async () => {
+    const out = stdout();
+    const mend = server({
+      "GET /projects/p_shop/worktrees": { worktrees: [{ id: "wt_1", name: "checkout" }] },
+      "POST /projects/p_shop/worktrees/wt_1/resources/db/reset": {
+        statusLine: "@db · shared database reset · empty · previous data saved as a dump 14:02",
+      },
+    });
+    await resourceCommand(mend.api, async () => shop, [
+      "reset",
+      "db",
+      "--worktree",
+      "checkout",
+      "--target",
+      "shared",
+    ]);
+    expect(mend.calls.at(-1)).toBe(
+      "POST /projects/p_shop/worktrees/wt_1/resources/db/reset?timeZone=…&target=shared",
+    );
+    expect(out.join("")).toBe(
+      "@db · shared database reset · empty · previous data saved as a dump 14:02\n",
+    );
+  });
+
   it("prints a worktree's exports as a shell reads them, and what the project sets as comments", async () => {
     const out = stdout();
     const mend = server({
@@ -463,7 +487,7 @@ describe("the command against a server", () => {
       resourceCommand(server({}).api, async () => shop, ["approve", "db"]),
     ).rejects.toThrow("exit 1");
     expect(err.join("")).toBe(
-      'mend: unknown resource command "approve" · try: add, list, remove, use, start, stop, env\n',
+      'mend: unknown resource command "approve" · try: add, list, remove, use, start, stop, reset, env\n',
     );
   });
 });

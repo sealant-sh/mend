@@ -571,6 +571,15 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-read", "POST", "/resources/db/start?timeZone=UTC")("resources.start"),
   project("project-read", "POST", "/resources/db/stop?timeZone=UTC")("resources.stop"),
   {
+    endpoint: "resources.reset",
+    rule: "project-read",
+    call: (target) => ({
+      method: "POST",
+      path: `/api/projects/${ids(target).project}/worktrees/${ids(target).worktree}/resources/db/reset?timeZone=UTC`,
+      id: ids(target).project,
+    }),
+  },
+  {
     endpoint: "resources.env",
     rule: "project-read",
     call: (target) => ({
@@ -967,10 +976,12 @@ const ADMITTED: Readonly<
   },
   // Who added the definition decides who may remove it, so it is read first.
   "resources.remove": { status: 500, calls: ["resources.listForProject"] },
-  "resources.use": { status: 500, calls: ["resources.setSelection"] },
+  // What the worktree used before decides whether its Services restart, so it is read first.
+  "resources.use": { status: 500, calls: ["resources.listWithChoices"] },
   // A start or stop finds the definition by name first.
   "resources.start": { status: 500, calls: ["resources.byName"] },
   "resources.stop": { status: 500, calls: ["resources.byName"] },
+  "resources.reset": { status: 500, calls: ["resources.byName"] },
   "resources.env": { status: 500, calls: ["resourceRuntime.envOf", "resources.listForProject"] },
   "sessions.create": { status: 500, calls: ["removalFences.admitsStart", "engine.provision"] },
   // Refresh-capture helper defects before detail reads.

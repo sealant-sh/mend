@@ -16,7 +16,9 @@ import {
 import {
   ImageResolutionError,
   type ResourceImageResolver,
+  type ResetOutcome,
   type ResourceRuntime,
+  type WorktreeServiceRestarts,
   WORKTREE_STAMP,
 } from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
@@ -134,12 +136,14 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
   const start = async (
     override: (repo: ResourcesRepo["Service"]) => ResourcesRepo["Service"] = (repo) => repo,
     resourceRuntime: Layer.PartialEffectful<ResourceRuntime["Service"]> = {},
+    serviceRestarts: Layer.PartialEffectful<WorktreeServiceRestarts["Service"]> = {},
   ) => {
     const repo = override(await runtime.runPromise(repoNow));
     api = await createTenancyApi(undefined, {
       implement: {
         resources: repo,
         resourceRuntime,
+        serviceRestarts,
         users: {
           byIds: (accounts) =>
             Effect.succeed(
@@ -630,12 +634,14 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
           mode: "shared",
           chosenBy: "carol",
           statusLine:
-            "@db · not started · shared database · any worktree on shared can change or drop its tables · observed 0 s ago",
+            "@db · shared database · any worktree on shared can change or drop its tables · no Service was running · agents and shells keep their env until they restart",
         },
       });
+      expect(harness().world.calls).toContain("serviceRestarts.restart");
       expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own")).body).toMatchObject({
         mode: "own",
-        statusLine: "@db · not started · own database · not made yet · observed 0 s ago",
+        statusLine:
+          "@db · own database · not made yet · no Service was running · agents and shells keep their env until they restart",
       });
       expect((await use("alice", CAROL_WORKTREE_IN_SHARED_A, db.id, "off")).body).toEqual({
         _tag: "ResourceDenied",
@@ -787,6 +793,72 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       await addPreset("alice", "17");
       expect((await control("bob", "db", "stop")).status).toBe(404);
     });
+  });
+
+  it("restarts the worktree's Services on a switch, and names them on its line", async () => {
+    const asked: Array<string> = [];
+    await start(undefined, undefined, {
+      restart: (worktreeId, by) =>
+        Effect.sync(() => {
+          asked.push(`${worktreeId} ${by}`);
+          return ["web", "worker"];
+        }),
+    });
+    const db = (await addPreset("alice", "17")).body.definition;
+    expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared")).body).toMatchObject({
+      statusLine: expect.stringContaining(
+        "· restarted web, worker · agents and shells keep their env until they restart",
+      ),
+    });
+    // Choosing what the worktree already uses restarts nothing.
+    await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared");
+    expect(asked).toEqual([`${CAROL_WORKTREE_IN_SHARED_A} carol`]);
+  });
+
+  it("resets a worktree's database as its runtime answers, and says why one was not", async () => {
+    const at = new Date("2026-10-31T12:02:00Z");
+    let outcome: ResetOutcome = { kind: "reset", origin: "copied", savedAt: at };
+    const asked: Array<string> = [];
+    await start(undefined, {
+      reset: (input) =>
+        Effect.sync(() => {
+          asked.push(`${input.definition.spec.name} ${input.worktreeId} ${input.target}`);
+          return outcome;
+        }),
+    });
+    await addPreset("alice", "17");
+    const reset = (as: HarnessUser, query = "") =>
+      harness()
+        .request(
+          as,
+          "POST",
+          `/api/projects/${shared.project}/worktrees/${CAROL_WORKTREE_IN_SHARED_A}/resources/db/reset?${zone}${query}`,
+        )
+        .then(json);
+    expect(await reset("carol")).toEqual({
+      status: 200,
+      body: {
+        statusLine: expect.stringMatching(
+          /^@db · own database reset · copied from shared · previous data saved as a dump .*14:02$/,
+        ),
+      },
+    });
+    // Its own database is its change owner's to reset; the shared one is any member's.
+    expect((await reset("alice")).body).toMatchObject({ _tag: "ResourceDenied" });
+    expect((await reset("alice", "&target=shared")).status).toBe(200);
+    outcome = {
+      kind: "not-running",
+      instance: { kind: "stopped", reason: { kind: "person", by: "Maria" } },
+    };
+    expect(await reset("carol")).toEqual({
+      status: 409,
+      body: { _tag: "ResourceNotReset", message: "@db · stopped by Maria · nothing was reset" },
+    });
+    expect(asked).toEqual([
+      `db ${CAROL_WORKTREE_IN_SHARED_A} own`,
+      `db ${CAROL_WORKTREE_IN_SHARED_A} shared`,
+      `db ${CAROL_WORKTREE_IN_SHARED_A} own`,
+    ]);
   });
 
   it("answers the env a worktree's processes get now, with what the project sets itself", async () => {

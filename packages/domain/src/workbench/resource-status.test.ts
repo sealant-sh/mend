@@ -166,6 +166,42 @@ const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
     "@db · mend.toml differs · project settings kept",
   ],
   [
+    "a switch to own, and the Services it restarted",
+    {
+      kind: "switched",
+      definition: db,
+      use: { kind: "own", origin: null },
+      restarted: ["web", "api"],
+    },
+    "@db · own database · not made yet · restarted web, api · agents and shells keep their env until they restart",
+  ],
+  [
+    "a switch with no Service running",
+    { kind: "switched", definition: cache, use: { kind: "shared" }, restarted: [] },
+    "@cache · shared · no Service was running · agents and shells keep their env until they restart",
+  ],
+  [
+    "a switch to off",
+    { kind: "switched", definition: cache, use: { kind: "off" }, restarted: [] },
+    "@cache · off · agents and shells keep their env until they restart",
+  ],
+  [
+    "an own database reset, copied again, with the dump of what it held",
+    {
+      kind: "reset",
+      definition: db,
+      target: "own",
+      origin: "copied",
+      savedAt: new Date("2026-10-30T14:02:00Z"),
+    },
+    "@db · own database reset · copied from shared · previous data saved as a dump 14:02",
+  ],
+  [
+    "a shared database reset that held nothing",
+    { kind: "reset", definition: db, target: "shared", origin: "empty", savedAt: null },
+    "@db · shared database reset · empty · it held no data to save",
+  ],
+  [
     "a Sealant that runs no resources",
     observed(db, { kind: "shared" }, { kind: "unsupported", runtime: "kubernetes" }),
     `@db · resources run on Docker; this Sealant runs kubernetes · shared database · ${WARNING} · observed 3 s ago`,

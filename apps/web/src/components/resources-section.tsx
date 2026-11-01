@@ -52,7 +52,8 @@ const quiet =
 const field =
   "w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint";
 const hint = "mt-1 text-[11px] text-label";
-const toggle = (on: boolean) =>
+/** A choice among several, pressed or not: the card's, and the composer's resource line's. */
+export const choiceToggle = (on: boolean) =>
   `rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
     on
       ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
@@ -601,7 +602,7 @@ export function ChoiceLine(props: {
               disabled={props.busy}
               aria-pressed={entry.choice === choice}
               onClick={() => (entry.choice === choice ? undefined : props.onChoose(choice))}
-              className={toggle(entry.choice === choice)}
+              className={choiceToggle(entry.choice === choice)}
             >
               {choiceWords(entry.spec, choice).label}
             </button>
@@ -664,7 +665,7 @@ export function ResourceForm(props: {
           type="button"
           aria-pressed={value === each}
           onClick={() => pick(each)}
-          className={toggle(value === each)}
+          className={choiceToggle(value === each)}
         >
           {each}
         </button>

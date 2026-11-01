@@ -4,6 +4,7 @@ import {
   ResourceDenied,
   ResourceManifestUnverifiable,
   ResourceRegistryUnavailable,
+  ResourceNotReset,
   ResourceRejected,
   ResourceStale,
 } from "@mend/api-contracts";
@@ -184,6 +185,25 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
             timeZone: query.timeZone,
           })
           .pipe(Effect.catchTags(controlRefused));
+      }),
+    )
+    .handle("reset", ({ params, query }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        yield* projectWorktree(project.id, params.worktreeId);
+        return yield* (yield* Resources)
+          .reset(project, viewer, params.name, params.worktreeId, query.target ?? null, {
+            now: new Date(),
+            timeZone: query.timeZone,
+          })
+          .pipe(
+            Effect.catchTags({
+              ResourceActRefusedError: (error) => Effect.fail(denied(error)),
+              ResourceNameNotFoundError: (error) => Effect.fail(new NotFound({ id: error.name })),
+              ResourceNotResetError: (error) =>
+                Effect.fail(new ResourceNotReset({ message: error.message })),
+            }),
+          );
       }),
     )
     .handle("env", ({ params, query }) =>

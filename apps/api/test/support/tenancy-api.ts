@@ -95,6 +95,7 @@ import {
   SessionEngine,
   WorkspaceCaller,
   WorktreeReads,
+  WorktreeServiceRestarts,
 } from "@mend/sessions";
 import { SlackApi } from "@mend/slack/client";
 import {
@@ -343,6 +344,8 @@ export const createTenancyApi = async (
       readonly images?: Layer.PartialEffectful<ResourceImageResolver["Service"]>;
       /** What runs a project's resources on Sealant (docs/adr/0019). */
       readonly resourceRuntime?: Layer.PartialEffectful<ResourceRuntime["Service"]>;
+      /** What restarts a worktree's Services after a switch; none run here. */
+      readonly serviceRestarts?: Layer.PartialEffectful<WorktreeServiceRestarts["Service"]>;
       readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
       readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
       readonly hotWorkspaces?: Layer.PartialEffectful<HotWorkspacesRepo["Service"]>;
@@ -786,6 +789,12 @@ export const createTenancyApi = async (
           archive: () => Effect.void,
           ...options.implement?.resourceRuntime,
         },
+        calls,
+      ),
+      recording(
+        WorktreeServiceRestarts,
+        "serviceRestarts",
+        { restart: () => Effect.succeed([]), ...options.implement?.serviceRestarts },
         calls,
       ),
       // Whose identity a call about a workspace runs as: the principal in context here, since the
