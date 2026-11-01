@@ -118,6 +118,8 @@ describe("Mend's MCP server", () => {
           { name: "screen_look" },
           { name: "screen_act" },
           { name: "proof_screenshot" },
+          { name: "proof_video_start" },
+          { name: "proof_video_stop" },
           { name: "proof_missing" },
           { name: "greet" },
         ],

@@ -88,7 +88,8 @@ import {
   type SessionPagesRepo,
   SessionPagesRepoLive,
   ProofArtifactsRepoLive,
-  type ProofArtifactsRepo,
+  ProofArtifactsRepo,
+  type ScreensRepo,
   type WorktreeChangesRepo,
   type AgentConversationRepo,
   SessionsRepoLive,
@@ -206,6 +207,7 @@ import {
   ScreenHostLive,
   type Screens,
   ScreensLive,
+  ScreenRecorder,
   screenWorkersLayer,
   ServiceHostLive,
   sessionPagesLayer,
@@ -454,6 +456,17 @@ const SCREEN_WORKER = new URL(
 const ScreensLayer = ScreensLive.pipe(
   Layer.provide(ScreenHostLive),
   Layer.provide(screenWorkersLayer(SCREEN_WORKER)),
+  Layer.provide(
+    Layer.effectDiscard(
+      Effect.flatMap(ProofArtifactsRepo, (artifacts) =>
+        artifacts
+          .settleStaleRecordings()
+          .pipe(
+            Effect.catch(() => Effect.logWarning("proof recordings were not reconciled at boot")),
+          ),
+      ),
+    ),
+  ),
 );
 // Its screen tools ask the one `Screens` beside the HTTP half.
 const MendMcpLayer: Layer.Layer<
@@ -461,6 +474,8 @@ const MendMcpLayer: Layer.Layer<
   never,
   | SessionPagesRepo
   | Screens
+  | ScreenRecorder
+  | ScreensRepo
   | UsersRepo
   | SessionEngine
   | ProofArtifactsRepo
@@ -960,7 +975,9 @@ const MainLive = Layer.unwrap(
     // The one Screens, provided to the routes that watch and take over screens and to Mend's MCP server.
     const screens = ScreensLayer.pipe(Layer.provide(captureStore));
     const video = ScreenVideoSourceLive.pipe(Layer.provide(ScreenHostLive));
-    const served = Layer.mergeAll(ServerLive, MendMcpLayer, ScreenRecorderLive).pipe(
+    const recorder = ScreenRecorderLive.pipe(Layer.provide(video));
+    const served = Layer.mergeAll(ServerLive, MendMcpLayer).pipe(
+      Layer.provide(recorder),
       Layer.provide(video),
       Layer.provideMerge(screens),
     );

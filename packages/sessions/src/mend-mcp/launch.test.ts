@@ -58,7 +58,7 @@ describe("withMendMcp", () => {
 
   it("lets every Claude launch call the screen tools without asking, beside its own --settings", () => {
     const allowed =
-      "--allowedTools=mcp__mend__screen_look,mcp__mend__screen_act,mcp__mend__proof_screenshot,mcp__mend__proof_missing";
+      "--allowedTools=mcp__mend__screen_look,mcp__mend__screen_act,mcp__mend__proof_screenshot,mcp__mend__proof_video_start,mcp__mend__proof_video_stop,mcp__mend__proof_missing";
     const settings = JSON.stringify({ permissions: { allow: ["Bash(git status)"] } });
     expect(withMendMcp(["claude", "-p", "--settings", settings])).toEqual([
       "claude",

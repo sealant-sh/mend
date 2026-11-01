@@ -3,8 +3,17 @@ import {
   PROOF_SCREENSHOT_DESCRIPTION,
   ProofMissingParams,
   ProofScreenshotParams,
+  ProofVideoStartParams,
+  ProofVideoStopParams,
+  PROOF_VIDEO_START_DESCRIPTION,
+  PROOF_VIDEO_STOP_DESCRIPTION,
 } from "@mend/agent-protocol";
-import { PROOF_MISSING_TOOL, PROOF_SCREENSHOT_TOOL } from "@mend/domain/workbench";
+import {
+  PROOF_MISSING_TOOL,
+  PROOF_SCREENSHOT_TOOL,
+  PROOF_VIDEO_START_TOOL,
+  PROOF_VIDEO_STOP_TOOL,
+} from "@mend/domain/workbench";
 import { Context, Effect, Layer, Schema } from "effect";
 import { McpSchema, McpServer } from "effect/ai";
 
@@ -44,6 +53,38 @@ export const ProofToolsLive: Layer.Layer<never, never, ProofCaptures> = Layer.ef
         Schema.decodeUnknownEffect(ProofScreenshotParams)(payload).pipe(
           Effect.mapError((error) => new McpSchema.InvalidParams({ message: error.message })),
           Effect.flatMap((params) => captures.screenshot(caller, params)),
+        ),
+      ),
+    });
+    yield* server.addTool({
+      tool: new McpSchema.Tool({
+        name: PROOF_VIDEO_START_TOOL,
+        title: "Start proof video",
+        description: PROOF_VIDEO_START_DESCRIPTION,
+        inputSchema: toolJson(ProofVideoStartParams),
+        annotations,
+      }),
+      annotations: Context.empty(),
+      handle: asCaller((payload: unknown, caller) =>
+        Schema.decodeUnknownEffect(ProofVideoStartParams)(payload).pipe(
+          Effect.mapError((error) => new McpSchema.InvalidParams({ message: error.message })),
+          Effect.flatMap((params) => captures.videoStart(caller, params)),
+        ),
+      ),
+    });
+    yield* server.addTool({
+      tool: new McpSchema.Tool({
+        name: PROOF_VIDEO_STOP_TOOL,
+        title: "Stop proof video",
+        description: PROOF_VIDEO_STOP_DESCRIPTION,
+        inputSchema: toolJson(ProofVideoStopParams),
+        annotations,
+      }),
+      annotations: Context.empty(),
+      handle: asCaller((payload: unknown, caller) =>
+        Schema.decodeUnknownEffect(ProofVideoStopParams)(payload).pipe(
+          Effect.mapError((error) => new McpSchema.InvalidParams({ message: error.message })),
+          Effect.flatMap(() => captures.videoStop(caller)),
         ),
       ),
     });

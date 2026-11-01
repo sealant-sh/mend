@@ -385,10 +385,12 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
           { name: "screen_look" },
           { name: "screen_act" },
           { name: "proof_screenshot" },
+          { name: "proof_video_start" },
+          { name: "proof_video_stop" },
           { name: "proof_missing" },
         ],
       });
-      expect(decodeAny(list.body).result).toMatchObject({ tools: { length: 5 } });
+      expect(decodeAny(list.body).result).toMatchObject({ tools: { length: 7 } });
 
       const published = resultOf(await client.render(PAGE, "call-1"));
       expect(published.isError).toBe(false);
