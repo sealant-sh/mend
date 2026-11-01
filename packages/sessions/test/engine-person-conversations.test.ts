@@ -625,6 +625,10 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
         expect(agentOptions[0]?.env?.["CLAUDE_CONFIG_DIR"]).toBe(`${home}/.claude`);
         expect(agentOptions[0]?.env?.["CLAUDE_CODE_DISABLE_AUTO_MEMORY"]).toBe("1");
         expect(agentOptions[0]?.env?.["CLAUDE_CODE_DISABLE_CRON"]).toBe("1");
+        const notes = run.execCalls.filter((argv) => commandOf(argv)[3] === "mend-note");
+        expect(notes).toHaveLength(4);
+        expect(commandOf(notes[1] ?? [])[2]).toContain(`${home}/.claude/CLAUDE.md`);
+        expect(commandOf(notes[3] ?? [])[2]).toContain(`${home}/.claude/CLAUDE.md`);
         // The process says whose user it runs as.
         expect(run.attached[0]?.process.runsAs).toBe("user-fixture");
         // Stopped: the conversation is free and H's login released.
@@ -655,6 +659,10 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
         );
         expect(agentOptions[0]?.env?.["HOME"]).toBe(home);
         expect(agentOptions[0]?.env?.["CODEX_SQLITE_HOME"]).toBe(`${home}/.codex`);
+        const notes = run.execCalls.filter((argv) => commandOf(argv)[3] === "mend-note");
+        expect(notes).toHaveLength(4);
+        expect(commandOf(notes[1] ?? [])[2]).toContain(`${home}/.codex/AGENTS.md`);
+        expect(commandOf(notes[3] ?? [])[2]).toContain(`${home}/.codex/AGENTS.md`);
         const agentArgv = run.spawned.filter((argv) => argv.includes("app-server"));
         expect(agentArgv[0]).toEqual([
           "codex",
