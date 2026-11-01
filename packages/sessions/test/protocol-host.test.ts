@@ -10,6 +10,7 @@ import {
 import { ClientMessageId } from "@mend/domain";
 import {
   AgentItemId,
+  AgentRequestId,
   AgentTurnId,
   SealantWorkspaceId,
   SessionId,
@@ -20,7 +21,7 @@ import {
   TURN_DELIVERY_UNCONFIRMED,
   type AgentTurnSteer,
 } from "@mend/domain/workbench";
-import { AgentItem, AgentTurn, SessionProcess } from "@mend/domain/workbench";
+import { AgentItem, AgentRequest, AgentTurn, SessionProcess } from "@mend/domain/workbench";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, References } from "effect";
@@ -106,6 +107,8 @@ const makeConversationWorld = () => {
     beforeAdmit: Effect.Effect<void>;
     beforeHarnessTurn: Effect.Effect<void>;
     beforeComplete: Effect.Effect<void>;
+    beforeUpsert: Effect.Effect<void>;
+    beforeRequest: Effect.Effect<void>;
     afterSteerAdmit: Effect.Effect<void>;
     afterMessageAdmit: Effect.Effect<void>;
     beforeSteerQueue: Effect.Effect<void>;
@@ -125,6 +128,8 @@ const makeConversationWorld = () => {
     beforeAdmit: Effect.void,
     beforeHarnessTurn: Effect.void,
     beforeComplete: Effect.void,
+    beforeUpsert: Effect.void,
+    beforeRequest: Effect.void,
     afterSteerAdmit: Effect.void,
     afterMessageAdmit: Effect.void,
     beforeSteerQueue: Effect.void,
@@ -141,6 +146,7 @@ const makeConversationWorld = () => {
   };
   const requeued = Effect.runSync(Deferred.make<void>());
   const items = new Map<string, AgentItem>();
+  const itemWrites: Array<Parameters<AgentConversationRepo["Service"]["upsertItem"]>[0]> = [];
   const cancelSweeps: Array<AgentTurnId> = [];
   const steerStore = makeSteerStore(turns, () => admission.stopping);
   const dispatch = makeDispatchStore(turns, () => ordinal++);
@@ -270,29 +276,47 @@ const makeConversationWorld = () => {
         ),
       ),
     upsertItem: (input) =>
-      Effect.sync(() => {
-        const item = new AgentItem({
-          id: AgentItemId.make(input.providerItemId),
-          sessionId: input.sessionId,
-          processId: input.processId,
-          turnId: input.turnId,
-          seq: items.size,
-          providerItemId: input.providerItemId,
-          kind: input.kind,
-          status: input.status,
-          title: input.title,
-          text: input.text,
-          data: input.data,
-          createdAt: now(),
-          updatedAt: now(),
-        });
-        items.set(input.providerItemId, item);
-        return item;
-      }),
+      Effect.andThen(
+        admission.beforeUpsert,
+        Effect.sync(() => {
+          const item = new AgentItem({
+            id: AgentItemId.make(input.providerItemId),
+            sessionId: input.sessionId,
+            processId: input.processId,
+            turnId: input.turnId,
+            seq: items.size,
+            providerItemId: input.providerItemId,
+            kind: input.kind,
+            status: input.status,
+            title: input.title,
+            text: input.text,
+            data: input.data,
+            createdAt: now(),
+            updatedAt: now(),
+          });
+          items.set(input.providerItemId, item);
+          itemWrites.push(input);
+          return item;
+        }),
+      ),
     listItems: () => Effect.succeed([]),
     turnMessages: () => Effect.succeed([]),
     turnItems: () => Effect.succeed([]),
-    openRequest: () => Effect.die("not in test"),
+    openRequest: (input) =>
+      admission.beforeRequest.pipe(
+        Effect.as(
+          new AgentRequest({
+            ...input,
+            id: AgentRequestId.make(input.providerRequestId),
+            status: "pending",
+            decision: null,
+            decidedBy: null,
+            answers: null,
+            createdAt: now(),
+            decidedAt: null,
+          }),
+        ),
+      ),
     byRequestId: () => Effect.succeed(null),
     listRequests: () => Effect.succeed([]),
     hasPendingRequests: () => Effect.succeed(false),
@@ -326,7 +350,7 @@ const makeConversationWorld = () => {
       }),
     saveProtocolCursor: () => Effect.void,
   });
-  return { layer, turns, items, seed, admission, steerStore, requeued, cancelSweeps };
+  return { layer, turns, items, itemWrites, seed, admission, steerStore, requeued, cancelSweeps };
 };
 
 const processesLayer = (rows: ReadonlyArray<SessionProcess> = [agentProcess]) =>
@@ -495,6 +519,7 @@ const makeClaudePipe = () => {
     pipe,
     push,
     pushRaw,
+    pendingOutput: () => pending.length,
     sent,
     refuseNextTurn: () => {
       refuseNextTurn = true;
@@ -2540,6 +2565,155 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     task_type: "local_workflow",
     description: "marker task",
   };
+
+  it.effect("projects a steered answer without waiting behind every superseded text delta", () => {
+    const world = makeConversationWorld();
+    const turn = world.seed("start");
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      // The box persisted 553 preceding-answer updates at about 73 ms each. A ready
+      // output burst must not charge the following answer once per stale snapshot.
+      let writes = 0;
+      world.admission.beforeUpsert = Effect.sync(() => {
+        writes += 1;
+      }).pipe(Effect.andThen(Effect.sleep("73 millis")));
+      yield* sendSteer(host, { turnId: turn.id, sender: "user-1", input: "Only PINEAPPLE" });
+      const push = (event: unknown) => peer.push({ type: "stream_event", event });
+      push({ type: "message_start" });
+      push({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      for (let i = 0; i < 550; i += 1)
+        push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x" } });
+      push({ type: "content_block_stop", index: 0 });
+      yield* waitUntil(() => writes > 0);
+      peer.push(aborted);
+      peer.push(continued);
+      push({ type: "message_start" });
+      push({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      push({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "PINEAPPLE" },
+      });
+      push({ type: "content_block_stop", index: 0 });
+      peer.push(finished);
+      for (let tick = 0; tick < 10; tick += 1) {
+        // Let the SDK-shaped async iterable deliver ready chunks between clock ticks.
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        yield* TestClock.adjust("100 millis");
+      }
+      expect([...world.items.values()].some((item) => item.text === "PINEAPPLE")).toBe(true);
+      expect(world.turns.get(turn.id)?.status).toBe("completed");
+      expect([...world.items.values()].some((item) => item.text === "x".repeat(550))).toBe(true);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("keeps a long coalesced reply byte-exact before completing its turn", () => {
+    const world = makeConversationWorld();
+    const turn = world.seed("start");
+    const peer = makeClaudePipe();
+    const parts = Array.from({ length: 550 }, (_, i) => `${i}: Ελληνικά 👩🏽‍💻 e\u0301 \r\n`);
+    const expected = parts.join("");
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      world.admission.beforeUpsert = Effect.sleep("73 millis");
+      const push = (event: unknown) => peer.push({ type: "stream_event", event });
+      push({ type: "message_start" });
+      push({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      for (const text of parts)
+        push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } });
+      push({ type: "content_block_stop", index: 0 });
+      let completedAfterFinalSnapshot = false;
+      world.admission.beforeComplete = Effect.sync(() => {
+        const final = [...world.items.values()].find((item) => item.kind === "assistant-message");
+        expect(new TextEncoder().encode(final?.text ?? "")).toEqual(
+          new TextEncoder().encode(expected),
+        );
+        expect(final?.status).toBe("completed");
+        expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(552n);
+        expect(world.itemWrites.at(-1)?.providerEventIndex).toBe(0);
+        expect(world.itemWrites.length).toBeLessThan(parts.length);
+        completedAfterFinalSnapshot = true;
+      });
+      peer.push(finished);
+      for (let tick = 0; tick < 10; tick += 1) {
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        yield* TestClock.adjust("100 millis");
+      }
+      expect(completedAfterFinalSnapshot).toBe(true);
+      expect(world.turns.get(turn.id)?.status).toBe("completed");
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("flushes a pending final snapshot when detaching during a long reply", () => {
+    const world = makeConversationWorld();
+    world.seed("start");
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      const release = yield* Deferred.make<void>();
+      let writes = 0;
+      world.admission.beforeUpsert = Effect.sync(() => {
+        writes += 1;
+      }).pipe(Effect.andThen(Deferred.await(release)));
+      const push = (event: unknown) => peer.push({ type: "stream_event", event });
+      push({ type: "message_start" });
+      push({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      for (let i = 0; i < 550; i += 1)
+        push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x" } });
+      push({ type: "content_block_stop", index: 0 });
+      yield* waitUntil(() => writes > 0 && peer.pendingOutput() === 0);
+      const detaching = yield* host.detachForHandOver(processId).pipe(Effect.forkChild);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(detaching);
+      expect([...world.items.values()].map((item) => item.text)).toEqual(["x".repeat(550)]);
+      expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(552n);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("flushes the preceding item's final snapshot before an interleaved request", () => {
+    const world = makeConversationWorld();
+    world.seed("start");
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      world.admission.beforeUpsert = Effect.sleep("73 millis");
+      const push = (event: unknown) => peer.push({ type: "stream_event", event });
+      push({ type: "message_start" });
+      push({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      for (let i = 0; i < 550; i += 1)
+        push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x" } });
+      push({ type: "content_block_stop", index: 0 });
+      let openedAfterFinalSnapshot = false;
+      world.admission.beforeRequest = Effect.sync(() => {
+        expect(
+          [...world.items.values()].map((item) => ({ text: item.text, status: item.status })),
+        ).toEqual([{ text: "x".repeat(550), status: "completed" }]);
+        openedAfterFinalSnapshot = true;
+      });
+      peer.push({
+        type: "control_request",
+        request_id: "permission-after-text",
+        request: {
+          subtype: "can_use_tool",
+          tool_name: "Edit",
+          input: { file_path: "/workspace/repo/a.ts" },
+        },
+      });
+      for (let tick = 0; tick < 10; tick += 1) {
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        yield* TestClock.adjust("100 millis");
+      }
+      expect(openedAfterFinalSnapshot).toBe(true);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 
   it.effect("sends the next Claude turn after one whose start could not be recorded", () => {
     const world = makeConversationWorld();
