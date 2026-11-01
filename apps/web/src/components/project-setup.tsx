@@ -26,6 +26,7 @@ import {
   setProjectInstallCommand,
   setProjectInstallEnabled,
   setProjectVisibility,
+  setNewWorktreesUseProjectResources,
   type AutomationChoiceDto,
   type FolderDto,
   type GitAuthModeDto,
@@ -1454,6 +1455,38 @@ export function ProjectFoldersSection({
       </div>
       {error !== null && (
         <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
+      )}
+    </section>
+  );
+}
+
+/** The default is copied into each new worktree; existing choices stay with that worktree. */
+export function ResourceVisibilitySection({ project }: { readonly project: ProjectDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = (value: boolean) => {
+    setBusy(true);
+    setError(null);
+    void setNewWorktreesUseProjectResources(project.id, value)
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <section className="project-setup-card">
+      <div className="flex items-center justify-between gap-4">
+        <h2 className="font-sans text-sm font-semibold">New worktrees use project resources</h2>
+        <OnOffSwitch value={project.newWorktreesUseProjectResources} busy={busy} onChange={save} />
+      </div>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        Sets the default for new worktrees. Existing worktrees keep their resource choices.
+      </p>
+      {error === null ? null : (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {error}
+        </p>
       )}
     </section>
   );

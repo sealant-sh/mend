@@ -261,6 +261,11 @@ export class Project extends Schema.Class<Project>("Project")({
    * decode to on.
    */
   installEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  /** Whether new worktrees use project resources before a per-resource choice. */
+  newWorktreesUseProjectResources: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(true)),
+    Schema.withConstructorDefault(Effect.succeed(true)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

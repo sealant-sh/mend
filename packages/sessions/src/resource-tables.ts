@@ -1,11 +1,10 @@
 import {
   envCollisionRefusals,
   isResourceTableKey,
-  ProjectResourceDefinition,
+  ResourceDefinition,
   recipeRefusalLine,
   RESOURCE_PRESETS,
   RESOURCE_TABLES_HEADING,
-  ResourceDefinitionInput,
   resourceDefinitionRefusals,
   withPresetCommand,
   type ResourceEnvValue,
@@ -16,23 +15,21 @@ import {
   ResourcePreset,
   ResourceReady,
   type ResourceRefusal,
-  ResourceScope,
   ResourceVolume,
   type ServiceDeclarations,
 } from "@mend/domain/workbench";
 import { Option, Schema } from "effect";
 
 /**
- * `[resource.*]` tables in `.mend/mend.toml` (ADR 0019, decision S8): definitions a person adds to the
- * project's settings from the file; none runs from the file itself. A bad table refuses that
+ * `[resource.*]` tables in `.mend/mend.toml` (ADR 0019, decision S8): definitions an explicit start
+ * reads; launch never starts one. A bad table refuses that
  * resource alone, naming its full key; the file's other resources still read. A key this Mend does
  * not read is listed as ignored, as recipes' are. Fields are checked with the domain's schemas, so
- * a table passes the rules a definition entered in settings does.
+ * a table passes the resource definition rules.
  *
  * ```toml
  * [resource.queue]
  * image = "rabbitmq:4-management"
- * scope = "project"
  * ports = { amqp = 5672 }
  * volumes = { data = "/var/lib/rabbitmq" }
  * env = { RABBITMQ_DEFAULT_USER = "app", RABBITMQ_DEFAULT_PASS = { secret = "RABBITMQ_PASSWORD" } }
@@ -41,7 +38,7 @@ import { Option, Schema } from "effect";
  */
 
 export interface ResourceTables {
-  readonly tables: ReadonlyArray<ResourceDefinitionInput>;
+  readonly tables: ReadonlyArray<ResourceDefinition>;
   /** Keyed in full (`resource.queue.ports.amqp`), which names the resource. */
   readonly refused: ReadonlyArray<ResourceRefusal>;
   readonly ignored: ReadonlyArray<{ readonly key: string }>;
@@ -62,8 +59,8 @@ const oneOf = (options: ReadonlyArray<string>): string => {
     : `${quoted.slice(0, -1).join(", ")} or ${quoted.at(-1)}`;
 };
 
-const isImage = Schema.is(ProjectResourceDefinition.fields.image);
-const isCommand = Schema.is(ProjectResourceDefinition.fields.command);
+const isImage = Schema.is(ResourceDefinition.fields.image);
+const isCommand = Schema.is(ResourceDefinition.fields.command);
 const isReady = Schema.is(ResourceReady);
 const isPortNumber = Schema.is(ResourcePort.fields.port);
 const isProtocol = Schema.is(ResourcePort.fields.protocol);
@@ -158,13 +155,12 @@ const isLimitKey = (key: string): key is keyof ResourceLimits => Object.hasOwn(L
 
 interface Fields {
   readonly image: string;
-  readonly scope: ResourceScope;
   readonly preset: ResourcePreset;
-  readonly command: ResourceDefinitionInput["command"];
-  readonly ports: ResourceDefinitionInput["ports"];
-  readonly volumes: ResourceDefinitionInput["volumes"];
-  readonly env: ResourceDefinitionInput["env"];
-  readonly exports: ResourceDefinitionInput["exports"];
+  readonly command: ResourceDefinition["command"];
+  readonly ports: ResourceDefinition["ports"];
+  readonly volumes: ResourceDefinition["volumes"];
+  readonly env: ResourceDefinition["env"];
+  readonly exports: ResourceDefinition["exports"];
   readonly ready: ResourceReady;
   readonly limits: Partial<ResourceLimits>;
 }
@@ -190,7 +186,6 @@ const READERS: { readonly [K in keyof Fields]: Reader<K> } = {
     context.refuse("image", 'must be an image reference, such as "rabbitmq:4-management"');
     return undefined;
   },
-  scope: literalOf("scope", ResourceScope.literals),
   preset: literalOf("preset", ResourcePreset.literals),
   command: (value, context) => {
     if (isCommand(value)) return value;
@@ -279,7 +274,7 @@ const READERS: { readonly [K in keyof Fields]: Reader<K> } = {
 
 const isFieldKey = (key: string): key is keyof Fields => Object.hasOwn(READERS, key);
 
-const decodeDefinition = Schema.decodeUnknownOption(ResourceDefinitionInput);
+const decodeDefinition = Schema.decodeUnknownOption(ResourceDefinition);
 
 /** Without `ready`: the preset's own check, else a TCP accept on the first TCP port, else none. */
 const defaultReady = (
@@ -300,7 +295,6 @@ type Field = keyof Fields | "name";
  */
 const READS: Readonly<Record<string, ReadonlyArray<Field>>> = {
   name: ["name"],
-  scope: ["scope", "preset"],
   ports: ["ports"],
   volumes: ["volumes"],
   env: ["env"],
@@ -317,7 +311,7 @@ const readResource = (
   name: string,
   entry: Record<string, unknown>,
   context: KeyContext,
-): ResourceDefinitionInput | null => {
+): ResourceDefinition | null => {
   const refusedFields = new Set<string>();
   const guarded: KeyContext = {
     refuse: (key, message) => {
@@ -353,7 +347,6 @@ const readResource = (
   const ports = fields.ports ?? [];
   const decoded = decodeDefinition({
     name: refusedFields.has("name") ? STAND_IN : name,
-    scope: fields.scope ?? "project",
     preset: fields.preset ?? null,
     image: fields.image ?? STAND_IN,
     command: fields.command ?? null,
@@ -390,7 +383,7 @@ export const readResourceTables = (value: unknown): ResourceTables => {
       ignored: [],
     };
   }
-  const read: ResourceDefinitionInput[] = [];
+  const read: ResourceDefinition[] = [];
   const refused: ResourceRefusal[] = [];
   const ignored: Array<{ readonly key: string }> = [];
   const contextOf = (name: string): KeyContext => {

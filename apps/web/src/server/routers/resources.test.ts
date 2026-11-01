@@ -7,7 +7,6 @@ import { createTrpcHandler } from "../trpc-handler.ts";
 const origin = "https://mend.example";
 const network = makePublicNetwork(PublicOrigin.make(origin), []);
 const projectId = "p_shop";
-const digest = "a".repeat(64);
 let answer: Response;
 /** Each request the web tier sent the API: its method, path and query. */
 let asked: Array<string> = [];
@@ -46,113 +45,74 @@ const mutate = async (path: string, input: unknown) => {
     : { status: response.status, value: deserialize(body.result.data) };
 };
 
-const preset = {
+const start = {
   projectId,
-  timeZone: "Europe/Athens",
-  worktreeId: null,
-  addition: { kind: "preset", name: "db", preset: "postgres", version: "17", scope: "project" },
+  timeZone: "UTC",
+  worktreeId: "wt_1",
+  name: "db",
+  verb: "start",
+  level: "project",
+  restart: false,
 };
-const removal = { projectId, definitionId: "rdef_1", expectedDigest: digest };
-
 describe("resource writes through the web tier", () => {
-  it("returns a refusal by field as a value, each refusal apart", async () => {
+  it("returns a definition refusal as a typed outcome", async () => {
     answer = Response.json(
       {
         _tag: "ResourceRejected",
-        name: "mail",
-        refusals: [
-          { key: "ports", message: "names no port, and a resource is reached on one" },
-          { key: "image", message: "is not an image reference" },
-        ],
-        message: "@mail · ports names no port\n@mail · image is not an image reference",
+        name: "db",
+        refusals: [{ key: "ports", message: "names no port" }],
+        message: "@db · ports names no port",
       },
       { status: 422 },
     );
-    expect(await mutate("resources.add", preset)).toEqual({
+    expect(await mutate("resources.control", start)).toEqual({
       status: 200,
       value: {
         ok: false,
         kind: "rejected",
-        refusals: [
-          { key: "ports", message: "names no port, and a resource is reached on one" },
-          { key: "image", message: "is not an image reference" },
-        ],
-        message: "@mail · ports names no port\n@mail · image is not an image reference",
+        refusals: [{ key: "ports", message: "names no port" }],
+        message: "@db · ports names no port",
       },
     });
   });
-
-  it("returns a read that changed since as stale, and a registry that did not answer as unanswered", async () => {
-    answer = Response.json(
-      { _tag: "ResourceStale", message: "@db · the definition changed since you read it" },
-      { status: 409 },
-    );
-    expect(await mutate("resources.remove", removal)).toMatchObject({
-      value: { ok: false, kind: "stale" },
-    });
-    for (const [tag, status] of [
-      ["ResourceRegistryUnavailable", 503],
-      ["ResourceManifestUnverifiable", 502],
-    ] as const) {
-      answer = Response.json({ _tag: tag, message: `@db · ${tag}` }, { status });
-      expect(await mutate("resources.add", preset)).toEqual({
-        status: 200,
-        value: { ok: false, kind: "unanswered", message: `@db · ${tag}` },
-      });
-    }
-  });
-
-  it("sends each kind of addition as its own member", async () => {
-    answer = Response.json(
-      { _tag: "ResourceRejected", name: "mail", refusals: [], message: "@mail" },
-      { status: 422 },
-    );
-    expect(
-      await mutate("resources.add", {
-        projectId,
-        timeZone: "Europe/Athens",
-        worktreeId: "wt_1",
-        addition: {
-          kind: "definition",
-          spec: {
-            name: "mail",
-            scope: "worktree",
-            preset: null,
-            image: "axllent/mailpit:v1.21",
-            command: null,
-            ports: [{ name: "smtp", port: 1025, protocol: "tcp" }],
-            env: {},
-            volumes: [],
-            ready: { kind: "tcp" },
-            exports: {},
-          },
-        },
-      }),
-    ).toMatchObject({ value: { ok: false, kind: "rejected" } });
-  });
-
-  it("sends a Start or Stop to its route, with the worktree it names, and answers the line", async () => {
-    answer = Response.json({
-      instance: "stopped",
-      statusLine: "@mail · stopped by Tom · its own instance",
-    });
-    expect(
-      await mutate("resources.control", {
-        projectId,
-        timeZone: "UTC",
-        name: "mail",
-        worktreeId: "wt_1",
-        verb: "stop",
-      }),
-    ).toEqual({
+  it("preserves needs-restart with affected worktrees", async () => {
+    const result = {
+      kind: "needs-restart",
+      statusLine: "@db · project · definition differs from this worktree",
+      hint: "mend resource start db --project --restart",
+      worktrees: [{ id: "wt_1", name: "checkout" }],
+    };
+    answer = Response.json(result);
+    expect(await mutate("resources.control", start)).toEqual({
       status: 200,
-      value: {
-        ok: true,
-        result: { instance: "stopped", statusLine: "@mail · stopped by Tom · its own instance" },
-      },
+      value: { ok: true, result },
     });
-    expect(asked).toEqual([
-      "POST /api/projects/p_shop/resources/mail/stop?timeZone=UTC&worktreeId=wt_1",
-    ]);
+    expect(asked[0]).toContain("/projects/p_shop/resources/db/start?");
+  });
+  it("returns a registry failure as unanswered", async () => {
+    answer = Response.json(
+      { _tag: "ResourceRegistryUnavailable", message: "registry unavailable" },
+      { status: 503 },
+    );
+    expect(await mutate("resources.control", start)).toMatchObject({
+      value: { ok: false, kind: "unanswered" },
+    });
+  });
+  it("sends stop and remove by name and level", async () => {
+    answer = Response.json({ instance: "stopped", statusLine: "@db · stopped", message: null });
+    expect(await mutate("resources.control", { ...start, verb: "stop" })).toMatchObject({
+      status: 200,
+      value: { ok: true, result: { statusLine: "@db · stopped" } },
+    });
+    answer = Response.json({ statusLine: "archived" });
+    expect(
+      await mutate("resources.remove", {
+        projectId,
+        name: "db",
+        level: "project",
+        worktreeId: "wt_1",
+      }),
+    ).toMatchObject({ status: 200, value: { ok: true } });
+    expect(asked.at(-1)).toBe("DELETE /api/projects/p_shop/resources/db");
   });
 });

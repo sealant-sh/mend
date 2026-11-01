@@ -57,6 +57,7 @@ export interface ResourceScope {
   readonly link: (
     workspaceId: string,
     worktreeKey: string,
+    aliases: Readonly<Record<string, "project" | "worktree">>,
   ) => Effect.Effect<void, SealantPlatformError>;
 }
 
@@ -128,8 +129,10 @@ export const ResourceScopesLive: Layer.Layer<ResourceScopes, never, SealantEnv> 
           ),
         archive: (key) =>
           wrap(() => client.instances.archive(key)).pipe(Effect.map((answer) => answer.volumes)),
-        link: (workspaceId, worktreeKey) =>
-          wrap(() => client.workspaces.link(workspaceId, { worktreeKey })).pipe(Effect.asVoid),
+        link: (workspaceId, worktreeKey, aliases) =>
+          wrap(() => client.workspaces.link(workspaceId, { worktreeKey, aliases })).pipe(
+            Effect.asVoid,
+          ),
       };
     };
 

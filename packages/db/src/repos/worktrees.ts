@@ -7,7 +7,8 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { agentSessions, worktrees } from "../schema/workbench.ts";
+import { projects, agentSessions, worktrees } from "../schema/workbench.ts";
+import { projectListed } from "./projects.ts";
 
 export class WorktreeNotFoundError extends Schema.TaggedError<WorktreeNotFoundError>()(
   "WorktreeNotFoundError",
@@ -116,7 +117,16 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
       const pg = yield* PgClient.PgClient;
 
       const create = Effect.fn("WorktreesRepo.create")(function* (worktree: NewWorktreeRow) {
-        const [row] = yield* db.insert(worktrees).values(worktree).returning().pipe(Effect.orDie);
+        const [project] = yield* db
+          .select({ uses: projects.newWorktreesUseProjectResources })
+          .from(projects)
+          .where(and(eq(projects.id, worktree.projectId), projectListed))
+          .pipe(Effect.orDie);
+        const [row] = yield* db
+          .insert(worktrees)
+          .values({ ...worktree, usesProjectResources: project?.uses ?? true })
+          .returning()
+          .pipe(Effect.orDie);
         if (row === undefined) return yield* Effect.die("worktree insert returned no row");
         yield* notifyEvent(pg, {
           type: "worktree",

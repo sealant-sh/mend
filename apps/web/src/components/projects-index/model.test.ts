@@ -24,6 +24,7 @@ const project: ProjectDto = {
   gitAuthMode: "mend-key",
   workspaceImage: null,
   applyDotfiles: false,
+  newWorktreesUseProjectResources: true,
   defaultShellProfile: true,
   inheritUserSkills: true,
   hotSessions: 0,

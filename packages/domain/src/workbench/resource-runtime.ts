@@ -5,16 +5,15 @@ import type { ProjectId, ResourceDefinitionId, WorktreeId } from "../ids.ts";
 import {
   choiceInEffect,
   type ResourceBinding,
-  type ResourceDefinitionInput,
+  type ResourceDefinition,
   resourceEnvPrefix,
   type ResourceName,
-  scopePolicyFor,
   type WorktreeChoice,
 } from "./resource.ts";
 
 /**
  * How Mend runs a resource on Sealant and what every process in a worktree is told of it (ADR
- * 0019, amendment of 2026-10-31). Pure: the `Resources` service reads the rows, these decide.
+ * 0019, amendment of 2026-11-01). Pure: the `Resources` service reads the rows, these decide.
  */
 
 /** The database `shared` names on a project Postgres, and the one a worktree Postgres serves. */
@@ -72,7 +71,7 @@ export interface ResourceInstanceSpec {
 }
 
 /** The env a preset's image needs to start with no password and the shared database made. */
-const presetEnv = (def: ResourceDefinitionInput): Readonly<Record<string, string>> => {
+const presetEnv = (def: ResourceDefinition): Readonly<Record<string, string>> => {
   switch (def.preset) {
     case "postgres":
       return { POSTGRES_HOST_AUTH_METHOD: "trust", POSTGRES_DB: SHARED_DATABASE };
@@ -84,10 +83,10 @@ const presetEnv = (def: ResourceDefinitionInput): Readonly<Record<string, string
   }
 };
 
-const firstPort = (def: ResourceDefinitionInput, protocol?: "tcp") =>
+const firstPort = (def: ResourceDefinition, protocol?: "tcp") =>
   def.ports.find((port) => protocol === undefined || port.protocol === protocol);
 
-const readyOf = (def: ResourceDefinitionInput): ResourceInstanceSpec["ready"] => {
+const readyOf = (def: ResourceDefinition): ResourceInstanceSpec["ready"] => {
   if (def.preset === "postgres") {
     return {
       kind: "exec",
@@ -104,7 +103,7 @@ const readyOf = (def: ResourceDefinitionInput): ResourceInstanceSpec["ready"] =>
 };
 
 /** The literal env values of a definition. A `{ secret }` value is not sent: Sealant's spec is plain. */
-const literalEnv = (def: ResourceDefinitionInput) =>
+const literalEnv = (def: ResourceDefinition) =>
   Object.fromEntries(
     Object.entries(def.env).flatMap(([name, value]) =>
       typeof value === "string" ? [[name, value]] : [],
@@ -112,7 +111,7 @@ const literalEnv = (def: ResourceDefinitionInput) =>
   );
 
 /** The env names a definition sets from a project secret, which its instance does not get yet. */
-export const secretEnvLeftOut = (def: ResourceDefinitionInput): ReadonlyArray<string> =>
+export const secretEnvLeftOut = (def: ResourceDefinition): ReadonlyArray<string> =>
   Object.entries(def.env).flatMap(([name, value]) => (typeof value === "string" ? [] : [name]));
 
 /**
@@ -121,7 +120,7 @@ export const secretEnvLeftOut = (def: ResourceDefinitionInput): ReadonlyArray<st
  * reached only from its worktree.
  */
 export const resourceInstanceSpec = (input: {
-  readonly definition: ResourceDefinitionInput;
+  readonly definition: ResourceDefinition;
   /** The image pinned to its digest: `postgres:17@sha256:…`. */
   readonly image: string;
   readonly worktreeId: WorktreeId | null;
@@ -136,7 +135,7 @@ export const resourceInstanceSpec = (input: {
       : [];
   return {
     alias: def.name,
-    worktreeKey: def.scope === "worktree" ? input.worktreeId : null,
+    worktreeKey: input.worktreeId,
     image: input.image,
     command: def.command,
     env: { ...literalEnv(def), ...presetEnv(def) },
@@ -150,41 +149,92 @@ export const resourceInstanceSpec = (input: {
   };
 };
 
-/**
- * How one worktree uses each definition, from its stored choice or the policy's default: `off`
- * binds nothing, and a scope the policy refuses runs nowhere.
- */
-export const resourceBindings = (
-  definitions: ReadonlyArray<{
-    readonly spec: ResourceDefinitionInput;
-    readonly choice: WorktreeChoice | null;
-  }>,
-): ReadonlyArray<ResourceBinding> =>
-  definitions.flatMap(({ spec, choice }): ReadonlyArray<ResourceBinding> => {
-    if (spec.scope === "worktree") {
-      return scopePolicyFor(spec).kind === "own-instance"
-        ? [{ definition: spec, mode: "worktree" }]
+/** The identity and remembered rows needed to resolve one worktree's bindings. */
+export interface ResourceBindingRows {
+  readonly worktreeId: WorktreeId;
+  readonly usesProjectResources: boolean;
+  readonly resources: ReadonlyArray<{ readonly id: ResourceDefinitionId; readonly name: string }>;
+  readonly instances: ReadonlyArray<{
+    readonly resourceId: ResourceDefinitionId;
+    readonly worktreeId: WorktreeId | null;
+    readonly spec: ResourceDefinition;
+  }>;
+  readonly selections: ReadonlyArray<{
+    readonly resourceId: ResourceDefinitionId;
+    readonly mode: WorktreeChoice;
+  }>;
+  readonly ownDatabases: ReadonlySet<ResourceDefinitionId>;
+}
+
+/** Resolve availability from remembered rows only. A missing target never binds. */
+export const resourceBindings = (rows: ResourceBindingRows): ReadonlyArray<ResourceBinding> =>
+  rows.resources.flatMap((resource): ReadonlyArray<ResourceBinding> => {
+    const choice = choiceInEffect(
+      rows.selections.find((row) => row.resourceId === resource.id)?.mode ?? null,
+      rows.usesProjectResources,
+    );
+    if (choice === "off") return [];
+    const project = rows.instances.find(
+      (row) => row.resourceId === resource.id && row.worktreeId === null,
+    );
+    if (choice === "project")
+      return project === undefined
+        ? []
+        : [
+            {
+              definition: project.spec,
+              level: "project",
+              resourceId: resource.id,
+              instanceKey: resourceInstanceKey(resource.id, null),
+              database: project.spec.preset === "postgres" ? SHARED_DATABASE : null,
+            },
+          ];
+    const own = rows.instances.find(
+      (row) => row.resourceId === resource.id && row.worktreeId === rows.worktreeId,
+    );
+    if (own !== undefined)
+      return [
+        {
+          definition: own.spec,
+          level: "worktree",
+          resourceId: resource.id,
+          instanceKey: resourceInstanceKey(resource.id, rows.worktreeId),
+          database: own.spec.preset === "postgres" ? SHARED_DATABASE : null,
+        },
+      ];
+    if (project?.spec.preset === "postgres")
+      return rows.ownDatabases.has(resource.id)
+        ? [
+            {
+              definition: project.spec,
+              level: "worktree",
+              resourceId: resource.id,
+              instanceKey: resourceInstanceKey(resource.id, null),
+              database: ownDatabaseName(rows.worktreeId),
+            },
+          ]
         : [];
-    }
-    const mode = choiceInEffect(spec, choice);
-    return mode === "shared" || mode === "own" ? [{ definition: spec, mode }] : [];
+    return [];
   });
 
-/** The database a binding's processes use; null for an engine that names none. */
-export const boundDatabase = (binding: ResourceBinding, worktreeId: WorktreeId): string | null => {
-  switch (binding.definition.preset) {
-    case "postgres":
-      return binding.mode === "own" ? ownDatabaseName(worktreeId) : SHARED_DATABASE;
-    case "mysql":
-      return SHARED_DATABASE;
-    case "redis":
-    case null:
-      return null;
-  }
-};
+/** The server level Core should attach for each selected alias. Own Postgres uses the project server. */
+export const reachAliases = (
+  bindings: ReadonlyArray<ResourceBinding>,
+): Record<string, "project" | "worktree"> =>
+  Object.fromEntries(
+    bindings.map((binding) => [
+      binding.definition.name,
+      binding.instanceKey === resourceInstanceKey(binding.resourceId, null)
+        ? "project"
+        : "worktree",
+    ]),
+  );
+
+/** The database remembered in the binding; non-database images have none. */
+export const boundDatabase = (binding: ResourceBinding): string | null => binding.database;
 
 /** `{host}`, `{port}`, `{port.<name>}` and `{env.<NAME>}` filled in; null when one names a secret. */
-const renderExport = (def: ResourceDefinitionInput, template: string): string | null => {
+const renderExport = (def: ResourceDefinition, template: string): string | null => {
   const values = new Map<string, string>([
     ["host", def.name],
     ...def.ports.slice(0, 1).map((port) => ["port", String(port.port)] as const),
@@ -200,64 +250,43 @@ const renderExport = (def: ResourceDefinitionInput, template: string): string | 
   return missing ? null : rendered;
 };
 
-const envPart = (label: string) => label.toUpperCase().replaceAll("-", "_");
-
-/** One binding's env: its own names first, then the conventional ones when it is the only of its engine. */
+/** A binding's exports in URL, host, port, Postgres fields, then declared export order. */
 export const resourceBindingEnv = (
   binding: ResourceBinding,
-  worktreeId: WorktreeId,
-  only: boolean,
 ): ReadonlyArray<readonly [string, string]> => {
   const def = binding.definition;
   const prefix = resourceEnvPrefix(def.name);
   const host = def.name;
   const port = firstPort(def);
-  const address: ReadonlyArray<readonly [string, string]> = [
+  const at = `${host}:${port?.port ?? ""}`;
+  const database = binding.database ?? SHARED_DATABASE;
+  const url =
+    def.preset === "postgres"
+      ? `postgres://${POSTGRES_USER}@${at}/${database}`
+      : def.preset === "redis"
+        ? `redis://${at}`
+        : def.preset === "mysql"
+          ? `mysql://root@${at}/app`
+          : def.exports.URL === undefined
+            ? `${port?.protocol ?? "tcp"}://${at}`
+            : renderExport(def, def.exports.URL);
+  return [
+    ...(url === null ? [] : [[`${prefix}URL`, url] as const]),
     [`${prefix}HOST`, host],
     ...(port === undefined ? [] : [[`${prefix}PORT`, String(port.port)] as const]),
-    ...def.ports.map((each) => [`${prefix}PORT_${envPart(each.name)}`, String(each.port)] as const),
+    ...(def.preset === "postgres"
+      ? ([
+          [`${prefix}USER`, POSTGRES_USER],
+          [`${prefix}PASSWORD`, ""],
+          [`${prefix}DATABASE`, database],
+        ] as const)
+      : []),
+    ...Object.entries(def.exports).flatMap(([name, template]) => {
+      if (name === "URL") return [];
+      const value = renderExport(def, template);
+      return value === null ? [] : [[`${prefix}${name}`, value] as const];
+    }),
   ];
-  const database = boundDatabase(binding, worktreeId);
-  const at = `${host}:${port?.port ?? ""}`;
-  switch (def.preset) {
-    case "postgres": {
-      const url = `postgres://${POSTGRES_USER}@${at}/${database ?? SHARED_DATABASE}`;
-      return [
-        ...address,
-        [`${prefix}URL`, url],
-        [`${prefix}DATABASE`, database ?? SHARED_DATABASE],
-        [`${prefix}USERNAME`, POSTGRES_USER],
-        ...(only
-          ? ([
-              ["DATABASE_URL", url],
-              ["PGHOST", host],
-              ["PGPORT", String(port?.port ?? "")],
-              ["PGUSER", POSTGRES_USER],
-              ["PGDATABASE", database ?? SHARED_DATABASE],
-            ] as const)
-          : []),
-      ];
-    }
-    case "mysql":
-      return [
-        ...address,
-        [`${prefix}URL`, `mysql://root@${at}/${SHARED_DATABASE}`],
-        [`${prefix}DATABASE`, SHARED_DATABASE],
-        [`${prefix}USERNAME`, "root"],
-      ];
-    case "redis": {
-      const url = `redis://${at}`;
-      return [...address, [`${prefix}URL`, url], ...(only ? [["REDIS_URL", url] as const] : [])];
-    }
-    case null:
-      return [
-        ...address,
-        ...Object.entries(def.exports).flatMap(([name, template]) => {
-          const value = renderExport(def, template);
-          return value === null ? [] : [[`${prefix}${name}`, value] as const];
-        }),
-      ];
-  }
 };
 
 /** The env names one resource left to the project, which sets them itself. */
@@ -268,8 +297,7 @@ export interface ResourceEnvLeft {
 
 /**
  * The env every process in a worktree gets from the resources it uses (story 2): each one's
- * `MEND_RESOURCE_<NAME>_*`, and `DATABASE_URL` with the `PG*` names for the one Postgres and
- * `REDIS_URL` for the one Redis. A name the project's env or secrets set is left as the project
+ * `MEND_<NAME>_*`. A name the project's env or secrets set is left as the project
  * sets it, and said. Built from the rows alone, never from what runs, so a slow or failed start
  * still gives the right names.
  */
@@ -285,11 +313,8 @@ export const resourceProcessEnv = (input: {
   const left: Array<ResourceEnvLeft> = [];
   for (const binding of input.bindings) {
     const def = binding.definition;
-    const only =
-      def.preset !== null &&
-      input.bindings.filter((other) => other.definition.preset === def.preset).length === 1;
     const kept: Array<string> = [];
-    for (const [name, value] of resourceBindingEnv(binding, input.worktreeId, only)) {
+    for (const [name, value] of resourceBindingEnv(binding)) {
       if (input.projectEnvNames.has(name)) kept.push(name);
       else env[name] = value;
     }

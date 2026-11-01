@@ -1,13 +1,6 @@
-import {
-  type DefinitionWithChoice,
-  ResourcesRepo,
-  ResourceLoadsRepo,
-  type StoredResourceDefinition,
-  UsersRepo,
-} from "@mend/db";
+import { type DefinitionWithChoice, ResourcesRepo, ResourceLoadsRepo } from "@mend/db";
 import type { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
-  choiceInEffect,
   loadIsLive,
   type OwnDatabaseOrigin,
   type ResourceInstanceKind,
@@ -20,123 +13,105 @@ import {
   SHARED_DATABASE,
   resourceBindings,
   resourceEnvNames,
+  resourceEnvPrefix,
+  imageReference,
 } from "@mend/domain/workbench";
 import { Clock, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
+import { WorktreeReads } from "../worktree-reads.ts";
 import type { ReaderClock } from "./resources.ts";
 import { type InstanceObserved, type ProjectObservation, ResourceRuntime } from "./runtime.ts";
+import { readWorktreeTables, tablesOf } from "./worktree-tables.ts";
 
-/** A workspace note needs env names only. This read never resolves or returns env values. */
+/** A note reads names and observations only, never env values. */
 export interface WorktreeResourceStatus {
   readonly statusLine: string;
   readonly envNames: ReadonlyArray<string>;
+  readonly available?: {
+    readonly name: string;
+    readonly kind: string;
+    readonly level: "project" | "worktree";
+    readonly urlName: string;
+  };
+  readonly postgresName?: string;
 }
-
 type Shown = { readonly view: ResourceStatusView; readonly instance: ResourceInstanceKind };
-
-/** Resource observations shared by settings, session DTOs and workspace notes, without engine actions. */
+/** Shared observations for project pages, sessions and workspace notes. */
 export class ResourceStatusReads extends Context.Service<
   ResourceStatusReads,
   {
-    /** Builds the views Resources uses for its settings entries. */
     readonly viewsFor: (
       listed: ReadonlyArray<DefinitionWithChoice>,
       projectId: ProjectId,
       worktreeId: WorktreeId | null,
       clock: ReaderClock,
     ) => Effect.Effect<(each: DefinitionWithChoice) => Shown>;
-    /** Trusted read: the caller has already resolved a visible session or owns its launch. */
     readonly forWorktree: (
       projectId: ProjectId,
       worktreeId: WorktreeId,
     ) => Effect.Effect<ReadonlyArray<WorktreeResourceStatus>>;
   }
 >()("@mend/sessions/ResourceStatusReads") {}
-
-/** An engine with no resource definitions, used by isolated engine tests. */
+/** No resource observations for isolated engine compositions. */
 export const ResourceStatusReadsNone: Layer.Layer<ResourceStatusReads> = Layer.succeed(
   ResourceStatusReads,
   {
-    viewsFor: () => Effect.die("no resource definitions in this composition"),
+    viewsFor: () => Effect.die("no resources in this composition"),
     forWorktree: () => Effect.succeed([]),
   },
 );
-
-/** How a read looks one instance up: what Sealant observed, or why it could not. */
 type Lookup = (key: string) => InstanceObserved;
-
 const lookupIn =
   (observation: ProjectObservation | null, now: Date): Lookup =>
-  (key) => {
-    if (observation === null) return { instance: { kind: "not-started" }, observedAt: now };
-    if (observation.kind === "unobserved")
-      return { instance: observation.instance, observedAt: now };
-    return observation.byKey.get(key) ?? { instance: { kind: "not-started" }, observedAt: now };
-  };
+  (key) =>
+    observation?.kind === "unobserved"
+      ? { instance: observation.instance, observedAt: now }
+      : (observation?.byKey.get(key) ?? { instance: { kind: "not-started" }, observedAt: now });
 
-/** A worktree resource's instances read for the project: how many run. */
-const runningOf = (observation: ProjectObservation | null, definitionId: ResourceDefinitionId) =>
-  observation?.kind !== "observed"
-    ? 0
-    : [...observation.byKey].filter(
-        ([key, seen]) => key.startsWith(`${definitionId}@`) && seen.instance.kind === "running",
-      ).length;
-
-/**
- * The status view of one definition for one read: the worktree's use of it and the instance that
- * use reaches, or the project's when no worktree is read.
- */
+/** A remembered instance's status for the selected level, or its own level on the project page. */
 export const resourceViewOf = (input: {
-  readonly definition: StoredResourceDefinition;
-  readonly choice: WorktreeChoice | null;
+  readonly definition: DefinitionWithChoice["definition"];
+  readonly choice: WorktreeChoice;
   readonly worktreeId: WorktreeId | null;
   readonly owns: ReadonlyMap<ResourceDefinitionId, OwnDatabaseOrigin>;
-  readonly observation: ProjectObservation | null;
   readonly lookup: Lookup;
   readonly addedBy: string;
-}): { readonly view: ResourceStatusView; readonly instance: ResourceInstanceKind } => {
-  const { definition, worktreeId, lookup } = input;
-  const spec = definition.spec;
-  if (worktreeId === null) {
-    if (spec.scope === "worktree") {
-      return {
-        view: {
-          kind: "observed",
-          definition: spec,
-          use: { kind: "project", addedBy: input.addedBy },
-          instance: { kind: "per-worktree", running: runningOf(input.observation, definition.id) },
-          observedAt: lookup(definition.id).observedAt,
-        },
-        instance: "none",
-      };
-    }
-    const seen = lookup(resourceInstanceKey(definition.id, null));
-    return {
-      view: {
-        kind: "observed",
-        definition: spec,
-        use: { kind: "project", addedBy: input.addedBy },
-        instance: seen.instance,
-        observedAt: seen.observedAt,
-      },
-      instance: seen.instance.kind,
-    };
-  }
-  const mode = spec.scope === "worktree" ? "worktree" : choiceInEffect(spec, input.choice);
+}): Shown => {
+  const { definition, worktreeId } = input;
+  const level =
+    worktreeId === null
+      ? definition.worktreeId === null
+        ? "project"
+        : "worktree"
+      : input.choice === "worktree"
+        ? "worktree"
+        : "project";
+  const postgresOwn =
+    definition.spec.preset === "postgres" && level === "worktree" && definition.worktreeId === null;
   const use: ResourceUse =
-    mode === "worktree"
-      ? { kind: "worktree" }
-      : mode === "own"
+    input.choice === "off" && worktreeId !== null
+      ? { kind: "off" }
+      : postgresOwn
         ? { kind: "own", origin: input.owns.get(definition.id) ?? null }
-        : mode === "shared"
-          ? { kind: "shared" }
-          : { kind: "off" };
-  const seen = lookup(resourceInstanceKey(definition.id, mode === "worktree" ? worktreeId : null));
+        : definition.spec.preset === "postgres"
+          ? level === "worktree"
+            ? { kind: "own", origin: null, available: true }
+            : { kind: "shared" }
+          : { kind: "worktree" };
+  const key = resourceInstanceKey(
+    definition.id,
+    level === "project" || postgresOwn ? null : (worktreeId ?? definition.worktreeId),
+  );
+  const seen =
+    postgresOwn && !input.owns.has(definition.id)
+      ? { instance: { kind: "not-started" as const }, observedAt: input.lookup(key).observedAt }
+      : input.lookup(key);
   return {
     view: {
       kind: "observed",
-      definition: spec,
+      definition: definition.spec,
+      level,
       use,
       instance: seen.instance,
       observedAt: seen.observedAt,
@@ -145,72 +120,55 @@ export const resourceViewOf = (input: {
   };
 };
 
-/** Reads stored choices and Core observations without starting or changing a resource. */
+/** Reads rows and Core without creating or starting an instance. */
 export const ResourceStatusReadsLive: Layer.Layer<
   ResourceStatusReads,
   never,
-  ResourcesRepo | ResourceLoadsRepo | UsersRepo | ResourceRuntime
+  ResourcesRepo | ResourceLoadsRepo | ResourceRuntime | WorktreeReads
 > = Layer.effect(
   ResourceStatusReads,
   Effect.gen(function* () {
     const repo = yield* ResourcesRepo;
     const loads = yield* ResourceLoadsRepo;
-    const users = yield* UsersRepo;
     const runtime = yield* ResourceRuntime;
-    const namesOf = (ids: ReadonlyArray<string>) =>
-      users.byIds(ids).pipe(
-        Effect.map((found) => {
-          const names = new Map(found.map((user) => [user.id, user.name]));
-          return (id: string) => names.get(id) ?? id;
-        }),
-      );
-    /** Each definition's view for a read: one call to Sealant, and none when there is nothing. */
-    const viewsFor = Effect.fn("Resources.viewsFor")(function* (
+    const reads = yield* WorktreeReads;
+    const viewsFor = Effect.fn("ResourceStatusReads.viewsFor")(function* (
       listed: ReadonlyArray<DefinitionWithChoice>,
       projectId: ProjectId,
       worktreeId: WorktreeId | null,
       clock: ReaderClock,
     ) {
-      const [observation, owns, nameOf, latestLoads] = yield* Effect.all(
+      const [observation, owns, latestLoads] = yield* Effect.all(
         [
           listed.length === 0 ? Effect.succeed(null) : runtime.observe(projectId),
           worktreeId === null
             ? Effect.succeed(new Map<ResourceDefinitionId, OwnDatabaseOrigin>())
             : repo.ownDatabases(worktreeId),
-          namesOf(listed.map(({ definition }) => definition.addedBy)),
           loads.latest(projectId),
         ],
         { concurrency: "unbounded" },
       );
       const lookup = lookupIn(observation, clock.now);
-      return (each: DefinitionWithChoice) => {
+      return (each: DefinitionWithChoice): Shown => {
         const shown = resourceViewOf({
           definition: each.definition,
           choice: each.choice,
           worktreeId,
           owns,
-          observation,
           lookup,
-          addedBy: nameOf(each.definition.addedBy),
+          addedBy: each.definition.startedBy,
         });
-        const mode =
-          worktreeId === null ? "shared" : choiceInEffect(each.definition.spec, each.choice);
         const database =
-          mode === "own" && worktreeId !== null ? ownDatabaseName(worktreeId) : SHARED_DATABASE;
-        const instanceKey = resourceInstanceKey(
-          each.definition.id,
-          each.definition.spec.scope === "worktree" ? worktreeId : null,
-        );
+          each.choice === "worktree" && worktreeId !== null && each.definition.worktreeId === null
+            ? ownDatabaseName(worktreeId)
+            : SHARED_DATABASE;
+        const key = resourceInstanceKey(each.definition.id, each.definition.worktreeId);
         const load =
-          mode === "off"
+          each.choice === "off"
             ? undefined
-            : // Only a load in progress speaks for the resource. A finished one said its result to
-              // whoever ran it; from then on the line is what the runtime observes.
-              latestLoads.find(
+            : latestLoads.find(
                 (row) =>
-                  row.instanceKey === instanceKey &&
-                  row.database === database &&
-                  loadIsLive(row.phase),
+                  row.instanceKey === key && row.database === database && loadIsLive(row.phase),
               );
         return load === undefined
           ? shown
@@ -226,29 +184,58 @@ export const ResourceStatusReadsLive: Layer.Layer<
                 bytesTotal: load.bytesTotal,
                 savedAt: load.savedAt,
                 message: load.message,
-              } satisfies ResourceStatusView,
+              },
             };
       };
     });
-
     const forWorktree = Effect.fn("ResourceStatusReads.forWorktree")(function* (
       projectId: ProjectId,
       worktreeId: WorktreeId,
     ) {
       const listed = yield* repo.listWithChoices(projectId, worktreeId);
-      if (listed.length === 0) return [];
-      // Session lines have no reader zone. UTC makes absolute origin/load times identical across
-      // clients and notes; the server's Effect clock also owns every relative observation age.
+      const file = tablesOf(yield* readWorktreeTables(reads, projectId, worktreeId));
+      const postgres = [...file, ...listed.map((row) => row.definition.spec)].find(
+        (spec) => spec.preset === "postgres",
+      )?.name;
       const clock = { now: new Date(yield* Clock.currentTimeMillis), timeZone: "UTC" };
       const shownOf = yield* viewsFor(listed, projectId, worktreeId, clock);
-      const bindings = resourceBindings(
-        listed.map((each) => ({ spec: each.definition.spec, choice: each.choice })),
-      );
+      const bindings = resourceBindings(yield* repo.bindingRows(projectId, worktreeId));
       const names = resourceEnvNames(bindings);
-      return listed.map((each) => ({
-        statusLine: resourceStatusLine(shownOf(each).view, clock),
-        envNames: names.get(each.definition.spec.name) ?? [],
-      }));
+      const result: WorktreeResourceStatus[] = listed.map((each) => {
+        const spec = each.definition.spec;
+        const binding = bindings.find((row) => row.resourceId === each.definition.id);
+        const kind =
+          spec.preset === "postgres"
+            ? "Postgres"
+            : spec.preset === "redis"
+              ? "Redis"
+              : spec.preset === "mysql"
+                ? "MySQL"
+                : (imageReference(spec.image).repository.split("/").at(-1) ?? spec.image);
+        return {
+          statusLine: resourceStatusLine(shownOf(each).view, clock),
+          envNames: names.get(spec.name) ?? [],
+          ...(binding === undefined
+            ? {}
+            : {
+                available: {
+                  name: spec.name,
+                  kind,
+                  level: binding.level,
+                  urlName: `${resourceEnvPrefix(spec.name)}URL`,
+                },
+              }),
+          ...(postgres === undefined ? {} : { postgresName: postgres }),
+        };
+      });
+      const declaredPostgres = file.find((spec) => spec.name === postgres);
+      if (result.length === 0 && declaredPostgres !== undefined)
+        result.push({
+          statusLine: resourceStatusLine({ kind: "defined", definition: declaredPostgres }, clock),
+          envNames: [],
+          postgresName: declaredPostgres.name,
+        });
+      return result;
     });
     return { viewsFor, forWorktree };
   }),

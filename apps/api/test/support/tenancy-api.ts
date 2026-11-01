@@ -100,6 +100,8 @@ import {
   SessionEngine,
   WorkspaceCaller,
   WorktreeReads,
+  WORKTREE_STAMP,
+  MEND_TOML_PATHS,
   WorktreeServiceRestarts,
 } from "@mend/sessions";
 import { SlackApi } from "@mend/slack/client";
@@ -673,7 +675,20 @@ export const createTenancyApi = async (
       recording(
         ResourcesRepo,
         "resources",
-        { listWithChoices: () => Effect.succeed([]), ...options.implement?.resources },
+        {
+          listWithChoices: () => Effect.succeed([]),
+          ownDatabases: () => Effect.succeed(new Map()),
+          bindingRows: (_, worktreeId) =>
+            Effect.succeed({
+              worktreeId,
+              usesProjectResources: true,
+              resources: [],
+              instances: [],
+              selections: [],
+              ownDatabases: new Set(),
+            }),
+          ...options.implement?.resources,
+        },
         calls,
       ),
       recording(
@@ -804,7 +819,18 @@ export const createTenancyApi = async (
       ),
       Layer.mock(ResourceLoadsRepo, { latest: () => Effect.succeed([]) }),
       recording(ResourceLoads, "resourceLoads", options.implement?.resourceLoads ?? {}, calls),
-      recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
+      recording(
+        WorktreeReads,
+        "reads",
+        {
+          readFile: (_project, _worktree, relative) =>
+            MEND_TOML_PATHS.some((path) => path === relative)
+              ? Effect.succeed({ value: null, stamp: WORKTREE_STAMP })
+              : Effect.die("reads.readFile is not implemented"),
+          ...options.implement?.reads,
+        },
+        calls,
+      ),
       recording(ResourceImageResolver, "images", options.implement?.images ?? {}, calls),
       // Nothing runs on Sealant here: a start runs, a stop holds as its person's, and every read
       // finds nothing started.
@@ -821,7 +847,9 @@ export const createTenancyApi = async (
               observedAt: new Date(),
             }),
           observe: () => Effect.succeed({ kind: "observed", byKey: new Map() }),
-          archive: () => Effect.void,
+          archive: () => Effect.succeed({ kind: "archived", startedForArchive: false }),
+          ensureOwnDatabase: () => Effect.succeed(null),
+          relink: () => Effect.succeed([]),
           ...options.implement?.resourceRuntime,
         },
         calls,
@@ -829,7 +857,11 @@ export const createTenancyApi = async (
       recording(
         WorktreeServiceRestarts,
         "serviceRestarts",
-        { restart: () => Effect.succeed([]), ...options.implement?.serviceRestarts },
+        {
+          restart: () => Effect.succeed([]),
+          tell: () => Effect.succeed([]),
+          ...options.implement?.serviceRestarts,
+        },
         calls,
       ),
       // Whose identity a call about a workspace runs as: the principal in context here, since the

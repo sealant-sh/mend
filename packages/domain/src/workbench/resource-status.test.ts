@@ -6,7 +6,7 @@ import {
   resourceStatusLine,
   type ResourceStatusView,
 } from "./resource-status.ts";
-import { ProjectResourceDefinition, WorktreeResourceDefinition } from "./resource.ts";
+import { ResourceDefinition } from "./resource.ts";
 
 const base = {
   preset: null,
@@ -18,9 +18,9 @@ const base = {
 };
 
 const project = (fields: Record<string, unknown>) =>
-  Schema.decodeUnknownSync(ProjectResourceDefinition)({ ...base, scope: "project", ...fields });
+  Schema.decodeUnknownSync(ResourceDefinition)({ ...base, scope: "project", ...fields });
 const worktree = (fields: Record<string, unknown>) =>
-  Schema.decodeUnknownSync(WorktreeResourceDefinition)({ ...base, scope: "worktree", ...fields });
+  Schema.decodeUnknownSync(ResourceDefinition)({ ...base, scope: "worktree", ...fields });
 
 const postgresOn = (image: string) =>
   project({
@@ -64,72 +64,80 @@ const observedAt = new Date("2026-10-30T14:30:00Z");
 const running: ResourceInstanceObservation = { kind: "running" };
 
 const observed = (
-  definition: ResourceStatusView["definition"],
+  definition: Extract<ResourceStatusView, { kind: "observed" }>["definition"],
   use: Extract<ResourceStatusView, { kind: "observed" }>["use"],
   instance: Extract<ResourceStatusView, { kind: "observed" }>["instance"] = running,
-): ResourceStatusView => ({ kind: "observed", definition, use, instance, observedAt });
+): ResourceStatusView => ({
+  kind: "observed",
+  definition,
+  level:
+    use.kind === "own" || use.kind === "worktree" || definition.name === "dns"
+      ? "worktree"
+      : "project",
+  use,
+  instance,
+  observedAt,
+});
 
 const copiedAt = (iso: string) =>
   observed(db, { kind: "own", origin: { kind: "copied", at: new Date(iso) } });
-
-const WARNING = "any worktree on shared can change or drop its tables";
 
 const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
   [
     "a worktree's own database copied from shared",
     copiedAt("2026-10-30T14:02:00Z"),
-    "@db · running · own database · copied from shared 14:02 · observed 3 s ago",
+    "@db · running · worktree · own database · copied from shared 14:02 · observed 3 s ago",
   ],
   [
     "a worktree's own database begun empty",
     observed(db, { kind: "own", origin: { kind: "empty", at: new Date("2026-10-30T14:02:00Z") } }),
-    "@db · running · own database · started empty 14:02 · observed 3 s ago",
+    "@db · running · worktree · own database · started empty 14:02 · observed 3 s ago",
   ],
   [
     "own before the worktree made its database",
     observed(db, { kind: "own", origin: null }, { kind: "starting" }),
-    "@db · starting · own database · not made yet · observed 3 s ago",
+    "@db · starting · worktree · own database · not made yet · observed 3 s ago",
   ],
   [
     "a shared database, and what shared means",
     observed(db, { kind: "shared" }),
-    `@db · running · shared database · ${WARNING} · observed 3 s ago`,
+    `@db · running · project · shared database · observed 3 s ago`,
   ],
   [
     "a shared image that is not a database",
     observed(queue, { kind: "shared" }),
-    "@queue · running · shared · observed 3 s ago",
+    "@queue · running · project · observed 3 s ago",
   ],
   ["a worktree that has it off", observed(cache, { kind: "off" }), "@cache · off"],
   [
     "a worktree resource",
     observed(mail, { kind: "worktree" }),
-    "@mail · running · its own instance · observed 3 s ago",
+    "@mail · running · worktree · observed 3 s ago",
   ],
   [
     "a stop a person made",
     observed(db, { kind: "shared" }, { kind: "stopped", reason: { kind: "person", by: "Maria" } }),
-    `@db · stopped by Maria · shared database · ${WARNING} · observed 3 s ago`,
+    `@db · stopped by Maria · project · shared database · observed 3 s ago`,
   ],
   [
     "an idle stop",
     observed(mail, { kind: "worktree" }, { kind: "stopped", reason: { kind: "idle" } }),
-    "@mail · stopped · idle · its own instance · observed 3 s ago",
+    "@mail · stopped · idle · worktree · observed 3 s ago",
   ],
   [
     "a start that failed, and why",
     observed(mail, { kind: "worktree" }, { kind: "failed", message: "image pull refused" }),
-    "@mail · failed · image pull refused · its own instance · observed 3 s ago",
+    "@mail · failed · image pull refused · worktree · observed 3 s ago",
   ],
   [
     "a project read, with who added it",
     observed(db, { kind: "project", addedBy: "Maria" }),
-    "@db · postgres 17 · project · added by Maria · running · observed 3 s ago",
+    "@db · postgres:17 · started by Maria · running · project · observed 3 s ago",
   ],
   [
     "a worktree resource read for the project",
     observed(dns, { kind: "project", addedBy: "Tom" }, { kind: "per-worktree", running: 2 }),
-    "@dns · coredns 1 · worktree · added by Tom · one per worktree · 2 running · observed 3 s ago",
+    "@dns · coredns:1 · started by Tom · one per worktree · 2 running · worktree · observed 3 s ago",
   ],
   [
     "a launch that went on while a person's stop holds",
@@ -158,12 +166,12 @@ const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
   [
     "an own database that could not be made",
     { kind: "own-not-made", definition: db, message: "pg_restore exited 1" },
-    "@db · own database not made · pg_restore exited 1 · the next launch tries again",
+    "@db · own database not made · pg_restore exited 1 · run mend resource start to try again",
   ],
   [
-    "a .mend/mend.toml table settings hold otherwise",
-    { kind: "file-kept", definition: db },
-    "@db · .mend/mend.toml differs · project settings kept",
+    "a mend.toml table settings hold otherwise",
+    { kind: "definition-differs", definition: db, level: "project" },
+    "@db · project · definition differs from this worktree",
   ],
   [
     "a switch to own, and the Services it restarted",
@@ -178,7 +186,7 @@ const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
   [
     "a switch with no Service running",
     { kind: "switched", definition: cache, use: { kind: "shared" }, restarted: [] },
-    "@cache · shared · no Service was running · agents and shells keep their env until they restart",
+    "@cache · no Service was running · agents and shells keep their env until they restart",
   ],
   [
     "a switch to off",
@@ -204,7 +212,7 @@ const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
   [
     "a Sealant that runs no resources",
     observed(db, { kind: "shared" }, { kind: "unsupported", runtime: "kubernetes" }),
-    `@db · resources run on Docker; this Sealant runs kubernetes · shared database · ${WARNING} · observed 3 s ago`,
+    `@db · resources run on Docker; this Sealant runs kubernetes · project · shared database · observed 3 s ago`,
   ],
 ];
 
@@ -215,7 +223,7 @@ describe("the one status line", () => {
 
   it("names a preset with its image when the image is not the preset's own", () => {
     const view = observed(postgresOn("pgvector/pgvector:pg17"), { kind: "project", addedBy: "A" });
-    expect(resourceStatusLine(view, at)).toContain("@db · postgres pgvector 17 · project");
+    expect(resourceStatusLine(view, at)).toContain("@db · postgres pgvector:17");
   });
 
   it("never prints an env value, a literal secret among them", () => {
@@ -244,21 +252,24 @@ describe("the one status line", () => {
   });
 });
 
-describe("a .mend/mend.toml table", () => {
-  const declared = (
-    definition: ResourceStatusView["definition"],
-    settings: "absent" | "same" | "differs",
-  ) => resourceStatusLine({ kind: "declared", definition, source: { kind: "file", settings } }, at);
-
-  it("says how it stands against settings", () => {
-    expect(declared(mail, "absent")).toBe(
-      "@mail · mailpit · worktree · in .mend/mend.toml · not in settings",
+describe("file and differing server views", () => {
+  it("describes a definition without settings or a fixed level", () => {
+    expect(resourceStatusLine({ kind: "defined", definition: mail }, at)).toBe(
+      "@mail · mailpit · in .mend/mend.toml · not started",
     );
-    expect(declared(mail, "same")).toBe(
-      "@mail · mailpit · worktree · in .mend/mend.toml · same as settings",
-    );
-    expect(declared(db, "differs")).toBe(
-      "@db · postgres 17 · project · in .mend/mend.toml · differs from settings",
+  });
+  it("names the own database's actual server and this file's requested version", () => {
+    expect(
+      resourceStatusLine(
+        {
+          kind: "own-on-differing-server",
+          definition: postgresOn("postgres:16"),
+          requested: postgresOn("postgres:17"),
+        },
+        at,
+      ),
+    ).toBe(
+      "@db · own database on the project server (postgres:16) · this worktree's file asks postgres:17",
     );
   });
 });

@@ -214,16 +214,32 @@ export const resourcesNote = (
   resources: ReadonlyArray<{
     readonly statusLine: string;
     readonly envNames: ReadonlyArray<string>;
+    readonly available?: {
+      readonly name: string;
+      readonly kind: string;
+      readonly level: "project" | "worktree";
+      readonly urlName: string;
+    };
+    readonly postgresName?: string;
   }>,
-): string =>
-  resources.length === 0
-    ? ""
-    : "## Mend Resources\n\n" +
-      "Observed when this note was written. Run `mend resource list` for a fresh observation. Clock times are UTC.\n\n" +
-      resources
-        .map(
-          (resource) =>
-            `- ${resource.statusLine}\n  Env names: ${resource.envNames.length === 0 ? "none" : resource.envNames.join(", ")}`,
-        )
-        .join("\n") +
-      "\n\nUse `mend resource list`, `start <name>`, `stop <name>`, `use <name> shared|own|off`, `reset <name>`, `load <name>`, or `env`. Each verb follows `mend resource`. `env` prints values, so keep its output out of notes and reports.\n\n";
+): string => {
+  if (resources.length === 0) return "";
+  const postgres = resources.find((resource) => resource.postgresName !== undefined)?.postgresName;
+  return (
+    "## Mend Resources\n\n" +
+    "Observed when this note was written. Run `mend resource list` for a fresh observation. Clock times are UTC.\n\n" +
+    resources
+      .map((resource) => {
+        const available = resource.available;
+        return available === undefined
+          ? resource.statusLine
+          : `@${available.name} · ${available.kind} · ${available.level} · ${available.urlName}\n${resource.statusLine}`;
+      })
+      .join("\n") +
+    "\n\nMEND_* resource values are fixed when a process starts. After a switch, already-running processes, including your own shell, keep the old values. Run mend resource env to print the current values, or restart the process to receive them. Printing values does not update your shell.\n" +
+    (postgres === undefined
+      ? ""
+      : `Before changing the database schema, start your own worktree database: mend resource start ${postgres} --worktree.\n`) +
+    "\nUse `mend resource list`, `start <name> --project|--worktree`, `stop <name>`, `use <name> project|worktree|off`, `reset <name>`, `load <name>`, or `env`. Each verb follows `mend resource`. `env` prints values, so keep its output out of notes and reports.\n\n"
+  );
+};

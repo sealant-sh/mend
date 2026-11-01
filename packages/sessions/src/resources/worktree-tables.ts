@@ -1,5 +1,5 @@
 import type { ProjectId, WorktreeId } from "@mend/domain";
-import type { ResourceDefinitionInput } from "@mend/domain/workbench";
+import type { ResourceDefinition } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { parse as parseToml } from "smol-toml";
 
@@ -70,5 +70,5 @@ export const readWorktreeTables = Effect.fn("Resources.readWorktreeTables")(func
 });
 
 /** The tables a read found, or none. */
-export const tablesOf = (read: WorktreeTablesRead): ReadonlyArray<ResourceDefinitionInput> =>
+export const tablesOf = (read: WorktreeTablesRead): ReadonlyArray<ResourceDefinition> =>
   read.kind === "read" ? read.tables : [];

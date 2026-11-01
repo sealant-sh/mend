@@ -867,6 +867,17 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
       }),
     )
+    .handle("newWorktreesUseProjectResources", ({ params, payload }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
+        const projects = yield* ProjectsRepo;
+        // Written at launch, not at workspace creation: a ready standby picks it up at claim, so
+        // the pool keeps its workspaces.
+        return yield* projects
+          .setNewWorktreesUseProjectResources(params.id, payload.newWorktreesUseProjectResources)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    )
     .handle("inheritUserSkills", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).manageProject(params.id);

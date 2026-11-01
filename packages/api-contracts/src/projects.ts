@@ -197,6 +197,18 @@ export const projectsGroup = HttpApiGroup.make("projects")
     }),
   )
   .add(
+    HttpApiEndpoint.put(
+      "newWorktreesUseProjectResources",
+      "/projects/:id/new-worktrees-use-project-resources",
+      {
+        params: { id: ProjectId },
+        payload: Schema.Struct({ newWorktreesUseProjectResources: Schema.Boolean }),
+        success: Project,
+        error: [NotFound, RemovalInProgress],
+      },
+    ),
+  )
+  .add(
     HttpApiEndpoint.put("inheritUserSkills", "/projects/:id/inherit-user-skills", {
       params: { id: ProjectId },
       payload: ProjectInheritUserSkillsRequest,

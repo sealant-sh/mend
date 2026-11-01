@@ -7,6 +7,8 @@ import { ProjectId, ResourceDefinitionId, WorktreeId } from "../ids.ts";
 import {
   ownDatabaseName,
   resourceBindings,
+  reachAliases,
+  type ResourceBindingRows,
   resourceInstanceKey,
   resourceInstanceSpec,
   resourceProcessEnv,
@@ -14,26 +16,19 @@ import {
   secretEnvLeftOut,
   shellExports,
 } from "./resource-runtime.ts";
-import {
-  presetDefinition,
-  PresetVersion,
-  ProjectResourceDefinition,
-  ResourceName,
-  WorktreeResourceDefinition,
-} from "./resource.ts";
+import { presetDefinition, PresetVersion, ResourceDefinition, ResourceName } from "./resource.ts";
 
 const preset = (
   name: string,
   kind: "postgres" | "redis" | "mysql",
-  scope: "project" | "worktree" = "project",
+  _level: "project" | "worktree" = "project",
 ) =>
   presetDefinition({
     name: ResourceName.make(name),
     preset: kind,
     version: PresetVersion.make(kind === "postgres" ? "17" : "8"),
-    scope,
   });
-const mail = Schema.decodeUnknownSync(WorktreeResourceDefinition)({
+const mail = Schema.decodeUnknownSync(ResourceDefinition)({
   name: "mail",
   scope: "worktree",
   preset: null,
@@ -144,123 +139,125 @@ describe("what Sealant runs", () => {
       image,
       worktreeId: worktree,
     });
-    expect(spec.worktreeKey).toBeNull();
+    expect(spec.worktreeKey).toBe(worktree);
   });
 });
 
-describe("how a worktree uses each resource", () => {
-  const db = preset("db", "postgres");
-  const cache = preset("cache", "redis");
-
-  it("takes the stored choice, the default when none, and binds nothing for off", () => {
-    expect(
-      resourceBindings([
-        { spec: db, choice: null },
-        { spec: cache, choice: "off" },
-        { spec: mail, choice: null },
-      ]).map((binding) => [binding.definition.name, binding.mode]),
-    ).toEqual([
-      ["db", "own"],
-      ["mail", "worktree"],
-    ]);
-  });
-
-  it("falls back to the default for a choice the policy no longer offers", () => {
-    const [binding] = resourceBindings([{ spec: cache, choice: "own" }]);
-    expect(binding?.mode).toBe("shared");
-  });
-
-  it("binds a worktree Redis nowhere, since the policy refuses it", () => {
-    expect(resourceBindings([{ spec: preset("q", "redis", "worktree"), choice: null }])).toEqual(
-      [],
-    );
-  });
-});
-
-describe("the env every process in a worktree gets", () => {
-  const project = Schema.decodeUnknownSync(ProjectResourceDefinition);
-  const db = project(preset("db", "postgres"));
-  const cache = project(preset("cache", "redis"));
-  const none = new Set<string>();
+describe("bindings, reach and current env", () => {
+  const id = ResourceDefinitionId.make("resource");
   const envOf = (
-    bindings: Parameters<typeof resourceProcessEnv>[0]["bindings"],
-    projectEnvNames: ReadonlySet<string> = none,
-  ) => resourceProcessEnv({ bindings, worktreeId: worktree, projectEnvNames });
-
-  it.each([
-    [
-      "an own Postgres: its own database, and DATABASE_URL and PG* for the one Postgres",
-      [{ definition: db, mode: "own" as const }],
-      {
-        MEND_RESOURCE_DB_HOST: "db",
-        MEND_RESOURCE_DB_PORT: "5432",
-        MEND_RESOURCE_DB_PORT_POSTGRES: "5432",
-        MEND_RESOURCE_DB_URL: `postgres://postgres@db:5432/${own}`,
-        MEND_RESOURCE_DB_DATABASE: own,
-        MEND_RESOURCE_DB_USERNAME: "postgres",
-        DATABASE_URL: `postgres://postgres@db:5432/${own}`,
-        PGHOST: "db",
-        PGPORT: "5432",
-        PGUSER: "postgres",
-        PGDATABASE: own,
-      },
-    ],
-    [
-      "a shared Postgres: the database app",
-      [{ definition: db, mode: "shared" as const }],
-      expect.objectContaining({
-        DATABASE_URL: "postgres://postgres@db:5432/app",
-        PGDATABASE: "app",
-      }),
-    ],
-    [
-      "a Redis: its URL, and REDIS_URL for the one Redis",
-      [{ definition: cache, mode: "shared" as const }],
-      {
-        MEND_RESOURCE_CACHE_HOST: "cache",
-        MEND_RESOURCE_CACHE_PORT: "6379",
-        MEND_RESOURCE_CACHE_PORT_REDIS: "6379",
-        MEND_RESOURCE_CACHE_URL: "redis://cache:6379",
-        REDIS_URL: "redis://cache:6379",
-      },
-    ],
-    [
-      "another image: host, ports and the exports it can fill",
-      [{ definition: mail, mode: "worktree" as const }],
-      {
-        MEND_RESOURCE_MAIL_HOST: "mail",
-        MEND_RESOURCE_MAIL_PORT: "1025",
-        MEND_RESOURCE_MAIL_PORT_SMTP: "1025",
-        MEND_RESOURCE_MAIL_PORT_HTTP: "8025",
-        MEND_RESOURCE_MAIL_SMTP_URL: "smtp://mail:1025",
-      },
-    ],
-  ])("gives %s", (_, bindings, env) => {
-    expect(envOf(bindings).env).toEqual(env);
-  });
-
-  it("gives two Postgres neither DATABASE_URL nor PG*", () => {
-    const { env } = envOf([
-      { definition: db, mode: "own" },
-      { definition: project(preset("analytics", "postgres")), mode: "shared" },
-    ]);
-    expect(env["MEND_RESOURCE_ANALYTICS_URL"]).toBe("postgres://postgres@analytics:5432/app");
-    expect(Object.keys(env).filter((name) => !name.startsWith("MEND_RESOURCE_"))).toEqual([]);
-  });
-
-  it("leaves a name the project sets as it is, and says which", () => {
-    const { env, left } = envOf(
-      [{ definition: db, mode: "own" }],
-      new Set(["DATABASE_URL", "PGHOST"]),
-    );
-    expect(env["DATABASE_URL"]).toBeUndefined();
-    expect(env["PGHOST"]).toBeUndefined();
-    expect(env["PGDATABASE"]).toBe(own);
-    expect(left).toEqual([{ resource: "db", names: ["DATABASE_URL", "PGHOST"] }]);
-  });
-
-  it("answers nothing for a worktree that uses nothing", () => {
-    expect(envOf([])).toEqual({ env: {}, left: [] });
+    definition: ResourceDefinition,
+    level: "project" | "worktree",
+    database: string | null = null,
+  ) =>
+    resourceProcessEnv({
+      bindings: [{ definition, level, database, resourceId: id, instanceKey: "resource" }],
+      worktreeId: worktree,
+      projectEnvNames: new Set(),
+    }).env;
+  it.each(["postgres", "redis", "mysql", null] as const)(
+    "resolves the choice × rows truth table for %s",
+    (kind) => {
+      const spec = kind === null ? mail : preset("test", kind);
+      for (const mode of ["project", "worktree", "off", null] as const)
+        for (const visible of [true, false])
+          for (const projectExists of [true, false])
+            for (const ownExists of [true, false]) {
+              const rows: ResourceBindingRows = {
+                worktreeId: worktree,
+                usesProjectResources: visible,
+                resources: [{ id, name: spec.name }],
+                instances: [
+                  ...(projectExists ? [{ resourceId: id, worktreeId: null, spec }] : []),
+                  ...(kind !== "postgres" && ownExists
+                    ? [{ resourceId: id, worktreeId: worktree, spec }]
+                    : []),
+                ],
+                selections: mode === null ? [] : [{ resourceId: id, mode }],
+                ownDatabases: new Set(ownExists ? [id] : []),
+              };
+              const choice = mode ?? (visible ? "project" : "off");
+              const available =
+                choice === "project"
+                  ? projectExists
+                  : choice === "worktree"
+                    ? ownExists && (kind !== "postgres" || projectExists)
+                    : false;
+              const bindings = resourceBindings(rows);
+              expect(bindings.length).toBe(available ? 1 : 0);
+              if (available) {
+                expect(bindings[0]?.level).toBe(choice);
+                expect(bindings[0]?.instanceKey).toBe(
+                  choice === "worktree" && kind !== "postgres"
+                    ? `resource@${worktree}`
+                    : "resource",
+                );
+                expect(reachAliases(bindings)).toEqual({
+                  [spec.name]: kind === "postgres" ? "project" : choice,
+                });
+              } else expect(reachAliases(bindings)).toEqual({});
+            }
+    },
+  );
+  it.each(["project", "worktree"] as const)(
+    "gives Postgres only the specified exports at %s level",
+    (level) => {
+      const database = level === "project" ? "app" : own;
+      expect(envOf(preset("db", "postgres"), level, database)).toEqual({
+        MEND_DB_URL: `postgres://postgres@db:5432/${database}`,
+        MEND_DB_HOST: "db",
+        MEND_DB_PORT: "5432",
+        MEND_DB_USER: "postgres",
+        MEND_DB_PASSWORD: "",
+        MEND_DB_DATABASE: database,
+      });
+    },
+  );
+  it.each(["project", "worktree"] as const)(
+    "gives other presets and images URL, host, port and declared exports at %s level",
+    (level) => {
+      expect(envOf(preset("cache", "redis"), level)).toEqual({
+        MEND_CACHE_URL: "redis://cache:6379",
+        MEND_CACHE_HOST: "cache",
+        MEND_CACHE_PORT: "6379",
+      });
+      expect(envOf(preset("db", "mysql"), level)).toEqual({
+        MEND_DB_URL: "mysql://root@db:3306/app",
+        MEND_DB_HOST: "db",
+        MEND_DB_PORT: "3306",
+      });
+      expect(envOf(mail, level)).toEqual({
+        MEND_MAIL_URL: "tcp://mail:1025",
+        MEND_MAIL_HOST: "mail",
+        MEND_MAIL_PORT: "1025",
+        MEND_MAIL_SMTP_URL: "smtp://mail:1025",
+      });
+      expect(
+        envOf({ ...mail, exports: { URL: "smtp://{host}:{port.smtp}" } }, level).MEND_MAIL_URL,
+      ).toBe("smtp://mail:1025");
+      expect(
+        envOf({ ...mail, ports: [{ name: "dns", port: 53, protocol: "udp" }], exports: {} }, level)
+          .MEND_MAIL_URL,
+      ).toBe("udp://mail:53");
+    },
+  );
+  it("leaves env and secret names the project already sets untouched", () => {
+    const result = resourceProcessEnv({
+      bindings: [
+        {
+          definition: preset("db", "postgres"),
+          level: "project",
+          resourceId: id,
+          instanceKey: "resource",
+          database: "app",
+        },
+      ],
+      worktreeId: worktree,
+      projectEnvNames: new Set(["MEND_DB_URL", "MEND_DB_HOST"]),
+    });
+    expect(result.env.MEND_DB_URL).toBeUndefined();
+    expect(result.env.MEND_DB_HOST).toBeUndefined();
+    expect(result.left).toEqual([{ resource: "db", names: ["MEND_DB_URL", "MEND_DB_HOST"] }]);
   });
 });
 

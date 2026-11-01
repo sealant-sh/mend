@@ -28,6 +28,7 @@ const worktree = (name: string, createdAt: string): WorktreeDto => ({
   directory: `/store/worktrees/${name}`,
   branch: `mend/${name}`,
   baseSha: Sha.make("0123456789abcdef0123456789abcdef01234567"),
+  usesProjectResources: true,
   changeOwnerUserId: null,
   changeOwnerProven: false,
   baseRef: "main",

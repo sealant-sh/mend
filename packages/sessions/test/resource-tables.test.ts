@@ -2,7 +2,7 @@ import {
   presetDefinition,
   PresetVersion,
   recipeRefusalLine,
-  type ResourceDefinitionInput,
+  type ResourceDefinition,
   ResourceName,
   resourceSpecDigest,
   ServiceRecipe,
@@ -23,7 +23,6 @@ const parse = (lines: ReadonlyArray<string>): MendTomlFile =>
 const ADR_QUEUE = [
   "[resource.queue]",
   'image = "rabbitmq:4-management"',
-  'scope = "project"',
   "ports = { amqp = 5672 }",
   'volumes = { data = "/var/lib/rabbitmq" }',
   'env = { RABBITMQ_DEFAULT_USER = "app", RABBITMQ_DEFAULT_PASS = { secret = "RABBITMQ_PASSWORD" } }',
@@ -54,7 +53,6 @@ describe("[resource.*] tables in mend.toml", () => {
     expect(file.resources).toEqual([
       {
         name: "queue",
-        scope: "project",
         preset: null,
         image: "rabbitmq:4-management",
         command: null,
@@ -104,7 +102,7 @@ describe("[resource.*] tables in mend.toml", () => {
       "limits = { cpu = 0.5, memoryMiB = 256 }",
     ]);
     expect(file.refused).toEqual([]);
-    const byName = new Map<string, ResourceDefinitionInput>(
+    const byName = new Map<string, ResourceDefinition>(
       file.resources.map((resource) => [resource.name, resource]),
     );
     expect(byName.get("db")?.ready).toEqual({ kind: "preset" });
@@ -128,7 +126,6 @@ describe("[resource.*] tables in mend.toml", () => {
       name: ResourceName.make("cache"),
       preset: "redis",
       version: PresetVersion.make("8"),
-      scope: "project",
     });
     expect(file.resources.map(resourceSpecDigest)).toEqual([resourceSpecDigest(preset)]);
   });
@@ -223,17 +220,6 @@ describe("[resource.*] tables in mend.toml", () => {
         'exports = { ADDR = "{host}:{port}" }',
       ],
       "resource.cache.exports",
-    ],
-    [
-      "Redis at worktree scope",
-      [
-        "[resource.cache]",
-        'preset = "redis"',
-        'scope = "worktree"',
-        'image = "redis:7"',
-        "ports = { redis = 6379 }",
-      ],
-      "resource.cache.scope",
     ],
     [
       "a command written as a string",
@@ -385,11 +371,7 @@ describe("[resource.*] tables in mend.toml", () => {
           "limits = { memoryMiB = 1.5 }",
         ]),
       ).toSorted(),
-    ).toEqual([
-      "resource.cache.exports",
-      "resource.cache.limits.memoryMiB",
-      "resource.cache.scope",
-    ]);
+    ).toEqual(["resource.cache.exports", "resource.cache.limits.memoryMiB"]);
   });
 
   it("does not refuse an export for naming a port that is itself refused", () => {
@@ -451,8 +433,8 @@ describe("[resource.*] tables in mend.toml", () => {
     ]);
     expect(tableNames(file)).toEqual(["mail"]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
-      ".mend/mend.toml · resource.db.exports.MAIN_URL · sets MEND_RESOURCE_DB_MAIN_URL, as db-main does too",
-      ".mend/mend.toml · resource.db-main.exports.URL · sets MEND_RESOURCE_DB_MAIN_URL, as db does too",
+      ".mend/mend.toml · resource.db.exports.MAIN_URL · sets MEND_DB_MAIN_URL, as db-main does too",
+      ".mend/mend.toml · resource.db-main.exports.URL · sets MEND_DB_MAIN_URL, as db does too",
     ]);
   });
 });
@@ -490,7 +472,7 @@ describe("the workspace note on mend.toml", () => {
     expect(declarationsNote(declared)).toBe(
       "Refused in .mend/mend.toml (fix these before running them):\n\n" +
         "- api · cwd · is absolute; name a path inside the repository\n\n" +
-        "Resources in .mend/mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):\n\n" +
+        "Resources in .mend/mend.toml (start explicitly with mend resource start <name> --project or --worktree):\n\n" +
         "- resource.web.ports.http · must be a port in 1..65535\n" +
         "- resource.web.healthcheck · is ignored: this Mend does not read it\n\n",
     );

@@ -454,6 +454,9 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-manage", "PUT", "/workspace-image", { workspaceImage: null })(
     "projects.workspaceImage",
   ),
+  project("project-manage", "PUT", "/new-worktrees-use-project-resources", {
+    newWorktreesUseProjectResources: false,
+  })("projects.newWorktreesUseProjectResources"),
   project("project-manage", "PUT", "/apply-dotfiles", { applyDotfiles: true })(
     "projects.applyDotfiles",
   ),
@@ -547,26 +550,25 @@ const CASES: ReadonlyArray<AccessCase> = [
   })("projectRecipes.add"),
   project("project-manage", "DELETE", "/service-recipes/web")("projectRecipes.remove"),
   project("project-read", "GET", "/resources?timeZone=UTC")("resources.list"),
-  project("project-read", "POST", "/resources?timeZone=UTC", {
-    kind: "preset",
-    name: "db",
-    preset: "postgres",
-    version: "17",
-    scope: "project",
-  })("resources.add"),
-  // Its adder or a manager removes a definition, which is read to say who added it.
-  project("project-read", "DELETE", "/resources/rdef_1", {
-    expectedDigest: "a".repeat(64),
-  })("resources.remove"),
+  {
+    endpoint: "resources.remove",
+    rule: "project-read",
+    call: (target) => ({
+      method: "DELETE",
+      path: `/api/projects/${ids(target).project}/resources/db`,
+      id: ids(target).project,
+      body: { level: "project", worktreeId: ids(target).worktree },
+    }),
+  },
   // A worktree's choice is its change owner's, which in the harness is its session's owner.
   {
     endpoint: "resources.use",
     rule: "steer",
     call: (target) => ({
       method: "PUT",
-      path: `/api/projects/${ids(target).project}/worktrees/${ids(target).worktree}/resources/rdef_1/selection?timeZone=UTC`,
+      path: `/api/projects/${ids(target).project}/worktrees/${ids(target).worktree}/resources/db/selection?timeZone=UTC`,
       id: ids(target).project,
-      body: { mode: "own" },
+      body: { mode: "worktree" },
     }),
   },
   project("project-read", "POST", "/resource-loads?timeZone=UTC", {
@@ -585,8 +587,18 @@ const CASES: ReadonlyArray<AccessCase> = [
     "PUT",
     "/resource-loads/11111111-1111-1111-1111-111111111111/body?timeZone=UTC",
   )("resources.feedLoad"),
-  project("project-read", "POST", "/resources/db/start?timeZone=UTC")("resources.start"),
-  project("project-read", "POST", "/resources/db/stop?timeZone=UTC")("resources.stop"),
+  ...(["start", "stop"] as const).map(
+    (verb): AccessCase => ({
+      endpoint: `resources.${verb}`,
+      rule: "project-read",
+      call: (target) => ({
+        method: "POST",
+        path: `/api/projects/${ids(target).project}/resources/db/${verb}?timeZone=UTC`,
+        id: ids(target).project,
+        body: { level: "project", worktreeId: ids(target).worktree, restart: false },
+      }),
+    }),
+  ),
   {
     endpoint: "resources.reset",
     rule: "project-read",
@@ -917,6 +929,10 @@ const ADMITTED: Readonly<
   "projects.automation": { status: 500, calls: ["projects.setAutomation"] },
   "projects.gitAuth": { status: 500, calls: ["projects.setGitAuthMode"] },
   "projects.workspaceImage": { status: 500, calls: ["projects.setWorkspaceImage"] },
+  "projects.newWorktreesUseProjectResources": {
+    status: 500,
+    calls: ["projects.setNewWorktreesUseProjectResources"],
+  },
   "projects.applyDotfiles": { status: 500, calls: ["projects.setApplyDotfiles"] },
   "projects.defaultShellProfile": { status: 500, calls: ["projects.setDefaultShellProfile"] },
   "projects.inheritUserSkills": { status: 500, calls: ["projects.setInheritUserSkills"] },
@@ -983,23 +999,22 @@ const ADMITTED: Readonly<
   "projectRecipes.remove": { status: 500, calls: ["recipes.remove"] },
   // The page's reads run together, so all are asked before the first unimplemented one fails.
   "resources.list": {
-    status: 500,
-    calls: ["resources.listWithChoices", "resources.ownSelections"],
-  },
-  // What settings hold under the name decides whether the add replaces someone else's.
-  "resources.add": {
-    status: 500,
-    calls: ["resources.listWithChoices", "resources.ownSelections"],
+    status: 200,
+    calls: ["resources.listWithChoices"],
+    body: { settings: [], file: { kind: "not-selected" } },
   },
   // Who added the definition decides who may remove it, so it is read first.
-  "resources.remove": { status: 500, calls: ["resources.listForProject"] },
+  "resources.remove": { status: 500, calls: ["resources.byName"] },
   // What the worktree used before decides whether its Services restart, so it is read first.
-  "resources.use": { status: 500, calls: ["resources.listWithChoices", "resources.setSelection"] },
+  "resources.use": { status: 500, calls: ["resources.listIdentities"] },
   // A start or stop finds the definition by name first.
   "resources.beginLoad": { status: 500, calls: ["resourceLoads.begin"] },
   "resources.readLoad": { status: 500, calls: ["resourceLoads.read"] },
   "resources.feedLoad": { status: 500, calls: ["resourceLoads.feed"] },
-  "resources.start": { status: 500, calls: ["resources.byName"] },
+  "resources.start": {
+    status: 500,
+    calls: ["reads.readFile", "reads.readFile", "resources.listForProject"],
+  },
   "resources.stop": { status: 500, calls: ["resources.byName"] },
   "resources.reset": { status: 500, calls: ["resources.byName"] },
   "resources.env": { status: 500, calls: ["resourceRuntime.envOf", "resources.listForProject"] },
@@ -1007,7 +1022,15 @@ const ADMITTED: Readonly<
   // Refresh-capture helper defects before detail reads.
   "sessions.detail": {
     status: 500,
-    calls: ["resources.listWithChoices", "sessions.launchersOf", "engine.refreshCaptureStatus"],
+    calls: [
+      "resources.listWithChoices",
+      "reads.readFile",
+      "reads.readFile",
+      "resources.ownDatabases",
+      "resources.bindingRows",
+      "sessions.launchersOf",
+      "engine.refreshCaptureStatus",
+    ],
   },
   "sessions.sendMessage": { status: 500, calls: ["engine.sendMessage"] },
   "sessions.submitTurn": { status: 500, calls: ["engine.submitTurn"] },

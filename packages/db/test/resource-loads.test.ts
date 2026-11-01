@@ -60,17 +60,17 @@ describe.skipIf(postgres.skip)("durable resource loads", () => {
         const definitions = yield* ResourcesRepo;
         const repo = yield* ResourceLoadsRepo;
         const projectId = ProjectId.make("load-project");
-        const definition = yield* definitions.declare(
+        const identity = yield* definitions.ensureIdentity(projectId, "db");
+        const definition = yield* definitions.remember(
           projectId,
-          {
-            spec: presetDefinition({
-              name: ResourceName.make("db"),
-              preset: "postgres",
-              version: PresetVersion.make("17"),
-              scope: "project",
-            }),
-            imageDigest: ImageDigest.make(`sha256:${"a".repeat(64)}`),
-          },
+          identity.id,
+          null,
+          presetDefinition({
+            name: ResourceName.make("db"),
+            preset: "postgres",
+            version: PresetVersion.make("17"),
+          }),
+          ImageDigest.make(`sha256:${"a".repeat(64)}`),
           "alice",
         );
         const row: StoredResourceLoad = {

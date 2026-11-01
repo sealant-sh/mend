@@ -8,10 +8,20 @@ import {
   RemovalFencesRepoLive,
   ResourcesRepo,
   ResourcesRepoLive,
+  ResourceArchivesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { ImageDigest, ResourceDefinitionInput, withPresetCommand } from "@mend/domain/workbench";
-import { WORKTREE_STAMP } from "@mend/sessions";
+import {
+  ImageDigest,
+  ownDatabaseName,
+  presetDefinition,
+  PresetVersion,
+  ResourceName,
+  ResourceDefinition,
+  withPresetCommand,
+} from "@mend/domain/workbench";
+import { ResourceScopes, type ResourceScope } from "@mend/sealant";
+import { WORKTREE_STAMP, ResourceRemoval, ResourceRemovalLive } from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterEach, describe, expect, it } from "vitest";
@@ -122,10 +132,31 @@ const scratchDatabase = async () => {
       ),
     );
   await admin(`CREATE DATABASE ${name}`);
+  const absentServer: ResourceScope = {
+    id: "archived",
+    get: () => Effect.succeed(null),
+    list: () => Effect.succeed([]),
+    archiveScope: () => Effect.succeed([]),
+    up: () => Effect.die("removal must not start an archived server"),
+    exec: () => Effect.die("removal must not need an archived server"),
+    archive: () => Effect.die("there are no worktree instances"),
+    stop: () => Effect.die("unused"),
+    link: () => Effect.die("unused"),
+  };
+  const repos = Layer.mergeAll(
+    ResourcesRepoLive,
+    ProjectsRepoLive,
+    RemovalFencesRepoLive,
+    ResourceArchivesRepoLive,
+  ).pipe(Layer.provideMerge(MendDBLive), Layer.provideMerge(pgLayer(url.toString())));
   const runtime = ManagedRuntime.make(
-    Layer.mergeAll(ResourcesRepoLive, ProjectsRepoLive, RemovalFencesRepoLive).pipe(
-      Layer.provideMerge(MendDBLive),
-      Layer.provideMerge(pgLayer(url.toString())),
+    ResourceRemovalLive.pipe(
+      Layer.provideMerge(
+        Layer.merge(
+          repos,
+          Layer.succeed(ResourceScopes, { of: () => Effect.succeed(absentServer) }),
+        ),
+      ),
     ),
   );
   const drop = async () => {
@@ -195,6 +226,69 @@ describe.skipIf(postgres.skip)("two purges of one removed project, in Postgres",
     database = undefined;
   });
 
+  it("removes a worktree with a checked dump after its server row is gone, then removes and purges its project", async () => {
+    database = await scratchDatabase();
+    const { runtime } = database;
+    const { resources, preservation } = await runtime.runPromise(
+      Effect.all({ resources: ResourcesRepo, preservation: ResourceRemoval }),
+    );
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+        VALUES (${worktree}, ${project}, 'work', 'work', 'mend/work', 'abc')`;
+        const spec = presetDefinition({
+          name: ResourceName.make("db"),
+          preset: "postgres",
+          version: PresetVersion.make("17"),
+        });
+        const identity = yield* resources.ensureIdentity(project, "db");
+        const row = yield* resources.remember(
+          project,
+          identity.id,
+          null,
+          spec,
+          ImageDigest.make(`sha256:${"a".repeat(64)}`),
+          "alice",
+        );
+        yield* resources.recordOwnDatabase(worktree, row.id, "empty");
+        const at = new Date("2026-11-01T12:00:00Z");
+        yield* resources.reserveRemovalDump(
+          worktree,
+          row.id,
+          `${ownDatabaseName(worktree)}-removed-20261101T120000Z.dump`,
+          at,
+        );
+        yield* resources.checkRemovalDump(worktree, row.id, at);
+        yield* resources.removeInstance(row.id, null);
+      }),
+    );
+    api = await createTenancyApi(undefined, {
+      implement: {
+        ...quietWorktree(),
+        resources,
+        resourceRemoval: preservation,
+        store: {
+          removeWorktreeForce: () => Effect.succeed({ leftover: null }),
+          removeProjectStore: () => Effect.succeed({ leftover: null }),
+        },
+      },
+    });
+    const removed = await api.request("alice", "DELETE", `/api/worktrees/${worktree}`);
+    expect(removed.status).toBe(200);
+    expect(await removed.json()).toMatchObject({
+      resourceStatusLines: [expect.stringContaining("saved when @db was archived")],
+    });
+    expect(
+      (await runtime.runPromise(resources.ownDatabaseRemovals(worktree)))[0]?.removedAt,
+    ).toBeInstanceOf(Date);
+    expect((await api.request("alice", "DELETE", `/api/projects/${project}`)).status).toBe(200);
+    const purged = await api.request("alice", "POST", `/api/removed-projects/${project}/purge`, {
+      confirm: "private-alice",
+    });
+    expect(purged.status).toBe(200);
+  }, 60_000);
+
   it("refuses a second purge while one deletes; a failed purge stays fenced, and the next purge finishes it", async () => {
     database = await scratchDatabase();
     const { runtime } = database;
@@ -240,7 +334,7 @@ describe.skipIf(postgres.skip)("two purges of one removed project, in Postgres",
     expect(restore.status).toBe(409);
 
     const spec = withPresetCommand(
-      Schema.decodeUnknownSync(ResourceDefinitionInput)({
+      Schema.decodeUnknownSync(ResourceDefinition)({
         name: "db",
         scope: "project",
         preset: "postgres",
@@ -254,13 +348,7 @@ describe.skipIf(postgres.skip)("two purges of one removed project, in Postgres",
       }),
     );
     const declared = await runtime.runPromise(
-      resources
-        .declare(
-          project,
-          { spec, imageDigest: ImageDigest.make(`sha256:${"a".repeat(64)}`) },
-          "alice",
-        )
-        .pipe(Effect.result),
+      resources.ensureIdentity(project, spec.name).pipe(Effect.result),
     );
     expect(Result.isFailure(declared) ? declared.failure : "accepted").toMatchObject({
       _tag: "ResourceDefinitionRefusedError",

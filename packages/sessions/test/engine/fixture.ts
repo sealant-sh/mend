@@ -2643,6 +2643,7 @@ export const projectsLayer = (world: World) =>
     setCreatedBy: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
     setApplyDotfiles: () => Effect.die("not in test"),
+    setNewWorktreesUseProjectResources: () => Effect.die("not in test"),
     setDefaultShellProfile: () => Effect.die("not in test"),
     setInheritUserSkills: () => Effect.die("not in test"),
     setHotSessions: () => Effect.die("not in test"),

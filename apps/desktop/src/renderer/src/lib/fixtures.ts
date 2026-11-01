@@ -41,6 +41,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
   workspaceImage: null,
   applyDotfiles: false,
   defaultShellProfile: true,
+  newWorktreesUseProjectResources: true,
   inheritUserSkills: true,
   hotSessions: 0,
   installCommand: null,

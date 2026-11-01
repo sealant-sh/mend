@@ -1,5 +1,9 @@
-import { redactRepositoryUrl } from "@mend/domain/workbench";
-import { Effect } from "effect";
+import {
+  redactRepositoryUrl,
+  ResourceDefinition,
+  resourceSpecDigest,
+} from "@mend/domain/workbench";
+import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 
 /**
@@ -4860,6 +4864,54 @@ const resourceRemovalMigration = Effect.gen(function* () {
     FOR EACH ROW EXECUTE FUNCTION require_project_resource_archive()`;
 });
 
+/** 0177: definitions identify names; instances remember explicit starts at either level. */
+const resourceLevelsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE projects ADD COLUMN new_worktrees_use_project_resources boolean NOT NULL DEFAULT true`;
+  yield* sql`ALTER TABLE worktrees ADD COLUMN uses_project_resources boolean NOT NULL DEFAULT true`;
+  yield* sql`CREATE TABLE resource_instances (
+    resource_id text NOT NULL REFERENCES resource_definitions(id) ON DELETE CASCADE,
+    worktree_id text,
+    spec jsonb NOT NULL,
+    spec_digest text NOT NULL CHECK (spec_digest ~ '^[0-9a-f]{64}$'),
+    image_digest text NOT NULL CHECK (image_digest ~ '^sha256:[0-9a-f]{64}$'),
+    started_by text NOT NULL,
+    started_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`;
+  yield* sql`CREATE UNIQUE INDEX resource_instances_level_key ON resource_instances(resource_id, coalesce(worktree_id, ''))`;
+  yield* sql`ALTER TABLE resource_selections DROP CONSTRAINT resource_selections_mode_check`;
+  yield* sql`UPDATE resource_selections SET mode = CASE mode WHEN 'shared' THEN 'project' WHEN 'own' THEN 'worktree' ELSE mode END`;
+  yield* sql`ALTER TABLE resource_selections ADD CONSTRAINT resource_selections_mode_check CHECK (mode IN ('project', 'worktree', 'off'))`;
+  // Existing worktree Postgres containers are retained as legacy instance rows as well: migration
+  // must not orphan their app databases. New worktree Postgres starts use own-database rows only.
+  yield* sql`INSERT INTO resource_instances(resource_id, worktree_id, spec, spec_digest, image_digest, started_by, started_at, updated_at)
+    SELECT d.id, NULL, d.spec - 'scope', d.spec_digest, d.image_digest, d.added_by, d.created_at, d.updated_at
+      FROM resource_definitions d WHERE d.scope = 'project'
+    UNION ALL
+    SELECT d.id, w.id, d.spec - 'scope', d.spec_digest, d.image_digest, d.added_by, d.created_at, d.updated_at
+      FROM resource_definitions d JOIN worktrees w ON w.project_id = d.project_id
+      WHERE d.scope = 'worktree' AND EXISTS (SELECT 1 FROM agent_sessions a
+        WHERE a.worktree_id = w.id AND a.created_at >= d.created_at)`;
+  yield* sql`INSERT INTO resource_selections(worktree_id, definition_id, mode, chosen_by)
+    SELECT i.worktree_id, i.resource_id, 'worktree', i.started_by FROM resource_instances i
+    WHERE i.worktree_id IS NOT NULL
+    ON CONFLICT (worktree_id, definition_id) DO UPDATE SET mode = 'worktree'`;
+  // The application canonicalizer, rather than Postgres jsonb formatting, owns digest bytes.
+  const rows = yield* sql<{
+    resource_id: string;
+    worktree_id: string | null;
+    spec: unknown;
+  }>`SELECT resource_id, worktree_id, spec FROM resource_instances`;
+  for (const row of rows) {
+    const spec = yield* Schema.decodeUnknownEffect(ResourceDefinition)(row.spec).pipe(Effect.orDie);
+    yield* sql`UPDATE resource_instances SET spec_digest = ${resourceSpecDigest(spec)}
+      WHERE resource_id = ${row.resource_id} AND worktree_id IS NOT DISTINCT FROM ${row.worktree_id}`;
+  }
+  yield* sql`ALTER TABLE resource_definitions DROP COLUMN scope, DROP COLUMN preset, DROP COLUMN spec,
+    DROP COLUMN spec_digest, DROP COLUMN image_digest, DROP COLUMN added_by, DROP COLUMN updated_at`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5025,4 +5077,5 @@ export const migrations = {
   "0174_resource_runtime": resourceRuntimeMigration,
   "0175_resource_loads": resourceLoadsMigration,
   "0176_resource_removal": resourceRemovalMigration,
+  "0177_resource_levels": resourceLevelsMigration,
 };

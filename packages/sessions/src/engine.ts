@@ -23660,6 +23660,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 worktreeId: session.worktreeId,
                 workspaceId: workspace.id,
                 launcher: resourceLauncher,
+                service: service.name,
                 dependencies: launch.depends,
                 recipeEnv: launch.env,
               });
@@ -23712,7 +23713,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ...(cwd === undefined ? {} : { cwd }),
               env: serviceProcessEnv({
                 resources,
-                recipe: launch.env,
+                recipe: preparedResources.recipeEnv ?? launch.env,
                 port: service.workspacePort,
                 previewUrl,
                 dependencies: start.dependencies,
@@ -24288,6 +24289,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (retired !== null) return yield* new ServiceStartError({ message: retired });
         yield* Effect.acquireRelease(enterJoin(workspaceId), () => leaveJoin(workspaceId));
         const person = yield* startAsPerson(session, workspace, Effect.succeed(runsAs), "shell");
+        const resourceEnv = yield* resourceEnvOf(session, workspace, runsAs, false);
         yield* setupRunner.run({
           plan: {
             stopped: () => plan.stopped,
@@ -24301,6 +24303,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           worktreeId: session.worktreeId,
           copy,
           workspace,
+          resourceEnv,
           person: person === null ? null : { user: person.user, env: person.env },
           runsAs,
           runAgain,

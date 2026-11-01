@@ -1,20 +1,22 @@
+import { createInterface } from "node:readline/promises";
+
 import {
-  type ResourceAdded,
-  resourceAdditionOf,
   type ResourceControlled,
   type ResourceEnvAnswer,
-  resourcePositionals,
-  resourceRefusalWords,
   type ResourceSelectionEntry,
   type ResourcesPage,
+  type ResourceStarted,
+  resourcePositionals,
   resourceTableNotices,
-  WorktreeChoice,
+  resourceChoiceOf,
+  resourceLevelFlag,
+  resourceLevelHint,
 } from "@mend/domain/workbench";
-import { Schema } from "effect";
 
 import type { ApiCall } from "./pair.ts";
 import { type ResourceLoadUpload, runResourceLoad } from "./resource-load.ts";
 import {
+  gitCurrentBranch,
   jsonWithoutCredentials,
   paint,
   printable,
@@ -58,7 +60,7 @@ export const renderResources = (
   const lines: Array<string> = [];
   if (page.settings.length > 0) {
     lines.push(
-      "settings",
+      "instances",
       ...page.settings.map((entry) => `  ${entryLine(entry, entry.image, entry.id)}`),
     );
   }
@@ -72,122 +74,12 @@ export const renderResources = (
   if (file.kind === "read") {
     lines.push(
       `${where} · ${printable(file.observed)}`,
-      ...file.tables.flatMap((table) => [
-        `  ${entryLine(table, table.spec.image, null)}`,
-        ...(table.add.kind === "ready"
-          ? [
-              `    ${dim(`mend resource add ${printable(table.spec.name)} --from-file --worktree ${printable(worktree ?? "")}`)}`,
-            ]
-          : []),
-      ]),
+      ...file.tables.map((table) => `  ${entryLine(table, table.spec.image, null)}`),
       ...resourceTableNotices(file).map((notice) => `  ${printable(notice)}`),
     );
   }
-  return lines.length > 0
-    ? lines
-    : [`no resources in ${printable(project.name)} · mend resource add adds one`];
+  return lines.length > 0 ? lines : [`no resources in ${printable(project.name)}`];
 };
-
-type RemovalTarget =
-  | {
-      readonly kind: "definition";
-      readonly route: string;
-      readonly body: unknown;
-      readonly line: string;
-    }
-  | { readonly kind: "none"; readonly message: string };
-
-/**
- * What `mend resource remove` removes, from the page the caller just read: the definition
- * settings hold under the name, or the one `--definition` names by the id `mend resource list`
- * prints, which must be of the name when one is given too.
- */
-export const removalTarget = (
-  project: ProjectRef,
-  page: ResourcesPage,
-  name: string | null,
-  definition: string | null,
-): RemovalTarget => {
-  const entry =
-    definition === null
-      ? page.settings.find((each) => each.spec.name === name)
-      : page.settings.find((each) => each.id === definition);
-  if (entry === undefined) {
-    return {
-      kind: "none",
-      message:
-        definition !== null
-          ? `no definition ${printable(definition)} in ${printable(project.name)}`
-          : name === null
-            ? "name the resource: mend resource remove db"
-            : `no @${printable(name)} in ${printable(project.name)}`,
-    };
-  }
-  if (name !== null && entry.spec.name !== name) {
-    return {
-      kind: "none",
-      message: `${printable(entry.id)} is @${printable(entry.spec.name)}, not @${printable(name)} · nothing was removed`,
-    };
-  }
-  return {
-    kind: "definition",
-    route: `/projects/${encodeURIComponent(project.id)}/resources/${encodeURIComponent(entry.id)}`,
-    body: { expectedDigest: entry.digest },
-    line: entryLine(entry, entry.image, entry.id),
-  };
-};
-
-/**
- * What `mend resource add <name> --from-file` adds, from the page read for `--worktree`: the
- * `[resource.<name>]` table in its `.mend/mend.toml`, as the page offers it. A table settings already
- * hold the same is said, and nothing is posted.
- */
-export const tableAddition = (
-  page: ResourcesPage,
-  name: string,
-  worktree: string,
-):
-  | { readonly kind: "ready"; readonly body: unknown; readonly line: string }
-  | { readonly kind: "added"; readonly message: string }
-  | { readonly kind: "refused"; readonly message: string } => {
-  const where = `.mend/mend.toml in ${printable(worktree)}`;
-  const file = page.file;
-  if (file.kind !== "read") {
-    return {
-      kind: "refused",
-      message: `${where} · ${"message" in file ? printable(file.message) : file.kind}`,
-    };
-  }
-  const table = file.tables.find((each) => each.spec.name === name);
-  if (table === undefined) {
-    return { kind: "refused", message: `no [resource.${printable(name)}] in ${where}` };
-  }
-  const named = `@${printable(name)}`;
-  switch (table.add.kind) {
-    case "ready":
-      return {
-        kind: "ready",
-        body: { kind: "definition", spec: table.spec },
-        line: entryLine(table, table.spec.image, null),
-      };
-    case "added":
-      return { kind: "added", message: `${named} is in settings already, as ${where} has it` };
-    case "denied":
-      return { kind: "refused", message: `${printable(table.add.message)} · nothing was added` };
-    case "rejected":
-      return {
-        kind: "refused",
-        message: [
-          ...table.add.refusals.map(
-            (refusal) => `${named} · ${printable(resourceRefusalWords(refusal))}`,
-          ),
-          "nothing was added",
-        ].join("\n"),
-      };
-  }
-};
-
-const isChoice = Schema.is(WorktreeChoice);
 
 const readerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
@@ -200,7 +92,7 @@ export const resourceCommand = async (
   const [first, ...after] = args;
   const verb = first?.startsWith("--") === true ? undefined : first;
   const rest = verb === undefined ? args : after;
-  const project = await projectOf(takeFlagValue(rest, "--project"));
+  const project = await projectOf(takeFlagValue(rest, "--project-id"));
   const zone = `timeZone=${encodeURIComponent(readerZone())}`;
   const read = (worktreeId: string | null) =>
     api<ResourcesPage>(
@@ -209,7 +101,11 @@ export const resourceCommand = async (
     );
   /** The `--worktree` named, by name or id; null when none is. */
   const worktreeOf = async () => {
-    const named = takeFlagValue(rest, "--worktree");
+    let named = takeFlagValue(rest, "--worktree-id");
+    if (named === null) {
+      const branch = gitCurrentBranch(process.cwd());
+      if (branch?.startsWith("mend/") === true) named = branch.slice(5);
+    }
     if (named === null) return null;
     const listing = await api<{
       readonly worktrees: ReadonlyArray<{ readonly id: string; readonly name: string }>;
@@ -235,76 +131,104 @@ export const resourceCommand = async (
       for (const line of renderResources(project, page, worktreeName)) say(line);
       return;
     }
-    case "add": {
-      // A worktree resource starts in the worktree named; a project resource starts either way.
-      const from = await worktreeOf();
-      const added = async (body: unknown) => {
-        const answer = await api<ResourceAdded>(
-          "POST",
-          `/projects/${project.id}/resources?${zone}${from === null ? "" : `&worktreeId=${encodeURIComponent(from.id)}`}`,
-          body,
-        );
-        say(printable(answer.definition.statusLine));
-        const by =
-          answer.resolvedBy === null ? "" : ` · digest from ${printable(answer.resolvedBy)}`;
-        say(dim(`image ${printable(answer.definition.image)}${by}`));
-      };
-      if (rest.includes("--from-file")) {
-        if (name === null) return fail("name the resource: mend resource add db --from-file");
-        if (from === null) {
-          return fail("name the worktree whose .mend/mend.toml holds it: --worktree <w>");
-        }
-        const table = tableAddition(await read(from.id), name, from.label);
-        if (table.kind === "refused") return fail(table.message);
-        if (table.kind === "added") return say(table.message);
-        say(`adding ${table.line}`);
-        return added(table.body);
-      }
-      const addition = resourceAdditionOf(rest);
-      if (!addition.ok) return fail(addition.message);
-      return added(addition.body);
-    }
+    case "add":
+      return fail("not available in this build");
     case "remove": {
-      const target = removalTarget(
-        project,
-        await read(null),
-        name,
-        takeFlagValue(rest, "--definition"),
-      );
-      if (target.kind === "none") return fail(target.message);
-      say(`removing ${target.line}`);
-      const removed = await api<{ readonly statusLine: string }>(
+      if (rest.includes("--project") && rest.includes("--worktree"))
+        return fail("choose one level: --project or --worktree");
+      if (name === null)
+        return fail("name the resource: mend resource remove db --project or --worktree");
+      const level = resourceLevelFlag(rest);
+      if (level === null)
+        return fail(`choose a level: mend resource remove ${name} --project or --worktree`);
+      const worktree = await worktreeOf();
+      if (worktree === null) return fail("name the worktree: --worktree-id <w>");
+      const answer = await api<{ readonly statusLine: string }>(
         "DELETE",
-        target.route,
-        target.body,
+        `/projects/${project.id}/resources/${encodeURIComponent(name)}`,
+        { level, worktreeId: worktree.id },
       );
-      return say(printable(removed.statusLine));
+      return say(printable(answer.statusLine));
     }
     case "use": {
-      const mode = resourcePositionals(rest)[1] ?? "";
-      if (name === null || !isChoice(mode)) {
-        return fail("name the resource and a choice: mend resource use db own --worktree checkout");
-      }
+      const mode = resourceChoiceOf(resourcePositionals(rest)[1] ?? "");
+      if (name === null || mode === null)
+        return fail("name the resource and a choice: mend resource use db project|worktree|off");
       const worktree = await worktreeOf();
-      if (worktree === null) return fail("name the worktree that uses it: --worktree <w>");
-      const held = (await read(null)).settings.find((entry) => entry.spec.name === name);
-      if (held === undefined) return fail(`no @${printable(name)} in settings`);
-      const chosen = await api<ResourceSelectionEntry>(
+      if (worktree === null) return fail("name the worktree: --worktree-id <w>");
+      const answer = await api<ResourceSelectionEntry>(
         "PUT",
-        `/projects/${project.id}/worktrees/${encodeURIComponent(worktree.id)}/resources/${encodeURIComponent(held.id)}/selection?${zone}`,
+        `/projects/${project.id}/worktrees/${encodeURIComponent(worktree.id)}/resources/${encodeURIComponent(name)}/selection?${zone}`,
         { mode },
       );
-      return say(printable(chosen.statusLine));
+      say(printable(answer.statusLine));
+      if (answer.message !== null && answer.message !== answer.statusLine)
+        say(printable(answer.message));
+      return;
     }
     case "start":
     case "stop": {
       if (name === null) return fail(`name the resource: mend resource ${verb} db`);
+      let level = resourceLevelFlag(rest);
+      if (rest.includes("--project") && rest.includes("--worktree"))
+        return fail("choose one level: --project or --worktree");
+      if (verb === "start" && level === null) {
+        if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
+          return fail(resourceLevelHint(name));
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          const choice = (await rl.question("project or worktree? ")).trim();
+          level = choice === "project" || choice === "worktree" ? choice : null;
+        } finally {
+          rl.close();
+        }
+        if (level === null) return fail(resourceLevelHint(name));
+      }
       const worktree = await worktreeOf();
-      const answer = await api<ResourceControlled>(
-        "POST",
-        `/projects/${project.id}/resources/${encodeURIComponent(name)}/${verb}?${zone}${worktree === null ? "" : `&worktreeId=${encodeURIComponent(worktree.id)}`}`,
-      );
-      return say(printable(answer.statusLine));
+      if (worktree === null) return fail("name the worktree: --worktree-id <w>");
+      const route = `/projects/${project.id}/resources/${encodeURIComponent(name)}/${verb}?${zone}`;
+      if (verb === "stop") {
+        const answer = await api<ResourceControlled>("POST", route, {
+          ...(level === null ? {} : { level }),
+          worktreeId: worktree.id,
+        });
+        say(printable(answer.statusLine));
+        if (answer.message !== null) say(printable(answer.message));
+        return;
+      }
+      let answer = await api<ResourceStarted>("POST", route, {
+        level,
+        worktreeId: worktree.id,
+        restart: rest.includes("--restart"),
+      });
+      if (answer.kind === "needs-restart") {
+        say(printable(answer.statusLine));
+        for (const used of answer.worktrees) say(`  ${printable(used.name)}`);
+        if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
+          return say(printable(answer.hint));
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        let restart = false;
+        try {
+          restart = /^(y|yes)$/i.test(
+            (
+              await rl.question(
+                `restart @${printable(name)} with this worktree's definition? [y/N] `,
+              )
+            ).trim(),
+          );
+        } finally {
+          rl.close();
+        }
+        if (!restart) return;
+        answer = await api<ResourceStarted>("POST", route, {
+          level,
+          worktreeId: worktree.id,
+          restart: true,
+        });
+      }
+      say(printable(answer.statusLine));
+      if (answer.kind === "started" && answer.message !== null) say(printable(answer.message));
+      return;
     }
     case "load": {
       if (name === null) return fail("name the resource: mend resource load db --from dump.sql");
@@ -330,10 +254,10 @@ export const resourceCommand = async (
       }
     }
     case "reset": {
-      if (name === null) return fail("name the resource: mend resource reset db --worktree <w>");
+      if (name === null) return fail("name the resource: mend resource reset db --worktree-id <w>");
       const worktree = await worktreeOf();
       if (worktree === null)
-        return fail("name the worktree whose database to reset: --worktree <w>");
+        return fail("name the worktree whose database to reset: --worktree-id <w>");
       const target = takeFlagValue(rest, "--target");
       if (target !== null && target !== "shared" && target !== "own") {
         return fail("--target is shared or own");
@@ -346,7 +270,7 @@ export const resourceCommand = async (
     }
     case "env": {
       const worktree = await worktreeOf();
-      if (worktree === null) return fail("name the worktree whose env to print: --worktree <w>");
+      if (worktree === null) return fail("name the worktree whose env to print: --worktree-id <w>");
       const answer = await api<ResourceEnvAnswer>(
         "GET",
         `/projects/${project.id}/worktrees/${encodeURIComponent(worktree.id)}/resources/env?${zone}`,

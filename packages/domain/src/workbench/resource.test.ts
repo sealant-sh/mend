@@ -3,35 +3,34 @@ import { createHash } from "node:crypto";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { ResourceDefinitionId } from "../ids.ts";
 import {
   choicesFor,
-  defaultChoiceFor,
+  choiceInEffect,
   envCollisionRefusals,
   resourceRefusalWords,
   envNameCollisions,
   ImageDigest,
   imageDigestOf,
   imageReference,
-  onlyOfItsEngine,
   parseImageReference,
   pinImage,
   presetDefinition,
   PresetVersion,
   type ResourceBinding,
-  ResourceDefinitionInput,
+  ResourceDefinition,
   resourceDefinitionRefusals,
   resourceEnvNames,
   resourceEnvPrefix,
   ResourceName,
   resourceNameIssue,
   resourceSpecDigest,
-  selectionRefusal,
   withPresetCommand,
 } from "./resource.ts";
 
-const decode = Schema.decodeUnknownSync(ResourceDefinitionInput);
+const decode = Schema.decodeUnknownSync(ResourceDefinition);
 
-const define = (overrides: Record<string, unknown> = {}): ResourceDefinitionInput =>
+const define = (overrides: Record<string, unknown> = {}): ResourceDefinition =>
   decode({
     name: "queue",
     scope: "project",
@@ -213,7 +212,6 @@ describe("rules across a definition's fields", () => {
     ],
     ["a preset's check without a preset", { ready: { kind: "preset" } }, "ready"],
     ["an export Mend already sets", { exports: { HOST: "{host}" } }, "exports.HOST"],
-    ["an export over a named port", { exports: { PORT_AMQP: "{port}" } }, "exports.PORT_AMQP"],
     ["an export of an unknown port", { exports: { URL: "{host}:{port.http}" } }, "exports.URL"],
     ["an export of an env the definition lacks", { exports: { URL: "{env.PASS}" } }, "exports.URL"],
     [
@@ -259,7 +257,6 @@ describe("rules across a definition's fields", () => {
 
   it.each([
     ["exports on a preset", postgres({ exports: { URL: "postgres://{host}" } }), "exports"],
-    ["a worktree Redis", redis({ scope: "worktree" }), "scope"],
     ["a Postgres preset on a Redis image", postgres({ image: "redis:8" }), "image"],
     [
       "a Postgres preset on an image of another name",
@@ -305,151 +302,57 @@ describe("rules across a definition's fields", () => {
     expect(refusal?.message).toMatch(/\{ at 7/);
   });
 
-  it("says why a worktree Redis waits", () => {
-    const [refusal] = resourceDefinitionRefusals(redis({ scope: "worktree" }));
-    expect(refusal?.message).toMatch(/Redis/);
-    expect(refusal?.message).toMatch(/project/);
+  it("accepts old JSON with scope while discarding the key", () => {
+    const def = define({ scope: "worktree" });
+    expect("scope" in def).toBe(false);
+    expect(resourceSpecDigest(def)).toBe(resourceSpecDigest(define()));
   });
 });
 
-describe("the scope policy", () => {
+describe("choices and Mend's env namespace", () => {
+  it.each([postgres(), mysql(), redis(), define()])("offers both levels and off", (def) => {
+    expect(choicesFor(def)).toEqual(["project", "worktree", "off"]);
+  });
+  it("uses the worktree's stored visibility default", () => {
+    expect(choiceInEffect(null)).toBe("project");
+    expect(choiceInEffect(null, false)).toBe("off");
+    expect(choiceInEffect("worktree", false)).toBe("worktree");
+  });
   it.each([
-    ["project", "postgres", ["shared", "own", "off"], "own"],
-    ["project", "mysql", ["shared", "off"], "shared"],
-    ["project", "redis", ["shared", "off"], "shared"],
-    ["project", null, ["shared", "off"], "shared"],
-    ["worktree", "postgres", [], null],
-    ["worktree", "mysql", [], null],
-    ["worktree", null, [], null],
-    ["worktree", "redis", [], null],
-  ] as const)("%s %s offers %j and defaults to %s", (scope, preset, choices, chosen) => {
-    expect(choicesFor({ scope, preset })).toEqual(choices);
-    expect(defaultChoiceFor({ scope, preset })).toBe(chosen);
-  });
-
-  it("offers no own Redis at project scope", () => {
-    expect(choicesFor({ scope: "project", preset: "redis" })).not.toContain("own");
-  });
-
-  it("lets every non-refused definition through validation", () => {
-    for (const def of [
-      postgres(),
-      mysql(),
-      redis(),
-      define(),
-      postgres({ scope: "worktree" }),
-      mysql({ scope: "worktree" }),
-      define({ name: "mail", scope: "worktree" }),
-    ]) {
-      expect(resourceDefinitionRefusals(def)).toEqual([]);
-    }
-  });
-});
-
-describe("a worktree's selection", () => {
-  it.each([
-    ["shared on a Postgres preset", postgres(), "shared"],
-    ["own on a Postgres preset", postgres(), "own"],
-    ["off on a Redis preset", redis(), "off"],
-    ["shared on another image", define(), "shared"],
-  ] as const)("takes %s", (_, def, mode) => {
-    expect(selectionRefusal(def, mode)).toBeNull();
-  });
-
-  it.each([
-    ["own on Redis, which offers shared and off", redis(), "own", "mode"],
-    ["own on MySQL, whose own comes later", mysql(), "own", "mode"],
-    ["own on another image, whose own comes later", define(), "own", "mode"],
-    ["any selection of a worktree resource", define({ scope: "worktree" }), "shared", "selection"],
-    ["any selection of a refused worktree Redis", redis({ scope: "worktree" }), "off", "selection"],
-  ] as const)("refuses %s by its key", (_, def, mode, key) => {
-    expect(selectionRefusal(def, mode)?.key).toBe(key);
-  });
-});
-
-const bind = (
-  definition: ResourceDefinitionInput,
-  mode: "shared" | "own" = "shared",
-): ResourceBinding =>
-  definition.scope === "worktree" ? { definition, mode: "worktree" } : { definition, mode };
-
-const namesOf = (bound: ReadonlyArray<ResourceBinding>, name: string) =>
-  [...resourceEnvNames(bound)].find(([resource]) => resource === name)?.[1];
-
-describe("env names", () => {
-  it("writes the name in upper case with - as _", () => {
-    expect(resourceEnvPrefix(ResourceName.make("mail-catcher"))).toBe(
-      "MEND_RESOURCE_MAIL_CATCHER_",
-    );
-  });
-
-  it("gives the host, the first port, each named port and the exports", () => {
-    const mail = define({
-      name: "mail-catcher",
-      scope: "worktree",
-      image: "axllent/mailpit:v1.21",
-      ports: [
-        { name: "smtp", port: 1025, protocol: "tcp" },
-        { name: "web-ui", port: 8025, protocol: "tcp" },
-      ],
-      exports: { SMTP_URL: "smtp://{host}:{port.smtp}" },
+    "preview",
+    "session",
+    "session-token",
+    "service",
+    "service-web",
+    "agent",
+    "agent-process",
+    "setup",
+  ])("refuses %s because Mend supplies that env name or family", (name) => {
+    expect(resourceDefinitionRefusals(define({ name }))).toContainEqual({
+      key: "name",
+      message: "generates env names Mend owns",
     });
-    expect(namesOf([bind(mail)], "mail-catcher")).toEqual([
-      "MEND_RESOURCE_MAIL_CATCHER_HOST",
-      "MEND_RESOURCE_MAIL_CATCHER_PORT",
-      "MEND_RESOURCE_MAIL_CATCHER_PORT_SMTP",
-      "MEND_RESOURCE_MAIL_CATCHER_PORT_WEB_UI",
-      "MEND_RESOURCE_MAIL_CATCHER_SMTP_URL",
+  });
+});
+
+const bind = (definition: ResourceDefinition): ResourceBinding => ({
+  definition,
+  level: "project",
+  resourceId: ResourceDefinitionId.make("names"),
+  instanceKey: "names",
+  database: definition.preset === "postgres" ? "app" : null,
+});
+describe("env names", () => {
+  it("uses the short prefix and only Mend names", () => {
+    expect(resourceEnvPrefix(ResourceName.make("mail-catcher"))).toBe("MEND_MAIL_CATCHER_");
+    expect(resourceEnvNames([bind(postgres())]).get(ResourceName.make("db"))).toEqual([
+      "MEND_DB_URL",
+      "MEND_DB_HOST",
+      "MEND_DB_PORT",
+      "MEND_DB_USER",
+      "MEND_DB_PASSWORD",
+      "MEND_DB_DATABASE",
     ]);
-  });
-
-  const fixed = [
-    "MEND_RESOURCE_DB_HOST",
-    "MEND_RESOURCE_DB_PORT",
-    "MEND_RESOURCE_DB_PORT_POSTGRES",
-    "MEND_RESOURCE_DB_URL",
-    "MEND_RESOURCE_DB_DATABASE",
-    "MEND_RESOURCE_DB_USERNAME",
-  ];
-  const conventional = ["DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE"];
-
-  it("gives the one Postgres in use DATABASE_URL and PG*", () => {
-    expect(namesOf([bind(postgres())], "db")).toEqual([...fixed, ...conventional]);
-  });
-
-  it("gives neither of two Postgres in use DATABASE_URL or PG*", () => {
-    const bound = [bind(postgres()), bind(postgres({ name: "analytics" }))];
-    expect(namesOf(bound, "db")).toEqual(fixed);
-  });
-
-  it("counts only the resources in use as the engine's", () => {
-    const bound = [bind(postgres()), bind(redis()), bind(define())];
-    expect(namesOf(bound, "db")).toEqual([...fixed, ...conventional]);
-  });
-
-  it("gives own and shared the same names: only the database differs", () => {
-    expect(namesOf([bind(postgres(), "own")], "db")).toEqual(namesOf([bind(postgres())], "db"));
-  });
-
-  it("gives Redis _URL, and REDIS_URL only when it is the one Redis", () => {
-    expect(namesOf([bind(redis())], "cache")).toContain("MEND_RESOURCE_CACHE_URL");
-    expect(namesOf([bind(redis())], "cache")).toContain("REDIS_URL");
-    expect(namesOf([bind(redis())], "cache")).not.toContain("DATABASE_URL");
-    const two = [bind(redis()), bind(redis({ name: "sessions" }))];
-    expect(namesOf(two, "cache")).not.toContain("REDIS_URL");
-  });
-
-  it("gives an image Mend does not know no conventional names", () => {
-    expect(namesOf([bind(define())], "queue")).toEqual([
-      "MEND_RESOURCE_QUEUE_HOST",
-      "MEND_RESOURCE_QUEUE_PORT",
-      "MEND_RESOURCE_QUEUE_PORT_AMQP",
-    ]);
-  });
-
-  it("counts no image Mend does not know as the one of its engine", () => {
-    expect(onlyOfItsEngine(define(), [define()])).toBe(false);
-    expect(onlyOfItsEngine(postgres(), [postgres(), define()])).toBe(true);
   });
 });
 
@@ -461,16 +364,13 @@ describe("env name collisions", () => {
   it("reports an export that lands on another resource's name", () => {
     const db = define({ name: "db", exports: { MAIN_URL: "{host}" } });
     expect(envNameCollisions([db, postgres({ name: "db-main" })])).toEqual([
-      { name: "MEND_RESOURCE_DB_MAIN_URL", resources: ["db", "db-main"] },
+      { name: "MEND_DB_MAIN_URL", resources: ["db", "db-main"] },
     ]);
   });
 
-  it("reports a named port that lands on another resource's host", () => {
+  it("does not export per-port env names automatically", () => {
     const db = define({ name: "db", ports: [{ name: "host", port: 1, protocol: "tcp" }] });
-    const dbPort = define({ name: "db-port" });
-    expect(envNameCollisions([db, dbPort])).toEqual([
-      { name: "MEND_RESOURCE_DB_PORT_HOST", resources: ["db", "db-port"] },
-    ]);
+    expect(envNameCollisions([db, define({ name: "db-port" })])).toEqual([]);
   });
 
   it("leaves the conventional names out when two of one engine are in use", () => {
@@ -481,8 +381,8 @@ describe("env name collisions", () => {
     expect(resourceRefusalWords({ key: "exports.MAIN_URL", message: "sets X" })).toBe(
       "exports.MAIN_URL sets X",
     );
-    expect(resourceRefusalWords({ key: "", message: "sets MEND_RESOURCE_DB_MAIN_URL" })).toBe(
-      "sets MEND_RESOURCE_DB_MAIN_URL",
+    expect(resourceRefusalWords({ key: "", message: "sets MEND_DB_MAIN_URL" })).toBe(
+      "sets MEND_DB_MAIN_URL",
     );
   });
 
@@ -493,12 +393,12 @@ describe("env name collisions", () => {
         resource: "db",
         refusal: {
           key: "exports.MAIN_URL",
-          message: "sets MEND_RESOURCE_DB_MAIN_URL, as db-main does too",
+          message: "sets MEND_DB_MAIN_URL, as db-main does too",
         },
       },
       {
         resource: "db-main",
-        refusal: { key: "", message: "sets MEND_RESOURCE_DB_MAIN_URL, as db does too" },
+        refusal: { key: "", message: "sets MEND_DB_MAIN_URL, as db does too" },
       },
     ]);
   });
@@ -556,7 +456,7 @@ describe("a definition's digest", () => {
       '{"command":null,"env":{"A":{"secret":"TOKEN"},"B":"2"},"exports":{},' +
       '"image":"rabbitmq:4-management","limits":{"cpu":1,"diskGiB":10,"memoryMiB":1024},' +
       '"name":"queue","ports":[{"name":"amqp","port":5672,"protocol":"tcp"}],"preset":null,' +
-      '"ready":{"kind":"tcp"},"scope":"project",' +
+      '"ready":{"kind":"tcp"},' +
       '"volumes":[{"mountPath":"/var/lib/rabbitmq","name":"data"}]}';
     expect(resourceSpecDigest(spec)).toBe(createHash("sha256").update(canonical).digest("hex"));
   });
@@ -572,7 +472,6 @@ describe("a definition's digest", () => {
       command: null,
       image: "rabbitmq:4-management",
       preset: null,
-      scope: "project",
       name: "queue",
     });
     expect(resourceSpecDigest(written)).toBe(
@@ -582,7 +481,6 @@ describe("a definition's digest", () => {
 
   it.each([
     ["name", { name: "mq" }],
-    ["scope", { scope: "worktree" }],
     ["preset", { preset: "redis" }],
     ["image", { image: "rabbitmq:4" }],
     ["command", { command: ["rabbitmq-server"] }],
@@ -617,7 +515,6 @@ describe("a preset's definition", () => {
       name: ResourceName.make("db"),
       preset: "postgres",
       version: PresetVersion.make("17"),
-      scope: "project",
     });
     expect(db).toMatchObject({
       image: "postgres:17",
@@ -633,10 +530,9 @@ describe("a preset's definition", () => {
       name: ResourceName.make("db"),
       preset: "postgres",
       version: PresetVersion.make("18"),
-      scope: "worktree",
     });
     expect(db.volumes).toEqual([{ name: "data", mountPath: "/var/lib/postgresql" }]);
-    expect(db.scope).toBe("worktree");
+    expect("scope" in db).toBe(false);
   });
 
   it.each([
@@ -654,7 +550,6 @@ describe("a preset's definition", () => {
         name: ResourceName.make("db"),
         preset,
         version: PresetVersion.make(version),
-        scope: "project",
       } as const;
       const def = presetDefinition(input);
       expect(def.command).toEqual(command);
@@ -667,7 +562,6 @@ describe("a preset's definition", () => {
       name: ResourceName.make("cache"),
       preset: "redis",
       version: PresetVersion.make("8"),
-      scope: "project",
     });
     const table = withPresetCommand({ ...declared, command: null });
     expect(resourceSpecDigest(table)).toBe(resourceSpecDigest(declared));

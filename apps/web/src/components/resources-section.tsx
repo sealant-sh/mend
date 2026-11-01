@@ -1,35 +1,26 @@
 import type { WorktreeId } from "@mend/domain";
 import {
   choicesFor,
-  type ResourceAddOffer,
-  type ResourceRefusal,
-  resourceControls,
-  resourceRefusalWords,
-  resourceTableNotices,
+  type ResourceLevel,
   type WorktreeChoice,
+  resourceControls,
+  resourceTableNotices,
 } from "@mend/domain/workbench";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useRef, useState } from "react";
 
 import {
-  additionOf,
-  addResource,
   choiceInUse,
   choiceWords,
   chooseResource,
   controlResource,
-  type DraftField,
-  EMPTY_DRAFT,
-  fieldOf,
   readerZone,
-  removeResourceDefinition,
-  type ResourceDraft,
+  removeResourceInstance,
   type ResourceFileTableView,
   type ResourcesPageView,
   type ResourceSettingView,
 } from "#/lib/resources";
 import {
-  type Answer,
   answered,
   type ItemNote,
   refusedNote,
@@ -40,61 +31,17 @@ import { useTRPC } from "#/lib/trpc";
 
 import { ResourceLoadForm } from "./resource-load-form";
 
-/**
- * A project's resources in its setup (ADR 0019): the definitions settings hold and a chosen
- * worktree's `.mend/mend.toml` tables, each on the one status line the server sends. Every control
- * comes from the page: its flags, and the add offer the server made for each table.
- */
-
-/** The act running on each item, by item key; one at a time per item. */
+/** An item has at most one operation in progress. */
 export type Busy = ReadonlyMap<string, string>;
-
 const quiet =
   "shrink-0 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50";
-const field =
-  "w-full rounded-lg border border-input bg-background px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint";
-const hint = "mt-1 text-[11px] text-label";
-/** A choice among several, pressed or not: the card's, and the composer's resource line's. */
-export const choiceToggle = (on: boolean) =>
-  `rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
-    on
-      ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
-      : "border-border bg-card text-muted-foreground hover:text-foreground"
-  }`;
-
-const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
-
-const FORM = "form";
-
-/** An act's answer, and whatever else it changes on screen once it is known to be this read's. */
-type Settled = Answer & { readonly apply?: () => void };
-
-/** An act answered with nothing to say: the item's earlier note goes. */
-const none = (key: string): Answer => ({ at: key, note: null });
-
-/** The definition an add answered with: its pinned image lands on its line. */
-const addedNote = (added: {
-  readonly definition: ResourceSettingView;
-  readonly resolvedBy: string | null;
-}): Answer => ({
-  at: `s:${added.definition.id}`,
-  note: {
-    refused: false,
-    lines: [
-      `image ${added.definition.image}${added.resolvedBy === null ? "" : ` · digest from ${added.resolvedBy}`}`,
-    ],
-    reload: false,
-  },
-});
-
-/**
- * Keyed by project, so another project's setup starts from nothing: no answer or refusal of one
- * project's read reaches another's.
- */
+/** Shared choice control used by the Resources page and composer. */
+export const choiceToggle = (on: boolean): string =>
+  `rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${on ? "border-border bg-wash text-foreground" : "border-border bg-card text-muted-foreground hover:text-foreground"}`;
+/** The Resources page reads definitions and remembered instances, with explicit starts. */
 export function ResourcesSection({ projectId }: { readonly projectId: string }) {
   return <ProjectResources key={projectId} projectId={projectId} />;
 }
-
 function ProjectResources({ projectId }: { readonly projectId: string }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -107,736 +54,355 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
     worktreeId,
   });
   const query = useQuery(listOptions);
-  const read = resourcesRead(query, worktreeId);
   const [busy, setBusy] = useState<Busy>(new Map());
-  const running = useRef(new Map<string, string>());
+  const running = useRef(new Set<string>());
   const [notes, setNotes] = useState<ReadonlyMap<string, ItemNote>>(new Map());
-  const [draft, setDraft] = useState<ResourceDraft | null>(null);
-  const [formRefusals, setFormRefusals] = useState<ReadonlyArray<ResourceRefusal>>([]);
-  // The read on screen: its project and worktree. An act's answer belongs to the read it started
-  // from, and one that returns after the read changed is dropped, never shown under another.
-  const reading = `${projectId}\u0000${worktreeId ?? ""}`;
+  const reading = `${projectId}\0${worktreeId ?? ""}`;
   const shown = useRef(reading);
   shown.current = reading;
-
-  const invalidate = () => queryClient.invalidateQueries(trpc.resources.pathFilter());
-  const reload = () => {
-    setNotes(new Map());
-    return invalidate();
-  };
-  /**
-   * One act on one item, never two at once on it: the guard reads a ref, so a second click before
-   * the next render is refused too. Its answer lands once, where the act says.
-   */
-  const act = (key: string, action: string, run: () => Promise<Settled>) => {
+  const reload = () => queryClient.invalidateQueries(trpc.resources.pathFilter());
+  const act = (key: string, verb: string, run: () => Promise<ItemNote | null>) => {
     if (running.current.has(key)) return;
-    running.current.set(key, action);
-    setBusy(new Map(running.current));
+    running.current.add(key);
+    setBusy((current) => new Map(current).set(key, verb));
     const startedOn = reading;
     void run()
       .catch(
-        (error: unknown): Settled => ({
-          at: key,
-          note: { refused: true, lines: [message(error)], reload: false },
+        (error: unknown): ItemNote => ({
+          refused: true,
+          lines: [error instanceof Error ? error.message : String(error)],
+          reload: false,
         }),
       )
-      .then((answer) => {
-        // Everything an answer changes on screen happens here, for the read it started from only.
-        if (shown.current !== startedOn) return false;
-        setNotes((current) => answered(current, key, answer));
-        answer.apply?.();
-        return true;
+      .then((note) => {
+        if (shown.current === startedOn)
+          setNotes((current) => answered(current, key, { at: key, note }));
+        return null;
       })
       .finally(() => {
         running.current.delete(key);
-        setBusy(new Map(running.current));
+        setBusy((current) => {
+          const next = new Map(current);
+          next.delete(key);
+          return next;
+        });
       });
   };
-
   const handlers: ResourceHandlers = {
+    reload: () => {
+      void reload();
+    },
     remove: (entry) => {
-      const key = `s:${entry.id}`;
-      act(key, "remove", async () => {
-        const outcome = await removeResourceDefinition(projectId, entry);
-        if (!outcome.ok) return { at: key, note: refusedNote(outcome) };
-        await invalidate();
-        return none(key);
+      if (worktreeId === null) return;
+      act(`s:${entry.id}:${entry.worktreeId ?? "project"}`, "remove", async () => {
+        const outcome = await removeResourceInstance(projectId, entry, worktreeId);
+        if (!outcome.ok) return refusedNote(outcome);
+        await reload();
+        return { refused: false, lines: [outcome.result.statusLine], reload: false };
       });
     },
-    add: (table) => {
-      const key = `f:${table.spec.name}`;
-      act(key, "add", async () => {
-        const outcome = await addResource(
-          projectId,
-          { kind: "definition", spec: table.spec },
-          worktreeId,
-        );
-        if (!outcome.ok) return { at: key, note: refusedNote(outcome) };
-        await invalidate();
-        return addedNote(outcome.result);
-      });
-    },
-    choose: (entry, readFor, mode) => {
-      if (readFor === null) return;
-      const key = `s:${entry.id}`;
-      act(key, "choose", async () => {
-        const outcome = await chooseResource(projectId, readFor, entry.id, mode);
-        if (!outcome.ok) return { at: key, note: refusedNote(outcome) };
+    choose: (entry, read, mode) => {
+      if (read === null) return;
+      act(`s:${entry.id}:${entry.worktreeId ?? "project"}`, "use", async () => {
+        const outcome = await chooseResource(projectId, read, entry.spec.name, mode);
+        if (!outcome.ok) return refusedNote(outcome);
         await settleChoice(queryClient, listOptions.queryKey, outcome.result);
-        return none(key);
+        return { refused: false, lines: [outcome.result.statusLine], reload: false };
       });
     },
-    control: (entry, readFor, verb) => {
-      const key = `s:${entry.id}`;
+    control: (entry, read, verb, level, restart = false) => {
+      if (read === null) return;
+      const key =
+        "id" in entry ? `s:${entry.id}:${entry.worktreeId ?? "project"}` : `f:${entry.spec.name}`;
       act(key, verb, async () => {
-        const outcome = await controlResource(projectId, entry, readFor, verb);
-        if (!outcome.ok) return { at: key, note: refusedNote(outcome) };
-        await invalidate();
-        return none(key);
+        const outcome = await controlResource(projectId, entry, read, verb, level, restart);
+        if (!outcome.ok) return refusedNote(outcome);
+        await reload();
+        const result = outcome.result;
+        if ("kind" in result && result.kind === "needs-restart")
+          return {
+            refused: true,
+            lines: [
+              result.statusLine,
+              ...result.worktrees.map((worktree) => worktree.name),
+              result.hint,
+            ],
+            reload: false,
+            restartLevel: level,
+          };
+        return {
+          refused: false,
+          lines: [
+            result.statusLine,
+            ...("message" in result && result.message !== null ? [result.message] : []),
+          ],
+          reload: false,
+        };
       });
     },
-    reload: () => void reload(),
   };
-
-  const submit = (current: ResourceDraft) => {
-    if (running.current.has(FORM)) return;
-    const checked = additionOf(current);
-    if (!checked.ok) return setFormRefusals(checked.refusals);
-    setFormRefusals([]);
-    act(FORM, "add", async () => {
-      const outcome = await addResource(projectId, checked.addition, worktreeId);
-      if (!outcome.ok) {
-        const refusals =
-          outcome.kind === "rejected"
-            ? outcome.refusals
-            : [{ key: "resource", message: outcome.message }];
-        return { ...none(FORM), apply: () => setFormRefusals(refusals) };
-      }
-      await invalidate();
-      return { ...addedNote(outcome.result), apply: () => setDraft(null) };
-    });
-  };
-
-  const readName = (id: WorktreeId | null) =>
-    id === null ? null : (worktrees.find((each) => each.id === id)?.name ?? id);
   return (
-    <section id="resources" className="project-setup-card">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <h2 className="font-sans text-sm font-semibold">Resources</h2>
-        <div className="flex flex-col items-end gap-1">
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            read for worktree
-            <select
-              value={worktreeId ?? ""}
-              onChange={(event) => {
-                const chosen = worktrees.find((each) => each.id === event.target.value);
-                setWorktreeId(chosen?.id ?? null);
-                shown.current = `${projectId}\u0000${chosen?.id ?? ""}`;
-                setNotes(new Map());
-                // Refusals answered a submit on the read that changed; the draft stays the person's.
-                setFormRefusals([]);
-              }}
-              className="rounded-lg border border-input bg-background px-2 py-1 font-mono text-[11px] text-foreground"
-            >
-              <option value="">none</option>
-              {worktrees.map((each) => (
-                <option key={each.id} value={each.id}>
-                  {each.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {worktreesQuery.isError ? (
-            <p className="font-mono text-[11px] text-danger">
-              worktrees not read · {message(worktreesQuery.error)}{" "}
-              <button type="button" onClick={() => void worktreesQuery.refetch()} className={quiet}>
-                retry
-              </button>
-            </p>
-          ) : null}
-        </div>
-      </div>
-      <p className="mt-2.5 max-w-[64ch] text-xs leading-relaxed text-muted-foreground">
-        Long-running services for the project or for one worktree, such as a database or a mail
-        catcher. Any member adds one, and it is the project&apos;s. Whoever added it, the
-        project&apos;s creator or an organization owner replaces or removes it, and a
-        worktree&apos;s change owner chooses how that worktree uses it. Adding pins the image and
-        starts it: a project resource at once, a worktree resource in the worktree read here and in
-        any other on first use. A Stop holds until someone starts it again.
+    <section className="mt-6">
+      <h3 className="text-sm font-medium text-foreground">Resources</h3>
+      <p className="mt-1 text-xs text-ink-2">
+        Definitions live in .mend/mend.toml. Select a worktree to read its definitions and start a
+        resource.
       </p>
-      <ReadState
-        read={read}
-        worktreeName={readName(worktreeId)}
-        onRetry={() => void query.refetch()}
+      <select
+        aria-label="Resource worktree"
+        value={worktreeId ?? ""}
+        onChange={(event) =>
+          setWorktreeId(
+            worktrees.find((worktree) => worktree.id === event.target.value)?.id ?? null,
+          )
+        }
+        className="mt-3 rounded-lg border border-border bg-card px-2 py-1 text-xs"
       >
-        {(page, readWorktree) => (
+        <option value="">All running instances</option>
+        {worktrees.map((worktree) => (
+          <option key={worktree.id} value={worktree.id}>
+            {worktree.name}
+          </option>
+        ))}
+      </select>
+      <ReadState
+        read={resourcesRead(query, worktreeId)}
+        worktreeName={worktrees.find((row) => row.id === worktreeId)?.name ?? null}
+        onRetry={() => {
+          void reload();
+        }}
+      >
+        {(page, read) => (
           <ResourcesView
             projectId={projectId}
             page={page}
-            worktreeId={readWorktree}
-            worktreeName={readName(readWorktree)}
+            worktreeId={read}
+            worktreeName={worktrees.find((row) => row.id === read)?.name ?? null}
             busy={busy}
             notes={notes}
             handlers={handlers}
           />
         )}
       </ReadState>
-      {read.kind !== "loaded" ? null : draft === null ? (
-        <button
-          type="button"
-          onClick={() => {
-            setDraft(EMPTY_DRAFT);
-            setFormRefusals([]);
-          }}
-          className="mt-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
-        >
-          + add a resource…
-        </button>
-      ) : (
-        <ResourceForm
-          draft={draft}
-          refusals={formRefusals}
-          note={notes.get(FORM)}
-          busy={busy.has(FORM)}
-          onChange={(next) => {
-            // A refusal answered the draft that was sent; an edit makes a new one.
-            setDraft(next);
-            setFormRefusals([]);
-          }}
-          onCancel={() => setDraft(null)}
-          onSubmit={() => submit(draft)}
-        />
-      )}
     </section>
   );
 }
-
-/** A read in flight, failed with its words and a retry, or loaded and handed on. */
+/** A read never substitutes an empty file for unavailable bytes. */
 export function ReadState(props: {
   readonly read: ReturnType<typeof resourcesRead>;
   readonly worktreeName: string | null;
   readonly onRetry: () => void;
   readonly children: (page: ResourcesPageView, worktreeId: WorktreeId | null) => ReactNode;
 }) {
-  const { read } = props;
-  const where = props.worktreeName === null ? "" : ` for ${props.worktreeName}`;
-  switch (read.kind) {
-    case "pending":
-      return <p className="mt-4 font-mono text-[11px] text-faint">reading resources{where}…</p>;
-    case "failed":
-      return (
-        <div className="mt-4 border-l-2 border-[var(--sw-red)] pl-2">
-          <p className="font-mono text-[11px] text-danger">
-            resources{where} not read · {read.message}
-          </p>
-          <button type="button" onClick={props.onRetry} className={`${quiet} mt-1`}>
-            retry
-          </button>
-        </div>
-      );
-    case "loaded":
-      return props.children(read.page, read.worktreeId);
-  }
+  if (props.read.kind === "pending")
+    return <p className="mt-4 text-xs text-faint">reading resources…</p>;
+  if (props.read.kind === "failed")
+    return (
+      <div className="mt-4 text-xs text-danger">
+        {props.read.message}{" "}
+        <button type="button" onClick={props.onRetry} className={quiet}>
+          retry
+        </button>
+      </div>
+    );
+  return props.children(props.read.page, props.read.worktreeId);
 }
-
+/** All actions carry the worktree the displayed read came from. */
 export interface ResourceHandlers {
   readonly remove: (entry: ResourceSettingView) => void;
-  /** Adds a `.mend/mend.toml` table to settings as the page read it. */
-  readonly add: (table: ResourceFileTableView) => void;
-  /** `read`: the worktree the page on screen was read for, which the choice is made for. */
   readonly choose: (
     entry: ResourceSettingView,
     read: WorktreeId | null,
     mode: WorktreeChoice,
   ) => void;
-  /** A person's Start or Stop of the instance the read worktree reaches. */
   readonly control: (
-    entry: ResourceSettingView,
+    entry: ResourceSettingView | ResourceFileTableView,
     read: WorktreeId | null,
     verb: "start" | "stop",
+    level: ResourceLevel,
+    restart?: boolean,
   ) => void;
   readonly reload: () => void;
 }
-
+/** Data-only view shared by the page and its rendering tests. */
 export interface ResourcesViewProps {
   readonly projectId?: string;
   readonly page: ResourcesPageView;
-  /** The worktree this page was read for; every action on it is for that worktree. */
   readonly worktreeId: WorktreeId | null;
   readonly worktreeName: string | null;
   readonly busy: Busy;
   readonly notes: ReadonlyMap<string, ItemNote>;
   readonly handlers: ResourceHandlers;
 }
-
-/** The lists, each item with its line, its image and the acts the page offers on it. */
+/** One status line for each remembered instance and each definition. */
 export function ResourcesView(props: ResourcesViewProps) {
-  const { page, worktreeId, worktreeName, busy, handlers } = props;
-  const label = (key: string, action: string, idle: string, running: string) =>
-    busy.get(key) === action ? running : idle;
+  const { page, handlers, worktreeId } = props;
+  const controls = (entry: ResourceSettingView | ResourceFileTableView, key: string) => (
+    <>
+      {(["project", "worktree"] as const).map((level) => (
+        <button
+          key={level}
+          type="button"
+          disabled={worktreeId === null || props.busy.has(key)}
+          onClick={() => handlers.control(entry, worktreeId, "start", level)}
+          className={quiet}
+        >
+          start {level}
+        </button>
+      ))}
+      {props.notes.get(key)?.restartLevel === undefined ? null : (
+        <button
+          type="button"
+          disabled={worktreeId === null || props.busy.has(key)}
+          onClick={() =>
+            handlers.control(
+              entry,
+              worktreeId,
+              "start",
+              props.notes.get(key)?.restartLevel ?? "project",
+              true,
+            )
+          }
+          className={quiet}
+        >
+          restart with this definition
+        </button>
+      )}
+    </>
+  );
   const item = (
+    entry: ResourceSettingView | ResourceFileTableView,
     key: string,
-    line: string,
-    image: string,
-    id: string | null,
-    actions: ReactNode,
-    body?: ReactNode,
+    children?: ReactNode,
   ) => (
-    <ResourceItem
-      key={key}
-      line={line}
-      image={image}
-      id={id}
-      actions={actions}
-      note={props.notes.get(key)}
-      onReload={handlers.reload}
-    >
-      {body}
-    </ResourceItem>
-  );
-  const { file } = page;
-  const notices = file.kind === "read" ? resourceTableNotices(file) : [];
-  const empty = page.settings.length === 0 && file.kind !== "read";
-  return (
-    <div className="mt-4 space-y-5">
-      {empty ? <p className="text-xs text-ink-2">No resources yet. Nothing is declared.</p> : null}
-      {page.settings.length === 0 ? null : (
-        <Group label="definitions">
-          {page.settings.map((entry) => {
-            const key = `s:${entry.id}`;
-            return item(
-              key,
-              entry.statusLine,
-              entry.image,
-              entry.id,
-              <>
-                {resourceControls(entry.instance).start ? (
-                  <button
-                    type="button"
-                    disabled={busy.has(key)}
-                    onClick={() => handlers.control(entry, worktreeId, "start")}
-                    className={quiet}
-                  >
-                    {label(key, "start", "start", "starting…")}
-                  </button>
-                ) : null}
-                {resourceControls(entry.instance).stop ? (
-                  <button
-                    type="button"
-                    disabled={busy.has(key)}
-                    onClick={() => handlers.control(entry, worktreeId, "stop")}
-                    className={quiet}
-                  >
-                    {label(key, "stop", "stop", "stopping…")}
-                  </button>
-                ) : null}
-                {entry.canRemove ? (
-                  <button
-                    type="button"
-                    disabled={busy.has(key)}
-                    onClick={() => handlers.remove(entry)}
-                    className={`${quiet} hover:text-danger`}
-                  >
-                    {label(key, "remove", "remove", "removing…")}
-                  </button>
-                ) : null}
-              </>,
-              <>
-                {worktreeId === null ? null : (
-                  <ChoiceLine
-                    entry={entry}
-                    worktreeName={worktreeName ?? ""}
-                    busy={busy.has(key)}
-                    onChoose={(mode) => handlers.choose(entry, worktreeId, mode)}
-                  />
-                )}
-                {entry.spec.preset === "postgres" &&
-                props.projectId !== undefined &&
-                (entry.spec.scope === "project" || (worktreeId !== null && entry.canLoadOwn)) ? (
-                  <ResourceLoadForm
-                    key={`${entry.id}:${worktreeId ?? "shared"}`}
-                    projectId={props.projectId}
-                    name={entry.spec.name}
-                    worktreeId={worktreeId}
-                    mayLoadOwn={entry.canLoadOwn}
-                    worktreeResource={entry.spec.scope === "worktree"}
-                  />
-                ) : null}
-              </>,
-            );
-          })}
-        </Group>
-      )}
-      {file.kind === "not-selected" ? null : (
-        <Group label={`.mend/mend.toml in ${worktreeName ?? "this worktree"}`}>
-          {file.kind === "read" ? (
-            <>
-              <p className="px-4 pt-3 font-mono text-[11px] text-faint">{file.observed}</p>
-              {file.tables.map((table) => {
-                const key = `f:${table.spec.name}`;
-                return item(
-                  key,
-                  table.statusLine,
-                  table.spec.image,
-                  null,
-                  table.add.kind === "ready" ? (
-                    <button
-                      type="button"
-                      disabled={busy.has(key)}
-                      onClick={() => handlers.add(table)}
-                      className={quiet}
-                    >
-                      {label(key, "add", "add to settings", "adding…")}
-                    </button>
-                  ) : null,
-                  withheldReasons(table.add).map((reason) => (
-                    <p
-                      key={reason}
-                      className="mt-1.5 font-mono text-[11px] break-words text-muted-foreground"
-                    >
-                      <span className="text-label">add ·</span> {reason}
-                    </p>
-                  )),
-                );
-              })}
-              {notices.map((notice) => (
-                <p key={notice} className="px-4 py-2 font-mono text-[11px] text-ink-2">
-                  {notice}
-                </p>
-              ))}
-              {file.tables.length === 0 && notices.length === 0 ? (
-                <p className="px-4 py-3 text-xs text-muted-foreground">No [resource.*] tables.</p>
-              ) : null}
-            </>
-          ) : (
-            <p className="px-4 py-3 font-mono text-[11px] text-ink-2">
-              {file.kind === "absent"
-                ? `absent · ${file.observed}`
-                : file.kind === "unparsed"
-                  ? `${file.observed} · ${file.message}`
-                  : file.message}
-            </p>
-          )}
-        </Group>
-      )}
-    </div>
-  );
-}
-
-/** Why a table has no add button, in the route's words: each refusal by its key, or a denial. */
-const withheldReasons = (offer: ResourceAddOffer): ReadonlyArray<string> => {
-  switch (offer.kind) {
-    case "rejected":
-      return offer.refusals.map(resourceRefusalWords);
-    case "denied":
-      return [offer.message];
-    case "ready":
-    case "added":
-      return [];
-  }
-};
-
-function Group({ label, children }: { readonly label: string; readonly children: ReactNode }) {
-  return (
-    <div>
-      <p className="ev-eyebrow">{label}</p>
-      <div className="mt-2 divide-y divide-rule-faint overflow-hidden rounded-xl border border-rule-faint">
+    <div key={key} className="border-b border-rule-faint px-4 py-3">
+      <p className="font-mono text-[12px] text-foreground">{entry.statusLine}</p>
+      <p className="mt-1 font-mono text-[11px] text-faint">
+        {"image" in entry ? entry.image : entry.spec.image}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-3">
+        {controls(entry, key)}
         {children}
       </div>
+      {props.notes.get(key)?.lines.map((line) => (
+        <p key={line} className="mt-1 text-xs text-ink-2">
+          {line}
+        </p>
+      ))}
     </div>
   );
-}
-
-function ResourceItem(props: {
-  readonly line: string;
-  readonly image: string;
-  readonly id: string | null;
-  readonly actions: ReactNode;
-  readonly note: ItemNote | undefined;
-  readonly onReload: () => void;
-  readonly children?: ReactNode;
-}) {
-  const { note } = props;
   return (
-    <div className="px-4 py-3">
-      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
-        <p className="min-w-0 font-mono text-[12px] break-words text-foreground">{props.line}</p>
-        <div className="flex flex-wrap items-center gap-3">{props.actions}</div>
+    <div className="mt-4 space-y-4">
+      <div>
+        {page.settings.map((entry) => {
+          const key = `s:${entry.id}:${entry.worktreeId ?? "project"}`;
+          return (
+            <div key={key}>
+              {item(
+                entry,
+                key,
+                <>
+                  {resourceControls(entry.instance).stop ? (
+                    <button
+                      type="button"
+                      disabled={worktreeId === null || props.busy.has(key)}
+                      onClick={() => handlers.control(entry, worktreeId, "stop", entry.level)}
+                      className={quiet}
+                    >
+                      stop
+                    </button>
+                  ) : null}
+                  {entry.canRemove ? (
+                    <button
+                      type="button"
+                      disabled={worktreeId === null || props.busy.has(key)}
+                      onClick={() => handlers.remove(entry)}
+                      className={quiet}
+                    >
+                      remove {entry.level}
+                    </button>
+                  ) : null}
+                </>,
+              )}
+              {worktreeId === null ? null : (
+                <ChoiceLine
+                  entry={entry}
+                  worktreeName={props.worktreeName ?? "this worktree"}
+                  busy={props.busy.has(key)}
+                  onChoose={(mode) => handlers.choose(entry, worktreeId, mode)}
+                />
+              )}
+              {entry.spec.preset === "postgres" && props.projectId !== undefined ? (
+                <ResourceLoadForm
+                  projectId={props.projectId}
+                  name={entry.spec.name}
+                  worktreeId={worktreeId}
+                  mayLoadOwn={entry.canLoadOwn}
+                  worktreeResource={false}
+                />
+              ) : null}
+            </div>
+          );
+        })}
       </div>
-      <p className="mt-1 font-mono text-[11px] break-all text-faint">
-        {props.image}
-        {props.id === null ? "" : ` · ${props.id}`}
-      </p>
-      {props.children}
-      {note === undefined ? null : (
-        <div
-          className={`mt-2 border-l-2 pl-2 text-xs ${note.refused ? "border-[var(--sw-red)] text-danger" : "border-rule text-ink-2"}`}
-        >
-          {note.lines.map((line) => (
-            <p key={line} className="font-mono text-[11px] break-words">
-              {line}
+      {page.file.kind === "read" ? (
+        <div>
+          <p className="ev-eyebrow">.mend/mend.toml · {page.file.observed}</p>
+          {page.file.tables.map((table) => item(table, `f:${table.spec.name}`))}
+          {resourceTableNotices(page.file).map((notice) => (
+            <p key={notice} className="text-xs text-ink-2">
+              {notice}
             </p>
           ))}
-          {note.reload ? (
-            <button type="button" onClick={props.onReload} className={`${quiet} mt-1`}>
-              reload
-            </button>
-          ) : null}
         </div>
+      ) : page.file.kind === "not-selected" ? null : (
+        <p className="text-xs text-ink-2">
+          {page.file.kind === "absent"
+            ? "No resource definitions in this worktree."
+            : page.file.message}
+        </p>
       )}
+      {page.settings.length === 0 && page.file.kind !== "read" ? (
+        <p className="text-xs text-ink-2">No resources started.</p>
+      ) : null}
     </div>
   );
 }
-
-/** Which mode the read worktree uses, at a glance, and the one action that changes it. */
+/** A stored choice controls availability, without starting a missing resource. */
 export function ChoiceLine(props: {
   readonly entry: ResourceSettingView;
   readonly worktreeName: string;
   readonly busy: boolean;
   readonly onChoose: (mode: WorktreeChoice) => void;
 }) {
-  const { entry } = props;
-  const inUse = choiceInUse(entry);
-  if (inUse === null) {
-    return (
-      <p className="mt-2 text-xs text-ink-2">
-        {props.worktreeName} gets an instance of its own of this worktree resource, with no choice.
-      </p>
-    );
-  }
-  const words = choiceWords(entry.spec, inUse.choice);
+  const inUse = choiceInUse(props.entry);
   return (
-    <div className="mt-2">
-      {entry.canChoose ? (
-        <div
-          role="group"
-          aria-label={`How ${props.worktreeName} uses @${entry.spec.name}`}
-          className="flex flex-wrap items-center gap-1"
-        >
-          {choicesFor(entry.spec).map((choice) => (
-            <button
-              key={choice}
-              type="button"
-              disabled={props.busy}
-              aria-pressed={entry.choice === choice}
-              onClick={() => (entry.choice === choice ? undefined : props.onChoose(choice))}
-              className={choiceToggle(entry.choice === choice)}
-            >
-              {choiceWords(entry.spec, choice).label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      <p className="mt-1.5 text-xs text-ink-2">
-        <span className="font-mono text-[11px] text-foreground">
-          {inUse.stored
-            ? `${props.worktreeName} uses ${words.label}.`
-            : `${props.worktreeName} uses ${words.label}, the default.`}
-        </span>{" "}
-        {words.meaning}
-      </p>
-    </div>
-  );
-}
-
-const PRESETS = ["postgres", "redis", "mysql"] as const;
-
-/** A preset at a version, or an image with its ports, env and volumes; refusals under each field. */
-export function ResourceForm(props: {
-  readonly draft: ResourceDraft;
-  readonly refusals: ReadonlyArray<ResourceRefusal>;
-  /** What answered the last submit when it never reached the server: a request that failed. */
-  readonly note: ItemNote | undefined;
-  readonly busy: boolean;
-  readonly onChange: (draft: ResourceDraft) => void;
-  readonly onCancel: () => void;
-  readonly onSubmit: () => void;
-}) {
-  const { draft, onChange } = props;
-  const set = <K extends keyof ResourceDraft>(key: K, value: ResourceDraft[K]) =>
-    onChange({ ...draft, [key]: value });
-  const refused = (at: DraftField | null) => {
-    const own = props.refusals.filter((refusal) => fieldOf(refusal.key) === at);
-    return own.length === 0 ? null : (
-      <div className="border-l-2 border-[var(--sw-red)] pl-2">
-        {own.map((refusal) => (
-          <p
-            key={`${refusal.key}:${refusal.message}`}
-            className="font-mono text-[11px] text-danger"
-          >
-            {resourceRefusalWords(refusal)}
-          </p>
-        ))}
+    <div className="mt-2 px-4">
+      <div
+        role="group"
+        aria-label={`How ${props.worktreeName} uses @${props.entry.spec.name}`}
+        className="flex flex-wrap gap-1"
+      >
+        {props.entry.canChoose
+          ? choicesFor(props.entry.spec).map((choice) => (
+              <button
+                key={choice}
+                type="button"
+                disabled={props.busy}
+                aria-pressed={inUse.choice === choice}
+                onClick={() => {
+                  if (inUse.choice !== choice) props.onChoose(choice);
+                }}
+                className={choiceToggle(inUse.choice === choice)}
+              >
+                {choiceWords(props.entry.spec, choice).label}
+              </button>
+            ))
+          : null}
       </div>
-    );
-  };
-  const choices = <V extends string>(
-    label: string,
-    values: ReadonlyArray<V>,
-    value: V,
-    pick: (next: V) => void,
-  ) => (
-    <div role="group" aria-label={label} className="flex items-center gap-1">
-      {values.map((each) => (
-        <button
-          key={each}
-          type="button"
-          aria-pressed={value === each}
-          onClick={() => pick(each)}
-          className={choiceToggle(value === each)}
-        >
-          {each}
-        </button>
-      ))}
+      <p className="mt-1 text-xs text-ink-2">
+        {props.worktreeName} uses {choiceWords(props.entry.spec, inUse.choice).label}.
+      </p>
     </div>
-  );
-  return (
-    <form
-      className="mt-3 flex flex-col gap-2 rounded-xl border border-rule-faint px-4 py-3"
-      onSubmit={(event) => {
-        event.preventDefault();
-        props.onSubmit();
-      }}
-    >
-      {/* While an add is in flight nothing can be typed that its answer would close over. */}
-      <fieldset disabled={props.busy} className="contents">
-        <div className="flex flex-wrap items-center gap-2">
-          {choices("What it runs", ["preset", "image"], draft.kind, (kind) => set("kind", kind))}
-          {choices("Scope", ["project", "worktree"], draft.scope, (scope) => set("scope", scope))}
-        </div>
-        {refused("scope")}
-        <span className={hint}>Name: lower case, as @name reads it</span>
-        <input
-          aria-label="Name"
-          value={draft.name}
-          onChange={(event) => set("name", event.target.value)}
-          placeholder="db"
-          className={field}
-        />
-        {refused("name")}
-        {draft.kind === "preset" ? (
-          <>
-            <span className={hint}>
-              Preset and its version, an image tag that starts with its major
-            </span>
-            <div className="flex flex-wrap items-center gap-2">
-              {choices("Preset", PRESETS, draft.preset, (preset) => set("preset", preset))}
-              <input
-                aria-label="Version"
-                value={draft.version}
-                onChange={(event) => set("version", event.target.value)}
-                placeholder="17"
-                className={`${field} w-32`}
-              />
-            </div>
-            {refused("version")}
-          </>
-        ) : (
-          <>
-            <span className={hint}>Image</span>
-            <input
-              aria-label="Image"
-              value={draft.image}
-              onChange={(event) => set("image", event.target.value)}
-              placeholder="axllent/mailpit:v1.21"
-              className={field}
-            />
-            {refused("image")}
-            <span className={hint}>Ports, one per line: name=port, or name=port/udp</span>
-            <textarea
-              aria-label="Ports"
-              rows={2}
-              value={draft.ports}
-              onChange={(event) => set("ports", event.target.value)}
-              placeholder={"smtp=1025\nhttp=8025"}
-              className={field}
-            />
-            {refused("ports")}
-            <span className={hint}>Volumes, one per line: name=/mount/path</span>
-            <textarea
-              aria-label="Volumes"
-              rows={2}
-              value={draft.volumes}
-              onChange={(event) => set("volumes", event.target.value)}
-              placeholder="data=/data"
-              className={field}
-            />
-            {refused("volumes")}
-            <span className={hint}>Env: a literal value, or a project secret by its name</span>
-            {draft.env.map((row, index) => {
-              const change = (next: Partial<typeof row>) =>
-                set(
-                  "env",
-                  draft.env.map((each, at) => (at === index ? { ...each, ...next } : each)),
-                );
-              return (
-                <div key={index} className="flex flex-wrap items-center gap-1.5">
-                  <input
-                    aria-label="Env name"
-                    value={row.key}
-                    onChange={(event) => change({ key: event.target.value })}
-                    placeholder="NAME"
-                    className={`${field} w-36`}
-                  />
-                  {choices("Env value from", ["literal", "secret"], row.from, (from) =>
-                    change({ from }),
-                  )}
-                  <input
-                    aria-label={row.from === "secret" ? "Project secret name" : "Env value"}
-                    value={row.value}
-                    onChange={(event) => change({ value: event.target.value })}
-                    placeholder={row.from === "secret" ? "project secret's name" : "value"}
-                    className={`${field} min-w-0 flex-1`}
-                  />
-                  <button
-                    type="button"
-                    aria-label={`Remove env ${row.key === "" ? "row" : row.key}`}
-                    onClick={() =>
-                      set(
-                        "env",
-                        draft.env.filter((_, at) => at !== index),
-                      )
-                    }
-                    className={`${quiet} hover:text-danger`}
-                  >
-                    remove
-                  </button>
-                </div>
-              );
-            })}
-            <button
-              type="button"
-              onClick={() => set("env", [...draft.env, { key: "", from: "literal", value: "" }])}
-              className={`${quiet} self-start`}
-            >
-              + env
-            </button>
-            {refused("env")}
-          </>
-        )}
-        {refused(null)}
-        {props.note === undefined ? null : (
-          <div className="border-l-2 border-[var(--sw-red)] pl-2">
-            {props.note.lines.map((line) => (
-              <p key={line} className="font-mono text-[11px] text-danger">
-                {line}
-              </p>
-            ))}
-          </div>
-        )}
-        <div className="flex items-center justify-end gap-2.5">
-          <button type="button" onClick={props.onCancel} className={quiet}>
-            cancel
-          </button>
-          <button
-            type="submit"
-            disabled={props.busy}
-            className="rounded-xl border border-border bg-card px-3 py-1.5 font-mono text-xs text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-          >
-            {props.busy ? "adding…" : "add"}
-          </button>
-        </div>
-      </fieldset>
-    </form>
   );
 }

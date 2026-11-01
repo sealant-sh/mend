@@ -1,6 +1,6 @@
 import { observedAgo } from "./landing.ts";
 import { loadBytes, type ResourceLoadPhase } from "./resource-load.ts";
-import { imageReference, isDatabasePreset, type ResourceDefinitionInput } from "./resource.ts";
+import { imageReference, type ResourceDefinition, type ResourceLevel } from "./resource.ts";
 
 /** Why an instance is stopped: idle, or a person, whose stop holds until a person starts it. */
 export type ResourceStopReason =
@@ -32,27 +32,18 @@ export type OwnDatabaseOrigin =
 export type ResourceUse =
   | { readonly kind: "shared" }
   /** Null: the worktree has not made its own database yet. */
-  | { readonly kind: "own"; readonly origin: OwnDatabaseOrigin | null }
+  | { readonly kind: "own"; readonly origin: OwnDatabaseOrigin | null; readonly available?: true }
   | { readonly kind: "off" }
   /** A worktree resource: the worktree's own instance. */
   | { readonly kind: "worktree" }
   /** Read for no worktree: who added it. A worktree resource's instances are counted instead. */
   | { readonly kind: "project"; readonly addedBy: string };
 
-/**
- * Where a `.mend/mend.toml` table stands against what settings hold under its name. A table never
- * replaces a definition settings hold.
- */
-export type ResourceDeclaration = {
-  readonly kind: "file";
-  readonly settings: "absent" | "same" | "differs";
-};
-
-/** The status line's input. The line reads a definition's name, image and scope, never its env. */
+/** The status line's input. The line reads a definition's name, image and level, never its env. */
 export type ResourceStatusView =
   | {
       readonly kind: "load";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: ResourceDefinition;
       readonly target: "shared" | "own";
       readonly phase: ResourceLoadPhase;
       readonly label: string;
@@ -63,24 +54,27 @@ export type ResourceStatusView =
     }
   | {
       readonly kind: "own-removed";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: { readonly name: string };
       readonly savedAt: Date;
       readonly startedForRemoval: boolean;
+      /** The server was archived after the recorded dump was checked; no live drop is needed. */
+      readonly savedWhenArchived?: boolean;
     }
   | {
       readonly kind: "removal-refused";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: ResourceDefinition;
       readonly database: string;
       readonly reason: string;
     }
   | {
       readonly kind: "archived";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: ResourceDefinition;
     }
   | {
       readonly kind: "observed";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: ResourceDefinition;
       readonly use: ResourceUse;
+      readonly level: ResourceLevel;
       /** A worktree resource read for the project: how many of its instances run. */
       readonly instance:
         | ResourceInstanceObservation
@@ -90,19 +84,19 @@ export type ResourceStatusView =
   /** A launch went on while the instance was not running: the process has its env, not its server. */
   | {
       readonly kind: "launched-without";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: ResourceDefinition;
       readonly instance: ResourceInstanceObservation;
     }
   /** Names the project's env or secrets set, which the resource leaves as they are. */
   | {
       readonly kind: "env-left";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: ResourceDefinition;
       readonly names: ReadonlyArray<string>;
     }
-  /** The worktree's own database could not be made, and why; the next launch tries again. */
+  /** The worktree's own database could not be made, and why; run mend resource start to try again. */
   | {
       readonly kind: "own-not-made";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: ResourceDefinition;
       readonly message: string;
     }
   /**
@@ -111,7 +105,7 @@ export type ResourceStatusView =
    */
   | {
       readonly kind: "switched";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: ResourceDefinition;
       readonly use: ResourceUse;
       readonly restarted: ReadonlyArray<string>;
     }
@@ -121,44 +115,35 @@ export type ResourceStatusView =
    */
   | {
       readonly kind: "reset";
-      readonly definition: ResourceDefinitionInput;
+      readonly definition: ResourceDefinition;
       readonly target: "shared" | "own";
       readonly origin: "empty" | "copied";
       readonly savedAt: Date | null;
     }
-  /** A `.mend/mend.toml` table whose name settings hold with another spec: settings were kept. */
-  | { readonly kind: "file-kept"; readonly definition: ResourceDefinitionInput }
-  /** A `.mend/mend.toml` table as read, with no instance behind it. */
   | {
-      readonly kind: "declared";
-      readonly definition: ResourceDefinitionInput;
-      readonly source: ResourceDeclaration;
-    };
-
-const AGAINST_SETTINGS = {
-  absent: "not in settings",
-  same: "same as settings",
-  differs: "differs from settings",
-} as const;
+      readonly kind: "definition-differs";
+      readonly definition: ResourceDefinition;
+      readonly level: ResourceLevel;
+    }
+  | {
+      readonly kind: "own-on-differing-server";
+      readonly definition: ResourceDefinition;
+      readonly requested: ResourceDefinition;
+    }
+  | { readonly kind: "defined"; readonly definition: ResourceDefinition };
 
 /**
  * `postgres:17` → `postgres 17`, `rabbitmq:4-management` → `rabbitmq 4`, `axllent/mailpit:v1.21`
  * → `mailpit`. A preset leads with its own name: `pgvector/pgvector:pg17` → `postgres pgvector 17`.
  */
-const engineOf = (def: ResourceDefinitionInput): string => {
+export const engineOf = (def: ResourceDefinition): string => {
   const { repository, tag } = imageReference(def.image);
   const image = repository.split("/").at(-1) ?? repository;
   const major = (def.preset === null ? null : /(?:^|-)pg(\d+)/.exec(tag)) ?? /^(\d+)/.exec(tag);
   const names =
     def.preset === null ? [image] : image === def.preset ? [def.preset] : [def.preset, image];
-  return [...names, ...(major === null ? [] : [major[1]])].join(" ");
+  return `${names.join(" ")}${major === null ? "" : `:${major[1]}`}`;
 };
-
-const SHARED_DATABASE_WARNING = "any worktree on shared can change or drop its tables";
-
-/** What a recipe's `depends` answers for a resource it names, which a later Mend waits on. */
-export const resourceDependsRefusal = (name: string): string =>
-  `@${name} · a Service's depends does not name a resource yet · every process in the worktree has @${name}'s env already`;
 
 const instanceParts = (
   instance:
@@ -191,18 +176,20 @@ const instanceParts = (
 type Clock = (at: Date) => string;
 
 const useParts = (
-  def: ResourceDefinitionInput,
+  def: ResourceDefinition,
   use: ResourceUse,
   clock: Clock,
 ): ReadonlyArray<string> => {
   switch (use.kind) {
     case "shared":
-      return isDatabasePreset(def) ? ["shared database", SHARED_DATABASE_WARNING] : ["shared"];
+      return def.preset === "postgres" ? ["shared database"] : [];
     case "own":
       return [
         "own database",
         ...(use.origin === null
-          ? ["not made yet"]
+          ? use.available === true
+            ? []
+            : ["not made yet"]
           : use.origin.kind === "copied"
             ? [`copied from shared ${clock(use.origin.at)}`]
             : use.origin.kind === "loaded"
@@ -212,9 +199,9 @@ const useParts = (
     case "off":
       return ["off"];
     case "worktree":
-      return ["its own instance"];
+      return [];
     case "project":
-      return [engineOf(def), def.scope, `added by ${use.addedBy}`];
+      return [engineOf(def), `started by ${use.addedBy}`];
   }
 };
 
@@ -262,8 +249,15 @@ export const resourceStatusLine = (
   view: ResourceStatusView,
   at: { readonly now: Date; readonly timeZone: string },
 ): string => {
-  const def = view.definition;
   const clock = clockIn(at.now, at.timeZone);
+  if (view.kind === "own-removed")
+    return [
+      `@${view.definition.name}`,
+      `its own database saved as a dump ${clock(view.savedAt)}${view.savedWhenArchived ? "" : " and dropped"}`,
+      ...(view.savedWhenArchived ? [`saved when @${view.definition.name} was archived`] : []),
+      ...(view.startedForRemoval ? ["removal started its server"] : []),
+    ].join(" · ");
+  const def = view.definition;
   const parts = ((): ReadonlyArray<string> => {
     switch (view.kind) {
       case "load":
@@ -286,21 +280,18 @@ export const resourceStatusLine = (
           `${view.phase} ${loadBytes(view.bytesDone)}${view.bytesTotal === null ? "" : ` of ${loadBytes(view.bytesTotal)}`}`,
           `${view.target} database`,
         ];
-      case "own-removed":
-        return [
-          `its own database saved as a dump ${clock(view.savedAt)} and dropped`,
-          ...(view.startedForRemoval ? ["removal started its server"] : []),
-        ];
       case "removal-refused":
         return [`database ${view.database}`, "not removed", view.reason];
       case "archived":
         return ["archived", "volumes kept"];
-      case "declared":
+      case "defined":
+        return [engineOf(def), "in .mend/mend.toml", "not started"];
+      case "definition-differs":
+        return [view.level, "definition differs from this worktree"];
+      case "own-on-differing-server":
         return [
-          engineOf(def),
-          def.scope,
-          "in .mend/mend.toml",
-          AGAINST_SETTINGS[view.source.settings],
+          `own database on the project server (${engineOf(def)})`,
+          `this worktree's file asks ${engineOf(view.requested)}`,
         ];
       case "launched-without":
         return [...instanceParts(view.instance), "this session starts without it"];
@@ -309,9 +300,7 @@ export const resourceStatusLine = (
           `${view.names.join(", ")} left as the project sets ${view.names.length === 1 ? "it" : "them"}`,
         ];
       case "own-not-made":
-        return ["own database not made", view.message, "the next launch tries again"];
-      case "file-kept":
-        return [".mend/mend.toml differs", "project settings kept"];
+        return ["own database not made", view.message, "run mend resource start to try again"];
       case "switched":
         return [
           ...useParts(def, view.use, clock),
@@ -338,10 +327,12 @@ export const resourceStatusLine = (
           ? [
               ...useParts(def, view.use, clock),
               ...instanceParts(view.instance),
+              view.level,
               `observed ${observedAgo(view.observedAt, at.now)}`,
             ]
           : [
               ...instanceParts(view.instance),
+              view.level,
               ...useParts(def, view.use, clock),
               `observed ${observedAgo(view.observedAt, at.now)}`,
             ];

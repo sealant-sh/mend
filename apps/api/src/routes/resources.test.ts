@@ -3,26 +3,16 @@ import { createHash } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { MendDBLive, migrations, ResourcesRepo, ResourcesRepoLive, UserFacts } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { ProjectId, ResourceLoadId, type WorktreeId } from "@mend/domain";
-import {
-  ImageDigest,
-  presetDefinition,
-  PresetVersion,
-  type ResourceAdded,
-  ResourceDefinitionInput,
-  ResourceName,
-  type ResourcesPage,
-} from "@mend/domain/workbench";
+import { ImageDigest, type ResourcesPage } from "@mend/domain/workbench";
 import {
   ImageResolutionError,
   type ResourceImageResolver,
-  type ResetOutcome,
   type ResourceLoads,
   type ResourceRuntime,
   type WorktreeServiceRestarts,
   WORKTREE_STAMP,
 } from "@mend/sessions";
-import { Effect, Layer, ManagedRuntime, Redacted, Schema, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -34,9 +24,6 @@ import {
 } from "../../test/support/tenancy-harness.ts";
 
 const postgres = postgresTestConfig();
-const decodeSpec = Schema.decodeUnknownSync(ResourceDefinitionInput);
-const lines = (entries: ReadonlyArray<{ readonly statusLine: string }>) =>
-  entries.map((entry) => entry.statusLine);
 const shared = ids("shared-a");
 const NAMES: Readonly<Record<string, string>> = { alice: "Alice", carol: "Carol" };
 
@@ -186,797 +173,135 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     harness()
       .request(as, "GET", `/api/projects/${shared.project}/resources?${zone}${query}`)
       .then(json);
-  const add = (as: HarnessUser, body: unknown): Promise<{ status: number; body: ResourceAdded }> =>
+  const control = (as: HarnessUser, name: string, level: "project" | "worktree", restart = false) =>
     harness()
-      .request(as, "POST", `/api/projects/${shared.project}/resources?${zone}`, body)
-      .then(json);
-  const addPreset = (as: HarnessUser, version: string, scope = "project") =>
-    add(as, { kind: "preset", name: "db", preset: "postgres", version, scope });
-  const remove = (as: HarnessUser, id: string, digest: string) =>
-    harness()
-      .request(as, "DELETE", `/api/projects/${shared.project}/resources/${id}`, {
-        expectedDigest: digest,
+      .request(as, "POST", `/api/projects/${shared.project}/resources/${name}/start?${zone}`, {
+        level,
+        worktreeId: CAROL_WORKTREE_IN_SHARED_A,
+        restart,
       })
       .then(json);
-  const use = (as: HarnessUser, worktree: WorktreeId, definition: string, mode: string) =>
-    harness()
-      .request(
-        as,
-        "PUT",
-        `/api/projects/${shared.project}/worktrees/${worktree}/resources/${definition}/selection?${zone}`,
-        { mode },
-      )
-      .then(json);
-  const mailpit = (name: string, scope: "project" | "worktree", image = "axllent/mailpit:v1.21") =>
-    decodeSpec({
-      name,
-      scope,
-      preset: null,
-      image,
-      command: null,
-      ports: [{ name: "smtp", port: 1025, protocol: "tcp" }],
-      env: {},
-      volumes: [],
-      ready: { kind: "tcp" },
-      exports: {},
-    });
-  const definitionCount = () =>
-    runtime.runPromise(
-      Effect.flatMap(
-        SqlClient.SqlClient,
-        (sql) => sql<{ readonly n: number }>`SELECT count(*)::int AS n FROM resource_definitions`,
-      ).pipe(Effect.map(([row]) => row?.n)),
-    );
-  const forCarol = `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`;
-  const tableOf = async (as: HarnessUser) => {
-    const read = (await list(as, forCarol)).body;
-    if (read.file.kind !== "read") throw new Error(`no mend.toml read: ${read.file.kind}`);
-    const [table] = read.file.tables;
-    if (table === undefined) throw new Error("no [resource.*] table");
-    return table;
+  const seedFile = (image = "postgres:17") => {
+    file.text = `[resource.db]\npreset = "postgres"\nimage = "${image}"\nports = { postgres = 5432 }\nvolumes = { data = "/var/lib/postgresql/data" }`;
   };
-
-  describe("adding", () => {
-    it("adds a preset as the project's, its image pinned to the digest the registry gave", async () => {
-      await start();
-      expect(await addPreset("carol", "17")).toMatchObject({
-        status: 200,
-        body: {
-          resolvedBy: "docker-mirror:5000",
-          definition: {
-            spec: { image: "postgres:17" },
-            image: `postgres:17@${digestFor("postgres:17")}`,
-            addedBy: "carol",
-            canRemove: true,
-            // Adding is running: the project resource started at once.
-            statusLine: "@db · postgres 17 · project · added by Carol · running · observed 0 s ago",
-          },
-        },
-      });
-      expect(resolved).toEqual(["postgres:17"]);
-      const page = await list("alice");
-      expect(page.status).toBe(200);
-      expect(page.body.settings).toMatchObject([
-        {
-          image: `postgres:17@${digestFor("postgres:17")}`,
-          canRemove: true,
-          statusLine:
-            "@db · postgres 17 · project · added by Carol · not started · observed 0 s ago",
-        },
-      ]);
-      expect(page.body.file).toEqual({ kind: "not-selected" });
-    });
-
-    it("lets its adder or a manager replace a definition, and refuses another member", async () => {
-      await start();
-      expect((await addPreset("alice", "17")).status).toBe(200);
-      expect(await addPreset("carol", "18")).toEqual({
-        status: 403,
-        body: {
-          _tag: "ResourceDenied",
-          message:
-            "replacing a definition someone else added is theirs or a manager's: the project's creator or an organization owner",
-        },
-      });
-      expect(resolved).toEqual(["postgres:17"]);
-      expect(lines((await list("carol")).body.settings)).toEqual([
-        "@db · postgres 17 · project · added by Alice · not started · observed 0 s ago",
-      ]);
-
-      await remove("alice", (await list("alice")).body.settings[0]?.id ?? "", "0".repeat(64));
-      const carols = await add("carol", { kind: "definition", spec: mailpit("mail", "project") });
-      expect(carols.status).toBe(200);
-      const replaced = await add("carol", {
-        kind: "definition",
-        spec: mailpit("mail", "project", "axllent/mailpit:v1.27"),
-      });
-      expect(replaced).toMatchObject({
-        status: 200,
-        body: { definition: { id: carols.body.definition.id, addedBy: "carol" } },
-      });
-      const byManager = await add("alice", {
-        kind: "definition",
-        spec: mailpit("mail", "project", "axllent/mailpit:v1.28"),
-      });
-      expect(byManager.body.definition).toMatchObject({
-        id: carols.body.definition.id,
-        image: `axllent/mailpit:v1.28@${digestFor("axllent/mailpit:v1.28")}`,
-        statusLine: "@mail · mailpit · project · added by Alice · running · observed 0 s ago",
-      });
-    });
-
-    it("answers the same spec as settings hold it to a member who may not replace it, asking no registry", async () => {
-      await start();
-      const alices = await addPreset("alice", "17");
-      resolved.length = 0;
-      const again = await addPreset("carol", "17");
-      expect(again).toEqual({
-        status: 200,
-        body: {
-          ...alices.body,
-          resolvedBy: null,
-          definition: { ...alices.body.definition, canRemove: false },
-        },
-      });
-      expect(resolved).toEqual([]);
-      // Its adder adding it again asks the registry again, and a tag that moved is pinned anew.
-      resolveImage = () =>
-        Effect.succeed({ digest: digestFor("a tag moved since"), resolvedBy: "fake-registry" });
-      expect((await addPreset("alice", "17")).body).toMatchObject({
-        resolvedBy: "fake-registry",
-        definition: { image: `postgres:17@${digestFor("a tag moved since")}` },
-      });
-    });
-
-    it("refuses a definition the rules refuse, a line per field, before any registry is asked", async () => {
-      await start();
-      const refused = await add("carol", {
-        kind: "definition",
-        spec: { ...mailpit("mail", "worktree"), ports: [] },
-      });
-      expect(refused).toMatchObject({
-        status: 422,
-        body: {
-          _tag: "ResourceRejected",
-          message: "@mail · ports names no port, and a resource is reached on one",
-        },
-      });
-      expect(resolved).toEqual([]);
-      expect(await definitionCount()).toBe(0);
-    });
-
-    it("refuses a preset version that names no major, keyed by version, and stores nothing", async () => {
-      await start();
-      expect(await addPreset("carol", "latest")).toEqual({
-        status: 422,
-        body: {
-          _tag: "ResourceRejected",
-          name: "db",
-          refusals: [
-            {
-              key: "version",
-              message:
-                "is not an image tag that starts with its major version, such as 17 or 16.4-bookworm",
-            },
-          ],
-          message:
-            "@db · version is not an image tag that starts with its major version, such as 17 or 16.4-bookworm",
-        },
-      });
-      expect(await definitionCount()).toBe(0);
-    });
-
-    it("refuses an image that is no reference, a terminal escape in it, and stores nothing", async () => {
-      await start();
-      const refused = await harness().request(
-        "carol",
-        "POST",
-        `/api/projects/${shared.project}/resources?${zone}`,
-        {
-          kind: "definition",
-          spec: { ...mailpit("mail", "project"), image: "mail\u001b[2J\u001b[H:1" },
-        },
-      );
-      expect(refused.status).toBe(400);
-      expect(await definitionCount()).toBe(0);
-    });
-
-    it("refuses a replacement that changes what own is while a worktree holds it as own, before any registry", async () => {
-      await start();
-      const db = (await addPreset("carol", "17")).body.definition;
-      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own")).status).toBe(200);
-      resolved.length = 0;
-      expect(await addPreset("carol", "17", "worktree")).toMatchObject({
-        status: 422,
-        body: {
-          refusals: [
-            {
-              key: "scope",
-              message:
-                "changes what own is, and 1 worktree holds @db as own, with data of its own · switch it to shared or off first",
-            },
-          ],
-        },
-      });
-      expect(resolved).toEqual([]);
-      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared")).status).toBe(200);
-      expect((await addPreset("carol", "17", "worktree")).status).toBe(200);
-    });
-
-    it("gives a whole preset definition with no command its engine settings", async () => {
-      await start();
-      const spec = presetDefinition({
-        name: ResourceName.make("db"),
-        preset: "postgres",
-        version: PresetVersion.make("17"),
-        scope: "project",
-      });
-      const added = await add("carol", { kind: "definition", spec: { ...spec, command: null } });
-      expect(added.body.definition.spec.command).toEqual(spec.command);
-      expect(added.body.definition.digest).toBe(
-        (await addPreset("carol", "17")).body.definition.digest,
-      );
-    });
-
-    it("says a registry that cannot pin the image, and adds nothing", async () => {
-      await start();
-      resolveImage = (image) =>
-        Effect.fail(new ImageResolutionError({ image, reason: "unavailable" }));
-      expect(await addPreset("carol", "17")).toEqual({
-        status: 503,
-        body: {
-          _tag: "ResourceRegistryUnavailable",
-          message:
-            "@db · image postgres:17 · registry did not answer · try adding it again · not added",
-        },
-      });
-      resolveImage = (image) =>
-        Effect.fail(new ImageResolutionError({ image, reason: "not-found" }));
-      expect(await addPreset("carol", "17")).toEqual({
-        status: 422,
-        body: {
-          _tag: "ResourceRejected",
-          name: "db",
-          refusals: [
-            { key: "image", message: "postgres:17 · not found in the registry · not added" },
-          ],
-          message: "@db · image postgres:17 · not found in the registry · not added",
-        },
-      });
-      expect(await definitionCount()).toBe(0);
-    });
-
-    it("answers 404 for a project the caller cannot see, before reading or writing anything", async () => {
-      await start();
-      expect((await list("bob")).status).toBe(404);
-      expect((await addPreset("bob", "17")).status).toBe(404);
-      expect((await addPreset("dave", "17")).status).toBe(404);
-      expect(harness().world.calls.filter((call) => call.startsWith("resources."))).toEqual([]);
-      expect(resolved).toEqual([]);
-    });
-  });
-
-  describe("removing", () => {
-    it("lets its adder or a manager remove a definition as they read it, and nobody else", async () => {
-      await start();
-      const alices = (await addPreset("alice", "17")).body.definition;
-      expect((await list("carol")).body.settings).toMatchObject([{ canRemove: false }]);
-      expect(await remove("carol", alices.id, alices.digest)).toEqual({
-        status: 403,
-        body: {
-          _tag: "ResourceDenied",
-          message:
-            "removing a definition someone else added is theirs or a manager's: the project's creator or an organization owner",
-        },
-      });
-      expect((await remove("alice", alices.id, "0".repeat(64))).status).toBe(409);
-      expect(await remove("alice", alices.id, alices.digest)).toEqual({
-        status: 200,
-        body: { statusLine: "@db · definition removed · its volumes are kept" },
-      });
-
-      const carols = (await addPreset("carol", "17")).body.definition;
-      expect(await remove("carol", carols.id, carols.digest)).toMatchObject({ status: 200 });
-      expect((await list("alice")).body.settings).toEqual([]);
-    });
-  });
-
-  describe("a worktree's mend.toml", () => {
-    it("lists a table settings do not hold with an add, and adding it makes it the same", async () => {
-      await start();
-      const table = await tableOf("carol");
-      expect(table).toMatchObject({
-        statusLine: "@mail · mailpit · worktree · in .mend/mend.toml · not in settings",
-        add: { kind: "ready" },
-      });
-      const added = await add("carol", { kind: "definition", spec: table.spec });
-      expect(added.body.definition).toMatchObject({
-        digest: table.digest,
-        statusLine:
-          "@mail · mailpit · worktree · added by Carol · one per worktree · 0 running · observed 0 s ago",
-      });
-      expect(await tableOf("carol")).toMatchObject({
-        statusLine: "@mail · mailpit · worktree · in .mend/mend.toml · same as settings",
-        add: { kind: "added" },
-      });
-    });
-
-    it("says a table differs from settings, and offers its replacement as the add answers", async () => {
-      await start();
-      await add("alice", {
-        kind: "definition",
-        spec: mailpit("mail", "worktree", "axllent/mailpit:v1.20"),
-      });
-      const carols = await tableOf("carol");
-      const denied = {
-        kind: "denied",
-        message:
-          "replacing a definition someone else added is theirs or a manager's: the project's creator or an organization owner",
-      };
-      expect(carols).toMatchObject({
-        statusLine: "@mail · mailpit · worktree · in .mend/mend.toml · differs from settings",
-        add: denied,
-      });
-      expect(await add("carol", { kind: "definition", spec: carols.spec })).toEqual({
-        status: 403,
-        body: { _tag: "ResourceDenied", message: denied.message },
-      });
-      const alices = await tableOf("alice");
-      expect(alices.add).toEqual({ kind: "ready" });
-      expect((await add("alice", { kind: "definition", spec: alices.spec })).status).toBe(200);
-      expect((await tableOf("carol")).add).toEqual({ kind: "added" });
-    });
-
-    it("offers no table whose export sets an env name another definition sets, and says why", async () => {
-      await start();
-      await add("alice", {
-        kind: "definition",
-        spec: { ...mailpit("db", "project"), exports: { MAIN_URL: "smtp://{host}" } },
-      });
-      file = {
-        text: [
-          "[resource.db-main]",
-          'image = "axllent/mailpit:v1.21"',
-          'scope = "project"',
-          "ports = { smtp = 1025 }",
-          'exports = { URL = "smtp://{host}" }',
-        ].join("\n"),
-        stamp: WORKTREE_STAMP,
-      };
-      const table = await tableOf("carol");
-      const refusals = [
-        { key: "exports.URL", message: "sets MEND_RESOURCE_DB_MAIN_URL, as db does too" },
-      ];
-      expect(table.add).toEqual({ kind: "rejected", refusals });
-      resolved.length = 0;
-      expect(await add("carol", { kind: "definition", spec: table.spec })).toMatchObject({
-        status: 422,
-        body: { _tag: "ResourceRejected", refusals },
-      });
-      expect(resolved).toEqual([]);
-    });
-
-    it("reads the selected worktree's tables, with the keys it ignores", async () => {
-      await start();
-      const page = await list("carol", `&worktreeId=${shared.worktree}`);
-      expect(page.body.file).toMatchObject({
-        kind: "read",
-        worktreeId: shared.worktree,
-        observed: ".mend/mend.toml · observed on the worktree",
-        tables: [
-          { statusLine: "@mail · mailpit · worktree · in .mend/mend.toml · not in settings" },
-        ],
-        refused: [],
-        ignored: [{ key: "resource.mail.device" }],
-      });
-      expect((await list("carol", `&worktreeId=${ids("shared-b").worktree}`)).status).toBe(404);
-    });
-
-    it("keeps where a file that does not parse was read, beside why", async () => {
-      await start();
-      file = {
-        text: "[resource.mail\nimage = 1",
-        stamp: { ...WORKTREE_STAMP, source: "capture", captureN: 12, seq: "4180" },
-      };
-      expect((await list("carol", `&worktreeId=${shared.worktree}`)).body.file).toEqual({
-        kind: "unparsed",
-        worktreeId: shared.worktree,
-        observed: ".mend/mend.toml · observed at capture 12 · seq 4180",
-        message:
-          ".mend/mend.toml is not valid TOML: line 1, column 2 · incomplete key-value: cannot find end of key",
-      });
-    });
-
-    it("says where a file does not parse and why, and quotes none of its lines to a person either", async () => {
-      await start();
-      file = {
-        text: [
-          "[resource.mail]",
-          'image = "axllent/mailpit:v1.21"',
-          "ports = { smtp = 1025 }",
-          'env = { MP_UI_AUTH = "fake-value-gate1201" BAD }',
-          'device = "/dev/null"',
-        ].join("\n"),
-        stamp: { ...WORKTREE_STAMP, source: "capture", captureN: 2, seq: "1", partial: true },
-      };
-      const page = await list("carol", `&worktreeId=${shared.worktree}`);
-      expect(page.body.file).toEqual({
-        kind: "unparsed",
-        worktreeId: shared.worktree,
-        observed: ".mend/mend.toml · observed at capture 2 · seq 1 · partial",
-        message:
-          ".mend/mend.toml is not valid TOML: line 4, column 44 · unexpected character encountered",
-      });
-      const wire = JSON.stringify(page.body);
-      for (const excerpt of ["fake-value-gate1201", "MP_UI_AUTH", "BAD", "smtp", "/dev/null"]) {
-        expect(wire).not.toContain(excerpt);
-      }
-    });
-  });
-
-  it("names every person on the page with one read of the accounts", async () => {
+  it("starts only through the explicit level endpoint and remembers the file's spec", async () => {
     await start();
-    await addPreset("alice", "17");
-    await add("carol", { kind: "definition", spec: mailpit("mail", "project") });
-    const before = harness().world.calls.length;
-    expect((await list("carol")).status).toBe(200);
-    expect(
-      harness()
-        .world.calls.slice(before)
-        .filter((call) => call.startsWith("users.")),
-    ).toEqual(["users.byIds"]);
-  });
-
-  describe("choosing", () => {
-    it("stores a change owner's choice and answers the row it wrote", async () => {
-      await start();
-      const db = (await addPreset("alice", "17")).body.definition;
-      expect(await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared")).toEqual({
-        status: 200,
-        body: {
-          definitionId: db.id,
-          worktreeId: CAROL_WORKTREE_IN_SHARED_A,
-          mode: "shared",
-          chosenBy: "carol",
-          statusLine:
-            "@db · shared database · any worktree on shared can change or drop its tables · no Service was running · agents and shells keep their env until they restart",
-        },
-      });
-      expect(harness().world.calls).toContain("serviceRestarts.restart");
-      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own")).body).toMatchObject({
-        mode: "own",
-        statusLine:
-          "@db · own database · not made yet · no Service was running · agents and shells keep their env until they restart",
-      });
-      expect((await use("alice", CAROL_WORKTREE_IN_SHARED_A, db.id, "off")).body).toEqual({
-        _tag: "ResourceDenied",
-        message:
-          "choosing how this worktree uses a resource is its change owner's: the owner of its first session",
-      });
-    });
-
-    it("reads a worktree's choice on its line, the default until one is stored, and the read writes none", async () => {
-      await start();
-      const db = (await addPreset("alice", "17")).body.definition;
-      const settingsLines = async (query: string) =>
-        lines((await list("carol", query)).body.settings);
-      // A Postgres worktree is on its own database by default.
-      expect(await settingsLines(forCarol)).toEqual([
-        "@db · not started · own database · not made yet · observed 0 s ago",
-      ]);
-      expect((await list("carol", forCarol)).body.settings).toMatchObject([
-        { choice: null, canChoose: true, instance: "not-started" },
-      ]);
-      expect((await list("alice", forCarol)).body.settings).toMatchObject([
-        { choice: null, canChoose: false },
-      ]);
-      await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "off");
-      expect(await settingsLines(forCarol)).toEqual(["@db · off"]);
-      expect((await list("carol", forCarol)).body.settings).toMatchObject([
-        { choice: "off", instance: "none" },
-      ]);
-      expect(await settingsLines("")).toEqual([
-        "@db · postgres 17 · project · added by Alice · not started · observed 0 s ago",
-      ]);
-    });
-
-    it("names the resource a refused choice is of, and says each refusal as a clause", async () => {
-      await start();
-      const cache = (
-        await add("carol", {
-          kind: "preset",
-          name: "cache",
-          preset: "redis",
-          version: "8",
-          scope: "project",
-        })
-      ).body.definition;
-      expect(await use("carol", CAROL_WORKTREE_IN_SHARED_A, cache.id, "own")).toEqual({
-        status: 422,
-        body: {
-          _tag: "ResourceRejected",
-          name: "cache",
-          refusals: [{ key: "mode", message: "is own, and @cache offers shared, off" }],
-          message: "@cache · mode is own, and @cache offers shared, off",
-        },
-      });
-    });
-
-    it("answers another project's definition as not found, and never says its name", async () => {
-      await start();
-      const elsewhere = ProjectId.make("p_resources_elsewhere");
-      await runtime.runPromise(
-        Effect.flatMap(
-          SqlClient.SqlClient,
-          (sql) => sql`INSERT INTO projects (id, name, store_path, default_branch, organization_id)
-            VALUES (${elsewhere}, 'elsewhere', '/store/elsewhere', 'main', 'org-a')
-            ON CONFLICT (id) DO NOTHING`,
-        ),
-      );
-      const hidden = await runtime.runPromise(
-        Effect.flatMap(repoNow, (repo) =>
-          repo.declare(
-            elsewhere,
-            {
-              spec: mailpit("secret-mail", "project"),
-              imageDigest: ImageDigest.make(`sha256:${"f".repeat(64)}`),
-            },
-            "bob",
-          ),
-        ),
-      );
-      const chosen = await use("carol", CAROL_WORKTREE_IN_SHARED_A, hidden.id, "off");
-      expect(chosen.status).toBe(404);
-      expect(JSON.stringify(chosen.body)).not.toContain("secret-mail");
-    });
-  });
-
-  describe("starting and stopping", () => {
-    const control = (as: HarnessUser, name: string, verb: "start" | "stop", query = "") =>
-      harness()
-        .request(
-          as,
-          "POST",
-          `/api/projects/${shared.project}/resources/${name}/${verb}?${zone}${query}`,
-        )
-        .then(json);
-
-    it("lets any member start and stop a project resource, and says who stopped it", async () => {
-      await start();
-      await addPreset("alice", "17");
-      expect(await control("carol", "db", "stop")).toEqual({
-        status: 200,
-        body: {
-          instance: "stopped",
-          statusLine:
-            "@db · postgres 17 · project · added by Alice · stopped by Carol · observed 0 s ago",
-        },
-      });
-      expect(await control("carol", "db", "start")).toEqual({
-        status: 200,
-        body: {
-          instance: "running",
-          statusLine: "@db · postgres 17 · project · added by Alice · running · observed 0 s ago",
-        },
-      });
-      expect(harness().world.calls.filter((call) => call.startsWith("resourceRuntime."))).toEqual([
-        "resourceRuntime.start",
-        "resourceRuntime.stop",
-        "resourceRuntime.start",
-      ]);
-    });
-
-    it("starts a worktree resource in the worktree named, and refuses one named for none", async () => {
-      await start();
-      await add("carol", { kind: "definition", spec: mailpit("mail", "worktree") });
-      expect(await control("carol", "mail", "start")).toEqual({
-        status: 422,
-        body: {
-          _tag: "ResourceRejected",
-          name: "mail",
-          refusals: [
-            {
-              key: "worktree",
-              message: "@mail runs one instance per worktree · name the worktree: --worktree <w>",
-            },
-          ],
-          message: "@mail runs one instance per worktree · name the worktree: --worktree <w>",
-        },
-      });
-      expect(await control("carol", "mail", "start", forCarol)).toEqual({
-        status: 200,
-        body: {
-          instance: "running",
-          statusLine: "@mail · running · its own instance · observed 0 s ago",
-        },
-      });
-    });
-
-    it("answers a name the project lacks, and a project the caller cannot see, as not found", async () => {
-      await start();
-      expect((await control("carol", "db", "start")).status).toBe(404);
-      await addPreset("alice", "17");
-      expect((await control("bob", "db", "stop")).status).toBe(404);
-    });
-  });
-
-  it("restarts the worktree's Services on a switch, and names them on its line", async () => {
-    const asked: Array<string> = [];
-    await start(undefined, undefined, {
-      restart: (worktreeId, by) =>
-        Effect.sync(() => {
-          asked.push(`${worktreeId} ${by}`);
-          return ["web", "worker"];
-        }),
-    });
-    const db = (await addPreset("alice", "17")).body.definition;
-    expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared")).body).toMatchObject({
-      statusLine: expect.stringContaining(
-        "· restarted web, worker · agents and shells keep their env until they restart",
-      ),
-    });
-    // Choosing what the worktree already uses restarts nothing.
-    await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared");
-    expect(asked).toEqual([`${CAROL_WORKTREE_IN_SHARED_A} carol`]);
-  });
-
-  it("resets a worktree's database as its runtime answers, and says why one was not", async () => {
-    const at = new Date("2026-10-31T12:02:00Z");
-    let outcome: ResetOutcome = { kind: "reset", origin: "copied", savedAt: at };
-    const asked: Array<string> = [];
-    await start(undefined, {
-      reset: (input) =>
-        Effect.sync(() => {
-          asked.push(`${input.definition.spec.name} ${input.worktreeId} ${input.target}`);
-          return outcome;
-        }),
-    });
-    await addPreset("alice", "17");
-    const reset = (as: HarnessUser, query = "") =>
-      harness()
-        .request(
-          as,
-          "POST",
-          `/api/projects/${shared.project}/worktrees/${CAROL_WORKTREE_IN_SHARED_A}/resources/db/reset?${zone}${query}`,
-        )
-        .then(json);
-    expect(await reset("carol")).toEqual({
+    seedFile();
+    expect(await control("carol", "db", "project")).toMatchObject({
       status: 200,
-      body: {
-        statusLine: expect.stringMatching(
-          /^@db · own database reset · copied from shared · previous data saved as a dump .*14:02$/,
-        ),
-      },
+      body: { kind: "started", instance: "running" },
     });
-    // Its own database is its change owner's to reset; the shared one is any member's.
-    expect((await reset("alice")).body).toMatchObject({ _tag: "ResourceDenied" });
-    expect((await reset("alice", "&target=shared")).status).toBe(200);
-    outcome = {
-      kind: "not-running",
-      instance: { kind: "stopped", reason: { kind: "person", by: "Maria" } },
-    };
-    expect(await reset("carol")).toEqual({
-      status: 409,
-      body: { _tag: "ResourceNotReset", message: "@db · stopped by Maria · nothing was reset" },
-    });
-    expect(asked).toEqual([
-      `db ${CAROL_WORKTREE_IN_SHARED_A} own`,
-      `db ${CAROL_WORKTREE_IN_SHARED_A} shared`,
-      `db ${CAROL_WORKTREE_IN_SHARED_A} own`,
-    ]);
+    expect(resolved).toEqual(["postgres:17"]);
+    const page = (await list("carol", `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`)).body;
+    expect(page.settings).toHaveLength(1);
+    expect(page.settings[0]?.level).toBe("project");
   });
-
-  it("answers the env a worktree's processes get now, with what the project sets itself", async () => {
-    const env = {
-      DATABASE_URL: "postgres://postgres@db:5432/own_0123456789ab",
-      PGHOST: "db",
-    };
-    await start(undefined, {
-      envOf: () =>
-        Effect.succeed({ env, left: [{ resource: ResourceName.make("db"), names: ["PGPORT"] }] }),
-    });
-    await addPreset("alice", "17");
-    const answered = await harness()
-      .request(
-        "carol",
-        "GET",
-        `/api/projects/${shared.project}/worktrees/${CAROL_WORKTREE_IN_SHARED_A}/resources/env?${zone}`,
-      )
-      .then(json);
-    expect(answered).toEqual({
+  it("returns needs-restart and leaves the old image until an explicit restart", async () => {
+    await start();
+    seedFile();
+    await control("carol", "db", "project");
+    seedFile("postgres:18");
+    expect(await control("carol", "db", "project")).toMatchObject({
       status: 200,
-      body: {
-        env,
-        exports: [
-          "export DATABASE_URL='postgres://postgres@db:5432/own_0123456789ab'",
-          "export PGHOST='db'",
-        ],
-        statusLines: ["@db · PGPORT left as the project sets it"],
-      },
+      body: { kind: "needs-restart", hint: "mend resource start db --project --restart" },
     });
+    expect(resolved).toEqual(["postgres:17"]);
+    expect(await control("carol", "db", "project", true)).toMatchObject({
+      status: 200,
+      body: { kind: "started" },
+    });
+    expect(resolved).toEqual(["postgres:17", "postgres:18"]);
+  });
+  it("requires a level and worktree, refuses missing definitions, and hides invisible projects", async () => {
+    await start();
+    seedFile();
     expect(
       (
         await harness().request(
-          "bob",
-          "GET",
-          `/api/projects/${shared.project}/worktrees/${CAROL_WORKTREE_IN_SHARED_A}/resources/env?${zone}`,
+          "carol",
+          "POST",
+          `/api/projects/${shared.project}/resources/db/start?${zone}`,
+          {},
+        )
+      ).status,
+    ).toBe(400);
+    expect((await control("carol", "missing", "project")).status).toBe(403);
+    expect((await control("bob", "db", "project")).status).toBe(404);
+  });
+  it("refuses malformed definitions and Mend process env collisions before resolving an image", async () => {
+    await start();
+    file.text = '[resource.preview]\nimage = "redis:8"\nports = { redis = 6379 }';
+    expect((await control("carol", "preview", "project")).status).toBe(422);
+    expect(resolved).toEqual([]);
+  });
+  it("has no add-to-settings route", async () => {
+    await start();
+    expect(
+      (
+        await harness().request(
+          "carol",
+          "POST",
+          `/api/projects/${shared.project}/resources?${zone}`,
+          {},
         )
       ).status,
     ).toBe(404);
   });
-  it("parses pull URLs as redacted values at the boundary and never echoes malformed input", async () => {
-    const captured: Array<string> = [];
-    const secret = "api-load-private-password";
-    await start(
-      undefined,
-      {},
-      {},
-      {
-        begin: (_project, _viewer, input) =>
-          Effect.sync(() => {
-            captured.push(JSON.stringify(input));
-            return {
-              id: ResourceLoadId.make("33333333-3333-3333-3333-333333333333"),
-              phase: "pulling",
-              bytesDone: 0,
-              bytesTotal: null,
-              statusLine: "@db · loading staging/app · pulling 0 B · shared database",
-            };
-          }),
-      },
-    );
-    const base = `/api/projects/${shared.project}/resource-loads?${zone}`;
-    const response = await harness().request("alice", "POST", base, {
-      name: "db",
-      worktreeId: null,
-      target: "shared",
-      source: { kind: "pull", url: `postgres://alice:${secret}@staging/app` },
+  it("returns the exact switch message and restarts this worktree's Services", async () => {
+    const asked: string[] = [];
+    await start(undefined, undefined, {
+      restart: (id) =>
+        Effect.sync(() => {
+          asked.push(id);
+          return [{ name: "web", kind: "restarted" as const }];
+        }),
     });
-    expect(response.status).toBe(200);
-    expect(await response.text()).not.toContain(secret);
-    expect(captured.join("\n")).not.toContain(secret);
-    const invalid = await harness().request("alice", "POST", base, {
-      name: "db",
-      worktreeId: secret,
-      target: "no",
-      source: { kind: "pull", url: secret },
-    });
-    expect(invalid.status).toBe(409);
-    expect(await invalid.text()).not.toContain(secret);
-    expect((await harness().request("bob", "POST", base, {})).status).toBe(404);
+    seedFile();
+    await control("carol", "db", "worktree");
+    const switched = await harness()
+      .request(
+        "carol",
+        "PUT",
+        `/api/projects/${shared.project}/worktrees/${CAROL_WORKTREE_IN_SHARED_A}/resources/db/selection?${zone}`,
+        { mode: "project" },
+      )
+      .then(json);
+    expect(switched.status).toBe(200);
+    expect(switched.body.message).toContain("@db switched from worktree to project.");
+    expect(asked).toHaveLength(2);
   });
-  it("streams a raw dump body through the authenticated load route", async () => {
-    let received = 0;
-    const id = ResourceLoadId.make("44444444-4444-4444-4444-444444444444");
-    await start(
-      undefined,
-      {},
-      {},
-      {
-        feed: (_project, viewer, loadId, body) =>
-          Effect.gen(function* () {
-            expect(viewer.userId).toBe("alice");
-            expect(loadId).toBe(id);
-            received = yield* Stream.runFold(
-              body,
-              () => 0,
-              (bytes, chunk) => bytes + chunk.length,
-            ).pipe(Effect.orDie);
-            return {
-              id,
-              phase: "restoring",
-              bytesDone: received,
-              bytesTotal: null,
-              statusLine: "@db · restoring",
-            };
-          }),
-      },
-    );
-    const path = `/api/projects/${shared.project}/resource-loads/${id}/body?${zone}`;
-    const bytes = new Uint8Array(256 * 1024).fill(128);
-    expect((await harness().request("bob", "PUT", path, bytes)).status).toBe(404);
-    expect(received).toBe(0);
-    expect((await harness().request("alice", "PUT", path, bytes)).status).toBe(200);
-    expect(received).toBe(bytes.length);
+  it("refuses selecting a missing own database and archives one instance by name and level", async () => {
+    await start();
+    seedFile();
+    await control("carol", "db", "project");
+    const chosen = await harness()
+      .request(
+        "carol",
+        "PUT",
+        `/api/projects/${shared.project}/worktrees/${CAROL_WORKTREE_IN_SHARED_A}/resources/db/selection?${zone}`,
+        { mode: "worktree" },
+      )
+      .then(json);
+    expect(chosen).toMatchObject({
+      status: 403,
+      body: { message: "@db · no own database yet · mend resource start db --worktree" },
+    });
+    expect(
+      (
+        await harness().request("carol", "DELETE", `/api/projects/${shared.project}/resources/db`, {
+          level: "project",
+          worktreeId: CAROL_WORKTREE_IN_SHARED_A,
+        })
+      ).status,
+    ).toBe(200);
+    expect((await list("carol")).body.settings).toHaveLength(0);
+  });
+  it("reports an unavailable registry without remembering an instance", async () => {
+    await start();
+    seedFile();
+    resolveImage = (image) =>
+      Effect.fail(new ImageResolutionError({ image, reason: "unavailable" }));
+    expect((await control("carol", "db", "project")).status).toBe(503);
+    expect((await list("carol")).body.settings).toHaveLength(0);
   });
 });

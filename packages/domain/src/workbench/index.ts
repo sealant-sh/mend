@@ -103,3 +103,5 @@ export * from "./resource-removal.ts";
 
 export * from "./service-dependency.ts";
 export * from "./service-resource-env.ts";
+
+export * from "./resource-switch.ts";

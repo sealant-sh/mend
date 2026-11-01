@@ -16,6 +16,7 @@ const worktree: WorktreeDto = {
   branch: "mend/fix-login",
   baseRef: "main",
   handoff: null,
+  usesProjectResources: true,
   changeOwnerUserId: "ada",
   changeOwnerProven: true,
   baseSha: Sha.make("0123456789abcdef0123456789abcdef01234567"),

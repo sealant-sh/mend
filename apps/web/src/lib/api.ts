@@ -244,6 +244,16 @@ export const adoptProject = (
   );
 export const setProjectVisibility = (id: ProjectDto["id"], visibility: ProjectDto["visibility"]) =>
   orLogin(trpcClient.projects.setVisibility.mutate({ id, visibility }));
+export const setNewWorktreesUseProjectResources = (
+  id: ProjectDto["id"],
+  newWorktreesUseProjectResources: boolean,
+) =>
+  orLogin(
+    trpcClient.projects.setNewWorktreesUseProjectResources.mutate({
+      id,
+      newWorktreesUseProjectResources,
+    }),
+  );
 export const setProjectFolders = (
   id: ProjectDto["id"],
   selections: ReadonlyArray<{
