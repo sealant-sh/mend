@@ -40,7 +40,7 @@ import {
   worktreePathOf,
   worktreeTreeOf,
 } from "@mend/store";
-import { Deferred, Duration, Effect, Layer, Schema, Scope, Semaphore } from "effect";
+import { Deferred, Duration, Effect, Layer, Option, Schema, Scope, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -116,6 +116,22 @@ const defaultBranchUnavailable = () =>
   new DefaultBranchUnavailableError({
     message: "the default branch is not available on this server",
   });
+
+/**
+ * A file on the project's default branch, from the project's store in either mode: the branch as a
+ * session bases on it (`listBranches`, origin's view merged with local heads). Never fetches.
+ */
+const readDefaultBranchBlob = Effect.fnUntraced(function* (
+  store: Store["Service"],
+  project: { readonly storePath: string; readonly defaultBranch: string },
+  relative: string,
+  maxBytes: number,
+) {
+  const branches = yield* store.listBranches(project.storePath);
+  const branch = branches.find((row) => row.name === project.defaultBranch);
+  if (branch === undefined) return yield* defaultBranchUnavailable();
+  return yield* store.readBlob(project.storePath, branch.sha, relative, maxBytes);
+});
 
 export type WorktreeReadError =
   | GitError
@@ -318,10 +334,7 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
       readDefaultBranchFile: (projectId, relative, maxBytes) =>
         Effect.gen(function* () {
           const project = yield* projects.byId(projectId);
-          const branches = yield* store.listBranches(project.storePath);
-          const branch = branches.find((row) => row.name === project.defaultBranch);
-          if (branch === undefined) return yield* defaultBranchUnavailable();
-          return stamped(yield* store.readBlob(project.storePath, branch.sha, relative, maxBytes));
+          return stamped(yield* readDefaultBranchBlob(store, project, relative, maxBytes));
         }),
       diffWorktree: (projectId, worktreeId, base) =>
         pathOf(projectId, worktreeId).pipe(
@@ -624,19 +637,14 @@ const restoreCapture = Effect.fnUntraced(function* (
 export const WorktreeReadsCapturedLive: Layer.Layer<
   WorktreeReads,
   never,
-  | CaptureStoreRepo
-  | BlobStore
-  | GitOpsRunner
-  | StoreRefsRepo
-  | RawBlobCache
-  | ProjectsRepo
-  | WorktreesRepo
+  CaptureStoreRepo | BlobStore | GitOpsRunner | StoreRefsRepo | RawBlobCache | ProjectsRepo
 > = Layer.effect(
   WorktreeReads,
   Effect.gen(function* () {
     const repo = yield* CaptureStoreRepo;
     const projects = yield* ProjectsRepo;
-    const worktrees = yield* WorktreesRepo;
+    // The project's store holds the default branch; a composition without one reads none.
+    const store = yield* Effect.serviceOption(Store);
     const blobs = yield* BlobStore;
     const runner = yield* GitOpsRunner;
     const refs = yield* StoreRefsRepo;
@@ -683,19 +691,13 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
     return {
       readDefaultBranchFile: (projectId, relative, maxBytes) =>
         Effect.gen(function* () {
+          // Captures hold worktree branches; the default branch lives in the project's store.
+          if (Option.isNone(store)) return yield* defaultBranchUnavailable();
           const project = yield* projects.byId(projectId);
-          for (const worktree of yield* worktrees.listForProject(projectId)) {
-            const result = yield* Effect.gen(function* () {
-              const ready = yield* prepared(projectId, worktree.id);
-              const branches = yield* runner.listBranches(ready.cache);
-              const branch = branches.find((row) => row.name === project.defaultBranch);
-              if (branch === undefined) return yield* defaultBranchUnavailable();
-              const value = yield* runner.readBlob(ready.cache, branch.sha, relative, maxBytes);
-              return { value, stamp: ready.stamp };
-            }).pipe(Effect.result);
-            if (result._tag === "Success") return result.success;
-          }
-          return yield* defaultBranchUnavailable();
+          return {
+            value: yield* readDefaultBranchBlob(store.value, project, relative, maxBytes),
+            stamp: WORKTREE_STAMP,
+          };
         }),
       diffWorktree: (projectId, worktreeId, base) =>
         prepared(projectId, worktreeId).pipe(

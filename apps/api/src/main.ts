@@ -916,7 +916,11 @@ const MainLive = Layer.unwrap(
       mode === "worker" ? RawBlobCacheOff : RawBlobCacheLive.pipe(Layer.provide(StoreConfig.layer));
     const worktreeReads = (
       captured
-        ? WorktreeReadsCapturedLive.pipe(Layer.provide(captureStore), Layer.provide(DatabaseLive))
+        ? WorktreeReadsCapturedLive.pipe(
+            Layer.provide(captureStore),
+            Layer.provide(StoreLive),
+            Layer.provide(DatabaseLive),
+          )
         : WorktreeReadsColocatedLive.pipe(Layer.provide(StoreLive), Layer.provide(DatabaseLive))
     ).pipe(Layer.provide(rawBlobCache));
     // Landing's git half by store kind: the runner cache for a capture-backed worktree, the

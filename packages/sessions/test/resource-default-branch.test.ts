@@ -1,14 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { StoreRefsRepo } from "@mend/db";
-import { ProjectId, Sha } from "@mend/domain";
+import { ProjectId } from "@mend/domain";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { readDefaultBranchTables } from "../src/resources/worktree-tables.ts";
-import { SessionRepositoryCapturedLive } from "../src/session-repository-captured.ts";
-import { SessionRepository } from "../src/session-repository.ts";
 import {
   WorktreeReads,
   WorktreeReadsColocatedLive,
@@ -16,7 +13,7 @@ import {
   DefaultBranchUnavailableError,
   WORKTREE_STAMP,
 } from "../src/worktree-reads.ts";
-import { makeCaptureWorld, newWorktreeId, sh, worktreeRowFor } from "./capture-world.ts";
+import { makeCaptureWorld, sh } from "./capture-world.ts";
 
 const table = '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\n';
 const stamp = (text: string | null) => ({
@@ -31,6 +28,20 @@ const stamp = (text: string | null) => ({
         },
   stamp: WORKTREE_STAMP,
 });
+const declareOnOrigin = (
+  world: ReturnType<typeof makeCaptureWorld>,
+  file: string,
+  text: string,
+) => {
+  const work = path.join(world.scratch, "work");
+  fs.mkdirSync(path.dirname(path.join(work, file)), { recursive: true });
+  fs.writeFileSync(path.join(work, file), text);
+  sh(work, ["add", file]);
+  sh(work, ["commit", "-qm", `declare ${file}`]);
+  // What adoption and refresh write: origin's default branch as last fetched.
+  sh(world.project.storePath, ["fetch", work, "main:refs/remotes/origin/main"]);
+};
+
 describe("default branch resource tables", () => {
   it("uses the preferred file and never combines it with the root fallback", async () => {
     const paths: string[] = [];
@@ -75,95 +86,41 @@ describe("default branch resource tables", () => {
       message: "the default branch is not available on this server",
     });
   });
-  it("reads a co-located default branch with no worktrees, including root fallback and absent/unavailable refs", async () => {
-    const world = makeCaptureWorld();
-    const runtime = ManagedRuntime.make(
-      WorktreeReadsColocatedLive.pipe(Layer.provide(world.layer)),
-    );
-    const read = () =>
-      runtime.runPromise(
-        Effect.flatMap(WorktreeReads, (reads) => readDefaultBranchTables(reads, world.project.id)),
-      );
-    try {
-      expect((await read()).kind).toBe("absent");
-      const work = path.join(world.scratch, "work");
-      fs.writeFileSync(path.join(work, "mend.toml"), table);
-      sh(work, ["add", "mend.toml"]);
-      sh(work, ["commit", "-qm", "declare db"]);
-      sh(world.project.storePath, ["fetch", work, "main:refs/heads/main"]);
-      expect((await read()).kind).toBe("read");
-      fs.mkdirSync(path.join(work, ".mend"));
-      fs.writeFileSync(
-        path.join(work, ".mend/mend.toml"),
-        '[resource.cache]\npreset = "redis"\nimage = "redis:8"\n',
-      );
-      sh(work, ["add", ".mend"]);
-      sh(work, ["commit", "-qm", "preferred"]);
-      sh(world.project.storePath, ["fetch", work, "main:refs/heads/main"]);
-      const preferred = await read();
-      expect(preferred.kind === "read" && preferred.tables.map((def) => def.name)).toEqual([
-        "cache",
-      ]);
-      sh(world.project.storePath, ["update-ref", "-d", "refs/heads/main"]);
-      expect(await read()).toEqual({
-        kind: "unavailable",
-        message: "the default branch is not available on this server",
-      });
-    } finally {
-      await runtime.dispose();
-      fs.rmSync(world.scratch, { recursive: true, force: true });
-    }
-  });
-  it("a captured project reports unavailable before a capture, and reads the default ref from restored objects", async () => {
-    const world = makeCaptureWorld();
-    const runtime = ManagedRuntime.make(
-      Layer.mergeAll(
-        world.layer,
-        WorktreeReadsCapturedLive.pipe(Layer.provide(world.layer)),
-        SessionRepositoryCapturedLive.pipe(Layer.provide(world.layer)),
-      ),
-    );
-    const read = () =>
-      runtime.runPromise(
-        Effect.flatMap(WorktreeReads, (reads) => readDefaultBranchTables(reads, world.project.id)),
-      );
-    try {
-      expect((await read()).kind).toBe("unavailable");
-      const id = newWorktreeId();
-      const made = await runtime.runPromise(
-        Effect.flatMap(SessionRepository, (repo) =>
-          repo.createWorktree(
-            world.project.id,
-            { id, directory: id, branch: `mend/${id}` },
-            { kind: "base", base: null },
-            null,
-          ),
-        ),
-      );
-      world.worktrees.set(id, worktreeRowFor(world, id, made.branch));
-      await runtime.runPromise(
-        Effect.flatMap(
-          SessionRepository,
-          (repo) => repo.attachWorktree?.(world.project.id, id) ?? Effect.void,
-        ),
-      );
-      // Capture 0 has the worktree's branch but does not invent a default-branch ref.
-      expect((await read()).kind).toBe("unavailable");
-      await runtime.runPromise(
-        Effect.flatMap(StoreRefsRepo, (refs) =>
-          refs.set(world.project.id, "refs/heads/main", Sha.make(world.baseSha), null),
-        ),
-      );
-      expect((await read()).kind).toBe("absent");
-      const present = await runtime.runPromise(
-        Effect.flatMap(WorktreeReads, (reads) =>
-          reads.readDefaultBranchFile(world.project.id, "a.txt", 1024),
-        ),
-      );
-      expect(new TextDecoder().decode(present.value?.bytes)).toBe("one\ntwo\n");
-    } finally {
-      await runtime.dispose();
-      fs.rmSync(world.scratch, { recursive: true, force: true });
-    }
-  });
+  for (const mode of ["co-located", "captured"] as const) {
+    it(`reads the default branch from the project's store with no worktree (${mode})`, async () => {
+      const world = makeCaptureWorld();
+      const reads =
+        mode === "co-located"
+          ? WorktreeReadsColocatedLive.pipe(Layer.provide(world.layer))
+          : Layer.mergeAll(world.layer, WorktreeReadsCapturedLive.pipe(Layer.provide(world.layer)));
+      const runtime = ManagedRuntime.make(reads);
+      const read = () =>
+        runtime.runPromise(
+          Effect.flatMap(WorktreeReads, (each) => readDefaultBranchTables(each, world.project.id)),
+        );
+      try {
+        expect((await read()).kind).toBe("absent");
+        declareOnOrigin(world, "mend.toml", table);
+        expect((await read()).kind).toBe("read");
+        declareOnOrigin(
+          world,
+          ".mend/mend.toml",
+          '[resource.cache]\npreset = "redis"\nimage = "redis:8"\n',
+        );
+        const preferred = await read();
+        expect(preferred.kind === "read" && preferred.tables.map((def) => def.name)).toEqual([
+          "cache",
+        ]);
+        sh(world.project.storePath, ["update-ref", "-d", "refs/remotes/origin/main"]);
+        sh(world.project.storePath, ["update-ref", "-d", "refs/heads/main"]);
+        expect(await read()).toEqual({
+          kind: "unavailable",
+          message: "the default branch is not available on this server",
+        });
+      } finally {
+        await runtime.dispose();
+        fs.rmSync(world.scratch, { recursive: true, force: true });
+      }
+    });
+  }
 });
