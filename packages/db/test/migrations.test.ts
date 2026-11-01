@@ -2731,6 +2731,105 @@ describe.skipIf(postgres.skip)("0165 preview preparations", () => {
   }, 60_000);
 });
 
+describe.skipIf(postgres.skip)("0183 resource own databases key repair", () => {
+  beforeEach(async () => {
+    await emptyScratch();
+    await withScratch(
+      Effect.gen(function* () {
+        yield* upTo("0182_slack_proof_turns");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-repair', 'Repair')`;
+        yield* sql`INSERT INTO projects (id, name, organization_id, store_path, default_branch)
+          VALUES ('p-repair', 'repair', 'org-repair', '/store/repair/repo.git', 'main')`;
+        yield* sql`INSERT INTO resource_definitions (id, project_id, name)
+          VALUES ('db-repair', 'p-repair', 'db')`;
+      }),
+    );
+  });
+
+  const inventory = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return {
+      columns: yield* sql`SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'resource_own_databases'
+        ORDER BY ordinal_position`,
+      constraints: yield* sql`SELECT oid, conname, pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint WHERE conrelid = 'resource_own_databases'::regclass ORDER BY conname`,
+      rows: yield* sql`SELECT * FROM resource_own_databases ORDER BY worktree_id, definition_id`,
+    };
+  });
+
+  it.each([false, true])("repairs retired 0180 with a renamed key: %s", async (renamed) => {
+    await withScratch(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`ALTER TABLE resource_own_databases ADD COLUMN purpose text NOT NULL DEFAULT 'own' CHECK (purpose IN ('own', 'base'))`;
+        yield* sql`ALTER TABLE resource_own_databases DROP CONSTRAINT resource_own_databases_pkey`;
+        yield* sql`ALTER TABLE resource_own_databases ADD PRIMARY KEY (worktree_id, definition_id, purpose)`;
+        if (renamed) {
+          yield* sql`ALTER TABLE resource_own_databases RENAME CONSTRAINT resource_own_databases_pkey TO preview_primary_key`;
+        }
+        yield* sql`INSERT INTO resource_own_databases
+          (worktree_id, definition_id, origin, purpose, made_at) VALUES
+          ('wt-repair', 'db-repair', 'copied', 'own', '2026-11-01T00:00:00Z'),
+          ('wt-repair', 'db-repair', 'empty', 'base', '2026-11-01T00:00:00Z')`;
+        yield* migrations["0183_resource_own_databases_key_repair"];
+        expect(
+          yield* sql`SELECT conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint
+            WHERE conrelid = 'resource_own_databases'::regclass AND contype = 'p'`,
+        ).toEqual([
+          {
+            conname: "resource_own_databases_pkey",
+            definition: "PRIMARY KEY (worktree_id, definition_id)",
+          },
+        ]);
+        expect(
+          yield* sql`SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'resource_own_databases' AND column_name = 'purpose'`,
+        ).toEqual([]);
+        expect(
+          yield* sql`SELECT conname FROM pg_constraint
+            WHERE conrelid = 'resource_own_databases'::regclass AND conname = 'resource_own_databases_purpose_check'`,
+        ).toEqual([]);
+        expect(
+          yield* sql`SELECT worktree_id, definition_id, origin, made_at FROM resource_own_databases`,
+        ).toEqual([
+          {
+            worktree_id: "wt-repair",
+            definition_id: "db-repair",
+            origin: "copied",
+            made_at: new Date("2026-11-01T00:00:00Z"),
+          },
+        ]);
+        yield* sql`INSERT INTO resource_own_databases (worktree_id, definition_id, origin)
+          VALUES ('wt-repair', 'db-repair', 'loaded')
+          ON CONFLICT ("worktree_id", "definition_id") DO UPDATE
+          SET origin = EXCLUDED.origin, made_at = now()`;
+        expect(yield* sql`SELECT origin FROM resource_own_databases`).toEqual([
+          { origin: "loaded" },
+        ]);
+        const repaired = yield* inventory;
+        yield* migrations["0183_resource_own_databases_key_repair"];
+        expect(yield* inventory).toEqual(repaired);
+      }),
+    );
+  });
+
+  it("leaves a database that never applied 0180 unchanged", async () => {
+    await withScratch(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO resource_own_databases (worktree_id, definition_id, origin)
+          VALUES ('wt-repair', 'db-repair', 'copied')`;
+        const original = yield* inventory;
+        yield* migrations["0183_resource_own_databases_key_repair"];
+        yield* migrations["0183_resource_own_databases_key_repair"];
+        expect(yield* inventory).toEqual(original);
+      }),
+    );
+  });
+});
+
 describe.skipIf(postgres.skip)("0166 worktree removal", () => {
   beforeAll(emptyScratch);
 
