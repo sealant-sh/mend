@@ -6,9 +6,9 @@ sidebar:
   order: 1.5
 ---
 
-:::note[Agreed design, not yet built] This guide describes recorded proof artifacts designed for
-Mend 0.37. The captures and review controls described here are not yet built. The first version
-covers web apps. :::
+:::note[Partly built] Mend 0.37 builds recorded proof artifacts in order. Captures, Slack file
+uploads and inline display in T3 Code are built. The setup session, PR body embeds, the review page
+and the phone are not yet built. The first version covers web apps. :::
 
 A proof artifact is a selected screenshot or short video of your web app running on a session's
 screen, attached to its change. You can inspect it beside the diff without starting the app
