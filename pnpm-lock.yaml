@@ -909,6 +909,9 @@ importers:
       '@effect/vitest':
         specifier: 'catalog:'
         version: 4.0.5(effect@4.0.5)(vitest@5.0.1(@types/node@22.20.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)))
+      '@mend/agent-protocol':
+        specifier: workspace:*
+        version: link:../../packages/agent-protocol
       '@mend/test-ci':
         specifier: workspace:*
         version: link:../../tooling/test-ci
