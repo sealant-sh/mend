@@ -330,7 +330,7 @@ describe("whose preview a row shows", () => {
       previews: read({ previews: [preview("web", [observedWeb(at)], { bound: sibling })] }),
     });
     expect(rows(root)).toEqual([
-      ["web", "Run", "pnpm dev · :3000 · mend.toml"],
+      ["web", "Run", "pnpm dev · :3000 · .mend/mend.toml"],
       [
         "web",
         "Open",

@@ -568,8 +568,8 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
         /^@db · running · own database · copied from shared .+ · observed 0 s ago$/,
       ),
       "@mail · running · its own instance · observed 0 s ago",
-      "mend.toml · observed on the worktree",
-      "@mail · mailpit · worktree · in mend.toml · same as settings",
+      ".mend/mend.toml · observed on the worktree",
+      "@mail · mailpit · worktree · in .mend/mend.toml · same as settings",
       "  resource.mail.device · is ignored: this Mend does not read it",
     ]);
     for (const secret of ["hunter2", "u-tom", "u-maria", DIGEST]) {
@@ -686,7 +686,7 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
       const wire = await response.text();
       expect(response.status).toBe(200);
       expect(JSON.parse(wire).lines.at(-1)).toBe(
-        "mend.toml · observed at capture 2 · seq 1 · partial · mend.toml is not valid TOML: line 5, column 44 · unexpected character encountered",
+        ".mend/mend.toml · observed at capture 2 · seq 1 · partial · .mend/mend.toml is not valid TOML: line 5, column 44 · unexpected character encountered",
       );
       for (const excerpt of ["fake-value-gate1201", "MP_UI_AUTH", "BAD", "/dev/null"]) {
         expect(wire).not.toContain(excerpt);

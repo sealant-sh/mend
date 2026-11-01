@@ -161,9 +161,9 @@ const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
     "@db · own database not made · pg_restore exited 1 · the next launch tries again",
   ],
   [
-    "a mend.toml table settings hold otherwise",
+    "a .mend/mend.toml table settings hold otherwise",
     { kind: "file-kept", definition: db },
-    "@db · mend.toml differs · project settings kept",
+    "@db · .mend/mend.toml differs · project settings kept",
   ],
   [
     "a switch to own, and the Services it restarted",
@@ -244,7 +244,7 @@ describe("the one status line", () => {
   });
 });
 
-describe("a mend.toml table", () => {
+describe("a .mend/mend.toml table", () => {
   const declared = (
     definition: ResourceStatusView["definition"],
     settings: "absent" | "same" | "differs",
@@ -252,13 +252,13 @@ describe("a mend.toml table", () => {
 
   it("says how it stands against settings", () => {
     expect(declared(mail, "absent")).toBe(
-      "@mail · mailpit · worktree · in mend.toml · not in settings",
+      "@mail · mailpit · worktree · in .mend/mend.toml · not in settings",
     );
     expect(declared(mail, "same")).toBe(
-      "@mail · mailpit · worktree · in mend.toml · same as settings",
+      "@mail · mailpit · worktree · in .mend/mend.toml · same as settings",
     );
     expect(declared(db, "differs")).toBe(
-      "@db · postgres 17 · project · in mend.toml · differs from settings",
+      "@db · postgres 17 · project · in .mend/mend.toml · differs from settings",
     );
   });
 });

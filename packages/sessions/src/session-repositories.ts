@@ -1,6 +1,7 @@
 import type { ProjectId } from "@mend/domain";
 import {
   NESTED_REPOSITORIES_EXCLUDE,
+  REPOSITORY_READY_EXCLUDE,
   nestedRepositoryPath,
   repositoryPath,
 } from "@mend/domain/workbench";
@@ -25,7 +26,7 @@ export interface AddableProject {
  */
 
 /**
- * `.mend/` is kept out of the main repository's `git status`, whichever git dir it has: a
+ * `.mend/repos/` and `.mend/ready/` are kept out of the main repository's `git status`, whichever git dir it has: a
  * directory of its own in a captured workspace, a file pointing at the store's bare repository
  * in a co-located one. The path is asked absolute, so it holds wherever the shell runs from. An
  * exclude file that ends without a newline gets one first, so the pattern never glues onto the
@@ -34,9 +35,11 @@ export interface AddableProject {
 const excludeNested =
   `exclude="$(git -C /workspace/repo rev-parse --path-format=absolute --git-path info/exclude)" && ` +
   `mkdir -p "$(dirname "$exclude")" && ` +
-  `{ grep -qxF -- ${shellQuote(NESTED_REPOSITORIES_EXCLUDE)} "$exclude" 2>/dev/null || { ` +
+  `{ [ ! -f "$exclude" ] || sed -i '/^\\.mend\\/$/d' "$exclude"; } && ` +
+  `for pattern in ${[NESTED_REPOSITORIES_EXCLUDE, REPOSITORY_READY_EXCLUDE].map(shellQuote).join(" ")}; do ` +
+  `grep -qxF -- "$pattern" "$exclude" 2>/dev/null || { ` +
   `[ ! -s "$exclude" ] || [ -z "$(tail -c1 "$exclude")" ] || printf '\\n' >> "$exclude"; ` +
-  `printf '%s\\n' ${shellQuote(NESTED_REPOSITORIES_EXCLUDE)} >> "$exclude"; }; }`;
+  `printf '%s\\n' "$pattern" >> "$exclude"; }; done`;
 
 /** Where Mend keeps what it adds inside the worktree, and the ready marks beside it. */
 const MEND_DIR = "/workspace/repo/.mend";

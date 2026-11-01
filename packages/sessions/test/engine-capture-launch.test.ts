@@ -23,7 +23,7 @@ import {
   SessionEngine,
   setupFingerprint,
   sha256Hex,
-  WORKSPACE_MEND_TOML,
+  WORKSPACE_MEND_TOML_SCRIPT,
 } from "@mend/sessions";
 import {
   BlobStoreFsLive,
@@ -393,7 +393,7 @@ const verifyDeferredFinalHarvest = (pathKind: "stop" | "mode-switch" | "sweep") 
   });
 
 /** The engine's read of the worktree's `mend.toml` inside a workspace. */
-const readsToml = (argv: ReadonlyArray<string>) => argv.at(-1) === WORKSPACE_MEND_TOML;
+const readsToml = (argv: ReadonlyArray<string>) => argv[2] === WORKSPACE_MEND_TOML_SCRIPT;
 
 /**
  * The executor's copy of the repository as a directory here: an exec that reads it (setup's
@@ -769,7 +769,7 @@ describe("SessionEngine capture mode", () => {
           expect(note?.at(-1)).toContain("Declared Services (mend.toml + project): web");
           // It says what a preview is and where people open it: the agent cannot see its address.
           expect(note?.at(-1)).toContain("## Mend previews");
-          expect(note?.at(-1)).toContain("write that `mend.toml` yourself");
+          expect(note?.at(-1)).toContain("write that `.mend/mend.toml` yourself");
           expect(note?.at(-1)).toContain("the workspace's `mend` has no `init`");
           expect(note?.at(-1)).toContain(
             "in a terminal session, start it yourself with `mend service run <name>`",
@@ -778,7 +778,7 @@ describe("SessionEngine capture mode", () => {
             "After a turn that changed the worktree, Mend starts the preview if it isn't running.",
           );
           expect(note?.at(-1)).toContain(
-            "It restarts a running preview only when its recipe in `mend.toml` changed.",
+            "It restarts a running preview only when its recipe in `.mend/mend.toml` changed.",
           );
           expect(note?.at(-1)).toContain(
             "It doesn't restart one for code changes, because dev servers hot-reload.",
@@ -863,7 +863,7 @@ describe("SessionEngine capture mode", () => {
                 ? executorRepository(repository)(argv)
                 : workspaceToml === null
                   ? { exitCode: 44, stdout: "", stderr: "" }
-                  : { exitCode: 0, stdout: workspaceToml, stderr: "" },
+                  : { exitCode: 0, stdout: "mend.toml\n" + workspaceToml, stderr: "" },
           },
         ),
       },
@@ -914,7 +914,8 @@ describe("SessionEngine capture mode", () => {
               readsToml(argv)
                 ? {
                     exitCode: 0,
-                    stdout: fs.readFileSync(path.join(repository, "mend.toml"), "utf8"),
+                    stdout:
+                      "mend.toml\n" + fs.readFileSync(path.join(repository, "mend.toml"), "utf8"),
                     stderr: "",
                   }
                 : executorRepository(repository)(argv),
@@ -978,7 +979,7 @@ describe("SessionEngine capture mode", () => {
                 ? {
                     exitCode: 0,
                     stdout:
-                      '[setup]\nrun = ["pnpm install"]\ninputs = ["pnpm-lock.yaml"]\n' +
+                      'mend.toml\n[setup]\nrun = ["pnpm install"]\ninputs = ["pnpm-lock.yaml"]\n' +
                       '[service.web]\ncommand = "pnpm dev"\nport = 5173\n',
                     stderr: "",
                   }
@@ -1081,7 +1082,8 @@ describe("SessionEngine capture mode", () => {
               if (readsToml(argv)) {
                 return {
                   exitCode: 0,
-                  stdout: fs.readFileSync(path.join(repository, "mend.toml"), "utf8"),
+                  stdout:
+                    "mend.toml\n" + fs.readFileSync(path.join(repository, "mend.toml"), "utf8"),
                   stderr: "",
                 };
               }

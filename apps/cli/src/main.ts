@@ -29,6 +29,7 @@ import {
 } from "@mend/domain/workbench";
 import { type AgentShareHandle, shareAgent, startAgentShare } from "@mend/local-git/agent-share";
 import { tunnelListener } from "@mend/network/tunnel-client";
+import { MEND_TOML, LEGACY_MEND_TOML, selectMendToml } from "@mend/sessions/recipes";
 import { Schema } from "effect";
 
 import { agentLoginsLine, parseAgentLoginsArgs, type AgentLoginsDto } from "./agent-logins.ts";
@@ -2974,7 +2975,11 @@ const serviceRestart = async (config: CliConfig, args: ReadonlyArray<string>) =>
  */
 const serviceInit = async (args: ReadonlyArray<string>) => {
   const root = gitTopLevel(process.cwd()) ?? process.cwd();
-  const target = path.join(root, "mend.toml");
+  const existing = selectMendToml(
+    fs.existsSync(path.join(root, MEND_TOML)) ? true : null,
+    fs.existsSync(path.join(root, LEGACY_MEND_TOML)) ? true : null,
+  );
+  const target = path.join(root, existing?.path ?? MEND_TOML);
   if (fs.existsSync(target)) {
     return fail(`${target} already exists — edit it directly (init never merges)`);
   }
@@ -3032,6 +3037,7 @@ const serviceInit = async (args: ReadonlyArray<string>) => {
       return;
     }
   }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, toml);
   say(`${green("✓")} wrote ${target} — commit it, then: mend service run ${proposals[0]?.name}`);
 };

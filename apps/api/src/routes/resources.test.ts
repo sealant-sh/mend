@@ -486,7 +486,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       await start();
       const table = await tableOf("carol");
       expect(table).toMatchObject({
-        statusLine: "@mail · mailpit · worktree · in mend.toml · not in settings",
+        statusLine: "@mail · mailpit · worktree · in .mend/mend.toml · not in settings",
         add: { kind: "ready" },
       });
       const added = await add("carol", { kind: "definition", spec: table.spec });
@@ -496,7 +496,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
           "@mail · mailpit · worktree · added by Carol · one per worktree · 0 running · observed 0 s ago",
       });
       expect(await tableOf("carol")).toMatchObject({
-        statusLine: "@mail · mailpit · worktree · in mend.toml · same as settings",
+        statusLine: "@mail · mailpit · worktree · in .mend/mend.toml · same as settings",
         add: { kind: "added" },
       });
     });
@@ -514,7 +514,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
           "replacing a definition someone else added is theirs or a manager's: the project's creator or an organization owner",
       };
       expect(carols).toMatchObject({
-        statusLine: "@mail · mailpit · worktree · in mend.toml · differs from settings",
+        statusLine: "@mail · mailpit · worktree · in .mend/mend.toml · differs from settings",
         add: denied,
       });
       expect(await add("carol", { kind: "definition", spec: carols.spec })).toEqual({
@@ -562,8 +562,10 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       expect(page.body.file).toMatchObject({
         kind: "read",
         worktreeId: shared.worktree,
-        observed: "observed on the worktree",
-        tables: [{ statusLine: "@mail · mailpit · worktree · in mend.toml · not in settings" }],
+        observed: ".mend/mend.toml · observed on the worktree",
+        tables: [
+          { statusLine: "@mail · mailpit · worktree · in .mend/mend.toml · not in settings" },
+        ],
         refused: [],
         ignored: [{ key: "resource.mail.device" }],
       });
@@ -579,9 +581,9 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       expect((await list("carol", `&worktreeId=${shared.worktree}`)).body.file).toEqual({
         kind: "unparsed",
         worktreeId: shared.worktree,
-        observed: "observed at capture 12 · seq 4180",
+        observed: ".mend/mend.toml · observed at capture 12 · seq 4180",
         message:
-          "mend.toml is not valid TOML: line 1, column 2 · incomplete key-value: cannot find end of key",
+          ".mend/mend.toml is not valid TOML: line 1, column 2 · incomplete key-value: cannot find end of key",
       });
     });
 
@@ -601,9 +603,9 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       expect(page.body.file).toEqual({
         kind: "unparsed",
         worktreeId: shared.worktree,
-        observed: "observed at capture 2 · seq 1 · partial",
+        observed: ".mend/mend.toml · observed at capture 2 · seq 1 · partial",
         message:
-          "mend.toml is not valid TOML: line 4, column 44 · unexpected character encountered",
+          ".mend/mend.toml is not valid TOML: line 4, column 44 · unexpected character encountered",
       });
       const wire = JSON.stringify(page.body);
       for (const excerpt of ["fake-value-gate1201", "MP_UI_AUTH", "BAD", "smtp", "/dev/null"]) {

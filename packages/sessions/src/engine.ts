@@ -649,7 +649,9 @@ import {
   EMPTY_MEND_TOML,
   MEND_TOML,
   type MendTomlFile,
-  parseMendToml,
+  parseWorkspaceMendToml,
+  WORKSPACE_MEND_TOML_SCRIPT,
+  mendTomlName,
   readMendToml,
   RecipeFileError,
   resolveDeclarations,
@@ -2198,9 +2200,8 @@ export interface ProvisionInput {
 /** Where a linked project is bound inside the workspace (ADR-0001). */
 export const linkedProjectMountPath = (name: string) => `/workspace/repos/${name}`;
 /** The worktree's `mend.toml` as a workspace sees it. */
+export { WORKSPACE_MEND_TOML_SCRIPT } from "./recipes.ts";
 export const WORKSPACE_MEND_TOML = `${WORKSPACE_REPO}/${MEND_TOML}`;
-/** The read script's exit code for "no mend.toml": distinct from `cat`'s own failures. */
-const WORKSPACE_MEND_TOML_ABSENT = 44;
 const isLinkedProjectMountPath = (mountPath: string) => mountPath.startsWith("/workspace/repos/");
 
 const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
@@ -13412,18 +13413,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const result = yield* sealant.exec(workspace, [
           "sh",
           "-c",
-          `[ -e "$1" ] || exit ${WORKSPACE_MEND_TOML_ABSENT}; cat -- "$1"`,
+          WORKSPACE_MEND_TOML_SCRIPT,
           "sh",
-          WORKSPACE_MEND_TOML,
+          WORKSPACE_REPO,
         ]);
-        if (result.exitCode === WORKSPACE_MEND_TOML_ABSENT) return EMPTY_MEND_TOML;
-        if (result.exitCode !== 0) {
-          return yield* new RecipeFileError({
-            path: WORKSPACE_MEND_TOML,
-            message: `mend.toml could not be read in the session workspace (exit ${result.exitCode}): ${result.stderr.trim()}`,
-          });
-        }
-        return yield* parseMendToml(result.stdout, WORKSPACE_MEND_TOML);
+        return yield* parseWorkspaceMendToml(result, WORKSPACE_REPO);
       });
 
       /**
@@ -13511,12 +13505,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const recipesLine =
           (runnable.length === 0
             ? ""
-            : `Declared Services (mend.toml + project): ` +
+            : `Declared Services (${mendTomlName(read.path ?? MEND_TOML)} + project): ` +
               runnable.map((recipe) => recipe.name).join(", ") +
               ` — start one with \`mend service run <name>\`.\n\n`) +
           (read instanceof RecipeFileError
-            ? `mend.toml declares nothing this session can run: ${read.message}\n\n`
-            : declarationsNote(declared));
+            ? `${mendTomlName(read.path)} declares nothing this session can run: ${read.message}\n\n`
+            : declarationsNote(declared, mendTomlName(read.path ?? MEND_TOML)));
         const servicesSection =
           `## Mend Services\n\n` +
           `For any long-running server (dev server, database), use ` +
@@ -16888,7 +16882,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (row.sessionId === holder.id) restart.push(service.name);
           else {
             yield* Effect.logInfo(
-              "session engine: a joiner's mend.toml Service ends with the replaced workspace",
+              "session engine: a joiner's .mend/mend.toml Service ends with the replaced workspace",
             ).pipe(Effect.annotateLogs({ sessionId: row.sessionId, service: service.name }));
           }
         }
@@ -24456,7 +24450,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.fail(
                 new ServiceStartError({
                   message:
-                    "This session has no live workspace, so its mend.toml cannot be read. Resume it, then run the recipe.",
+                    "This session has no live workspace, so its .mend/mend.toml cannot be read. Resume it, then run the recipe.",
                 }),
               ),
             RecipeFileError: (error) =>
@@ -24477,20 +24471,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const refusals = declared.refused.filter((refusal) => refusal.name === name);
         // The in-workspace helper prints this message as is, so it carries the file's notices.
+        const fileName = mendTomlName(file.path ?? MEND_TOML);
         const notRun = (line: string) =>
           new ServiceStartError({
-            message: [line, ...resourceTablesSection(declared)].join("\n"),
+            message: [line, ...resourceTablesSection(declared, fileName)].join("\n"),
           });
         if (refusals.length > 0) {
           return yield* notRun(
-            `mend.toml refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
+            `${fileName} refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
           );
         }
-        const recipePlan = planRecipeStart(declared, name);
+        const recipePlan = planRecipeStart(declared, name, fileName);
         if (recipePlan._tag === "Refused") {
           return yield* notRun(recipePlan.message);
         }
-        return { declared, recipePlan };
+        return { declared, recipePlan, fileName };
       });
 
       /**
@@ -24512,7 +24507,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const { steps, setup } = recipePlan;
         if (setup._tag === "Refused" && cause.kind === "system") {
           return yield* new ServiceStartError({
-            message: `mend.toml refuses [setup], so ${name} is not started automatically: ${setup.line}`,
+            message: `${planned.fileName} refuses [setup], so ${name} is not started automatically: ${setup.line}`,
           });
         }
         const key = planKey(sessionId, startId ?? crypto.randomUUID());
@@ -24633,7 +24628,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* runServiceRecipe(holder.id, name, { kind: "system", runsAs }, null).pipe(
             Effect.catch((error) =>
               Effect.logInfo(
-                "session engine: a mend.toml Service was not started again after the replacement",
+                "session engine: a .mend/mend.toml Service was not started again after the replacement",
               ).pipe(
                 Effect.annotateLogs({ sessionId: holder.id, service: name, why: error.message }),
               ),

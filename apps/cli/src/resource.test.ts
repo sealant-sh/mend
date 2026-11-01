@@ -50,7 +50,7 @@ const page = pageOf({
         digest: "b".repeat(64),
         spec: spec("queue", "rabbitmq:4-management"),
         add: { kind: "ready" },
-        statusLine: "@queue · rabbitmq 4 · project · in mend.toml · not in settings",
+        statusLine: "@queue · rabbitmq 4 · project · in .mend/mend.toml · not in settings",
       },
       {
         digest: "d".repeat(64),
@@ -60,7 +60,7 @@ const page = pageOf({
           message:
             "replacing a definition someone else added is theirs or a manager's: the project's creator or an organization owner",
         },
-        statusLine: "@db · postgres 18 · project · in mend.toml · differs from settings",
+        statusLine: "@db · postgres 18 · project · in .mend/mend.toml · differs from settings",
       },
       {
         digest: "e".repeat(64),
@@ -71,13 +71,13 @@ const page = pageOf({
             { key: "exports.URL", message: "sets MEND_RESOURCE_CACHE_URL, as db does too" },
           ],
         },
-        statusLine: "@cache · redis 7 · project · in mend.toml · not in settings",
+        statusLine: "@cache · redis 7 · project · in .mend/mend.toml · not in settings",
       },
       {
         digest,
         spec: spec("mail", "axllent/mailpit:v1.21"),
         add: { kind: "added" },
-        statusLine: "@mail · mailpit · project · in mend.toml · same as settings",
+        statusLine: "@mail · mailpit · project · in .mend/mend.toml · same as settings",
       },
     ],
     refused: [{ key: "resource.cache.ports.redis", message: "must be a port in 1..65535" }],
@@ -90,12 +90,12 @@ describe("mend resource list", () => {
     expect(renderResources(shop, page, "checkout")).toEqual([
       "settings",
       `  @db · postgres 17 · project · added by Maria · not started  postgres:17@${pin}  rdef_1`,
-      "mend.toml in checkout · observed at capture 12 · seq 4180",
-      "  @queue · rabbitmq 4 · project · in mend.toml · not in settings  rabbitmq:4-management",
+      ".mend/mend.toml in checkout · observed at capture 12 · seq 4180",
+      "  @queue · rabbitmq 4 · project · in .mend/mend.toml · not in settings  rabbitmq:4-management",
       "    mend resource add queue --from-file --worktree checkout",
-      "  @db · postgres 18 · project · in mend.toml · differs from settings  postgres:18",
-      "  @cache · redis 7 · project · in mend.toml · not in settings  redis:7",
-      "  @mail · mailpit · project · in mend.toml · same as settings  axllent/mailpit:v1.21",
+      "  @db · postgres 18 · project · in .mend/mend.toml · differs from settings  postgres:18",
+      "  @cache · redis 7 · project · in .mend/mend.toml · not in settings  redis:7",
+      "  @mail · mailpit · project · in .mend/mend.toml · same as settings  axllent/mailpit:v1.21",
       "  resource.cache.ports.redis · must be a port in 1..65535",
       "  resource.queue.device · is ignored: this Mend does not read it",
     ]);
@@ -111,11 +111,11 @@ describe("mend resource list", () => {
       file: {
         kind: "unavailable",
         worktreeId: "wt_1",
-        message: "mend.toml could not be read",
+        message: ".mend/mend.toml could not be read",
       },
     };
     expect(renderResources(shop, pageOf(unread), "checkout")).toEqual([
-      "mend.toml in checkout · mend.toml could not be read",
+      ".mend/mend.toml in checkout · .mend/mend.toml could not be read",
     ]);
   });
 
@@ -126,11 +126,11 @@ describe("mend resource list", () => {
         kind: "unparsed",
         worktreeId: "wt_1",
         observed: "observed at capture 12 · seq 4180",
-        message: "mend.toml is not text · not read",
+        message: ".mend/mend.toml is not text · not read",
       },
     };
     expect(renderResources(shop, pageOf(unparsed), "checkout")).toEqual([
-      "mend.toml in checkout · observed at capture 12 · seq 4180 · mend.toml is not text · not read",
+      ".mend/mend.toml in checkout · observed at capture 12 · seq 4180 · .mend/mend.toml is not text · not read",
     ]);
   });
 });
@@ -179,14 +179,14 @@ describe("mend resource add", () => {
     });
   });
 
-  it("adds a mend.toml table as the page offers it, or says why not", () => {
+  it("adds a .mend/mend.toml table as the page offers it, or says why not", () => {
     expect(tableAddition(page, "queue", "checkout")).toEqual({
       kind: "ready",
       body: {
         kind: "definition",
         spec: page.file.kind === "read" ? page.file.tables[0]?.spec : null,
       },
-      line: "@queue · rabbitmq 4 · project · in mend.toml · not in settings  rabbitmq:4-management",
+      line: "@queue · rabbitmq 4 · project · in .mend/mend.toml · not in settings  rabbitmq:4-management",
     });
     expect(tableAddition(page, "db", "checkout")).toEqual({
       kind: "refused",
@@ -200,11 +200,11 @@ describe("mend resource add", () => {
     });
     expect(tableAddition(page, "mail", "checkout")).toEqual({
       kind: "added",
-      message: "@mail is in settings already, as mend.toml in checkout has it",
+      message: "@mail is in settings already, as .mend/mend.toml in checkout has it",
     });
     expect(tableAddition(page, "dns", "checkout")).toEqual({
       kind: "refused",
-      message: "no [resource.dns] in mend.toml in checkout",
+      message: "no [resource.dns] in .mend/mend.toml in checkout",
     });
     const absent = pageOf({
       settings: [],
@@ -212,7 +212,7 @@ describe("mend resource add", () => {
     });
     expect(tableAddition(absent, "queue", "checkout")).toEqual({
       kind: "refused",
-      message: "mend.toml in checkout · absent",
+      message: ".mend/mend.toml in checkout · absent",
     });
   });
 });
@@ -316,7 +316,7 @@ describe("the command against a server", () => {
     ]);
   });
 
-  it("adds a worktree's mend.toml table as it reads, and posts nothing the page withholds", async () => {
+  it("adds a worktree's .mend/mend.toml table as it reads, and posts nothing the page withholds", async () => {
     const out = stdout();
     const mend = server({
       "GET /projects/p_shop/worktrees": { worktrees: [{ id: "wt_1", name: "checkout" }] },
@@ -338,7 +338,7 @@ describe("the command against a server", () => {
       })}`,
     ]);
     expect(out[0]).toBe(
-      "adding @queue · rabbitmq 4 · project · in mend.toml · not in settings  rabbitmq:4-management\n",
+      "adding @queue · rabbitmq 4 · project · in .mend/mend.toml · not in settings  rabbitmq:4-management\n",
     );
 
     exits();
@@ -369,7 +369,9 @@ describe("the command against a server", () => {
       "--worktree",
       "checkout",
     ]);
-    expect(out.join("")).toBe("@mail is in settings already, as mend.toml in checkout has it\n");
+    expect(out.join("")).toBe(
+      "@mail is in settings already, as .mend/mend.toml in checkout has it\n",
+    );
     expect(mend.calls.filter((call) => call.startsWith("POST"))).toEqual([]);
   });
 

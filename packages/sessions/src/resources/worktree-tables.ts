@@ -1,9 +1,9 @@
 import type { ProjectId, WorktreeId } from "@mend/domain";
 import type { ResourceDefinitionInput } from "@mend/domain/workbench";
 import { Effect } from "effect";
-import { parse as parseToml, TomlError } from "smol-toml";
+import { parse as parseToml } from "smol-toml";
 
-import { MEND_TOML } from "../recipes.ts";
+import { MEND_TOML, LEGACY_MEND_TOML, selectMendToml, tomlDiagnostic } from "../recipes.ts";
 import { readResourceTables, type ResourceTables } from "../resource-tables.ts";
 import { stampLabel, type WorktreeReads } from "../worktree-reads.ts";
 
@@ -12,17 +12,6 @@ const MEND_TOML_MAX_BYTES = 256 * 1024;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
-/**
- * Why `mend.toml` does not parse, by position and the parser's reason alone. The parser's own
- * message quotes the lines around the error, which can hold env values, and a workspace reads
- * this text.
- */
-const tomlDiagnostic = (cause: unknown): string => {
-  if (!(cause instanceof TomlError)) return `${MEND_TOML} is not valid TOML`;
-  const reason = cause.message.replace(/^Invalid TOML document: /, "").split("\n", 1)[0];
-  return `${MEND_TOML} is not valid TOML: line ${cause.line}, column ${cause.column} · ${reason}`;
-};
 
 /** A worktree's `[resource.*]` tables as read: unavailable is never shown as an empty file. */
 export type WorktreeTablesRead =
@@ -33,21 +22,30 @@ export type WorktreeTablesRead =
 
 /** Reads the `[resource.*]` tables of a worktree's `mend.toml`. */
 export const readWorktreeTables = Effect.fn("Resources.readWorktreeTables")(function* (
-  reads: WorktreeReads["Service"],
+  reads: Pick<WorktreeReads["Service"], "readFile">,
   projectId: ProjectId,
   worktreeId: WorktreeId,
 ) {
-  const read = yield* reads
-    .readFile(projectId, worktreeId, MEND_TOML, null, MEND_TOML_MAX_BYTES)
-    .pipe(Effect.result);
+  const readFile = (name: string) =>
+    reads.readFile(projectId, worktreeId, name, null, MEND_TOML_MAX_BYTES).pipe(Effect.result);
+  const preferred = yield* readFile(MEND_TOML);
+  const legacy =
+    preferred._tag === "Success" && preferred.success.value === null
+      ? yield* readFile(LEGACY_MEND_TOML)
+      : null;
+  const selected = selectMendToml(
+    preferred._tag === "Success" && preferred.success.value === null ? null : preferred,
+    legacy,
+  ) ?? { path: MEND_TOML, value: preferred };
+  const { path: name, value: read } = selected;
   if (read._tag === "Failure") {
     return {
       kind: "unavailable",
-      message: `${MEND_TOML} could not be read`,
+      message: `${name} could not be read`,
     } satisfies WorktreeTablesRead;
   }
   const { value: file, stamp } = read.success;
-  const observed = stampLabel(stamp);
+  const observed = `${name} · ${stampLabel(stamp)}`;
   if (file === null) return { kind: "absent", observed } satisfies WorktreeTablesRead;
   const unparsed = (message: string): WorktreeTablesRead => ({
     kind: "unparsed",
@@ -55,14 +53,14 @@ export const readWorktreeTables = Effect.fn("Resources.readWorktreeTables")(func
     message,
   });
   if (file.truncated) {
-    return unparsed(`${MEND_TOML} is over ${MEND_TOML_MAX_BYTES / 1024} KiB · not read`);
+    return unparsed(`${name} is over ${MEND_TOML_MAX_BYTES / 1024} KiB · not read`);
   }
-  if (file.binary) return unparsed(`${MEND_TOML} is not text · not read`);
+  if (file.binary) return unparsed(`${name} is not text · not read`);
   let parsed: unknown;
   try {
     parsed = parseToml(new TextDecoder().decode(file.bytes));
   } catch (cause) {
-    return unparsed(tomlDiagnostic(cause));
+    return unparsed(tomlDiagnostic(cause, name));
   }
   return {
     kind: "read",

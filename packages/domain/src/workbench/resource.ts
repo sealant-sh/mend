@@ -194,7 +194,7 @@ export type WorktreeResourceDefinition = typeof WorktreeResourceDefinition.Type;
 
 /**
  * A resource as declared (ADR 0019): from project settings, `mend resource add` or a
- * `[resource.*]` table in `mend.toml`. Shapes are checked here; rules across fields are
+ * `[resource.*]` table in `.mend/mend.toml`. Shapes are checked here; rules across fields are
  * `resourceDefinitionRefusals`.
  */
 export const ResourceDefinitionInput = Schema.Union([
@@ -456,7 +456,7 @@ export const presetDefinition = (input: {
 
 /**
  * A preset definition that names no command runs its preset's engine settings. Every reader of a
- * declared definition applies this before the definition is shown or digested, so a `mend.toml`
+ * declared definition applies this before the definition is shown or digested, so a `.mend/mend.toml`
  * table, a whole definition and `--preset` all declare the same spec.
  */
 export const withPresetCommand = <D extends ResourceDefinitionInput>(def: D): D =>
@@ -873,13 +873,13 @@ export const resourceDefinitionRefusals = (
   ];
 };
 
-/** A `mend.toml` key a `[resource.*]` table owns (decision S8): `resource`, or one under it. */
+/** A `.mend/mend.toml` key a `[resource.*]` table owns (decision S8): `resource`, or one under it. */
 export const isResourceTableKey = (key: string): boolean =>
   key === "resource" || key.startsWith("resource.");
 
 /** Heads `resourceTableNotices`; true of every table, refused or not. */
 export const RESOURCE_TABLES_HEADING =
-  "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file)";
+  "Resources in .mend/mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file)";
 
 /**
  * A file's refusals and ignored keys under `[resource]`, one line each, keyed in full:
@@ -905,9 +905,13 @@ export const resourceTableNotices = (declared: {
 /** `resourceTableNotices` for a terminal: the heading, then one indented line each; empty when none. */
 export const resourceTablesSection = (
   declared: Parameters<typeof resourceTableNotices>[0],
+  fileName = ".mend/mend.toml",
 ): ReadonlyArray<string> => {
   const notices = resourceTableNotices(declared);
   return notices.length === 0
     ? []
-    : [`${RESOURCE_TABLES_HEADING}:`, ...notices.map((notice) => `  ${notice}`)];
+    : [
+        `${RESOURCE_TABLES_HEADING.replace(".mend/mend.toml", fileName)}:`,
+        ...notices.map((notice) => `  ${notice}`),
+      ];
 };

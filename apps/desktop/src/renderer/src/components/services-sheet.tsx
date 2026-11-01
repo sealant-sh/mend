@@ -454,7 +454,7 @@ export function ServicesSheet({
           ))}
           {recipes.data !== undefined && recipes.data.length === 0 && (
             <p className="py-1 font-mono text-[10.5px] text-faint">
-              No recipes declared in mend.toml.
+              No recipes declared in .mend/mend.toml.
             </p>
           )}
         </div>

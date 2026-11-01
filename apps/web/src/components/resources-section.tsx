@@ -42,7 +42,7 @@ import { ResourceLoadForm } from "./resource-load-form";
 
 /**
  * A project's resources in its setup (ADR 0019): the definitions settings hold and a chosen
- * worktree's `mend.toml` tables, each on the one status line the server sends. Every control
+ * worktree's `.mend/mend.toml` tables, each on the one status line the server sends. Every control
  * comes from the page: its flags, and the add offer the server made for each table.
  */
 
@@ -341,7 +341,7 @@ export function ReadState(props: {
 
 export interface ResourceHandlers {
   readonly remove: (entry: ResourceSettingView) => void;
-  /** Adds a `mend.toml` table to settings as the page read it. */
+  /** Adds a `.mend/mend.toml` table to settings as the page read it. */
   readonly add: (table: ResourceFileTableView) => void;
   /** `read`: the worktree the page on screen was read for, which the choice is made for. */
   readonly choose: (
@@ -468,7 +468,7 @@ export function ResourcesView(props: ResourcesViewProps) {
         </Group>
       )}
       {file.kind === "not-selected" ? null : (
-        <Group label={`mend.toml in ${worktreeName ?? "this worktree"}`}>
+        <Group label={`.mend/mend.toml in ${worktreeName ?? "this worktree"}`}>
           {file.kind === "read" ? (
             <>
               <p className="px-4 pt-3 font-mono text-[11px] text-faint">{file.observed}</p>

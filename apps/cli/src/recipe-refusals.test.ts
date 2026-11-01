@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { missingRecipeLine } from "./recipe-refusals.ts";
 
 describe("mend service run <name> with no recipe to run", () => {
-  it("says why mend.toml refuses it, key by key", () => {
+  it("says why .mend/mend.toml refuses it, key by key", () => {
     expect(
       missingRecipeLine("web", [{ name: "api" }], {
         refused: [
@@ -23,7 +23,7 @@ describe("mend service run <name> with no recipe to run", () => {
         ignored: [],
       }),
     ).toBe(
-      "web is refused by mend.toml · cwd is absolute; name a path inside the repository · depends @db · a Service's depends does not name a resource yet · every process in the worktree has @db's env already",
+      "web is refused by .mend/mend.toml · cwd is absolute; name a path inside the repository · depends @db · a Service's depends does not name a resource yet · every process in the worktree has @db's env already",
     );
   });
 
@@ -32,7 +32,7 @@ describe("mend service run <name> with no recipe to run", () => {
       'no recipe named "web" — declared: api',
     );
     expect(missingRecipeLine("web", [], null)).toBe(
-      "no mend.toml recipes in this worktree — declare [service.web] first",
+      "no .mend/mend.toml recipes in this worktree — declare [service.web] first",
     );
   });
 
@@ -50,7 +50,7 @@ describe("mend service run <name> with no recipe to run", () => {
       }),
     ).toBe(
       'no recipe named "web" — declared: api\n' +
-        "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):\n" +
+        "Resources in .mend/mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):\n" +
         "  resource.web.ports.http · must be a port in 1..65535\n" +
         "  resource.web.healthcheck · is ignored: this Mend does not read it",
     );

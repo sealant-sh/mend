@@ -23,7 +23,7 @@ import {
 import { Option, Schema } from "effect";
 
 /**
- * `[resource.*]` tables in `mend.toml` (ADR 0019, decision S8): definitions a person adds to the
+ * `[resource.*]` tables in `.mend/mend.toml` (ADR 0019, decision S8): definitions a person adds to the
  * project's settings from the file; none runs from the file itself. A bad table refuses that
  * resource alone, naming its full key; the file's other resources still read. A key this Mend does
  * not read is listed as ignored, as recipes' are. Fields are checked with the domain's schemas, so
@@ -380,7 +380,7 @@ const readResource = (
 };
 
 /** The key a collision refuses: the export that sets the name, else the table. */
-/** `mend.toml`'s `resource` value, as parsed. Absent declares nothing. */
+/** `.mend/mend.toml`'s `resource` value, as parsed. Absent declares nothing. */
 export const readResourceTables = (value: unknown): ResourceTables => {
   if (value === undefined) return { tables: [], refused: [], ignored: [] };
   if (!isRecord(value)) {
@@ -422,11 +422,22 @@ export const readResourceTables = (value: unknown): ResourceTables => {
 const noteSection = (heading: string, lines: ReadonlyArray<string>): string =>
   lines.length === 0 ? "" : `${heading}:\n\n${lines.map((line) => `- ${line}`).join("\n")}\n\n`;
 
-/** The workspace note on what `mend.toml` refuses or ignores: recipes to fix, then resource tables. */
+/** The workspace note on what `.mend/mend.toml` refuses or ignores: recipes to fix, then resource tables. */
 export const declarationsNote = (
   declared: Pick<ServiceDeclarations, "refused" | "ignored">,
+  fileName = ".mend/mend.toml",
 ): string =>
   noteSection(
-    "Refused in mend.toml (fix these before running them)",
-    declared.refused.filter((refusal) => !isResourceTableKey(refusal.key)).map(recipeRefusalLine),
-  ) + noteSection(RESOURCE_TABLES_HEADING, resourceTableNotices(declared));
+    `Refused in ${fileName} (fix these before running them)`,
+    declared.refused
+      .filter((refusal) => !isResourceTableKey(refusal.key))
+      .map((refusal) =>
+        refusal.name === null
+          ? [fileName, refusal.key, refusal.message].join(" · ")
+          : recipeRefusalLine(refusal),
+      ),
+  ) +
+  noteSection(
+    RESOURCE_TABLES_HEADING.replace(".mend/mend.toml", fileName),
+    resourceTableNotices(declared),
+  );

@@ -156,6 +156,16 @@ describe("workspace note", () => {
       ]),
     ];
 
+    cases.push({
+      name: ".mend/mend.toml declaration",
+      note: legacyNote({
+        services: LEGACY_NOTE.services[3] ?? null,
+        sections,
+        declared:
+          "Declared Services (.mend/mend.toml + project): web — start one with `mend service run <name>`.",
+      }),
+    });
+
     for (const scenario of cases) {
       it(`${scenario.name}: becomes the block, and what follows it stays`, () => {
         const home = makeHome();

@@ -465,7 +465,7 @@ export function ServicesCard({
         {empty ? (
           <p className="p-4 font-mono text-xs text-faint">
             {recipes.isError
-              ? "mend.toml did not parse — fix it in the worktree"
+              ? ".mend/mend.toml did not parse — fix it in the worktree"
               : "none running · mend service run exposes one"}
           </p>
         ) : (
@@ -509,7 +509,7 @@ export function ServicesCard({
                   <p className="mt-1 truncate font-mono text-[11px] text-faint">
                     {recipe.command ?? "adopt"} · :{recipe.port}
                     {recipe.protocol === "udp" ? "/udp" : ""} ·{" "}
-                    {recipe.source === "file" ? "mend.toml" : "project"}
+                    {recipe.source === "file" ? ".mend/mend.toml" : "project"}
                   </p>
                   {preview !== null && preview.facts.length > 0 && (
                     <PreviewLines facts={preview.facts} />

@@ -65,7 +65,7 @@ export const LEGACY_NOTE = {
     "## Mend Services\n\nFor any long-running server (dev server, database), use `mend service run --port <port> [--name <n>] [--http|--https] -- <command...>` — it runs the command supervised in this workspace, waits for the port, and makes it reachable from the user's own machine. Pass `--http` (or `--https`) when the server is something to open in a browser: the user then gets an Open link, and an attached `mend` terminal on their machine tunnels it to their localhost. NEVER background a server inside a tool call. Listen on IPv4 — `127.0.0.1` or `0.0.0.0`: the forward dials the workspace's `127.0.0.1`, so a server bound only to `::1` reports healthy and answers nothing (Vite and friends: pass `--host`). In a monorepo, run the ONE app's own dev command (`pnpm --dir apps/<app> dev`): a root-level dev script fans out to every app and hands each the same `--port`, so they collide and drift onto ports nobody asked for. `mend service add <port> [--http|--https]` adopts something already listening; `mend service list` shows what runs.\n\n",
   ],
   declared:
-    "^Declared Services \\(mend\\.toml(?: \\+ project)?\\): [^\\n]* — start one with `mend service run <name>`\\.\\n\\n",
+    "^Declared Services \\((?:\\.mend/)?mend\\.toml(?: \\+ project)?\\): [^\\n]* — start one with `mend service run <name>`\\.\\n\\n",
 } as const;
 
 /**
@@ -79,21 +79,22 @@ export const WORKSPACE_NOTE_FILES = [
 ] as const;
 
 /**
- * The note's section on previews: what `[preview]` is, how to scaffold `mend.toml`, and where people
+ * The note's section on previews: what `[preview]` is, how to scaffold `.mend/mend.toml`, and where people
  * open the preview, since its address is not visible from inside the workspace.
  */
 export const PREVIEWS_NOTE =
   `## Mend previews\n\n` +
-  `A \`[preview]\` table in \`mend.toml\` names the Service people open as this ` +
+  `A \`[preview]\` table in \`.mend/mend.toml\` names the Service people open as this ` +
   `worktree's preview, a recipe with \`browserScheme = "http"\`:\n\n` +
   `\`\`\`toml\n[service.web]\nport = 3000\nbrowserScheme = "http"\n` +
   `command = "pnpm dev --host 0.0.0.0"\n\n[preview]\nservice = "web"\n\`\`\`\n\n` +
-  `To give a worktree a preview, write that \`mend.toml\` yourself (on their own machine a ` +
+  `Root \`mend.toml\` is a fallback; when both exist, Mend reads only \`.mend/mend.toml\`. ` +
+  `To give a worktree a preview, write that \`.mend/mend.toml\` yourself (on their own machine a ` +
   `person can scaffold one with \`mend service init\`; the workspace's \`mend\` has no ` +
   `\`init\`). In a conversation session (Slack, the web, the phone), Mend prepares the preview ` +
   `after a turn that changed the worktree; in a terminal session, start it yourself with ` +
   `\`mend service run <name>\`. After a turn that changed the worktree, Mend starts the preview ` +
-  `if it isn't running. It restarts a running preview only when its recipe in \`mend.toml\` ` +
+  `if it isn't running. It restarts a running preview only when its recipe in \`.mend/mend.toml\` ` +
   `changed. It doesn't restart one for code changes, because dev servers hot-reload. ` +
   `If this app doesn't hot-reload, run \`mend service restart <name>\` yourself after your change. ` +
   `During a turn it may not be running yet: don't report it as down. Its address is not visible from this workspace. People open it from Mend: ` +

@@ -631,7 +631,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["<session> [--yes]"],
     description: [
       `${REPLACE_WORKSPACE_ACTION}, from a terminal. A workspace that shares one home, as every workspace started before Mend 0.36 does, takes only its launcher's sessions and turns once its worktree runs each person as themselves, until it is replaced. Mend replaces it on its own when nothing would stop; otherwise the change's owner does, here or on the web.`,
-      "It prints what was checked, and when: Mend's records, and the processes in the workspace and its running containers once they have been checked. Then what would stop, one line each: terminal sessions (they end resumable), shells, Services started by hand, processes Mend did not start, running containers and anything that could not be checked. Mend starts the launching session's mend.toml Services again.",
+      "It prints what was checked, and when: Mend's records, and the processes in the workspace and its running containers once they have been checked. Then what would stop, one line each: terminal sessions (they end resumable), shells, Services started by hand, processes Mend did not start, running containers and anything that could not be checked. Mend starts the launching session's .mend/mend.toml Services again.",
       "The replacement names what it showed you: when more would stop by the time you answer, the server refuses, nothing is stopped, and its words are printed as they are; run it again to look at the list again. An agent turn in flight is never stopped: the server refuses the same way. The workspace goes once its last save is done.",
       "A prefix of the session id is enough. mend sessions shows which sessions wait for this.",
     ],
@@ -771,7 +771,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "[session] <name> [--setup] [--wait [--timeout <duration>]] [--no-connect]",
     ],
     description: [
-      "With --, the command after it is started in the workspace and supervised: its output is recorded, and mend service restart re-runs it. Without --, the name is a Service declared in the worktree's mend.toml. mend service <name> is the shorthand for that.",
+      "With --, the command after it is started in the workspace and supervised: its output is recorded, and mend service restart re-runs it. Without --, the name is a Service declared in the worktree's .mend/mend.toml. mend service <name> is the shorthand for that.",
       "Mend waits up to a minute for the port to answer before it returns; a recipe's ready rule sets what answering means (any HTTP status for its path) and how long to wait. A recipe's depends start first, in order; one already running in the session is not started again, and counts once it has answered its own ready rule. A recipe start runs to its end on the server whatever happens to this command: Ctrl-C or a cut connection leaves it going, and a Stop of one of its Services ends it. --wait follows it, a line for each dependency as it starts and answers, and keeps waiting while the Service is still starting (its process runs and its port has not answered yet: building, installing, booting), however long that takes, up to --timeout (default 10 minutes). Mend probes a started Service's port every 20 seconds, so the wait ends at the first probe that answers. The wait judges the one process this start began, by an id the start sends and the server stamps on it, whatever another client starts, restarts or stops meanwhile. The exit status says how it ended: 0 the port answered for that process; 1 Mend refused the start or could not be asked; 2 the process ended before its port answered (the line says its status and exit code; a process its workspace took reads exited, no exit code reported); 3 the server no longer has the session, its workspace gone with it; 124 the Service was still starting when the timeout passed, and it keeps starting. A server older than this CLI stamps no id: a start whose answer an edge cut is then not followed (1), and a command that exits inside the minute reads as the refusal it answers with (1). A waited start returns and opens no tunnel; mend service connect reaches the port. UDP has no probe, and a recipe that declares only a port is adopted, its port looked for within its ready timeout, so --wait takes neither.",
       "The port is tunnelled to this machine's loopback as soon as it listens, unless --no-connect.",
     ],
@@ -791,12 +791,12 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--no-connect", text: "do not tunnel the port to this machine" },
       {
         flag: "--setup",
-        text: "a recipe: run mend.toml's [setup] even if it already succeeded here",
+        text: "a recipe: run .mend/mend.toml's [setup] even if it already succeeded here",
       },
     ],
     examples: [
       { command: "mend service run --port 3000 -- pnpm dev", text: "" },
-      { command: "mend service web", text: "the Service named web in mend.toml" },
+      { command: "mend service web", text: "the Service named web in .mend/mend.toml" },
       {
         command: "mend service run web --wait --timeout 15m",
         text: "returns once web answers; 124 if it is still starting after 15 minutes",
@@ -876,10 +876,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "service init",
     section: "services",
-    summary: "scaffold mend.toml from package.json and compose ports",
+    summary: "scaffold .mend/mend.toml from package.json and compose ports",
     synopsis: ["[--yes]"],
     description: [
-      'Writes a mend.toml in the current repository with one Service per script and exposed port it can find. A workspace package\'s server runs in its own directory (cwd), a known dev server gets browserScheme = "http", a compose service gets address = "docker", and the one browser Service, when there is exactly one, becomes the [preview]. With a lockfile at the root it adds a [setup] that installs from it (pnpm install --frozen-lockfile, yarn install --frozen-lockfile, or --immutable on Yarn 2 and later, bun install --frozen-lockfile or npm ci), run before a recipe starts and again when the lockfile changes. Edit it afterwards; sessions read it from their worktree.',
+      'Writes a .mend/mend.toml in the current repository with one Service per script and exposed port it can find. A workspace package\'s server runs in its own directory (cwd), a known dev server gets browserScheme = "http", a compose service gets address = "docker", and the one browser Service, when there is exactly one, becomes the [preview]. With a lockfile at the root it adds a [setup] that installs from it (pnpm install --frozen-lockfile, yarn install --frozen-lockfile, or --immutable on Yarn 2 and later, bun install --frozen-lockfile or npm ci), run before a recipe starts and again when the lockfile changes. Edit it afterwards; sessions read it from their worktree. Root mend.toml remains a fallback; when both exist only .mend/mend.toml is read. Init refuses to overwrite either file.',
     ],
     options: [{ flag: "--yes", text: "write without asking" }],
     see: ["service run"],
@@ -889,15 +889,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "resource list",
     section: "project setup",
-    summary: "a project's resources: settings and mend.toml",
+    summary: "a project's resources: settings and .mend/mend.toml",
     synopsis: ["[--project <p>] [--worktree <w>] [--json]"],
     description: [
-      "One status line per resource, then the image it runs and its id, as Sealant last observed its instance: the definitions project settings hold, each with whoever added it, and, with --worktree, that worktree's use of each (shared, its own database, its own instance or off) and the [resource.*] tables in its mend.toml with the keys it refuses or ignores. A table's line says whether settings hold it, hold it the same, or differ.",
+      "One status line per resource, then the image it runs and its id, as Sealant last observed its instance: the definitions project settings hold, each with whoever added it, and, with --worktree, that worktree's use of each (shared, its own database, its own instance or off) and the [resource.*] tables in its .mend/mend.toml with the keys it refuses or ignores. A table's line says whether settings hold it, hold it the same, or differ.",
       "Inside a session's workspace, mend resource reads and acts for the session's own project and worktree, as the session's owner: list, add, remove, start, stop, use, reset and env.",
     ],
     options: [
       project(),
-      { flag: "--worktree <w>", text: "also read this worktree's mend.toml, by name" },
+      { flag: "--worktree <w>", text: "also read this worktree's .mend/mend.toml, by name" },
       { flag: "--json", text: "print the page as JSON" },
     ],
     see: ["resource add", "resource remove"],
@@ -913,7 +913,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     description: [
       "Any member who can see the project adds a resource, and it is the project's, and it runs: a project resource starts at once, a worktree resource in --worktree when one is named and in any other worktree on first use. Mend pins the image to the digest its registry serves for the tag, asking the operator's mirrors first; a registry that cannot say leaves nothing added. Adding a name that exists replaces its definition, which is the person who added it or a manager's: the project's creator or an organization owner.",
-      "A preset runs its own image at the version named, which starts with its major version (17, 16.4-bookworm), with its port, a data volume and its own ready check. An image is any image reference, such as axllent/mailpit:v1.21. Each --port names one port. --from-file adds the [resource.<name>] table in --worktree's mend.toml as it stands, or says why it may not.",
+      "A preset runs its own image at the version named, which starts with its major version (17, 16.4-bookworm), with its port, a data volume and its own ready check. An image is any image reference, such as axllent/mailpit:v1.21. Each --port names one port. --from-file adds the [resource.<name>] table in --worktree's .mend/mend.toml as it stands, or says why it may not.",
     ],
     options: [
       { flag: "--preset <p>", text: "postgres, redis or mysql" },
@@ -927,10 +927,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         flag: "--scope <s>",
         text: "project (one instance) or worktree (one per worktree). Default: project",
       },
-      { flag: "--from-file", text: "add the [resource.<name>] table in --worktree's mend.toml" },
+      {
+        flag: "--from-file",
+        text: "add the [resource.<name>] table in --worktree's .mend/mend.toml",
+      },
       {
         flag: "--worktree <w>",
-        text: "the worktree whose mend.toml --from-file reads, and where a worktree resource starts",
+        text: "the worktree whose .mend/mend.toml --from-file reads, and where a worktree resource starts",
       },
       project(),
     ],
