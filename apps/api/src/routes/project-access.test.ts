@@ -87,6 +87,11 @@ interface AccessCase {
 
 /** Endpoints with no project behind them: authenticated-only, public, or tested on their own. */
 const UNSCOPED: ReadonlySet<string> = new Set([
+  // Current change visibility, including revocation, is exercised in proof-artifacts.test.ts.
+  "proofArtifacts.listForChange",
+  "proofArtifacts.byId",
+  "proofArtifacts.media",
+  "proofArtifacts.mediaHead",
   // Recovery authority and hidden descendants are exercised in removal.test.ts.
   "projects.removed",
   "projects.removedDisk",

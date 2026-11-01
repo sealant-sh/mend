@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { ProofArtifactsRepo } from "@mend/db";
 import { DopplerRepo } from "@mend/db";
 import { ProjectNameTakenError } from "@mend/db";
 import {
@@ -106,6 +107,7 @@ import {
   WorktreeServiceRestarts,
 } from "@mend/sessions";
 import { SlackApi } from "@mend/slack/client";
+import { BlobStore } from "@mend/store";
 import {
   AgentBridge,
   DeploymentConfig,
@@ -336,6 +338,7 @@ export const createTenancyApi = async (
       readonly sessionRepositories?: Layer.PartialEffectful<SessionRepositoriesRepo["Service"]>;
       readonly forwards?: Layer.PartialEffectful<ServiceForwardsRepo["Service"]>;
       readonly store?: Layer.PartialEffectful<Store["Service"]>;
+      readonly proofBlobs?: Layer.PartialEffectful<BlobStore["Service"]>;
       readonly doppler?: Layer.PartialEffectful<DopplerRepo["Service"]>;
       readonly dopplerApi?: Layer.PartialEffectful<DopplerApi["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
@@ -958,6 +961,16 @@ export const createTenancyApi = async (
     ),
   );
   const dependencies = Layer.mergeAll(
+    Layer.mock(ProofArtifactsRepo, {
+      listForChange: () => Effect.succeed([]),
+      byId: () => Effect.succeed(null),
+    }),
+    Layer.mock(BlobStore, {
+      identity: "test:proof",
+      list: () => Effect.succeed([]),
+      remove: () => Effect.void,
+      ...options.implement?.proofBlobs,
+    }),
     world.authLayer,
     world.accessLayers,
     effects,

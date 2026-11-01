@@ -46,6 +46,7 @@ import type {
   ProjectEnvironmentVariableId,
   ProjectId,
   PageId,
+  ProofArtifactId,
   PreviewId,
   PreviewLabel,
   ProjectSecretId,
@@ -87,6 +88,8 @@ import type {
   ServiceHostPolicy,
 } from "@mend/domain/workbench";
 import {
+  ProofSource,
+  ProofCapture,
   ArchivedResourceVolume,
   AuditData,
   HotWorkspaceEnvironment,
@@ -2076,6 +2079,40 @@ export const agentItems = pgTable(
     unique("agent_items_process_provider_key").on(table.processId, table.providerItemId),
     index("agent_items_session_seq_idx").on(table.sessionId, table.seq),
     index("agent_items_turn_seq_idx").on(table.turnId, table.seq),
+  ],
+);
+
+export const proofArtifacts = pgTable(
+  "proof_artifacts",
+  {
+    id: text().$type<ProofArtifactId>().primaryKey(),
+    changeId: text()
+      .$type<ChangeId>()
+      .notNull()
+      .references(() => worktreeChanges.id, { onDelete: "cascade" }),
+    worktreeId: text().$type<WorktreeId>().notNull(),
+    projectId: text().$type<ProjectId>().notNull(),
+    sessionId: text()
+      .$type<SessionId>()
+      .references(() => agentSessions.id, { onDelete: "set null" }),
+    turnId: text()
+      .$type<AgentTurnId>()
+      .references(() => agentTurns.id, { onDelete: "set null" }),
+    callKey: text(),
+    title: text().notNull(),
+    caption: text().notNull(),
+    side: text().$type<"before" | "after">().notNull(),
+    source: jsonbOf(ProofSource).notNull(),
+    capture: jsonbOf(ProofCapture).notNull(),
+    launch: text(),
+    differences: text(),
+    observedFrom: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    observedTo: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("proof_artifacts_session_call_key").on(table.sessionId, table.callKey),
+    index("proof_artifacts_change_idx").on(table.changeId),
   ],
 );
 
