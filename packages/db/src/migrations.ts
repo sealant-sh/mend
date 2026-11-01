@@ -4962,6 +4962,18 @@ const proofArtifactsWithoutSideMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE proof_artifacts DROP COLUMN IF EXISTS side`;
 });
 
+const slackProofTurnsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE slack_proof_turns (
+    session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    turn_id text NOT NULL,
+    context jsonb,
+    progress jsonb NOT NULL DEFAULT '{"batches":[]}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, turn_id)
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5131,4 +5143,5 @@ export const migrations = {
   "0178_proof_artifacts": proofArtifactsMigration,
   "0179_slack_proof_deliveries": slackProofDeliveriesMigration,
   "0181_proof_artifacts_without_side": proofArtifactsWithoutSideMigration,
+  "0182_slack_proof_turns": slackProofTurnsMigration,
 };

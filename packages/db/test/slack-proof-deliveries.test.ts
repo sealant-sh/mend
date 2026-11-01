@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProofArtifactId, SessionId } from "@mend/domain";
+import { AgentTurnId, ProjectId, ProofArtifactId, SessionId } from "@mend/domain";
 import { Deferred, Effect, Layer, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -119,6 +119,64 @@ describe.skipIf(config.skip)("0179 Slack proof delivery persistence", () => {
     );
   });
 
+  it("persists turn release and batch membership across a failed writer", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* SlackProofDeliveriesRepo;
+        const turnKey = { sessionId: key.sessionId, turnId: AgentTurnId.make("turn") };
+        const context = {
+          projectId: ProjectId.make("proof-p"),
+          changeId: null,
+          url: "https://mend.test/session",
+          previewUrl: null,
+          push: null,
+        };
+        expect(yield* repo.withTurn(turnKey, (store) => Effect.succeed(store.context))).toBeNull();
+        yield* repo.readyTurn(key.sessionId, turnKey.turnId, context);
+        yield* repo
+          .withTurn(turnKey, (store) =>
+            Effect.gen(function* () {
+              expect(store.context).toEqual(context);
+              yield* store.save({
+                batches: [
+                  {
+                    artifactIds: [key.artifactId],
+                    startedAt: 123,
+                    finished: false,
+                    messageTs: null,
+                    replyStarted: false,
+                  },
+                ],
+              });
+              return yield* Effect.fail("worker stopped");
+            }),
+          )
+          .pipe(Effect.flip);
+        expect(yield* repo.withTurn(turnKey, (store) => store.read())).toMatchObject({
+          batches: [{ artifactIds: [key.artifactId], startedAt: 123, finished: false }],
+        });
+        expect(yield* repo.pendingTurns(new Date(0))).toEqual([turnKey]);
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Effect.all(
+          [
+            repo.withTurn(turnKey, () =>
+              Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            ),
+            Effect.gen(function* () {
+              yield* Deferred.await(entered);
+              expect(
+                yield* repo.withTurn(turnKey, (store) => store.read()).pipe(Effect.flip),
+              ).toMatchObject({ operation: "busy" });
+              yield* Deferred.succeed(release, undefined);
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+      }),
+    );
+  });
+
   it("restricts states and cascades when the contributing session is deleted", async () => {
     await run(
       Effect.gen(function* () {
@@ -131,6 +189,9 @@ describe.skipIf(config.skip)("0179 Slack proof delivery persistence", () => {
         yield* sql`DELETE FROM agent_sessions WHERE id = 'session'`;
         const rows = yield* sql`SELECT * FROM slack_proof_deliveries WHERE session_id = 'session'`;
         expect(Schema.decodeUnknownSync(Schema.Array(Schema.Unknown))(rows)).toHaveLength(0);
+        expect(
+          yield* sql`SELECT * FROM slack_proof_turns WHERE session_id = 'session'`,
+        ).toHaveLength(0);
       }),
     );
   });
