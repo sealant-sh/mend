@@ -51,6 +51,7 @@ class GatedMendClient {
   readonly worktreeDiff: DeviceCalls["worktreeDiff"];
   readonly worktreeContents: DeviceCalls["worktreeContents"];
   readonly openRawFile: DeviceCalls["openRawFile"];
+  readonly openProofMedia: DeviceCalls["openProofMedia"];
   readonly pageFrame: DeviceCalls["pageFrame"];
   readonly openPage: DeviceCalls["openPage"];
   readonly createSession: DeviceCalls["createSession"];
@@ -101,6 +102,7 @@ class GatedMendClient {
     this.worktreeDiff = calls.worktreeDiff;
     this.worktreeContents = calls.worktreeContents;
     this.openRawFile = calls.openRawFile;
+    this.openProofMedia = calls.openProofMedia;
     this.pageFrame = calls.pageFrame;
     this.openPage = calls.openPage;
     this.createSession = calls.createSession;
@@ -178,6 +180,8 @@ export const gateDeviceCalls = (
       guard(token, mend.worktreeContents(token, worktreeId, question)),
     openRawFile: (token, worktreeId, input) =>
       guard(Redacted.value(token), mend.openRawFile(token, worktreeId, input)),
+    openProofMedia: (token, artifactId, input) =>
+      guard(Redacted.value(token), mend.openProofMedia(token, artifactId, input)),
     pageFrame: (token, pageId) => guard(Redacted.value(token), mend.pageFrame(token, pageId)),
     openPage: (token, pageId) => guard(Redacted.value(token), mend.openPage(token, pageId)),
     projectFiles: (token, projectId, sessionId) =>
