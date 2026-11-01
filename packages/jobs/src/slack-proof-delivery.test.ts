@@ -73,6 +73,7 @@ const harness = (artifact = artifactOf(), slackWorkspace = workspace) => {
   const lock = Semaphore.makeUnsafe(1);
   let refuseSave: ((progress: SlackProofDeliveryProgress) => boolean) | null = null;
   const repo = SlackProofDeliveriesRepo.of({
+    pendingSince: () => Effect.succeed([]),
     withDelivery: (key, use) =>
       lock.withPermit(
         Effect.suspend(() => {

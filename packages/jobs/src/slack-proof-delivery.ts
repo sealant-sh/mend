@@ -36,6 +36,7 @@ const FINAL_UPLOAD_ERRORS: ReadonlySet<string> = new Set([
   "restricted_action",
   "invalid_length",
   "invalid_bytes",
+  "media_not_found",
   "not_slack_host",
 ]);
 
@@ -48,6 +49,8 @@ export interface SlackProofDeliveryInput<E, R> {
   readonly install: Pick<SealedSlackInstall, "teamId" | "organizationId" | "settings">;
   readonly project: Pick<Project, "id" | "organizationId" | "visibility">;
   readonly token: string;
+  /** Total upload attempts before a retryable error becomes a named final failure. */
+  readonly attemptLimit?: number;
   /** Opens a fresh reader for every attempt. */
   readonly media: (artifact: ProofArtifact) => Effect.Effect<SlackUploadBody, E, R>;
 }
@@ -156,7 +159,11 @@ export const deliverProofToSlack = Effect.fn("deliverProofToSlack")(function* <E
             const why =
               delivery.errorCode === "missing_scope"
                 ? "The Slack app needs files:write. Add the scope and reinstall the app to the workspace."
-                : `Slack answered ${delivery.errorCode ?? "unknown_error"}.`;
+                : delivery.errorCode === "media_not_found"
+                  ? "The stored proof file is no longer available."
+                  : delivery.errorCode === "media_unavailable"
+                    ? "Mend could not read the stored proof file."
+                    : `Slack answered ${delivery.errorCode ?? "unknown_error"}.`;
             const messageTs = yield* postText(
               "failed",
               escapeSlack(`File not delivered · ${slackProofFilename(artifact)}\n${label}\n${why}`),
@@ -273,14 +280,18 @@ export const deliverProofToSlack = Effect.fn("deliverProofToSlack")(function* <E
             (error) =>
               Effect.gen(function* () {
                 if (
-                  error.code === "file_not_found" ||
-                  (error.method === "files.uploadBytes" &&
-                    ["http_404", "http_410"].includes(error.code))
+                  delivery.attempts < (input.attemptLimit ?? Infinity) &&
+                  (error.code === "file_not_found" ||
+                    (error.method === "files.uploadBytes" &&
+                      ["http_404", "http_410"].includes(error.code)))
                 ) {
                   yield* resetTicket();
                   return yield* error;
                 }
-                if (!FINAL_UPLOAD_ERRORS.has(error.code)) {
+                if (
+                  !FINAL_UPLOAD_ERRORS.has(error.code) &&
+                  delivery.attempts < (input.attemptLimit ?? Infinity)
+                ) {
                   yield* save({
                     ...delivery,
                     errorCode: error.code,
