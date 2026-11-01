@@ -16,6 +16,7 @@ import {
   tomlDiagnostic,
 } from "../recipes.ts";
 import { SessionRepository } from "../session-repository.ts";
+import { resourceWorkspace } from "./workspace.ts";
 
 /** The selected repository file, using the same precedence as the readers. */
 export type ResourceTablePath = typeof MEND_TOML | typeof LEGACY_MEND_TOML;
@@ -166,8 +167,9 @@ const appendLocal = Effect.fn("ResourceTableWrites.appendLocal")(function* (
 });
 
 /**
- * Read or append inside a live workspace. Arguments: root, read|write, selected path, expected
+ * Read or append inside a live workspace. Arguments: root, read|write|observe, selected path, expected
  * base64 bytes, appended base64 bytes. A write checks precedence and the bytes read by the server.
+ * Observe takes a byte limit in place of the path and returns base64, or exit 44 when absent.
  * All replacement files are created beside their destination and renamed atomically. It needs only
  * coreutils: workspace images carry no `cmp`. A new file belongs to the worktree's owner, mode 644,
  * so the person's processes can read it.
@@ -186,9 +188,12 @@ if [ -e "$target" ] || [ -L "$target" ]; then
   check_inside "$target"
   [ -f "$target" ] || exit 45
 fi
-if [ "$2" = read ]; then
+if [ "$2" = read ] || [ "$2" = observe ]; then
   printf '%s\\n' "$file"
-  if [ -e "$target" ]; then cat -- "$target"; fi
+  if [ -e "$target" ]; then
+    [ -r "$target" ] || exit 45
+    if [ "$2" = observe ]; then head -c "$3" -- "$target" | base64; else cat -- "$target"; fi
+  elif [ "$2" = observe ]; then exit 44; fi
   exit 0
 fi
 [ "$file" = "$3" ] || exit 46
@@ -220,34 +225,9 @@ const make: Effect.Effect<
 > = Effect.gen(function* () {
   const repository = yield* SessionRepository;
   const worktrees = yield* WorktreesRepo;
-  const sessions = yield* SessionsRepo;
   const sealant = yield* SealantClient;
 
-  // Keep worktree-to-live-workspace resolution here. A settled agent may still have a live shell.
-  const liveWorkspace = Effect.fn("ResourceTableWrites.liveWorkspace")(function* (
-    worktreeId: WorktreeId,
-  ) {
-    const members = yield* sessions.listForWorktree(worktreeId);
-    const flushed = new Set(
-      yield* Effect.forEach(members, (member) => sessions.finalFlushedWorkspace(member.id)),
-    );
-    for (const session of members) {
-      const id = session.sealantWorkspaceId;
-      if (id === null || flushed.has(id)) continue;
-      const found = yield* Effect.gen(function* () {
-        const workspace = yield* sealant.getWorkspace(id);
-        const status = yield* io(() => workspace.status());
-        return status === "queued" || status === "running" || status === "ready"
-          ? { workspace, owner: session.ownerUserId }
-          : null;
-      }).pipe(
-        asSealantUser(session.ownerUserId),
-        Effect.orElseSucceed(() => null),
-      );
-      if (found !== null) return found;
-    }
-    return null;
-  });
+  const liveWorkspace = yield* resourceWorkspace;
 
   const appendResourceTable = Effect.fn("ResourceTableWrites.appendResourceTable")(
     function* (input: AppendResourceTableInput) {

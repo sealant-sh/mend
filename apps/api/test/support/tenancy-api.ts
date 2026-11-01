@@ -84,7 +84,12 @@ import { Landing, LandingGit } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
-import { ResourceStatusReads, ResourceStatusReadsLive } from "@mend/sessions";
+import {
+  readWorktreeTables,
+  ResourceTableReads,
+  ResourceStatusReads,
+  ResourceStatusReadsLive,
+} from "@mend/sessions";
 import {
   CaptureRuntime,
   DotfilesCloner,
@@ -1023,6 +1028,14 @@ export const createTenancyApi = async (
     Layer.provideMerge(connections),
     Layer.provideMerge(budgetsLayer),
     Layer.provideMerge(ticketsLayer),
+    Layer.provide(
+      Layer.effect(
+        ResourceTableReads,
+        Effect.map(WorktreeReads, (reads) => ({
+          forWorktree: (projectId, worktreeId) => readWorktreeTables(reads, projectId, worktreeId),
+        })),
+      ),
+    ),
     Layer.provideMerge(dependencies),
   );
   const apiLayer = Layer.mergeAll(

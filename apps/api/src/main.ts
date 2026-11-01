@@ -189,6 +189,7 @@ import {
   ResourcesChannelLive,
   ResourcesLive,
   ResourceTableWritesLive,
+  ResourceTableReadsLive,
   ResourceStatusReadsLive,
   ResourceLoadsLive,
   ResourceLoadsChannelLive,
@@ -1013,6 +1014,7 @@ const MainLive = Layer.unwrap(
       // that registers what runs, so both hold the same one.
       Layer.provide(
         Layer.mergeAll(
+          ResourceTableReadsLive.pipe(Layer.provide(Layer.merge(sessionRepository, worktreeReads))),
           sessionRepository,
           worktreeReads,
           captureRuntime,

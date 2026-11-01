@@ -19,10 +19,9 @@ import {
 import { Clock, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
-import { WorktreeReads } from "../worktree-reads.ts";
 import type { ReaderClock } from "./resources.ts";
 import { type InstanceObserved, type ProjectObservation, ResourceRuntime } from "./runtime.ts";
-import { readWorktreeTables, tablesOf } from "./worktree-tables.ts";
+import { ResourceTableReads, tablesOf } from "./worktree-tables.ts";
 
 /** A note reads names and observations only, never env values. */
 export interface WorktreeResourceStatus {
@@ -124,14 +123,14 @@ export const resourceViewOf = (input: {
 export const ResourceStatusReadsLive: Layer.Layer<
   ResourceStatusReads,
   never,
-  ResourcesRepo | ResourceLoadsRepo | ResourceRuntime | WorktreeReads
+  ResourcesRepo | ResourceLoadsRepo | ResourceRuntime | ResourceTableReads
 > = Layer.effect(
   ResourceStatusReads,
   Effect.gen(function* () {
     const repo = yield* ResourcesRepo;
     const loads = yield* ResourceLoadsRepo;
     const runtime = yield* ResourceRuntime;
-    const reads = yield* WorktreeReads;
+    const reads = yield* ResourceTableReads;
     const viewsFor = Effect.fn("ResourceStatusReads.viewsFor")(function* (
       listed: ReadonlyArray<DefinitionWithChoice>,
       projectId: ProjectId,
@@ -193,7 +192,7 @@ export const ResourceStatusReadsLive: Layer.Layer<
       worktreeId: WorktreeId,
     ) {
       const listed = yield* repo.listWithChoices(projectId, worktreeId);
-      const file = tablesOf(yield* readWorktreeTables(reads, projectId, worktreeId));
+      const file = tablesOf(yield* reads.forWorktree(projectId, worktreeId));
       const postgres = [...file, ...listed.map((row) => row.definition.spec)].find(
         (spec) => spec.preset === "postgres",
       )?.name;

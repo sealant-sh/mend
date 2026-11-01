@@ -18,7 +18,7 @@ import { ResourceScopes, type ScopeInstance } from "@mend/sealant";
 import { Duration, Effect, Layer } from "effect";
 
 import { resourceRuntimeLayer } from "../../src/resources/runtime.ts";
-import { WorktreeReads, WORKTREE_STAMP } from "../../src/worktree-reads.ts";
+import { ResourceTableReads } from "../../src/resources/worktree-tables.ts";
 
 /** Real resource preparation over a scope client that holds a person's stop against use. */
 export const resourcePreviewFixture = () => {
@@ -88,8 +88,9 @@ export const resourcePreviewFixture = () => {
         Layer.mock(ProjectSecretsRepo, {
           snapshot: () => Effect.succeed({ revision: 0, secrets: [] }),
         }),
-        Layer.mock(WorktreeReads, {
-          readFile: () => Effect.succeed({ value: null, stamp: WORKTREE_STAMP }),
+        Layer.mock(ResourceTableReads, {
+          forWorktree: () =>
+            Effect.succeed({ kind: "absent", observed: "observed on the worktree" }),
         }),
         Layer.mock(SessionsRepo, { listForProject: () => Effect.succeed([]) }),
         Layer.succeed(ResourceScopes, {
