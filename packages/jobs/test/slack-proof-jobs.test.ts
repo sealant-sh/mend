@@ -410,4 +410,100 @@ describe.skipIf(postgres.skip)("Slack proof jobs with Postgres and fake Slack", 
       }).pipe(Effect.provide(h.layer), Effect.scoped),
     );
   });
+
+  it("posts the latest pending preview button once and makes no edit for repeated checks", async () => {
+    const h = fixture();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* h.prepare;
+        yield* h.ready;
+        const deliveries = yield* SlackProofDeliveriesRepo;
+        const previewUrl = "https://mend.test/preview-auth?preview=pv-web&path=%2F";
+        const context = {
+          projectId: ProjectId.make("project"),
+          changeId: ChangeId.make("change"),
+          url: "https://mend.test/session",
+          previewUrl,
+          push: { sessionId: SessionId.make("session"), updates: false },
+        };
+        yield* deliveries.readyTurn(SessionId.make("session"), h.turnId, context);
+        const payload = { sessionId: SessionId.make("session"), turnId: h.turnId };
+        yield* runSlackProof(payload);
+        yield* deliveries.readyTurn(SessionId.make("session"), h.turnId, context);
+        yield* runSlackProof(payload);
+        expect(h.slack.calls).toMatchObject([
+          {
+            kind: "postMessage",
+            input: {
+              channel: "C1",
+              threadTs: "1.0",
+              text: "Open in Mend",
+              blocks: [
+                {
+                  type: "actions",
+                  elements: [
+                    { text: { text: "Open in Mend" }, url: context.url },
+                    { text: { text: "Open preview" }, url: previewUrl },
+                    { text: { text: "Push and open pull request" }, value: "session" },
+                  ],
+                },
+              ],
+            },
+          },
+        ]);
+        expect(JSON.stringify(h.slack.calls)).not.toMatch(/preview ·|ticket|changes not landed/u);
+      }).pipe(Effect.provide(h.layer), Effect.scoped),
+    );
+  });
+
+  it("withholds a pending preview post after the project turns private, and shows it in a direct message", async () => {
+    const h = fixture();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* h.prepare;
+        yield* h.ready;
+        yield* (yield* SlackProofDeliveriesRepo).readyTurn(SessionId.make("session"), h.turnId, {
+          projectId: ProjectId.make("project"),
+          changeId: ChangeId.make("change"),
+          url: "https://mend.test/session",
+          previewUrl: "https://mend.test/preview-auth?preview=pv-web&path=%2F",
+          push: null,
+        });
+        const sql = yield* SqlClient.SqlClient;
+        try {
+          yield* sql`UPDATE projects SET visibility = 'private' WHERE id = 'project'`;
+          const payload = { sessionId: SessionId.make("session"), turnId: h.turnId };
+          yield* runSlackProof(payload);
+          yield* runSlackProof(payload);
+          expect(h.slack.calls).toEqual([]);
+          yield* sql`UPDATE slack_threads SET channel_id = 'D1' WHERE session_id = 'session'`;
+          yield* runSlackProof(payload);
+          expect(h.slack.calls).toMatchObject([
+            {
+              kind: "postMessage",
+              input: {
+                channel: "D1",
+                threadTs: "1.0",
+                blocks: [
+                  {
+                    type: "actions",
+                    elements: [
+                      { text: { text: "Open in Mend" } },
+                      {
+                        text: { text: "Open preview" },
+                        url: "https://mend.test/preview-auth?preview=pv-web&path=%2F",
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          ]);
+        } finally {
+          yield* sql`UPDATE projects SET visibility = 'shared' WHERE id = 'project'`;
+          yield* sql`UPDATE slack_threads SET channel_id = 'C1' WHERE session_id = 'session'`;
+        }
+      }).pipe(Effect.provide(h.layer), Effect.scoped),
+    );
+  });
 });
