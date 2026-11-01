@@ -133,7 +133,8 @@ the default branch plus whatever is running, including resources whose tables ha
 A running project resource remembers the definition it started from. If a worktree's file differs,
 its status line says `@db · project · definition differs from this worktree`. Starting it again from
 that worktree asks whether to restart it with the new definition, and names the worktrees that use
-it; the agent answers with `--restart`. A file edit alone cannot restart it. Removing its table cannot remove its data or stop it.
+it; the agent answers with `--restart`. A file edit alone cannot restart it. Removing its table
+cannot remove its data or stop it.
 
 A name is a lowercase DNS label, with digits and hyphens allowed after the first letter and no
 trailing hyphen. Existing network names remain reserved. A name whose generated env collides with
