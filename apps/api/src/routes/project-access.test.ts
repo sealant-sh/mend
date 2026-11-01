@@ -994,7 +994,7 @@ const ADMITTED: Readonly<
   // Who added the definition decides who may remove it, so it is read first.
   "resources.remove": { status: 500, calls: ["resources.listForProject"] },
   // What the worktree used before decides whether its Services restart, so it is read first.
-  "resources.use": { status: 500, calls: ["resources.listWithChoices"] },
+  "resources.use": { status: 500, calls: ["resources.listWithChoices", "resources.setSelection"] },
   // A start or stop finds the definition by name first.
   "resources.beginLoad": { status: 500, calls: ["resourceLoads.begin"] },
   "resources.readLoad": { status: 500, calls: ["resourceLoads.read"] },
@@ -1007,7 +1007,7 @@ const ADMITTED: Readonly<
   // Refresh-capture helper defects before detail reads.
   "sessions.detail": {
     status: 500,
-    calls: ["sessions.launchersOf", "engine.refreshCaptureStatus"],
+    calls: ["resources.listWithChoices", "sessions.launchersOf", "engine.refreshCaptureStatus"],
   },
   "sessions.sendMessage": { status: 500, calls: ["engine.sendMessage"] },
   "sessions.submitTurn": { status: 500, calls: ["engine.submitTurn"] },

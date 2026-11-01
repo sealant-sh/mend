@@ -60,6 +60,7 @@ import {
   type TurnLanding,
 } from "@mend/domain/workbench";
 import { PublicOrigin } from "@mend/network";
+import { ResourceStatusReadsNone } from "@mend/sessions";
 import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
 import {
   NO_PREVIEWS,
@@ -528,6 +529,7 @@ const world = (options: WorldOptions = {}) => {
   const clock = Effect.runSync(Layer.buildWithScope(TestClock.layer(), scope));
 
   const layer = Layer.mergeAll(
+    ResourceStatusReadsNone,
     Layer.succeedContext(clock),
     Layer.succeed(SlackApi, {
       ...slack.service,

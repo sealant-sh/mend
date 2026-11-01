@@ -49,6 +49,7 @@ import {
 import { SlackReports } from "@mend/jobs";
 import { makeWindowLimiter } from "@mend/network";
 import { asSealantUser, SealantClients } from "@mend/sealant";
+import { ResourceStatusReads } from "@mend/sessions";
 import { PASTED_IMAGE_MAX_BYTES, PASTED_IMAGE_TYPES, SessionEngine } from "@mend/sessions";
 import {
   answersFromMention,
@@ -687,6 +688,7 @@ const renderingOf = (message: SlackMessage) => {
 
 export const makeSlackRunner = (options: SlackRunnerOptions) =>
   Effect.gen(function* () {
+    const resourceStatus = yield* ResourceStatusReads;
     const installs = yield* SlackInstallsRepo;
     const links = yield* SlackLinksRepo;
     const defaults = yield* SlackDefaultsRepo;
@@ -1423,6 +1425,10 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         },
       });
       yield* react(token, mention, reactionFor("starting"));
+      const resourceStatusLines = (yield* resourceStatus.forWorktree(
+        session.projectId,
+        session.worktreeId,
+      )).map((each) => each.statusLine);
       const status = (state: SlackSessionState, current: Session) =>
         statusMessage({
           project: choice.project.name,
@@ -1435,6 +1441,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           url: sessionUrl(install.webOrigin, current.id),
           switchSession: switchOffered(state, []) ? current.id : null,
           previews: NO_PREVIEWS,
+          resourceStatusLines,
         });
       const shown = status("starting", session);
       const posted = yield* say(token, mention, shown).pipe(
@@ -2264,6 +2271,7 @@ export const SlackRunnerLive: Layer.Layer<
   | SecretCipher
   | SessionControlEventsRepo
   | SessionEngine
+  | ResourceStatusReads
   | SessionProcessesRepo
   | SessionStart
   | SessionSteering

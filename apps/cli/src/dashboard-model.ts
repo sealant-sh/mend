@@ -71,6 +71,7 @@ export interface SessionDto extends SessionCaptureLike {
    * view when per-person homes are possible; empty otherwise, absent on older servers.
    */
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
+  readonly resourceStatusLines?: ReadonlyArray<string>;
   /** When shared control was turned on; null while it is off. Absent on older servers. */
   readonly sharedControlEnabledAt?: string | null;
   /**
@@ -1338,7 +1339,7 @@ export const fetchWorkspaceFacts = async (
  * would stop. Every word is kept; a line too long for one row takes the next.
  */
 export const workspaceFactRows = (
-  session: Pick<SessionDto, "id" | "livePeople">,
+  session: Pick<SessionDto, "id" | "livePeople" | "resourceStatusLines">,
   viewer: Viewer | undefined,
   facts: WorkspaceFacts | undefined,
   width: number,
@@ -1347,6 +1348,7 @@ export const workspaceFactRows = (
     sessionWorkspaceLines({
       sessionId: session.id,
       livePeople: session.livePeople ?? [],
+      resourceStatusLines: session.resourceStatusLines ?? [],
       viewer: viewer?.userId ?? null,
       wait: facts?.wait ?? null,
       retirement: facts?.retirement ?? null,

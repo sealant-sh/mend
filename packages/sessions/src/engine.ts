@@ -656,6 +656,7 @@ import {
 } from "./recipes.ts";
 import { declarationsNote } from "./resource-tables.ts";
 import { type Prepared, ResourceRuntime } from "./resources/runtime.ts";
+import { ResourceStatusReads } from "./resources/status-reads.ts";
 import {
   HOT_POOL_MAX_OWNERS,
   HOT_POOL_RECENT_OWNER_WINDOW,
@@ -753,6 +754,7 @@ import {
 } from "./workspace-files.ts";
 import { WorkspaceGitHooks } from "./workspace-git-hooks.ts";
 import {
+  resourcesNote,
   parseWorkspaceNoteOutcomes,
   PREVIEWS_NOTE,
   WORKSPACE_NOTE_NOT_WRITTEN,
@@ -3427,6 +3429,7 @@ export class SessionEngine extends Context.Service<
 
 type SessionEngineRequirements =
   | ResourceRuntime
+  | ResourceStatusReads
   | RemovalFencesRepo
   | SealantClient
   | WorkspaceCaller
@@ -3519,6 +3522,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const scope = yield* Effect.scope;
       const sealant = yield* SealantClient;
       const resourceRuntime = yield* ResourceRuntime;
+      const resourceStatus = yield* ResourceStatusReads;
       // Whose platform identity a call about a workspace runs as (`workspace-caller.ts`): the
       // engine tells it when a creator is recorded, and asks it before restoring a process.
       const workspaceCaller = yield* WorkspaceCaller;
@@ -13439,6 +13443,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         extraMounts: ReadonlyArray<SessionExtraMount>,
         /** The session's repositories (docs/adr/0010), as they stand after the relink. */
         repositories: ReadonlyArray<SessionRepositoryRow> = [],
+        resourceWorktreeId: WorktreeId | null = null,
       ) {
         const readyRepositories = repositories.filter((row) => row.state === "ready");
         const repositoriesSection =
@@ -13530,6 +13535,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           `\`mend service add <port> [--http|--https]\` adopts something already listening; ` +
           `\`mend service list\` shows what runs.\n\n` +
           recipesLine;
+        const resourceSection =
+          resourceWorktreeId === null
+            ? ""
+            : resourcesNote(yield* resourceStatus.forWorktree(project.id, resourceWorktreeId));
         const note =
           `## Mend mounts\n\nMounted beside the repo:\n\n` +
           referencesSection +
@@ -13538,6 +13547,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           `\n` +
           repositoriesSection +
           servicesSection +
+          resourceSection +
           PREVIEWS_NOTE;
         const notWritten = (detail: Record<string, unknown>) =>
           Effect.logWarning("session engine: the workspace note was not written").pipe(
@@ -18913,6 +18923,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
           ),
         );
+        // Prepare resources before the note observes them, including tables first adopted on launch.
+        const resourceEnv = yield* resourceEnvOf(session, workspace, ownerUserId, true);
         // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
         // Rewrite the managed note after both paths so it reflects the claimed worktree now. It
         // is written through exec in either store, so a captured executor's agent reads the same
@@ -18924,6 +18936,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           provisioned.referenceMounts,
           provisioned.extraMounts,
           repositories,
+          session.worktreeId,
         );
 
         // Per-person harness homes (docs/adr/0016): in a person-layout executor the launcher's
@@ -19061,7 +19074,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? Effect.void
             : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
         );
-        const resourceEnv = yield* resourceEnvOf(session, workspace, ownerUserId, true);
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
         const onScreen = yield* displayOfLaunch(

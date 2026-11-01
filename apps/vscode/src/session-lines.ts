@@ -123,7 +123,7 @@ export const launcherName = (
 
 /** The session's lines in reading order; empty when there is nothing to say. */
 export const sessionLines = (facts: {
-  readonly session: Pick<Session, "livePeople">;
+  readonly session: Pick<Session, "livePeople" | "resourceStatusLines">;
   readonly viewer: string | null;
   readonly waitLine: string | null;
   readonly retirement: RetirementView | null;
@@ -132,6 +132,7 @@ export const sessionLines = (facts: {
   const shared = sharedWorkspaceLine(facts.session.livePeople, facts.viewer);
   const { retirement } = facts;
   return [
+    ...(facts.session.resourceStatusLines ?? []),
     ...(shared === null ? [] : [shared]),
     ...(facts.waitLine === null ? [] : [facts.waitLine]),
     ...(retirement === null
@@ -262,3 +263,7 @@ export const joinLineOf = async (
     knownViewer ?? (worktreeListsPeople(sessions, worktreeId) ? await client.viewerId() : null);
   return worktreeJoinLine(sessions, worktreeId, viewer);
 };
+
+/** Lines from a newer server; malformed entries are omitted at the wire boundary. */
+export const parseResourceStatusLines = (value: unknown): ReadonlyArray<string> =>
+  Array.isArray(value) ? value.filter((line): line is string => typeof line === "string") : [];

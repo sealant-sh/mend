@@ -2,7 +2,11 @@ import type { AgentInputQuestionDto, AgentRequestDto } from "@mend/agent-convers
 import { LaunchAdmissionRule } from "@mend/domain/workbench";
 import { Option, Schema } from "effect";
 
-import { parseLivePeople, parseRetirementState } from "./session-lines.js";
+import {
+  parseResourceStatusLines,
+  parseLivePeople,
+  parseRetirementState,
+} from "./session-lines.js";
 import type { LandingFact } from "./session-model.js";
 import {
   SESSION_STATUSES,
@@ -75,6 +79,7 @@ export const parseSession = (value: unknown): Session => {
     settledAt: typeof value["settledAt"] === "string" ? value["settledAt"] : null,
     ownerUserId: typeof value["ownerUserId"] === "string" ? value["ownerUserId"] : null,
     livePeople: parseLivePeople(value["livePeople"]),
+    resourceStatusLines: parseResourceStatusLines(value["resourceStatusLines"]),
     sharedControlEnabledAt:
       typeof value["sharedControlEnabledAt"] === "string" ? value["sharedControlEnabledAt"] : null,
     workspaceRetirement: parseRetirementState(value["workspaceRetirement"]),

@@ -32,6 +32,7 @@ import { postgresTestConfig } from "@mend/db/testing";
 import { type OrganizationId, ProjectId } from "@mend/domain";
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
+import { ResourceStatusReadsNone, ResourceStatusReads } from "@mend/sessions";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
 import {
   AgentBridge,
@@ -134,6 +135,7 @@ const unused = Layer.mergeAll(
   Layer.mock(MendKeys, {}),
   Layer.mock(ServiceForwardsRepo, {}),
   Layer.mock(ResourcesRepo, {}),
+  ResourceStatusReadsNone,
   Layer.mock(SessionEngine, {
     launchUnderWay: () => false,
     personLayoutPossible: () => Effect.succeed(false),
@@ -165,7 +167,7 @@ const dependencies = (startupParameters?: Readonly<Record<string, string>>) =>
     ),
     Layer.provideMerge(databaseLayer(startupParameters)),
   );
-type Services = Layer.Success<ReturnType<typeof dependencies>>;
+type Services = ResourceStatusReads | Layer.Success<ReturnType<typeof dependencies>>;
 const runtime = ManagedRuntime.make(dependencies());
 /** Its connections resolve an unqualified pg_notify to the test's refusing one in public. */
 const notifyRefusingRuntime = ManagedRuntime.make(

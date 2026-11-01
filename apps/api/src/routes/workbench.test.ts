@@ -37,6 +37,7 @@ import {
 } from "@mend/domain/workbench";
 import { JobEnqueueError, JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
+import { ResourceStatusReadsNone, ResourceStatusReads } from "@mend/sessions";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
 import {
   AgentBridge,
@@ -314,7 +315,8 @@ type ProjectRouteServices =
   | ResourcesRepo
   | RemovalFencesRepo
   | Removal
-  | TenancyConfig;
+  | TenancyConfig
+  | ResourceStatusReads;
 
 type UnusedProjectRouteServices = Exclude<
   ProjectRouteServices,
@@ -328,6 +330,7 @@ type UnusedProjectRouteServices = Exclude<
 >;
 
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
+  ResourceStatusReadsNone,
   Layer.mock(ProjectCreation, {}),
   Layer.mock(AuditEventsRepo, {}),
   Layer.mock(RemovalFencesRepo, {}),

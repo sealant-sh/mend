@@ -346,6 +346,7 @@ interface SessionDto extends SessionCaptureLike {
    * `GET /sessions` and the session view only; absent on older servers.
    */
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
+  readonly resourceStatusLines?: ReadonlyArray<string>;
   /** When shared control was turned on; null while it is off. Absent on older servers. */
   readonly sharedControlEnabledAt?: string | null;
   /** The workspace the session runs in now; null when none runs. */
@@ -990,8 +991,12 @@ const workspaceLinesOf = async (
   config: CliConfig,
   sessions: ReadonlyArray<SessionDto>,
 ): Promise<ReadonlyMap<string, ReadonlyArray<string>>> => {
-  const live = sessions.filter((session) => LIVE_STATUSES.has(session.status));
-  if (!hasPersonFacts(live)) return new Map();
+  const live = sessions;
+  if (
+    !hasPersonFacts(live) &&
+    !live.some((session) => (session.resourceStatusLines ?? []).length > 0)
+  )
+    return new Map();
   const viewerRead = live.some((session) => (session.livePeople ?? []).length > 0)
     ? viewerIdOf(config)
     : Promise.resolve(null);
@@ -1030,6 +1035,7 @@ const workspaceLinesOf = async (
         sessionWorkspaceLines({
           sessionId: session.id,
           livePeople: session.livePeople ?? [],
+          resourceStatusLines: session.resourceStatusLines ?? [],
           viewer,
           wait,
           retirement,

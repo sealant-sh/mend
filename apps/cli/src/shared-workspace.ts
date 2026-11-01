@@ -190,6 +190,7 @@ export const launcherNameOf = (
 
 /** What a session says about its workspace, each part null when there is nothing to say. */
 export interface SessionWorkspaceLines {
+  readonly resources: ReadonlyArray<string>;
   /** "Shared workspace with Anna · …" while another person's process is live there. */
   readonly shared: string | null;
   /** The waiting line, as the server words it. */
@@ -205,6 +206,7 @@ export interface SessionWorkspaceLines {
 }
 
 export const sessionWorkspaceLines = (facts: {
+  readonly resourceStatusLines?: ReadonlyArray<string>;
   readonly sessionId: string;
   readonly livePeople: ReadonlyArray<LivePersonDto>;
   readonly viewer: string | null;
@@ -214,6 +216,7 @@ export const sessionWorkspaceLines = (facts: {
 }): SessionWorkspaceLines => {
   const { retirement } = facts;
   return {
+    resources: facts.resourceStatusLines ?? [],
     shared: sharedWorkspaceLine(facts.livePeople, facts.viewer),
     waiting: facts.wait?.line ?? null,
     retirement:
@@ -238,6 +241,7 @@ export const sessionWorkspaceLines = (facts: {
 
 /** The lines in reading order, for a terminal that prints them one under another. */
 export const workspaceLineList = (lines: SessionWorkspaceLines): ReadonlyArray<string> => [
+  ...lines.resources,
   ...(lines.shared === null ? [] : [lines.shared]),
   ...(lines.waiting === null ? [] : [lines.waiting]),
   ...(lines.retirement === null ? [] : [lines.retirement]),

@@ -55,6 +55,7 @@ import { ResourceImageResolver } from "../src/resources/image-resolver.ts";
 import { Resources, ResourcesChannelLive, ResourcesLive } from "../src/resources/resources.ts";
 import { ResourceRuntime, resourceRuntimeLayer } from "../src/resources/runtime.ts";
 import { WorktreeServiceRestarts } from "../src/resources/service-restarts.ts";
+import { ResourceStatusReads, ResourceStatusReadsLive } from "../src/resources/status-reads.ts";
 import {
   handleSessionRequest,
   SessionChannelRegistry,
@@ -243,6 +244,7 @@ const restarts = Layer.succeed(WorktreeServiceRestarts, {
     }),
 });
 const resources = ResourcesLive.pipe(
+  Layer.provideMerge(ResourceStatusReadsLive),
   Layer.provide(Layer.mock(ResourceLoadsRepo, { latest: () => Effect.sync(() => loadRows) })),
   Layer.provideMerge(Layer.merge(runtimeLayer, restarts)),
 );
@@ -426,6 +428,19 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
       Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabases(WORKTREE)),
     );
     expect(owns.get(db.id)?.kind).toBe("copied");
+  });
+
+  it("reads worktree status through the same formatter and returns only env names", async () => {
+    const statuses = await runtime.runPromise(
+      Effect.flatMap(ResourceStatusReads, (statusReads) =>
+        statusReads.forWorktree(PROJECT, WORKTREE),
+      ),
+    );
+    const dbStatus = statuses.find((each) => each.statusLine.startsWith("@db ·"));
+    expect(dbStatus?.statusLine).toContain("@db · running · own database");
+    expect(dbStatus?.envNames).toContain("DATABASE_URL");
+    expect(dbStatus?.envNames).toContain("MEND_RESOURCE_DB_URL");
+    expect(JSON.stringify(statuses)).not.toContain("postgres://");
   });
 
   it("keeps a person's stop against a launch, which starts with the env and says so", async () => {

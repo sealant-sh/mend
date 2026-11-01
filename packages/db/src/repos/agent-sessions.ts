@@ -782,7 +782,10 @@ type SessionBookkeepingColumns =
 // session list and view (`sessionViewColumns`), not columns.
 const sessionSeamIntact: ExactKeys<
   Omit<SessionRow, SessionBookkeepingColumns>,
-  Omit<Session, "livePeople" | "workspaceRetirement" | "workspaceLauncherUserId">
+  Omit<
+    Session,
+    "livePeople" | "workspaceRetirement" | "workspaceLauncherUserId" | "resourceStatusLines"
+  >
 > = true;
 void sessionSeamIntact;
 

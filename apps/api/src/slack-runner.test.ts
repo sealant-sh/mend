@@ -71,6 +71,7 @@ import {
 import { SlackReports } from "@mend/jobs";
 import { Landing, LandingNotStartedError, type LandInput } from "@mend/landing";
 import { SealantClients, SealantPrincipal } from "@mend/sealant";
+import { ResourceStatusReadsNone } from "@mend/sessions";
 import {
   ProtocolHostNotLiveError,
   SessionEngine,
@@ -582,6 +583,7 @@ const world = (options: WorldOptions = {}) => {
       }),
   };
   const dependencies = Layer.mergeAll(
+    ResourceStatusReadsNone,
     Layer.succeed(SlackApi, {
       ...slack.service,
       filesDownload: (token, url, limit) =>

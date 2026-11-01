@@ -41,6 +41,7 @@ import {
 } from "@mend/domain";
 import { SlackReportsLive } from "@mend/jobs";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
+import { ResourceStatusReadsNone } from "@mend/sessions";
 import { WorktreeReads } from "@mend/sessions";
 import { makeFakeSlack, type FakeSlackCall } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
@@ -164,7 +165,12 @@ const outside = Layer.mergeAll(
 /** The worker's half as main.ts composes it: the bus, the reporter, Slack's preview read. */
 const worker = SlackReportEventsLive.pipe(
   Layer.provide(EventBusLive),
-  Layer.provide(SlackReportsLive.pipe(Layer.provide(SlackPreviewReadsLive))),
+  Layer.provide(
+    SlackReportsLive.pipe(
+      Layer.provide(ResourceStatusReadsNone),
+      Layer.provide(SlackPreviewReadsLive),
+    ),
+  ),
 );
 const runtime = ManagedRuntime.make(repos.pipe(Layer.provideMerge(outside)));
 const run = <A, E>(
@@ -478,7 +484,12 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
       Layer.buildWithScope(
         SlackReportEventsLive.pipe(
           Layer.provide(gappedBus),
-          Layer.provide(SlackReportsLive.pipe(Layer.provide(SlackPreviewReadsLive))),
+          Layer.provide(
+            SlackReportsLive.pipe(
+              Layer.provide(ResourceStatusReadsNone),
+              Layer.provide(SlackPreviewReadsLive),
+            ),
+          ),
         ),
         gapped,
       ),
