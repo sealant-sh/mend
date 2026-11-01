@@ -419,7 +419,8 @@ export const resourceRuntimeLayer = (
           worktreeId: input.worktreeId,
           projectEnvNames: names,
         });
-        const remembered = (yield* repo.listForProject(input.projectId)).map((row) => row.spec);
+        const instances = yield* repo.listForProject(input.projectId);
+        const remembered = instances.map((row) => row.spec);
         const file =
           input.service === undefined
             ? []
@@ -444,6 +445,9 @@ export const resourceRuntimeLayer = (
               : [{ kind: "env-left", definition: definition.binding.definition, names: kept }];
           },
         );
+        // A project that never started a resource has nothing to reach: no Sealant call at launch.
+        if (instances.length === 0)
+          return { env, recipeEnv: mapped.env, views: leftViews, notReady: [] } satisfies Prepared;
 
         // What each bound instance answered, as it answers: a launch past the bound says the rest
         // are still starting, and their starts go on in Mend's lifetime.

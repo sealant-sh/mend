@@ -101,7 +101,7 @@ import {
   WorkspaceCaller,
   WorktreeReads,
   WORKTREE_STAMP,
-  MEND_TOML,
+  MEND_TOML_PATHS,
   WorktreeServiceRestarts,
 } from "@mend/sessions";
 import { SlackApi } from "@mend/slack/client";
@@ -824,7 +824,7 @@ export const createTenancyApi = async (
         "reads",
         {
           readFile: (_project, _worktree, relative) =>
-            relative === MEND_TOML
+            MEND_TOML_PATHS.some((path) => path === relative)
               ? Effect.succeed({ value: null, stamp: WORKTREE_STAMP })
               : Effect.die("reads.readFile is not implemented"),
           ...options.implement?.reads,

@@ -33,7 +33,9 @@ export const resourceSwitchMessage = (input: {
   const sentences = [
     `@${input.name} switched from ${input.from} to ${input.to}.`,
     ...(input.changed.length === 0
-      ? ["No MEND_* value changed: the same names now reach this worktree's own container."]
+      ? [
+          `No MEND_* value changed: the same names now reach ${input.to === "worktree" ? "this worktree's own container" : "the project's container"}.`,
+        ]
       : [
           `Changed: ${input.changed.join(", ")}.`,
           "Your already-running processes, including your own shell, still have the old values.",

@@ -21,8 +21,8 @@ import {
 import { Option, Schema } from "effect";
 
 /**
- * `[resource.*]` tables in `.mend/mend.toml` (ADR 0019, decision S8): definitions a person adds to the
- * remembered instances at explicit start time; launch never starts one. A bad table refuses that
+ * `[resource.*]` tables in `.mend/mend.toml` (ADR 0019, decision S8): definitions an explicit start
+ * reads; launch never starts one. A bad table refuses that
  * resource alone, naming its full key; the file's other resources still read. A key this Mend does
  * not read is listed as ignored, as recipes' are. Fields are checked with the domain's schemas, so
  * a table passes the resource definition rules.

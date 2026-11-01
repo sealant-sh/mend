@@ -369,7 +369,7 @@ describe("a recipe's launch", () => {
           const missing = (yield* helperPrints("absent")).split("\n");
           expect(missing.slice(0, 2)).toEqual([
             'mend: No Service recipe named "absent" exists in this session.',
-            "Resources in .mend/mend.toml (start explicitly with mend resource start <name> --project or --worktree):",
+            "Resources in mend.toml (start explicitly with mend resource start <name> --project or --worktree):",
           ]);
           expect(missing.filter((line) => line.includes("resource.bad.ports.http"))).toEqual([
             expect.stringMatching(/^ {2}resource\.bad\.ports\.http · /),
@@ -378,7 +378,7 @@ describe("a recipe's launch", () => {
           const refused = (yield* helperPrints("api")).split("\n");
           expect(refused.slice(0, 2)).toEqual([
             "mend: mend.toml refuses api: api · cwd · is absolute; name a path inside the repository",
-            "Resources in .mend/mend.toml (start explicitly with mend resource start <name> --project or --worktree):",
+            "Resources in mend.toml (start explicitly with mend resource start <name> --project or --worktree):",
           ]);
         }),
       { sealantLayer: sealantLaunchLayer(created) },

@@ -1011,7 +1011,10 @@ const ADMITTED: Readonly<
   "resources.beginLoad": { status: 500, calls: ["resourceLoads.begin"] },
   "resources.readLoad": { status: 500, calls: ["resourceLoads.read"] },
   "resources.feedLoad": { status: 500, calls: ["resourceLoads.feed"] },
-  "resources.start": { status: 500, calls: ["reads.readFile", "resources.listForProject"] },
+  "resources.start": {
+    status: 500,
+    calls: ["reads.readFile", "reads.readFile", "resources.listForProject"],
+  },
   "resources.stop": { status: 500, calls: ["resources.byName"] },
   "resources.reset": { status: 500, calls: ["resources.byName"] },
   "resources.env": { status: 500, calls: ["resourceRuntime.envOf", "resources.listForProject"] },
@@ -1021,6 +1024,7 @@ const ADMITTED: Readonly<
     status: 500,
     calls: [
       "resources.listWithChoices",
+      "reads.readFile",
       "reads.readFile",
       "resources.ownDatabases",
       "resources.bindingRows",

@@ -5,6 +5,7 @@ import {
   SessionsRepo,
   type StoredResourceInstance,
   type StoredResourceIdentity,
+  UsersRepo,
   WorktreesRepo,
   ResourceDefinitionRefusedError,
 } from "@mend/db";
@@ -241,6 +242,7 @@ export const ResourcesLive: Layer.Layer<
   | ResourceRuntime
   | WorktreeServiceRestarts
   | ResourceStatusReads
+  | UsersRepo
 > = Layer.effect(
   Resources,
   Effect.gen(function* () {
@@ -254,6 +256,10 @@ export const ResourcesLive: Layer.Layer<
     const runtime = yield* ResourceRuntime;
     const restarts = yield* WorktreeServiceRestarts;
     const status = yield* ResourceStatusReads;
+    const users = yield* UsersRepo;
+    /** A person's name as the status line says who stopped an instance; the id when unknown. */
+    const nameOf = (id: string) =>
+      users.byIds([id]).pipe(Effect.map((found) => found[0]?.name ?? id));
     const checkedWorktree = (project: ResourceProject, worktreeId: WorktreeId) =>
       worktrees.byId(worktreeId).pipe(
         Effect.mapError(() => refused("worktree not found")),
@@ -594,8 +600,6 @@ export const ResourcesLive: Layer.Layer<
           worktrees: using,
         } satisfies ResourceStarted;
       }
-      if (held !== null && differs && !postgresOwn)
-        yield* decide(project, viewer, { kind: "add", replaces: { addedBy: held.startedBy } });
       const before = (yield* runtime.envOf(project.id, options.worktreeId)).env;
       const identity = yield* repo.ensureIdentity(project.id, name);
       const from = yield* effective(project.id, options.worktreeId, identity.id);
@@ -691,7 +695,7 @@ export const ResourcesLive: Layer.Layer<
       return controlled(
         definition,
         choice,
-        yield* runtime.stop(definition, definition.worktreeId, viewer.userId),
+        yield* runtime.stop(definition, definition.worktreeId, yield* nameOf(viewer.userId)),
         clock,
         postgresOwn ? "stops the project server, which every worktree on it uses" : null,
       );

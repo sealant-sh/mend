@@ -575,7 +575,7 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
       ),
     );
     expect((await prepare([{ kind: "resource", name: "db", env: {} }])).refusal).toBe(
-      "@db stopped by u-tom",
+      "@db stopped by Tom",
     );
   });
 

@@ -50,7 +50,7 @@ describe("mend service run <name> with no recipe to run", () => {
       }),
     ).toBe(
       'no recipe named "web" — declared: api\n' +
-        "Resources in .mend/mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):\n" +
+        "Resources in .mend/mend.toml (start explicitly with mend resource start <name> --project or --worktree):\n" +
         "  resource.web.ports.http · must be a port in 1..65535\n" +
         "  resource.web.healthcheck · is ignored: this Mend does not read it",
     );

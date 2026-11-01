@@ -39,6 +39,17 @@ describe("resource switches", () => {
     expect(resourceSwitchMessage({ ...input, name: "cache", changed: [] })).toBe(
       "@cache switched from project to worktree. No MEND_* value changed: the same names now reach this worktree's own container.",
     );
+    expect(
+      resourceSwitchMessage({
+        ...input,
+        name: "cache",
+        from: "worktree",
+        to: "project",
+        changed: [],
+      }),
+    ).toBe(
+      "@cache switched from worktree to project. No MEND_* value changed: the same names now reach the project's container.",
+    );
   });
   it("counts added and removed names in env order", () => {
     expect(
