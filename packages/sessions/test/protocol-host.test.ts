@@ -466,14 +466,20 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
 
 /** A Claude Code on the far side of a pipe: records what Mend sends, says what the test pushes. */
 const makeClaudePipe = () => {
-  const pending: Array<{ sequence: bigint; data: Uint8Array }> = [];
+  const pending: Array<{
+    sequence: bigint;
+    data: Uint8Array;
+    consumed: Deferred.Deferred<void>;
+  }> = [];
   let notify: (() => void) | null = null;
   let sequence = 0n;
   const sent: Array<string> = [];
   let refuseNextTurn = false;
   const pushRaw = (text: string) => {
-    pending.push({ sequence: sequence++, data: new TextEncoder().encode(text) });
+    const consumed = Effect.runSync(Deferred.make<void>());
+    pending.push({ sequence: sequence++, data: new TextEncoder().encode(text), consumed });
     notify?.();
+    return Deferred.await(consumed);
   };
   const push = (value: unknown) => pushRaw(`${JSON.stringify(value)}\n`);
   const pipe: InteractiveSession = {
@@ -498,6 +504,7 @@ const makeClaudePipe = () => {
           const next = pending.shift();
           if (next !== undefined) {
             yield next;
+            Effect.runSync(Deferred.succeed(next.consumed, undefined));
             continue;
           }
           await new Promise<void>((resolve) => {
@@ -519,7 +526,6 @@ const makeClaudePipe = () => {
     pipe,
     push,
     pushRaw,
-    pendingOutput: () => pending.length,
     sent,
     refuseNextTurn: () => {
       refuseNextTurn = true;
@@ -2572,21 +2578,23 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     const peer = makeClaudePipe();
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
-      yield* attachClaude(host, peer);
-      // The box persisted 553 preceding-answer updates at about 73 ms each. A ready
-      // output burst must not charge the following answer once per stale snapshot.
-      let writes = 0;
-      world.admission.beforeUpsert = Effect.sync(() => {
-        writes += 1;
-      }).pipe(Effect.andThen(Effect.sleep("73 millis")));
+      const completed = yield* Deferred.make<void>();
+      yield* attachClaude(host, peer, (ended) =>
+        ended.status === "completed"
+          ? Effect.asVoid(Deferred.succeed(completed, undefined))
+          : Effect.void,
+      );
+      // A blocked first write must not block decoding the remaining 550 snapshots.
+      // Await the pipe's consumption acknowledgement, independent of wall/virtual time.
+      const release = yield* Deferred.make<void>();
+      world.admission.beforeUpsert = Deferred.await(release);
       yield* sendSteer(host, { turnId: turn.id, sender: "user-1", input: "Only PINEAPPLE" });
       const push = (event: unknown) => peer.push({ type: "stream_event", event });
       push({ type: "message_start" });
       push({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
       for (let i = 0; i < 550; i += 1)
         push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x" } });
-      push({ type: "content_block_stop", index: 0 });
-      yield* waitUntil(() => writes > 0);
+      yield* push({ type: "content_block_stop", index: 0 });
       peer.push(aborted);
       peer.push(continued);
       push({ type: "message_start" });
@@ -2598,11 +2606,9 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       });
       push({ type: "content_block_stop", index: 0 });
       peer.push(finished);
-      for (let tick = 0; tick < 10; tick += 1) {
-        // Let the SDK-shaped async iterable deliver ready chunks between clock ticks.
-        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
-        yield* TestClock.adjust("100 millis");
-      }
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.await(completed);
+      expect(world.itemWrites.length).toBeLessThan(14);
       expect([...world.items.values()].some((item) => item.text === "PINEAPPLE")).toBe(true);
       expect(world.turns.get(turn.id)?.status).toBe("completed");
       expect([...world.items.values()].some((item) => item.text === "x".repeat(550))).toBe(true);
@@ -2618,14 +2624,20 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     const expected = parts.join("");
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
-      yield* attachClaude(host, peer);
-      world.admission.beforeUpsert = Effect.sleep("73 millis");
+      const completed = yield* Deferred.make<void>();
+      yield* attachClaude(host, peer, (ended) =>
+        ended.status === "completed"
+          ? Effect.asVoid(Deferred.succeed(completed, undefined))
+          : Effect.void,
+      );
+      const release = yield* Deferred.make<void>();
+      world.admission.beforeUpsert = Deferred.await(release);
       const push = (event: unknown) => peer.push({ type: "stream_event", event });
       push({ type: "message_start" });
       push({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
       for (const text of parts)
         push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } });
-      push({ type: "content_block_stop", index: 0 });
+      yield* push({ type: "content_block_stop", index: 0 });
       let completedAfterFinalSnapshot = false;
       world.admission.beforeComplete = Effect.sync(() => {
         const final = [...world.items.values()].find((item) => item.kind === "assistant-message");
@@ -2639,10 +2651,8 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
         completedAfterFinalSnapshot = true;
       });
       peer.push(finished);
-      for (let tick = 0; tick < 10; tick += 1) {
-        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
-        yield* TestClock.adjust("100 millis");
-      }
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.await(completed);
       expect(completedAfterFinalSnapshot).toBe(true);
       expect(world.turns.get(turn.id)?.status).toBe("completed");
       yield* host.detach(processId);
@@ -2657,17 +2667,13 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       const host = yield* ProtocolHost;
       yield* attachClaude(host, peer);
       const release = yield* Deferred.make<void>();
-      let writes = 0;
-      world.admission.beforeUpsert = Effect.sync(() => {
-        writes += 1;
-      }).pipe(Effect.andThen(Deferred.await(release)));
+      world.admission.beforeUpsert = Deferred.await(release);
       const push = (event: unknown) => peer.push({ type: "stream_event", event });
       push({ type: "message_start" });
       push({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
       for (let i = 0; i < 550; i += 1)
         push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x" } });
-      push({ type: "content_block_stop", index: 0 });
-      yield* waitUntil(() => writes > 0 && peer.pendingOutput() === 0);
+      yield* push({ type: "content_block_stop", index: 0 });
       const detaching = yield* host.detachForHandOver(processId).pipe(Effect.forkChild);
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(detaching);
@@ -2683,20 +2689,22 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     return Effect.gen(function* () {
       const host = yield* ProtocolHost;
       yield* attachClaude(host, peer);
-      world.admission.beforeUpsert = Effect.sleep("73 millis");
+      const release = yield* Deferred.make<void>();
+      world.admission.beforeUpsert = Deferred.await(release);
       const push = (event: unknown) => peer.push({ type: "stream_event", event });
       push({ type: "message_start" });
       push({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
       for (let i = 0; i < 550; i += 1)
         push({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x" } });
-      push({ type: "content_block_stop", index: 0 });
+      yield* push({ type: "content_block_stop", index: 0 });
+      const opened = yield* Deferred.make<void>();
       let openedAfterFinalSnapshot = false;
       world.admission.beforeRequest = Effect.sync(() => {
         expect(
           [...world.items.values()].map((item) => ({ text: item.text, status: item.status })),
         ).toEqual([{ text: "x".repeat(550), status: "completed" }]);
         openedAfterFinalSnapshot = true;
-      });
+      }).pipe(Effect.andThen(Deferred.succeed(opened, undefined)));
       peer.push({
         type: "control_request",
         request_id: "permission-after-text",
@@ -2706,10 +2714,8 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           input: { file_path: "/workspace/repo/a.ts" },
         },
       });
-      for (let tick = 0; tick < 10; tick += 1) {
-        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
-        yield* TestClock.adjust("100 millis");
-      }
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.await(opened);
       expect(openedAfterFinalSnapshot).toBe(true);
       yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
