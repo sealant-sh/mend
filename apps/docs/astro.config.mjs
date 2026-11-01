@@ -68,6 +68,7 @@ export default defineConfig({
             { label: "Secret files", slug: "guides/secret-files" },
             { label: "Git access", slug: "guides/git-access" },
             { label: "Development services", slug: "guides/services" },
+            { label: "Resources", slug: "guides/resources" },
             { label: "Skills", slug: "guides/skills" },
             { label: "Your pi setup", slug: "guides/pi" },
             { label: "Agent memory", slug: "guides/agent-memory" },

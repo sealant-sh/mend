@@ -150,7 +150,7 @@ default shell profile.
 ## Services
 
 A Service is an explicitly declared development process associated with a session. Add recipes to
-`mend.toml`, add them in the **Services** section of Setup, or start a command with
+`.mend/mend.toml`, add them in the **Services** section of Setup, or start a command with
 `mend service run`. Mend records each attempt. `mend service run` tunnels the declared port to your
 machine's loopback over an authenticated WebSocket when the CLI points at a non-loopback server URL,
 unless you pass `--no-connect`, and never for UDP. `mend attach`, `mend codex`, and the dashboard

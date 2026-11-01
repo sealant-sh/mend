@@ -124,7 +124,7 @@ Mend resolves a project's launch inputs before it creates a workspace:
 - connect your Claude, Codex, and GitHub accounts;
 - sync dotfiles from the machine where they live;
 - add reference repositories and organization folders;
-- declare development Services in `mend.toml`.
+- declare development Services in `.mend/mend.toml`.
 
 Running workspaces keep the setup they started with. New launches and fresh resumes use the latest
 project settings.

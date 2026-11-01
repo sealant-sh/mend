@@ -117,7 +117,7 @@ without a setuid `sudo`, `useradd` or ACL support takes one person.
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | An agent Mend starts (new, join, resume, follow-up, mode switch) | the person whose turn it runs: the session owner, or the steerer under shared control |
 | A shell                                                          | the person who opened it                                                              |
-| A Service                                                        | the person who started it, across restarts; a `mend.toml` Service, the launcher       |
+| A Service                                                        | the person who started it, across restarts; a `.mend/mend.toml` Service, the launcher |
 | Dependency install and setup commands                            | the launcher                                                                          |
 | Writing a pasted image into the workspace                        | the person who pasted it                                                              |
 | VS Code Remote-SSH, `ssh`, SFTP and `scp`                        | the workspace's launcher, as their own user; nobody else can open Remote-SSH into it  |
@@ -224,9 +224,9 @@ Mend looks for workspaces to retire only while `MEND_HARNESS_LAYOUT` is `person`
 **Otherwise the change's owner chooses.** The owner sees **Replace this workspace now**, when Mend
 last checked and what it checked, and one line each for what would stop: terminal sessions (they end
 resumable), shells, Services started by hand, processes Mend did not start, running containers, and
-anything it could not check. Mend starts the launching session's `mend.toml` Services again. The
-replacement checks once more and ends nothing that was not on the list the owner saw; if more would
-stop now, it is refused and nothing is stopped:
+anything it could not check. Mend starts the launching session's `.mend/mend.toml` Services again.
+The replacement checks once more and ends nothing that was not on the list the owner saw; if more
+would stop now, it is refused and nothing is stopped:
 
 ```text
 What would stop has changed since you looked. Nothing was stopped; look at the list again and replace it from there.
