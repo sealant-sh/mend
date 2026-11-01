@@ -4974,6 +4974,32 @@ const slackProofTurnsMigration = Effect.gen(function* () {
   )`;
 });
 
+const resourceOwnDatabasesKeyRepairMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  // Retired 0180 from closed #1336 changed this key in preview databases.
+  yield* sql`DO $$
+    DECLARE primary_key text;
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = 'resource_own_databases'::regclass
+          AND attname = 'purpose' AND NOT attisdropped
+      ) THEN
+        DELETE FROM resource_own_databases WHERE purpose <> 'own';
+        FOR primary_key IN
+          SELECT conname FROM pg_constraint
+          WHERE conrelid = 'resource_own_databases'::regclass AND contype = 'p'
+        LOOP
+          EXECUTE format('ALTER TABLE resource_own_databases DROP CONSTRAINT %I', primary_key);
+        END LOOP;
+        ALTER TABLE resource_own_databases
+          ADD CONSTRAINT resource_own_databases_pkey PRIMARY KEY (worktree_id, definition_id);
+        ALTER TABLE resource_own_databases DROP COLUMN purpose;
+      END IF;
+    END
+  $$`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5144,4 +5170,5 @@ export const migrations = {
   "0179_slack_proof_deliveries": slackProofDeliveriesMigration,
   "0181_proof_artifacts_without_side": proofArtifactsWithoutSideMigration,
   "0182_slack_proof_turns": slackProofTurnsMigration,
+  "0183_resource_own_databases_key_repair": resourceOwnDatabasesKeyRepairMigration,
 };
