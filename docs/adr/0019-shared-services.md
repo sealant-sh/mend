@@ -212,10 +212,15 @@ Before changing the database schema, start your own worktree database: mend reso
 
 The schema line uses the declared Postgres resource's name in place of `db`.
 
-When a worktree switches levels, Mend tells the agent in the session which variables changed, using
-their names and no values. List only variables whose values changed. On a Postgres switch within one
-server, host, port, user and password can stay the same. For a change only to URL and database, the
-exact message is:
+When a worktree switches levels, Mend tells the agents in that worktree which variables changed,
+using their names and no values. The command that made the switch prints the message, so an agent
+that ran `mend resource start` or `mend resource use` itself reads it in that command's output, in
+either session mode. Mend also sends it to every other live conversation-mode agent in the worktree.
+Mend never types into a terminal-mode agent: the switch answer names that session instead
+(`the agent in <session> runs in a terminal, so Mend did not type this into it · pass it on or restart that session`),
+and that agent relies on the workspace note's standing instruction that values are fixed at process
+start. List only variables whose values changed. On a Postgres switch within one server, host, port,
+user and password can stay the same. For a change only to URL and database, the exact message is:
 
 ```text
 @db switched from project to worktree. Changed: MEND_DB_URL, MEND_DB_DATABASE. Your already-running processes, including your own shell, still have the old values. Run mend resource env to print the current values, or restart the process to receive them. Printing values does not update your shell. Mend restarted this worktree's Services with the current values.
@@ -441,8 +446,10 @@ needs no box check.
   Shared Postgres is the default, so the workspace note tells agents to start their own before
   changing the schema.
 - Resource env is an offer. Apps that expect `DATABASE_URL` or another conventional name opt in.
-- A switch does not rewrite any running process's env, including the agent's shell. The agent
-  receives a message with the changed names and instructions to print current values or restart.
+- A switch does not rewrite any running process's env, including the agent's shell. The agent that
+  made the switch reads the changed names in its command's output, other conversation-mode agents
+  receive them as a message, and every agent's workspace note says that values are fixed at process
+  start and how to print current ones.
 - Shared data can be changed or dropped by any worktree that uses it. Data writes happen outside the
   worktree and do not appear in Review. Retained volumes and saved dumps are not a promise of
   recovery from every application write or machine failure.
