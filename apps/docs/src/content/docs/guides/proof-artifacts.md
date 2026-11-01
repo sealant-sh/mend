@@ -6,8 +6,8 @@ sidebar:
 ---
 
 :::note[Partly built] Captures, Slack file uploads and inline display in T3 Code are built. The
-setup session, PR body embeds, the review page and the phone are not yet built. The first version
-covers web apps. :::
+setup session and PR body embeds are not yet built. Review and the phone show captures. The first
+version covers web apps. :::
 
 A proof artifact is a selected screenshot or short video of your web app running on a session's
 screen, attached to its change. You can inspect the captures without starting the app yourself. Its
@@ -25,9 +25,10 @@ screenshots and short video:
 | Video      | Complete a task and reload the board · checkpoint `<checkpoint>` · observed `<time>` |
 
 Open a screenshot to inspect the app with the change. Play the short video to see the flow, under
-about 60 seconds. Each item links to the session and the moment or span in its screen log. Its
-details name the recipe, source and known differences from the verification instructions. The
-agent's caption describes what is visible; you decide what it establishes.
+about 60 seconds. Each item links to the session and shows the moment or span in its screen log as
+text. Mend has no screen-log viewer yet. Its details name the recipe, source and known differences
+from the verification instructions. The agent's caption describes what is visible; you decide what
+it establishes.
 
 The agent chooses relevant captures using your
 [feature map and verification instructions](/guides/setup-session/). You can ask for more in the
@@ -87,8 +88,10 @@ pictures and play the video there, with their source and observation captions. Y
 session for another capture using its normal steering permissions.
 
 T3 Code shows the same images and video inline in the session's thread through Mend's T3 Code
-gateway. You do not have to follow a link to Mend to see them. The planned phone review will show
-the same screenshots, labels and video as the planned review page.
+gateway. You do not have to follow a link to Mend to see them. The web review and phone review show
+the same screenshots, labels and playable video in **Proof artifacts**. Labels stay visible before
+you open a capture. New captures and completed videos appear without reloading. Phone video playback
+requires an app build that includes the native video module.
 
 The planned landing delivery uploads the selected media as GitHub-native attachments to the PR's
 repository. The PR body embeds the screenshots and a video player in Mend's section. It names the
@@ -118,6 +121,5 @@ it later.
 
 1. The setup session, including auth preparation.
 2. Embedded media in the PR body.
-3. The review page and phone presentation.
 
 Withdrawing a capture is deferred to later work.
