@@ -16,6 +16,7 @@ import {
   FrameDigest,
   ProofArtifact,
   type ProofSource,
+  SCREEN_LIMITS,
   proofBlobKey,
   proofLabel,
 } from "@mend/domain/workbench";
@@ -65,6 +66,7 @@ const resultOf = (
   artifact: ProofArtifact,
   png: Uint8Array | null,
   tool: "video" | "other" = "other",
+  screenWait: "idle" | "settled" = "idle",
 ) =>
   new McpSchema.CallToolResult({
     ...(tool === "video" && artifact.capture._tag === "NotCaptured" ? { isError: true } : {}),
@@ -81,11 +83,12 @@ const resultOf = (
           artifactId: artifact.id,
           label: proofLabel(artifact, (at) => `${at.toISOString().slice(11, 16)} UTC`),
           message:
-            artifact.capture._tag === "Recording"
+            (artifact.capture._tag === "Recording"
               ? "recording · stop with proof_video_stop within 60 s"
               : artifact.capture._tag === "NotCaptured"
                 ? "Recorded what could not be captured and why."
-                : "Recorded the screen as observed, with the reported source and launch details.",
+                : "Recorded the screen as observed, with the reported source and launch details.") +
+            (screenWait === "settled" ? " Waited for earlier screen_act calls to finish." : ""),
         }),
       },
     ],
@@ -125,7 +128,10 @@ export const ProofCapturesLive: Layer.Layer<
         readonly lock: Semaphore.Semaphore;
       }
     >();
-    const stoppedCalls = new Map<string, ProofArtifactId>();
+    const stoppedCalls = new Map<
+      string,
+      { readonly artifactId: ProofArtifactId; readonly screenWait: "idle" | "settled" }
+    >();
     const lastSeq = (screenId: Parameters<typeof screenLog.log>[0]) =>
       screenLog.log(screenId).pipe(Effect.map((entries) => entries.at(-1)?.seq ?? 0));
     const unavailable = (artifact: ProofArtifact, reason: string) =>
@@ -266,6 +272,15 @@ export const ProofCapturesLive: Layer.Layer<
         const change = yield* changes.bySession(caller.sessionId);
         if (change === null)
           return refused("no_change", "This session has no change to attach proof to.");
+        const screenWait =
+          "video" in params || "reason" in params
+            ? "idle"
+            : yield* screens.waitForActs(state.screen.id);
+        if (screenWait === "timed_out")
+          return refused(
+            "screen_busy",
+            `Waited ${SCREEN_LIMITS.batchMs / 1000} s for earlier screen_act calls; they have not finished. No screenshot was taken. Retry once they settle.`,
+          );
         const source = yield* sourceOf(caller);
         const turns = yield* conversation.listTurns(caller.sessionId);
         const processId = caller.agentProcess?.id;
@@ -393,7 +408,7 @@ export const ProofCapturesLive: Layer.Layer<
                   ),
           ),
         );
-        return resultOf(saved, png, "video" in params ? "video" : "other");
+        return resultOf(saved, png, "video" in params ? "video" : "other", screenWait);
       }).pipe(
         Effect.catch((error) =>
           Effect.logWarning("proof capture unavailable").pipe(
@@ -416,21 +431,33 @@ export const ProofCapturesLive: Layer.Layer<
         const key = JSON.stringify([caller.sessionId, caller.callKey]);
         const previous = stoppedCalls.get(key);
         if (previous !== undefined) {
-          const artifact = yield* artifacts.byId(previous);
-          if (artifact !== null) return resultOf(artifact, null, "video");
+          const artifact = yield* artifacts.byId(previous.artifactId);
+          if (artifact !== null) return resultOf(artifact, null, "video", previous.screenWait);
         }
         const recording = recordings.get(caller.sessionId);
         if (recording === undefined)
           return refused("not_recording", "This session has no proof video recording to stop.");
         const current = yield* artifacts.byId(recording.artifact.id);
+        const screenWait =
+          current?.capture._tag === "Recording"
+            ? yield* screens.waitForActs(current.capture.screenId)
+            : "idle";
+        if (screenWait === "timed_out")
+          return refused(
+            "screen_busy",
+            `Waited ${SCREEN_LIMITS.batchMs / 1000} s for earlier screen_act calls; they have not finished. The recorder was not stopped and its time limit still applies. Retry once they settle.`,
+          );
         const settled =
           current?.capture._tag === "Recording"
             ? yield* finish(recording, recorder.stop(recording.id))
             : current;
         if (settled === null)
           return refused("capture_unavailable", "This proof artifact is no longer available.");
-        stoppedCalls.set(key, settled.id);
-        return resultOf(settled, null, "video");
+        stoppedCalls.set(key, {
+          artifactId: settled.id,
+          screenWait,
+        });
+        return resultOf(settled, null, "video", screenWait);
       });
     const videoCall = (caller: Caller, effect: Effect.Effect<McpSchema.CallToolResult, unknown>) =>
       serially(
