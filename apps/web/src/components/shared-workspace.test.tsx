@@ -65,7 +65,7 @@ const evidence = [
   "Checked at 12:05 UTC: Mend's records, the processes in the workspace and its running containers",
   "shell · bash",
   "process Mend did not start",
-  "Mend starts the launching session's mend.toml Services again.",
+  "Mend starts the launching session's .mend/mend.toml Services again.",
 ];
 
 const view = {

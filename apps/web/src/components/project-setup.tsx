@@ -891,7 +891,7 @@ export function LinksSection({ projectId }: { readonly projectId: string }) {
 
 /**
  * Declared Services (docs/SESSION-SERVICES.md): the project's recipes on this
- * machine — the web-editable twin of mend.toml. Sessions offer the union of
+ * machine — the web-editable twin of .mend/mend.toml. Sessions offer the union of
  * both as one-tap launchers; on a name collision the file wins.
  */
 export function ServicesSection({ projectId }: { readonly projectId: string }) {
@@ -951,7 +951,7 @@ export function ServicesSection({ projectId }: { readonly projectId: string }) {
       <h2 className="font-sans text-sm font-semibold">Services</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         Commands sessions can run and expose — a dev server, a database. Every session offers these
-        one tap away, beside whatever <span className="font-mono text-[11px]">mend.toml</span>{" "}
+        one tap away, beside whatever <span className="font-mono text-[11px]">.mend/mend.toml</span>{" "}
         declares in the repo. Leave the command empty to adopt an already-listening port.
       </p>
       <div className="mt-4 overflow-hidden rounded-xl border border-rule-faint">

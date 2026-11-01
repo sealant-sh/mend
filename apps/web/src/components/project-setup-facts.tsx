@@ -93,7 +93,7 @@ const EXPLANATIONS: Record<FactKey, string> = {
   mounts:
     "Host folders the next sessions see at /workspace/home/<name>. Read-only unless chosen otherwise — the reviewed change stays the worktree.",
   services:
-    "Commands sessions can run and expose — a dev server, a database — declared here or in the repo's mend.toml.",
+    "Commands sessions can run and expose — a dev server, a database — declared here or in the repo's .mend/mend.toml.",
   dotfiles:
     "Whether sessions in this project receive your dotfiles (repo plus synced home files, set up in Settings) at launch, and whether a zsh workspace gets Mend's default shell profile where your dotfiles left no ~/.zshrc or starship config.",
   hot: "How many workspaces this project keeps ready for new sessions. A new session claims one and attaches immediately; each ready workspace is a live container on this machine.",

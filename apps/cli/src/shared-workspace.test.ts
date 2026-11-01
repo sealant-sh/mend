@@ -126,7 +126,7 @@ describe("what a session says about its workspace", () => {
       `${REPLACE_WORKSPACE_ACTION} · mend workspace replace 3f2a0001`,
       "  Checked: Mend's records only · processes Mend did not start and running containers not checked yet",
       "  shell · auth · shell 1",
-      "  Mend starts the launching session's mend.toml Services again.",
+      "  Mend starts the launching session's .mend/mend.toml Services again.",
     ]);
   });
 
@@ -185,7 +185,7 @@ describe("the confirmations", () => {
       `${REPLACE_WORKSPACE_ACTION}?`,
       "  Checked: Mend's records only · processes Mend did not start and running containers not checked yet",
       "  Found nothing that would stop.",
-      "  Mend starts the launching session's mend.toml Services again.",
+      "  Mend starts the launching session's .mend/mend.toml Services again.",
     ]);
     expect(
       replaceConfirmLines(
@@ -202,7 +202,7 @@ describe("the confirmations", () => {
       "  Checked at 12:05 UTC: Mend's records, the processes in the workspace and its running containers",
       "  process Mend did not start",
       "  could not check · running containers",
-      "  Mend starts the launching session's mend.toml Services again.",
+      "  Mend starts the launching session's .mend/mend.toml Services again.",
     ]);
   });
 });

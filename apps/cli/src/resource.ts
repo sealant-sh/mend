@@ -63,7 +63,7 @@ export const renderResources = (
     );
   }
   const file = page.file;
-  const where = `mend.toml in ${printable(worktree ?? "")}`;
+  const where = `.mend/mend.toml in ${printable(worktree ?? "")}`;
   if (file.kind === "unavailable") lines.push(`${where} · ${printable(file.message)}`);
   if (file.kind === "unparsed") {
     lines.push(`${where} · ${printable(file.observed)} · ${printable(file.message)}`);
@@ -139,7 +139,7 @@ export const removalTarget = (
 
 /**
  * What `mend resource add <name> --from-file` adds, from the page read for `--worktree`: the
- * `[resource.<name>]` table in its `mend.toml`, as the page offers it. A table settings already
+ * `[resource.<name>]` table in its `.mend/mend.toml`, as the page offers it. A table settings already
  * hold the same is said, and nothing is posted.
  */
 export const tableAddition = (
@@ -150,7 +150,7 @@ export const tableAddition = (
   | { readonly kind: "ready"; readonly body: unknown; readonly line: string }
   | { readonly kind: "added"; readonly message: string }
   | { readonly kind: "refused"; readonly message: string } => {
-  const where = `mend.toml in ${printable(worktree)}`;
+  const where = `.mend/mend.toml in ${printable(worktree)}`;
   const file = page.file;
   if (file.kind !== "read") {
     return {
@@ -252,7 +252,7 @@ export const resourceCommand = async (
       if (rest.includes("--from-file")) {
         if (name === null) return fail("name the resource: mend resource add db --from-file");
         if (from === null) {
-          return fail("name the worktree whose mend.toml holds it: --worktree <w>");
+          return fail("name the worktree whose .mend/mend.toml holds it: --worktree <w>");
         }
         const table = tableAddition(await read(from.id), name, from.label);
         if (table.kind === "refused") return fail(table.message);
