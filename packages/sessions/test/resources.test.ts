@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   MendDBLive,
+  ResourceArchivesRepo,
   ResourceArchivesRepoLive,
   ServicesRepoLive,
   SessionProcessesRepo,
@@ -51,6 +52,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { SessionEngine, SessionTurnRefusedError } from "../src/engine.ts";
 import { ResourceImageResolver } from "../src/resources/image-resolver.ts";
+import { ResourceRemoval, ResourceRemovalLive } from "../src/resources/removal.ts";
 import { Resources, ResourcesChannelLive, ResourcesLive } from "../src/resources/resources.ts";
 import { ResourceRuntime, resourceRuntimeLayer } from "../src/resources/runtime.ts";
 import {
@@ -104,10 +106,12 @@ const reads = Layer.mock(WorktreeReads, {
  */
 const sealant = {
   calls: [] as Array<string>,
+  commands: [] as Array<ReadonlyArray<string>>,
   specs: new Map<string, ScopeInstanceSpec>(),
   instances: new Map<string, ScopeInstance>(),
   upDelay: Duration.zero,
   execAnswer: "copied",
+  failDumpOf: "",
 };
 const instanceOf = (
   key: string,
@@ -155,11 +159,12 @@ const fakeScope: ResourceScope = {
     }),
   exec: (key, options) =>
     Effect.sync(() => {
+      sealant.commands.push(options.argv);
       sealant.calls.push(`exec ${key} ${options.user} ${options.argv.slice(4).join(" ")}`);
       return {
-        exitCode: 0,
+        exitCode: options.argv[4] === sealant.failDumpOf ? 1 : 0,
         stdout: `${sealant.execAnswer}\n`,
-        stderr: "",
+        stderr: options.argv[4] === sealant.failDumpOf ? "dump check refused" : "",
         truncated: false,
         timedOut: false,
       };
@@ -225,8 +230,9 @@ const resources = ResourcesLive.pipe(
   Layer.provide(Layer.mock(ResourceLoadsRepo, { latest: () => Effect.sync(() => loadRows) })),
   Layer.provideMerge(Layer.merge(runtimeLayer, restarts)),
 );
+const removalLayer = ResourceRemovalLive.pipe(Layer.provideMerge(Layer.merge(repos, scopes)));
 const channel = ResourcesChannelLive.pipe(
-  Layer.provideMerge(Layer.merge(resources, SessionChannelRegistryLive)),
+  Layer.provideMerge(Layer.mergeAll(resources, removalLayer, SessionChannelRegistryLive)),
 );
 
 const runtime = ManagedRuntime.make(channel);
@@ -315,11 +321,13 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
 
   beforeEach(async () => {
     sealant.calls.length = 0;
+    sealant.commands.length = 0;
     sealant.specs.clear();
     sealant.instances.clear();
     restarted.length = 0;
     told.length = 0;
     sealant.upDelay = Duration.zero;
+    sealant.failDumpOf = "";
     file = {
       text: '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\nports = { postgres = 5432 }\nvolumes = { data = "/var/lib/postgresql/data" }\n[resource.cache]\npreset = "redis"\nimage = "redis:8"\nports = { redis = 6379 }\nvolumes = { data = "/data" }',
       stamp: WORKTREE_STAMP,
@@ -596,6 +604,158 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
         Effect.flatMap(ResourcesRepo, (repo) => repo.byName(PROJECT, "cache")),
       ),
     ).not.toBeNull();
+  });
+
+  const OTHER_WORKTREE = WorktreeId.make("wt-archive-b");
+  const archiveDb = () =>
+    runtime.runPromise(
+      Effect.flatMap(Resources, (actions) =>
+        actions.remove(awaitedProject, maria, "db", {
+          level: "project",
+          worktreeId: WORKTREE,
+        }),
+      ),
+    );
+  const seedOwnDatabases = async () => {
+    await start("db", "worktree");
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+        VALUES (${OTHER_WORKTREE}, ${PROJECT}, 'archive-b', 'archive-b', 'mend/archive-b', 'abc')
+        ON CONFLICT (id) DO NOTHING`;
+        yield* (yield* ResourcesRepo).recordOwnDatabase(OTHER_WORKTREE, db.id, "empty");
+      }),
+    );
+    sealant.calls.length = 0;
+    sealant.commands.length = 0;
+  };
+  const ownRows = (worktreeId: WorktreeId) =>
+    runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabaseRemovals(worktreeId)),
+    );
+
+  it("checks both own databases before archiving, removes their worktrees without a server, then archives the project", async () => {
+    await seedOwnDatabases();
+    expect((await archiveDb()).statusLine).toBe("@db · project · archived · volumes kept");
+    for (const worktreeId of [WORKTREE, OTHER_WORKTREE]) {
+      expect(await ownRows(worktreeId)).toEqual([
+        expect.objectContaining({
+          dumpName: expect.stringContaining(`${ownDatabaseName(worktreeId)}-removed-`),
+          dumpAt: expect.any(Date),
+          checkedAt: expect.any(Date),
+          removedAt: null,
+        }),
+      ]);
+    }
+    const archiveIndex = sealant.calls.indexOf(`archive ${db.id}`);
+    expect(
+      sealant.calls.filter((call, i) => i < archiveIndex && call.includes("-removed-")),
+    ).toHaveLength(2);
+    expect(sealant.commands.some((argv) => argv[2]?.includes("drop database"))).toBe(false);
+    sealant.calls.length = 0;
+    const projectRow = await project();
+    for (const worktreeId of [WORKTREE, OTHER_WORKTREE]) {
+      const lines = await runtime.runPromise(
+        Effect.flatMap(ResourceRemoval, (removal) => removal.worktree(projectRow, worktreeId)),
+      );
+      expect(lines).toEqual([expect.stringContaining("saved when @db was archived")]);
+      expect((await ownRows(worktreeId))[0]?.removedAt).toBeInstanceOf(Date);
+    }
+    expect(sealant.calls).toEqual([]);
+    await runtime.runPromise(
+      Effect.flatMap(ResourceRemoval, (removal) => removal.project(projectRow)),
+    );
+    const archived = await runtime.runPromise(
+      Effect.flatMap(ResourceArchivesRepo, (repo) => repo.byProject(PROJECT)),
+    );
+    expect(archived?.complete).toBe(true);
+  });
+
+  it("refuses the archive if one own dump fails, names its worktree, and keeps the instance", async () => {
+    await seedOwnDatabases();
+    sealant.failDumpOf = ownDatabaseName(OTHER_WORKTREE);
+    const result = await archiveDb().then(
+      () => "archived",
+      (error: unknown) => error,
+    );
+    expect(result).toMatchObject({
+      message: expect.stringContaining(
+        "@db · not archived · could not save the own databases of archive-b ·",
+      ),
+    });
+    expect(sealant.calls).not.toContain(`archive ${db.id}`);
+    expect(sealant.instances.get(db.id)?.state.kind).toBe("running");
+    expect((await ownRows(OTHER_WORKTREE))[0]?.checkedAt).toBeNull();
+    expect(
+      await runtime.runPromise(Effect.flatMap(ResourcesRepo, (repo) => repo.byName(PROJECT, "db"))),
+    ).not.toBeNull();
+    sealant.failDumpOf = "";
+    await archiveDb();
+    expect((await ownRows(OTHER_WORKTREE))[0]?.checkedAt).toBeInstanceOf(Date);
+  });
+
+  it.each(["idle", "person"] as const)(
+    "starts a server stopped by %s to save the own databases for archive and says so",
+    async (kind) => {
+      await seedOwnDatabases();
+      const instance = sealant.instances.get(db.id);
+      if (instance === undefined) throw new Error("missing server");
+      const reason = kind === "idle" ? { kind } : { kind, by: "Maria" };
+      sealant.instances.set(db.id, {
+        ...instance,
+        state: { kind: "stopped", at: new Date(), reason },
+        stopReason: reason,
+      });
+      expect((await archiveDb()).statusLine).toBe(
+        "@db · project · archived · volumes kept · archive started its server",
+      );
+      expect(sealant.calls[0]).toBe(`up ${db.id} person`);
+    },
+  );
+
+  it("refuses to replace an archived server without saved dumps, naming every affected worktree", async () => {
+    await seedOwnDatabases();
+    const instance = sealant.instances.get(db.id);
+    if (instance === undefined) throw new Error("missing server");
+    sealant.instances.set(db.id, { ...instance, state: { kind: "archived", at: new Date() } });
+    const result = await archiveDb().then(
+      () => "archived",
+      (error: unknown) => error,
+    );
+    expect(result).toMatchObject({
+      message:
+        "@db · not archived · could not save the own databases of archive-b, wt-res · server is archived · nothing archived or dropped · volumes kept",
+    });
+    expect(sealant.calls).toEqual([]);
+    expect(sealant.commands).toEqual([]);
+  });
+
+  it("archives without starting a server when there are no remaining own databases", async () => {
+    await start();
+    expect((await archiveDb()).statusLine).toBe("@db · project · archived · volumes kept");
+    expect(sealant.calls.filter((call) => call.startsWith("exec "))).toEqual([]);
+    await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.recordOwnDatabase(WORKTREE, db.id, "empty")),
+    );
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* ResourcesRepo;
+        const at = new Date();
+        yield* repo.reserveRemovalDump(WORKTREE, db.id, `${OWN}-removed-20261101T120000Z.dump`, at);
+        yield* repo.checkRemovalDump(WORKTREE, db.id, at);
+        yield* repo.removeOwnDatabase(WORKTREE, db.id, at);
+      }),
+    );
+    // Re-remember the server to exercise the already-removed inventory on a new archive.
+    await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) =>
+        repo.remember(PROJECT, db.id, null, db.spec, DIGEST, "u-tom"),
+      ),
+    );
+    sealant.calls.length = 0;
+    await archiveDb();
+    expect(sealant.calls).toEqual([`archive ${db.id}`]);
   });
 
   it("keeps malformed file source out of the status response", async () => {

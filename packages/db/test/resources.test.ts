@@ -277,6 +277,42 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
     ]);
   });
 
+  it("lists only active own databases for archive and refreshes a checked reservation before saving again", async () => {
+    const project = await newProject();
+    const first = await newWorktree(project);
+    const second = await newWorktree(project);
+    const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
+    await withRepo((repo) =>
+      Effect.gen(function* () {
+        for (const id of [first, second]) yield* repo.recordOwnDatabase(id, db.id, "empty");
+        const at = new Date("2026-11-01T12:00:00Z");
+        yield* repo.reserveRemovalDump(first, db.id, "first.dump", at);
+        yield* repo.checkRemovalDump(first, db.id, at);
+        yield* repo.removeOwnDatabase(first, db.id, at);
+        expect(yield* repo.ownDatabasesForResource(db.id)).toEqual([
+          { worktreeId: second, worktreeName: second },
+        ]);
+        yield* repo.reserveRemovalDump(second, db.id, "second.dump", at);
+        yield* repo.checkRemovalDump(second, db.id, at);
+        const later = new Date("2026-11-01T13:00:00Z");
+        yield* repo.reserveRemovalDump(second, db.id, "new.dump", later, true);
+        expect(yield* repo.ownDatabaseRemovals(second)).toEqual([
+          {
+            worktreeId: second,
+            definitionId: db.id,
+            dumpName: "new.dump",
+            dumpAt: later,
+            checkedAt: null,
+            removedAt: null,
+          },
+        ]);
+        // A refresh never revives or clears the check on an already removed database.
+        yield* repo.reserveRemovalDump(first, db.id, "ignored.dump", later, true);
+        expect((yield* repo.ownDatabaseRemovals(first))[0]?.dumpName).toBe("first.dump");
+      }),
+    );
+  });
+
   it("holds the project removal fence until checking expires, and always while deleting", async () => {
     const project = await newProject();
     await execute(

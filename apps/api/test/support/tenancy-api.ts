@@ -847,7 +847,7 @@ export const createTenancyApi = async (
               observedAt: new Date(),
             }),
           observe: () => Effect.succeed({ kind: "observed", byKey: new Map() }),
-          archive: () => Effect.succeed(null),
+          archive: () => Effect.succeed({ kind: "archived", startedForArchive: false }),
           ensureOwnDatabase: () => Effect.succeed(null),
           relink: () => Effect.succeed([]),
           ...options.implement?.resourceRuntime,

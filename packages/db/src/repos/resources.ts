@@ -137,11 +137,19 @@ export class ResourcesRepo extends Context.Service<
     readonly ownDatabaseRemovals: (
       worktreeId: WorktreeId,
     ) => Effect.Effect<ReadonlyArray<OwnDatabaseRemoval>>;
+    /** Active own databases on one project server, including the worktree names for refusals. */
+    readonly ownDatabasesForResource: (
+      definitionId: ResourceDefinitionId,
+    ) => Effect.Effect<
+      ReadonlyArray<{ readonly worktreeId: WorktreeId; readonly worktreeName: string }>
+    >;
+    /** Reserves a retry path; archive refresh invalidates an earlier check before saving live data. */
     readonly reserveRemovalDump: (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       dumpName: string,
       at: Date,
+      refresh?: boolean,
     ) => Effect.Effect<void>;
     readonly checkRemovalDump: (
       worktreeId: WorktreeId,
@@ -447,16 +455,40 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
             })),
           ),
         );
+    const ownDatabasesForResource = (definitionId: ResourceDefinitionId) =>
+      db
+        .select({ worktreeId: worktrees.id, worktreeName: worktrees.name })
+        .from(resourceOwnDatabases)
+        .innerJoin(worktrees, eq(worktrees.id, resourceOwnDatabases.worktreeId))
+        .where(
+          and(
+            eq(resourceOwnDatabases.definitionId, definitionId),
+            isNull(resourceOwnDatabases.removedAt),
+          ),
+        )
+        .orderBy(asc(worktrees.name), asc(worktrees.id))
+        .pipe(Effect.orDie);
     const reserveRemovalDump = (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       dumpName: string,
       at: Date,
+      refresh = false,
     ) =>
       db
         .update(resourceOwnDatabases)
-        .set({ removalDumpName: dumpName, removalDumpAt: at })
-        .where(and(ownKey(worktreeId, definitionId), isNull(resourceOwnDatabases.removalDumpName)))
+        .set({
+          removalDumpName: dumpName,
+          removalDumpAt: at,
+          ...(refresh ? { removalCheckedAt: null } : {}),
+        })
+        .where(
+          and(
+            ownKey(worktreeId, definitionId),
+            isNull(resourceOwnDatabases.removedAt),
+            ...(refresh ? [] : [isNull(resourceOwnDatabases.removalDumpName)]),
+          ),
+        )
         .pipe(Effect.orDie, Effect.asVoid);
     const checkRemovalDump = (
       worktreeId: WorktreeId,
@@ -578,6 +610,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       ownDatabases,
       recordOwnDatabase,
       ownDatabaseRemovals,
+      ownDatabasesForResource,
       reserveRemovalDump,
       checkRemovalDump,
       removeOwnDatabase,

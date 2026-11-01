@@ -58,5 +58,17 @@ describe("a resource archive", () => {
         { now: at, timeZone: "UTC" },
       ),
     ).toBe("@db · its own database saved as a dump 14:02 and dropped · removal started its server");
+    expect(
+      resourceStatusLine(
+        {
+          kind: "own-removed",
+          definition: { name: "db" },
+          savedAt: at,
+          startedForRemoval: false,
+          savedWhenArchived: true,
+        },
+        { now: at, timeZone: "UTC" },
+      ),
+    ).toBe("@db · its own database saved as a dump 14:02 · saved when @db was archived");
   });
 });

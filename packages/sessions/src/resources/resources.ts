@@ -725,14 +725,16 @@ export const ResourcesLive: Layer.Layer<
       );
       if (definition === null) return yield* refused(`@${name} · no ${options.level} instance`);
       yield* decide(project, viewer, { kind: "remove-definition", addedBy: definition.startedBy });
-      const failure = yield* runtime.archive(definition);
-      if (failure !== null) return yield* refused(`@${name} · not removed · ${failure}`);
+      const archived = yield* runtime.archive(definition);
+      if (archived.kind === "failed")
+        return yield* refused(`@${name} · not archived · ${archived.message}`);
       yield* repo.removeInstance(definition.id, definition.worktreeId);
       const failures = yield* runtime.relink(project.id);
       return {
-        statusLine: [`@${name} · ${options.level} · archived · volumes kept`, ...failures].join(
-          "\n",
-        ),
+        statusLine: [
+          `@${name} · ${options.level} · archived · volumes kept${archived.startedForArchive ? " · archive started its server" : ""}`,
+          ...failures,
+        ].join("\n"),
       };
     });
     const reset = Effect.fn("Resources.reset")(function* (

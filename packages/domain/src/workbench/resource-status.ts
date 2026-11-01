@@ -54,9 +54,11 @@ export type ResourceStatusView =
     }
   | {
       readonly kind: "own-removed";
-      readonly definition: ResourceDefinition;
+      readonly definition: { readonly name: string };
       readonly savedAt: Date;
       readonly startedForRemoval: boolean;
+      /** The server was archived after the recorded dump was checked; no live drop is needed. */
+      readonly savedWhenArchived?: boolean;
     }
   | {
       readonly kind: "removal-refused";
@@ -247,8 +249,15 @@ export const resourceStatusLine = (
   view: ResourceStatusView,
   at: { readonly now: Date; readonly timeZone: string },
 ): string => {
-  const def = view.definition;
   const clock = clockIn(at.now, at.timeZone);
+  if (view.kind === "own-removed")
+    return [
+      `@${view.definition.name}`,
+      `its own database saved as a dump ${clock(view.savedAt)}${view.savedWhenArchived ? "" : " and dropped"}`,
+      ...(view.savedWhenArchived ? [`saved when @${view.definition.name} was archived`] : []),
+      ...(view.startedForRemoval ? ["removal started its server"] : []),
+    ].join(" · ");
+  const def = view.definition;
   const parts = ((): ReadonlyArray<string> => {
     switch (view.kind) {
       case "load":
@@ -270,11 +279,6 @@ export const resourceStatusLine = (
           `loading ${view.label}`,
           `${view.phase} ${loadBytes(view.bytesDone)}${view.bytesTotal === null ? "" : ` of ${loadBytes(view.bytesTotal)}`}`,
           `${view.target} database`,
-        ];
-      case "own-removed":
-        return [
-          `its own database saved as a dump ${clock(view.savedAt)} and dropped`,
-          ...(view.startedForRemoval ? ["removal started its server"] : []),
         ];
       case "removal-refused":
         return [`database ${view.database}`, "not removed", view.reason];

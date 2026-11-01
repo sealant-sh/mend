@@ -64,7 +64,7 @@ const observedAt = new Date("2026-10-30T14:30:00Z");
 const running: ResourceInstanceObservation = { kind: "running" };
 
 const observed = (
-  definition: ResourceStatusView["definition"],
+  definition: Extract<ResourceStatusView, { kind: "observed" }>["definition"],
   use: Extract<ResourceStatusView, { kind: "observed" }>["use"],
   instance: Extract<ResourceStatusView, { kind: "observed" }>["instance"] = running,
 ): ResourceStatusView => ({

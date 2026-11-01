@@ -273,6 +273,69 @@ describe.skipIf(postgres.skip)("resource preservation before removal", () => {
     expect(saved.size).toBe(2);
   });
 
+  it("uses a checked dump with an archived server even while the remembered instance row remains", async () => {
+    const definitions = await seed();
+    const at = new Date();
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* ResourcesRepo;
+        for (const definition of definitions) {
+          yield* repo.reserveRemovalDump(
+            WORKTREE,
+            definition.id,
+            `${OWN}-removed-20261101T120000Z.dump`,
+            at,
+          );
+          yield* repo.checkRemovalDump(WORKTREE, definition.id, at);
+          yield* scope.up(
+            definition.id,
+            resourceInstanceSpec({
+              definition: definition.spec,
+              image: definition.image,
+              worktreeId: null,
+            }),
+            "person",
+          );
+          yield* scope.archive(definition.id);
+        }
+      }),
+    );
+    const result = await remove();
+    expect(
+      Result.isSuccess(result) && result.success.every((line) => line.includes("saved when @")),
+    ).toBe(true);
+    expect(calls).toEqual([]);
+    expect(dropped.size).toBe(0);
+    const rows = await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabaseRemovals(WORKTREE)),
+    );
+    expect(rows.every((row) => row.removedAt !== null)).toBe(true);
+  });
+
+  it("refuses removal after the server row is gone when its reserved dump was not checked", async () => {
+    const definitions = await seed();
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* ResourcesRepo;
+        for (const definition of definitions) {
+          yield* repo.reserveRemovalDump(
+            WORKTREE,
+            definition.id,
+            `${OWN}-removed-20261101T120000Z.dump`,
+            new Date(),
+          );
+          yield* repo.removeInstance(definition.id, null);
+        }
+      }),
+    );
+    expect(Result.isFailure(await remove())).toBe(true);
+    expect(calls).toEqual([]);
+    const rows = await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabaseRemovals(WORKTREE)),
+    );
+    expect(rows.every((row) => row.removedAt === null)).toBe(true);
+  });
+
   it("archives only this worktree's instances and keeps the others", async () => {
     const [definition] = await seed();
     if (definition === undefined) throw new Error("missing fixture");

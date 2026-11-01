@@ -33,7 +33,7 @@ import {
   type SealantPlatformError,
   unsupportedRuntimeOf,
 } from "@mend/sealant";
-import { Config, Duration, Effect, Fiber, Layer, Option, Schema, Semaphore } from "effect";
+import { Clock, Config, Duration, Effect, Fiber, Layer, Option, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { WorktreeReads } from "../worktree-reads.ts";
@@ -46,6 +46,7 @@ import {
   resetArgv,
   resetOutcome,
 } from "./postgres-ops.ts";
+import { removalDumpName, saveRemovalDump } from "./removal-postgres.ts";
 import { readWorktreeTables, tablesOf } from "./worktree-tables.ts";
 
 /**
@@ -130,8 +131,8 @@ export class ResourceRuntime extends Context.Service<
     readonly relink: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
     /** Every instance of the project as Sealant observed it, in one call. */
     readonly observe: (projectId: ProjectId) => Effect.Effect<ProjectObservation>;
-    /** Archives every instance of a definition: containers go, volumes stay. */
-    readonly archive: (definition: StoredResourceInstance) => Effect.Effect<string | null>;
+    /** Saves all active own databases before archiving this instance; volumes stay. */
+    readonly archive: (definition: StoredResourceInstance) => Effect.Effect<ArchiveOutcome>;
     /**
      * Saves a Postgres database as a dump in its dumps volume, checks the dump reads back, then
      * makes it again: empty, or an own database copied from shared when shared has tables. The
@@ -146,6 +147,11 @@ export class ResourceRuntime extends Context.Service<
     }) => Effect.Effect<ResetOutcome>;
   }
 >()("@mend/sessions/ResourceRuntime") {}
+
+/** Whether archiving finished, and whether saving own databases needed to start the server. */
+export type ArchiveOutcome =
+  | { readonly kind: "archived"; readonly startedForArchive: boolean }
+  | { readonly kind: "failed"; readonly message: string };
 
 /** What a reset did, or why it did not. */
 export type ResetOutcome =
@@ -173,7 +179,7 @@ export const ResourceRuntimeNone: Layer.Layer<ResourceRuntime> = Layer.succeed(R
       kind: "unobserved",
       instance: { kind: "not-observed", message: "no runtime runs resources here" },
     }),
-  archive: () => Effect.succeed(null),
+  archive: () => Effect.succeed({ kind: "archived", startedForArchive: false }),
   ensureOwnDatabase: () => Effect.succeed(null),
   relink: () => Effect.succeed([]),
   reset: () => Effect.succeed({ kind: "failed", message: "no runtime runs resources here" }),
@@ -585,20 +591,78 @@ export const resourceRuntimeLayer = (
       const archive = Effect.fn("ResourceRuntime.archive")(function* (
         definition: StoredResourceInstance,
       ) {
-        return yield* scopeOf(definition.projectId).pipe(
-          Effect.flatMap((client) =>
-            client.archive(resourceInstanceKey(definition.id, definition.worktreeId)),
+        let startedForArchive = false;
+        const own =
+          definition.worktreeId === null && definition.spec.preset === "postgres"
+            ? yield* repo.ownDatabasesForResource(definition.id)
+            : [];
+        let preserving = own.length > 0;
+        return yield* Effect.gen(function* () {
+          const client = yield* scopeOf(definition.projectId);
+          const key = resourceInstanceKey(definition.id, definition.worktreeId);
+          if (own.length > 0) {
+            const at = new Date(yield* Clock.currentTimeMillis);
+            const previous = yield* client.get(key);
+            if (previous?.state.kind !== "running") {
+              // Only a stopped server is started for preservation. Do not replace any other state.
+              if (previous?.state.kind !== "stopped")
+                return {
+                  kind: "failed" as const,
+                  message: `could not save the own databases of ${own.map((row) => row.worktreeName).join(", ")} · server is ${previous?.state.kind ?? "missing"} · nothing archived or dropped · volumes kept`,
+                };
+              const instance = yield* client.up(
+                key,
+                specOf(definition, null, idleStopAfterSeconds),
+                "person",
+              );
+              if (instance.state.kind !== "running")
+                return {
+                  kind: "failed" as const,
+                  message: `could not save the own databases of ${own.map((row) => row.worktreeName).join(", ")} · archive could not start its server · ${instance.state.kind} · nothing archived or dropped · volumes kept`,
+                };
+              startedForArchive = true;
+            }
+            const failures: Array<{ readonly name: string; readonly reason: string }> = [];
+            for (const row of own) {
+              const dumpName = removalDumpName(ownDatabaseName(row.worktreeId), at);
+              // Refresh even a previously checked dump: a refused archive left this database live.
+              yield* repo.reserveRemovalDump(row.worktreeId, definition.id, dumpName, at, true);
+              const result = yield* saveRemovalDump(
+                client,
+                key,
+                row.worktreeId,
+                dumpName,
+                true,
+              ).pipe(Effect.result);
+              if (result._tag === "Failure")
+                failures.push({ name: row.worktreeName, reason: result.failure.message });
+              else yield* repo.checkRemovalDump(row.worktreeId, definition.id, at);
+            }
+            if (failures.length > 0)
+              return {
+                kind: "failed" as const,
+                message: `could not save the own databases of ${failures.map((row) => row.name).join(", ")} · ${failures.map((row) => `${row.name}: ${row.reason}`).join("; ")} · nothing archived or dropped · volumes kept${startedForArchive ? " · archive started its server" : ""}`,
+              };
+          }
+          preserving = false;
+          const volumes = yield* client.archive(key);
+          yield* archives.rememberVolumes(
+            definition.projectId,
+            volumes.map((volume) => ({ ...volume, resourceName: definition.spec.name })),
+          );
+          return { kind: "archived" as const, startedForArchive };
+        }).pipe(
+          Effect.catch((error: SealantPlatformError) =>
+            Effect.succeed({
+              kind: "failed" as const,
+              message: preserving
+                ? `could not save the own databases of ${own.map((row) => row.worktreeName).join(", ")} · ${error.message} · nothing archived or dropped · volumes kept${startedForArchive ? " · archive started its server" : ""}`
+                : error.message,
+            }),
           ),
-          Effect.flatMap((volumes) =>
-            archives.rememberVolumes(
-              definition.projectId,
-              volumes.map((volume) => ({ ...volume, resourceName: definition.spec.name })),
-            ),
-          ),
-          Effect.as(null),
-          Effect.catch((error: SealantPlatformError) => Effect.succeed(error.message)),
         );
       });
+
       const ensureOwnDatabase = (definition: StoredResourceInstance, worktreeId: WorktreeId) =>
         scopeOf(definition.projectId).pipe(
           Effect.flatMap((client) =>
