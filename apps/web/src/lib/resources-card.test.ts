@@ -29,6 +29,7 @@ const page = (choice: WorktreeChoice | null): ResourcesPageView => ({
       choice,
       canRemove: false,
       canChoose: true,
+      instance: "not-started",
       statusLine: `@db · ${choice ?? "nothing"}`,
     },
   ],

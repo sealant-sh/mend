@@ -25,10 +25,8 @@ import {
   ResourceName,
   resourceNameIssue,
   resourceSpecDigest,
-  secretEnvNames,
   selectionRefusal,
   withPresetCommand,
-  WorktreeSelection,
 } from "./resource.ts";
 
 const decode = Schema.decodeUnknownSync(ResourceDefinitionInput);
@@ -317,9 +315,9 @@ describe("rules across a definition's fields", () => {
 describe("the scope policy", () => {
   it.each([
     ["project", "postgres", ["shared", "own", "off"], "own"],
-    ["project", "mysql", ["shared", "own", "off"], "own"],
+    ["project", "mysql", ["shared", "off"], "shared"],
     ["project", "redis", ["shared", "off"], "shared"],
-    ["project", null, ["shared", "own", "off"], "shared"],
+    ["project", null, ["shared", "off"], "shared"],
     ["worktree", "postgres", [], null],
     ["worktree", "mysql", [], null],
     ["worktree", null, [], null],
@@ -349,89 +347,23 @@ describe("the scope policy", () => {
 });
 
 describe("a worktree's selection", () => {
-  const read = Schema.decodeUnknownSync(WorktreeSelection);
-
-  it("reads each mode, with own naming a database or an instance", () => {
-    expect(read({ mode: "off", revision: 1 }).mode).toBe("off");
-    expect(read({ mode: "shared", revision: 2 }).mode).toBe("shared");
-    expect(
-      read({ mode: "own", revision: 3, target: { kind: "database", database: "d1" } }),
-    ).toEqual({ mode: "own", revision: 3, target: { kind: "database", database: "d1" } });
-    expect(
-      read({ mode: "own", revision: 3, target: { kind: "instance", instance: "i1" } }),
-    ).toEqual({ mode: "own", revision: 3, target: { kind: "instance", instance: "i1" } });
-  });
-
-  const database = { kind: "database", database: "d1" };
-  const instance = { kind: "instance", instance: "i1" };
-
   it.each([
-    ["shared on a Postgres preset", postgres(), { mode: "shared", revision: 1 }],
-    ["off on a Redis preset", redis(), { mode: "off", revision: 1 }],
-    [
-      "own as a database on a Postgres preset",
-      postgres(),
-      { mode: "own", revision: 1, target: database },
-    ],
-    [
-      "own as a database on a MySQL preset",
-      mysql(),
-      { mode: "own", revision: 1, target: database },
-    ],
-    [
-      "own as an instance of another image",
-      define(),
-      { mode: "own", revision: 1, target: instance },
-    ],
-  ])("takes %s", (_, def, raw) => {
-    expect(selectionRefusal(def, read(raw))).toBeNull();
+    ["shared on a Postgres preset", postgres(), "shared"],
+    ["own on a Postgres preset", postgres(), "own"],
+    ["off on a Redis preset", redis(), "off"],
+    ["shared on another image", define(), "shared"],
+  ] as const)("takes %s", (_, def, mode) => {
+    expect(selectionRefusal(def, mode)).toBeNull();
   });
 
   it.each([
-    [
-      "own on Redis, which offers shared and off",
-      redis(),
-      { mode: "own", revision: 1, target: instance },
-      "mode",
-    ],
-    [
-      "own as an instance on a Postgres preset",
-      postgres(),
-      { mode: "own", revision: 1, target: instance },
-      "target",
-    ],
-    [
-      "own as a database on another image",
-      define(),
-      { mode: "own", revision: 1, target: database },
-      "target",
-    ],
-    [
-      "any selection of a worktree resource",
-      define({ scope: "worktree" }),
-      { mode: "shared", revision: 1 },
-      "selection",
-    ],
-    [
-      "any selection of a refused worktree Redis",
-      redis({ scope: "worktree" }),
-      { mode: "off", revision: 1 },
-      "selection",
-    ],
-  ])("refuses %s by its key", (_, def, raw, key) => {
-    expect(selectionRefusal(def, read(raw))?.key).toBe(key);
-  });
-
-  it.each([
-    ["own without a target", { mode: "own", revision: 1 }],
-    ["a negative revision", { mode: "shared", revision: -1 }],
-    ["a mode outside off, shared and own", { mode: "copy", revision: 1 }],
-    [
-      "a database target carrying an instance",
-      { mode: "own", revision: 1, target: { kind: "database", instance: "i1" } },
-    ],
-  ])("refuses %s", (_, raw) => {
-    expect(() => read(raw)).toThrow();
+    ["own on Redis, which offers shared and off", redis(), "own", "mode"],
+    ["own on MySQL, whose own comes later", mysql(), "own", "mode"],
+    ["own on another image, whose own comes later", define(), "own", "mode"],
+    ["any selection of a worktree resource", define({ scope: "worktree" }), "shared", "selection"],
+    ["any selection of a refused worktree Redis", redis({ scope: "worktree" }), "off", "selection"],
+  ] as const)("refuses %s by its key", (_, def, mode, key) => {
+    expect(selectionRefusal(def, mode)?.key).toBe(key);
   });
 });
 
@@ -478,9 +410,8 @@ describe("env names", () => {
     "MEND_RESOURCE_DB_URL",
     "MEND_RESOURCE_DB_DATABASE",
     "MEND_RESOURCE_DB_USERNAME",
-    "MEND_RESOURCE_DB_PASSWORD",
   ];
-  const conventional = ["DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"];
+  const conventional = ["DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE"];
 
   it("gives the one Postgres in use DATABASE_URL and PG*", () => {
     expect(namesOf([bind(postgres())], "db")).toEqual([...fixed, ...conventional]);
@@ -496,17 +427,8 @@ describe("env names", () => {
     expect(namesOf(bound, "db")).toEqual([...fixed, ...conventional]);
   });
 
-  it("gives a database preset's own database MEND_RESOURCE_<NAME>_SUFFIX, and shared none", () => {
-    expect(namesOf([bind(postgres(), "own")], "db")).toEqual([
-      ...fixed,
-      "MEND_RESOURCE_DB_SUFFIX",
-      ...conventional,
-    ]);
-    expect(namesOf([bind(mysql(), "own")], "db")).toContain("MEND_RESOURCE_DB_SUFFIX");
-    expect(namesOf([bind(postgres({ scope: "worktree" }))], "db")).not.toContain(
-      "MEND_RESOURCE_DB_SUFFIX",
-    );
-    expect(namesOf([bind(define(), "own")], "queue")).not.toContain("MEND_RESOURCE_QUEUE_SUFFIX");
+  it("gives own and shared the same names: only the database differs", () => {
+    expect(namesOf([bind(postgres(), "own")], "db")).toEqual(namesOf([bind(postgres())], "db"));
   });
 
   it("gives Redis _URL, and REDIS_URL only when it is the one Redis", () => {
@@ -531,37 +453,6 @@ describe("env names", () => {
   });
 });
 
-describe("secret env names", () => {
-  it("marks an export built from a secret, and not one built from a literal", () => {
-    const queue = define({
-      env: { RABBITMQ_DEFAULT_USER: "app", RABBITMQ_DEFAULT_PASS: { secret: "RABBITMQ_PASSWORD" } },
-      exports: {
-        URL: "amqp://{env.RABBITMQ_DEFAULT_USER}:{env.RABBITMQ_DEFAULT_PASS}@{host}:{port.amqp}/",
-        USER: "{env.RABBITMQ_DEFAULT_USER}",
-      },
-    });
-    expect([...secretEnvNames([bind(queue)])]).toEqual(["MEND_RESOURCE_QUEUE_URL"]);
-  });
-
-  it("marks an export it cannot parse, which adding refuses anyway", () => {
-    const queue = define({
-      env: { PASS: { secret: "RABBITMQ_PASSWORD" } },
-      exports: { URL: "amqp://{env.PASS" },
-    });
-    expect([...secretEnvNames([bind(queue)])]).toEqual(["MEND_RESOURCE_QUEUE_URL"]);
-  });
-
-  it("marks a preset's URL and password, and the conventional names that carry them", () => {
-    expect([...secretEnvNames([bind(postgres())])]).toEqual([
-      "MEND_RESOURCE_DB_URL",
-      "MEND_RESOURCE_DB_PASSWORD",
-      "DATABASE_URL",
-      "PGPASSWORD",
-    ]);
-    expect([...secretEnvNames([bind(redis())])]).toEqual(["MEND_RESOURCE_CACHE_URL", "REDIS_URL"]);
-  });
-});
-
 describe("env name collisions", () => {
   it("finds none between distinct resources", () => {
     expect(envNameCollisions([postgres(), redis(), define()])).toEqual([]);
@@ -579,13 +470,6 @@ describe("env name collisions", () => {
     const dbPort = define({ name: "db-port" });
     expect(envNameCollisions([db, dbPort])).toEqual([
       { name: "MEND_RESOURCE_DB_PORT_HOST", resources: ["db", "db-port"] },
-    ]);
-  });
-
-  it("reports an export that lands on a database's suffix, which only own sets", () => {
-    const a = define({ name: "a", exports: { B_SUFFIX: "{host}" } });
-    expect(envNameCollisions([a, postgres({ name: "a-b" })])).toEqual([
-      { name: "MEND_RESOURCE_A_B_SUFFIX", resources: ["a", "a-b"] },
     ]);
   });
 

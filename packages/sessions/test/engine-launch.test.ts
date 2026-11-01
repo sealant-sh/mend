@@ -15,10 +15,24 @@ import {
   agentMemoryDigest,
 } from "@mend/db";
 import { SealantWorkspaceId, SessionId, SessionProcessId, ReferenceId } from "@mend/domain";
-import { Project, SessionProcess, PiProfile, Reference } from "@mend/domain/workbench";
+import {
+  PiProfile,
+  presetDefinition,
+  PresetVersion,
+  Project,
+  Reference,
+  ResourceName,
+  SessionProcess,
+} from "@mend/domain/workbench";
 import { LAUNCH_BOOTING, LAUNCH_PREPARING } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
-import { ProtocolHost, SessionEngine, startFromBase } from "@mend/sessions";
+import {
+  type PrepareInput,
+  ProtocolHost,
+  ResourceRuntime,
+  SessionEngine,
+  startFromBase,
+} from "@mend/sessions";
 import { harnessHomePathOf, processStatePathOf } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
@@ -184,7 +198,13 @@ describe("SessionEngine", () => {
           expect(created).toHaveLength(1);
           expect(created[0]?.os).toBe("nix");
           // Mend adds its Doppler CLI to the person's configured image packages.
-          expect(created[0]?.packages).toEqual(["bat", "lazygit", "doppler"]);
+          expect(created[0]?.packages).toEqual([
+            "bat",
+            "lazygit",
+            "doppler",
+            "postgresql-client",
+            "redis-cli",
+          ]);
           expect(created[0]?.services).toEqual({ docker: true });
           // The owner's own Claude login rides along, so the agent can run `claude` on it.
           expect(created[0]?.credentials).toEqual({ codex: true, claude: true, github: true });
@@ -1003,6 +1023,93 @@ describe("SessionEngine", () => {
           openedOptions,
         ),
         protocolHostLayer: recordingProtocolHostLayer(attached, submitted, authors),
+      },
+    );
+  });
+
+  it("gives the agent and a shell their worktree's resources' env, and says what the agent starts without", async () => {
+    const spawned: ReadonlyArray<string>[] = [];
+    const openedOptions: SessionOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const prepared: Array<PrepareInput> = [];
+    const resources = {
+      DATABASE_URL: "postgres://postgres@db:5432/own_0123456789ab",
+      MEND_RESOURCE_DB_HOST: "db",
+    };
+    const db = presetDefinition({
+      name: ResourceName.make("db"),
+      preset: "postgres",
+      version: PresetVersion.make("17"),
+      scope: "project",
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", prompt: "migrate", permissionMode: "ask" },
+            "user-1",
+          );
+          expect(openedOptions[0]).toEqual({
+            mode: "pipe",
+            env: { ...resources, MEND_AGENT_PROCESS_ID: attached[0]?.process.id },
+          });
+          expect(world.sessions.get(session.id)?.summary).toContain(
+            "@db · stopped by Maria · this session starts without it",
+          );
+          yield* engine.openShell(session.id);
+          expect(openedOptions.at(-1)?.env).toMatchObject(resources);
+          expect(prepared.map((input) => input.worktreeId)).toEqual([
+            session.worktreeId,
+            session.worktreeId,
+          ]);
+          expect(prepared[0]?.launcher).toBe("user-fixture");
+          expect(prepared[0]?.workspaceId).not.toBe("");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          openedOptions,
+        ),
+        protocolHostLayer: recordingProtocolHostLayer(attached, [], []),
+        resourceRuntime: Layer.succeed(ResourceRuntime, {
+          prepare: (input) =>
+            Effect.sync(() => {
+              prepared.push(input);
+              return {
+                env: resources,
+                views: [
+                  {
+                    kind: "launched-without" as const,
+                    definition: db,
+                    instance: {
+                      kind: "stopped" as const,
+                      reason: { kind: "person" as const, by: "Maria" },
+                    },
+                  },
+                ],
+              };
+            }),
+          start: () => Effect.die("not in this test"),
+          observe: () => Effect.die("not in this test"),
+          archive: () => Effect.die("not in this test"),
+        }),
       },
     );
   });

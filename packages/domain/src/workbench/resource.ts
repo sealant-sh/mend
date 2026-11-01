@@ -2,7 +2,6 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { Effect, Schema } from "effect";
 
-import { ResourceDatabaseId, ResourceInstanceId } from "../ids.ts";
 import { formatProjectEnvironmentIssue } from "./project-environment.ts";
 import { validateProjectSecretName } from "./project-secret.ts";
 import { ENV_NAME } from "./service-recipe.ts";
@@ -342,56 +341,37 @@ const exportRefusals = (
     }));
 };
 
-/** Whether an env value carries a credential, which keeps it out of `launch_env`, logs and status lines. */
-export type ResourceEnvKind = "secret" | "plain";
-
 /**
- * What Mend knows of each preset's inside: the image repositories it runs, whether `own` is a
- * database on the project instance, the fixed exports, and the conventional names set when it is
- * the only one of its engine in use.
+ * What Mend knows of each preset's inside: the image repositories it runs, whether it serves
+ * databases by name, the exports every bound one sets, and the conventional names it sets when it
+ * is the only one of its engine in use. No resource has a credential (ADR 0019, amendment of
+ * 2026-10-31), so none of these is a secret.
  */
 export const RESOURCE_PRESETS: {
   readonly [P in ResourcePreset]: {
     readonly images: ReadonlyArray<string>;
     readonly database: boolean;
-    readonly exports: Readonly<Record<string, ResourceEnvKind>>;
-    readonly conventional: Readonly<Record<string, ResourceEnvKind>>;
+    readonly exports: ReadonlyArray<string>;
+    readonly conventional: ReadonlyArray<string>;
   };
 } = {
   postgres: {
     images: ["postgres", "pgvector/pgvector", "postgis/postgis"],
     database: true,
-    exports: {
-      URL: "secret",
-      DATABASE: "plain",
-      USERNAME: "plain",
-      PASSWORD: "secret",
-    },
-    conventional: {
-      DATABASE_URL: "secret",
-      PGHOST: "plain",
-      PGPORT: "plain",
-      PGUSER: "plain",
-      PGPASSWORD: "secret",
-      PGDATABASE: "plain",
-    },
+    exports: ["URL", "DATABASE", "USERNAME"],
+    conventional: ["DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE"],
   },
   mysql: {
     images: ["mysql", "mariadb"],
     database: true,
-    exports: {
-      URL: "secret",
-      DATABASE: "plain",
-      USERNAME: "plain",
-      PASSWORD: "secret",
-    },
-    conventional: {},
+    exports: ["URL", "DATABASE", "USERNAME"],
+    conventional: [],
   },
   redis: {
     images: ["redis", "valkey/valkey"],
     database: false,
-    exports: { URL: "secret" },
-    conventional: { REDIS_URL: "secret" },
+    exports: ["URL"],
+    conventional: ["REDIS_URL"],
   },
 };
 
@@ -645,73 +625,30 @@ export const onlyOfItsEngine = (
 ): boolean =>
   def.preset !== null && bound.filter((other) => other.preset === def.preset).length === 1;
 
-/**
- * An export built from a secret env value is itself a secret (ADR 0019, "Env"). One that does not
- * parse is taken as secret, since what it names is unknown.
- */
-const exportKind = (def: ResourceDefinitionInput, template: string): ResourceEnvKind => {
-  const parsed = parseTemplate(template);
-  if (!parsed.ok) return "secret";
-  return parsed.placeholders.some((placeholder) => {
-    const value = placeholder.startsWith("env.")
-      ? def.env[placeholder.slice("env.".length)]
-      : undefined;
-    return value !== undefined && typeof value !== "string";
-  })
-    ? "secret"
-    : "plain";
-};
-
-const envOf = (
+const envNamesOf = (
   binding: ResourceBinding,
   bound: ReadonlyArray<ResourceBinding>,
-): ReadonlyArray<readonly [string, ResourceEnvKind]> => {
+): ReadonlyArray<string> => {
   const def = binding.definition;
-  const prefixed = (suffix: string, kind: ResourceEnvKind): readonly [string, ResourceEnvKind] => [
-    resourceEnvPrefix(def.name) + suffix,
-    kind,
-  ];
-  const address = addressSuffixes(def).map((suffix) => prefixed(suffix, "plain"));
-  if (def.preset === null) {
-    return [
-      ...address,
-      ...Object.entries(def.exports).map(([name, template]) =>
-        prefixed(name, exportKind(def, template)),
-      ),
-    ];
-  }
+  const prefixed = (suffix: string) => resourceEnvPrefix(def.name) + suffix;
+  const address = addressSuffixes(def).map(prefixed);
+  if (def.preset === null) return [...address, ...Object.keys(def.exports).map(prefixed)];
   const preset = RESOURCE_PRESETS[def.preset];
   const only = onlyOfItsEngine(
     def,
     bound.map((other) => other.definition),
   );
-  return [
-    ...address,
-    ...Object.entries(preset.exports).map(([name, kind]) => prefixed(name, kind)),
-    // Test and shadow databases are named server-wide, so each own database needs its suffix (S15).
-    ...(binding.mode === "own" && preset.database ? [prefixed("SUFFIX", "plain")] : []),
-    ...(only ? Object.entries(preset.conventional) : []),
-  ];
+  return [...address, ...preset.exports.map(prefixed), ...(only ? preset.conventional : [])];
 };
 
 /**
  * Every env name a process gets from each resource its worktree binds: the address, the exports,
- * an own database's suffix, and a preset's conventional names when it is the one of its engine.
+ * and a preset's conventional names when it is the one of its engine.
  */
 export const resourceEnvNames = (
   bound: ReadonlyArray<ResourceBinding>,
 ): ReadonlyMap<ResourceName, ReadonlyArray<string>> =>
-  new Map(
-    bound.map((binding) => [binding.definition.name, envOf(binding, bound).map(([name]) => name)]),
-  );
-
-/** The env names among `resourceEnvNames` that carry a credential. */
-export const secretEnvNames = (bound: ReadonlyArray<ResourceBinding>): ReadonlySet<string> =>
-  new Set(
-    bound.flatMap((binding) =>
-      envOf(binding, bound).flatMap(([name, kind]) => (kind === "secret" ? [name] : [])),
-    ),
-  );
+  new Map(bound.map((binding) => [binding.definition.name, envNamesOf(binding, bound)]));
 
 export interface ResourceEnvCollision {
   readonly name: string;
@@ -785,28 +722,31 @@ export type ResourceScopePolicy =
   | { readonly kind: "own-instance" }
   | { readonly kind: "refused"; readonly message: string };
 
-const DATABASE_POLICY: ResourceScopePolicy = {
+/** Own is a Postgres database on the project's server (ADR 0019, amendment of 2026-10-31). */
+const POSTGRES_POLICY: ResourceScopePolicy = {
   kind: "choose",
   choices: ["shared", "own", "off"],
   default: "own",
 };
+/** Own for any other image, MySQL included, comes later. */
+const SHARED_POLICY: ResourceScopePolicy = {
+  kind: "choose",
+  choices: ["shared", "off"],
+  default: "shared",
+};
 const PER_WORKTREE: ResourceScopePolicy = { kind: "own-instance" };
 
-/** ADR 0019, "Two scopes, and what each worktree gets": the one policy (S1, S10, G11, G12). */
+/** ADR 0019, "Two scopes, and what each worktree gets", as amended on 2026-10-31: the one policy. */
 export const RESOURCE_SCOPE_POLICY: {
   readonly [S in ResourceScope]: {
     readonly [K in ResourceKind]: ResourceScopePolicy;
   };
 } = {
   project: {
-    postgres: DATABASE_POLICY,
-    mysql: DATABASE_POLICY,
-    redis: { kind: "choose", choices: ["shared", "off"], default: "shared" },
-    other: {
-      kind: "choose",
-      choices: ["shared", "own", "off"],
-      default: "shared",
-    },
+    postgres: POSTGRES_POLICY,
+    mysql: SHARED_POLICY,
+    redis: SHARED_POLICY,
+    other: SHARED_POLICY,
   },
   worktree: {
     postgres: PER_WORKTREE,
@@ -844,44 +784,10 @@ export const defaultChoiceFor = (def: PolicySubject): WorktreeChoice | null => {
   return policy.kind === "choose" ? policy.default : null;
 };
 
-/** A selection's revision: a switch, or a reset of the shared data, makes a new one. */
-export const SelectionRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
-  Schema.brand("SelectionRevision"),
-);
-export type SelectionRevision = typeof SelectionRevision.Type;
-
-/** What `own` names: a database on the project instance for a database preset, else an instance. */
-export const OwnTarget = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("database"),
-    database: ResourceDatabaseId,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("instance"),
-    instance: ResourceInstanceId,
-  }),
-]);
-export type OwnTarget = typeof OwnTarget.Type;
-
-/** A project resource's choice for one worktree. A worktree resource has no selection. */
-export const WorktreeSelection = Schema.Union([
-  Schema.Struct({ mode: Schema.Literal("off"), revision: SelectionRevision }),
-  Schema.Struct({
-    mode: Schema.Literal("shared"),
-    revision: SelectionRevision,
-  }),
-  Schema.Struct({
-    mode: Schema.Literal("own"),
-    revision: SelectionRevision,
-    target: OwnTarget,
-  }),
-]);
-export type WorktreeSelection = typeof WorktreeSelection.Type;
-
-/** Why `selection` is not one the policy offers this definition, or null when it is. */
+/** Why `mode` is not a choice the policy offers this definition, or null when it is. */
 export const selectionRefusal = (
   def: ResourceDefinitionInput,
-  selection: WorktreeSelection,
+  mode: WorktreeChoice,
 ): ResourceRefusal | null => {
   if (def.scope === "worktree") {
     return {
@@ -890,23 +796,17 @@ export const selectionRefusal = (
     };
   }
   const choices = choicesFor(def);
-  if (!choices.includes(selection.mode)) {
-    return {
-      key: "mode",
-      message: `is ${selection.mode}, and @${def.name} offers ${choices.join(", ")}`,
-    };
-  }
-  if (selection.mode !== "own") return null;
-  const target = isDatabasePreset(def) ? "database" : "instance";
-  if (selection.target.kind === target) return null;
-  return {
-    key: "target",
-    message:
-      target === "database"
-        ? `is an instance, and own for @${def.name} is a database on the project instance`
-        : `is a database, and own for @${def.name} is an instance of its own`,
-  };
+  return choices.includes(mode)
+    ? null
+    : { key: "mode", message: `is ${mode}, and @${def.name} offers ${choices.join(", ")}` };
 };
+
+/** A worktree's choice as it applies: its stored one while the policy still offers it, else the default. */
+export const choiceInEffect = (
+  def: PolicySubject,
+  stored: WorktreeChoice | null,
+): WorktreeChoice | null =>
+  stored !== null && choicesFor(def).includes(stored) ? stored : defaultChoiceFor(def);
 
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;

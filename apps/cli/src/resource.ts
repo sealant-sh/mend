@@ -20,10 +20,10 @@ import {
 } from "./shared.ts";
 
 /**
- * `mend resource add|list|remove|use|start` (docs/adr/0019-shared-services.md): a project's
- * resources from a person's terminal. What a member adds is the project's. The server decides
- * every act; these commands print its status lines as they come. Anything a definition stores is
- * someone else's text, so it reaches the terminal through `printable`.
+ * `mend resource add|list|remove|use|start` (docs/adr/0019-shared-services.md): a
+ * project's resources from a person's terminal. What a member adds is the project's, and runs.
+ * The server decides every act; these commands print its status lines as they come. Anything a
+ * definition stores is someone else's text, so it reaches the terminal through `printable`.
  */
 
 const dim = paint("2");
@@ -317,10 +317,12 @@ export const resourceCommand = async (
       return;
     }
     case "add": {
+      // A worktree resource starts in the worktree named; a project resource starts either way.
+      const from = await worktreeOf();
       const added = async (body: unknown) => {
         const answer = await api<ResourceAdded>(
           "POST",
-          `/projects/${project.id}/resources?${zone}`,
+          `/projects/${project.id}/resources?${zone}${from === null ? "" : `&worktreeId=${encodeURIComponent(from.id)}`}`,
           body,
         );
         say(printable(answer.definition.statusLine));
@@ -330,11 +332,10 @@ export const resourceCommand = async (
       };
       if (rest.includes("--from-file")) {
         if (name === null) return fail("name the resource: mend resource add db --from-file");
-        const worktree = await worktreeOf();
-        if (worktree === null) {
+        if (from === null) {
           return fail("name the worktree whose mend.toml holds it: --worktree <w>");
         }
-        const table = tableAddition(await read(worktree.id), name, worktree.label);
+        const table = tableAddition(await read(from.id), name, from.label);
         if (table.kind === "refused") return fail(table.message);
         if (table.kind === "added") return say(table.message);
         say(`adding ${table.line}`);
@@ -374,12 +375,11 @@ export const resourceCommand = async (
         `/projects/${project.id}/worktrees/${encodeURIComponent(worktree.id)}/resources/${encodeURIComponent(held.id)}/selection?${zone}`,
         { mode },
       );
-      say(printable(chosen.statusLine));
-      return say(dim(`${printable(worktree.label)} · revision ${chosen.revision}`));
+      return say(printable(chosen.statusLine));
     }
     case "start": {
       if (name === null) return fail("name the resource: mend resource start db");
-      // The server refuses every start until a runtime runs resources, and says why.
+      // The server refuses every start until a person's start lands, and says why.
       await api("POST", `/projects/${project.id}/resources/${encodeURIComponent(name)}/start`);
       return;
     }

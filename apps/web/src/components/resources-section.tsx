@@ -162,7 +162,11 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
     add: (table) => {
       const key = `f:${table.spec.name}`;
       act(key, "add", async () => {
-        const outcome = await addResource(projectId, { kind: "definition", spec: table.spec });
+        const outcome = await addResource(
+          projectId,
+          { kind: "definition", spec: table.spec },
+          worktreeId,
+        );
         if (!outcome.ok) return { at: key, note: refusedNote(outcome) };
         await invalidate();
         return addedNote(outcome.result);
@@ -187,7 +191,7 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
     if (!checked.ok) return setFormRefusals(checked.refusals);
     setFormRefusals([]);
     act(FORM, "add", async () => {
-      const outcome = await addResource(projectId, checked.addition);
+      const outcome = await addResource(projectId, checked.addition, worktreeId);
       if (!outcome.ok) {
         const refusals =
           outcome.kind === "rejected"
@@ -243,8 +247,9 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
         Long-running services for the project or for one worktree, such as a database or a mail
         catcher. Any member adds one, and it is the project&apos;s. Whoever added it, the
         project&apos;s creator or an organization owner replaces or removes it, and a
-        worktree&apos;s change owner chooses how that worktree uses it. Adding pins the image;
-        nothing starts until a runtime runs resources.
+        worktree&apos;s change owner chooses how that worktree uses it. Adding pins the image and
+        starts it: a project resource at once, a worktree resource in the worktree read here and in
+        any other on first use.
       </p>
       <ReadState
         read={read}
@@ -575,7 +580,7 @@ export function ChoiceLine(props: {
         <span className="font-mono text-[11px] text-foreground">
           {inUse.stored
             ? `${props.worktreeName} uses ${words.label}.`
-            : `${props.worktreeName} · nothing chosen yet · ${words.label} at its first launch.`}
+            : `${props.worktreeName} uses ${words.label}, the default.`}
         </span>{" "}
         {words.meaning}
       </p>

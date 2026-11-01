@@ -9,10 +9,18 @@ const network = makePublicNetwork(PublicOrigin.make(origin), []);
 const projectId = "p_shop";
 const digest = "a".repeat(64);
 let answer: Response;
+/** Each request the web tier sent the API: its method, path and query. */
+let asked: Array<string> = [];
 
 beforeEach(() => {
   answer = Response.json({});
-  vi.stubGlobal("fetch", async () => answer.clone());
+  asked = [];
+  vi.stubGlobal("fetch", async (input: Request | URL | string, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+    asked.push(`${method} ${url.pathname}${url.search}`);
+    return answer.clone();
+  });
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -41,6 +49,7 @@ const mutate = async (path: string, input: unknown) => {
 const preset = {
   projectId,
   timeZone: "Europe/Athens",
+  worktreeId: null,
   addition: { kind: "preset", name: "db", preset: "postgres", version: "17", scope: "project" },
 };
 const removal = { projectId, definitionId: "rdef_1", expectedDigest: digest };
@@ -102,6 +111,7 @@ describe("resource writes through the web tier", () => {
       await mutate("resources.add", {
         projectId,
         timeZone: "Europe/Athens",
+        worktreeId: "wt_1",
         addition: {
           kind: "definition",
           spec: {

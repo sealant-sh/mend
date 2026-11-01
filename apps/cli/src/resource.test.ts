@@ -40,6 +40,7 @@ const db = {
   choice: null,
   canRemove: true,
   canChoose: false,
+  instance: "not-started",
   statusLine: "@db · postgres 17 · project · added by Maria · not started",
 };
 
@@ -336,7 +337,7 @@ describe("the command against a server", () => {
     ]);
     expect(mend.calls.slice(1)).toEqual([
       "GET /projects/p_shop/resources?timeZone=…&worktreeId=wt_1",
-      `POST /projects/p_shop/resources?timeZone=… ${JSON.stringify({
+      `POST /projects/p_shop/resources?timeZone=…&worktreeId=wt_1 ${JSON.stringify({
         kind: "definition",
         spec: page.file.kind === "read" ? page.file.tables[0]?.spec : null,
       })}`,
@@ -399,8 +400,7 @@ describe("the command against a server", () => {
       "GET /projects/p_shop/worktrees": { worktrees: [{ id: "wt_1", name: "checkout" }] },
       "GET /projects/p_shop/resources": page,
       "PUT /projects/p_shop/worktrees/wt_1/resources/rdef_1/selection": {
-        statusLine: "@db · postgres 17 · project · added by Maria · its own database · not started",
-        revision: 2,
+        statusLine: "@db · not started · own database · not made yet · observed 3 s ago",
       },
     });
     await resourceCommand(mend.api, async () => shop, [
@@ -414,8 +414,7 @@ describe("the command against a server", () => {
       'PUT /projects/p_shop/worktrees/wt_1/resources/rdef_1/selection?timeZone=… {"mode":"own"}',
     );
     expect(out.join("")).toBe(
-      "@db · postgres 17 · project · added by Maria · its own database · not started\n" +
-        "checkout · revision 2\n",
+      "@db · not started · own database · not made yet · observed 3 s ago\n",
     );
   });
 

@@ -48,6 +48,7 @@ const setting = (overrides: Partial<ResourceSettingView> = {}): ResourceSettingV
   choice: null,
   canRemove: true,
   canChoose: false,
+  instance: "not-started",
   statusLine: "@db · postgres 17 · project · added by Maria · not started",
   ...overrides,
 });
@@ -159,13 +160,13 @@ describe("choosing how a worktree uses a resource", () => {
   it("says what each mode reaches, and warns of shared tables only for a database", () => {
     expect(choiceWords(db, "shared").meaning).toContain("change or drop its tables");
     expect(choiceWords(db, "own").meaning).toBe(
-      "Gets a database of its own on the project instance.",
+      "Gets a database of its own on the project's server, copied from shared when shared has tables. Switching back to it finds its data.",
     );
     expect(choiceWords(mail, "own").meaning).toBe(
       "Gets an instance of its own, of the same definition.",
     );
     expect(choiceWords(db, "off").meaning).toBe(
-      "Gets nothing from this resource; the worktree runs its own.",
+      "Gets nothing from this resource: no env, and no instance started for it.",
     );
   });
 });

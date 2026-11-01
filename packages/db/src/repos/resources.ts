@@ -1,16 +1,8 @@
-import {
-  ProjectId,
-  ResourceDatabaseId,
-  ResourceDefinitionId,
-  ResourceInstanceId,
-  WorktreeId,
-} from "@mend/domain";
+import { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
   changesWhatOwnIs,
-  defaultChoiceFor,
   type ImageDigest,
-  isDatabasePreset,
-  type OwnTarget,
+  type OwnDatabaseOrigin,
   pinImage,
   resourceDeclarationRefusals,
   ResourceDefinitionInput,
@@ -19,10 +11,8 @@ import {
   ResourceSpecDigest,
   resourceSpecDigest,
   selectionRefusal,
-  SelectionRevision,
   type SettingsDefinition,
   type WorktreeChoice,
-  WorktreeSelection,
 } from "@mend/domain/workbench";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -32,6 +22,7 @@ import { MendDB, type MendDatabase } from "../client.ts";
 import {
   projects,
   resourceDefinitions,
+  resourceOwnDatabases,
   resourceSelections,
   worktrees,
 } from "../schema/workbench.ts";
@@ -60,9 +51,6 @@ export interface AddedDefinition {
   readonly imageDigest: ImageDigest;
 }
 
-/** A selection as a person asks for it; the repo mints an `own` target and numbers the revision. */
-export type SelectionChoice = { readonly mode: WorktreeChoice };
-
 export interface DefinitionWithChoice {
   readonly definition: StoredResourceDefinition;
   /** The listed worktree's stored choice; null when it made none, or no worktree was listed. */
@@ -78,7 +66,7 @@ export interface DefinitionVersion {
 export interface StoredSelection {
   readonly worktreeId: WorktreeId;
   readonly definitionId: ResourceDefinitionId;
-  readonly selection: WorktreeSelection;
+  readonly mode: WorktreeChoice;
   /** Null when the policy's default applied and nobody chose. */
   readonly chosenBy: string | null;
   readonly chosenAt: Date;
@@ -160,30 +148,27 @@ export class ResourcesRepo extends Context.Service<
      * that took its mark first reads every name that will exist.
      */
     readonly declaredNames: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
-    /**
-     * The worktree's selection of one of the project's definitions, set from the default when it
-     * has none or the policy refuses the one it has; null for a worktree resource. Another
-     * project's definition is not found.
-     */
-    readonly ensureSelection: (
-      projectId: ProjectId,
-      worktreeId: WorktreeId,
-      definitionId: ResourceDefinitionId,
-    ) => Effect.Effect<
-      StoredSelection | null,
-      ResourceDefinitionNotFoundError | ResourceSelectionRefusedError
-    >;
-    /** A changed choice takes the next revision; the same choice again changes nothing. */
+    /** Stores the worktree's choice; the same choice again changes nothing. */
     readonly setSelection: (
       projectId: ProjectId,
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
-      choice: SelectionChoice,
+      mode: WorktreeChoice,
       chosenBy: string,
     ) => Effect.Effect<
       StoredSelection,
       ResourceDefinitionNotFoundError | ResourceSelectionRefusedError
     >;
+    /** The own databases Mend made for a worktree, by definition, with how each began. */
+    readonly ownDatabases: (
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, OwnDatabaseOrigin>>;
+    /** Records an own database Mend made; one it recorded already keeps how it began. */
+    readonly recordOwnDatabase: (
+      worktreeId: WorktreeId,
+      definitionId: ResourceDefinitionId,
+      origin: OwnDatabaseOrigin["kind"],
+    ) => Effect.Effect<void>;
   }
 >()("@mend/db/ResourcesRepo") {}
 
@@ -193,7 +178,6 @@ type SelectionRow = typeof resourceSelections.$inferSelect;
 
 const decodeSpec = Schema.decodeUnknownEffect(ResourceDefinitionInput);
 const encodeSpec = Schema.encodeEffect(ResourceDefinitionInput);
-const decodeSelection = Schema.decodeUnknownEffect(WorktreeSelection);
 
 const toDefinition = Effect.fnUntraced(function* (row: DefinitionRow) {
   const spec = yield* decodeSpec(row.spec).pipe(Effect.orDie);
@@ -214,44 +198,12 @@ const toDefinition = Effect.fnUntraced(function* (row: DefinitionRow) {
   } satisfies StoredResourceDefinition;
 });
 
-const toSelection = (row: SelectionRow) =>
-  decodeSelection({
-    mode: row.mode,
-    revision: row.revision,
-    ...(row.mode === "own" ? { target: row.ownTarget } : {}),
-  }).pipe(
-    Effect.map(
-      (selection): StoredSelection => ({
-        worktreeId: row.worktreeId,
-        definitionId: row.definitionId,
-        selection,
-        chosenBy: row.chosenBy,
-        chosenAt: row.chosenAt,
-      }),
-    ),
-    Effect.orDie,
-  );
-
-/** A new `own`: a database on the project instance, or an instance of its own. */
-const newOwnTarget = (spec: ResourceDefinitionInput): OwnTarget =>
-  isDatabasePreset(spec)
-    ? { kind: "database", database: ResourceDatabaseId.make(`rdb_${crypto.randomUUID()}`) }
-    : { kind: "instance", instance: ResourceInstanceId.make(`rins_${crypto.randomUUID()}`) };
-
-const withRevision = (
-  spec: ResourceDefinitionInput,
-  mode: WorktreeChoice,
-  revision: number,
-): WorktreeSelection =>
-  mode === "own"
-    ? { mode, revision: SelectionRevision.make(revision), target: newOwnTarget(spec) }
-    : { mode, revision: SelectionRevision.make(revision) };
-
-/** The columns of `selection`, an `own` target among them. */
-const selectionColumns = (selection: WorktreeSelection) => ({
-  mode: selection.mode,
-  revision: selection.revision,
-  ownTarget: selection.mode === "own" ? selection.target : null,
+const toSelection = (row: SelectionRow): StoredSelection => ({
+  worktreeId: row.worktreeId,
+  definitionId: row.definitionId,
+  mode: row.mode,
+  chosenBy: row.chosenBy,
+  chosenAt: row.chosenAt,
 });
 
 /** A typed failure survives a transaction; a database error is a defect. */
@@ -320,24 +272,23 @@ const storedSelection = (tx: Tx, worktreeId: WorktreeId, definitionId: ResourceD
     )
     .pipe(Effect.map(([row]) => row ?? null));
 
-/** Writes `selection` as the worktree's, over what it had, and returns the row it wrote. */
+/** Writes `mode` as the worktree's, over what it had, and returns the row it wrote. */
 const writeSelection = Effect.fn("ResourcesRepo.writeSelection")(function* (
   tx: Tx,
   stored: SelectionRow | null,
   key: { readonly worktreeId: WorktreeId; readonly definitionId: ResourceDefinitionId },
-  selection: WorktreeSelection,
+  mode: WorktreeChoice,
   chosenBy: string | null,
 ) {
-  const columns = { ...selectionColumns(selection), chosenBy };
   const [row] =
     stored === null
       ? yield* tx
           .insert(resourceSelections)
-          .values({ ...key, ...columns })
+          .values({ ...key, mode, chosenBy })
           .returning()
       : yield* tx
           .update(resourceSelections)
-          .set({ ...columns, chosenAt: sql`now()` })
+          .set({ mode, chosenBy, chosenAt: sql`now()` })
           .where(
             and(
               eq(resourceSelections.worktreeId, key.worktreeId),
@@ -346,7 +297,7 @@ const writeSelection = Effect.fn("ResourcesRepo.writeSelection")(function* (
           )
           .returning();
   if (row === undefined) return yield* Effect.die(new Error("a selection write returned no row"));
-  return yield* toSelection(row);
+  return toSelection(row);
 });
 
 /** What refuses a declaration before any rule: a removal's mark, or a removed project (0167). */
@@ -365,29 +316,6 @@ const fenceRefusal = (spec: ResourceDefinitionInput, fence: ProjectFence) =>
       },
     ],
   });
-
-/**
- * Under the definition's lock: what a new scope or preset does to each worktree's selection, once
- * `resourceDeclarationRefusals` found no worktree holding it as `own`.
- */
-const redefaultSelections = Effect.fn("ResourcesRepo.redefaultSelections")(function* (
-  tx: Tx,
-  existing: StoredResourceDefinition,
-  spec: ResourceDefinitionInput,
-) {
-  const mode = defaultChoiceFor(spec);
-  if (mode === null) {
-    yield* tx.delete(resourceSelections).where(eq(resourceSelections.definitionId, existing.id));
-    return;
-  }
-  const rows = yield* tx
-    .select()
-    .from(resourceSelections)
-    .where(eq(resourceSelections.definitionId, existing.id));
-  for (const row of rows) {
-    yield* writeSelection(tx, row, row, withRevision(spec, mode, row.revision + 1), null);
-  }
-});
 
 /**
  * The project's row, locked in every state: it orders every declaration and a removal taking its
@@ -497,8 +425,9 @@ const writeDeclarationIn = Effect.fn("ResourcesRepo.writeDeclarationIn")(functio
   }
   const existing = yield* toDefinition(held);
   if (existing.specDigest === specDigest && existing.imageDigest === imageDigest) return existing;
+  // A new scope or preset leaves no choice that held: each worktree takes the policy's default.
   if (changesWhatOwnIs(existing.spec, spec)) {
-    yield* redefaultSelections(tx, existing, spec);
+    yield* tx.delete(resourceSelections).where(eq(resourceSelections.definitionId, existing.id));
   }
   const [updated] = yield* tx
     .update(resourceDefinitions)
@@ -659,50 +588,18 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       return rows.map((row) => row.name);
     });
 
-    const ensureSelection = Effect.fn("ResourcesRepo.ensureSelection")(function* (
-      projectId: ProjectId,
-      worktreeId: WorktreeId,
-      definitionId: ResourceDefinitionId,
-    ) {
-      return yield* db
-        .transaction((tx) =>
-          Effect.gen(function* () {
-            const { spec } = yield* lockForWorktree(tx, projectId, worktreeId, definitionId);
-            const mode = defaultChoiceFor(spec);
-            if (mode === null) return null;
-            const stored = yield* storedSelection(tx, worktreeId, definitionId);
-            if (stored !== null) {
-              const current = yield* toSelection(stored);
-              if (selectionRefusal(spec, current.selection) === null) return current;
-            }
-            const revision = stored === null ? 0 : stored.revision + 1;
-            return yield* writeSelection(
-              tx,
-              stored,
-              { worktreeId, definitionId },
-              withRevision(spec, mode, revision),
-              null,
-            );
-          }),
-        )
-        .pipe(Effect.catchTags(queryErrorsDie));
-    });
-
     const setSelection = Effect.fn("ResourcesRepo.setSelection")(function* (
       projectId: ProjectId,
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
-      choice: SelectionChoice,
+      mode: WorktreeChoice,
       chosenBy: string,
     ) {
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
             const { spec } = yield* lockForWorktree(tx, projectId, worktreeId, definitionId);
-            const stored = yield* storedSelection(tx, worktreeId, definitionId);
-            const revision = stored === null ? 0 : stored.revision + 1;
-            const wanted = withRevision(spec, choice.mode, revision);
-            const refusal = selectionRefusal(spec, wanted);
+            const refusal = selectionRefusal(spec, mode);
             if (refusal !== null) {
               return yield* new ResourceSelectionRefusedError({
                 definitionId,
@@ -710,26 +607,43 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
                 refusal,
               });
             }
-            if (stored !== null && stored.mode === choice.mode) {
-              const current = yield* toSelection(stored);
-              if (selectionRefusal(spec, current.selection) === null) {
-                // The same choice keeps its revision and target; a person choosing the default
-                // still owns the choice from now on.
-                return stored.chosenBy !== null
-                  ? current
-                  : yield* writeSelection(tx, stored, stored, current.selection, chosenBy);
-              }
+            const stored = yield* storedSelection(tx, worktreeId, definitionId);
+            // A person choosing what applies already still owns the choice from now on.
+            if (stored !== null && stored.mode === mode && stored.chosenBy !== null) {
+              return toSelection(stored);
             }
-            return yield* writeSelection(
-              tx,
-              stored,
-              { worktreeId, definitionId },
-              wanted,
-              chosenBy,
-            );
+            return yield* writeSelection(tx, stored, { worktreeId, definitionId }, mode, chosenBy);
           }),
         )
         .pipe(Effect.catchTags(queryErrorsDie));
+    });
+
+    const ownDatabases = Effect.fn("ResourcesRepo.ownDatabases")(function* (
+      worktreeId: WorktreeId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(resourceOwnDatabases)
+        .where(eq(resourceOwnDatabases.worktreeId, worktreeId))
+        .pipe(Effect.orDie);
+      return new Map(
+        rows.map((row): readonly [ResourceDefinitionId, OwnDatabaseOrigin] => [
+          row.definitionId,
+          { kind: row.origin, at: row.madeAt },
+        ]),
+      );
+    });
+
+    const recordOwnDatabase = Effect.fn("ResourcesRepo.recordOwnDatabase")(function* (
+      worktreeId: WorktreeId,
+      definitionId: ResourceDefinitionId,
+      origin: OwnDatabaseOrigin["kind"],
+    ) {
+      yield* db
+        .insert(resourceOwnDatabases)
+        .values({ worktreeId, definitionId, origin })
+        .onConflictDoNothing()
+        .pipe(Effect.orDie);
     });
 
     return {
@@ -740,8 +654,9 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       ownSelections,
       byName,
       declaredNames,
-      ensureSelection,
       setSelection,
+      ownDatabases,
+      recordOwnDatabase,
     };
   }),
 );

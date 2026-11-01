@@ -72,6 +72,7 @@ const db = {
   choice: "shared" as const,
   canRemove: false,
   canChoose: true,
+  instance: "not-started" as const,
   statusLine: "@db · postgres 17 · project · added by Manager · shared database · not started",
 };
 
@@ -239,10 +240,11 @@ describe("the Resources card's answers", () => {
       const switchTo = reads(card.host);
       await switchTo("wt_a");
       await act(async () => card.buttonNamed("add to settings")?.click());
-      expect(boundary.add).toHaveBeenCalledWith("project_probe", {
-        kind: "definition",
-        spec: db.spec,
-      });
+      expect(boundary.add).toHaveBeenCalledWith(
+        "project_probe",
+        { kind: "definition", spec: db.spec },
+        "wt_a",
+      );
       await switchTo("wt_b");
       await act(async () => {
         for (const finish of pending) {

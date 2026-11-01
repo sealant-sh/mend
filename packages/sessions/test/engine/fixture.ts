@@ -183,6 +183,8 @@ import {
   ServiceHost,
   SessionEngine,
   SessionEngineLive,
+  ResourceRuntimeNone,
+  type ResourceRuntime,
   SealantClientByWorkspaceCreator,
   SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
@@ -3794,6 +3796,8 @@ const wrappedSessions = (
 
 /** Dependencies and persisted fixture state used by one engine scope. */
 interface EngineOptions {
+  /** The worktree's resources (ADR 0019); none run unless a test provides a runtime. */
+  readonly resourceRuntime?: Layer.Layer<ResourceRuntime>;
   /** Observe real channel waits without replacing registration or timeout behavior. */
   readonly wrapCaptureChannel?: (inner: CaptureChannel["Service"]) => CaptureChannel["Service"];
   readonly sealantLayer?: Layer.Layer<SealantClient>;
@@ -4193,6 +4197,7 @@ export const withPreparedEngineEffect = <B, A, E>(
                   options.harnessLayout?.afterRequest,
                 ),
           options.harnessLayout?.platform ?? PersonLayoutPlatformNone,
+          options.resourceRuntime ?? ResourceRuntimeNone,
           Layer.succeed(HarnessLayoutConfig, {
             flag: options.harnessLayout?.flag ?? "shared",
             loginReleaseGrace: Duration.zero,

@@ -215,9 +215,17 @@ describe("a workspace image's screen", () => {
         "git",
         "chromium",
         "doppler",
+        "postgresql-client",
+        "redis-cli",
         ...screenPackageIds(os).filter((id) => id !== "chromium"),
       ]);
-      expect(workspaceImagePackages(family(os, false))).toEqual(["git", "chromium", "doppler"]);
+      expect(workspaceImagePackages(family(os, false))).toEqual([
+        "git",
+        "chromium",
+        "doppler",
+        "postgresql-client",
+        "redis-cli",
+      ]);
     }
   });
 

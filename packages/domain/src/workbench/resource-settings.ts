@@ -8,7 +8,6 @@ import {
   ResourceRefusal,
   ResourceScope,
   ResourceSpecDigest,
-  SelectionRevision,
   WorktreeChoice,
 } from "./resource.ts";
 
@@ -62,6 +61,20 @@ export const ResourceAddOffer = Schema.Union([
 ]);
 export type ResourceAddOffer = typeof ResourceAddOffer.Type;
 
+/** The kind of a `ResourceInstanceObservation`, or `none` when the read reaches no one instance. */
+export const ResourceInstanceKind = Schema.Literals([
+  "none",
+  "not-started",
+  "starting",
+  "running",
+  "stopped",
+  "exited",
+  "failed",
+  "unsupported",
+  "not-observed",
+]);
+export type ResourceInstanceKind = typeof ResourceInstanceKind.Type;
+
 export const ResourceSettingEntry = Schema.Struct({
   id: ResourceDefinitionId,
   /** What a removal sends back: it holds only while the definition still has this spec. */
@@ -76,6 +89,11 @@ export const ResourceSettingEntry = Schema.Struct({
   canRemove: Schema.Boolean,
   /** For the reader, choosing how the read worktree uses it; false when no worktree was read. */
   canChoose: Schema.Boolean,
+  /**
+   * What Sealant last observed of the instance the read reaches: `none` for a worktree resource
+   * read for no worktree, or one the worktree has off.
+   */
+  instance: ResourceInstanceKind,
   statusLine: Schema.String,
 });
 export type ResourceSettingEntry = typeof ResourceSettingEntry.Type;
@@ -169,7 +187,6 @@ export const ResourceSelectionEntry = Schema.Struct({
   definitionId: ResourceDefinitionId,
   worktreeId: WorktreeId,
   mode: WorktreeChoice,
-  revision: SelectionRevision,
   chosenBy: Schema.NullOr(Schema.String),
   statusLine: Schema.String,
 });

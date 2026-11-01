@@ -892,8 +892,8 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "a project's resources: settings and mend.toml",
     synopsis: ["[--project <p>] [--worktree <w>] [--json]"],
     description: [
-      "One status line per resource, then the image it runs and its id: the definitions project settings hold, each with whoever added it, and, with --worktree, the [resource.*] tables in that worktree's mend.toml with the keys it refuses or ignores. A table's line says whether settings hold it, hold it the same, or differ; nothing runs from the file itself.",
-      "Inside a session's workspace, mend resource list reads the session's own project and worktree. Adding, removing and choosing are a person's: run them from the web app, VS Code, the phone or mend on your machine.",
+      "One status line per resource, then the image it runs and its id, as Sealant last observed its instance: the definitions project settings hold, each with whoever added it, and, with --worktree, that worktree's use of each (shared, its own database, its own instance or off) and the [resource.*] tables in its mend.toml with the keys it refuses or ignores. A table's line says whether settings hold it, hold it the same, or differ.",
+      "Inside a session's workspace, mend resource list reads the session's own project and worktree, as its owner sees them. Adding, removing and choosing are a person's: run them from the web app or mend on your machine.",
     ],
     options: [
       project(),
@@ -912,7 +912,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "<name> --from-file --worktree <w> [--project <p>]",
     ],
     description: [
-      "Any member who can see the project adds a resource, and it is the project's. Mend pins the image to the digest its registry serves for the tag, asking the operator's mirrors first; a registry that cannot say leaves nothing added. Adding a name that exists replaces its definition, which is the person who added it or a manager's: the project's creator or an organization owner.",
+      "Any member who can see the project adds a resource, and it is the project's, and it runs: a project resource starts at once, a worktree resource in --worktree when one is named and in any other worktree on first use. Mend pins the image to the digest its registry serves for the tag, asking the operator's mirrors first; a registry that cannot say leaves nothing added. Adding a name that exists replaces its definition, which is the person who added it or a manager's: the project's creator or an organization owner.",
       "A preset runs its own image at the version named, which starts with its major version (17, 16.4-bookworm), with its port, a data volume and its own ready check. An image is any image reference, such as axllent/mailpit:v1.21. Each --port names one port. --from-file adds the [resource.<name>] table in --worktree's mend.toml as it stands, or says why it may not.",
     ],
     options: [
@@ -930,7 +930,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--from-file", text: "add the [resource.<name>] table in --worktree's mend.toml" },
       {
         flag: "--worktree <w>",
-        text: "the worktree whose mend.toml --from-file reads, by name or id",
+        text: "the worktree whose mend.toml --from-file reads, and where a worktree resource starts",
       },
       project(),
     ],
@@ -958,7 +958,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["<name> [--project <p>]", "[<name>] --definition <id> [--project <p>]"],
     description: [
       "Removes the definition project settings hold under that name, or the one --definition names by the id mend resource list prints; with a name too, the id must be of that name. Removing a definition is the person who added it or a manager's.",
-      "The line being removed prints first. A definition changed since it was read is not removed. Nothing runs yet, so removing deletes no data.",
+      "The line being removed prints first. A definition changed since it was read is not removed. Its instances are archived: their containers go and their volumes are kept.",
     ],
     options: [{ flag: "--definition <id>", text: "the definition to remove" }, project()],
     see: ["resource list"],
@@ -969,7 +969,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "choose how a worktree uses a project resource",
     synopsis: ["<name> <off|shared|own> --worktree <w> [--project <p>]"],
     description: [
-      "Stores the worktree's choice and prints the line it wrote: shared reaches the project's instance, own its own database or instance, off none. The choice is the worktree's change owner's: the owner of its first session. Nothing runs yet, so choosing starts, copies and moves nothing.",
+      "Stores the worktree's choice and prints the line it wrote: shared reaches the project's database app, own the worktree's own database on the same server (Postgres only), off none. The choice is the worktree's change owner's: the owner of its first session. Both databases stay. A process started before the choice keeps its env until it restarts.",
     ],
     options: [{ flag: "--worktree <w>", text: "the worktree, by name or id" }, project()],
     see: ["resource list"],
@@ -980,7 +980,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "start a resource's instance",
     synopsis: ["<name> [--project <p>]"],
     description: [
-      "Refused on every runtime this Mend reaches: resources need a newer Sealant there. A session can run its own [service.<name>] instead. Nothing is started.",
+      "Refused on every runtime this Mend reaches: a person's start comes in a later step. A session's launch starts what its worktree uses. Nothing is started.",
     ],
     options: [project()],
     see: ["resource list"],

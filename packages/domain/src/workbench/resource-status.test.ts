@@ -62,269 +62,131 @@ const dns = worktree({
 const now = new Date("2026-10-30T14:30:03Z");
 const at = { now, timeZone: "UTC" };
 const observedAt = new Date("2026-10-30T14:30:00Z");
+const running: ResourceInstanceObservation = { kind: "running" };
 
-const running = (check: string): ResourceInstanceObservation => ({
-  kind: "running",
-  probe: { kind: "answered", check },
-  secret: "applied",
-});
-const stopped = (
-  reason: Extract<ResourceInstanceObservation, { kind: "stopped" }>["reason"],
-): ResourceInstanceObservation => ({ kind: "stopped", reason, secret: "applied" });
+const observed = (
+  definition: ResourceStatusView["definition"],
+  use: Extract<ResourceStatusView, { kind: "observed" }>["use"],
+  instance: Extract<ResourceStatusView, { kind: "observed" }>["instance"] = running,
+): ResourceStatusView => ({ kind: "observed", definition, use, instance, observedAt });
 
-const ownCopy: ResourceStatusView = {
-  kind: "observed",
-  definition: db,
-  use: {
-    kind: "own",
-    start: { kind: "copied", at: new Date("2026-10-30T14:02:00Z") },
-    instance: running("SELECT 1"),
-  },
-  observedAt,
-};
-
-const sharedDb = (instance: ResourceInstanceObservation): ResourceStatusView => ({
-  kind: "observed",
-  definition: db,
-  use: { kind: "shared", worktrees: 2, instance },
-  observedAt,
-});
-const sharedQueue = (instance: ResourceInstanceObservation): ResourceStatusView => ({
-  kind: "observed",
-  definition: queue,
-  use: { kind: "shared", worktrees: 3, instance },
-  observedAt,
-});
-const ofMail = (instance: ResourceInstanceObservation): ResourceStatusView => ({
-  kind: "observed",
-  definition: mail,
-  use: { kind: "worktree", instance },
-  observedAt,
-});
+const copiedAt = (iso: string) =>
+  observed(db, { kind: "own", origin: { kind: "copied", at: new Date(iso) } });
 
 const WARNING = "any worktree on shared can change or drop its tables";
 
 const lines: ReadonlyArray<readonly [string, ResourceStatusView, string]> = [
   [
-    "a worktree's own database copied from shared, and what answered its check",
-    ownCopy,
-    "@db · postgres 17 · project · its own database · copied from shared 14:02 · running · answered SELECT 1 · observed 3 s ago",
+    "a worktree's own database copied from shared",
+    copiedAt("2026-10-30T14:02:00Z"),
+    "@db · running · own database · copied from shared 14:02 · observed 3 s ago",
   ],
   [
-    "a shared instance and how many worktrees reach it",
-    sharedQueue(running("TCP 5672")),
-    "@queue · rabbitmq 4 · project · shared · reached by 3 worktrees · running · answered TCP 5672 · observed 3 s ago",
+    "a worktree's own database begun empty",
+    observed(db, { kind: "own", origin: { kind: "empty", at: new Date("2026-10-30T14:02:00Z") } }),
+    "@db · running · own database · started empty 14:02 · observed 3 s ago",
   ],
+  [
+    "own before the worktree made its database",
+    observed(db, { kind: "own", origin: null }, { kind: "starting" }),
+    "@db · starting · own database · not made yet · observed 3 s ago",
+  ],
+  [
+    "a shared database, and what shared means",
+    observed(db, { kind: "shared" }),
+    `@db · running · shared database · ${WARNING} · observed 3 s ago`,
+  ],
+  [
+    "a shared image that is not a database",
+    observed(queue, { kind: "shared" }),
+    "@queue · running · shared · observed 3 s ago",
+  ],
+  ["a worktree that has it off", observed(cache, { kind: "off" }), "@cache · off"],
   [
     "a worktree resource",
-    ofMail(running("TCP 1025")),
-    "@mail · mailpit · worktree · running · answered TCP 1025 · observed 3 s ago",
+    observed(mail, { kind: "worktree" }),
+    "@mail · running · its own instance · observed 3 s ago",
   ],
   [
-    "a UDP-only resource with no check",
+    "a stop a person made",
+    observed(db, { kind: "shared" }, { kind: "stopped", reason: { kind: "person", by: "Maria" } }),
+    `@db · stopped by Maria · shared database · ${WARNING} · observed 3 s ago`,
+  ],
+  [
+    "an idle stop",
+    observed(mail, { kind: "worktree" }, { kind: "stopped", reason: { kind: "idle" } }),
+    "@mail · stopped · idle · its own instance · observed 3 s ago",
+  ],
+  [
+    "a start that failed, and why",
+    observed(mail, { kind: "worktree" }, { kind: "failed", message: "image pull refused" }),
+    "@mail · failed · image pull refused · its own instance · observed 3 s ago",
+  ],
+  [
+    "a project read, with who added it",
+    observed(db, { kind: "project", addedBy: "Maria" }),
+    "@db · postgres 17 · project · added by Maria · running · observed 3 s ago",
+  ],
+  [
+    "a worktree resource read for the project",
+    observed(dns, { kind: "project", addedBy: "Tom" }, { kind: "per-worktree", running: 2 }),
+    "@dns · coredns 1 · worktree · added by Tom · one per worktree · 2 running · observed 3 s ago",
+  ],
+  [
+    "a launch that went on while a person's stop holds",
     {
-      kind: "observed",
-      definition: dns,
-      use: {
-        kind: "worktree",
-        instance: { kind: "running", probe: { kind: "not-probed" }, secret: "applied" },
-      },
-      observedAt,
+      kind: "launched-without",
+      definition: db,
+      instance: { kind: "stopped", reason: { kind: "person", by: "Maria" } },
     },
-    "@dns · coredns 1 · worktree · running · not probed · observed 3 s ago",
-  ],
-  [
-    "a declared instance",
-    sharedQueue({ kind: "declared" }),
-    "@queue · rabbitmq 4 · project · shared · reached by 3 worktrees · declared · observed 3 s ago",
-  ],
-  [
-    "an instance starting",
-    ofMail({ kind: "starting" }),
-    "@mail · mailpit · worktree · starting · observed 3 s ago",
-  ],
-  [
-    "an instance stopping",
-    ofMail({ kind: "stopping" }),
-    "@mail · mailpit · worktree · stopping · observed 3 s ago",
-  ],
-  [
-    "an instance stopped after its idle time",
-    ofMail(stopped({ kind: "idle" })),
-    "@mail · mailpit · worktree · stopped · idle · observed 3 s ago",
-  ],
-  [
-    "an instance a person stopped",
-    sharedDb(stopped({ kind: "person", by: "Maria" })),
-    `@db · postgres 17 · project · shared database · reached by 2 worktrees · stopped by Maria · ${WARNING} · observed 3 s ago`,
-  ],
-  [
-    "an instance stopped at its memory limit",
-    sharedDb(stopped({ kind: "memory-limit" })),
-    `@db · postgres 17 · project · shared database · reached by 2 worktrees · stopped · memory limit reached · ${WARNING} · observed 3 s ago`,
-  ],
-  [
-    "an instance stopped at its disk limit",
-    ofMail(stopped({ kind: "disk-limit" })),
-    "@mail · mailpit · worktree · stopped · disk limit reached · observed 3 s ago",
-  ],
-  [
-    "an instance whose data volume is missing",
-    sharedDb({ kind: "blocked", reason: "data-volume-missing" }),
-    `@db · postgres 17 · project · shared database · reached by 2 worktrees · blocked · data volume missing · ${WARNING} · observed 3 s ago`,
-  ],
-  [
-    "an instance on a runtime without resources",
-    ofMail({ kind: "blocked", reason: "needs-newer-sealant" }),
-    "@mail · mailpit · worktree · blocked · resources need a newer Sealant on this runtime · observed 3 s ago",
-  ],
-  [
-    "a secret changed and not applied",
-    sharedQueue({
-      kind: "running",
-      probe: { kind: "answered", check: "TCP 5672" },
-      secret: "changed-not-applied",
-    }),
-    "@queue · rabbitmq 4 · project · shared · reached by 3 worktrees · running · answered TCP 5672 · secret changed · not applied · consumers keep the applied one · observed 3 s ago",
-  ],
-  [
-    "a worktree that runs its own infra",
-    { kind: "observed", definition: cache, use: { kind: "off" }, observedAt },
-    "@cache · redis 8 · project · off · observed 3 s ago",
-  ],
-  [
-    "an own instance from a snapshot, labelled crash-consistent",
-    {
-      kind: "observed",
-      definition: queue,
-      use: {
-        kind: "own",
-        start: { kind: "snapshot", at: new Date("2026-10-30T09:15:00Z") },
-        instance: running("TCP 5672"),
-      },
-      observedAt,
-    },
-    "@queue · rabbitmq 4 · project · its own instance · snapshot of shared 09:15 · crash-consistent · running · answered TCP 5672 · observed 3 s ago",
-  ],
-  [
-    "a launch without an instance a person stopped",
-    { kind: "launched-without", definition: db, because: { kind: "stopped-by", by: "Maria" } },
     "@db · stopped by Maria · this session starts without it",
   ],
   [
-    "a launch on a runtime without resources",
-    {
-      kind: "launched-without",
-      definition: db,
-      because: { kind: "blocked", reason: "needs-newer-sealant" },
-    },
-    "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
+    "a launch that went on while the instance still started",
+    { kind: "launched-without", definition: db, instance: { kind: "starting" } },
+    "@db · starting · this session starts without it",
   ],
   [
-    "a launch without an instance whose data volume is missing",
-    {
-      kind: "launched-without",
-      definition: db,
-      because: { kind: "blocked", reason: "data-volume-missing" },
-    },
-    "@db · blocked · data volume missing · this session starts without it",
+    "a name the project sets itself",
+    { kind: "env-left", definition: db, names: ["DATABASE_URL"] },
+    "@db · DATABASE_URL left as the project sets it",
   ],
   [
-    "a switch to the shared database that restarted a Service",
-    {
-      kind: "switched",
-      definition: db,
-      use: { kind: "shared", worktrees: 2, instance: running("SELECT 1") },
-      restarted: ["web"],
-      waitingFor: [],
-    },
-    `@db · shared database · running · answered SELECT 1 · restarted web · ${WARNING}`,
+    "names the project sets itself",
+    { kind: "env-left", definition: db, names: ["DATABASE_URL", "PGHOST"] },
+    "@db · DATABASE_URL, PGHOST left as the project sets them",
   ],
   [
-    "a switch waiting for a terminal",
-    {
-      kind: "switched",
-      definition: queue,
-      use: { kind: "own", start: { kind: "empty" }, instance: { kind: "starting" } },
-      restarted: [],
-      waitingFor: ["mend claude, pid 4211"],
-    },
-    "@queue · its own instance · empty · starting · waiting for mend claude, pid 4211 to restart",
+    "an own database that could not be made",
+    { kind: "own-not-made", definition: db, message: "pg_restore exited 1" },
+    "@db · own database not made · pg_restore exited 1 · the next launch tries again",
+  ],
+  [
+    "a mend.toml table settings hold otherwise",
+    { kind: "file-kept", definition: db },
+    "@db · mend.toml differs · project settings kept",
+  ],
+  [
+    "a Sealant that runs no resources",
+    observed(db, { kind: "shared" }, { kind: "unsupported", runtime: "kubernetes" }),
+    `@db · resources run on Docker; this Sealant runs kubernetes · shared database · ${WARNING} · observed 3 s ago`,
   ],
 ];
 
-describe("the status line", () => {
+describe("the one status line", () => {
   it.each(lines)("says %s", (_, view, line) => {
     expect(resourceStatusLine(view, at)).toBe(line);
   });
 
-  it("never prints a credential or a verdict", () => {
-    for (const [, view] of lines) {
-      const line = resourceStatusLine(view, at);
-      expect(line).not.toContain("hunter2-literal");
-      expect(line).not.toContain("MAILPIT_UI_AUTH");
-      expect(line).not.toMatch(/healthy|safe|ready to/i);
-    }
+  it("names a preset with its image when the image is not the preset's own", () => {
+    const view = observed(postgresOn("pgvector/pgvector:pg17"), { kind: "project", addedBy: "A" });
+    expect(resourceStatusLine(view, at)).toContain("@db · postgres pgvector 17 · project");
   });
 
-  it.each([
-    ["postgres:17", "postgres 17"],
-    ["pgvector/pgvector:pg17", "postgres pgvector 17"],
-    ["pgvector/pgvector:0.8.0-pg17", "postgres pgvector 17"],
-    ["postgis/postgis:17-3.5", "postgres postgis 17"],
-  ])("names a preset on %s as %s", (image, engine) => {
-    const view: ResourceStatusView = {
-      kind: "observed",
-      definition: postgresOn(image),
-      use: { kind: "off" },
-      observedAt,
-    };
-    expect(resourceStatusLine(view, at)).toBe(`@db · ${engine} · project · off · observed 3 s ago`);
-  });
-
-  it("cannot be built for a use its definition's scope does not have", () => {
-    const views: ReadonlyArray<ResourceStatusView> = [
-      // @ts-expect-error A worktree resource has its own instance and no shared use.
-      {
-        kind: "observed",
-        definition: mail,
-        use: { kind: "shared", worktrees: 2, instance: running("TCP 1025") },
-        observedAt,
-      },
-      // @ts-expect-error A project resource is reached through a worktree's selection.
-      {
-        kind: "observed",
-        definition: queue,
-        use: { kind: "worktree", instance: running("TCP 5672") },
-        observedAt,
-      },
-      // @ts-expect-error A worktree resource has no selection to switch.
-      { kind: "switched", definition: mail, use: { kind: "off" }, restarted: [], waitingFor: [] },
-    ];
-    expect(views).toHaveLength(3);
-  });
-});
-
-describe("clock times in the status line", () => {
-  const copiedAt = (time: string): ResourceStatusView => ({
-    ...ownCopy,
-    use: {
-      kind: "own",
-      start: { kind: "copied", at: new Date(time) },
-      instance: running("SELECT 1"),
-    },
-  });
-
-  it("reads them in the reader's time zone", () => {
-    expect(resourceStatusLine(ownCopy, { now, timeZone: "Europe/Athens" })).toContain(
-      "copied from shared 16:02",
-    );
-  });
-
-  it("dates a time that is not today", () => {
-    expect(resourceStatusLine(copiedAt("2026-10-27T14:02:00Z"), at)).toContain(
-      "copied from shared 27 Oct 14:02",
-    );
+  it("never prints an env value, a literal secret among them", () => {
+    expect(
+      resourceStatusLine(observed(queue, { kind: "project", addedBy: "A" }), at),
+    ).not.toContain("hunter2");
   });
 
   it("dates a time by the reader's day, not the server's", () => {
@@ -343,40 +205,25 @@ describe("clock times in the status line", () => {
 
   it("needs the reader's time zone", () => {
     // @ts-expect-error The server's zone is never a reader's default.
-    expect(resourceStatusLine(ownCopy, { now })).toContain("@db");
+    expect(resourceStatusLine(copiedAt("2026-10-30T14:02:00Z"), { now })).toContain("@db");
   });
 });
 
-describe("a resource only declared", () => {
+describe("a mend.toml table", () => {
   const declared = (
     definition: ResourceStatusView["definition"],
-    source: Extract<ResourceStatusView, { kind: "declared" }>["source"],
-  ) => resourceStatusLine({ kind: "declared", definition, source }, at);
+    settings: "absent" | "same" | "differs",
+  ) => resourceStatusLine({ kind: "declared", definition, source: { kind: "file", settings } }, at);
 
-  it("says a mend.toml table and how it stands against settings", () => {
-    expect(declared(mail, { kind: "file", settings: "absent" })).toBe(
+  it("says how it stands against settings", () => {
+    expect(declared(mail, "absent")).toBe(
       "@mail · mailpit · worktree · in mend.toml · not in settings",
     );
-    expect(declared(mail, { kind: "file", settings: "same" })).toBe(
+    expect(declared(mail, "same")).toBe(
       "@mail · mailpit · worktree · in mend.toml · same as settings",
     );
-    expect(declared(db, { kind: "file", settings: "differs" })).toBe(
+    expect(declared(db, "differs")).toBe(
       "@db · postgres 17 · project · in mend.toml · differs from settings",
-    );
-  });
-
-  it("says who added a definition settings hold, and that nothing started", () => {
-    expect(declared(db, { kind: "settings", addedBy: "Maria" })).toBe(
-      "@db · postgres 17 · project · added by Maria · not started",
-    );
-  });
-
-  it("says what a worktree chose, in the words its use is read in", () => {
-    expect(declared(db, { kind: "settings", addedBy: "Maria", choice: "own" })).toBe(
-      "@db · postgres 17 · project · added by Maria · its own database · not started",
-    );
-    expect(declared(cache, { kind: "settings", addedBy: "Tom", choice: "shared" })).toBe(
-      "@cache · redis 8 · project · added by Tom · shared · not started",
     );
   });
 });

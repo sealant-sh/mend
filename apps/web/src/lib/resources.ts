@@ -31,8 +31,11 @@ export const readerZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
 const at = (projectId: string) => ({ projectId, timeZone: readerZone() });
 
-export const addResource = (projectId: string, addition: ResourceAddInput) =>
-  orLogin(trpcClient.resources.add.mutate({ ...at(projectId), addition }));
+export const addResource = (
+  projectId: string,
+  addition: ResourceAddInput,
+  worktreeId: WorktreeId | null,
+) => orLogin(trpcClient.resources.add.mutate({ ...at(projectId), addition, worktreeId }));
 export const removeResourceDefinition = (projectId: string, entry: ResourceSettingView) =>
   orLogin(
     trpcClient.resources.remove.mutate({
@@ -59,20 +62,20 @@ export const choiceWords = (
       return {
         label: "shared",
         meaning: database
-          ? "Reaches the project's instance and its one shared database. Any worktree on shared can change or drop its tables."
+          ? "Reaches the project's server and its shared database, app. Any worktree on shared can change or drop its tables."
           : "Reaches the project's instance. Any worktree on shared can change what it holds.",
       };
     case "own":
       return {
         label: "own",
         meaning: database
-          ? "Gets a database of its own on the project instance."
+          ? "Gets a database of its own on the project's server, copied from shared when shared has tables. Switching back to it finds its data."
           : "Gets an instance of its own, of the same definition.",
       };
     case "off":
       return {
         label: "off",
-        meaning: "Gets nothing from this resource; the worktree runs its own.",
+        meaning: "Gets nothing from this resource: no env, and no instance started for it.",
       };
   }
 };

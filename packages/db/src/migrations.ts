@@ -4767,6 +4767,30 @@ const dropResourceApprovalsMigration = Effect.gen(function* () {
   yield* sql`DROP TABLE resource_proposals`;
 });
 
+/**
+ * 0174 (ADR 0019, amendment of 2026-10-31): a selection holds the mode only. Own is a Postgres
+ * database whose name derives from the worktree id, so its target and the revision that minted
+ * one go. Each own database Mend made is recorded with how it began; the row has no foreign key to
+ * its worktree, so it can outlive the worktree until the database's dump lands.
+ */
+const resourceRuntimeMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DROP INDEX resource_selections_own_target_key`;
+  yield* sql`ALTER TABLE resource_selections
+    DROP CONSTRAINT resource_selections_own_target,
+    DROP COLUMN own_target,
+    DROP COLUMN revision`;
+  yield* sql`CREATE TABLE resource_own_databases (
+    worktree_id text NOT NULL,
+    definition_id text NOT NULL REFERENCES resource_definitions(id) ON DELETE CASCADE,
+    origin text NOT NULL CHECK (origin IN ('empty', 'copied')),
+    made_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (worktree_id, definition_id)
+  )`;
+  yield* sql`CREATE INDEX resource_own_databases_definition_idx
+    ON resource_own_databases (definition_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4929,4 +4953,5 @@ export const migrations = {
   "0171_preview_activity": previewActivityMigration,
   "0172_doppler": dopplerMigration,
   "0173_drop_resource_approvals": dropResourceApprovalsMigration,
+  "0174_resource_runtime": resourceRuntimeMigration,
 };

@@ -88,6 +88,7 @@ import {
   FollowUpDelivery,
   ForwardAdapter,
   ResourceImageResolver,
+  ResourceRuntime,
   ResourcesLive,
   Screens,
   ServiceHost,
@@ -340,6 +341,8 @@ export const createTenancyApi = async (
       readonly users?: Layer.PartialEffectful<UsersRepo["Service"]>;
       readonly devices?: Layer.PartialEffectful<DevicesRepo["Service"]>;
       readonly images?: Layer.PartialEffectful<ResourceImageResolver["Service"]>;
+      /** What runs a project's resources on Sealant (docs/adr/0019). */
+      readonly resourceRuntime?: Layer.PartialEffectful<ResourceRuntime["Service"]>;
       readonly projects?: Layer.PartialEffectful<ProjectsRepo["Service"]>;
       readonly sessions?: Layer.PartialEffectful<SessionsRepo["Service"]>;
       readonly hotWorkspaces?: Layer.PartialEffectful<HotWorkspacesRepo["Service"]>;
@@ -765,6 +768,19 @@ export const createTenancyApi = async (
       ),
       recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
       recording(ResourceImageResolver, "images", options.implement?.images ?? {}, calls),
+      // Nothing runs on Sealant here: a start runs, and every read finds nothing started.
+      recording(
+        ResourceRuntime,
+        "resourceRuntime",
+        {
+          prepare: () => Effect.succeed({ env: {}, views: [] }),
+          start: () => Effect.succeed({ instance: { kind: "running" }, observedAt: new Date() }),
+          observe: () => Effect.succeed({ kind: "observed", byKey: new Map() }),
+          archive: () => Effect.void,
+          ...options.implement?.resourceRuntime,
+        },
+        calls,
+      ),
       // Whose identity a call about a workspace runs as: the principal in context here, since the
       // harness's platform has one user.
       recording(

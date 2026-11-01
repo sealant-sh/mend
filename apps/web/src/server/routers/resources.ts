@@ -80,10 +80,25 @@ export const resourcesRouter = router({
       ),
     ),
   add: procedure
-    .input(input(Schema.Struct({ ...reader, addition: ResourceAddInput })))
+    .input(
+      input(
+        Schema.Struct({
+          ...reader,
+          addition: ResourceAddInput,
+          // The worktree the card reads for: a worktree resource starts there at once.
+          worktreeId: Schema.NullOr(WorktreeId),
+        }),
+      ),
+    )
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => {
-        const at = { params: { id: i.projectId }, query: { timeZone: i.timeZone } };
+        const at = {
+          params: { id: i.projectId },
+          query: {
+            timeZone: i.timeZone,
+            ...(i.worktreeId === null ? {} : { worktreeId: i.worktreeId }),
+          },
+        };
         // The derived client takes its union payload as one request type per member, so each
         // member is narrowed before it is sent.
         const { addition } = i;

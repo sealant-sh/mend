@@ -14,7 +14,12 @@ import {
   resourceRuntimeRefusal,
   type ResourcesPage,
 } from "@mend/domain/workbench";
-import { ImageResolutionError, type ResourceImageResolver, WORKTREE_STAMP } from "@mend/sessions";
+import {
+  ImageResolutionError,
+  type ResourceImageResolver,
+  type ResourceRuntime,
+  WORKTREE_STAMP,
+} from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -129,11 +134,13 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
 
   const start = async (
     override: (repo: ResourcesRepo["Service"]) => ResourcesRepo["Service"] = (repo) => repo,
+    resourceRuntime: Layer.PartialEffectful<ResourceRuntime["Service"]> = {},
   ) => {
     const repo = override(await runtime.runPromise(repoNow));
     api = await createTenancyApi(undefined, {
       implement: {
         resources: repo,
+        resourceRuntime,
         users: {
           byIds: (accounts) =>
             Effect.succeed(
@@ -235,7 +242,8 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
             image: `postgres:17@${digestFor("postgres:17")}`,
             addedBy: "carol",
             canRemove: true,
-            statusLine: "@db · postgres 17 · project · added by Carol · not started",
+            // Adding is running: the project resource started at once.
+            statusLine: "@db · postgres 17 · project · added by Carol · running · observed 0 s ago",
           },
         },
       });
@@ -246,7 +254,8 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
         {
           image: `postgres:17@${digestFor("postgres:17")}`,
           canRemove: true,
-          statusLine: "@db · postgres 17 · project · added by Carol · not started",
+          statusLine:
+            "@db · postgres 17 · project · added by Carol · not started · observed 0 s ago",
         },
       ]);
       expect(page.body.file).toEqual({ kind: "not-selected" });
@@ -265,7 +274,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       });
       expect(resolved).toEqual(["postgres:17"]);
       expect(lines((await list("carol")).body.settings)).toEqual([
-        "@db · postgres 17 · project · added by Alice · not started",
+        "@db · postgres 17 · project · added by Alice · not started · observed 0 s ago",
       ]);
 
       await remove("alice", (await list("alice")).body.settings[0]?.id ?? "", "0".repeat(64));
@@ -286,7 +295,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       expect(byManager.body.definition).toMatchObject({
         id: carols.body.definition.id,
         image: `axllent/mailpit:v1.28@${digestFor("axllent/mailpit:v1.28")}`,
-        statusLine: "@mail · mailpit · project · added by Alice · not started",
+        statusLine: "@mail · mailpit · project · added by Alice · running · observed 0 s ago",
       });
     });
 
@@ -457,7 +466,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       expect((await remove("alice", alices.id, "0".repeat(64))).status).toBe(409);
       expect(await remove("alice", alices.id, alices.digest)).toEqual({
         status: 200,
-        body: { statusLine: "@db · definition removed" },
+        body: { statusLine: "@db · definition removed · its volumes are kept" },
       });
 
       const carols = (await addPreset("carol", "17")).body.definition;
@@ -477,7 +486,8 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       const added = await add("carol", { kind: "definition", spec: table.spec });
       expect(added.body.definition).toMatchObject({
         digest: table.digest,
-        statusLine: "@mail · mailpit · worktree · added by Carol · not started",
+        statusLine:
+          "@mail · mailpit · worktree · added by Carol · one per worktree · 0 running · observed 0 s ago",
       });
       expect(await tableOf("carol")).toMatchObject({
         statusLine: "@mail · mailpit · worktree · in mend.toml · same as settings",
@@ -613,21 +623,20 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     it("stores a change owner's choice and answers the row it wrote", async () => {
       await start();
       const db = (await addPreset("alice", "17")).body.definition;
-      expect(await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own")).toEqual({
+      expect(await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared")).toEqual({
         status: 200,
         body: {
           definitionId: db.id,
           worktreeId: CAROL_WORKTREE_IN_SHARED_A,
-          mode: "own",
-          revision: 0,
+          mode: "shared",
           chosenBy: "carol",
           statusLine:
-            "@db · postgres 17 · project · added by Alice · its own database · not started",
+            "@db · not started · shared database · any worktree on shared can change or drop its tables · observed 0 s ago",
         },
       });
-      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "shared")).body).toMatchObject({
-        mode: "shared",
-        revision: 1,
+      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own")).body).toMatchObject({
+        mode: "own",
+        statusLine: "@db · not started · own database · not made yet · observed 0 s ago",
       });
       expect((await use("alice", CAROL_WORKTREE_IN_SHARED_A, db.id, "off")).body).toEqual({
         _tag: "ResourceDenied",
@@ -636,31 +645,29 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
       });
     });
 
-    it("reads a worktree's stored choice back on its line, and the read writes none", async () => {
+    it("reads a worktree's choice on its line, the default until one is stored, and the read writes none", async () => {
       await start();
       const db = (await addPreset("alice", "17")).body.definition;
       const settingsLines = async (query: string) =>
         lines((await list("carol", query)).body.settings);
+      // A Postgres worktree is on its own database by default.
       expect(await settingsLines(forCarol)).toEqual([
-        "@db · postgres 17 · project · added by Alice · not started",
+        "@db · not started · own database · not made yet · observed 0 s ago",
       ]);
       expect((await list("carol", forCarol)).body.settings).toMatchObject([
-        { choice: null, canChoose: true },
+        { choice: null, canChoose: true, instance: "not-started" },
       ]);
       expect((await list("alice", forCarol)).body.settings).toMatchObject([
         { choice: null, canChoose: false },
       ]);
-      await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "own");
-      expect(await settingsLines(forCarol)).toEqual([
-        "@db · postgres 17 · project · added by Alice · its own database · not started",
+      await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "off");
+      expect(await settingsLines(forCarol)).toEqual(["@db · off"]);
+      expect((await list("carol", forCarol)).body.settings).toMatchObject([
+        { choice: "off", instance: "none" },
       ]);
       expect(await settingsLines("")).toEqual([
-        "@db · postgres 17 · project · added by Alice · not started",
+        "@db · postgres 17 · project · added by Alice · not started · observed 0 s ago",
       ]);
-      // The reads took no revision: the next choice is the first one after "own".
-      expect((await use("carol", CAROL_WORKTREE_IN_SHARED_A, db.id, "off")).body).toMatchObject({
-        revision: 1,
-      });
     });
 
     it("names the resource a refused choice is of, and says each refusal as a clause", async () => {
@@ -726,9 +733,6 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
         message: resourceRuntimeRefusal("db"),
       },
     });
-    expect(refused.body.message).toBe(
-      "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
-    );
     expect(
       (await harness().request("bob", "POST", `/api/projects/${shared.project}/resources/db/start`))
         .status,
