@@ -139,7 +139,7 @@ There are two ways to declare a Service:
 That is the creation surface. Listener observations may later suggest one of these explicit actions,
 but never perform it automatically.
 
-### Declared Services — `.mend/mend.toml`
+### Declared Services in `.mend/mend.toml`
 
 A repository declares its Services in `.mend/mend.toml`, versioned with the code so it travels to
 every collaborator and session worktree. Root `mend.toml` is still read for existing repositories;
@@ -172,12 +172,12 @@ service = "web"
 
 A declaration is a recipe, never a running process. `mend service run web` starts one by name; the
 web, desktop, and phone Run Service forms offer the declared set. Mend reads the file beside the
-worktree when the deployment co-locates it, and from the session's live workspace
-(`/workspace/repo/.mend/mend.toml`, through the SDK's exec) when it does not — the capture store's
-MicroVM executors. With no live workspace in that mode the file is not observable: the recipe list
-answers the project's recipes only, and running a file recipe is refused with a message that says
-so. A port-only entry is an `add` recipe. The session's worktree copy is authoritative, so an agent
-can add a recipe as part of its change and Review shows that edit.
+worktree when the deployment co-locates it. Otherwise, it reads `/workspace/repo/.mend/mend.toml`
+from the session's live workspace through the SDK's exec, as on the capture store's MicroVM
+executors. With no live workspace in that mode the file is not observable: the recipe list answers
+the project's recipes only, and running a file recipe is refused with a message that says so. A
+port-only entry is an `add` recipe. The session's worktree copy is authoritative, so an agent can
+add a recipe as part of its change and Review shows that edit.
 
 **Nothing autostarts.** Declaring, claiming a hot workspace, resuming and reconnecting start no
 Service. The one start Mend makes on its own is when it replaces an executor: it starts again the
