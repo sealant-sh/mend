@@ -316,13 +316,15 @@ const serve = Effect.gen(function* () {
   return read;
 });
 /** `mend resource <argv>` from inside the session: its lines, or why it was refused. */
-const fromSession = (...argv: ReadonlyArray<string>) =>
-  runtime.runPromise(
-    Effect.flatMap(serve, (read) => read(SESSION, argv, clock)).pipe(
+const fromSession = async (...argv: ReadonlyArray<string>) => {
+  const read = await runtime.runPromise(serve);
+  return Effect.runPromise(
+    read(SESSION, argv, clock).pipe(
       Effect.map((answer) => answer.lines),
       Effect.catch((error) => Effect.succeed([`refused: ${error.message}`])),
     ),
   );
+};
 
 describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
   let db: StoredResourceInstance;
@@ -464,6 +466,62 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
       "definition differs",
     );
     expect(file.text).toBe("");
+  });
+
+  for (const [serverVersion, fileVersion] of [
+    ["17", "17"],
+    ["16", "17"],
+    ["17", "16"],
+  ] as const) {
+    it(`starts a fresh live worktree's own database with server ${serverVersion} and file ${fileVersion}`, async () => {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE agent_sessions SET sealant_workspace_id = 'ws-1' WHERE id = ${SESSION}`;
+          const repo = yield* ResourcesRepo;
+          db = yield* repo.remember(
+            PROJECT,
+            db.id,
+            null,
+            presetDefinition({
+              name: ResourceName.make("db"),
+              preset: "postgres",
+              version: PresetVersion.make(serverVersion),
+            }),
+            DIGEST,
+            "u-tom",
+          );
+        }),
+      );
+      file.text = file.text.replace("postgres:17", `postgres:${serverVersion}`);
+      await start();
+      file.text = "";
+      workspaceFile = `[resource.db]\npreset = "postgres"\nimage = "postgres:${fileVersion}"\n`;
+      const lines = await fromSession("start", "db", "--worktree");
+      expect(lines[0]).toContain("@db · running");
+      if (serverVersion !== fileVersion)
+        expect(lines.join("\n")).toContain(
+          `own database on the project server (postgres:${serverVersion}) · this worktree's file asks postgres:${fileVersion}`,
+        );
+      expect((await prepare()).env.MEND_DB_DATABASE).toBe(OWN);
+      expect(sealant.specs.get(db.id)?.image).toBe(db.image);
+    });
+  }
+
+  it("starts a newly appended worktree Postgres definition by creating its project server", async () => {
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`TRUNCATE resource_definitions CASCADE`;
+        yield* sql`UPDATE agent_sessions SET sealant_workspace_id = 'ws-1' WHERE id = ${SESSION}`;
+      }),
+    );
+    file.text = "";
+    workspaceFile = '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\n';
+    const lines = await fromSession("start", "db", "--worktree");
+    expect(lines[0]).toContain("@db · running");
+    expect(lines.join("\n")).toContain("started the project server for it");
+    expect((await prepare()).env.MEND_DB_DATABASE).toBe(OWN);
   });
 
   it("launch never starts a missing instance, adopts a file definition, or creates an own database", async () => {
