@@ -676,9 +676,9 @@ selection and host-key verification.
 
 | Command                                                                       | Purpose                                                                     |
 | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `mend service init [--yes]`                                                   | Scaffold `mend.toml` from package and Compose files                         |
+| `mend service init [--yes]`                                                   | Scaffold `.mend/mend.toml` from package and Compose files                   |
 | `mend service run [session] --port <port> [options] -- <command...>`          | Start and supervise a Service command; tunnels the port here when remote    |
-| `mend service run [session] <name>`                                           | Start a recipe from `mend.toml`                                             |
+| `mend service run [session] <name>`                                           | Start a recipe from `.mend/mend.toml`                                       |
 | `mend service <name>`                                                         | Shorthand for a named recipe                                                |
 | `mend service add [session] <port> [--name <name>] [--udp] [--http\|--https]` | Forward an existing workspace listener without supervising it               |
 | `mend service connect [name...] [--port <port>]`                              | Bring live Services to this machine's loopback over an authenticated tunnel |
@@ -688,9 +688,9 @@ selection and host-key verification.
 | `mend service stop <name-or-id>`                                              | Stop the process and close its host port                                    |
 
 `mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, `--wait`, `--timeout`
-and `--no-connect`, and for a recipe `--setup`, which runs `mend.toml`'s `[setup]` even where it
-already succeeded. `mend service stop <name>` also ends a start of that Service still under way, in
-its setup or a dependency's start, before the Service exists. Mend holds the start for up to a
+and `--no-connect`, and for a recipe `--setup`, which runs `.mend/mend.toml`'s `[setup]` even where
+it already succeeded. `mend service stop <name>` also ends a start of that Service still under way,
+in its setup or a dependency's start, before the Service exists. Mend holds the start for up to a
 minute until the port answers. `--wait` keeps waiting while the Service is still starting, which
 means its process runs and its port has not answered yet (building, installing, booting), up to
 `--timeout` (a duration as `mend wait` takes it; default `10m`). Mend probes a started Service's
@@ -758,7 +758,7 @@ session endpoint), and it speaks Services, repositories, `mend land` and `mend s
 | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | `mend service` or `mend service list`                                                   | List this session's live Services                                              |
 | `mend service run --port <port> [--name <n>] [--udp] [--http\|--https] -- <command...>` | Start and supervise a Service                                                  |
-| `mend service run <name>` or `mend service <name>`                                      | Start a recipe from `mend.toml`                                                |
+| `mend service run <name>` or `mend service <name>`                                      | Start a recipe from `.mend/mend.toml`                                          |
 | `mend service add <port> [--name <n>] [--udp] [--http\|--https]`                        | Adopt an existing workspace listener                                           |
 | `mend service stop <name-or-id>`                                                        | Stop a Service                                                                 |
 | `mend service restart <name-or-id>`                                                     | Start another attempt                                                          |

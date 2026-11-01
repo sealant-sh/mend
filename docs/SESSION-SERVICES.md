@@ -139,10 +139,12 @@ There are two ways to declare a Service:
 That is the creation surface. Listener observations may later suggest one of these explicit actions,
 but never perform it automatically.
 
-### Declared Services — `mend.toml`
+### Declared Services in `.mend/mend.toml`
 
-A repository can declare its Services once, in a `mend.toml` at the repo root — versioned with the
-code, so it travels to every collaborator and every session worktree:
+A repository declares its Services in `.mend/mend.toml`, versioned with the code so it travels to
+every collaborator and session worktree. Root `mend.toml` is still read for existing repositories;
+when both exist, `.mend/mend.toml` wins, with no merging. This path follows the November 1 design in
+[ADR 0019](adr/0019-shared-services.md), awaiting implementation. For example:
 
 ```toml
 [setup]
@@ -170,8 +172,8 @@ service = "web"
 
 A declaration is a recipe, never a running process. `mend service run web` starts one by name; the
 web, desktop, and phone Run Service forms offer the declared set. Mend reads the file beside the
-worktree when the deployment co-locates it, and from the session's live workspace
-(`/workspace/repo/mend.toml`, through the SDK's exec) when it does not — the capture store's MicroVM
+worktree when the deployment co-locates it. Otherwise, it reads `/workspace/repo/.mend/mend.toml`
+from the session's live workspace through the SDK's exec, as on the capture store's MicroVM
 executors. With no live workspace in that mode the file is not observable: the recipe list answers
 the project's recipes only, and running a file recipe is refused with a message that says so. A
 port-only entry is an `add` recipe. The session's worktree copy is authoritative, so an agent can
@@ -200,7 +202,7 @@ Check the server's version before you rely on them.
 | `protocol`          | `"tcp"` (default) or `"udp"`.                                                                                                                                                                                                                                          | Anything else.                                                                                                                                                                              |
 | `browserScheme`     | `"http"` or `"https"`: the Service is opened in a browser.                                                                                                                                                                                                             | Anything else, or on UDP.                                                                                                                                                                   |
 | `cwd`               | The directory the command runs in, relative to the repository root. Mend passes `/workspace/repo/<cwd>`. `""` and `"."` are the root.                                                                                                                                  | Absolute, containing `..`, containing NUL, or not a string.                                                                                                                                 |
-| `env`               | The recipe's own environment, string values only.                                                                                                                                                                                                                      | A name that is not `[A-Za-z_][A-Za-z0-9_]*`, a `MEND_*` name (Mend's), `PORT` (Mend's), or a value that is not a string.                                                                    |
+| `env`               | The recipe's own environment, string values only; values may reference `MEND_*` resource variables at Service start.                                                                                                                                                   | A name that is not `[A-Za-z_][A-Za-z0-9_]*`, a `MEND_*` name (Mend's), `PORT` (Mend's), or a value that is not a string.                                                                    |
 | `ready`             | When a started Service counts as up: `{ http = "/health", timeout = "2m" }` waits for any HTTP status line for that path, over TLS for an `https` Service; `{ timeout = "90s" }` keeps the TCP accept with a longer wait, for an adopted port too. Default: TCP, 60 s. | `http` not a path, `timeout` not a quoted duration or outside 1 s–10 min, or `http` on UDP or on a recipe with no command.                                                                  |
 | `host`              | The `Host` a preview's requests carry: `"rewrite"` (default, `localhost:<port>`) or `"preserve"` (the preview's own host, for an app that builds its links from it).                                                                                                   | Without `browserScheme = "http"`.                                                                                                                                                           |
 | `address`           | `"loopback"` (default) or `"docker"`: Docker publishes the port, as a compose service's. A docker Service is always dialled port-scoped, never bound to a process, and its preview says `port-scoped`.                                                                 | Anything else, or on UDP.                                                                                                                                                                   |
@@ -229,10 +231,10 @@ gives `MEND_SERVICE_DB_MAIN_*`). The host is `127.0.0.1`, or for an `address = "
 whichever of `127.0.0.1` and the Docker sidecar (`docker`) Mend reaches it on. A recipe whose two
 dependencies give the same names is refused, and a recipe's `env` cannot set them (`MEND_*` is
 Mend's). The attempt records which dependencies it was started with, never their addresses: a
-restart binds the same ones, whatever `mend.toml` says by then, at their addresses as they are then.
-A dependency not running at a restart is left out; a restart that cannot look the addresses up says
-so and starts nothing. They are process environment, so they reach a Service in a standby workspace
-whose workspace environment was fixed before its worktree was known. `depends` starts each
+restart binds the same ones, whatever `.mend/mend.toml` says by then, at their addresses as they are
+then. A dependency not running at a restart is left out; a restart that cannot look the addresses up
+says so and starts nothing. They are process environment, so they reach a Service in a standby
+workspace whose workspace environment was fixed before its worktree was known. `depends` starts each
 dependency first, one start at a time. One already live in the session is not started again, but it
 counts only once it has answered its own `ready` rule: one that never did is checked again, within
 its own timeout, and a command-less one has its port looked at again. A command-less one not yet
@@ -240,23 +242,24 @@ live is adopted and waited for within its `ready.timeout`. The first that fails 
 stops the start with its name, leaving the ones already started running. The readiness wait holds
 nothing another Service's stop needs.
 
-**Resource dependencies.** `depends = ["@db"]` requires the project's `@db`. The Service gets all
-the worktree's resource env, including `DATABASE_URL` for its one Postgres, plus any explicit
-mapping in `depends = [{ shared = "db", env = { TEST_DATABASE_URL = "url" } }]`. `resource = "db"`
-means the same as `shared = "db"`. A mapping names `url`, `host`, `port`, `port.<name>`, `database`,
-`username` or an export in the resource's definition. Two mappings cannot set the same env name or
-shadow a name another binding provides. A recipe's `env` cannot set a binding's name either: Mend
-says `DATABASE_URL comes from @db`.
+**Resource dependencies.** `depends = ["@db"]` requires the worktree's selected `@db`. The Service
+gets all the worktree's namespaced resource env, such as `MEND_DB_URL`. As decided on November 1 in
+[ADR 0019](adr/0019-shared-services.md), Mend supplies no conventional `DATABASE_URL`, `PG*` or
+`REDIS_URL`. Recipe `env` may opt in with `env = { DATABASE_URL = "${MEND_DB_URL}" }`; values may
+reference `MEND_*` resource variables at Service start, while setting a `MEND_*` name remains
+refused. Explicit dependency mappings remain opt-ins. Duplicate mapped names and recipe env that
+shadows a binding are refused by name.
 
-A missing resource or one this worktree has off refuses that Service, leaving the other recipes
-available. For off, Mend says `@db · this worktree has it off · mend resource use db shared`. Before
-the Service opens, Mend starts its resources with cause `use` and waits up to 30 seconds for their
-ready checks. Past the bound it starts the Service and says `@db not ready` on the session's line.
-Every restart recomputes the mapped values; credentials are never saved in the attempt. A preview's
-wake follows this same path within its existing request deadline. An idle resource starts again, but
-a person's stop holds. The viewer sees
-`preview · web · @db stopped by Maria · your request was not delivered`. Stopping a preview never
-stops a resource.
+A missing resource or one this worktree has off refuses that Service, leaving other recipes
+available. A resource's first start must be explicit at project or worktree level. A session launch
+or preview wake only restarts a resource that stopped for idleness; a person's or agent's stop
+holds. Mend waits up to 30 seconds for readiness, then opens the Service anyway with the resource
+env and says `@db not ready` if it has not answered. A preview stop never stops a resource.
+
+A level switch restarts the worktree's Services with current resource values and tells the agent
+which variable names changed and to run `mend resource env` or restart its process. Existing
+processes, including the agent's shell, keep old values; printing exports does not update them. The
+exact workspace-note line and switch message are specified in ADR 0019.
 
 **One rule says a Service is up.** The recipe's `ready` decides it at the start, at a restart, at
 the 20-second background probe and when the server starts again. A port that accepts a connection is
@@ -331,17 +334,17 @@ step, done, unchanged since it last ran, refused, failed or stopped. A start's a
 its setup went too, so `mend service run` says a refused `[setup]` it went on without.
 
 **What a restart runs.** An attempt records its command, `cwd`, the recipe's `env` and its `ready`
-rule. A restart replays those, never the file as it reads now, so a turn that edited `mend.toml`
-changes nothing until a new start, except for the preview, which a changed turn starts again
-(below). `PORT`, `MEND_PREVIEW_URL`, the dependencies' addresses and the person's names are worked
-out again at each start.
+rule. A restart replays those, never the file as it reads now, so a turn that edited
+`.mend/mend.toml` changes nothing until a new start, except for the preview, which a changed turn
+starts again (below). `PORT`, `MEND_PREVIEW_URL`, the dependencies' addresses and the person's names
+are worked out again at each start.
 
 **Who runs a recipe.** Any recipe runs, whoever added or changed it (ADR 0017, decision log 4,
-reversed 2026-10-31). Every start reads `mend.toml` as the worktree has it now: the owner's Start,
-the agent's own start, a turn's start, Mend's start after an executor replacement and a restart
-alike. A recipe runs as the person who caused it, so nobody spends another person's login: the
-person who pressed Start, a turn's sender, and for a wake whoever last started the preview or last
-changed its recipe. `services.started_by` records it.
+reversed 2026-10-31). Every start reads `.mend/mend.toml` as the worktree has it now: the owner's
+Start, the agent's own start, a turn's start, Mend's start after an executor replacement and a
+restart alike. A recipe runs as the person who caused it, so nobody spends another person's login:
+the person who pressed Start, a turn's sender, and for a wake whoever last started the preview or
+last changed its recipe. `services.started_by` records it.
 
 - Each runnable recipe with a command has a digest: the sha256 of `mend-recipe/v1\0` followed by the
   canonical JSON (keys sorted, no whitespace) of its `command`, `cwd`, `env`, `depends` and `setup`.
@@ -355,7 +358,7 @@ changed its recipe. `services.started_by` records it.
   launch source.
 
 **The preview after a turn.** When a turn in a protocol session completes having changed the
-worktree, in a project whose `mend.toml` names a `[preview]`, Mend starts that preview unless
+worktree, in a project whose `.mend/mend.toml` names a `[preview]`, Mend starts that preview unless
 something already runs it (ADR 0017, "After the agent is done").
 
 - The session's latest turn decides. A turn with a later one hands its change on: the latest turn
@@ -365,7 +368,8 @@ something already runs it (ADR 0017, "After the agent is done").
 - Before it reads the change, Mend asks the executor to flush its captures, up to three times, then
   reads the newest capture itself. A turn whose change cannot be read, or only from an older
   capture, records `preview not prepared · change not captured`, never "no change". A question that
-  changed nothing starts nothing, and Mend reads `mend.toml` only once a turn changed something.
+  changed nothing starts nothing, and Mend reads `.mend/mend.toml` only once a turn changed
+  something.
 - Not running: setup if its fingerprint changed, then each `depends`, then the Service, then its
   ready check, from the file as the turn left it, as the turn's sender. A turn with no recorded
   sender runs it as the person who last started the Service.
@@ -568,16 +572,17 @@ TargetObservation
   serviceId · targetState · lastObservedAt · lastObservationError
 ```
 
-Project-local recipes remain the machine-specific companion to repository `mend.toml` recipes. Every
-client shows the recipe source. Name collisions are visible and the shadowed recipe cannot run.
+Project-local recipes remain the machine-specific companion to repository `.mend/mend.toml` recipes.
+Every client shows the recipe source. Name collisions are visible and the shadowed recipe cannot
+run.
 
 ## Surfaces
 
 ```text
 mend service run [session] --port <port> [--name <n>] -- <command>
-mend service run [session] <name>        start a declared Service (mend.toml recipe)
+mend service run [session] <name>        start a declared Service (.mend/mend.toml recipe)
 mend service add [session] <port> [--name <n>]
-mend service init                        scaffold mend.toml from the project's manifests
+mend service init                        scaffold .mend/mend.toml from the project's manifests
 mend service list [session]
 mend service connect [name…] [--port <p>]   tunnel live Services to this machine's loopback
 mend service logs <service>       (supervised: attach to its PTY/record)
@@ -698,7 +703,7 @@ clean exit.
 ## Delivery slices
 
 Slices 1 to 5 shipped, and the desktop half of slice 6 (status 2026-09-26). Later changes on top of
-them: in capture mode a Service's `mend.toml` recipe is read from the live workspace (#336);
+them: in capture mode a Service's `.mend/mend.toml` recipe is read from the live workspace (#336);
 `mend attach`, the agent commands and the dashboard tunnel the attached session's browser Services
 to the client (#337); the web and desktop show `mend service connect <name>` where an Open link to
 the host's loopback would not load (#338); a stop leaves Services running, every surface says which
