@@ -138,6 +138,21 @@ describe("the composer's resource line", () => {
     }
   });
 
+  it("shows the API's hint when the worktree level has not started", async () => {
+    boundary.settings.current = [entry("db", "postgres")];
+    const message = "@db · no own database yet · mend resource start db --worktree";
+    boundary.choose.mockResolvedValue({ ok: false, kind: "refused", message });
+    const line = await mount();
+    try {
+      await act(async () => line.buttonNamed("change")?.click());
+      await act(async () => line.buttonNamed("own database")?.click());
+      await settle();
+      expect(line.host.querySelector('[role="alert"]')?.textContent).toBe(message);
+      expect(line.host.textContent).toContain("@db shared database");
+    } finally {
+      await line.unmount();
+    }
+  });
   it("offers no change to a reader who may not choose, nor in a menu, and says nothing with nothing to choose", async () => {
     boundary.settings.current = [entry("db", "postgres", { canChoose: false })];
     const reader = await mount();

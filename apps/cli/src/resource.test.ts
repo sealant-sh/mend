@@ -144,3 +144,70 @@ describe("resource command levels", () => {
     ).toContain(".mend/mend.toml in checkout · file unavailable");
   });
 });
+
+describe("resource add writes through the API", () => {
+  it("sends a parsed preset and chosen worktree and prints the server's answer", async () => {
+    const out = output();
+    const s = server({
+      kind: "written",
+      path: "mend.toml",
+      table: "",
+      worktree: "checkout",
+      statusLine:
+        "@db · added to mend.toml in checkout · start it: mend resource start db --project or --worktree",
+    });
+    await resourceCommand(s.api, async () => project, [
+      "add",
+      "db",
+      "--preset",
+      "postgres",
+      "--version",
+      "17",
+      "--worktree-id",
+      "checkout",
+    ]);
+    expect(s.calls.at(-1)).toEqual({
+      method: "POST",
+      route: "/projects/p/worktrees/resources",
+      body: { worktreeId: "wt", definition: { name: "db", preset: "postgres", version: "17" } },
+    });
+    expect(out.join("")).toContain("added to mend.toml in checkout");
+  });
+  it("sends a whole image definition and prints a copyable multiline table", async () => {
+    const out = output();
+    const s = server({
+      kind: "unreachable",
+      reason: "offline",
+      table: '[resource.mail]\nimage = "mailpit:v1"\nports = { smtp = 1025 }\n',
+      statusLine: "@mail · offline · add this table to .mend/mend.toml yourself:",
+    });
+    await resourceCommand(s.api, async () => project, [
+      "add",
+      "mail",
+      "--image",
+      "mailpit:v1",
+      "--port",
+      "smtp=1025",
+      "--worktree-id",
+      "wt",
+    ]);
+    expect(s.calls.at(-1)?.body).toMatchObject({
+      worktreeId: "wt",
+      definition: {
+        name: "mail",
+        image: "mailpit:v1",
+        ports: [{ name: "smtp", port: 1025, protocol: "tcp" }],
+      },
+    });
+    expect(out.join("")).toContain('yourself:\n[resource.mail]\nimage = "mailpit:v1"\n');
+  });
+});
+
+it("stops and removes a project instance without a worktree selector", async () => {
+  output();
+  const s = server({ instance: "stopped", statusLine: "@db · stopped", message: null });
+  await resourceCommand(s.api, async () => project, ["stop", "db", "--project"]);
+  expect(s.calls.at(-1)?.body).toEqual({ level: "project", worktreeId: null });
+  await resourceCommand(s.api, async () => project, ["remove", "db", "--project"]);
+  expect(s.calls.at(-1)?.body).toEqual({ level: "project", worktreeId: null });
+});

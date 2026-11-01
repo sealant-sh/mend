@@ -7,6 +7,7 @@ import {
 import { ProjectId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
+  ResourceAddRequest,
   ResourceName,
   ResourceLevel,
   WorktreeChoice,
@@ -67,16 +68,37 @@ const reader = { projectId: ProjectId, timeZone: ReaderTimeZone };
 
 export const resourcesRouter = router({
   list: procedure
-    .input(input(Schema.Struct({ ...reader, worktreeId: Schema.NullOr(WorktreeId) })))
+    .input(
+      input(
+        Schema.Struct({
+          ...reader,
+          worktreeId: Schema.NullOr(WorktreeId),
+          allInstances: Schema.optional(Schema.Boolean),
+        }),
+      ),
+    )
     .query(({ ctx, input: i }) =>
       run(ctx, (api) =>
         api.resources.list({
           params: { id: i.projectId },
           query: {
             timeZone: i.timeZone,
+            ...(i.allInstances === true ? { allInstances: "true" as const } : {}),
             ...(i.worktreeId === null ? {} : { worktreeId: i.worktreeId }),
           },
         }),
+      ),
+    ),
+  add: procedure
+    .input(input(Schema.Struct({ projectId: ProjectId, ...ResourceAddRequest.fields })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        outcome(
+          api.resources.add({
+            params: { id: i.projectId },
+            payload: { worktreeId: i.worktreeId, definition: i.definition },
+          }),
+        ),
       ),
     ),
   remove: procedure
@@ -86,7 +108,7 @@ export const resourcesRouter = router({
           projectId: ProjectId,
           name: ResourceName,
           level: ResourceLevel,
-          worktreeId: WorktreeId,
+          worktreeId: Schema.NullOr(WorktreeId),
         }),
       ),
     )
@@ -119,6 +141,14 @@ export const resourcesRouter = router({
             query: { timeZone: i.timeZone },
             payload: { mode: i.mode },
           }),
+        ).pipe(
+          Effect.catchTag("ResourceDenied", (error) =>
+            Effect.succeed({
+              ok: false as const,
+              kind: "refused" as const,
+              message: error.message,
+            }),
+          ),
         ),
       ),
     ),
@@ -129,7 +159,7 @@ export const resourcesRouter = router({
         Schema.Struct({
           ...reader,
           name: ResourceName,
-          worktreeId: WorktreeId,
+          worktreeId: Schema.NullOr(WorktreeId),
           level: ResourceLevel,
           restart: Schema.Boolean,
           verb: Schema.Literals(["start", "stop"]),
@@ -145,7 +175,14 @@ export const resourcesRouter = router({
         };
         return outcome(
           Effect.gen(function* () {
-            if (i.verb === "start") return yield* api.resources.start(request);
+            if (i.verb === "start") {
+              if (i.worktreeId === null)
+                return yield* new ResourceStale({ message: "choose a worktree for Start" });
+              return yield* api.resources.start({
+                ...request,
+                payload: { ...request.payload, worktreeId: i.worktreeId },
+              });
+            }
             return yield* api.resources.stop(request);
           }),
         );

@@ -5,11 +5,14 @@ import {
   type WorktreeChoice,
   resourceControls,
   resourceTableNotices,
+  resourceAdditionOf,
+  type ResourceAdded,
 } from "@mend/domain/workbench";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useRef, useState } from "react";
 
 import {
+  addResource,
   choiceInUse,
   choiceWords,
   chooseResource,
@@ -52,6 +55,7 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
     projectId,
     timeZone: readerZone(),
     worktreeId,
+    allInstances: true,
   });
   const query = useQuery(listOptions);
   const [busy, setBusy] = useState<Busy>(new Map());
@@ -93,9 +97,12 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
       void reload();
     },
     remove: (entry) => {
-      if (worktreeId === null) return;
       act(`s:${entry.id}:${entry.worktreeId ?? "project"}`, "remove", async () => {
-        const outcome = await removeResourceInstance(projectId, entry, worktreeId);
+        const outcome = await removeResourceInstance(
+          projectId,
+          entry,
+          entry.worktreeId ?? worktreeId,
+        );
         if (!outcome.ok) return refusedNote(outcome);
         await reload();
         return { refused: false, lines: [outcome.result.statusLine], reload: false };
@@ -111,11 +118,12 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
       });
     },
     control: (entry, read, verb, level, restart = false) => {
-      if (read === null) return;
+      if (read === null && verb === "start") return;
       const key =
         "id" in entry ? `s:${entry.id}:${entry.worktreeId ?? "project"}` : `f:${entry.spec.name}`;
       act(key, verb, async () => {
-        const outcome = await controlResource(projectId, entry, read, verb, level, restart);
+        const target = verb === "stop" && "worktreeId" in entry ? (entry.worktreeId ?? read) : read;
+        const outcome = await controlResource(projectId, entry, target, verb, level, restart);
         if (!outcome.ok) return refusedNote(outcome);
         await reload();
         const result = outcome.result;
@@ -145,9 +153,15 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
     <section className="mt-6">
       <h3 className="text-sm font-medium text-foreground">Resources</h3>
       <p className="mt-1 text-xs text-ink-2">
-        Definitions live in .mend/mend.toml. Select a worktree to read its definitions and start a
-        resource.
+        Definitions come from the default branch. Select a worktree to start from its file. Add
+        writes a declaration into a worktree and starts nothing.
       </p>
+      <ResourceAddForm
+        projectId={projectId}
+        worktrees={worktrees}
+        loading={worktreesQuery.status !== "success"}
+        onWritten={reload}
+      />
       <select
         aria-label="Resource worktree"
         value={worktreeId ?? ""}
@@ -158,7 +172,7 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
         }
         className="mt-3 rounded-lg border border-border bg-card px-2 py-1 text-xs"
       >
-        <option value="">All running instances</option>
+        <option value="">Choose a worktree for Start</option>
         {worktrees.map((worktree) => (
           <option key={worktree.id} value={worktree.id}>
             {worktree.name}
@@ -305,7 +319,7 @@ export function ResourcesView(props: ResourcesViewProps) {
                   {resourceControls(entry.instance).stop ? (
                     <button
                       type="button"
-                      disabled={worktreeId === null || props.busy.has(key)}
+                      disabled={props.busy.has(key)}
                       onClick={() => handlers.control(entry, worktreeId, "stop", entry.level)}
                       className={quiet}
                     >
@@ -315,7 +329,7 @@ export function ResourcesView(props: ResourcesViewProps) {
                   {entry.canRemove ? (
                     <button
                       type="button"
-                      disabled={worktreeId === null || props.busy.has(key)}
+                      disabled={props.busy.has(key)}
                       onClick={() => handlers.remove(entry)}
                       className={quiet}
                     >
@@ -324,7 +338,8 @@ export function ResourcesView(props: ResourcesViewProps) {
                   ) : null}
                 </>,
               )}
-              {worktreeId === null ? null : (
+              {worktreeId === null ||
+              (entry.worktreeId !== null && entry.worktreeId !== worktreeId) ? null : (
                 <ChoiceLine
                   entry={entry}
                   worktreeName={props.worktreeName ?? "this worktree"}
@@ -347,7 +362,7 @@ export function ResourcesView(props: ResourcesViewProps) {
       </div>
       {page.file.kind === "read" ? (
         <div>
-          <p className="ev-eyebrow">.mend/mend.toml · {page.file.observed}</p>
+          <p className="ev-eyebrow">Default branch · {page.file.observed}</p>
           {page.file.tables.map((table) => item(table, `f:${table.spec.name}`))}
           {resourceTableNotices(page.file).map((notice) => (
             <p key={notice} className="text-xs text-ink-2">
@@ -358,7 +373,7 @@ export function ResourcesView(props: ResourcesViewProps) {
       ) : page.file.kind === "not-selected" ? null : (
         <p className="text-xs text-ink-2">
           {page.file.kind === "absent"
-            ? "No resource definitions in this worktree."
+            ? "No resource definitions on the default branch."
             : page.file.message}
         </p>
       )}
@@ -403,6 +418,210 @@ export function ChoiceLine(props: {
       <p className="mt-1 text-xs text-ink-2">
         {props.worktreeName} uses {choiceWords(props.entry.spec, inUse.choice).label}.
       </p>
+    </div>
+  );
+}
+
+/** Add writes only to a chosen worktree. A missing authority leaves a table beside the answer. */
+export function ResourceAddForm(props: {
+  readonly projectId: string;
+  readonly worktrees: ReadonlyArray<{ readonly id: WorktreeId; readonly name: string }>;
+  readonly loading?: boolean;
+  readonly onWritten: () => Promise<unknown>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<WorktreeId | null>(null);
+  const [name, setName] = useState("db");
+  const [kind, setKind] = useState("postgres");
+  const [version, setVersion] = useState("17");
+  const [image, setImage] = useState("");
+  const [ports, setPorts] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [answer, setAnswer] = useState<ResourceAdded | null>(null);
+  const worktreeId =
+    props.worktrees.find((row) => row.id === selected)?.id ?? props.worktrees[0]?.id ?? null;
+  const field = "rounded-lg border border-border bg-card px-2 py-1 text-xs text-foreground";
+  const submit = async () => {
+    const parsed = resourceAdditionOf([
+      name,
+      ...(kind === "image"
+        ? [
+            "--image",
+            image,
+            ...ports
+              .split(/[\s,]+/)
+              .filter(Boolean)
+              .flatMap((port) => ["--port", port]),
+          ]
+        : ["--preset", kind, "--version", version]),
+    ]);
+    setAnswer(null);
+    if (!parsed.ok) {
+      setMessage(parsed.message);
+      return;
+    }
+    setMessage(null);
+    setBusy(true);
+    try {
+      const result = await addResource(props.projectId, {
+        worktreeId,
+        definition: parsed.definition,
+      });
+      if (!result.ok) setMessage(result.message);
+      else {
+        setAnswer(result.result);
+        if (result.result.kind === "written") await props.onWritten();
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        className={quiet}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        Add resource
+      </button>
+      {open ? (
+        <form
+          className="mt-3 space-y-3 rounded-2xl bg-card p-4 shadow-sm"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!busy) void submit();
+          }}
+        >
+          <label className="block text-xs text-ink-2">
+            Worktree{" "}
+            <select
+              aria-label="Add resource worktree"
+              className={field}
+              value={worktreeId ?? ""}
+              disabled={busy || props.loading === true}
+              onChange={(event) =>
+                setSelected(
+                  props.worktrees.find((row) => row.id === event.target.value)?.id ?? null,
+                )
+              }
+            >
+              {props.worktrees.length === 0 ? (
+                <option value="">No worktree · table to copy</option>
+              ) : (
+                props.worktrees.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.name}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+          <label className="block text-xs text-ink-2">
+            Name{" "}
+            <input
+              aria-label="Resource name"
+              className={field}
+              value={name}
+              disabled={busy}
+              onChange={(event) => setName(event.target.value)}
+              required
+            />
+          </label>
+          <label className="block text-xs text-ink-2">
+            Definition{" "}
+            <select
+              aria-label="Resource preset"
+              className={field}
+              value={kind}
+              disabled={busy}
+              onChange={(event) => {
+                setKind(event.target.value);
+                setVersion(
+                  event.target.value === "redis"
+                    ? "8"
+                    : event.target.value === "mysql"
+                      ? "8.4"
+                      : "17",
+                );
+              }}
+            >
+              <option value="postgres">Postgres</option>
+              <option value="redis">Redis</option>
+              <option value="mysql">MySQL</option>
+              <option value="image">Image</option>
+            </select>
+          </label>
+          {kind === "image" ? (
+            <>
+              <label className="block text-xs text-ink-2">
+                Image{" "}
+                <input
+                  aria-label="Resource image"
+                  className={field}
+                  value={image}
+                  disabled={busy}
+                  onChange={(event) => setImage(event.target.value)}
+                  required
+                />
+              </label>
+              <label className="block text-xs text-ink-2">
+                Ports{" "}
+                <input
+                  aria-label="Resource ports"
+                  className={field}
+                  placeholder="smtp=1025 http=8025"
+                  value={ports}
+                  disabled={busy}
+                  onChange={(event) => setPorts(event.target.value)}
+                  required
+                />
+              </label>
+            </>
+          ) : (
+            <label className="block text-xs text-ink-2">
+              Version{" "}
+              <input
+                aria-label="Resource version"
+                className={field}
+                value={version}
+                disabled={busy}
+                onChange={(event) => setVersion(event.target.value)}
+                required
+              />
+            </label>
+          )}
+          <p className="text-xs text-ink-2">
+            Writes the worktree's .mend/mend.toml. Starts nothing.
+          </p>
+          <button
+            type="submit"
+            disabled={busy || props.loading === true}
+            className="rounded-xl bg-primary px-3 py-2 text-xs text-primary-foreground shadow-sm disabled:opacity-50"
+          >
+            {busy ? "Writing…" : worktreeId === null ? "Show table to copy" : "Write declaration"}
+          </button>
+          {message === null ? null : (
+            <p role="alert" className="text-xs text-danger">
+              {message}
+            </p>
+          )}
+          {answer === null ? null : (
+            <div role="status">
+              <p className="font-mono text-xs text-foreground">{answer.statusLine}</p>
+              {answer.kind === "unreachable" ? (
+                <pre className="mt-2 overflow-x-auto rounded-lg bg-sunken p-3 font-mono text-xs">
+                  {answer.table}
+                </pre>
+              ) : null}
+            </div>
+          )}
+        </form>
+      ) : null}
     </div>
   );
 }

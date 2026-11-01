@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { CaptureStoreRepo } from "@mend/db";
+import { CaptureStoreRepo, ProjectsRepo, WorktreesRepo } from "@mend/db";
 import { ProjectId, WorktreeId } from "@mend/domain";
 import {
   BlobStoreFsLive,
@@ -44,6 +44,7 @@ describe("WorktreeReads.pathsBeyondGit (captured)", () => {
     const memory = makeMemoryCaptureStore();
     const blobs = BlobStoreFsLive(path.join(scratch, "blobs"));
     const layer = WorktreeReadsCapturedLive.pipe(
+      Layer.provide(Layer.merge(Layer.mock(ProjectsRepo, {}), Layer.mock(WorktreesRepo, {}))),
       Layer.provide(memory.layer),
       Layer.provide(blobs),
       Layer.provide(memoryStoreRefs()),

@@ -10,7 +10,7 @@ import {
 } from "./resource.ts";
 
 /**
- * Remembered instances and a selected worktree's file definitions, with the shared status line.
+ * Remembered instances and default-branch file definitions, with the shared status line.
  * File definitions become remembered specs only when a person explicitly starts them.
  */
 
@@ -88,33 +88,33 @@ export const ResourceFileTable = Schema.Struct({
 export type ResourceFileTable = typeof ResourceFileTable.Type;
 
 /**
- * A worktree's `mend.toml` as read: unavailable is never shown as an empty file. Bytes that were
+ * The default branch's `mend.toml` as read: unavailable is never shown as an empty file. Bytes that were
  * read keep where they came from, whether they parsed or not.
  */
 export const ResourceFileRead = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("not-selected") }),
   Schema.Struct({
     kind: Schema.Literal("absent"),
-    worktreeId: WorktreeId,
+    worktreeId: Schema.NullOr(WorktreeId),
     /** Where the bytes came from: `observed at capture 12 · seq 4,180`. */
     observed: Schema.String,
   }),
   /** No bytes: the read itself failed. */
   Schema.Struct({
     kind: Schema.Literal("unavailable"),
-    worktreeId: WorktreeId,
+    worktreeId: Schema.NullOr(WorktreeId),
     message: Schema.String,
   }),
   /** Bytes were read and are not a file Mend parses: too large, not text, or not TOML. */
   Schema.Struct({
     kind: Schema.Literal("unparsed"),
-    worktreeId: WorktreeId,
+    worktreeId: Schema.NullOr(WorktreeId),
     observed: Schema.String,
     message: Schema.String,
   }),
   Schema.Struct({
     kind: Schema.Literal("read"),
-    worktreeId: WorktreeId,
+    worktreeId: Schema.NullOr(WorktreeId),
     observed: Schema.String,
     tables: Schema.Array(ResourceFileTable),
     /** Keyed in full (`resource.queue.ports.amqp`). */
@@ -176,7 +176,7 @@ export type ResourceStartOptions = typeof ResourceStartOptions.Type;
 /** Stop defaults to the level this worktree currently uses. */
 export const ResourceStopOptions = Schema.Struct({
   level: Schema.optional(ResourceLevel),
-  worktreeId: WorktreeId,
+  worktreeId: Schema.NullOr(WorktreeId),
 });
 export type ResourceStopOptions = typeof ResourceStopOptions.Type;
 /** A start either observed an instance or asks explicitly to replace its remembered definition. */

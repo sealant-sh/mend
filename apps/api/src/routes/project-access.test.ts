@@ -551,6 +551,19 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-manage", "DELETE", "/service-recipes/web")("projectRecipes.remove"),
   project("project-read", "GET", "/resources?timeZone=UTC")("resources.list"),
   {
+    endpoint: "resources.add",
+    rule: "project-read",
+    call: (target) => ({
+      method: "POST",
+      path: `/api/projects/${ids(target).project}/worktrees/resources`,
+      body: {
+        worktreeId: ids(target).worktree,
+        definition: { name: "db", preset: "postgres", version: "17" },
+      },
+      id: ids(target).project,
+    }),
+  },
+  {
     endpoint: "resources.remove",
     rule: "project-read",
     call: (target) => ({
@@ -1003,6 +1016,7 @@ const ADMITTED: Readonly<
     calls: ["resources.listWithChoices"],
     body: { settings: [], file: { kind: "not-selected" } },
   },
+  "resources.add": { status: 500, calls: ["resourceTableWrites.appendResourceTable"] },
   // Who added the definition decides who may remove it, so it is read first.
   "resources.remove": { status: 500, calls: ["resources.byName"] },
   // What the worktree used before decides whether its Services restart, so it is read first.

@@ -14,7 +14,7 @@ import {
 import { settleChoice } from "#/lib/resources-card";
 import { useTRPC } from "#/lib/trpc";
 
-/** `@db own`: what the worktree uses of one project resource, in the card's words. */
+/** The worktree's selected level, using database words for Postgres. */
 const usedWords = (entry: ResourceSettingView): string | null => {
   const inUse = choiceInUse(entry);
   return inUse === null
@@ -28,7 +28,7 @@ const chosenHere = (settings: ReadonlyArray<ResourceSettingView>) =>
 
 /**
  * What the chosen worktree uses of each project resource, on one line, before a session starts in
- * it (ADR 0019, story 3): `Resources · @db own · @cache shared`. Its change owner gets **change**,
+ * it (ADR 0019, story 3): `Resources · @db own database · @cache project`. Its change owner gets **change**,
  * which opens the choices; a choice is the Resources card's own selection, and a switch restarts
  * the worktree's Services.
  */

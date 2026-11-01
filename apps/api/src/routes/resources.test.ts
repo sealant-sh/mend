@@ -11,6 +11,7 @@ import {
   type ResourceRuntime,
   type WorktreeServiceRestarts,
   WORKTREE_STAMP,
+  type ResourceTableWrites,
 } from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
@@ -126,6 +127,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     resourceRuntime: Layer.PartialEffectful<ResourceRuntime["Service"]> = {},
     serviceRestarts: Layer.PartialEffectful<WorktreeServiceRestarts["Service"]> = {},
     resourceLoads: Layer.PartialEffectful<ResourceLoads["Service"]> = {},
+    resourceTableWrites: Layer.PartialEffectful<ResourceTableWrites["Service"]> = {},
   ) => {
     const repo = override(await runtime.runPromise(repoNow));
     api = await createTenancyApi(undefined, {
@@ -134,6 +136,7 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
         resourceRuntime,
         serviceRestarts,
         resourceLoads,
+        resourceTableWrites,
         users: {
           byIds: (accounts) =>
             Effect.succeed(
@@ -152,6 +155,16 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
             }),
         },
         reads: {
+          readDefaultBranchFile: () =>
+            Effect.succeed({
+              value: {
+                bytes: new TextEncoder().encode(file.text),
+                size: file.text.length,
+                truncated: false,
+                binary: false,
+              },
+              stamp: file.stamp,
+            }),
           readFile: () =>
             Effect.succeed({
               value: {
@@ -184,6 +197,115 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
   const seedFile = (image = "postgres:17") => {
     file.text = `[resource.db]\npreset = "postgres"\nimage = "${image}"\nports = { postgres = 5432 }\nvolumes = { data = "/var/lib/postgresql/data" }`;
   };
+  it.each(["written", "declared", "unparsed", "unreachable"] as const)(
+    "add returns %s without registering or starting anything",
+    async (kind) => {
+      let appended = "";
+      await start(
+        undefined,
+        {},
+        {},
+        {},
+        {
+          appendResourceTable: (input) => {
+            appended = input.table;
+            return Effect.succeed(
+              kind === "unreachable"
+                ? { kind, reason: "offline", table: input.table }
+                : kind === "unparsed"
+                  ? { kind, path: "mend.toml", message: "mend.toml: invalid TOML" }
+                  : { kind, path: "mend.toml" },
+            );
+          },
+        },
+      );
+      const response = await json(
+        await harness().request(
+          "carol",
+          "POST",
+          `/api/projects/${shared.project}/worktrees/resources`,
+          {
+            worktreeId: CAROL_WORKTREE_IN_SHARED_A,
+            definition: { name: "db", preset: "postgres", version: "17" },
+          },
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        kind,
+        table: '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\n',
+      });
+      expect(appended).toBe(response.body.table);
+      expect(
+        await runtime.runPromise(
+          Effect.flatMap(ResourcesRepo, (repo) => repo.listForProject(shared.project)),
+        ),
+      ).toEqual([]);
+      expect(resolved).toEqual([]);
+    },
+  );
+  it("previews with no worktree without touching a writer", async () => {
+    await start();
+    const response = await json(
+      await harness().request(
+        "carol",
+        "POST",
+        `/api/projects/${shared.project}/worktrees/resources`,
+        {
+          worktreeId: null,
+          definition: { name: "db", preset: "postgres", version: "17" },
+        },
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      kind: "unreachable",
+      reason: "this project has no selected worktree",
+    });
+    expect(response.body.table).toContain("[resource.db]");
+  });
+  it("refuses Mend-owned names before writing", async () => {
+    await start();
+    const response = await json(
+      await harness().request(
+        "carol",
+        "POST",
+        `/api/projects/${shared.project}/worktrees/resources`,
+        {
+          worktreeId: null,
+          definition: { name: "preview", preset: "redis", version: "8" },
+        },
+      ),
+    );
+    expect(response.status).toBe(422);
+    expect(response.body.message).toContain("generates env names Mend owns");
+  });
+  it("stops and removes a remembered project instance without a selected worktree", async () => {
+    await start();
+    seedFile();
+    expect((await control("carol", "db", "project")).status).toBe(200);
+    file.text = "";
+    const stopped = await json(
+      await harness().request(
+        "carol",
+        "POST",
+        `/api/projects/${shared.project}/resources/db/stop?${zone}`,
+        { level: "project", worktreeId: null },
+      ),
+    );
+    expect(stopped.status).toBe(200);
+    expect(stopped.body.instance).toBe("stopped");
+    const removed = await json(
+      await harness().request("carol", "DELETE", `/api/projects/${shared.project}/resources/db`, {
+        level: "project",
+        worktreeId: null,
+      }),
+    );
+    expect(removed).toMatchObject({
+      status: 200,
+      body: { statusLine: "@db · project · archived · volumes kept" },
+    });
+  });
   it("starts only through the explicit level endpoint and remembers the file's spec", async () => {
     await start();
     seedFile();

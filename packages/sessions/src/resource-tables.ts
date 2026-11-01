@@ -6,6 +6,7 @@ import {
   RESOURCE_PRESETS,
   RESOURCE_TABLES_HEADING,
   resourceDefinitionRefusals,
+  resourceTablePresetDefaults,
   withPresetCommand,
   type ResourceEnvValue,
   ResourceLimits,
@@ -344,7 +345,8 @@ const readResource = (
     );
   }
 
-  const ports = fields.ports ?? [];
+  const defaults = resourceTablePresetDefaults(fields.preset ?? null, fields.image ?? STAND_IN);
+  const ports = fields.ports ?? defaults?.ports ?? [];
   const decoded = decodeDefinition({
     name: refusedFields.has("name") ? STAND_IN : name,
     preset: fields.preset ?? null,
@@ -352,7 +354,7 @@ const readResource = (
     command: fields.command ?? null,
     ports,
     env: fields.env ?? {},
-    volumes: fields.volumes ?? [],
+    volumes: fields.volumes ?? defaults?.volumes ?? [],
     limits: fields.limits ?? {},
     ready: fields.ready ?? defaultReady(fields.preset, ports),
     exports: fields.exports ?? {},

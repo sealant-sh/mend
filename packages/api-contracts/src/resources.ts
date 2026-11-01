@@ -1,6 +1,8 @@
 import { ProjectId, ResourceLoadId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
+  ResourceAddRequest,
+  ResourceAdded,
   ResourceLoadAnswer,
   ResourceLoadSource,
   ResourceControlled,
@@ -84,15 +86,27 @@ export const resourcesGroup = HttpApiGroup.make("resources")
   .add(
     HttpApiEndpoint.get("list", "/projects/:id/resources", {
       params: { id: ProjectId },
-      query: { timeZone: ReaderTimeZone, worktreeId: Schema.optional(WorktreeId) },
+      query: {
+        timeZone: ReaderTimeZone,
+        worktreeId: Schema.optional(WorktreeId),
+        allInstances: Schema.optional(Schema.Literal("true")),
+      },
       success: ResourcesPage,
       error: NotFound,
     }),
   )
   .add(
+    HttpApiEndpoint.post("add", "/projects/:id/worktrees/resources", {
+      params: { id: ProjectId },
+      payload: ResourceAddRequest,
+      success: ResourceAdded,
+      error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
+    }),
+  )
+  .add(
     HttpApiEndpoint.delete("remove", "/projects/:id/resources/:name", {
       params: { id: ProjectId, name: ResourceName },
-      payload: Schema.Struct({ level: ResourceLevel, worktreeId: WorktreeId }),
+      payload: Schema.Struct({ level: ResourceLevel, worktreeId: Schema.NullOr(WorktreeId) }),
       success: ResourceRemoved,
       error: [NotFound, ResourceDenied, ResourceStale, RemovalInProgress],
     }),

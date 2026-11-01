@@ -188,6 +188,7 @@ import {
   ResourceImageResolverLive,
   ResourcesChannelLive,
   ResourcesLive,
+  ResourceTableWritesLive,
   ResourceStatusReadsLive,
   ResourceLoadsLive,
   ResourceLoadsChannelLive,
@@ -915,7 +916,11 @@ const MainLive = Layer.unwrap(
       mode === "worker" ? RawBlobCacheOff : RawBlobCacheLive.pipe(Layer.provide(StoreConfig.layer));
     const worktreeReads = (
       captured
-        ? WorktreeReadsCapturedLive.pipe(Layer.provide(captureStore))
+        ? WorktreeReadsCapturedLive.pipe(
+            Layer.provide(captureStore),
+            Layer.provide(StoreLive),
+            Layer.provide(DatabaseLive),
+          )
         : WorktreeReadsColocatedLive.pipe(Layer.provide(StoreLive), Layer.provide(DatabaseLive))
     ).pipe(Layer.provide(rawBlobCache));
     // Landing's git half by store kind: the runner cache for a capture-backed worktree, the
@@ -962,6 +967,7 @@ const MainLive = Layer.unwrap(
             Layer.provide(ResourceScopesLive.pipe(Layer.provide(SealantEnv.layer))),
           ),
           ResourcesLive.pipe(
+            Layer.provideMerge(ResourceTableWritesLive),
             Layer.provide(Layer.merge(ResourceImageResolverLive, WorktreeServiceRestartsLive)),
           ),
           RemovalLive.pipe(

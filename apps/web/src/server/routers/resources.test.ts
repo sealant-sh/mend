@@ -116,3 +116,35 @@ describe("resource writes through the web tier", () => {
     expect(asked.at(-1)).toBe("DELETE /api/projects/p_shop/resources/db");
   });
 });
+
+it("preserves add previews and written outcomes through the one route", async () => {
+  const result = {
+    kind: "unreachable",
+    reason: "this project has no selected worktree",
+    table: '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\n',
+    statusLine:
+      "@db · this project has no selected worktree · add this table to .mend/mend.toml yourself:",
+  };
+  answer = Response.json(result);
+  expect(
+    await mutate("resources.add", {
+      projectId,
+      worktreeId: null,
+      definition: { name: "db", preset: "postgres", version: "17" },
+    }),
+  ).toEqual({ status: 200, value: { ok: true, result } });
+  expect(asked[0]).toBe("POST /api/projects/p_shop/worktrees/resources");
+});
+it("shows a selection refusal using the API's start hint", async () => {
+  const message = "@db · no own database yet · mend resource start db --worktree";
+  answer = Response.json({ _tag: "ResourceDenied", message }, { status: 403 });
+  expect(
+    await mutate("resources.use", {
+      projectId,
+      timeZone: "UTC",
+      worktreeId: "wt_1",
+      name: "db",
+      mode: "worktree",
+    }),
+  ).toEqual({ status: 200, value: { ok: false, kind: "refused", message } });
+});
