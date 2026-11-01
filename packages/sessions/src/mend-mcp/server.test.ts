@@ -9,6 +9,7 @@ import type { SessionEngineLive } from "../engine.ts";
 import { Screens } from "../screen/screens.ts";
 import { type SessionChannelRegistry, SessionChannelRegistryLive } from "../session-channel.ts";
 import { asCaller, MEND_MCP_PATH } from "./caller.ts";
+import { ProofCaptures } from "./proof-captures.ts";
 import { MendMcp, mendMcpLayer } from "./server.ts";
 import { SessionPages } from "./session-pages.ts";
 import { MEND_TOOLKITS } from "./toolkits.ts";
@@ -97,6 +98,7 @@ describe("Mend's MCP server", () => {
       }).pipe(
         Effect.provide(
           extended.pipe(
+            Layer.provide(Layer.mock(ProofCaptures)({})),
             Layer.provide(SessionChannelRegistryLive),
             Layer.provide(Layer.succeed(Greetings, { to: (name) => `Hello ${name}` })),
             Layer.provide(
@@ -115,6 +117,8 @@ describe("Mend's MCP server", () => {
           { name: "html_render" },
           { name: "screen_look" },
           { name: "screen_act" },
+          { name: "proof_screenshot" },
+          { name: "proof_missing" },
           { name: "greet" },
         ],
       },
@@ -126,7 +130,7 @@ describe("Mend's MCP server", () => {
 
   it("needs what its toolkits need, and the engine does not need it, so a toolkit may need the engine", () => {
     expectTypeOf<Layer.Services<typeof extended>>().toEqualTypeOf<
-      SessionChannelRegistry | SessionPages | Screens | UsersRepo | Greetings
+      SessionChannelRegistry | SessionPages | Screens | UsersRepo | ProofCaptures | Greetings
     >();
     expectTypeOf<Extract<Layer.Services<typeof SessionEngineLive>, MendMcp>>().toBeNever();
   });

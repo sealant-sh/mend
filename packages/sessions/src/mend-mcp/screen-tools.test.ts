@@ -14,12 +14,14 @@ import {
   type ScreenLogEntry,
 } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
+import { McpSchema } from "effect/ai";
 import { describe, expect, it } from "vitest";
 
 import { ScreenStartError } from "../screen/screen-host.ts";
 import { type ScreenCallAnswer, Screens, type ScreenState } from "../screen/screens.ts";
 import { SessionChannelRegistryLive } from "../session-channel.ts";
 import { MEND_MCP_CALL_KEY_HEADER, MEND_MCP_PATH } from "./caller.ts";
+import { ProofCaptures } from "./proof-captures.ts";
 import { MendMcp, MendMcpLive, MendMcpWithoutScreensLive } from "./server.ts";
 import { SessionPages } from "./session-pages.ts";
 
@@ -63,6 +65,7 @@ const answered = (overrides: Partial<Extract<ScreenCallAnswer, { _tag: "Answered
     outcome: "applied",
     receipt: { screenId: SCREEN, seq: 7, callKey: "call-1" },
     png: PNG,
+    observedAt: new Date("2026-11-01T14:02:00Z"),
     frameId: ScreenFrameId.make("frame-7"),
     actions: [],
     sinceLastLook: [],
@@ -71,6 +74,7 @@ const answered = (overrides: Partial<Extract<ScreenCallAnswer, { _tag: "Answered
 
 interface Stub {
   readonly answer: Effect.Effect<ScreenCallAnswer, ScreenStartError>;
+  readonly proof?: ProofCaptures["Service"];
   readonly state?: ScreenState | null;
 }
 
@@ -131,6 +135,11 @@ const serve = (
       ),
   });
   const layer = (server === "screens" ? MendMcpLive : MendMcpWithoutScreensLive).pipe(
+    Layer.provide(
+      stub.proof === undefined
+        ? Layer.mock(ProofCaptures)({})
+        : Layer.succeed(ProofCaptures, stub.proof),
+    ),
     Layer.provide(SessionChannelRegistryLive),
     Layer.provide(screens),
     Layer.provide(users),
@@ -423,5 +432,64 @@ describe("the screen tools on Mend's MCP server", () => {
         refusal: "not_served_here",
       });
     }
+  });
+});
+
+describe("proof tools on the screen-enabled MCP server", () => {
+  it("returns an image beside the reference, with the authenticated caller and call key", async () => {
+    const seen: Array<unknown> = [];
+    const reference = {
+      artifactId: "proof-1",
+      label: "Board · before · base abcdef1 · observed 14:02 UTC",
+      message: "Recorded the screen as observed.",
+    };
+    const proof: ProofCaptures["Service"] = {
+      screenshot: (who, params) =>
+        Effect.sync(() => {
+          seen.push({ who, params });
+          return new McpSchema.CallToolResult({
+            content: [
+              { type: "image", data: PNG, mimeType: "image/png" },
+              { type: "text", text: JSON.stringify(reference) },
+            ],
+          });
+        }),
+      missing: () =>
+        Effect.succeed(
+          new McpSchema.CallToolResult({
+            content: [{ type: "text", text: JSON.stringify(reference) }],
+          }),
+        ),
+    };
+    const params = { title: "Board", side: "before", caption: "Empty board" };
+    const { listed, replies } = await serve({ answer: Effect.succeed(answered()), proof }, [
+      { name: "proof_screenshot", arguments: params },
+      {
+        name: "proof_missing",
+        arguments: { title: "Board", side: "before", kind: "screenshot", reason: "No account" },
+      },
+    ]);
+    expect(listed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "proof_screenshot" }),
+        expect.objectContaining({ name: "proof_missing" }),
+      ]),
+    );
+    expect(replies[0]?.result?.structuredContent).toBeUndefined();
+    expect(replies[0]?.result?.content?.[0]).toMatchObject({
+      type: "image",
+      data: Buffer.from(PNG).toString("base64"),
+      mimeType: "image/png",
+    });
+    expect(textOf(replies[0])).toEqual(reference);
+    expect(textOf(replies[1])).toEqual(reference);
+    expect(seen).toEqual([{ who: { ...caller, callKey: "call-0" }, params }]);
+    const worker = await serve({ answer: Effect.succeed(answered()) }, [], "worker");
+    expect(worker.listed.some((tool) => JSON.stringify(tool).includes('"proof_screenshot"'))).toBe(
+      false,
+    );
+    expect(worker.listed.some((tool) => JSON.stringify(tool).includes('"proof_missing"'))).toBe(
+      false,
+    );
   });
 });

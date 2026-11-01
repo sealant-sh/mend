@@ -41,6 +41,7 @@ describe.skipIf(postgres.skip)("who may call, and on what", () => {
             ...agent.call(),
             agentProcess: { _tag: "Superseded", id: agent.id },
           };
+          expect(yield* screens.authorize(superseded)).toBe("unattributed_caller");
           expect(yield* screens.look(superseded)).toEqual({
             _tag: "Refused",
             refusal: "unattributed_caller",

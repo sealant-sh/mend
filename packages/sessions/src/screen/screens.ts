@@ -71,6 +71,7 @@ export type ScreenCallAnswer =
       readonly outcome: "applied" | "interrupted";
       readonly receipt: ScreenReceipt;
       readonly png: Uint8Array;
+      readonly observedAt: Date;
       /** Null when the frame was not stored; the agent still has its PNG. */
       readonly frameId: ScreenFrameId | null;
       readonly actions: ReadonlyArray<ScreenActionNote>;
@@ -94,6 +95,7 @@ export interface ScreenState {
 export class Screens extends Context.Service<
   Screens,
   {
+    readonly authorize: (caller: ScreenCaller) => Effect.Effect<ScreenRefusal | null>;
     readonly look: (caller: ScreenCaller) => Effect.Effect<ScreenCallAnswer, ScreenStartError>;
     readonly act: (
       caller: ScreenCaller,
@@ -161,6 +163,7 @@ const answeredOf = (
   _tag: "Answered",
   outcome,
   receipt: { screenId: entry.screenId, seq: entry.seq, callKey },
+  observedAt: entry.at,
   png,
   frameId: entry.frame?.id ?? null,
   actions: entry.body._tag === "Acted" ? entry.body.notes : [],
@@ -421,6 +424,13 @@ export const ScreensLive: Layer.Layer<
     }
 
     return {
+      authorize: (caller) =>
+        Effect.gen(function* () {
+          if (attributed(caller) === null) return "unattributed_caller";
+          const owner = yield* host.ownerOf(caller.sessionId);
+          if (owner === null || caller.accountId !== owner) return "owner_only";
+          return (yield* screens.ofSession(caller.sessionId)) === null ? "no_screen" : null;
+        }),
       look: (caller) => call(caller, { tool: "screen_look" }, look),
       act: (caller, params) => {
         const plan = planActions(params.actions);
