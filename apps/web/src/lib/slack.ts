@@ -94,3 +94,9 @@ export const linkedLine = (teamName: string, requestQueued: boolean): string =>
   requestQueued
     ? `Linked in ${teamName}. Mend runs your request and answers in the thread.`
     : `Linked in ${teamName}. Your request was not queued; mention @mend in the thread again.`;
+
+/** Only an observed missing grant asks the owner to update the app. */
+export const slackUploadNotice = (scopes: ReadonlyArray<string> | null): string | null =>
+  scopes === null || scopes.includes("files:write")
+    ? null
+    : "This Slack app can't upload files. Add the files:write scope in the app's settings, or paste the current manifest, then reinstall it to the workspace.";

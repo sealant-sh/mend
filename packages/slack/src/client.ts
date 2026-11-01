@@ -1,3 +1,5 @@
+import type { Readable } from "node:stream";
+
 import {
   LogLevel,
   WebAPIHTTPError,
@@ -10,6 +12,7 @@ import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import type { SlackBlock } from "./blocks.ts";
+import { SLACK_BOT_SCOPES } from "./manifest.ts";
 import type { SlackThreadMessage } from "./thread.ts";
 
 /**
@@ -55,6 +58,8 @@ export interface SlackAuthIdentity {
   /** Present on some answers only; `botsInfo` has it otherwise. */
   readonly appId: string | null;
   readonly enterpriseId: string | null;
+  /** Null when Slack did not return the granted scopes header. */
+  readonly grantedScopes: ReadonlyArray<string> | null;
 }
 
 /** An app-level token's socket URL, from `apps.connections.open`, and the app it names. */
@@ -92,6 +97,8 @@ export interface SlackPostInput {
   readonly threadTs?: string;
   readonly text: string;
   readonly blocks?: ReadonlyArray<SlackBlock>;
+  /** Stable UUID for a reply that must be reconciled after an uncertain response. */
+  readonly clientMessageId?: string;
 }
 
 export interface SlackEphemeralInput extends SlackPostInput {
@@ -127,6 +134,37 @@ export interface SlackRepliesInput {
 export interface SlackDownload {
   readonly bytes: Uint8Array;
   readonly contentType: string | null;
+}
+
+/** The upload ticket returned before Mend sends bytes. */
+export interface SlackUploadTicket {
+  readonly uploadUrl: string;
+  readonly fileId: string;
+}
+
+export interface SlackUploadInput {
+  readonly filename: string;
+  readonly length: number;
+  readonly altText: string;
+}
+
+/** A fresh reader is needed on every upload attempt. */
+export interface SlackUploadBody {
+  readonly body: Uint8Array | Readable;
+  readonly length: number;
+}
+
+export interface SlackCompleteUploadInput {
+  readonly fileId: string;
+  readonly title: string;
+  readonly channelId: string;
+  readonly threadTs: string;
+  readonly initialComment: string;
+}
+
+export interface SlackFileShare {
+  readonly ts: string;
+  readonly threadTs: string | null;
 }
 
 /** Enough of any thread for the fifty messages the session receives. */
@@ -183,6 +221,26 @@ export class SlackApi extends Context.Service<
       token: string,
       user: string,
     ) => Effect.Effect<SlackUserInfo, SlackApiError>;
+    readonly filesGetUploadUrl: (
+      token: string,
+      input: SlackUploadInput,
+    ) => Effect.Effect<SlackUploadTicket, SlackApiError>;
+    /** The ticket authorizes the upload; no bot token is sent with the bytes. */
+    readonly filesUpload: (
+      url: string,
+      input: SlackUploadBody,
+    ) => Effect.Effect<void, SlackApiError>;
+    /** One file per call so its label and caption stay with that file. Never auto-retried. */
+    readonly filesCompleteUpload: (
+      token: string,
+      input: SlackCompleteUploadInput,
+    ) => Effect.Effect<void, SlackApiError>;
+    /** Shares in this channel only, across public and private conversations. */
+    readonly filesInfo: (
+      token: string,
+      fileId: string,
+      channelId: string,
+    ) => Effect.Effect<ReadonlyArray<SlackFileShare>, SlackApiError>;
     /**
      * A file's bytes (`url_private`), fetched with the bot token. Only an `https` URL on a
      * `slack.com` host is fetched, so the token never goes anywhere else.
@@ -206,6 +264,26 @@ const AuthTestResult = Schema.Struct({
   bot_id: OptionalString,
   app_id: OptionalString,
   enterprise_id: OptionalString,
+  response_metadata: Schema.optional(
+    Schema.Struct({ scopes: Schema.optional(Schema.Array(Schema.String)) }),
+  ),
+});
+
+const UploadUrlResult = Schema.Struct({ upload_url: Schema.String, file_id: Schema.String });
+const CompleteUploadResult = Schema.Struct({
+  files: Schema.Array(Schema.Struct({ id: Schema.String })),
+});
+const FileShares = Schema.Record(
+  Schema.String,
+  Schema.Array(Schema.Struct({ ts: Schema.String, thread_ts: OptionalString })),
+);
+const FileInfoResult = Schema.Struct({
+  file: Schema.Struct({
+    id: Schema.String,
+    shares: Schema.optional(
+      Schema.Struct({ public: Schema.optional(FileShares), private: Schema.optional(FileShares) }),
+    ),
+  }),
 });
 
 const ConnectionsOpenResult = Schema.Struct({ url: Schema.String });
@@ -226,6 +304,8 @@ const RepliesResult = Schema.Struct({
     Schema.Array(
       Schema.Struct({
         ts: Schema.String,
+        client_msg_id: OptionalString,
+        blocks: Schema.optional(Schema.Array(Schema.Struct({ block_id: OptionalString }))),
         user: OptionalString,
         user_team: OptionalString,
         team: OptionalString,
@@ -269,6 +349,8 @@ const present = (value: string | null | undefined): string | null =>
 
 /** An SDK failure as Mend reports it: Slack's code when it answered, never the request. */
 export const slackApiError = (method: string, cause: unknown): SlackApiError => {
+  if (cause instanceof SlackApiError) return cause;
+  if (cause instanceof Error && cause.cause instanceof SlackApiError) return cause.cause;
   if (cause instanceof WebAPIPlatformError) {
     return new SlackApiError({ method, code: cause.data.error, message: cause.message });
   }
@@ -356,6 +438,9 @@ const settled = (effect: Effect.Effect<unknown, SlackApiError>, done: string) =>
 const message = (input: SlackPostInput | SlackUpdateInput): Record<string, unknown> => ({
   channel: input.channel,
   text: input.text,
+  ...("clientMessageId" in input && input.clientMessageId !== undefined
+    ? { client_msg_id: input.clientMessageId }
+    : {}),
   ...(input.blocks === undefined ? {} : { blocks: input.blocks }),
   ...("threadTs" in input && input.threadTs !== undefined ? { thread_ts: input.threadTs } : {}),
 });
@@ -365,7 +450,48 @@ export interface SlackApiOptions {
   readonly fetch?: typeof globalThis.fetch;
   /** Per request, in milliseconds. */
   readonly timeoutMs?: number;
+  /** Bytes and completion may take longer than a small Web API request. Defaults to 120 s. */
+  readonly uploadTimeoutMs?: number;
 }
+
+const uploadStream = (body: Readable, length: number): ReadableStream<Uint8Array> => {
+  const iterator: AsyncIterator<unknown> = body[Symbol.asyncIterator]();
+  let sent = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = await iterator.next();
+      if (next.done === true) {
+        if (sent !== length)
+          throw new SlackApiError({
+            method: "files.uploadBytes",
+            code: "invalid_length",
+            message: "The file length does not match the upload.",
+          });
+        controller.close();
+        return;
+      }
+      const chunk =
+        typeof next.value === "string" ? new TextEncoder().encode(next.value) : next.value;
+      if (!(chunk instanceof Uint8Array))
+        throw new SlackApiError({
+          method: "files.uploadBytes",
+          code: "invalid_bytes",
+          message: "The upload reader did not return bytes.",
+        });
+      sent += chunk.byteLength;
+      if (sent > length)
+        throw new SlackApiError({
+          method: "files.uploadBytes",
+          code: "invalid_length",
+          message: "The file length does not match the upload.",
+        });
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      body.destroy();
+    },
+  });
+};
 
 /**
  * The live implementation over `@slack/web-api`: its transport, rate-limit waits and a short
@@ -375,6 +501,14 @@ export interface SlackApiOptions {
 export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"] => {
   const fetchFn = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const uploadTimeoutMs = options.uploadTimeoutMs ?? 120_000;
+  const completionClient = new WebClient(undefined, {
+    logLevel: LogLevel.WARN,
+    retryConfig: { retries: 0 },
+    timeout: uploadTimeoutMs,
+    rejectRateLimitedCalls: true,
+    fetch: fetchFn,
+  });
   const client = new WebClient(undefined, {
     logLevel: LogLevel.WARN,
     retryConfig: { retries: 2, factor: 2, minTimeout: 500, maxTimeout: 2_000 },
@@ -406,7 +540,7 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
     args: Record<string, unknown>,
     result: S,
   ): Effect.Effect<S["Type"], SlackApiError, S["DecodingServices"]> =>
-    decode(method, result, client.apiCall(method, { ...args, token }));
+    Effect.suspend(() => decode(method, result, client.apiCall(method, { ...args, token })));
 
   /**
    * A call with an app-level token (`xapp-`). `apiCall`'s `token` argument rides in the form body
@@ -442,6 +576,7 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
           botId: present(answer.bot_id),
           appId: present(answer.app_id),
           enterpriseId: present(answer.enterprise_id),
+          grantedScopes: answer.response_metadata?.scopes ?? null,
         })),
       ),
     appsConnectionsOpen: (appToken) =>
@@ -461,13 +596,26 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
         })),
       ),
     postMessage: (token, input) =>
-      call(
-        "chat.postMessage",
-        token,
-        // Mend's links are to itself; an unfurl would only repeat them.
-        { ...message(input), unfurl_links: false, unfurl_media: false },
-        PostResult,
-      ),
+      input.clientMessageId === undefined
+        ? call(
+            "chat.postMessage",
+            token,
+            // Mend's links are to itself; an unfurl would only repeat them.
+            { ...message(input), unfurl_links: false, unfurl_media: false },
+            PostResult,
+          )
+        : Effect.suspend(() =>
+            decode(
+              "chat.postMessage",
+              PostResult,
+              completionClient.apiCall("chat.postMessage", {
+                ...message(input),
+                token,
+                unfurl_links: false,
+                unfurl_media: false,
+              }),
+            ),
+          ),
     postEphemeral: (token, input) =>
       call(
         "chat.postEphemeral",
@@ -507,6 +655,14 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
             if (messages.length >= max) messages.shift();
             messages.push({
               ts: entry.ts,
+              ...(entry.client_msg_id == null ? {} : { clientMessageId: entry.client_msg_id }),
+              ...(entry.blocks === undefined
+                ? {}
+                : {
+                    blockIds: entry.blocks.flatMap((block) =>
+                      block.block_id == null ? [] : [block.block_id],
+                    ),
+                  }),
               userId: present(entry.user),
               teamId: present(entry.user_team) ?? present(entry.team),
               isBot: present(entry.bot_id) !== null || entry.subtype === "bot_message",
@@ -540,6 +696,87 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
           isBot: found.is_bot === true,
           deleted: found.deleted === true,
         })),
+      ),
+    filesGetUploadUrl: (token, input) =>
+      call(
+        "files.getUploadURLExternal",
+        token,
+        { filename: input.filename, length: input.length, alt_txt: input.altText },
+        UploadUrlResult,
+      ).pipe(Effect.map((answer) => ({ uploadUrl: answer.upload_url, fileId: answer.file_id }))),
+    filesUpload: (url, { body, length }) =>
+      Effect.gen(function* () {
+        const method = "files.uploadBytes";
+        if (!isSlackFileUrl(url))
+          return yield* new SlackApiError({
+            method,
+            code: "not_slack_host",
+            message: "Mend uploads files only to Slack.",
+          });
+        if (
+          !Number.isSafeInteger(length) ||
+          length < 0 ||
+          (body instanceof Uint8Array && body.byteLength !== length)
+        ) {
+          return yield* new SlackApiError({
+            method,
+            code: "invalid_length",
+            message: "The file length does not match the upload.",
+          });
+        }
+        yield* Effect.tryPromise({
+          try: async (signal) => {
+            const init = {
+              method: "POST",
+              headers: {
+                "content-type": "application/octet-stream",
+                "content-length": String(length),
+              },
+              body: body instanceof Uint8Array ? Buffer.from(body) : uploadStream(body, length),
+              duplex: "half",
+              redirect: "error",
+              signal: AbortSignal.any([signal, AbortSignal.timeout(uploadTimeoutMs)]),
+            } satisfies RequestInit & { readonly duplex: "half" };
+            const response = await fetchFn(url, init);
+            await response.body?.cancel();
+            if (!response.ok)
+              throw new SlackApiError({
+                method,
+                code: `http_${response.status}`,
+                message: `Slack answered ${response.status} for the upload.`,
+              });
+          },
+          catch: (cause) => (cause instanceof SlackApiError ? cause : slackApiError(method, cause)),
+        });
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (!(body instanceof Uint8Array)) body.destroy();
+          }),
+        ),
+      ),
+    filesCompleteUpload: (token, input) =>
+      Effect.suspend(() =>
+        decode(
+          "files.completeUploadExternal",
+          CompleteUploadResult,
+          completionClient.apiCall("files.completeUploadExternal", {
+            token,
+            files: [{ id: input.fileId, title: input.title }],
+            channel_id: input.channelId,
+            thread_ts: input.threadTs,
+            initial_comment: input.initialComment,
+          }),
+        ),
+      ).pipe(Effect.asVoid),
+    filesInfo: (token, fileId, channelId) =>
+      call("files.info", token, { file: fileId }, FileInfoResult).pipe(
+        Effect.map(({ file }) =>
+          [
+            ...(file.shares?.public?.[channelId] ?? []),
+            ...(file.shares?.private?.[channelId] ?? []),
+          ].map((share) => ({ ts: share.ts, threadTs: present(share.thread_ts) })),
+        ),
       ),
     filesDownload: (token, url, { maxBytes }) =>
       Effect.gen(function* () {
@@ -609,6 +846,7 @@ export interface FakeSlackWorkspace {
   readonly botToken: string;
   readonly appToken: string;
   readonly users?: ReadonlyArray<SlackUserInfo>;
+  readonly grantedScopes?: ReadonlyArray<string>;
   /** Threads by `<channel>:<parent ts>`, oldest first. */
   readonly threads?: Readonly<Record<string, ReadonlyArray<SlackThreadMessage>>>;
   /** File bytes by URL. */
@@ -617,6 +855,18 @@ export interface FakeSlackWorkspace {
 
 /** Everything the fake was asked to change, in order. */
 export type FakeSlackCall =
+  | {
+      readonly kind: "filesGetUploadUrl";
+      readonly teamId: string;
+      readonly input: SlackUploadInput;
+      readonly fileId: string;
+    }
+  | { readonly kind: "filesUpload"; readonly fileId: string; readonly length: number }
+  | {
+      readonly kind: "filesCompleteUpload";
+      readonly teamId: string;
+      readonly input: SlackCompleteUploadInput;
+    }
   | { readonly kind: "postMessage"; readonly teamId: string; readonly input: SlackPostInput }
   | { readonly kind: "postEphemeral"; readonly teamId: string; readonly input: SlackEphemeralInput }
   | { readonly kind: "update"; readonly teamId: string; readonly input: SlackUpdateInput }
@@ -637,6 +887,8 @@ export interface FakeSlack {
   /** Refuse the next `chat.update` calls, one per error, in order; a refused edit changes nothing. */
   readonly refuseUpdates: (...errors: ReadonlyArray<SlackApiError>) => void;
   readonly refused: ReadonlyArray<SlackUpdateInput>;
+  readonly refuseFiles: (...errors: ReadonlyArray<SlackApiError>) => void;
+  readonly expireFile: (fileId: string) => void;
 }
 
 /**
@@ -645,6 +897,21 @@ export interface FakeSlack {
  */
 export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): FakeSlack => {
   const calls: Array<FakeSlackCall> = [];
+  const uploadedFiles = new Map<
+    string,
+    {
+      readonly teamId: string;
+      readonly length: number;
+      uploaded: boolean;
+      shared: boolean;
+      channelId: string | null;
+      shares: Array<SlackFileShare>;
+    }
+  >();
+  const fileRefusals: Array<SlackApiError> = [];
+  const fileError = (method: string): SlackApiError | undefined =>
+    fileRefusals[0]?.method === method ? fileRefusals.shift() : undefined;
+  const posted = new Map<string, Array<SlackThreadMessage>>();
   const reactions = new Map<string, Set<string>>();
   const updateRefusals: Array<SlackApiError> = [];
   const refused: Array<SlackUpdateInput> = [];
@@ -676,6 +943,7 @@ export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): Fa
           botId: workspace.botId,
           appId: null,
           enterpriseId: null,
+          grantedScopes: workspace.grantedScopes ?? [...SLACK_BOT_SCOPES],
         })),
       ),
     appsConnectionsOpen: (appToken) => {
@@ -701,8 +969,36 @@ export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): Fa
     postMessage: (token, input) =>
       byBot("chat.postMessage", token).pipe(
         Effect.map((workspace) => {
+          const key = `${workspace.teamId}:${input.channel}:${input.threadTs ?? ""}`;
+          const replies = posted.get(key) ?? [];
+          const existing =
+            input.clientMessageId === undefined
+              ? undefined
+              : replies.find((reply) => reply.clientMessageId === input.clientMessageId);
+          if (existing !== undefined) return { channel: input.channel, ts: existing.ts };
+          const ts = nextTs();
           calls.push({ kind: "postMessage", teamId: workspace.teamId, input });
-          return { channel: input.channel, ts: nextTs() };
+          replies.push({
+            ts,
+            userId: workspace.botUserId,
+            teamId: workspace.teamId,
+            isBot: true,
+            displayName: null,
+            text: input.text,
+            files: [],
+            ...(input.blocks === undefined
+              ? {}
+              : {
+                  blockIds: input.blocks.flatMap((block) =>
+                    block.block_id === undefined ? [] : [block.block_id],
+                  ),
+                }),
+            ...(input.clientMessageId === undefined
+              ? {}
+              : { clientMessageId: input.clientMessageId }),
+          });
+          posted.set(key, replies);
+          return { channel: input.channel, ts };
         }),
       ),
     postEphemeral: (token, input) =>
@@ -742,7 +1038,12 @@ export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): Fa
     conversationsReplies: (token, input) =>
       byBot("conversations.replies", token).pipe(
         Effect.flatMap((workspace) => {
-          const thread = workspace.threads?.[`${input.channel}:${input.ts}`];
+          const initial = workspace.threads?.[`${input.channel}:${input.ts}`];
+          const replies = posted.get(`${workspace.teamId}:${input.channel}:${input.ts}`);
+          const thread =
+            initial === undefined && replies === undefined
+              ? undefined
+              : [...(initial ?? []), ...(replies ?? [])];
           if (thread === undefined) return refuse("conversations.replies", "thread_not_found");
           const latest = input.latest;
           const max = input.max ?? SLACK_REPLIES_MAX;
@@ -760,6 +1061,80 @@ export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): Fa
             ? refuse("users.info", "user_not_found")
             : Effect.succeed(found);
         }),
+      ),
+    filesGetUploadUrl: (token, input) =>
+      byBot("files.getUploadURLExternal", token).pipe(
+        Effect.flatMap((workspace) =>
+          Effect.suspend(() => {
+            const error = fileError("files.getUploadURLExternal");
+            if (error !== undefined) return Effect.fail(error);
+            if (!(workspace.grantedScopes ?? SLACK_BOT_SCOPES).includes("files:write"))
+              return refuse("files.getUploadURLExternal", "missing_scope");
+            const fileId = `F${uploadedFiles.size}-${nextTs()}`;
+            uploadedFiles.set(fileId, {
+              teamId: workspace.teamId,
+              length: input.length,
+              uploaded: false,
+              shared: false,
+              channelId: null,
+              shares: [],
+            });
+            calls.push({ kind: "filesGetUploadUrl", teamId: workspace.teamId, input, fileId });
+            return Effect.succeed({
+              fileId,
+              uploadUrl: `https://files.slack.com/upload/${fileId}`,
+            });
+          }),
+        ),
+      ),
+    filesUpload: (url, input) =>
+      Effect.suspend(() => {
+        const error = fileError("files.uploadBytes");
+        if (error !== undefined) return Effect.fail(error);
+        if (!isSlackFileUrl(url)) return refuse("files.uploadBytes", "not_slack_host");
+        const fileId = url.split("/").at(-1) ?? "";
+        const file = uploadedFiles.get(fileId);
+        if (file === undefined) return refuse("files.uploadBytes", "http_404");
+        if (
+          input.length !== file.length ||
+          (input.body instanceof Uint8Array && input.body.byteLength !== input.length)
+        )
+          return refuse("files.uploadBytes", "invalid_length");
+        file.uploaded = true;
+        calls.push({ kind: "filesUpload", fileId, length: input.length });
+        return Effect.void;
+      }),
+    filesCompleteUpload: (token, input) =>
+      byBot("files.completeUploadExternal", token).pipe(
+        Effect.flatMap((workspace) =>
+          Effect.suspend(() => {
+            const error = fileError("files.completeUploadExternal");
+            if (error !== undefined) return Effect.fail(error);
+            const file = uploadedFiles.get(input.fileId);
+            if (file === undefined || file.teamId !== workspace.teamId)
+              return refuse("files.completeUploadExternal", "file_not_found");
+            if (file.shared) return refuse("files.completeUploadExternal", "already_complete");
+            if (!file.uploaded) return refuse("files.completeUploadExternal", "file_not_found");
+            file.shared = true;
+            file.channelId = input.channelId;
+            file.shares.push({ ts: nextTs(), threadTs: input.threadTs });
+            calls.push({ kind: "filesCompleteUpload", teamId: workspace.teamId, input });
+            return Effect.void;
+          }),
+        ),
+      ),
+    filesInfo: (token, fileId, channelId) =>
+      byBot("files.info", token).pipe(
+        Effect.flatMap((workspace) =>
+          Effect.suspend(() => {
+            const error = fileError("files.info");
+            if (error !== undefined) return Effect.fail(error);
+            const file = uploadedFiles.get(fileId);
+            if (file === undefined || file.teamId !== workspace.teamId)
+              return refuse("files.info", "file_not_found");
+            return Effect.succeed(file.channelId === channelId ? [...file.shares] : []);
+          }),
+        ),
       ),
     filesDownload: (token, url, { maxBytes }) =>
       byBot("files.download", token).pipe(
@@ -780,5 +1155,7 @@ export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): Fa
     reactions,
     refuseUpdates: (...errors) => void updateRefusals.push(...errors),
     refused,
+    refuseFiles: (...errors) => void fileRefusals.push(...errors),
+    expireFile: (fileId) => void uploadedFiles.delete(fileId),
   };
 };

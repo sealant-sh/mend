@@ -36,6 +36,8 @@ export class SlackAppView extends Schema.Class<SlackAppView>("SlackAppView")({
   /** The origin every link Mend posts into Slack starts with. */
   webOrigin: Schema.String,
   settings: SlackInstallSettings,
+  /** Current granted scopes; null when Slack could not be checked. */
+  grantedScopes: Schema.NullOr(Schema.Array(Schema.String)),
   installedByUserId: Schema.String,
   /** Null when the account is gone. */
   installedByName: Schema.NullOr(Schema.String),

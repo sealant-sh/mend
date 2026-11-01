@@ -125,9 +125,10 @@ const nameOf = (userId: string) =>
   });
 
 /** An install without its tokens, which never leave the database sealed or not. */
-const appView = (install: SealedSlackInstall) =>
+const appView = (install: SealedSlackInstall, grantedScopes: ReadonlyArray<string> | null = null) =>
   Effect.gen(function* () {
     return new SlackAppView({
+      grantedScopes,
       teamId: install.teamId,
       teamName: install.teamName,
       appId: install.appId,
@@ -193,7 +194,19 @@ export const SlackGroupLive = HttpApiBuilder.group(MendApi, "slack", (handlers) 
         const found = yield* owner(SLACK);
         const install = yield* (yield* SlackInstallsRepo).byOrganization(found.organization.id);
         return new SlackAppStatus({
-          app: install === null ? null : yield* appView(install),
+          app:
+            install === null
+              ? null
+              : yield* appView(
+                  install,
+                  yield* Effect.gen(function* () {
+                    const cipher = yield* SecretCipher;
+                    const slack = yield* SlackApi;
+                    const token = yield* cipher.decrypt(install.sealedBotToken);
+                    const identity = yield* slack.authTest(token);
+                    return identity.teamId === install.teamId ? identity.grantedScopes : null;
+                  }).pipe(Effect.catch(() => Effect.succeed(null))),
+                ),
           harnesses: SLACK_HARNESSES,
         });
       }),
@@ -282,7 +295,7 @@ export const SlackGroupLive = HttpApiBuilder.group(MendApi, "slack", (handlers) 
                 }),
           },
         });
-        return yield* appView(saved.install);
+        return yield* appView(saved.install, bot.grantedScopes);
       }),
     )
     .handle("disconnect", () =>

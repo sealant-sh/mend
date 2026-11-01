@@ -15,6 +15,7 @@ describe("the Slack app manifest", () => {
         "channels:history",
         "chat:write",
         "files:read",
+        "files:write",
         "groups:history",
         "im:history",
         "im:write",

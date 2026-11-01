@@ -894,6 +894,7 @@ const ADMITTED: Readonly<
               "im:write",
               "reactions:write",
               "files:read",
+              "files:write",
               "users:read",
             ],
           },

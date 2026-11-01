@@ -106,7 +106,13 @@ const globexSlack: FakeSlackWorkspace = {
     },
   ],
 };
-const slack = makeFakeSlack([acmeSlack, otherApp, globexSlack]);
+const legacySlack: FakeSlackWorkspace = {
+  ...acmeSlack,
+  appToken: "xapp-legacy",
+  botToken: "xoxb-legacy",
+  grantedScopes: ["chat:write", "files:read"],
+};
+const slack = makeFakeSlack([acmeSlack, otherApp, globexSlack, legacySlack]);
 
 // ─── An in-memory Slack store, as the repositories promise it ──────────────
 
@@ -445,6 +451,24 @@ describe("the organization's Slack app (docs/adr/0006)", () => {
       installs: 0,
       audited: [],
       slack: [],
+    });
+  });
+
+  it("reports missing files:write on connect and checks scopes again when an owner reads the app", async () => {
+    const legacy = await connect("xapp-legacy", "xoxb-legacy");
+    expect(legacy.status).toBe(200);
+    await expect(legacy.json()).resolves.toMatchObject({
+      grantedScopes: ["chat:write", "files:read"],
+    });
+    const viewed = await call("alice", "GET", "/api/organization/slack");
+    expect(viewed.status).toBe(200);
+    await expect(viewed.json()).resolves.toMatchObject({
+      app: { grantedScopes: ["chat:write", "files:read"] },
+    });
+    await connect();
+    const replaced = await call("alice", "GET", "/api/organization/slack");
+    await expect(replaced.json()).resolves.toMatchObject({
+      app: { grantedScopes: expect.arrayContaining(["files:write"]) },
     });
   });
 

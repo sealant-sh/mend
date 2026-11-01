@@ -45,16 +45,17 @@ Before it saves anything, Mend checks the bot token with `auth.test`, the app-le
 never shown again.
 
 The manifest turns on Socket Mode and interactivity, subscribes to the `app_mention` and
-`message.im` bot events, and asks for ten bot scopes:
+`message.im` bot events, and asks for eleven bot scopes:
 
-| Scope                                                              | Used for                              |
-| ------------------------------------------------------------------ | ------------------------------------- |
-| `app_mentions:read`                                                | Seeing mentions                       |
-| `channels:history`, `groups:history`, `im:history`, `mpim:history` | Reading the thread a mention sits in  |
-| `chat:write`, `im:write`                                           | Posting status and replies            |
-| `reactions:write`                                                  | Marking the request with ⏳, ✅ or ❌ |
-| `files:read`                                                       | Reading screenshots in the thread     |
-| `users:read`                                                       | Showing who wrote each message        |
+| Scope                                                              | Used for                                              |
+| ------------------------------------------------------------------ | ----------------------------------------------------- |
+| `app_mentions:read`                                                | Seeing mentions                                       |
+| `channels:history`, `groups:history`, `im:history`, `mpim:history` | Reading the thread a mention sits in                  |
+| `chat:write`, `im:write`                                           | Posting status and replies                            |
+| `reactions:write`                                                  | Marking the request with ⏳, ✅ or ❌                 |
+| `files:write`                                                      | Uploading proof screenshots and video into the thread |
+| `files:read`                                                       | Reading screenshots in the thread                     |
+| `users:read`                                                       | Showing who wrote each message                        |
 
 It names no request, redirect or event URL.
 
@@ -65,6 +66,22 @@ Once connected, the owner can **Replace tokens…** or **Remove…** the app. To
 workspace keep its links and channel defaults; tokens for another workspace delete them. Removing
 the app deletes both tokens, every Slack link and every channel's default project. Sessions started
 from Slack stay, with their record and their origin.
+
+## Update an existing Slack app
+
+An app installed before proof uploads needs the `files:write` bot scope. Mend checks the granted
+scopes when you connect and when an owner opens **Settings → Slack**.
+
+1. Open your app at api.slack.com/apps. Under **OAuth & Permissions → Bot Token Scopes**, add
+   `files:write`. You can instead open **App Manifest** and paste the current manifest from
+   **Settings → Slack → Manifest** in Mend, then save it.
+2. Choose **Reinstall to Workspace** and approve the updated permissions. Adding a scope takes
+   effect for an existing install only after reinstallation.
+3. If Slack shows a new **Bot User OAuth Token**, paste it in **Settings → Slack → Replace
+   tokens…**, along with the app-level token, and choose **Check and connect**.
+
+See Slack's
+[manifest update instructions](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/#updating-configurations-via-manifests).
 
 ## Link your Slack account
 
@@ -195,6 +212,12 @@ A follow-up in a channel is refused when the session's project has been made pri
 ## What Mend posts
 
 Mend posts only into the thread the request came from.
+
+Selected proof screenshots are uploaded as PNG files and the after video as an MP4 file. Each
+carries its before or after label, source, observation time and the agent's caption. Uploaded copies
+follow Slack's access rules. A capture that could not be taken gets a text reply with its reason; a
+file that could not be delivered is named with the reason. Slack Connect threads receive no proof
+artifacts, even when other agent messages are enabled there.
 
 - A reaction on the request: ⏳ while the session runs, ✅ when it completes, ❌ when it fails or
   the request is refused. A terminal agent that finished its turn reads

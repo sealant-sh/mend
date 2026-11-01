@@ -14,3 +14,5 @@ export * from "./slack-reporter.ts";
 export * from "./protocol-idle-stop.ts";
 export * from "./push-sender.ts";
 export * from "./expo-push-sender.ts";
+
+export * from "./slack-proof-delivery.ts";
