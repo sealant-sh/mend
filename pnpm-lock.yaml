@@ -147,6 +147,9 @@ catalogs:
     lucide-react:
       specifier: ^0.545.0
       version: 0.545.0
+    mediabunny:
+      specifier: 1.65.0
+      version: 1.65.0
     pg:
       specifier: ^8.22.0
       version: 8.22.0
@@ -354,6 +357,9 @@ importers:
       effect:
         specifier: 'catalog:'
         version: 4.0.5
+      mediabunny:
+        specifier: 'catalog:'
+        version: 1.65.0
       werift:
         specifier: ^0.25.2
         version: 0.25.2

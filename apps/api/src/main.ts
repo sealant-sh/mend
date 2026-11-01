@@ -289,7 +289,9 @@ import { PreviewAuthRoutes } from "./routes/preview-auth.ts";
 import { TerminalProjectsLive } from "./routes/upgrade-tickets.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
+import { ScreenRecorderLive } from "./screen-recorder.ts";
 import { ScreenRtcLive } from "./screen-rtc.ts";
+import { ScreenVideoSourceLive } from "./screen-video-source.ts";
 import { ScreenWatchLive } from "./screen-watch.ts";
 import { DopplerApiLive } from "./services/doppler.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
@@ -566,7 +568,7 @@ const ServerLive = Layer.unwrap(
     ).pipe(
       Layer.provide(ProjectCreationLive),
       // Who may watch a screen, and which viewers are open: one for the routes and the socket.
-      Layer.provide(ScreenRtcLive.pipe(Layer.provide(ScreenHostLive))),
+      Layer.provide(ScreenRtcLive),
       Layer.provide(ScreenWatchLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
     );
@@ -956,7 +958,11 @@ const MainLive = Layer.unwrap(
     ).pipe(Layer.provide(PullRequestsLayer), Layer.provideMerge(landingGit));
     // The one Screens, provided to the routes that watch and take over screens and to Mend's MCP server.
     const screens = ScreensLayer.pipe(Layer.provide(captureStore));
-    const served = Layer.merge(ServerLive, MendMcpLayer).pipe(Layer.provideMerge(screens));
+    const video = ScreenVideoSourceLive.pipe(Layer.provide(ScreenHostLive));
+    const served = Layer.mergeAll(ServerLive, MendMcpLayer, ScreenRecorderLive).pipe(
+      Layer.provide(video),
+      Layer.provideMerge(screens),
+    );
     const parts =
       mode === "api"
         ? served

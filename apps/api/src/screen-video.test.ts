@@ -4,10 +4,9 @@ import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Fiber, Queue } from "effect";
 import { expect } from "vitest";
 
-import { ScreenH264 } from "./screen-h264.ts";
-import { streamScreenVideo } from "./screen-video.ts";
+import { streamScreenVideo, type ScreenVideoFrame } from "./screen-video.ts";
 
-type Frame = NonNullable<ReturnType<ScreenH264["push"]>>[number];
+type Frame = ScreenVideoFrame;
 const annex = (...units: Array<ReadonlyArray<number>>) =>
   Buffer.from(units.flatMap((unit) => [0, 0, 0, 1, ...unit]));
 const aud = [9, 0xf0];
@@ -66,7 +65,7 @@ const fixture = (initialPointer = true) =>
   });
 
 it.effect(
-  "keeps the old upstream until the replacement's complete IDR, with one RTP timeline",
+  "keeps the old upstream until the replacement's complete IDR, with arrival timestamps",
   () =>
     Effect.gen(function* () {
       const f = yield* fixture();
@@ -81,24 +80,22 @@ it.effect(
       yield* f.send(next.bytes, Buffer.concat([annex(aud), frame(20), frame(21, true, false)]));
       yield* f.send(old.bytes, frame(11));
       const continuing = yield* Queue.take(f.emitted);
-      expect(continuing.packets.some((p) => p.payload.equals(Buffer.from([0x41, 11])))).toBe(true);
+      expect(Buffer.from(continuing.data).includes(annex([0x41, 11]))).toBe(true);
       expect(Deferred.isDoneUnsafe(old.closed)).toBe(false);
       yield* f.send(next.bytes, frame(22, true));
       const switched = yield* Queue.take(f.emitted);
-      expect(switched.idr).toBe(true);
-      expect(switched.packets.some((p) => p.payload.equals(Buffer.from([0x65, 22])))).toBe(true);
+      expect(switched.keyframe).toBe(true);
+      expect(Buffer.from(switched.data).includes(annex([0x65, 22]))).toBe(true);
       yield* Deferred.await(old.closed);
       yield* f.send(old.bytes, frame(12));
       yield* f.send(next.bytes, frame(23));
       yield* Queue.take(f.emitted);
       expect(
-        f.packets
-          .flatMap((v) => v.packets)
-          .some((p) =>
-            [12, 20, 21].some((marker) =>
-              p.payload.equals(Buffer.from([marker === 21 ? 0x65 : 0x41, marker])),
-            ),
+        f.packets.some((v) =>
+          [12, 20, 21].some((marker) =>
+            Buffer.from(v.data).includes(annex([marker === 21 ? 0x65 : 0x41, marker])),
           ),
+        ),
       ).toBe(false);
 
       // Hand back selects the pointer encoder again without replacing any viewer track.
@@ -109,15 +106,8 @@ it.effect(
       yield* f.send(back.bytes, Buffer.concat([annex(aud), frame(30, true)]));
       yield* Queue.take(f.emitted);
       yield* Deferred.await(next.closed);
-      const packets = f.packets.flatMap((v) => v.packets);
-      expect(new Set(packets.map((p) => p.header.ssrc)).size).toBe(1);
-      for (let i = 1; i < packets.length; i++)
-        expect(packets[i]?.header.sequenceNumber).toBe(
-          ((packets[i - 1]?.header.sequenceNumber ?? 0) + 1) & 0xffff,
-        );
-      expect(f.packets.map((v) => v.packets[0]?.header.timestamp)).toEqual([
-        0, 3000, 6000, 9000, 12000,
-      ]);
+      expect(f.packets).toHaveLength(5);
+      expect(f.packets.map((v) => v.receivedAt)).toEqual([0, 100, 100, 100, 200]);
       yield* Fiber.interrupt(f.fiber);
       expect(Deferred.isDoneUnsafe(back.closed)).toBe(true);
     }),
@@ -162,7 +152,7 @@ it.effect("starts without the pointer if a person already holds input", () =>
     const first = yield* Queue.take(f.opens);
     expect(first.pointer).toBe(false);
     yield* f.send(first.bytes, Buffer.concat([annex(aud), frame(10, true)]));
-    expect((yield* Queue.take(f.emitted)).idr).toBe(true);
+    expect((yield* Queue.take(f.emitted)).keyframe).toBe(true);
   }),
 );
 
@@ -180,7 +170,7 @@ it.effect("discards a pending replacement if the holder changes back before its 
     yield* Deferred.await(next.closed);
     yield* f.send(old.bytes, frame(11));
     const continued = yield* Queue.take(f.emitted);
-    expect(continued.packets.some((p) => p.payload.equals(Buffer.from([0x41, 11])))).toBe(true);
+    expect(Buffer.from(continued.data).includes(annex([0x41, 11]))).toBe(true);
     expect(Deferred.isDoneUnsafe(old.closed)).toBe(false);
   }),
 );
