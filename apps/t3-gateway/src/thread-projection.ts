@@ -302,6 +302,10 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
       }
       return {
         ...base,
+        // v0.1.2 folds all but a run's last assistant reply once it ends. Mend's retained
+        // captures are independent output, so keep them outside that response and its attempt.
+        runId: null,
+        nodeId: null,
         type: "assistant_message",
         messageId: MessageId.make(`message:${item.id}`),
         text: parts.join("\n\n"),
@@ -769,8 +773,8 @@ const turnEntries = (
           creationSource: "provider",
           id: mapped.messageId,
           threadId,
-          runId,
-          nodeId: turnNodeIdOf(turn.id),
+          runId: mapped.runId,
+          nodeId: mapped.nodeId,
           role: "assistant",
           text: mapped.text,
           attachments: [],

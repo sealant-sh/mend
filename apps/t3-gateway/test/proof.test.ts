@@ -3,12 +3,14 @@ import { Agent, get } from "node:http";
 import { ProofArtifactId, SessionId } from "@mend/domain";
 import { ProofRef } from "@mend/domain/workbench";
 import {
+  CommandId,
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
   TurnItemId,
   WS_METHODS,
   type OrchestrationV2TurnItem,
   type OrchestrationV2ThreadStreamItem,
+  type OrchestrationV2ThreadProjection,
 } from "@mend/t3-contracts";
 import { Duration, Effect, Exit, Schema } from "effect";
 
@@ -20,6 +22,7 @@ import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { ROOT, withAssetHarness } from "./support/raw-assets.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { applyOrchestrationV2ProjectionEvent } from "./support/upstream/steering-client.mjs";
 
 const THREAD = ThreadId.make("session-1");
 const ID = ProofArtifactId.make("c57e0440-1ef8-4f54-9c63-f4c8ef64f41c");
@@ -39,6 +42,8 @@ const reference = (patch: Partial<ProofRef> = {}) =>
     mimeType: "image/png",
     ...patch,
   });
+const expectedProofText = (ref: ProofRef) =>
+  `${ref.label}\n\n${ref.caption}${ref.state === "stored" ? `\n\n![](/mend-proof/${ref.artifactId}.${ref.kind === "video" ? "mp4" : "png"})` : ""}`;
 const encoded = Schema.encodeSync(ProofRef);
 const resource = (extension = "png", kind: "media-file" | "workspace-file" = "media-file") => ({
   _tag: kind,
@@ -64,6 +69,8 @@ const assertProofMessage = (
   assert.strictEqual(item.messageId, `message:${id}`);
   assert.strictEqual(item.text, text);
   assert.isFalse(item.streaming);
+  assert.isNull(item.runId);
+  assert.isNull(item.nodeId);
 };
 
 describe("proof in the session's T3 Code thread", () => {
@@ -73,6 +80,7 @@ describe("proof in the session's T3 Code thread", () => {
       withGateway((mend) =>
         Effect.gen(function* () {
           const turn = mend.workbench.addTurn("session-1", "Capture the board", "completed");
+          mend.workbench.addItem(turn, { kind: "assistant-message", text: "Capturing the app." });
           const videoLabel = "Completed task on board · after · checkpoint #2 · observed 14:03 UTC";
           const recordingLabel =
             "Completed task on board · after · checkpoint #2 · recording · observed 14:03 UTC";
@@ -115,6 +123,10 @@ describe("proof in the session's T3 Code thread", () => {
             kind: "proof",
             data: { artifactId: ID },
           });
+          const reply = mend.workbench.addItem(turn, {
+            kind: "assistant-message",
+            text: "The change is captured.",
+          });
           const { rpc } = yield* pairAndConnect(mend, "PROOF");
           const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
             threadId: THREAD,
@@ -141,13 +153,160 @@ describe("proof in the session's T3 Code thread", () => {
             assert.strictEqual(projectedMessage?.role, "assistant");
             assert.strictEqual(projectedMessage?.text, test.text);
             assert.deepStrictEqual(projectedMessage?.attachments, []);
+            assert.isNull(projectedMessage?.runId);
+            assert.isNull(projectedMessage?.nodeId);
           }
+          assert.strictEqual(
+            projection.turnItems.find((item) => item.id === reply.id)?.runId,
+            projection.runs[0]?.id,
+          );
           assert.strictEqual(
             projection.turnItems.find((item) => item.id === malformed.id)?.type,
             "dynamic_tool",
           );
         }),
       ),
+  );
+
+  it.live(
+    "keeps captures outside collapsed replies through completion, settle, stop and cold replay",
+    () =>
+      Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1", harness: "claude" });
+        const turn = mend.workbench.addTurn("session-1", "Capture the app");
+        // Put the captures on the second /items page, as in a long agent conversation.
+        for (let index = 0; index < 500; index++)
+          mend.workbench.addItem(turn, { kind: "reasoning", text: `Observation ${index}` });
+        const image = reference();
+        const secondImage = reference({
+          artifactId: ProofArtifactId.make("30610dea-2b6d-4fa2-9f2f-2a2a557a1884"),
+        });
+        const recording = reference({
+          artifactId: ProofArtifactId.make("f31fb0fb-fbca-46ce-9f6b-3ba90ce48656"),
+          kind: "video",
+          state: "recording",
+          mimeType: null,
+        });
+        const refs = [image, secondImage, recording];
+        const captures = refs.map((ref) =>
+          mend.workbench.addItem(turn, {
+            kind: "proof",
+            status: ref.state === "recording" ? "in-progress" : "completed",
+            data: encoded(ref),
+          }),
+        );
+        const check = (projection: OrchestrationV2ThreadProjection, references = refs) => {
+          for (const [index, ref] of references.entries()) {
+            const id = captures[index]?.id ?? "";
+            const visible = projection.visibleTurnItems.filter((row) => row.sourceItemId === id);
+            assert.strictEqual(visible.length, 1);
+            assertProofMessage(visible[0]?.item, id, expectedProofText(ref));
+            const messages = projection.messages.filter(
+              (message) => message.id === `message:${id}`,
+            );
+            assert.strictEqual(messages.length, 1);
+            assert.strictEqual(messages[0]?.text, expectedProofText(ref));
+            assert.isNull(messages[0]?.runId);
+            assert.isNull(messages[0]?.nodeId);
+          }
+        };
+        const stored = reference({
+          artifactId: recording.artifactId,
+          kind: "video",
+          mimeType: "video/mp4",
+        });
+        const completedRefs = [image, secondImage, stored];
+        yield* Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "PROOF-LIFECYCLE");
+          const thread = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+          );
+          const snapshot = yield* thread.next((item) => item.kind === "snapshot");
+          if (snapshot.kind !== "snapshot") throw new Error("Expected a proof snapshot");
+          check(snapshot.projection);
+          const video = captures[2];
+          if (video === undefined) throw new Error("Expected the recording");
+          let replayed = snapshot.projection;
+          let sequence = snapshot.snapshotSequence;
+          const readUntil = (
+            accept: (
+              event: Extract<OrchestrationV2ThreadStreamItem, { kind: "event" }>["event"],
+            ) => boolean,
+          ) =>
+            Effect.gen(function* () {
+              for (;;) {
+                const item = yield* thread.next((candidate) => candidate.kind === "event");
+                if (item.kind !== "event") throw new Error("Expected a proof event");
+                replayed = applyOrchestrationV2ProjectionEvent(replayed, item.event);
+                sequence = item.sequence;
+                if (accept(item.event)) return;
+              }
+            });
+          mend.workbench.updateItem(video, { status: "completed", data: encoded(stored) });
+          yield* readUntil(
+            (event) => event.type === "turn-item.updated" && event.payload.id === video.id,
+          );
+          check(replayed, completedRefs);
+          const reply = mend.workbench.addItem(turn, {
+            kind: "assistant-message",
+            text: "The change is captured.",
+          });
+          yield* readUntil(
+            (event) => event.type === "turn-item.updated" && event.payload.id === reply.id,
+          );
+          mend.workbench.setTurn(turn, "completed");
+          yield* readUntil(
+            (event) => event.type === "run.updated" && event.payload.status === "completed",
+          );
+          check(replayed, completedRefs);
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "thread.settle",
+            commandId: CommandId.make("settle-proof"),
+            threadId: THREAD,
+          });
+          const settled = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: THREAD,
+          });
+          assert.strictEqual(settled.thread.settledOverride, "settled");
+          check(settled, completedRefs);
+          assert.strictEqual(mend.workbench.sessions.get("session-1")?.status, "idle");
+          assert.isNull(mend.workbench.agents.get("session-1")?.exitedAt);
+          mend.workbench.stopAgent("session-1");
+          const resumed = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: THREAD,
+              afterSequence: sequence,
+            }),
+          );
+          for (;;) {
+            const item = yield* resumed.next((candidate) => candidate.kind === "event");
+            if (item.kind !== "event") throw new Error("Expected a replay event");
+            replayed = applyOrchestrationV2ProjectionEvent(replayed, item.event);
+            if (
+              item.event.type === "provider-session.updated" &&
+              item.event.payload.status === "stopped"
+            )
+              break;
+          }
+          check(replayed, completedRefs);
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+        yield* Effect.gen(function* () {
+          const { rpc: cold } = yield* pairAndConnect(mend, "PROOF-COLD");
+          check(
+            yield* cold[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD }),
+            completedRefs,
+          );
+          const reloaded = yield* feed(
+            cold[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+          );
+          const fresh = yield* reloaded.next((item) => item.kind === "snapshot");
+          if (fresh.kind !== "snapshot") throw new Error("Expected a cold proof snapshot");
+          assert.strictEqual(fresh.projection.providerSessions[0]?.status, "stopped");
+          check(fresh.projection, completedRefs);
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+      }),
   );
 
   it.live("replaces the recording item and message in place, live and after reconnect", () =>
