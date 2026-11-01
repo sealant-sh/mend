@@ -79,6 +79,7 @@ export interface Session {
    * empty otherwise, in a shared executor and from older servers.
    */
   readonly livePeople: ReadonlyArray<LivePerson>;
+  readonly resourceStatusLines?: ReadonlyArray<string>;
   /** When shared control was turned on; null while it is off and from older servers. */
   readonly sharedControlEnabledAt: string | null;
   /**

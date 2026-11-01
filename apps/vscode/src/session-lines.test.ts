@@ -260,3 +260,16 @@ describe("with per-person homes off, no request beyond the project view", () => 
     expect(client.asked).toEqual(["/organization"]);
   });
 });
+
+it("keeps the resource lines the server gave the session", () => {
+  const line = "@db · running · own database · observed 3 s ago";
+  expect(
+    sessionLines({
+      session: { livePeople: [], resourceStatusLines: [line] },
+      viewer: null,
+      waitLine: null,
+      retirement: null,
+      members: [],
+    }),
+  ).toEqual([line]);
+});
