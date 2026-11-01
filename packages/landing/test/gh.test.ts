@@ -23,7 +23,14 @@ import {
 } from "../src/gh.ts";
 
 const repository = { owner: "acme", name: "api", slug: "acme/api" };
-const PREFIX = ["env", "GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "NO_COLOR=1", "gh"];
+const PREFIX = [
+  "env",
+  "GH_PROMPT_DISABLED=1",
+  "GH_TELEMETRY=0",
+  "GH_NO_UPDATE_NOTIFIER=1",
+  "NO_COLOR=1",
+  "gh",
+];
 
 const wire = {
   number: 412,

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import { UserFacts } from "@mend/db";
-import { SessionId, Sha } from "@mend/domain";
-import type { CheckpointTrigger, LandedPullRequest } from "@mend/domain/workbench";
+import { ProofArtifactId, SessionId, Sha } from "@mend/domain";
+import type {
+  CheckpointTrigger,
+  LandedPullRequest,
+  PullRequestMediaItem,
+} from "@mend/domain/workbench";
 import { BundleTooLargeError, PushRefusedError } from "@mend/store";
 import { Effect, Layer } from "effect";
 
@@ -47,6 +51,7 @@ const input = (overrides: Partial<LandInput> = {}): LandInput => ({
 });
 
 interface Script {
+  readonly proofItems?: Array<PullRequestMediaItem>;
   readonly checkpointFails?: string;
   readonly commitFails?: string;
   /** Mend wrote no commit: the agent's own commits hold the checkpoint's tree. */
@@ -225,6 +230,8 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
       }),
   });
   const pullRequests = Layer.succeed(PullRequests, {
+    proofItems: () => Effect.succeed(script.proofItems ?? []),
+    attachProof: () => Effect.succeed({ delivered: 0, reused: 0, failed: [] }),
     publish: (publish) =>
       Effect.suspend(() => {
         calls.push("publish");
@@ -286,7 +293,11 @@ describe("Landing.land", () => {
     return Effect.gen(function* () {
       const report = yield* (yield* Landing).land(input());
       expect(h.calls).toEqual(["checkpoint", "commit", "push", "files", "publish"]);
-      expect(report.pullRequest).toEqual({ _tag: "opened", pullRequest: PR });
+      expect(report.pullRequest).toEqual({
+        _tag: "opened",
+        pullRequest: PR,
+        media: { delivered: 0, reused: 0, failed: [] },
+      });
       expect(report.landing).toMatchObject({
         outcome: "pull-request",
         checkpointId: "cp-3",
@@ -419,6 +430,31 @@ describe("Landing.land", () => {
       expect(h.commits.map((commit) => commit.lastLanded)).toEqual([null, null]);
     }).pipe(Effect.provide(h.layer));
   });
+
+  it.effect(
+    "attaches a new capture without another push or landing row when the tree has not changed",
+    () => {
+      const proofItems: Array<PullRequestMediaItem> = [];
+      const h = harness({ nothingNew: true, proofItems });
+      return Effect.gen(function* () {
+        const landing = yield* Landing;
+        const first = yield* landing.land(input());
+        proofItems.push({
+          artifactId: ProofArtifactId.make("new-capture"),
+          label: "Board · checkpoint #2 · observed 14:02 UTC",
+          kind: "screenshot",
+          checkpointOrdinal: 2,
+          ref: { missing: "upload pending" },
+        });
+        const second = yield* landing.land(input());
+        expect(second.landing).toEqual(first.landing);
+        expect(second.pullRequest._tag).toBe("updated");
+        expect(h.world.landings).toHaveLength(1);
+        expect(h.pushes).toHaveLength(1);
+        expect(h.published).toHaveLength(1);
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
 
   it.effect("says nothing is new since the last landing, and records nothing", () => {
     const h = harness({ nothingNew: true });

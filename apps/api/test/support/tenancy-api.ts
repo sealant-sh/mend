@@ -81,7 +81,7 @@ import {
   type SessionProcess,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { Landing, LandingGit } from "@mend/landing";
+import { Landing, LandingGit, PullRequests } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
@@ -635,6 +635,7 @@ export const createTenancyApi = async (
       recording(ChangePassesRepo, "changePasses", options.implement?.changePasses ?? {}, calls),
       recording(ChangesRepo, "legacyChanges", {}, calls),
       recording(ChangeLandingsRepo, "landings", options.implement?.landings ?? {}, calls),
+      Layer.mock(PullRequests, { proofItems: () => Effect.succeed([]) }),
       recording(Landing, "landing", options.implement?.landing ?? {}, calls),
       recording(LandingGit, "landingGit", options.implement?.landingGit ?? {}, calls),
       recording(SessionGitOpsRepo, "gitOps", options.implement?.gitOps ?? {}, calls),

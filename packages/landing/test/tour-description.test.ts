@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { CheckpointsRepo } from "@mend/db";
-import { ChangeLandingId, CheckpointId, Sha } from "@mend/domain";
+import { ChangeLandingId, CheckpointId, ProofArtifactId, Sha } from "@mend/domain";
 import { ChangeLanding, type LandedPullRequest } from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
 
@@ -76,6 +76,17 @@ const harness = (
             ]),
         }),
         Layer.mock(PullRequests, {
+          proofItems: () =>
+            Effect.succeed([
+              {
+                artifactId: ProofArtifactId.make("proof"),
+                label: "Board · checkpoint #2 · observed 14:02 UTC",
+                kind: "screenshot",
+                checkpointOrdinal: 2,
+                ref: { url: "https://github.com/user-attachments/assets/stored" },
+              },
+            ]),
+          attachProof: () => Effect.succeed({ delivered: 0, reused: 0, failed: [] }),
           publish: (input) =>
             Effect.suspend(() => {
               published.push(input);
@@ -118,6 +129,10 @@ describe("LandingDescriptions.afterTour", () => {
       expect(publish?.section).toContain("## Summary\n\nFix the login redirect");
       expect(publish?.section).toContain("- `src/login.ts` · +12 −3");
       expect(publish?.section).toContain("#checkpoint-3");
+      expect(publish?.section).toContain(
+        "![Board · checkpoint #2 · observed 14:02 UTC](https://github.com/user-attachments/assets/stored)",
+      );
+      expect(publish?.section).toContain("landed checkpoint #3");
       // What gh said is recorded.
       expect(h.world.landings[0]?.pullRequest?.observedAt).toEqual(NOW);
 

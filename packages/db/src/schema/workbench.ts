@@ -3223,3 +3223,19 @@ export const resourceLoads = pgTable("resource_loads", {
   message: text(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+export const pullRequestProofUploads = pgTable(
+  "pull_request_proof_uploads",
+  {
+    artifactId: text()
+      .$type<ProofArtifactId>()
+      .notNull()
+      .references(() => proofArtifacts.id, { onDelete: "cascade" }),
+    repository: text().notNull(),
+    url: text().notNull(),
+    pullRequest: integer().notNull(),
+    uploadedBy: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.artifactId, table.repository] })],
+);

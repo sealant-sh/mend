@@ -24,6 +24,7 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import { ProjectId, SessionId, type OrganizationId } from "@mend/domain";
+import { pullRequestMediaLine } from "@mend/domain/workbench";
 import {
   currentAgentProcess,
   isCredentialProvider,
@@ -1795,7 +1796,17 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       yield* whisper(
         token,
         at,
-        landedMessage(landingLine(landing, [], how), landing.pullRequest?.url ?? null),
+        landedMessage(
+          [
+            landingLine(landing, [], how),
+            pullRequest._tag === "opened" || pullRequest._tag === "updated"
+              ? pullRequestMediaLine(pullRequest.media)
+              : null,
+          ]
+            .filter((part) => part !== null)
+            .join("\n"),
+          landing.pullRequest?.url ?? null,
+        ),
       );
     });
 

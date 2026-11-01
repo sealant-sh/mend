@@ -1,5 +1,7 @@
 import {
   describePullRequest,
+  pullRequestMediaLine,
+  type PullRequestMediaItem,
   forkPullRequestReason,
   landingFactLine,
   observedAgo,
@@ -101,6 +103,7 @@ export const describedFileOfReview = (file: ReviewDiffFileDto): DescribedFile =>
 });
 
 export interface DescriptionPreviewInput {
+  readonly media?: ReadonlyArray<PullRequestMediaItem>;
   /** The owner's own text; empty keeps what people wrote on GitHub. */
   readonly ownerText: string;
   readonly tour: { readonly summary: string; readonly approach: string | null } | null;
@@ -120,6 +123,7 @@ export const descriptionPreview = (input: DescriptionPreviewInput): string => {
   const origin = input.webOrigin.replace(/\/+$/, "");
   const section = describePullRequest({
     tour: input.tour,
+    media: input.media ?? [],
     files: input.files,
     checks: [],
     checkpoint: null,
@@ -250,7 +254,12 @@ export const landingReportLine = (report: LandingReportDto): string => {
   switch (pullRequest._tag) {
     case "opened":
     case "updated":
-      return `${pushed} · pull request #${pullRequest.pullRequest.number} · ${pullRequest._tag}`;
+      return [
+        `${pushed} · pull request #${pullRequest.pullRequest.number} · ${pullRequest._tag}`,
+        pullRequestMediaLine(pullRequest.media),
+      ]
+        .filter((part) => part !== null)
+        .join(" · ");
     case "unavailable":
       return `${pushed} · ${pullRequest.reason}`;
     case "failed":

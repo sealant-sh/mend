@@ -27,7 +27,12 @@ import {
 } from "@mend/db";
 import { Sha } from "@mend/domain";
 import type { Change, Session } from "@mend/domain/workbench";
-import { Landing, type LandingNotStartedError, pullRequestAvailability } from "@mend/landing";
+import {
+  Landing,
+  PullRequests,
+  type LandingNotStartedError,
+  pullRequestAvailability,
+} from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
 import { Clock, Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -141,7 +146,13 @@ const landingsView = (change: Change | null, session: Session | null, probe: boo
       probeAs: probe && refused === null ? caller.user.id : null,
     });
     const availability = pullRequestAvailability(project.originUrl);
+    const media = availability.available
+      ? yield* (yield* PullRequests)
+          .proofItems(change.id, availability.repository)
+          .pipe(Effect.orElseSucceed(() => []))
+      : [];
     return new ChangeLandingsView({
+      media,
       changeId: change.id,
       sessionId: session?.id ?? change.sessionId,
       land,

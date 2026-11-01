@@ -353,6 +353,7 @@ export function LandPanel({
 
   const preview = descriptionPreview({
     ownerText: draft.body,
+    media: view.media ?? [],
     tour,
     files: files.map(describedFileOfReview),
     webOrigin: window.location.origin,

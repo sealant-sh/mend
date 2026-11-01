@@ -140,6 +140,7 @@ export const LandingDescriptionsLive: Layer.Layer<
         section: describePullRequest({
           tour: { summary: tour.summary, approach: tour.approach },
           files,
+          media: yield* pullRequests.proofItems(input.changeId, availability.repository),
           checks: [],
           checkpoint: { ordinal, sha: landing.checkpointSha ?? pushedSha },
           links:

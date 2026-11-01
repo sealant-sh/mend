@@ -1,3 +1,4 @@
+import { pullRequestMediaLine } from "@mend/domain/workbench";
 import type {
   GitActionProgressPhase,
   GitRunStackedActionInput,
@@ -266,7 +267,15 @@ export const landingResultOf = (
           step._tag === "opened"
             ? `Opened pull request #${step.pullRequest.number}`
             : `Pushed to ${branch}`,
-        description: [pushed, stepLine].filter((part) => nonBlank(part) !== undefined).join(" · "),
+        description: [
+          pushed,
+          stepLine,
+          step._tag === "opened" || step._tag === "updated"
+            ? pullRequestMediaLine(step.media)
+            : null,
+        ]
+          .filter((part) => nonBlank(part) !== undefined)
+          .join(" · "),
         cta: link === null ? { kind: "none" } : { kind: "open_pr", label: "View PR", url: link },
       },
     },
