@@ -69,7 +69,7 @@ import {
 import { type InstanceObserved, ResourceRuntime } from "./runtime.ts";
 import { WorktreeServiceRestarts } from "./service-restarts.ts";
 import { ResourceStatusReads } from "./status-reads.ts";
-import { readWorktreeTables, readDefaultBranchTables, tablesOf } from "./worktree-tables.ts";
+import { ResourceTableReads, readDefaultBranchTables, tablesOf } from "./worktree-tables.ts";
 
 /** A project as the resource rules read it. */
 export type ResourceProject = ProjectTenancy & { readonly id: ProjectId };
@@ -256,6 +256,7 @@ export const ResourcesLive: Layer.Layer<
   | WorktreesRepo
   | OrganizationsRepo
   | WorktreeReads
+  | ResourceTableReads
   | ResourceImageResolver
   | ResourceRuntime
   | WorktreeServiceRestarts
@@ -271,6 +272,7 @@ export const ResourcesLive: Layer.Layer<
     const worktrees = yield* WorktreesRepo;
     const organizations = yield* OrganizationsRepo;
     const reads = yield* WorktreeReads;
+    const tableReads = yield* ResourceTableReads;
     const images = yield* ResourceImageResolver;
     const runtime = yield* ResourceRuntime;
     const restarts = yield* WorktreeServiceRestarts;
@@ -480,7 +482,7 @@ export const ResourcesLive: Layer.Layer<
         const read =
           allInstances || worktreeId === null
             ? yield* readDefaultBranchTables(reads, project.id)
-            : yield* readWorktreeTables(reads, project.id, worktreeId);
+            : yield* tableReads.forWorktree(project.id, worktreeId);
         file =
           read.kind === "read"
             ? {
@@ -499,7 +501,7 @@ export const ResourcesLive: Layer.Layer<
           worktreeId === null
             ? null
             : allInstances
-              ? yield* readWorktreeTables(reads, project.id, worktreeId)
+              ? yield* tableReads.forWorktree(project.id, worktreeId)
               : read;
         if (selected?.kind === "read")
           settings = settings.map((entry) => {
@@ -585,7 +587,7 @@ export const ResourcesLive: Layer.Layer<
       yield* decide(project, viewer, { kind: "read" });
       yield* checkedWorktree(project, options.worktreeId);
       if (options.level === "worktree") yield* mayChoose(project, viewer, options.worktreeId);
-      const read = yield* readWorktreeTables(reads, project.id, options.worktreeId);
+      const read = yield* tableReads.forWorktree(project.id, options.worktreeId);
       if (read.kind === "unavailable" || read.kind === "unparsed")
         return yield* refused(read.message);
       if (read.kind === "read") {

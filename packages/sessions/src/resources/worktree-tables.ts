@@ -1,18 +1,25 @@
+import { SessionsRepo, WorktreesRepo } from "@mend/db";
 import type { ProjectId, WorktreeId } from "@mend/domain";
 import type { ResourceDefinition } from "@mend/domain/workbench";
+import { asSealantUser, SealantClient } from "@mend/sealant";
 import type { FileRead } from "@mend/store";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
+import * as Context from "effect/Context";
 import { parse as parseToml } from "smol-toml";
 
 import { MEND_TOML, LEGACY_MEND_TOML, selectMendToml, tomlDiagnostic } from "../recipes.ts";
 import { readResourceTables, type ResourceTables } from "../resource-tables.ts";
+import { SessionRepository } from "../session-repository.ts";
 import {
+  WORKTREE_STAMP,
+  WorktreeReads,
   stampLabel,
-  type WorktreeReads,
   type Stamped,
   type WorktreeReadError,
   type DefaultBranchUnavailableError,
 } from "../worktree-reads.ts";
+import { WORKSPACE_RESOURCE_TABLE_SCRIPT } from "./append-table.ts";
+import { resourceWorkspace } from "./workspace.ts";
 
 /** A `mend.toml` larger than this is reported unread, never cut. */
 const MEND_TOML_MAX_BYTES = 256 * 1024;
@@ -80,7 +87,7 @@ const readTables = Effect.fn("Resources.readTables")(function* (
 export const tablesOf = (read: WorktreeTablesRead): ReadonlyArray<ResourceDefinition> =>
   read.kind === "read" ? read.tables : [];
 
-/** Reads this worktree's current declaration, used only by explicit Start. */
+/** Reads the available co-located file or captured observation when no workspace is live. */
 export const readWorktreeTables = (
   reads: Pick<WorktreeReads["Service"], "readFile">,
   projectId: ProjectId,
@@ -95,3 +102,90 @@ export const readDefaultBranchTables = (
     (name) => reads.readDefaultBranchFile(projectId, name, MEND_TOML_MAX_BYTES),
     "the default branch is not available on this server",
   );
+
+/** Current resource declarations for actions and status; review reads retain their capture stamp. */
+export class ResourceTableReads extends Context.Service<
+  ResourceTableReads,
+  {
+    readonly forWorktree: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<WorktreeTablesRead>;
+  }
+>()("@mend/sessions/resources/ResourceTableReads") {}
+
+const make: Effect.Effect<
+  ResourceTableReads["Service"],
+  never,
+  WorktreeReads | SessionRepository | WorktreesRepo | SessionsRepo | SealantClient
+> = Effect.gen(function* () {
+  const reads = yield* WorktreeReads;
+  const repository = yield* SessionRepository;
+  const worktrees = yield* WorktreesRepo;
+  const sealant = yield* SealantClient;
+  const liveWorkspace = yield* resourceWorkspace;
+  const forWorktree = Effect.fn("ResourceTableReads.forWorktree")(
+    function* (projectId: ProjectId, worktreeId: WorktreeId) {
+      const worktree = yield* worktrees.byId(worktreeId);
+      if (worktree.projectId !== projectId)
+        return {
+          kind: "unavailable",
+          message: "The worktree does not belong to this project",
+        } satisfies WorktreeTablesRead;
+      const mount = yield* repository.worktreeMount(projectId, worktree.directory);
+      const live = mount === undefined ? yield* liveWorkspace(worktreeId) : null;
+      if (live === null) return yield* readWorktreeTables(reads, projectId, worktreeId);
+      const read = yield* sealant
+        .exec(live.workspace, [
+          "sh",
+          "-c",
+          WORKSPACE_RESOURCE_TABLE_SCRIPT,
+          "sh",
+          "/workspace/repo",
+          "observe",
+          String(MEND_TOML_MAX_BYTES + 1),
+        ])
+        .pipe(asSealantUser(live.owner));
+      const newline = read.stdout.indexOf("\n");
+      const name = read.stdout.slice(0, newline);
+      if (
+        (read.exitCode !== 0 && read.exitCode !== 44) ||
+        newline < 0 ||
+        (name !== MEND_TOML && name !== LEGACY_MEND_TOML)
+      )
+        return {
+          kind: "unavailable",
+          message: "The worktree file could not be read in its workspace",
+        } satisfies WorktreeTablesRead;
+      const bytes = new Uint8Array(Buffer.from(read.stdout.slice(newline + 1), "base64"));
+      const file: FileRead | null =
+        read.exitCode === 44
+          ? null
+          : {
+              bytes,
+              size: bytes.length,
+              truncated: bytes.length > MEND_TOML_MAX_BYTES,
+              binary: bytes.includes(0),
+            };
+      return yield* readTables((path) =>
+        Effect.succeed({ value: path === name ? file : null, stamp: WORKTREE_STAMP }),
+      );
+    },
+    (effect) =>
+      effect.pipe(
+        Effect.catch(() =>
+          Effect.succeed({
+            kind: "unavailable",
+            message: "The worktree file could not be reached",
+          } satisfies WorktreeTablesRead),
+        ),
+      ),
+  );
+  return ResourceTableReads.of({ forWorktree });
+});
+
+export const ResourceTableReadsLive: Layer.Layer<
+  ResourceTableReads,
+  never,
+  WorktreeReads | SessionRepository | WorktreesRepo | SessionsRepo | SealantClient
+> = Layer.effect(ResourceTableReads, make);

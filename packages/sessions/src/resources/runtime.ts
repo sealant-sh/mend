@@ -36,7 +36,6 @@ import {
 import { Clock, Config, Duration, Effect, Fiber, Layer, Option, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
-import { WorktreeReads } from "../worktree-reads.ts";
 import {
   DUMPS_READY_ARGV,
   dumpPath,
@@ -47,7 +46,7 @@ import {
   resetOutcome,
 } from "./postgres-ops.ts";
 import { removalDumpName, saveRemovalDump } from "./removal-postgres.ts";
-import { readWorktreeTables, tablesOf } from "./worktree-tables.ts";
+import { ResourceTableReads, tablesOf } from "./worktree-tables.ts";
 
 /**
  * Runs a project's resources on Sealant and answers what every process in a worktree is told of
@@ -238,7 +237,7 @@ type RuntimeNeeds =
   | ResourceArchivesRepo
   | ProjectEnvironmentRepo
   | ProjectSecretsRepo
-  | WorktreeReads
+  | ResourceTableReads
   | SessionsRepo
   | ResourceScopes;
 
@@ -254,7 +253,7 @@ export const resourceRuntimeLayer = (
       const archives = yield* ResourceArchivesRepo;
       const environment = yield* ProjectEnvironmentRepo;
       const secrets = yield* ProjectSecretsRepo;
-      const reads = yield* WorktreeReads;
+      const reads = yield* ResourceTableReads;
       const sessions = yield* SessionsRepo;
       const scopes = yield* ResourceScopes;
       // Starts and copies outlive the launch that asked for them.
@@ -430,7 +429,7 @@ export const resourceRuntimeLayer = (
         const file =
           input.service === undefined
             ? []
-            : tablesOf(yield* readWorktreeTables(reads, input.projectId, input.worktreeId));
+            : tablesOf(yield* reads.forWorktree(input.projectId, input.worktreeId));
         const mapped = serviceResourceEnv({
           service: input.service ?? "process",
           dependencies: input.dependencies ?? [],

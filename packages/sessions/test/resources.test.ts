@@ -47,6 +47,7 @@ import {
 import {
   type ResourceScope,
   ResourceScopes,
+  SealantClient,
   type ScopeInstance,
   type ScopeInstanceSpec,
 } from "@mend/sealant";
@@ -68,8 +69,11 @@ import {
   WorktreeServiceRestarts,
 } from "../src/resources/service-restarts.ts";
 import { ResourceStatusReadsLive } from "../src/resources/status-reads.ts";
+import { ResourceTableReadsLive } from "../src/resources/worktree-tables.ts";
 import { SessionChannelRegistry, SessionChannelRegistryLive } from "../src/session-channel.ts";
+import { SessionRepository } from "../src/session-repository.ts";
 import { WORKTREE_STAMP, WorktreeReads } from "../src/worktree-reads.ts";
+import { execAnswer, fakeWorkspace } from "./fake-workspace.ts";
 
 const postgres = postgresTestConfig();
 const SCRATCH_DB = `mend_resources_session_${process.pid}_${Date.now()}`;
@@ -95,6 +99,7 @@ device = "/dev/null"
 
 let file = { text: "", stamp: WORKTREE_STAMP };
 let defaultFile: string | undefined;
+let workspaceFile: string | undefined;
 
 const reads = Layer.mock(WorktreeReads, {
   readDefaultBranchFile: () =>
@@ -224,8 +229,26 @@ const repos = Layer.mergeAll(
 const images = Layer.succeed(ResourceImageResolver, {
   resolve: () => Effect.succeed({ digest: DIGEST, resolvedBy: "registry.example" }),
 });
+const tableReads = ResourceTableReadsLive.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      repos,
+      reads,
+      Layer.mock(SessionRepository, { worktreeMount: () => Effect.succeed(undefined) }),
+      Layer.mock(SealantClient, {
+        getWorkspace: (id) => Effect.succeed(fakeWorkspace(id)),
+        exec: () =>
+          Effect.sync(() =>
+            execAnswer(
+              `.mend/mend.toml\n${Buffer.from(workspaceFile ?? file.text).toString("base64")}`,
+            ),
+          ),
+      }),
+    ),
+  ),
+);
 const runtimeLayer = resourceRuntimeLayer(Duration.millis(300)).pipe(
-  Layer.provideMerge(Layer.mergeAll(repos, reads, images, scopes)),
+  Layer.provideMerge(Layer.mergeAll(repos, reads, tableReads, images, scopes)),
 );
 /** The loads the repo answers as each target's latest. */
 let loadRows: ReadonlyArray<StoredResourceLoad> = [];
@@ -258,6 +281,7 @@ const resources = ResourcesLive.pipe(
     }),
   ),
   Layer.provideMerge(ResourceStatusReadsLive),
+  Layer.provide(tableReads),
   Layer.provide(Layer.mock(ResourceLoadsRepo, { latest: () => Effect.sync(() => loadRows) })),
   Layer.provideMerge(Layer.merge(runtimeLayer, restarts)),
 );
@@ -352,6 +376,7 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
 
   beforeEach(async () => {
     defaultFile = undefined;
+    workspaceFile = undefined;
     appended = null;
     writeResult = { kind: "written", path: ".mend/mend.toml" };
     sealant.calls.length = 0;
@@ -371,6 +396,7 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`TRUNCATE resource_definitions CASCADE`;
+        yield* sql`UPDATE agent_sessions SET sealant_workspace_id = NULL WHERE id = ${SESSION}`;
         const repo = yield* ResourcesRepo;
         for (const [name, preset, version] of [
           ["db", "postgres", "17"],
@@ -411,6 +437,33 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
   let awaitedProject: Awaited<ReturnType<typeof project>>;
   beforeEach(async () => {
     awaitedProject = await project();
+  });
+
+  it("starts the first workspace definition immediately, before capture, through the session CLI", async () => {
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`TRUNCATE resource_definitions CASCADE`;
+        yield* sql`UPDATE agent_sessions SET sealant_workspace_id = 'ws-1' WHERE id = ${SESSION}`;
+      }),
+    );
+    file.text = "";
+    workspaceFile = '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\n';
+    expect(await fromSession("start", "db", "--project")).toEqual([
+      expect.stringContaining("@db · running · project · shared database"),
+    ]);
+    workspaceFile = workspaceFile.replace("postgres:17", "postgres:16");
+    expect(await start()).toMatchObject({
+      kind: "needs-restart",
+      statusLine: expect.stringContaining("definition differs"),
+    });
+    const listed = await runtime.runPromise(
+      Effect.flatMap(Resources, (actions) => actions.list(awaitedProject, maria, WORKTREE, clock)),
+    );
+    expect(listed.settings.find((entry) => entry.spec.name === "db")?.statusLine).toContain(
+      "definition differs",
+    );
+    expect(file.text).toBe("");
   });
 
   it("launch never starts a missing instance, adopts a file definition, or creates an own database", async () => {

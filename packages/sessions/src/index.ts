@@ -62,3 +62,9 @@ export * from "./resources/load-channel.ts";
 export * from "./resources/removal.ts";
 
 export * from "./resources/status-reads.ts";
+
+export {
+  readWorktreeTables,
+  ResourceTableReads,
+  ResourceTableReadsLive,
+} from "./resources/worktree-tables.ts";

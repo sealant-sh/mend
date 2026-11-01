@@ -12,7 +12,9 @@ import { Effect, Layer } from "effect";
 import { afterEach, describe, expect } from "vitest";
 
 import { ResourceTableWrites, ResourceTableWritesLive } from "../src/resources/append-table.ts";
+import { ResourceTableReads, ResourceTableReadsLive } from "../src/resources/worktree-tables.ts";
 import { SessionRepository } from "../src/session-repository.ts";
+import { WorktreeReads, WORKTREE_STAMP } from "../src/worktree-reads.ts";
 import { execAnswer, fakeWorkspace } from "./fake-workspace.ts";
 
 /**
@@ -22,6 +24,7 @@ import { execAnswer, fakeWorkspace } from "./fake-workspace.ts";
 const WORKSPACE_TOOLS = [
   "base64",
   "cat",
+  "head",
   "chmod",
   "chown",
   "cp",
@@ -117,7 +120,7 @@ const read = (root: string, relative: string) => fs.readFileSync(path.join(root,
 
 const withWrites = <A, E>(
   root: string,
-  program: Effect.Effect<A, E, ResourceTableWrites>,
+  program: Effect.Effect<A, E, ResourceTableWrites | ResourceTableReads>,
   options: {
     mode: "local" | "workspace" | "offline";
     status?: "ready" | "stopped";
@@ -150,7 +153,11 @@ const withWrites = <A, E>(
         return execAnswer(result.stdout, result.status ?? 1, result.stderr);
       }),
   });
-  const testLayer: Layer.Layer<ResourceTableWrites> = ResourceTableWritesLive.pipe(
+  const capturedReads = Layer.mock(WorktreeReads, {
+    readFile: () =>
+      Effect.succeed({ value: null, stamp: { ...WORKTREE_STAMP, source: "capture", captureN: 1 } }),
+  });
+  const testLayer = Layer.merge(ResourceTableWritesLive, ResourceTableReadsLive).pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(SessionRepository, {
@@ -167,6 +174,7 @@ const withWrites = <A, E>(
             Effect.succeed(options.flushed ? session.sealantWorkspaceId : null),
         }),
         platform,
+        capturedReads,
       ),
     ),
   );
@@ -383,3 +391,120 @@ it.effect("the workspace script refuses a changed file between read and replace"
     expect(fs.readdirSync(path.join(root, ".mend"))).toEqual(["mend.toml"]);
   }),
 );
+
+it.effect("reads an immediately added definition before the next workspace capture", () =>
+  Effect.gen(function* () {
+    const root = fresh();
+    write(root, ".mend/mend.toml", '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\n');
+    const current = yield* withWrites(
+      root,
+      Effect.gen(function* () {
+        const reads = yield* ResourceTableReads;
+        return yield* reads.forWorktree(PROJECT, WORKTREE);
+      }),
+      { mode: "workspace" },
+    );
+    expect(current).toMatchObject({ kind: "read", tables: [{ name: "db", image: "postgres:17" }] });
+  }),
+);
+
+const currentTables = Effect.flatMap(ResourceTableReads, (reads) =>
+  reads.forWorktree(PROJECT, WORKTREE),
+);
+for (const entry of cases) {
+  it.effect(`current workspace declarations keep file precedence: ${entry.label}`, () =>
+    Effect.gen(function* () {
+      const root = fresh();
+      if (entry.preferred !== null) write(root, ".mend/mend.toml", entry.preferred);
+      if (entry.legacy !== null) write(root, "mend.toml", entry.legacy);
+      const result = yield* withWrites(root, currentTables, { mode: "workspace" });
+      expect(result.kind).toBe(
+        entry.preferred === null && entry.legacy === null ? "absent" : "read",
+      );
+      if (result.kind !== "unavailable")
+        expect(result.observed).toBe(
+          `${result.kind === "absent" ? "mend.toml" : entry.chosen} · observed on the worktree`,
+        );
+    }),
+  );
+}
+it.effect("Add reads the workspace before writing and its result is readable before capture", () =>
+  Effect.gen(function* () {
+    const root = fresh();
+    write(root, ".mend/mend.toml", "# freshly edited\n[service.web]\nport = 3000\n");
+    const result = yield* withWrites(
+      root,
+      Effect.gen(function* () {
+        yield* Effect.flatMap(ResourceTableWrites, (writes) =>
+          writes.appendResourceTable({ ...input, table: `${TABLE}ports = { smtp = 1025 }\n` }),
+        );
+        return yield* currentTables;
+      }),
+      { mode: "workspace" },
+    );
+    expect(result).toMatchObject({ kind: "read", tables: [{ name: "mail" }] });
+    expect(read(root, ".mend/mend.toml")).toContain("[service.web]\nport = 3000");
+    expect(yield* withWrites(root, append, { mode: "workspace" })).toMatchObject({
+      kind: "declared",
+    });
+  }),
+);
+it.effect("reads a subsequent image edit before capture", () =>
+  Effect.gen(function* () {
+    const root = fresh();
+    write(root, ".mend/mend.toml", '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\n');
+    yield* withWrites(root, currentTables, { mode: "workspace" });
+    write(root, ".mend/mend.toml", '[resource.db]\npreset = "postgres"\nimage = "postgres:16"\n');
+    expect(yield* withWrites(root, currentTables, { mode: "workspace" })).toMatchObject({
+      kind: "read",
+      tables: [{ image: "postgres:16" }],
+    });
+  }),
+);
+for (const example of [
+  { text: "#".repeat(256 * 1024 + 1), message: "over 256 KiB" },
+  { text: "\0", message: "not text" },
+  { text: "[resource.", message: ".mend/mend.toml" },
+]) {
+  it.effect(`refuses current workspace input that is ${example.message}`, () =>
+    Effect.gen(function* () {
+      const root = fresh();
+      write(root, ".mend/mend.toml", example.text);
+      expect(yield* withWrites(root, currentTables, { mode: "workspace" })).toMatchObject({
+        kind: "unparsed",
+        message: expect.stringContaining(example.message),
+      });
+    }),
+  );
+}
+it.effect(
+  "a live file outside the worktree is unavailable, never replaced by a stale capture",
+  () =>
+    Effect.gen(function* () {
+      const root = fresh();
+      const outside = fresh();
+      write(outside, "mend.toml", TABLE);
+      fs.mkdirSync(path.join(root, ".mend"));
+      fs.symlinkSync(path.join(outside, "mend.toml"), path.join(root, ".mend/mend.toml"));
+      expect(yield* withWrites(root, currentTables, { mode: "workspace" })).toMatchObject({
+        kind: "unavailable",
+      });
+    }),
+);
+for (const options of [
+  { mode: "offline" as const },
+  { mode: "workspace" as const, status: "stopped" as const },
+  { mode: "workspace" as const, flushed: true },
+]) {
+  it.effect(`uses the capture after the workspace ended: ${JSON.stringify(options)}`, () =>
+    Effect.gen(function* () {
+      const root = fresh();
+      write(root, ".mend/mend.toml", TABLE);
+      const observation = yield* withWrites(root, currentTables, options);
+      expect(observation).toMatchObject({
+        kind: "absent",
+        observed: expect.stringContaining("observed at capture 1"),
+      });
+    }),
+  );
+}
