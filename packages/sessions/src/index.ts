@@ -22,6 +22,7 @@ export * from "./harness-state.ts";
 export * from "./pasted-images.ts";
 export * from "./pickup-tickets.ts";
 export * from "./resource-tables.ts";
+export * from "./resources/append-table.ts";
 export * from "./resources/image-resolver.ts";
 export * from "./resources/resources.ts";
 export * from "./resources/runtime.ts";

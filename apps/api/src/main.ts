@@ -188,6 +188,7 @@ import {
   ResourceImageResolverLive,
   ResourcesChannelLive,
   ResourcesLive,
+  ResourceTableWritesLive,
   ResourceStatusReadsLive,
   ResourceLoadsLive,
   ResourceLoadsChannelLive,
@@ -962,6 +963,7 @@ const MainLive = Layer.unwrap(
             Layer.provide(ResourceScopesLive.pipe(Layer.provide(SealantEnv.layer))),
           ),
           ResourcesLive.pipe(
+            Layer.provideMerge(ResourceTableWritesLive),
             Layer.provide(Layer.merge(ResourceImageResolverLive, WorktreeServiceRestartsLive)),
           ),
           RemovalLive.pipe(
