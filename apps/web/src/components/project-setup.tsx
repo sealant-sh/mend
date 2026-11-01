@@ -40,7 +40,7 @@ import { useInheritedSettings } from "#/lib/viewer";
 /**
  * The project's setup sections — references, mounted folders, services,
  * dotfiles, git access, review automation, removal. They live on the project
- * setup page (one place to configure a project); the sidebar rail shows each
+ * Configuration page (one place to configure a project); the sidebar rail shows each
  * as a one-line fact linking to its anchor here. Each section is a plain
  * stacked block with an id the rail can target.
  */
@@ -1307,7 +1307,7 @@ export function InstallCommandSection({
 
 /**
  * Private or shared (docs/adr/0003-organizations-and-tenancy.md). Only organization owners see
- * this: the setup page renders it when the project's capabilities allow the change.
+ * this: the Configuration page renders it when the project's capabilities allow the change.
  */
 export function VisibilitySection({ project }: { readonly project: ProjectDto }) {
   const trpc = useTRPC();

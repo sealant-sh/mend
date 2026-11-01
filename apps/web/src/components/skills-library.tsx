@@ -199,7 +199,7 @@ export function ProjectSkillsCard({ projectId }: { readonly projectId: string })
       <div className="flex items-center justify-between border-b border-rule-faint px-5 pt-4 pb-3">
         <p className="font-sans text-sm font-medium text-foreground">Skills</p>
         <Link
-          to="/projects/$projectId/setup"
+          to="/projects/$projectId/configuration"
           params={{ projectId }}
           hash="skills"
           className="font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"

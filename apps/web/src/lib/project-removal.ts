@@ -1,6 +1,6 @@
 import { failureWords, removalRefusalDataOf } from "#/lib/refusal";
 
-/** A project removal that did not go ahead, as the setup page shows it. */
+/** A project removal that did not go ahead, as the Configuration page shows it. */
 export interface ProjectRemovalFailure {
   /** Mend's words, verbatim, or the failure's own. */
   readonly words: string;

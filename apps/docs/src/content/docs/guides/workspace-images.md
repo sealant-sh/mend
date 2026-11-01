@@ -6,8 +6,8 @@ sidebar:
 ---
 
 Every session runs inside a Sealant workspace built from an image definition. The definition
-resolves at three levels: a project's override on its **Setup** page, then its organization's
-default, then the instance default. See
+resolves at three levels: a project's override on its **Configuration** page, then its
+organization's default, then the instance default. See
 [Instance, organization and project](#instance-organization-and-project).
 
 A session records the image definition it launched with. Changing the setting affects later
@@ -141,10 +141,10 @@ image builds reads `stopped`, and the build failing afterwards does not change t
 ## Docker inside a workspace
 
 The **Docker service** switch, in the instance, organization and project editors alike, requests a
-disposable daemon scoped to that workspace. With it off, the image summary on a project's **Setup**
-page says `docker disabled`. Its isolation and privilege model depend on the workspace runtime. Mend
-does not mount the host Docker socket. Compose files can run inside the workspace against the
-provided daemon.
+disposable daemon scoped to that workspace. With it off, the image summary on a project's
+**Configuration** page says `docker disabled`. Its isolation and privilege model depend on the
+workspace runtime. Mend does not mount the host Docker socket. Compose files can run inside the
+workspace against the provided daemon.
 
 Changing the switch does not retrofit a workspace that is already running or retained. Joining or
 resuming a session that reuses that workspace keeps the Docker capability it was created with. A
@@ -165,7 +165,7 @@ platform services.
 
 A launch uses the first definition it finds, in this order:
 
-1. the project's override, saved on its **Setup** page;
+1. the project's override, saved on its **Configuration** page;
 2. the organization's default, which the organization's owners set in **Settings**;
 3. the instance default, which only the operator sees and edits in **Settings**.
 

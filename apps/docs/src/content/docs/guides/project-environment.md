@@ -8,9 +8,9 @@ sidebar:
 ---
 
 A project's setup controls how its future session workspaces launch. Open the project in Mend and
-choose **Setup** to configure it.
+choose **Configuration** to configure it.
 
-Setup joins machine resources and personal identity at session launch:
+Configuration joins machine resources and personal identity at session launch:
 
 ```mermaid
 flowchart LR
@@ -39,11 +39,11 @@ creator or an organization owner. You can start sessions and review changes as i
 
 ## Visibility
 
-Owners see a **Visibility** section at the top of Setup. A `private` project is visible only to its
-creator. A `shared` project is visible to every member of the organization, who can start sessions
-in it and review its changes. Making a shared project private drains other members' warm workspaces;
-their running sessions continue until they end. Read [Organizations](/organizations/overview/) for
-roles and shared control.
+Owners see a **Visibility** section at the top of Configuration. A `private` project is visible only
+to its creator. A `shared` project is visible to every member of the organization, who can start
+sessions in it and review its changes. Making a shared project private drains other members' warm
+workspaces; their running sessions continue until they end. Read
+[Organizations](/organizations/overview/) for roles and shared control.
 
 ## Where defaults come from
 
@@ -150,7 +150,7 @@ default shell profile.
 ## Services
 
 A Service is an explicitly declared development process associated with a session. Add recipes to
-`.mend/mend.toml`, add them in the **Services** section of Setup, or start a command with
+`.mend/mend.toml`, add them in the **Services** section of Configuration, or start a command with
 `mend service run`. Mend records each attempt. `mend service run` tunnels the declared port to your
 machine's loopback over an authenticated WebSocket when the CLI points at a non-loopback server URL,
 unless you pass `--no-connect`, and never for UDP. `mend attach`, `mend codex`, and the dashboard
@@ -189,9 +189,9 @@ that has already run per person, or the operator's `harnessLayout` asking for th
 Automatic install applies in capture mode, and it is on by default. On, Mend picks the install
 command from the lockfile at the root of the base tree, for example `pnpm install --frozen-lockfile`
 from `pnpm-lock.yaml` or `cargo fetch --locked` from `Cargo.lock`, and runs it before the agent
-starts. The Dependencies card on the setup page shows the command it detects on origin's default
-branch as last fetched, the ref a launch bases on; it says "not read" when it could not read that
-tree. A custom command, if you set one, replaces the detected one. Mend runs the command in two
+starts. The Dependencies card on the Configuration page shows the command it detects on origin's
+default branch as last fetched, the ref a launch bases on; it says "not read" when it could not read
+that tree. A custom command, if you set one, replaces the detected one. Mend runs the command in two
 places, both under its own control:
 
 - in a workspace whose captured dependency tree was built for another platform (or that has none

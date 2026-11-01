@@ -79,7 +79,7 @@ import {
  * project's sessions build from, and the project's ordinary environment variables. A child of the
  * project layout, so switching tabs keeps the shared ProjectShell mounted.
  */
-export const Route = createFileRoute("/projects/$projectId/setup")({
+export const Route = createFileRoute("/projects/$projectId/configuration")({
   ssr: false,
   loader: async ({ context: { queryClient, trpc }, params }) => {
     await Promise.all([
@@ -111,10 +111,10 @@ export const Route = createFileRoute("/projects/$projectId/setup")({
       ),
     ]);
   },
-  component: ProjectSetupPage,
+  component: ProjectConfigurationPage,
 });
 
-function ProjectSetupPage() {
+function ProjectConfigurationPage() {
   const { projectId } = Route.useParams();
   const trpc = useTRPC();
   const { project, capabilities, mountDelivery } = useSuspenseQuery(
@@ -123,7 +123,7 @@ function ProjectSetupPage() {
 
   return (
     <div className="mt-6">
-      <h2 className="text-sm font-medium">Setup</h2>
+      <h2 className="text-sm font-medium">Configuration</h2>
       <p className="mt-2 max-w-[64ch] text-sm leading-relaxed text-muted-foreground">
         How sessions in this project launch — image, variables, secrets, references, mounts,
         services, dotfiles, git access, review automation. Changes apply to new workspace launches,

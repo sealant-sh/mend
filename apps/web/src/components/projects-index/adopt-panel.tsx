@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { GitKeyCard } from "#/components/git-key-card";
+import { SetupSessionPanel } from "#/components/setup-session-panel";
 import {
   adoptProject,
   initGitKey,
@@ -21,6 +22,7 @@ import { useTRPC } from "#/lib/trpc";
 export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const [adopted, setAdopted] = useState<ProjectDto | null>(null);
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
   // The user's git access (Settings) is the default; the row below overrides it for this adopt.
@@ -49,7 +51,7 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
     setPending(true);
     setError(null);
     try {
-      await adoptProject(
+      const project = await adoptProject(
         name === "" ? inferName(trimmedSource) : name,
         trimmedSource,
         auth,
@@ -58,7 +60,7 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
       await queryClient.invalidateQueries(trpc.projects.pathFilter());
       setName("");
       setSource("");
-      onAdopted();
+      setAdopted(project);
     } catch (adoptError) {
       setError(adoptError instanceof Error ? adoptError.message : String(adoptError));
     } finally {
@@ -76,6 +78,17 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
       .then(setCreatedKey)
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
+
+  if (adopted !== null)
+    return (
+      <SetupSessionPanel
+        projectId={adopted.id}
+        onClose={() => {
+          setAdopted(null);
+          onAdopted();
+        }}
+      />
+    );
 
   return (
     <form

@@ -176,7 +176,7 @@ const CHILD = "child argv";
 
 const READS: Readonly<Record<string, Reads>> = {
   "main.ts hintHerdrAttachment": CHILD,
-  "main.ts adopt": { pages: ["adopt"] },
+  "main.ts adopt": { pages: ["adopt"], childArgv: ["--project"] },
   "main.ts attach": { pages: ["attach"] },
   "main.ts stopCommand": { pages: ["stop"] },
   "main.ts serviceAdd": { pages: ["service add"] },
@@ -205,6 +205,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "main.ts refreshCommand": { pages: ["refresh"] },
   "main.ts modelsCommand": { pages: ["models"] },
   "message.ts parseMessageArguments": { pages: ["message"] },
+  "setup-session.ts parseSetupSessionArgs": { pages: ["setup-session"] },
   "settings.ts parseSettingsArgs": { pages: ["settings"] },
   "main.ts sessionsCommand": { pages: ["sessions"] },
   "main.ts worktreesCommand": { pages: ["worktrees"] },

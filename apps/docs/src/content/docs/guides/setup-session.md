@@ -7,10 +7,6 @@ sidebar:
   order: 1.5
 ---
 
-:::note[Agreed design, not yet built] This guide describes the setup session designed for Mend 0.37.
-The action and files described here are planned behavior, not commands or controls available in the
-current build. :::
-
 When you adopt a repository, Mend asks whether to run a setup session. Choose **Set up this
 project** to let your agent study the repo and write down what the app does and how to run and check
 it. The session uses your own agent login. Choose **Not now** to finish adoption without it; the
@@ -19,6 +15,27 @@ project's **Set up this project** action stays available later.
 A setup session is an ordinary session running Mend's prompt. You choose your agent, see the prompt
 and conversation, answer questions and send follow-ups. Its result is a change you can review and
 land like any other change.
+
+## Start a setup session
+
+- **Web:** after adoption, choose a connected Claude or Codex login and press **Set up this
+  project**. Later, use **Set up this project** beside **Open a shell** or in the project menu.
+- **CLI:** run `mend setup-session [claude|codex]` in an adopted checkout. With no agent, it uses
+  Codex. Add `--note "Focus on browser sign-in"` for your own instructions, or `--project <name>`
+  from elsewhere. It starts a terminal session and attaches it. `mend adopt` asks on a terminal:
+  `Set up this project with codex? It uses your own codex login. [y/N]`. Only `y` or `yes` starts
+  one. Scripts are never asked, and implicit adoption by `mend claude` or `mend codex` never asks.
+- **Phone:** after adoption, choose Claude or Codex, then **Set up this project**. The same action
+  stays on the project screen. The session opens in conversation mode.
+- **VS Code:** after **Adopt a repository** or **Adopt this repository**, choose **Set up this
+  project**, then your agent. Later, run **Mend: Set up this project** from the command palette.
+
+**Not now**, dismissal or leaving the choice starts nothing. Adoption is already complete. Every
+setup session gets a new worktree with automatic landing off. Mend supplies its opening prompt;
+clients send only your own note when you give one.
+
+Project launch settings live on the **Configuration** tab. That tab configures launches; the setup
+session proposes repository files for review.
 
 ## What the session writes
 

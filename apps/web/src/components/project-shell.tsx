@@ -62,19 +62,28 @@ export function ProjectShell({
               </PopoverContent>
             </Popover>
           </div>
-          <button
-            type="button"
-            disabled={shellStarting}
-            onClick={() => {
-              setShellStarting(true);
-              void startSession(navigate, { queryClient, trpc }, project.id, "shell").finally(() =>
-                setShellStarting(false),
-              );
-            }}
-            className="rounded-xl border border-border bg-panel px-3.5 py-2 text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-          >
-            {shellStarting ? "Starting…" : "Open a shell"}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <Link
+              to="/projects/$projectId/setup-session"
+              params={{ projectId: project.id }}
+              className="rounded-xl border border-border bg-panel px-3.5 py-2 text-[13px] font-medium text-foreground no-underline shadow-xs"
+            >
+              Set up this project
+            </Link>
+            <button
+              type="button"
+              disabled={shellStarting}
+              onClick={() => {
+                setShellStarting(true);
+                void startSession(navigate, { queryClient, trpc }, project.id, "shell").finally(
+                  () => setShellStarting(false),
+                );
+              }}
+              className="rounded-xl border border-border bg-panel px-3.5 py-2 text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+            >
+              {shellStarting ? "Starting…" : "Open a shell"}
+            </button>
+          </div>
         </header>
         <ProjectNavigation projectId={project.id} />
         {children}

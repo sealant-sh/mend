@@ -2,7 +2,7 @@ import { OnOffSwitch } from "#/components/on-off-switch";
 import type { ProjectInstallDetectionDto } from "#/lib/api";
 
 /**
- * The "Dependencies" card on a project's Setup page, as a view of its inputs: the "Automatic
+ * The "Dependencies" card on a project's Configuration page, as a view of its inputs: the "Automatic
  * install" switch, what a launch would run, and the optional custom command (ADR-0002 decisions
  * 2 and 9). On, Mend runs the custom command, else the one detected from the lockfile, in a
  * workspace whose saved state and shared cache have no dependency tree for its platform, and in
