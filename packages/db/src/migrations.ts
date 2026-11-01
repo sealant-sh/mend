@@ -5000,6 +5000,12 @@ const resourceOwnDatabasesKeyRepairMigration = Effect.gen(function* () {
   $$`;
 });
 
+const sessionPurposeMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN purpose text
+    CONSTRAINT agent_sessions_purpose_check CHECK (purpose IN ('setup'))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5171,4 +5177,5 @@ export const migrations = {
   "0181_proof_artifacts_without_side": proofArtifactsWithoutSideMigration,
   "0182_slack_proof_turns": slackProofTurnsMigration,
   "0183_resource_own_databases_key_repair": resourceOwnDatabasesKeyRepairMigration,
+  "0184_session_purpose": sessionPurposeMigration,
 };

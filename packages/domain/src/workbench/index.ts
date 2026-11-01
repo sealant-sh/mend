@@ -83,6 +83,7 @@ export * from "./secret-file.ts";
 export * from "./service-recipe.ts";
 export * from "./service.ts";
 export * from "./session.ts";
+export * from "./setup-session.ts";
 export * from "./session-fold.ts";
 export * from "./session-process.ts";
 export * from "./session-control.ts";

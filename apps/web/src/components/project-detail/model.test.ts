@@ -47,6 +47,7 @@ const session = (
   projectId,
   worktreeId: WorktreeId.make(worktreeName),
   harness: "claude",
+  purpose: null,
   model: null,
   effort: null,
   providerSessionId: null,

@@ -159,6 +159,7 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         yield* migrations["0167_project_retention"];
         yield* sql`ALTER TABLE projects ADD COLUMN new_worktrees_use_project_resources boolean NOT NULL DEFAULT true`;
         yield* sql`ALTER TABLE worktrees ADD COLUMN uses_project_resources boolean NOT NULL DEFAULT true`;
+        yield* migrations["0184_session_purpose"];
       }),
     );
   }, 60_000);

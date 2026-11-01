@@ -842,3 +842,38 @@ describe("the session's screen (ADR 0020)", () => {
     ),
   );
 });
+
+it.effect(
+  "a setup session's workspace note leaves out proof capture and automatic preview guidance",
+  () =>
+    withScreens((world, platform) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        const [project] = [...world.projects.values()];
+        if (project === undefined) throw new Error("no project");
+        for (const purpose of [null, "setup"] as const) {
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: "Notes",
+            name: null,
+            start: { kind: "base", base: null },
+            ownerUserId: "user-fixture",
+            purpose,
+          });
+          const before = platform.execs.length;
+          yield* engine.launch(session.id, ["claude"]);
+          const notes = platform.execs.slice(before).flatMap((argv) => {
+            const at = argv.indexOf("mend-note");
+            return at === -1 ? [] : [argv[at + 1] ?? ""];
+          });
+          expect(notes.length).toBeGreaterThan(0);
+          for (const note of notes) {
+            expect(note.includes("## Proof artifacts")).toBe(purpose === null);
+            expect(note.includes("Mend prepares the preview")).toBe(purpose === null);
+            expect(note.includes("## Mend setup session")).toBe(purpose === "setup");
+          }
+        }
+      }),
+    ),
+);

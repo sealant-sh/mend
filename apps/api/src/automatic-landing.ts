@@ -175,6 +175,7 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
     /** Whether automatic landing is on for the session ("When it is on"). */
     const landsOn = (session: Session, project: Project) =>
       Effect.gen(function* () {
+        if (session.purpose === "setup") return false;
         const settings = yield* settingsRepo.forOrganization(project.organizationId);
         const install = yield* installOf(session);
         return resolveAutoLand({
