@@ -48,7 +48,10 @@ describe("the per-person columns of the session reads", () => {
       {},
       {
         implement: {
-          engine: { personLayoutPossible: () => Effect.succeed(false) },
+          engine: {
+            launchUnderWay: () => false,
+            personLayoutPossible: () => Effect.succeed(false),
+          },
           resourceStatus: (_projectId, worktreeId) =>
             Effect.sync(() => {
               readWorktrees.push(worktreeId);
