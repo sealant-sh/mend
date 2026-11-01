@@ -269,6 +269,7 @@ interface HostedProcess {
   readonly dispatchPermit: Semaphore.Semaphore;
   readonly steerPermit: Semaphore.Semaphore;
   readonly abort: AbortController;
+  readonly flushItems: Effect.Effect<void>;
   /** Non-null while a rehydrate replay is still behind its high water — dispatch waits on it. */
   readonly gate: Deferred.Deferred<void> | null;
   readonly steerGate: Deferred.Deferred<void> | null;
@@ -1212,9 +1213,13 @@ export const ProtocolHostLive: Layer.Layer<
           ),
         ),
         acknowledgeOutput: () =>
-          Effect.sync(() => {
-            projectedOutputSequence = currentOutputSequence;
-          }),
+          (rehydrateInput === null ? Effect.void : flushItems).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                projectedOutputSequence = currentOutputSequence;
+              }),
+            ),
+          ),
         close: () => Effect.sync(() => abort.abort()),
       };
       let activeEntry: HostedProcess | null = null;
@@ -1223,6 +1228,53 @@ export const ProtocolHostLive: Layer.Layer<
         readonly event: AgentEvent;
         readonly position: ProviderEventPosition;
       }> = [];
+      // Whole-item snapshots supersede earlier pending snapshots of the same item. Keep
+      // decoding while one store write is out, so a long reply cannot queue hundreds of
+      // obsolete writes ahead of a steer. There is no debounce: the first write starts now.
+      const itemPermit = yield* Semaphore.make(1);
+      const pendingItems = new Map<
+        string,
+        {
+          readonly event: Extract<AgentEvent, { readonly _tag: "item.updated" }>;
+          readonly position: ProviderEventPosition;
+        }
+      >();
+      let writingItems = false;
+      let itemFailure: Cause.Cause<never> | null = null;
+      const drainItems: Effect.Effect<void> = Effect.gen(function* () {
+        if (itemFailure !== null) return yield* Effect.failCause(itemFailure);
+        for (;;) {
+          const next = pendingItems.values().next().value;
+          if (next === undefined || activeEntry === null) {
+            // Clear this before releasing the permit. An enqueue after this check starts
+            // another writer rather than leaving its snapshot without a wake.
+            writingItems = false;
+            return;
+          }
+          pendingItems.delete(next.event.item.providerItemId);
+          yield* projectEvent(activeEntry, next.event, next.position);
+        }
+      });
+      const flushItems = itemPermit.withPermits(1)(drainItems);
+      const queueItem = (
+        event: Extract<AgentEvent, { readonly _tag: "item.updated" }>,
+        position: ProviderEventPosition,
+      ): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          if (itemFailure !== null) return yield* Effect.failCause(itemFailure);
+          pendingItems.set(event.item.providerItemId, { event, position });
+          if (writingItems) return;
+          writingItems = true;
+          yield* flushItems.pipe(
+            Effect.catchCause((cause) =>
+              Effect.sync(() => {
+                itemFailure = cause;
+                writingItems = false;
+              }),
+            ),
+            Effect.forkIn(scope),
+          );
+        });
       const onEvent = (event: AgentEvent): Effect.Effect<void> => {
         const position = {
           outputSequence: currentOutputSequence,
@@ -1234,7 +1286,14 @@ export const ProtocolHostLive: Layer.Layer<
         if (activeEntry === null || !flushed) {
           return Effect.sync(() => pendingEvents.push({ event, position })).pipe(Effect.asVoid);
         }
-        return projectEvent(activeEntry, event, position);
+        if (event._tag === "item.updated") return queueItem(event, position);
+        // Deltas have a whole-item update beside them and are never persisted separately.
+        if (event._tag === "content.delta") return Effect.void;
+        const entry = activeEntry;
+        // Requests, completions and other lifecycle events cannot overtake their items.
+        return itemPermit.withPermits(1)(
+          drainItems.pipe(Effect.andThen(projectEvent(entry, event, position))),
+        );
       };
       // Only Claude replays its controls; Codex acknowledges a steer on the wire.
       const controlJournal =
@@ -1288,6 +1347,7 @@ export const ProtocolHostLive: Layer.Layer<
         dispatchPermit: Semaphore.makeUnsafe(1),
         steerPermit: Semaphore.makeUnsafe(1),
         abort,
+        flushItems,
         gate,
         steerGate,
         holds: launchLogin(input.runsAs ?? input.launchedWithLoginOf),
@@ -1637,6 +1697,7 @@ export const ProtocolHostLive: Layer.Layer<
       hosted.delete(processId);
       yield* entry.adapter.close();
       entry.abort.abort();
+      yield* entry.flushItems;
     });
 
     const quiescence = Effect.fn("ProtocolHost.quiescence")(function* (
@@ -1673,6 +1734,9 @@ export const ProtocolHostLive: Layer.Layer<
       const entry = hosted.get(processId);
       if (entry === undefined) return;
       entry.stopping = true;
+      yield* entry.adapter.close();
+      entry.abort.abort();
+      yield* entry.flushItems;
       if (queueOnConversation) handingOver.set(entry.process.sessionId, processId);
       // A claim no dispatch of this host holds goes back to the queue; one a dispatch holds is
       // that dispatch's to settle, and it sees the stop.
