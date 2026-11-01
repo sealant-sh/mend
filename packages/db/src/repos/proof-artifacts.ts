@@ -45,6 +45,8 @@ export class ProofArtifactsRepo extends Context.Service<
     readonly listForChange: (
       id: ChangeId,
     ) => Effect.Effect<ReadonlyArray<ProofArtifact>, ProofArtifactStorageError>;
+    /** At HTTP boot, recordings from the previous process have no recoverable encoder. */
+    readonly settleStaleRecordings: () => Effect.Effect<void, ProofArtifactStorageError>;
     /** Only a Recording can settle; a repeated completion returns its first stored result. */
     readonly settleVideo: (
       id: ProofArtifactId,
@@ -231,6 +233,25 @@ export const ProofArtifactsRepoLive: Layer.Layer<
       yield* notify(written.artifact, written.itemChanged);
       return written.artifact;
     });
-    return { insert, byId, byCall, listForChange, settleVideo };
+    const settleStaleRecordings = Effect.fn("ProofArtifactsRepo.settleStaleRecordings")(
+      function* () {
+        const rows = yield* db
+          .select({ id: proofArtifacts.id })
+          .from(proofArtifacts)
+          .where(sql`${proofArtifacts.capture}->>'_tag' = 'Recording'`)
+          .pipe(Effect.mapError(storageFailed));
+        yield* Effect.forEach(
+          rows,
+          ({ id }) =>
+            settleVideo(id, {
+              _tag: "NotCaptured",
+              kind: "video",
+              reason: "Mend restarted while recording",
+            }),
+          { discard: true },
+        );
+      },
+    );
+    return { insert, byId, byCall, listForChange, settleVideo, settleStaleRecordings };
   }),
 );

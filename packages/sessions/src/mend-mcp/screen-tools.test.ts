@@ -444,6 +444,20 @@ describe("proof tools on the screen-enabled MCP server", () => {
       message: "Recorded the screen as observed.",
     };
     const proof: ProofCaptures["Service"] = {
+      videoStart: (who, params) =>
+        Effect.sync(() => {
+          seen.push({ who, params });
+          return new McpSchema.CallToolResult({
+            content: [{ type: "text", text: JSON.stringify(reference) }],
+          });
+        }),
+      videoStop: (who) =>
+        Effect.sync(() => {
+          seen.push({ who });
+          return new McpSchema.CallToolResult({
+            content: [{ type: "text", text: JSON.stringify(reference) }],
+          });
+        }),
       screenshot: (who, params) =>
         Effect.sync(() => {
           seen.push({ who, params });
@@ -464,6 +478,8 @@ describe("proof tools on the screen-enabled MCP server", () => {
     const params = { title: "Board", side: "before", caption: "Empty board" };
     const { listed, replies } = await serve({ answer: Effect.succeed(answered()), proof }, [
       { name: "proof_screenshot", arguments: params },
+      { name: "proof_video_start", arguments: { title: "Board", caption: "Completed task" } },
+      { name: "proof_video_stop", arguments: {} },
       {
         name: "proof_missing",
         arguments: { title: "Board", side: "before", kind: "screenshot", reason: "No account" },
@@ -472,6 +488,8 @@ describe("proof tools on the screen-enabled MCP server", () => {
     expect(listed).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "proof_screenshot" }),
+        expect.objectContaining({ name: "proof_video_start" }),
+        expect.objectContaining({ name: "proof_video_stop" }),
         expect.objectContaining({ name: "proof_missing" }),
       ]),
     );
@@ -483,12 +501,27 @@ describe("proof tools on the screen-enabled MCP server", () => {
     });
     expect(textOf(replies[0])).toEqual(reference);
     expect(textOf(replies[1])).toEqual(reference);
-    expect(seen).toEqual([{ who: { ...caller, callKey: "call-0" }, params }]);
+    expect(seen).toEqual([
+      { who: { ...caller, callKey: "call-0" }, params },
+      {
+        who: { ...caller, callKey: "call-1" },
+        params: { title: "Board", caption: "Completed task" },
+      },
+      { who: { ...caller, callKey: "call-2" } },
+    ]);
+    expect(textOf(replies[2])).toEqual(reference);
+    expect(textOf(replies[3])).toEqual(reference);
     const worker = await serve({ answer: Effect.succeed(answered()) }, [], "worker");
     expect(worker.listed.some((tool) => JSON.stringify(tool).includes('"proof_screenshot"'))).toBe(
       false,
     );
     expect(worker.listed.some((tool) => JSON.stringify(tool).includes('"proof_missing"'))).toBe(
+      false,
+    );
+    expect(worker.listed.some((tool) => JSON.stringify(tool).includes('"proof_video_start"'))).toBe(
+      false,
+    );
+    expect(worker.listed.some((tool) => JSON.stringify(tool).includes('"proof_video_stop"'))).toBe(
       false,
     );
   });

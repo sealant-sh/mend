@@ -198,6 +198,38 @@ describe.skipIf(postgres.skip)("proof artifacts in Postgres", () => {
     );
   });
 
+  it("settles stale recordings at boot and updates their existing proof items", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* ProofArtifactsRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const recording = yield* repo.insert(artifact("proof-stale", true), "stale");
+        const settled = yield* repo.byId(ProofArtifactId.make("proof-recording"));
+        yield* repo.settleStaleRecordings();
+        expect((yield* repo.byId(recording.id))?.capture).toEqual({
+          _tag: "NotCaptured",
+          kind: "video",
+          reason: "Mend restarted while recording",
+        });
+        expect(yield* repo.byId(ProofArtifactId.make("proof-recording"))).toEqual(settled);
+        const rows = yield* sql<{
+          data: unknown;
+          status: string;
+        }>`SELECT data, status FROM agent_items WHERE provider_item_id = 'mend-proof:proof-stale'`;
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.status).toBe("completed");
+        expect(Schema.decodeUnknownSync(ProofRef)(rows[0]?.data)).toMatchObject({
+          artifactId: recording.id,
+          state: "not-captured",
+          label:
+            "Task board · after · checkpoint #2 · not captured · Mend restarted while recording",
+        });
+        yield* repo.settleStaleRecordings();
+        expect((yield* repo.byId(recording.id))?.capture._tag).toBe("NotCaptured");
+      }),
+    );
+  });
+
   it("keeps artifacts after removing their session, then cascades with the change", async () => {
     await run(
       Effect.gen(function* () {
