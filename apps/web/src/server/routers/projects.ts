@@ -68,6 +68,16 @@ export const projectsRouter = router({
         }),
       ),
     ),
+  setNewWorktreesUseProjectResources: procedure
+    .input(input(Schema.Struct({ id: ProjectId, newWorktreesUseProjectResources: Schema.Boolean })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.projects.newWorktreesUseProjectResources({
+          params: { id: i.id },
+          payload: { newWorktreesUseProjectResources: i.newWorktreesUseProjectResources },
+        }),
+      ),
+    ),
   folders: procedure
     .input(byId)
     .query(({ ctx, input: i }) =>

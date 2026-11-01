@@ -1,74 +1,66 @@
 import { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
-  changesWhatOwnIs,
   type ImageDigest,
   type OwnDatabaseOrigin,
   type OwnDatabaseRemoval,
   pinImage,
-  resourceDeclarationRefusals,
-  ResourceDefinitionInput,
+  ResourceDefinition,
   ResourceRefusal,
-  type ResourceSettingsState,
+  type ResourceBindingRows,
   ResourceSpecDigest,
   resourceSpecDigest,
-  selectionRefusal,
-  type SettingsDefinition,
+  resourceDefinitionRefusals,
+  envCollisionRefusals,
   type WorktreeChoice,
+  choiceInEffect,
 } from "@mend/domain/workbench";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { MendDB, type MendDatabase } from "../client.ts";
+import { MendDB } from "../client.ts";
 import {
   projects,
   resourceDefinitions,
+  resourceInstances,
   resourceOwnDatabases,
   resourceSelections,
   worktrees,
 } from "../schema/workbench.ts";
 
-/** A definition as a project's settings hold it (ADR 0019); a `mend.toml` table is not one. */
-export interface StoredResourceDefinition {
+/** A resource's stable project/name identity, also the base of its Sealant keys. */
+export interface StoredResourceIdentity {
   readonly id: ResourceDefinitionId;
   readonly projectId: ProjectId;
-  /** The spec as it was added, its image as written. */
-  readonly spec: ResourceDefinitionInput;
-  /** The spec's digest when it was added: what its readers saw. */
-  readonly specDigest: ResourceSpecDigest;
-  /** The digest the image resolved to when it was added. */
-  readonly imageDigest: ImageDigest;
-  /** The image as it runs, pinned to `imageDigest`: `postgres:17@sha256:…`. */
-  readonly image: string;
-  /** Whoever added it last, by account id. */
-  readonly addedBy: string;
+  readonly name: string;
   readonly createdAt: Date;
+}
+
+/** The definition and image that an explicit start remembered at one level. */
+export interface StoredResourceInstance {
+  readonly id: ResourceDefinitionId;
+  readonly projectId: ProjectId;
+  readonly worktreeId: WorktreeId | null;
+  readonly spec: ResourceDefinition;
+  readonly specDigest: ResourceSpecDigest;
+  readonly imageDigest: ImageDigest;
+  readonly image: string;
+  readonly startedBy: string;
+  readonly startedAt: Date;
   readonly updatedAt: Date;
 }
 
-/** A definition as a person adds it: the spec, and the digest its image resolved to. */
-export interface AddedDefinition {
-  readonly spec: ResourceDefinitionInput;
-  readonly imageDigest: ImageDigest;
-}
-
+/** One remembered instance and the worktree's effective choice of its resource. */
 export interface DefinitionWithChoice {
-  readonly definition: StoredResourceDefinition;
-  /** The listed worktree's stored choice; null when it made none, or no worktree was listed. */
-  readonly choice: WorktreeChoice | null;
+  readonly definition: StoredResourceInstance;
+  readonly choice: WorktreeChoice;
 }
 
-/** A definition as its reader saw it: removing it holds only while it still is. */
-export interface DefinitionVersion {
-  readonly id: ResourceDefinitionId;
-  readonly digest: ResourceSpecDigest;
-}
-
+/** The choice persisted for a single worktree and identity. */
 export interface StoredSelection {
   readonly worktreeId: WorktreeId;
   readonly definitionId: ResourceDefinitionId;
   readonly mode: WorktreeChoice;
-  /** Null when the policy's default applied and nobody chose. */
   readonly chosenBy: string | null;
   readonly chosenAt: Date;
 }
@@ -77,78 +69,55 @@ export class ResourceDefinitionRefusedError extends Schema.TaggedError<ResourceD
   "ResourceDefinitionRefusedError",
   { name: Schema.String, refusals: Schema.Array(ResourceRefusal) },
 ) {}
-
 export class ResourceDefinitionNotFoundError extends Schema.TaggedError<ResourceDefinitionNotFoundError>()(
   "ResourceDefinitionNotFoundError",
   { id: ResourceDefinitionId },
 ) {}
-
-/** The definition changed after its reader saw it, so the write that assumed it did not happen. */
-export class ResourceDefinitionStaleError extends Schema.TaggedError<ResourceDefinitionStaleError>()(
-  "ResourceDefinitionStaleError",
-  {
-    definitionId: ResourceDefinitionId,
-    expected: ResourceSpecDigest,
-    current: ResourceSpecDigest,
-  },
-) {}
-
 export class ResourceSelectionRefusedError extends Schema.TaggedError<ResourceSelectionRefusedError>()(
   "ResourceSelectionRefusedError",
   { definitionId: ResourceDefinitionId, name: Schema.String, refusal: ResourceRefusal },
 ) {}
 
+/** Stored resource identities, remembered instances, selections and retained own-database inventory. */
 export class ResourcesRepo extends Context.Service<
   ResourcesRepo,
   {
-    /**
-     * Adds `added` under its name, or replaces that name's definition, refused as
-     * `resourceDeclarationRefusals` says under the project's lock, and refused on `image` when the
-     * spec's image names another digest. The same spec and pin twice is one write. A new scope or
-     * preset re-defaults each worktree's selection.
-     */
-    readonly declare: (
+    readonly ensureIdentity: (
       projectId: ProjectId,
-      added: AddedDefinition,
-      addedBy: string,
-    ) => Effect.Effect<StoredResourceDefinition, ResourceDefinitionRefusedError>;
-    /** Removes the definition while it holds the spec its remover read, and answers it. */
-    readonly removeIfCurrent: (
+      name: string,
+    ) => Effect.Effect<StoredResourceIdentity, ResourceDefinitionRefusedError>;
+    readonly remember: (
       projectId: ProjectId,
-      version: DefinitionVersion,
-    ) => Effect.Effect<
-      StoredResourceDefinition,
-      ResourceDefinitionNotFoundError | ResourceDefinitionStaleError
-    >;
+      resourceId: ResourceDefinitionId,
+      worktreeId: WorktreeId | null,
+      spec: ResourceDefinition,
+      imageDigest: ImageDigest,
+      by: string,
+    ) => Effect.Effect<StoredResourceInstance, ResourceDefinitionRefusedError>;
+    readonly removeInstance: (
+      resourceId: ResourceDefinitionId,
+      worktreeId: WorktreeId | null,
+    ) => Effect.Effect<void>;
     readonly listForProject: (
       projectId: ProjectId,
-    ) => Effect.Effect<ReadonlyArray<StoredResourceDefinition>>;
-    /**
-     * How many worktrees hold each of the project's definitions as `own`; a definition none holds
-     * is absent. One query, and nothing written.
-     */
-    readonly ownSelections: (
+    ) => Effect.Effect<ReadonlyArray<StoredResourceInstance>>;
+    readonly listIdentities: (
       projectId: ProjectId,
-    ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, number>>;
-    /**
-     * Each definition, with `worktreeId`'s stored choice of it, read as it is, writing no default.
-     * Two queries.
-     */
+    ) => Effect.Effect<ReadonlyArray<StoredResourceIdentity>>;
     readonly listWithChoices: (
       projectId: ProjectId,
       worktreeId: WorktreeId | null,
     ) => Effect.Effect<ReadonlyArray<DefinitionWithChoice>>;
+    readonly bindingRows: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<ResourceBindingRows>;
+    /** Project server, or a legacy worktree instance when no project instance exists. */
     readonly byName: (
       projectId: ProjectId,
       name: string,
-    ) => Effect.Effect<StoredResourceDefinition | null>;
-    /**
-     * The names of the project's definitions, by name; a spec that no longer decodes is named too.
-     * A declaration made while the project's removal mark stands is refused, so a removal
-     * that took its mark first reads every name that will exist.
-     */
+    ) => Effect.Effect<StoredResourceInstance | null>;
     readonly declaredNames: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
-    /** Stores the worktree's choice; the same choice again changes nothing. */
     readonly setSelection: (
       projectId: ProjectId,
       worktreeId: WorktreeId,
@@ -159,34 +128,31 @@ export class ResourcesRepo extends Context.Service<
       StoredSelection,
       ResourceDefinitionNotFoundError | ResourceSelectionRefusedError
     >;
-    /** The own databases Mend made for a worktree, by definition, with how each began. */
+    readonly ownSelections: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, number>>;
     readonly ownDatabases: (
       worktreeId: WorktreeId,
     ) => Effect.Effect<ReadonlyMap<ResourceDefinitionId, OwnDatabaseOrigin>>;
-    /** Removal progress, including rows whose worktree has gone. */
     readonly ownDatabaseRemovals: (
       worktreeId: WorktreeId,
     ) => Effect.Effect<ReadonlyArray<OwnDatabaseRemoval>>;
-    /** Reserves the same dump name and timestamp on every retry. */
     readonly reserveRemovalDump: (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       dumpName: string,
       at: Date,
     ) => Effect.Effect<void>;
-    /** Records a checked dump before any database is dropped. */
     readonly checkRemovalDump: (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       at: Date,
     ) => Effect.Effect<void>;
-    /** Marks a database removed only after its checked dump was recorded. */
     readonly removeOwnDatabase: (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       at: Date,
     ) => Effect.Effect<void>;
-    /** Records how an own database Mend made, or made again on a reset, began. */
     readonly recordOwnDatabase: (
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
@@ -195,458 +161,253 @@ export class ResourcesRepo extends Context.Service<
   }
 >()("@mend/db/ResourcesRepo") {}
 
-type Tx = Pick<MendDatabase, "select" | "insert" | "update" | "delete">;
-type DefinitionRow = typeof resourceDefinitions.$inferSelect;
-type SelectionRow = typeof resourceSelections.$inferSelect;
-
-const decodeSpec = Schema.decodeUnknownEffect(ResourceDefinitionInput);
-const encodeSpec = Schema.encodeEffect(ResourceDefinitionInput);
-
-const toDefinition = Effect.fnUntraced(function* (row: DefinitionRow) {
-  const spec = yield* decodeSpec(row.spec).pipe(Effect.orDie);
-  const image = pinImage(spec.image, row.imageDigest);
-  if (image === null) {
-    return yield* Effect.die(new Error(`definition ${row.id} pins another digest than its image`));
-  }
-  return {
-    id: row.id,
-    projectId: row.projectId,
-    spec,
-    specDigest: row.specDigest,
-    imageDigest: row.imageDigest,
-    image,
-    addedBy: row.addedBy,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  } satisfies StoredResourceDefinition;
-});
-
-const toSelection = (row: SelectionRow): StoredSelection => ({
-  worktreeId: row.worktreeId,
-  definitionId: row.definitionId,
-  mode: row.mode,
-  chosenBy: row.chosenBy,
-  chosenAt: row.chosenAt,
-});
-
+const instanceWhere = (id: ResourceDefinitionId, worktreeId: WorktreeId | null) =>
+  and(
+    eq(resourceInstances.resourceId, id),
+    worktreeId === null
+      ? isNull(resourceInstances.worktreeId)
+      : eq(resourceInstances.worktreeId, worktreeId),
+  );
 const ownKey = (worktreeId: WorktreeId, definitionId: ResourceDefinitionId) =>
   and(
     eq(resourceOwnDatabases.worktreeId, worktreeId),
     eq(resourceOwnDatabases.definitionId, definitionId),
   );
-
-/** A typed failure survives a transaction; a database error is a defect. */
-const queryErrorsDie = {
-  EffectDrizzleQueryError: (error: unknown) => Effect.die(error),
-  SqlError: (error: unknown) => Effect.die(error),
-};
-
-/** The definition, row-locked: every write to it and its selections takes this. */
-const lockDefinition = Effect.fn("ResourcesRepo.lockDefinition")(function* (
-  tx: Tx,
-  id: ResourceDefinitionId,
+const decodeSpec = Schema.decodeUnknownEffect(ResourceDefinition);
+const toInstance = Effect.fnUntraced(function* (
+  identity: StoredResourceIdentity,
+  row: typeof resourceInstances.$inferSelect,
 ) {
-  const [row] = yield* tx
-    .select()
-    .from(resourceDefinitions)
-    .where(eq(resourceDefinitions.id, id))
-    .for("update");
-  if (row === undefined) return yield* new ResourceDefinitionNotFoundError({ id });
-  return yield* toDefinition(row);
+  const spec = yield* decodeSpec(row.spec).pipe(Effect.orDie);
+  const image = pinImage(spec.image, row.imageDigest);
+  if (image === null)
+    return yield* Effect.die(
+      new Error(`resource ${identity.id} pins another digest than its image`),
+    );
+  return {
+    id: identity.id,
+    projectId: identity.projectId,
+    worktreeId: row.worktreeId,
+    spec,
+    image,
+    specDigest: row.specDigest,
+    imageDigest: row.imageDigest,
+    startedBy: row.startedBy,
+    startedAt: row.startedAt,
+    updatedAt: row.updatedAt,
+  } satisfies StoredResourceInstance;
 });
 
-const worktreeProject = (tx: Tx, worktreeId: WorktreeId) =>
-  tx
-    .select({ projectId: worktrees.projectId })
-    .from(worktrees)
-    .where(eq(worktrees.id, worktreeId))
-    .pipe(Effect.map(([row]) => row?.projectId ?? null));
-
-/**
- * The project's definition, locked, once the worktree is known to be one of the project's. Another
- * project's definition is not found, the same as a missing one, so its name is never said.
- */
-const lockForWorktree = Effect.fn("ResourcesRepo.lockForWorktree")(function* (
-  tx: Tx,
-  projectId: ProjectId,
-  worktreeId: WorktreeId,
-  definitionId: ResourceDefinitionId,
-) {
-  const definition = yield* lockDefinition(tx, definitionId);
-  if (definition.projectId !== projectId) {
-    return yield* new ResourceDefinitionNotFoundError({ id: definitionId });
-  }
-  if ((yield* worktreeProject(tx, worktreeId)) !== projectId) {
-    return yield* new ResourceSelectionRefusedError({
-      definitionId,
-      name: definition.spec.name,
-      refusal: {
-        key: "worktree",
-        message: `is not a worktree of the project that declares @${definition.spec.name}`,
-      },
-    });
-  }
-  return definition;
-});
-
-const storedSelection = (tx: Tx, worktreeId: WorktreeId, definitionId: ResourceDefinitionId) =>
-  tx
-    .select()
-    .from(resourceSelections)
-    .where(
-      and(
-        eq(resourceSelections.worktreeId, worktreeId),
-        eq(resourceSelections.definitionId, definitionId),
-      ),
-    )
-    .pipe(Effect.map(([row]) => row ?? null));
-
-/** Writes `mode` as the worktree's, over what it had, and returns the row it wrote. */
-const writeSelection = Effect.fn("ResourcesRepo.writeSelection")(function* (
-  tx: Tx,
-  stored: SelectionRow | null,
-  key: { readonly worktreeId: WorktreeId; readonly definitionId: ResourceDefinitionId },
-  mode: WorktreeChoice,
-  chosenBy: string | null,
-) {
-  const [row] =
-    stored === null
-      ? yield* tx
-          .insert(resourceSelections)
-          .values({ ...key, mode, chosenBy })
-          .returning()
-      : yield* tx
-          .update(resourceSelections)
-          .set({ mode, chosenBy, chosenAt: sql`now()` })
-          .where(
-            and(
-              eq(resourceSelections.worktreeId, key.worktreeId),
-              eq(resourceSelections.definitionId, key.definitionId),
-            ),
-          )
-          .returning();
-  if (row === undefined) return yield* Effect.die(new Error("a selection write returned no row"));
-  return toSelection(row);
-});
-
-/** What refuses a declaration before any rule: a removal's mark, or a removed project (0167). */
-type ProjectFence = "removing" | "removed";
-
-const fenceRefusal = (spec: ResourceDefinitionInput, fence: ProjectFence) =>
-  new ResourceDefinitionRefusedError({
-    name: spec.name,
-    refusals: [
-      {
-        key: "project",
-        message:
-          fence === "removed"
-            ? "was removed · restore it to declare resources"
-            : "is being removed · declare it again if the removal stops",
-      },
-    ],
-  });
-
-/**
- * The project's row, locked in every state: it orders every declaration and a removal taking its
- * mark (0166), so each sees the other. Answers the fence that refuses a declaration, or null; a
- * mark that lapsed is a removal that stopped, and a removed project (0167) is marked for good.
- */
-const lockProject = Effect.fn("ResourcesRepo.lockProject")(function* (
-  tx: Tx,
-  projectId: ProjectId,
-) {
-  const [project] = yield* tx
-    .select({
-      removing: sql<boolean>`removal_fence_marked(${projects.removalPhase}, ${projects.removalSince})`,
-      removed: sql<boolean>`${projects.removedAt} IS NOT NULL`,
-    })
-    .from(projects)
-    .where(eq(projects.id, projectId))
-    .for("no key update");
-  if (project === undefined) {
-    return yield* Effect.die(new Error(`project ${projectId} does not exist`));
-  }
-  const fence: ProjectFence | null = !project.removing
-    ? null
-    : project.removed
-      ? "removed"
-      : "removing";
-  return fence;
-});
-
-/** The definition settings hold under `name`, row-locked; null for none. */
-const lockByName = (tx: Tx, projectId: ProjectId, name: string) =>
-  tx
-    .select()
-    .from(resourceDefinitions)
-    .where(and(eq(resourceDefinitions.projectId, projectId), eq(resourceDefinitions.name, name)))
-    .for("update")
-    .pipe(Effect.map(([row]) => row ?? null));
-
-/**
- * The project's settings as the rules decide against them (`ResourceSettingsState`): each
- * definition and how many worktrees hold it as `own`. Read under the project's lock and that of
- * the definition under the name decided.
- */
-const settingsStateIn = Effect.fn("ResourcesRepo.settingsStateIn")(function* (
-  tx: Tx,
-  projectId: ProjectId,
-) {
-  const rows = yield* tx
-    .select()
-    .from(resourceDefinitions)
-    .where(eq(resourceDefinitions.projectId, projectId));
-  const owning = yield* tx
-    .select({
-      definitionId: resourceSelections.definitionId,
-      owning: sql<number>`count(*)::int`,
-    })
-    .from(resourceSelections)
-    .innerJoin(resourceDefinitions, eq(resourceDefinitions.id, resourceSelections.definitionId))
-    .where(and(eq(resourceDefinitions.projectId, projectId), eq(resourceSelections.mode, "own")))
-    .groupBy(resourceSelections.definitionId);
-  const definitions = yield* Effect.forEach(
-    rows,
-    Effect.fnUntraced(function* (row): Effect.fn.Return<SettingsDefinition> {
-      const { id, spec, specDigest } = yield* toDefinition(row);
-      return {
-        spec,
-        digest: specDigest,
-        owning: owning.find((each) => each.definitionId === id)?.owning ?? 0,
-      };
-    }),
-  );
-  return { projectId, definitions } satisfies ResourceSettingsState;
-});
-
-/** Stores `added` under its name, its refusals decided under these locks, unless a removal holds its mark. */
-const writeDeclarationIn = Effect.fn("ResourcesRepo.writeDeclarationIn")(function* (
-  tx: Tx,
-  projectId: ProjectId,
-  added: AddedDefinition,
-  addedBy: string,
-) {
-  const { spec, imageDigest } = added;
-  const fence = yield* lockProject(tx, projectId);
-  if (fence !== null) return yield* fenceRefusal(spec, fence);
-  const encoded = yield* encodeSpec(spec).pipe(Effect.orDie);
-  const specDigest = resourceSpecDigest(spec);
-  const held = yield* lockByName(tx, projectId, spec.name);
-  if (held === null) {
-    const [inserted] = yield* tx
-      .insert(resourceDefinitions)
-      .values({
-        id: ResourceDefinitionId.make(`rdef_${crypto.randomUUID()}`),
-        projectId,
-        name: spec.name,
-        scope: spec.scope,
-        preset: spec.preset,
-        spec: encoded,
-        specDigest,
-        imageDigest,
-        addedBy,
-      })
-      .returning();
-    if (inserted === undefined) {
-      return yield* Effect.die(new Error("a declared definition was not stored"));
-    }
-    return yield* toDefinition(inserted);
-  }
-  const existing = yield* toDefinition(held);
-  if (existing.specDigest === specDigest && existing.imageDigest === imageDigest) return existing;
-  // A new scope or preset leaves no choice that held: each worktree takes the policy's default.
-  if (changesWhatOwnIs(existing.spec, spec)) {
-    yield* tx.delete(resourceSelections).where(eq(resourceSelections.definitionId, existing.id));
-  }
-  const [updated] = yield* tx
-    .update(resourceDefinitions)
-    .set({
-      scope: spec.scope,
-      preset: spec.preset,
-      spec: encoded,
-      specDigest,
-      imageDigest,
-      addedBy,
-      updatedAt: sql`now()`,
-    })
-    .where(eq(resourceDefinitions.id, existing.id))
-    .returning();
-  if (updated === undefined) {
-    return yield* Effect.die(new Error("a declared definition was not stored"));
-  }
-  return yield* toDefinition(updated);
-});
-
-/** Under the transaction: declares `added` as `declare` says. */
-const declareIn = Effect.fn("ResourcesRepo.declareIn")(function* (
-  tx: Tx,
-  projectId: ProjectId,
-  added: AddedDefinition,
-  addedBy: string,
-) {
-  const { spec, imageDigest } = added;
-  if (pinImage(spec.image, imageDigest) === null) {
-    return yield* new ResourceDefinitionRefusedError({
-      name: spec.name,
-      refusals: [{ key: "image", message: `names another digest than ${imageDigest}` }],
-    });
-  }
-  yield* lockProject(tx, projectId);
-  yield* lockByName(tx, projectId, spec.name);
-  const refusals = resourceDeclarationRefusals(yield* settingsStateIn(tx, projectId), spec);
-  if (refusals.length > 0) {
-    return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
-  }
-  return yield* writeDeclarationIn(tx, projectId, added, addedBy);
-});
-
+/** Writes serialize with project removal; no database lock spans a registry or Core call. */
 export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Layer.effect(
   ResourcesRepo,
   Effect.gen(function* () {
     const db = yield* MendDB;
-
-    const byName = Effect.fn("ResourcesRepo.byName")(function* (
-      projectId: ProjectId,
-      name: string,
-    ) {
-      const [row] = yield* db
+    const fence = (tx: Pick<typeof db, "select">, projectId: ProjectId, name: string) =>
+      Effect.gen(function* () {
+        const [project] = yield* tx
+          .select({
+            marked: sql<boolean>`removal_fence_marked(${projects.removalPhase}, ${projects.removalSince})`,
+            removed: projects.removedAt,
+          })
+          .from(projects)
+          .where(eq(projects.id, projectId))
+          .for("no key update");
+        if (project === undefined || project.marked || project.removed !== null)
+          return yield* new ResourceDefinitionRefusedError({
+            name,
+            refusals: [
+              {
+                key: "project",
+                message: "is being removed or was removed · restore it before starting resources",
+              },
+            ],
+          });
+      });
+    const queryErrorsDie = {
+      EffectDrizzleQueryError: (error: unknown) => Effect.die(error),
+      SqlError: (error: unknown) => Effect.die(error),
+    };
+    const listIdentities = (projectId: ProjectId) =>
+      db
         .select()
         .from(resourceDefinitions)
-        .where(
-          and(eq(resourceDefinitions.projectId, projectId), eq(resourceDefinitions.name, name)),
-        )
+        .where(eq(resourceDefinitions.projectId, projectId))
+        .orderBy(asc(resourceDefinitions.createdAt), asc(resourceDefinitions.name))
         .pipe(Effect.orDie);
-      return row === undefined ? null : yield* toDefinition(row);
-    });
-
-    const declare = (projectId: ProjectId, added: AddedDefinition, addedBy: string) =>
+    const ensureIdentity = (projectId: ProjectId, name: string) =>
       db
-        .transaction((tx) => declareIn(tx, projectId, added, addedBy))
-        .pipe(Effect.catchTags(queryErrorsDie));
-
-    const removeIfCurrent = Effect.fn("ResourcesRepo.removeIfCurrent")(function* (
-      projectId: ProjectId,
-      version: DefinitionVersion,
-    ) {
-      return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
-            const definition = yield* lockDefinition(tx, version.id);
-            if (definition.projectId !== projectId) {
-              return yield* new ResourceDefinitionNotFoundError({ id: version.id });
-            }
-            if (definition.specDigest !== version.digest) {
-              return yield* new ResourceDefinitionStaleError({
-                definitionId: version.id,
-                expected: version.digest,
-                current: definition.specDigest,
-              });
-            }
-            yield* tx.delete(resourceDefinitions).where(eq(resourceDefinitions.id, version.id));
-            return definition;
+            yield* fence(tx, projectId, name);
+            const [row] = yield* tx
+              .insert(resourceDefinitions)
+              .values({
+                id: ResourceDefinitionId.make(`rdef_${crypto.randomUUID()}`),
+                projectId,
+                name,
+              })
+              .onConflictDoUpdate({
+                target: [resourceDefinitions.projectId, resourceDefinitions.name],
+                set: { name },
+              })
+              .returning();
+            if (row === undefined)
+              return yield* Effect.die("resource identity insert returned no row");
+            return row;
           }),
         )
         .pipe(Effect.catchTags(queryErrorsDie));
-    });
-
+    const remember = (
+      projectId: ProjectId,
+      resourceId: ResourceDefinitionId,
+      worktreeId: WorktreeId | null,
+      spec: ResourceDefinition,
+      imageDigest: ImageDigest,
+      by: string,
+    ) =>
+      db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* fence(tx, projectId, spec.name);
+            const [identity] = yield* tx
+              .select()
+              .from(resourceDefinitions)
+              .where(
+                and(
+                  eq(resourceDefinitions.id, resourceId),
+                  eq(resourceDefinitions.projectId, projectId),
+                ),
+              )
+              .for("update");
+            if (identity === undefined) return yield* Effect.die("resource identity is absent");
+            const others = yield* tx
+              .select({ spec: resourceInstances.spec })
+              .from(resourceInstances)
+              .innerJoin(
+                resourceDefinitions,
+                eq(resourceInstances.resourceId, resourceDefinitions.id),
+              )
+              .where(eq(resourceDefinitions.projectId, projectId));
+            const definitions = yield* Effect.forEach(others, (row) =>
+              decodeSpec(row.spec).pipe(Effect.orDie),
+            );
+            const refusals = [
+              ...resourceDefinitionRefusals(spec),
+              ...envCollisionRefusals([
+                ...definitions.filter((other) => other.name !== spec.name),
+                spec,
+              ])
+                .filter((entry) => entry.resource === spec.name)
+                .map((entry) => entry.refusal),
+            ];
+            if (pinImage(spec.image, imageDigest) === null)
+              refusals.push({ key: "image", message: `names another digest than ${imageDigest}` });
+            if (refusals.length > 0)
+              return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
+            const values = {
+              spec: yield* Schema.encodeEffect(ResourceDefinition)(spec).pipe(Effect.orDie),
+              specDigest: resourceSpecDigest(spec),
+              imageDigest,
+              startedBy: by,
+            };
+            const [held] = yield* tx
+              .select()
+              .from(resourceInstances)
+              .where(instanceWhere(resourceId, worktreeId));
+            const [row] =
+              held === undefined
+                ? yield* tx
+                    .insert(resourceInstances)
+                    .values({ resourceId, worktreeId, ...values })
+                    .returning()
+                : yield* tx
+                    .update(resourceInstances)
+                    .set({ ...values, startedAt: sql`now()`, updatedAt: sql`now()` })
+                    .where(instanceWhere(resourceId, worktreeId))
+                    .returning();
+            if (row === undefined)
+              return yield* Effect.die("resource instance write returned no row");
+            return yield* toInstance(identity, row);
+          }),
+        )
+        .pipe(Effect.catchTags(queryErrorsDie));
+    const removeInstance = (resourceId: ResourceDefinitionId, worktreeId: WorktreeId | null) =>
+      db
+        .delete(resourceInstances)
+        .where(instanceWhere(resourceId, worktreeId))
+        .pipe(Effect.orDie, Effect.asVoid);
     const listForProject = Effect.fn("ResourcesRepo.listForProject")(function* (
       projectId: ProjectId,
     ) {
       const rows = yield* db
-        .select()
+        .select({ identity: resourceDefinitions, instance: resourceInstances })
         .from(resourceDefinitions)
+        .innerJoin(resourceInstances, eq(resourceDefinitions.id, resourceInstances.resourceId))
         .where(eq(resourceDefinitions.projectId, projectId))
-        .orderBy(asc(resourceDefinitions.name))
+        .orderBy(asc(resourceDefinitions.createdAt))
         .pipe(Effect.orDie);
-      return yield* Effect.forEach(rows, toDefinition);
-    });
-
-    const ownSelections = Effect.fn("ResourcesRepo.ownSelections")(function* (
-      projectId: ProjectId,
-    ) {
-      const rows = yield* db
-        .select({
-          definitionId: resourceSelections.definitionId,
-          owning: sql<number>`count(*)::int`,
-        })
-        .from(resourceSelections)
-        .innerJoin(resourceDefinitions, eq(resourceDefinitions.id, resourceSelections.definitionId))
-        .where(
-          and(eq(resourceDefinitions.projectId, projectId), eq(resourceSelections.mode, "own")),
-        )
-        .groupBy(resourceSelections.definitionId)
-        .pipe(Effect.orDie);
-      return new Map(rows.map((row) => [row.definitionId, row.owning]));
-    });
-
-    const listWithChoices = Effect.fn("ResourcesRepo.listWithChoices")(function* (
-      projectId: ProjectId,
-      worktreeId: WorktreeId | null,
-    ) {
-      const definitions = yield* listForProject(projectId);
-      if (definitions.length === 0 || worktreeId === null) {
-        return definitions.map((definition) => ({ definition, choice: null }));
-      }
-      const choices = new Map(
-        (yield* db
-          .select({
-            definitionId: resourceSelections.definitionId,
-            mode: resourceSelections.mode,
-          })
-          .from(resourceSelections)
-          .where(eq(resourceSelections.worktreeId, worktreeId))
-          .pipe(Effect.orDie)).map((row) => [row.definitionId, row.mode]),
-      );
-      return definitions.map(
-        (definition): DefinitionWithChoice => ({
-          definition,
-          choice: choices.get(definition.id) ?? null,
-        }),
+      return yield* Effect.forEach(rows, ({ identity, instance }) =>
+        toInstance(identity, instance),
       );
     });
-
-    const declaredNames = Effect.fn("ResourcesRepo.declaredNames")(function* (
-      projectId: ProjectId,
-    ) {
-      const rows = yield* db
-        .select({ name: resourceDefinitions.name })
-        .from(resourceDefinitions)
-        .where(eq(resourceDefinitions.projectId, projectId))
-        .orderBy(asc(resourceDefinitions.name))
-        .pipe(Effect.orDie);
-      return rows.map((row) => row.name);
-    });
-
-    const setSelection = Effect.fn("ResourcesRepo.setSelection")(function* (
+    const byName = (projectId: ProjectId, name: string) =>
+      listForProject(projectId).pipe(
+        Effect.map(
+          (rows) =>
+            rows.find((row) => row.spec.name === name && row.worktreeId === null) ??
+            rows.find((row) => row.spec.name === name) ??
+            null,
+        ),
+      );
+    const declaredNames = (projectId: ProjectId) =>
+      listIdentities(projectId).pipe(Effect.map((rows) => rows.map((row) => row.name)));
+    const setSelection = (
       projectId: ProjectId,
       worktreeId: WorktreeId,
       definitionId: ResourceDefinitionId,
       mode: WorktreeChoice,
       chosenBy: string,
-    ) {
-      return yield* db
+    ) =>
+      db
         .transaction((tx) =>
           Effect.gen(function* () {
-            const { spec } = yield* lockForWorktree(tx, projectId, worktreeId, definitionId);
-            const refusal = selectionRefusal(spec, mode);
-            if (refusal !== null) {
+            const [identity] = yield* tx
+              .select()
+              .from(resourceDefinitions)
+              .where(
+                and(
+                  eq(resourceDefinitions.id, definitionId),
+                  eq(resourceDefinitions.projectId, projectId),
+                ),
+              )
+              .for("update");
+            if (identity === undefined)
+              return yield* new ResourceDefinitionNotFoundError({ id: definitionId });
+            const [worktree] = yield* tx
+              .select()
+              .from(worktrees)
+              .where(and(eq(worktrees.id, worktreeId), eq(worktrees.projectId, projectId)));
+            if (worktree === undefined)
               return yield* new ResourceSelectionRefusedError({
                 definitionId,
-                name: spec.name,
-                refusal,
+                name: identity.name,
+                refusal: { key: "worktree", message: "is not a worktree of this project" },
               });
-            }
-            const stored = yield* storedSelection(tx, worktreeId, definitionId);
-            // A person choosing what applies already still owns the choice from now on.
-            if (stored !== null && stored.mode === mode && stored.chosenBy !== null) {
-              return toSelection(stored);
-            }
-            return yield* writeSelection(tx, stored, { worktreeId, definitionId }, mode, chosenBy);
+            const [row] = yield* tx
+              .insert(resourceSelections)
+              .values({ worktreeId, definitionId, mode, chosenBy })
+              .onConflictDoUpdate({
+                target: [resourceSelections.worktreeId, resourceSelections.definitionId],
+                set: { mode, chosenBy, chosenAt: sql`now()` },
+              })
+              .returning();
+            if (row === undefined)
+              return yield* Effect.die("resource selection write returned no row");
+            return row;
           }),
         )
         .pipe(Effect.catchTags(queryErrorsDie));
-    });
-
     const ownDatabases = Effect.fn("ResourcesRepo.ownDatabases")(function* (
       worktreeId: WorktreeId,
     ) {
@@ -733,15 +494,87 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         .pipe(Effect.orDie);
     });
 
+    const bindingRows = Effect.fn("ResourcesRepo.bindingRows")(function* (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+    ): Effect.fn.Return<ResourceBindingRows> {
+      const resources = yield* listIdentities(projectId);
+      const instances = yield* listForProject(projectId);
+      const [worktree] = yield* db
+        .select({ uses: worktrees.usesProjectResources })
+        .from(worktrees)
+        .where(and(eq(worktrees.id, worktreeId), eq(worktrees.projectId, projectId)))
+        .pipe(Effect.orDie);
+      const selections = yield* db
+        .select()
+        .from(resourceSelections)
+        .where(eq(resourceSelections.worktreeId, worktreeId))
+        .pipe(Effect.orDie);
+      return {
+        worktreeId,
+        usesProjectResources: worktree?.uses ?? false,
+        resources,
+        instances: instances.map((row) => ({
+          resourceId: row.id,
+          worktreeId: row.worktreeId,
+          spec: row.spec,
+        })),
+        selections: selections.map((row) => ({ resourceId: row.definitionId, mode: row.mode })),
+        ownDatabases: new Set((yield* ownDatabases(worktreeId)).keys()),
+      };
+    });
+    const listWithChoices = Effect.fn("ResourcesRepo.listWithChoices")(function* (
+      projectId: ProjectId,
+      worktreeId: WorktreeId | null,
+    ) {
+      const instances = yield* listForProject(projectId);
+      if (worktreeId === null)
+        return instances.map((definition) => ({
+          definition,
+          choice: definition.worktreeId === null ? ("project" as const) : ("worktree" as const),
+        }));
+      const rows = yield* bindingRows(projectId, worktreeId);
+      return rows.resources.flatMap((identity): ReadonlyArray<DefinitionWithChoice> => {
+        const choice = choiceInEffect(
+          rows.selections.find((row) => row.resourceId === identity.id)?.mode ?? null,
+          rows.usesProjectResources,
+        );
+        const project = instances.find((row) => row.id === identity.id && row.worktreeId === null);
+        const own = instances.find(
+          (row) => row.id === identity.id && row.worktreeId === worktreeId,
+        );
+        const definition = choice === "worktree" ? (own ?? project) : (project ?? own);
+        return definition === undefined ? [] : [{ definition, choice }];
+      });
+    });
+    const ownSelections = (projectId: ProjectId) =>
+      db
+        .select({ definitionId: resourceOwnDatabases.definitionId, n: sql<number>`count(*)::int` })
+        .from(resourceOwnDatabases)
+        .innerJoin(
+          resourceDefinitions,
+          eq(resourceDefinitions.id, resourceOwnDatabases.definitionId),
+        )
+        .where(
+          and(eq(resourceDefinitions.projectId, projectId), isNull(resourceOwnDatabases.removedAt)),
+        )
+        .groupBy(resourceOwnDatabases.definitionId)
+        .pipe(
+          Effect.orDie,
+          Effect.map((rows) => new Map(rows.map((row) => [row.definitionId, row.n]))),
+        );
     return {
-      declare,
-      removeIfCurrent,
+      ensureIdentity,
+      remember,
+      removeInstance,
       listForProject,
+      listIdentities,
       listWithChoices,
-      ownSelections,
+      bindingRows,
       byName,
       declaredNames,
       setSelection,
+      ownSelections,
       ownDatabases,
       recordOwnDatabase,
       ownDatabaseRemovals,

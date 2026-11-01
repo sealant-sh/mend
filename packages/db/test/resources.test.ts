@@ -1,8 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, WorktreeId } from "@mend/domain";
+import { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import {
   ImageDigest,
-  ResourceDefinitionInput,
+  ResourceDefinition,
   resourceSpecDigest,
   withPresetCommand,
 } from "@mend/domain/workbench";
@@ -10,12 +10,10 @@ import { Effect, Layer, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-/** How long migration 0166 keeps a removal's mark fresh without renewal. */
-const MIGRATION_0166_LEASE_SECONDS = 120;
-
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { ResourcesRepo, ResourcesRepoLive } from "../src/repos/resources.ts";
+import { WorktreesRepo, WorktreesRepoLive } from "../src/repos/worktrees.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
@@ -28,14 +26,15 @@ const scratchUrl = (() => {
 })();
 const adminLayer = PgClient.layer({ url: Redacted.make(ADMIN_URL) });
 const scratchLayer = PgClient.layer({ url: Redacted.make(scratchUrl) });
-const repoLayer = ResourcesRepoLive.pipe(
+const repoLayer = Layer.merge(ResourcesRepoLive, WorktreesRepoLive).pipe(
   Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))),
 );
 
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
-const run = <A, E>(effect: Effect.Effect<A, E, ResourcesRepo | SqlClient.SqlClient>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(repoLayer), Effect.scoped));
+const run = <A, E>(
+  effect: Effect.Effect<A, E, ResourcesRepo | WorktreesRepo | SqlClient.SqlClient>,
+) => Effect.runPromise(effect.pipe(Effect.provide(repoLayer), Effect.scoped));
 const using = <A, E>(use: (repo: ResourcesRepo["Service"]) => Effect.Effect<A, E>) =>
   Effect.gen(function* () {
     return yield* use(yield* ResourcesRepo);
@@ -47,7 +46,7 @@ const failureOf = <A, E>(use: (repo: ResourcesRepo["Service"]) => Effect.Effect<
     Result.isFailure(outcome) ? outcome.failure : "accepted",
   );
 
-const decode = Schema.decodeUnknownSync(ResourceDefinitionInput);
+const decode = Schema.decodeUnknownSync(ResourceDefinition);
 const postgresDb = (overrides: Record<string, unknown> = {}) =>
   withPresetCommand(
     decode({
@@ -128,86 +127,18 @@ const execute = (statement: string, params: ReadonlyArray<unknown> = []) =>
     }),
   );
 
-/**
- * Runs `statement` in a transaction on its own connection, which keeps its locks until `release`
- * is called and then rolls back. `held` resolves once the statement has run.
- */
-const begin = (statement: string, params: ReadonlyArray<unknown> = []) => {
-  const released = Promise.withResolvers<void>();
-  const acquired = Promise.withResolvers<void>();
-  const done = run(
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql.withTransaction(
-        Effect.gen(function* () {
-          yield* sql.unsafe(statement, [...params]);
-          yield* Effect.sync(() => acquired.resolve());
-          yield* Effect.promise(() => released.promise);
-          return yield* Effect.fail("rolled back");
-        }),
-      );
-    }).pipe(
-      Effect.catchIf(
-        (error) => error === "rolled back",
-        () => Effect.void,
-      ),
-    ),
-  );
-  return {
-    held: Promise.race([
-      acquired.promise,
-      done.then(() => {
-        throw new Error("the transaction ended before its statement ran");
-      }),
-    ]),
-    release: async () => {
-      released.resolve();
-      await done;
-    },
-  };
-};
-
-/** `begin`, once its statement holds its locks. */
-const hold = async (statement: string, params: ReadonlyArray<unknown> = []) => {
-  const transaction = begin(statement, params);
-  await transaction.held;
-  return transaction.release;
-};
-
-/** Resolves once `n` sessions on the scratch database wait on a lock, or once `unless` settles. */
-const untilWaiting = async (n: number, unless?: Promise<unknown>) => {
-  let settled = false;
-  void unless?.finally(() => {
-    settled = true;
-  });
-  for (let tries = 0; tries < 300; tries++) {
-    if (settled) return;
-    const waiting = await run(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        const [row] = yield* sql<{ readonly n: number }>`
-          SELECT count(*)::int AS n FROM pg_stat_activity
-          WHERE datname = current_database() AND wait_event_type = 'Lock'`;
-        return row?.n ?? 0;
-      }),
-    );
-    if (waiting >= n) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`${n} sessions never waited on a lock`);
-};
-
-const imageDigest = (hex: string) => ImageDigest.make(`sha256:${hex.repeat(64)}`);
-/** `repo.declare` of `spec`, its image resolved to `imageDigest(hex)`. */
+const imageDigest = (hex = "a") => ImageDigest.make(`sha256:${hex.repeat(64)}`);
 const add = (
   repo: ResourcesRepo["Service"],
   project: ProjectId,
-  spec: ResourceDefinitionInput,
-  addedBy: string,
-  hex = "a",
-) => repo.declare(project, { spec, imageDigest: imageDigest(hex) }, addedBy);
-const encodeSpec = Schema.encodeSync(ResourceDefinitionInput);
-
+  spec: ResourceDefinition,
+  by: string,
+  worktreeId: WorktreeId | null = null,
+) =>
+  Effect.gen(function* () {
+    const identity = yield* repo.ensureIdentity(project, spec.name);
+    return yield* repo.remember(project, identity.id, worktreeId, spec, imageDigest(), by);
+  });
 describe.skipIf(postgres.skip)("resources in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(
@@ -233,401 +164,145 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
     );
   });
 
-  describe("definitions", () => {
-    it("declares a definition once per name, lists by name, and a repeated spec writes nothing", async () => {
-      const project = await newProject();
-      const first = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      expect(first.specDigest).toBe(resourceSpecDigest(postgresDb()));
-      await withRepo((repo) => add(repo, project, redisCache(), "alice"));
-      const again = await withRepo((repo) => add(repo, project, postgresDb(), "bob"));
-      expect(again).toEqual(first);
-
-      const changed = await withRepo((repo) =>
-        add(repo, project, postgresDb({ image: "postgres:18" }), "bob"),
+  it("copies the project visibility default only when inserting a worktree", async () => {
+    const project = await newProject();
+    const create = () =>
+      run(
+        Effect.gen(function* () {
+          const id = WorktreeId.make(`wt-${crypto.randomUUID()}`);
+          return yield* (yield* WorktreesRepo).create({
+            id,
+            projectId: project,
+            name: id,
+            directory: id,
+            branch: `mend/${id}`,
+            baseSha: Sha.make("abc"),
+            baseRef: null,
+            handoff: null,
+          });
+        }),
       );
-      expect(changed).toMatchObject({ id: first.id, addedBy: "bob" });
-      expect(changed.spec.image).toBe("postgres:18");
+    const first = await create();
+    expect(first.usesProjectResources).toBe(true);
+    await execute("UPDATE projects SET new_worktrees_use_project_resources = false WHERE id = $1", [
+      project,
+    ]);
+    const second = await create();
+    expect(second.usesProjectResources).toBe(false);
+    expect(
+      (await run(Effect.flatMap(WorktreesRepo, (repo) => repo.byId(first.id))))
+        .usesProjectResources,
+    ).toBe(true);
+  });
 
-      const listed = await withRepo((repo) => repo.listForProject(project));
-      expect(listed.map((definition) => definition.spec.name)).toEqual(["cache", "db"]);
-      expect(await withRepo((repo) => repo.byName(project, "db"))).toEqual(changed);
-      expect(await withRepo((repo) => repo.byName(project, "queue"))).toBeNull();
-    });
+  it("keeps one identity while remembering independent project and worktree starts", async () => {
+    const project = await newProject();
+    const worktree = await newWorktree(project);
+    const first = await withRepo((repo) => add(repo, project, redisCache(), "alice"));
+    const own = await withRepo((repo) => add(repo, project, redisCache(), "bob", worktree));
+    expect(own.id).toBe(first.id);
+    expect(own.worktreeId).toBe(worktree);
+    expect(first.specDigest).toBe(resourceSpecDigest(redisCache()));
+    expect(first.image).toBe(`redis:8@${imageDigest()}`);
+    expect(await withRepo((repo) => repo.listIdentities(project))).toHaveLength(1);
+    expect(await withRepo((repo) => repo.listForProject(project))).toHaveLength(2);
+  });
 
-    it("refuses what the domain refuses, a reserved name among them, and stores nothing", async () => {
-      const project = await newProject();
-      expect(
-        await failureOf((repo) => add(repo, project, postgresDb({ name: "postgres" }), "alice")),
-      ).toMatchObject({
-        _tag: "ResourceDefinitionRefusedError",
-        name: "postgres",
-        refusals: [
-          { key: "name", message: "is reserved, because a workspace already resolves it" },
-        ],
-      });
-      expect(
-        await failureOf((repo) => add(repo, project, postgresDb({ ports: [] }), "alice")),
-      ).toMatchObject({ _tag: "ResourceDefinitionRefusedError", refusals: [{ key: "ports" }] });
-      expect(await withRepo((repo) => repo.listForProject(project))).toEqual([]);
-    });
-
-    it("refuses a definition that sets an env name another one sets, keyed by its export", async () => {
-      const project = await newProject();
-      const db = mailpit("project", "db");
-      await withRepo((repo) =>
-        add(repo, project, { ...db, exports: { MAIN_URL: "smtp://{host}" } }, "alice"),
-      );
-      expect(
-        await failureOf((repo) =>
-          add(
-            repo,
-            project,
-            { ...mailpit("project", "db-main"), exports: { URL: "smtp://{host}" } },
-            "alice",
-          ),
-        ),
-      ).toMatchObject({
-        _tag: "ResourceDefinitionRefusedError",
-        name: "db-main",
-        refusals: [
-          { key: "exports.URL", message: "sets MEND_RESOURCE_DB_MAIN_URL, as db does too" },
-        ],
-      });
-      expect(await withRepo((repo) => repo.byName(project, "db-main"))).toBeNull();
-    });
-
-    it("stores one of two colliding definitions declared at once and refuses the other", async () => {
-      const project = await newProject();
-      const release = await hold("SELECT 1 FROM projects WHERE id = $1 FOR NO KEY UPDATE", [
+  it("refuses invalid definitions, Mend env collisions and resource env collisions", async () => {
+    const project = await newProject();
+    expect(
+      await failureOf((repo) => add(repo, project, postgresDb({ name: "preview" }), "alice")),
+    ).toMatchObject({ _tag: "ResourceDefinitionRefusedError", refusals: [{ key: "name" }] });
+    await withRepo((repo) =>
+      add(
+        repo,
         project,
-      ]);
-      const declaring = [
-        failureOf((repo) =>
-          add(
-            repo,
-            project,
-            { ...mailpit("project", "db"), exports: { MAIN_URL: "smtp://{host}" } },
-            "alice",
-          ),
-        ),
-        failureOf((repo) =>
-          add(
-            repo,
-            project,
-            { ...mailpit("project", "db-main"), exports: { URL: "smtp://{host}" } },
-            "bob",
-          ),
-        ),
-      ];
-      // Both wait on the project, unless a declaration takes no lock there.
-      await untilWaiting(2, Promise.all(declaring));
-      await release();
-      const outcomes = await Promise.all(declaring);
-      expect(outcomes.filter((outcome) => outcome === "accepted")).toHaveLength(1);
-      expect(outcomes.find((outcome) => outcome !== "accepted")).toMatchObject({
-        _tag: "ResourceDefinitionRefusedError",
-        refusals: [{ key: expect.stringMatching(/^exports\.(MAIN_)?URL$/) }],
-      });
-      expect(await withRepo((repo) => repo.listForProject(project))).toHaveLength(1);
-    });
+        { ...mailpit("project", "db"), exports: { MAIN_URL: "tcp://{host}" } },
+        "alice",
+      ),
+    );
+    expect(
+      await failureOf((repo) => add(repo, project, mailpit("project", "db-main"), "alice")),
+    ).toMatchObject({ _tag: "ResourceDefinitionRefusedError" });
+    expect(await withRepo((repo) => repo.listForProject(project))).toHaveLength(1);
   });
 
-  describe("a project removal's mark", () => {
-    const mark = (project: string, phase: "checking" | "deleting", secondsAgo = 0) =>
-      execute(
-        `UPDATE projects SET removal_phase = $2, removal_id = 'rmv_test',
-           removal_since = now() - make_interval(secs => $3),
-           removed_at = CASE WHEN $2 = 'deleting' THEN now() END WHERE id = $1`,
-        [project, phase, secondsAgo],
-      );
-
-    it("refuses a declaration while it stands, and lets one through once it is lifted", async () => {
-      const project = await newProject();
-      await mark(project, "checking");
-      expect(await failureOf((repo) => add(repo, project, postgresDb(), "alice"))).toMatchObject({
-        _tag: "ResourceDefinitionRefusedError",
-        refusals: [
-          { key: "project", message: "is being removed · declare it again if the removal stops" },
-        ],
-      });
-      expect(await withRepo((repo) => repo.listForProject(project))).toEqual([]);
-      await execute(
-        "UPDATE projects SET removal_phase = NULL, removal_id = NULL, removal_since = NULL WHERE id = $1",
-        [project],
-      );
-      expect(await failureOf((repo) => add(repo, project, postgresDb(), "alice"))).toBe("accepted");
-    });
-
-    it("refuses nothing once a removal that stopped while checking lets it lapse", async () => {
-      const project = await newProject();
-      await mark(project, "checking", MIGRATION_0166_LEASE_SECONDS + 5);
-      expect(await failureOf((repo) => add(repo, project, postgresDb(), "alice"))).toBe("accepted");
-    });
-
-    it("keeps refusing while a purge that stopped still has to delete", async () => {
-      const project = await newProject();
-      await mark(project, "deleting", MIGRATION_0166_LEASE_SECONDS + 5);
-      expect(await failureOf((repo) => add(repo, project, postgresDb(), "alice"))).toMatchObject({
-        _tag: "ResourceDefinitionRefusedError",
-        refusals: [{ key: "project" }],
-      });
-    });
-
-    it("makes a removal that marks during a declaration see what it stored", async () => {
-      const project = await newProject();
-      const spec = postgresDb();
-      // An uncommitted row of the same name holds the declaration at its insert, after it read
-      // the project's definitions and found none.
-      const release = await hold(
-        `INSERT INTO resource_definitions
-           (id, project_id, name, scope, preset, spec, spec_digest, image_digest, added_by)
-         VALUES ('rdef_held', $1, 'db', 'project', 'postgres', $2::jsonb, $3, $4, 'held')`,
-        [project, JSON.stringify(encodeSpec(spec)), resourceSpecDigest(spec), imageDigest("a")],
-      );
-      const declaring = failureOf((repo) => add(repo, project, spec, "alice"));
-      await untilWaiting(1);
-      const marking = execute(
-        `UPDATE projects SET removal_phase = 'checking', removal_id = 'rmv_test',
-           removal_since = now() WHERE id = $1`,
-        [project],
-      );
-      await untilWaiting(2);
-      await release();
-      expect(await declaring).toBe("accepted");
-      await marking;
-      expect(await withRepo((repo) => repo.declaredNames(project))).toEqual(["db"]);
-    });
-
-    it("names a definition whose stored spec no longer decodes", async () => {
-      const project = await newProject();
-      await execute(
-        `INSERT INTO resource_definitions
-           (id, project_id, name, scope, preset, spec, spec_digest, image_digest, added_by)
-         VALUES ($1, $2, 'db', 'project', NULL, $3::jsonb, $4, $5, 'alice')`,
-        [
-          `rdef_${crypto.randomUUID()}`,
-          project,
-          JSON.stringify({ name: "db", scope: "project", preset: null }),
-          "0".repeat(64),
-          imageDigest("a"),
-        ],
-      );
-      expect(await withRepo((repo) => repo.declaredNames(project))).toEqual(["db"]);
-    });
-  });
-
-  describe("pinning the image when a definition is added", () => {
-    it("keeps the digest the image resolved to, and runs the image pinned to it", async () => {
-      const project = await newProject();
-      const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      expect(db).toMatchObject({
-        spec: { image: "postgres:17" },
-        imageDigest: imageDigest("a"),
-        image: `postgres:17@${imageDigest("a")}`,
-      });
-      expect(await withRepo((repo) => repo.byName(project, "db"))).toEqual(db);
-    });
-
-    it("repins the same spec when its tag resolved elsewhere, as whoever added it again", async () => {
-      const project = await newProject();
-      const first = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      const moved = await withRepo((repo) => add(repo, project, postgresDb(), "bob", "b"));
-      expect(moved).toMatchObject({
-        id: first.id,
-        specDigest: first.specDigest,
-        image: `postgres:17@${imageDigest("b")}`,
-        addedBy: "bob",
-      });
-    });
-
-    it("keeps an image already pinned, and refuses a pin that names another digest", async () => {
-      const project = await newProject();
-      const pinned = `redis:8@${imageDigest("c")}`;
-      const cache = await withRepo((repo) =>
-        add(repo, project, { ...redisCache(), image: pinned }, "alice", "c"),
-      );
-      expect(cache.image).toBe(pinned);
-      expect(
-        await failureOf((repo) =>
-          add(repo, project, { ...redisCache(), image: pinned }, "bob", "d"),
-        ),
-      ).toMatchObject({
-        _tag: "ResourceDefinitionRefusedError",
-        refusals: [{ key: "image", message: `names another digest than ${imageDigest("d")}` }],
-      });
-      expect(await withRepo((repo) => repo.byName(project, "cache"))).toEqual(cache);
-    });
-
-    it("lists each definition with the read worktree's stored choice, and none without one", async () => {
-      const project = await newProject();
-      const worktree = await newWorktree(project);
-      const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      const cache = await withRepo((repo) => add(repo, project, redisCache(), "alice"));
-      await withRepo((repo) => repo.setSelection(project, worktree, db.id, "own", "alice"));
-      expect(await withRepo((repo) => repo.listWithChoices(project, worktree))).toEqual([
-        { definition: cache, choice: null },
-        { definition: db, choice: "own" },
-      ]);
-      expect(await withRepo((repo) => repo.listWithChoices(project, null))).toEqual([
-        { definition: cache, choice: null },
-        { definition: db, choice: null },
-      ]);
-    });
-  });
-
-  describe("selections", () => {
-    it("refuses a selection the policy does not offer, or for another project's worktree, and writes nothing", async () => {
-      const project = await newProject();
-      const worktree = await newWorktree(project);
-      const other = await newProject();
-      const elsewhere = await newWorktree(other);
-      const cache = await withRepo((repo) => add(repo, project, redisCache(), "alice"));
-      const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      const box = await withRepo((repo) => add(repo, project, mailpit("worktree"), "alice"));
-
-      expect(
-        await failureOf((repo) => repo.setSelection(project, worktree, cache.id, "own", "alice")),
-      ).toMatchObject({
-        _tag: "ResourceSelectionRefusedError",
-        definitionId: cache.id,
-        refusal: { key: "mode", message: "is own, and @cache offers shared, off" },
-      });
-      expect(
-        await failureOf((repo) => repo.setSelection(project, worktree, box.id, "off", "alice")),
-      ).toMatchObject({ refusal: { key: "selection" } });
-      expect(
-        await failureOf((repo) => repo.setSelection(project, elsewhere, db.id, "off", "alice")),
-      ).toMatchObject({ refusal: { key: "worktree" } });
-      // From the other project, this project's definition is not found, and its name is not said.
-      expect(
-        await failureOf((repo) => repo.setSelection(other, elsewhere, db.id, "off", "alice")),
-      ).toEqual(expect.objectContaining({ _tag: "ResourceDefinitionNotFoundError", id: db.id }));
-      for (const definition of [cache, db, box])
-        expect(await count("resource_selections", definition.id)).toBe(0);
-    });
-
-    it("stores the mode alone, and a repeated choice keeps who chose it", async () => {
-      const project = await newProject();
-      const worktree = await newWorktree(project);
-      const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      const set = (mode: "off" | "shared" | "own", by: string) =>
-        withRepo((repo) => repo.setSelection(project, worktree, db.id, mode, by));
-
-      expect(await set("shared", "alice")).toMatchObject({ mode: "shared", chosenBy: "alice" });
-      expect(await set("shared", "bob")).toMatchObject({ mode: "shared", chosenBy: "alice" });
-      expect(await set("own", "bob")).toMatchObject({ mode: "own", chosenBy: "bob" });
-      expect(await set("off", "alice")).toMatchObject({ mode: "off", chosenBy: "alice" });
-      expect(await withRepo((repo) => repo.listWithChoices(project, worktree))).toEqual([
-        { definition: db, choice: "off" },
-      ]);
-    });
-  });
-
-  describe("own databases", () => {
-    it("records how each began, as it was last made, and only for its worktree", async () => {
-      const project = await newProject();
-      const [one, two] = [await newWorktree(project), await newWorktree(project)];
-      const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      await withRepo((repo) => repo.recordOwnDatabase(one, db.id, "copied"));
-      expect([...(await withRepo((repo) => repo.ownDatabases(one)))]).toEqual([
-        [db.id, { kind: "copied", at: expect.any(Date) }],
-      ]);
-      // A reset makes it again.
-      await withRepo((repo) => repo.recordOwnDatabase(one, db.id, "empty"));
-      const mine = await withRepo((repo) => repo.ownDatabases(one));
-      expect([...mine]).toEqual([[db.id, { kind: "empty", at: expect.any(Date) }]]);
-      expect((await withRepo((repo) => repo.ownDatabases(two))).size).toBe(0);
-    });
-
-    it("goes with its definition", async () => {
-      const project = await newProject();
-      const worktree = await newWorktree(project);
-      const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      await withRepo((repo) => repo.recordOwnDatabase(worktree, db.id, "empty"));
-      await withRepo((repo) => repo.removeIfCurrent(project, { id: db.id, digest: db.specDigest }));
-      expect((await withRepo((repo) => repo.ownDatabases(worktree))).size).toBe(0);
-    });
-  });
-
-  describe("a declaration that changes the policy", () => {
-    it("is refused while a worktree holds the resource as own, and changes nothing", async () => {
-      const project = await newProject();
-      const worktree = await newWorktree(project);
-      const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      await withRepo((repo) => repo.setSelection(project, worktree, db.id, "own", "alice"));
-      const asRedis = postgresDb({
-        preset: "redis",
-        image: "redis:8",
-        ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
-        volumes: [{ name: "data", mountPath: "/data" }],
-      });
-      expect(await failureOf((repo) => add(repo, project, asRedis, "alice"))).toMatchObject({
-        _tag: "ResourceDefinitionRefusedError",
-        refusals: [
-          {
-            key: "preset",
-            message:
-              "changes what own is, and 1 worktree holds @db as own, with data of its own · switch it to shared or off first",
-          },
-        ],
-      });
-      expect(await withRepo((repo) => repo.byName(project, "db"))).toEqual(db);
-      expect(await withRepo((repo) => repo.listWithChoices(project, worktree))).toEqual([
-        { definition: db, choice: "own" },
-      ]);
-    });
-
-    it("drops every other worktree's choice, so each takes the new policy's default", async () => {
-      const project = await newProject();
-      const [one, two] = [await newWorktree(project), await newWorktree(project)];
-      const mail = await withRepo((repo) => add(repo, project, mailpit("project", "db"), "alice"));
-      await withRepo((repo) => repo.setSelection(project, one, mail.id, "off", "alice"));
-      await withRepo((repo) => repo.setSelection(project, two, mail.id, "shared", "alice"));
-      await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      expect(await count("resource_selections", mail.id)).toBe(0);
-    });
-
-    it("waits for a selection being written, and does not leave it behind", async () => {
-      const project = await newProject();
-      const worktree = await newWorktree(project);
-      const mail = await withRepo((repo) => add(repo, project, mailpit("project"), "alice"));
-      // The worktree's row lock holds the selection at its insert, after it checked the policy.
-      const release = await hold("SELECT 1 FROM worktrees WHERE id = $1 FOR UPDATE", [worktree]);
-      const selecting = failureOf((repo) =>
-        repo.setSelection(project, worktree, mail.id, "shared", "alice"),
-      );
-      await untilWaiting(1);
-      const declaring = failureOf((repo) => add(repo, project, mailpit("worktree"), "alice"));
-      await untilWaiting(2, declaring);
-      await release();
-      expect(await selecting).toBe("accepted");
-      expect(await declaring).toBe("accepted");
-      expect(await count("resource_selections", mail.id)).toBe(0);
-    });
-  });
-
-  it("keeps its project until each definition is removed, and its selections go with it", async () => {
+  it("uses visibility defaults and preserves selections when an instance is replaced or removed", async () => {
     const project = await newProject();
     const worktree = await newWorktree(project);
     const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-    await withRepo((repo) => repo.setSelection(project, worktree, db.id, "own", "alice"));
-    const deleteProject = () =>
-      run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient;
-          return yield* sql`DELETE FROM projects WHERE id = ${project}`.pipe(
-            Effect.as("deleted"),
-            Effect.catch(() => Effect.succeed("refused")),
-          );
-        }),
-      );
-    expect(await deleteProject()).toBe("refused");
-    await withRepo((repo) => repo.removeIfCurrent(project, { id: db.id, digest: db.specDigest }));
-    expect(await count("resource_selections", db.id)).toBe(0);
-    expect(await deleteProject()).toBe("deleted");
+    expect((await withRepo((repo) => repo.listWithChoices(project, worktree)))[0]?.choice).toBe(
+      "project",
+    );
+    await execute("UPDATE worktrees SET uses_project_resources = false WHERE id = $1", [worktree]);
+    expect((await withRepo((repo) => repo.listWithChoices(project, worktree)))[0]?.choice).toBe(
+      "off",
+    );
+    await withRepo((repo) => repo.setSelection(project, worktree, db.id, "worktree", "alice"));
+    await withRepo((repo) => add(repo, project, postgresDb({ image: "postgres:18" }), "bob"));
+    expect((await withRepo((repo) => repo.listWithChoices(project, worktree)))[0]?.choice).toBe(
+      "worktree",
+    );
+    await withRepo((repo) => repo.removeInstance(db.id, null));
+    expect(await count("resource_selections", db.id)).toBe(1);
+    expect(await withRepo((repo) => repo.listForProject(project))).toEqual([]);
   });
 
-  it("keeps resource definitions until a complete archive is recorded, then deletion cascades", async () => {
+  it("refuses selections across project boundaries and allows all three level choices", async () => {
+    const project = await newProject();
+    const other = await newProject();
+    const worktree = await newWorktree(project);
+    const elsewhere = await newWorktree(other);
+    const cache = await withRepo((repo) => add(repo, project, redisCache(), "alice"));
+    for (const mode of ["project", "worktree", "off"] as const)
+      expect(
+        await withRepo((repo) => repo.setSelection(project, worktree, cache.id, mode, "alice")),
+      ).toMatchObject({ mode });
+    expect(
+      await failureOf((repo) => repo.setSelection(project, elsewhere, cache.id, "off", "alice")),
+    ).toMatchObject({ _tag: "ResourceSelectionRefusedError" });
+    expect(
+      await failureOf((repo) => repo.setSelection(other, elsewhere, cache.id, "off", "alice")),
+    ).toMatchObject({ _tag: "ResourceDefinitionNotFoundError" });
+  });
+
+  it("keeps own database inventory and its origin when the server instance is removed", async () => {
+    const project = await newProject();
+    const worktree = await newWorktree(project);
+    const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
+    await withRepo((repo) => repo.recordOwnDatabase(worktree, db.id, "copied"));
+    await withRepo((repo) => repo.removeInstance(db.id, null));
+    expect([...(await withRepo((repo) => repo.ownDatabases(worktree)))]).toEqual([
+      [db.id, { kind: "copied", at: expect.any(Date) }],
+    ]);
+  });
+
+  it("holds the project removal fence until checking expires, and always while deleting", async () => {
+    const project = await newProject();
+    await execute(
+      "UPDATE projects SET removal_phase = 'checking', removal_id = 'rmv_test', removal_since = now() WHERE id = $1",
+      [project],
+    );
+    expect(await failureOf((repo) => add(repo, project, postgresDb(), "alice"))).toMatchObject({
+      _tag: "ResourceDefinitionRefusedError",
+    });
+    await execute(
+      "UPDATE projects SET removal_since = now() - interval '121 seconds' WHERE id = $1",
+      [project],
+    );
+    expect(await withRepo((repo) => add(repo, project, postgresDb(), "alice"))).toMatchObject({
+      startedBy: "alice",
+    });
+    await execute(
+      "UPDATE projects SET removal_phase = 'deleting', removed_at = now() WHERE id = $1",
+      [project],
+    );
+    expect(await failureOf((repo) => add(repo, project, redisCache(), "alice"))).toMatchObject({
+      _tag: "ResourceDefinitionRefusedError",
+    });
+  });
+
+  it("retains project resources until a complete archive, then cascades identities and instances", async () => {
     const project = await newProject();
     const worktree = await newWorktree(project);
     const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
@@ -635,54 +310,21 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
     await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO resource_archives (project_id, organization_id, project_name, created_by_user_id, archived_at, volumes)
-        SELECT id, organization_id, name, created_by_user_id, now(), '[]'::jsonb FROM projects WHERE id = ${project}`;
-        const refused = yield* sql`DELETE FROM projects WHERE id = ${project}`.pipe(
-          Effect.as(false),
-          Effect.catch(() => Effect.succeed(true)),
-        );
-        expect(refused).toBe(true);
-        yield* sql`UPDATE resource_archives SET complete = true WHERE project_id = ${project}`;
+        expect(
+          yield* sql`DELETE FROM projects WHERE id = ${project}`.pipe(
+            Effect.as(false),
+            Effect.catch(() => Effect.succeed(true)),
+          ),
+        ).toBe(true);
+        yield* sql`INSERT INTO resource_archives(project_id, organization_id, project_name, created_by_user_id, archived_at, volumes, complete) SELECT id, organization_id, name, created_by_user_id, now(), '[]'::jsonb, true FROM projects WHERE id = ${project}`;
         yield* sql`DELETE FROM projects WHERE id = ${project}`;
         expect(
-          yield* sql`SELECT project_id FROM resource_archives WHERE project_id = ${project}`,
-        ).toEqual([{ project_id: project }]);
+          yield* sql`SELECT resource_id FROM resource_instances WHERE resource_id = ${db.id}`,
+        ).toEqual([]);
         expect(
           yield* sql`SELECT definition_id FROM resource_own_databases WHERE definition_id = ${db.id}`,
         ).toEqual([]);
       }),
     );
-  });
-
-  describe("removing a definition as its remover read it", () => {
-    it("removes it while it holds the spec read, and refuses once it changed", async () => {
-      const project = await newProject();
-      const read = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      const changed = await withRepo((repo) =>
-        add(repo, project, postgresDb({ image: "postgres:18" }), "alice"),
-      );
-      expect(
-        await failureOf((repo) =>
-          repo.removeIfCurrent(project, { id: read.id, digest: read.specDigest }),
-        ),
-      ).toMatchObject({ _tag: "ResourceDefinitionStaleError", current: changed.specDigest });
-      expect(await withRepo((repo) => repo.byName(project, "db"))).not.toBeNull();
-
-      await withRepo((repo) =>
-        repo.removeIfCurrent(project, { id: changed.id, digest: changed.specDigest }),
-      );
-      expect(await withRepo((repo) => repo.byName(project, "db"))).toBeNull();
-    });
-
-    it("does not reach another project's definition", async () => {
-      const project = await newProject();
-      const other = await newProject();
-      const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
-      expect(
-        await failureOf((repo) =>
-          repo.removeIfCurrent(other, { id: db.id, digest: db.specDigest }),
-        ),
-      ).toMatchObject({ _tag: "ResourceDefinitionNotFoundError" });
-    });
   });
 });

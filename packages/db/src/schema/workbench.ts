@@ -82,8 +82,6 @@ import type {
   RecipeReady,
   RemoteSsh,
   RepoRelativePath,
-  ResourcePreset,
-  ResourceScope,
   ResourceSpecDigest,
   ServiceAddress,
   ServiceHostPolicy,
@@ -93,7 +91,7 @@ import {
   AuditData,
   HotWorkspaceEnvironment,
   RecordLink,
-  ResourceDefinitionInput,
+  ResourceDefinition,
   ReviewCommentAnchor,
   ScreenActor,
   ScreenInput,
@@ -512,6 +510,7 @@ export const projects = pgTable(
     // Whether sessions here receive the launching user's dotfiles.
     applyDotfiles: boolean().notNull().default(true),
     // Whether a zsh launch writes Mend's default shell profile where dotfiles left no file (0071).
+    newWorktreesUseProjectResources: boolean().notNull().default(true),
     defaultShellProfile: boolean().notNull().default(true),
     // Whether sessions inherit the launching user's skills. Project skills are always included.
     inheritUserSkills: boolean().notNull().default(true),
@@ -567,6 +566,7 @@ export const worktrees = pgTable(
       .$type<ProjectId>()
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    usesProjectResources: boolean().notNull().default(true),
     name: text().notNull(),
     directory: text().notNull(),
     branch: text().notNull(),
@@ -701,16 +701,33 @@ export const resourceDefinitions = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text().notNull(),
-    scope: text().$type<ResourceScope>().notNull(),
-    preset: text().$type<ResourcePreset>(),
-    spec: jsonbOf(ResourceDefinitionInput).notNull(),
-    specDigest: text().$type<ResourceSpecDigest>().notNull(),
-    imageDigest: text().$type<ImageDigest>().notNull(),
-    addedBy: text().notNull(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [unique("resource_definitions_project_name_key").on(table.projectId, table.name)],
+);
+
+/** What was last explicitly started at each level; rows survive a worktree's removal. */
+export const resourceInstances = pgTable(
+  "resource_instances",
+  {
+    resourceId: text()
+      .$type<ResourceDefinitionId>()
+      .notNull()
+      .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
+    worktreeId: text().$type<WorktreeId>(),
+    spec: jsonbOf(ResourceDefinition).notNull(),
+    specDigest: text().$type<ResourceSpecDigest>().notNull(),
+    imageDigest: text().$type<ImageDigest>().notNull(),
+    startedBy: text().notNull(),
+    startedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("resource_instances_level_key").on(
+      table.resourceId,
+      sql`coalesce(${table.worktreeId}, '')`,
+    ),
+  ],
 );
 
 /**

@@ -4,12 +4,11 @@ import {
   ResourceRejected,
   ResourceStale,
 } from "@mend/api-contracts";
-import { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
+import { ProjectId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
-  ResourceAddInput,
   ResourceName,
-  ResourceSpecDigest,
+  ResourceLevel,
   WorktreeChoice,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
@@ -80,44 +79,14 @@ export const resourcesRouter = router({
         }),
       ),
     ),
-  add: procedure
-    .input(
-      input(
-        Schema.Struct({
-          ...reader,
-          addition: ResourceAddInput,
-          // The worktree the card reads for: a worktree resource starts there at once.
-          worktreeId: Schema.NullOr(WorktreeId),
-        }),
-      ),
-    )
-    .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) => {
-        const at = {
-          params: { id: i.projectId },
-          query: {
-            timeZone: i.timeZone,
-            ...(i.worktreeId === null ? {} : { worktreeId: i.worktreeId }),
-          },
-        };
-        // The derived client takes its union payload as one request type per member, so each
-        // member is narrowed before it is sent.
-        const { addition } = i;
-        switch (addition.kind) {
-          case "preset":
-            return outcome(api.resources.add({ ...at, payload: addition }));
-          case "definition":
-            return outcome(api.resources.add({ ...at, payload: addition }));
-        }
-      }),
-    ),
   remove: procedure
     .input(
       input(
         Schema.Struct({
           projectId: ProjectId,
-          definitionId: ResourceDefinitionId,
-          expectedDigest: ResourceSpecDigest,
+          name: ResourceName,
+          level: ResourceLevel,
+          worktreeId: WorktreeId,
         }),
       ),
     )
@@ -125,8 +94,8 @@ export const resourcesRouter = router({
       run(ctx, (api) =>
         outcome(
           api.resources.remove({
-            params: { id: i.projectId, definitionId: i.definitionId },
-            payload: { expectedDigest: i.expectedDigest },
+            params: { id: i.projectId, name: i.name },
+            payload: { level: i.level, worktreeId: i.worktreeId },
           }),
         ),
       ),
@@ -137,7 +106,7 @@ export const resourcesRouter = router({
         Schema.Struct({
           ...reader,
           worktreeId: WorktreeId,
-          definitionId: ResourceDefinitionId,
+          name: ResourceName,
           mode: WorktreeChoice,
         }),
       ),
@@ -146,7 +115,7 @@ export const resourcesRouter = router({
       run(ctx, (api) =>
         outcome(
           api.resources.use({
-            params: { id: i.projectId, worktreeId: i.worktreeId, definitionId: i.definitionId },
+            params: { id: i.projectId, worktreeId: i.worktreeId, name: i.name },
             query: { timeZone: i.timeZone },
             payload: { mode: i.mode },
           }),
@@ -160,7 +129,9 @@ export const resourcesRouter = router({
         Schema.Struct({
           ...reader,
           name: ResourceName,
-          worktreeId: Schema.NullOr(WorktreeId),
+          worktreeId: WorktreeId,
+          level: ResourceLevel,
+          restart: Schema.Boolean,
           verb: Schema.Literals(["start", "stop"]),
         }),
       ),
@@ -169,13 +140,14 @@ export const resourcesRouter = router({
       run(ctx, (api) => {
         const request = {
           params: { id: i.projectId, name: i.name },
-          query: {
-            timeZone: i.timeZone,
-            ...(i.worktreeId === null ? {} : { worktreeId: i.worktreeId }),
-          },
+          query: { timeZone: i.timeZone },
+          payload: { worktreeId: i.worktreeId, level: i.level, restart: i.restart },
         };
         return outcome(
-          i.verb === "start" ? api.resources.start(request) : api.resources.stop(request),
+          Effect.gen(function* () {
+            if (i.verb === "start") return yield* api.resources.start(request);
+            return yield* api.resources.stop(request);
+          }),
         );
       }),
     ),

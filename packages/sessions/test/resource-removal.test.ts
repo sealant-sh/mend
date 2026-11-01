@@ -156,17 +156,18 @@ const seed = () =>
       const repo = yield* ResourcesRepo;
       const definitions = [];
       for (const name of ["db", "other"]) {
-        const definition = yield* repo.declare(
+        const spec = presetDefinition({
+          name: ResourceName.make(name),
+          preset: "postgres",
+          version: PresetVersion.make("17"),
+        });
+        const identity = yield* repo.ensureIdentity(PROJECT, name);
+        const definition = yield* repo.remember(
           PROJECT,
-          {
-            spec: presetDefinition({
-              name: ResourceName.make(name),
-              preset: "postgres",
-              version: PresetVersion.make("17"),
-              scope: "project",
-            }),
-            imageDigest: ImageDigest.make(`sha256:${"a".repeat(64)}`),
-          },
+          identity.id,
+          null,
+          spec,
+          ImageDigest.make(`sha256:${"a".repeat(64)}`),
           "alice",
         );
         yield* repo.recordOwnDatabase(WORKTREE, definition.id, "empty");
@@ -281,7 +282,7 @@ describe.skipIf(postgres.skip)("resource preservation before removal", () => {
       scope.up(
         ownKey,
         resourceInstanceSpec({
-          definition: { ...definition.spec, scope: "worktree" },
+          definition: definition.spec,
           image: definition.image,
           worktreeId: WORKTREE,
         }),
@@ -292,7 +293,7 @@ describe.skipIf(postgres.skip)("resource preservation before removal", () => {
       scope.up(
         otherKey,
         resourceInstanceSpec({
-          definition: { ...definition.spec, scope: "worktree" },
+          definition: definition.spec,
           image: definition.image,
           worktreeId: WorktreeId.make("other"),
         }),
@@ -327,6 +328,46 @@ describe.skipIf(postgres.skip)("resource preservation before removal", () => {
     expect(archived?.archive.volumes).toContainEqual(
       expect.objectContaining({ instanceKey: ownKey, bytes: 4096 }),
     );
+  });
+
+  it("archives a worktree-only resource and removes its remembered row", async () => {
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`TRUNCATE resource_archives, resource_kept_volumes, resource_definitions CASCADE`;
+        const repo = yield* ResourcesRepo;
+        const spec = presetDefinition({
+          name: ResourceName.make("cache"),
+          preset: "redis",
+          version: PresetVersion.make("8"),
+        });
+        const identity = yield* repo.ensureIdentity(PROJECT, "cache");
+        const row = yield* repo.remember(
+          PROJECT,
+          identity.id,
+          WORKTREE,
+          spec,
+          ImageDigest.make(`sha256:${"a".repeat(64)}`),
+          "alice",
+        );
+        yield* scope.up(
+          `${identity.id}@${WORKTREE}`,
+          resourceInstanceSpec({ definition: spec, image: row.image, worktreeId: WORKTREE }),
+          "person",
+        );
+      }),
+    );
+    const result = await remove();
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(archivedKeys).toHaveLength(1);
+    const rows = await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.listForProject(PROJECT)),
+    );
+    expect(rows).toEqual([]);
+    const kept = await runtime.runPromise(
+      Effect.flatMap(ResourceArchivesRepo, (repo) => repo.keptVolumes(PROJECT)),
+    );
+    expect(kept).toHaveLength(1);
   });
 
   it("records the project inventory before archiving, retains measured sizes and never archives twice", async () => {

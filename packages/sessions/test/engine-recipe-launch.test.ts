@@ -195,7 +195,7 @@ describe("a recipe's launch", () => {
           );
           const web = yield* engine.runServiceRecipe(session.id, "web", ownerStart);
           expect(opened.at(-1)?.env).toMatchObject({
-            DATABASE_URL: "postgres://postgres@db:5432/app",
+            MEND_DB_URL: "postgres://postgres@db:5432/app",
             TEST_DATABASE_URL: "postgres://postgres@db:5432/app",
             PORT: "3000",
           });
@@ -369,7 +369,7 @@ describe("a recipe's launch", () => {
           const missing = (yield* helperPrints("absent")).split("\n");
           expect(missing.slice(0, 2)).toEqual([
             'mend: No Service recipe named "absent" exists in this session.',
-            "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):",
+            "Resources in .mend/mend.toml (start explicitly with mend resource start <name> --project or --worktree):",
           ]);
           expect(missing.filter((line) => line.includes("resource.bad.ports.http"))).toEqual([
             expect.stringMatching(/^ {2}resource\.bad\.ports\.http · /),
@@ -378,7 +378,7 @@ describe("a recipe's launch", () => {
           const refused = (yield* helperPrints("api")).split("\n");
           expect(refused.slice(0, 2)).toEqual([
             "mend: mend.toml refuses api: api · cwd · is absolute; name a path inside the repository",
-            "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):",
+            "Resources in .mend/mend.toml (start explicitly with mend resource start <name> --project or --worktree):",
           ]);
         }),
       { sealantLayer: sealantLaunchLayer(created) },

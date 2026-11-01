@@ -1,4 +1,4 @@
-import { ResourceArchivesRepo, ResourcesRepo, type StoredResourceDefinition } from "@mend/db";
+import { ResourceArchivesRepo, ResourcesRepo, type StoredResourceInstance } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import {
   type ArchivedResourceVolume,
@@ -65,7 +65,9 @@ const make: Effect.Effect<
     project: Project,
     worktreeId: WorktreeId,
   ) {
-    const definitions = yield* repo.listForProject(project.id);
+    const definitions = (yield* repo.listForProject(project.id)).filter(
+      (row) => row.worktreeId === null || row.worktreeId === worktreeId,
+    );
     const held = yield* repo.ownDatabaseRemovals(worktreeId);
     if (definitions.length === 0 && held.length === 0) return [];
     const client = yield* scopes
@@ -82,7 +84,7 @@ const make: Effect.Effect<
     const lines: Array<string> = [];
 
     const databaseCommand = (
-      definition: StoredResourceDefinition,
+      definition: StoredResourceInstance,
       run: (
         scope: ResourceScope,
         key: string,
@@ -136,7 +138,9 @@ const make: Effect.Effect<
     const planned = yield* repo.ownDatabaseRemovals(worktreeId);
     for (const row of planned) {
       if (row.removedAt !== null) continue;
-      const definition = definitions.find((def) => def.id === row.definitionId);
+      const definition = definitions.find(
+        (def) => def.id === row.definitionId && def.worktreeId === null,
+      );
       if (definition === undefined || row.dumpName === null || row.dumpAt === null) {
         return yield* new ResourceRemovalRefused({
           message: `database ${ownDatabaseName(worktreeId)} · not removed · its definition or reserved dump is missing`,
@@ -201,7 +205,9 @@ const make: Effect.Effect<
     }
     // No drop is reachable until every database has a checked dump recorded.
     for (const row of planned) {
-      const definition = definitions.find((def) => def.id === row.definitionId);
+      const definition = definitions.find(
+        (def) => def.id === row.definitionId && def.worktreeId === null,
+      );
       if (definition === undefined || row.dumpName === null || row.dumpAt === null) continue;
       if (row.removedAt === null) {
         const dumpName = row.dumpName;
@@ -268,8 +274,10 @@ const make: Effect.Effect<
       const definition = definitions.find(
         (def) => resourceInstanceKey(def.id, worktreeId) === instance.key,
       );
-      if (definition !== undefined)
+      if (definition !== undefined) {
+        yield* repo.removeInstance(definition.id, worktreeId);
         lines.push(resourceStatusLine({ kind: "archived", definition: definition.spec }, clock));
+      }
     }
     return lines;
   });
@@ -313,7 +321,9 @@ const make: Effect.Effect<
         }),
       );
       yield* archives.finish(project.id, mergeArchivedVolumes(stored.archive.volumes, measured));
-      const definitions = yield* repo.listForProject(project.id);
+      const definitions = (yield* repo.listForProject(project.id)).filter(
+        (row) => row.worktreeId === null,
+      );
       return definitions.map((definition) =>
         resourceStatusLine(
           { kind: "archived", definition: definition.spec },

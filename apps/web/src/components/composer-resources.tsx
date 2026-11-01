@@ -62,7 +62,12 @@ export function ComposerResources(props: {
     setBusy(true);
     setRefusal(null);
     const settle = async () => {
-      const outcome = await chooseResource(props.projectId, props.worktreeId, entry.id, mode);
+      const outcome = await chooseResource(
+        props.projectId,
+        props.worktreeId,
+        entry.spec.name,
+        mode,
+      );
       if (outcome.ok) await settleChoice(queryClient, listOptions.queryKey, outcome.result);
       else setRefusal(outcome.message);
     };

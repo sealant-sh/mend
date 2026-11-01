@@ -1,12 +1,13 @@
 import {
+  ResourceArchivesRepo,
   ProjectEnvironmentRepo,
   ProjectSecretsRepo,
   ResourcesRepo,
-  type StoredResourceDefinition,
+  SessionsRepo,
+  type StoredResourceInstance,
 } from "@mend/db";
 import type { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
-  boundDatabase,
   ownDatabaseName,
   type ResourceBinding,
   type ServiceDependency,
@@ -21,7 +22,7 @@ import {
   RESOURCE_IDLE_STOP_SECONDS,
   resourceProcessEnv,
   resourceScopeKey,
-  resourceSpecDigest,
+  reachAliases,
   type ResourceStatusView,
   SHARED_DATABASE,
 } from "@mend/domain/workbench";
@@ -32,11 +33,10 @@ import {
   type SealantPlatformError,
   unsupportedRuntimeOf,
 } from "@mend/sealant";
-import { Cause, Config, Duration, Effect, Fiber, Layer, Option, Schema, Semaphore } from "effect";
+import { Config, Duration, Effect, Fiber, Layer, Option, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { WorktreeReads } from "../worktree-reads.ts";
-import { ResourceImageResolver } from "./image-resolver.ts";
 import {
   DUMPS_READY_ARGV,
   dumpPath,
@@ -50,7 +50,7 @@ import { readWorktreeTables, tablesOf } from "./worktree-tables.ts";
 
 /**
  * Runs a project's resources on Sealant and answers what every process in a worktree is told of
- * them (ADR 0019, amendment of 2026-10-31). The engine calls `prepare` before each process it
+ * them (ADR 0019, amendment of 2026-11-01). The engine calls `prepare` before each process it
  * opens; `Resources` calls the rest for a person's acts and reads.
  */
 
@@ -65,8 +65,9 @@ export interface PrepareInput {
   readonly projectId: ProjectId;
   readonly worktreeId: WorktreeId;
   readonly workspaceId: string;
-  /** The person the launch is for: a `mend.toml` table this adds to settings is theirs. */
+  /** The person opening the process. */
   readonly launcher: string;
+  readonly service?: string;
   readonly dependencies?: ReadonlyArray<ServiceDependency>;
   readonly recipeEnv?: Readonly<Record<string, string>>;
 }
@@ -75,6 +76,7 @@ export interface PrepareInput {
 export interface Prepared {
   readonly env: Readonly<Record<string, string>>;
   readonly views: ReadonlyArray<ResourceStatusView>;
+  readonly recipeEnv?: Readonly<Record<string, string>>;
   readonly refusal?: string;
   readonly resourceStopped?: { readonly name: string; readonly by: string };
   readonly notReady?: ReadonlyArray<string>;
@@ -89,10 +91,9 @@ export class ResourceRuntime extends Context.Service<
   ResourceRuntime,
   {
     /**
-     * Before a process opens in a worktree: adds the names its `mend.toml` declares that settings
-     * lack, links the workspace, starts what the worktree uses and makes its own databases, all
-     * bounded (`PREPARE_BOUND`), and answers the env from the rows. A slow or failed start never
-     * fails the launch: the env is the same, and a view says the process starts without it.
+     * Links only the selected remembered instances and wakes observed idle stops with their
+     * remembered specs. Never performs a first start or creates an own database. Bounded
+     * preparation answers env from the rows, with observations beside unavailable instances.
      */
     readonly prepare: (input: PrepareInput) => Effect.Effect<Prepared>;
     /** Read only: whether a person stopped one of this Service's required resources. */
@@ -111,26 +112,33 @@ export class ResourceRuntime extends Context.Service<
     }>;
     /** A person's start: clears a person's stop. Bounded; the start goes on past the bound. */
     readonly start: (
-      definition: StoredResourceDefinition,
+      definition: StoredResourceInstance,
       worktreeId: WorktreeId | null,
     ) => Effect.Effect<InstanceObserved>;
     /** A person's stop, which holds against every launch until a person starts it. */
     readonly stop: (
-      definition: StoredResourceDefinition,
+      definition: StoredResourceInstance,
       worktreeId: WorktreeId | null,
       by: string,
     ) => Effect.Effect<InstanceObserved>;
+    /** Ensure an own database only for an explicit worktree start, never at launch. */
+    readonly ensureOwnDatabase: (
+      definition: StoredResourceInstance,
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<string | null>;
+    /** Reconcile reach for every live workspace after starts or choices change. */
+    readonly relink: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
     /** Every instance of the project as Sealant observed it, in one call. */
     readonly observe: (projectId: ProjectId) => Effect.Effect<ProjectObservation>;
     /** Archives every instance of a definition: containers go, volumes stay. */
-    readonly archive: (definition: StoredResourceDefinition) => Effect.Effect<void>;
+    readonly archive: (definition: StoredResourceInstance) => Effect.Effect<string | null>;
     /**
      * Saves a Postgres database as a dump in its dumps volume, checks the dump reads back, then
      * makes it again: empty, or an own database copied from shared when shared has tables. The
      * instance must be running; a person's stop is never overridden for it.
      */
     readonly reset: (input: {
-      readonly definition: StoredResourceDefinition;
+      readonly definition: StoredResourceInstance;
       readonly worktreeId: WorktreeId;
       /** `own` is the worktree's own database on the project's server; `shared` is `app`. */
       readonly target: "shared" | "own";
@@ -165,7 +173,9 @@ export const ResourceRuntimeNone: Layer.Layer<ResourceRuntime> = Layer.succeed(R
       kind: "unobserved",
       instance: { kind: "not-observed", message: "no runtime runs resources here" },
     }),
-  archive: () => Effect.void,
+  archive: () => Effect.succeed(null),
+  ensureOwnDatabase: () => Effect.succeed(null),
+  relink: () => Effect.succeed([]),
   reset: () => Effect.succeed({ kind: "failed", message: "no runtime runs resources here" }),
 });
 
@@ -205,31 +215,25 @@ const observed = (instance: ScopeInstance): InstanceObserved => ({
   observedAt: instance.observedAt,
 });
 
-/** The instance key a binding reaches. */
-const keyOf = (
-  definition: StoredResourceDefinition,
-  binding: ResourceBinding,
-  worktreeId: WorktreeId,
-) => resourceInstanceKey(definition.id, binding.mode === "worktree" ? worktreeId : null);
-
 const specOf = (
-  definition: StoredResourceDefinition,
+  definition: StoredResourceInstance,
   worktreeId: WorktreeId | null,
   idleStopAfterSeconds: number,
 ) =>
   resourceInstanceSpec({
     definition: definition.spec,
     image: definition.image,
-    worktreeId: definition.spec.scope === "worktree" ? worktreeId : null,
+    worktreeId,
     idleStopAfterSeconds,
   });
 
 type RuntimeNeeds =
   | ResourcesRepo
+  | ResourceArchivesRepo
   | ProjectEnvironmentRepo
   | ProjectSecretsRepo
   | WorktreeReads
-  | ResourceImageResolver
+  | SessionsRepo
   | ResourceScopes;
 
 /** The runtime, waiting `waitFor` for a launch's resources before it opens without them. */
@@ -241,10 +245,11 @@ export const resourceRuntimeLayer = (
     ResourceRuntime,
     Effect.gen(function* () {
       const repo = yield* ResourcesRepo;
+      const archives = yield* ResourceArchivesRepo;
       const environment = yield* ProjectEnvironmentRepo;
       const secrets = yield* ProjectSecretsRepo;
       const reads = yield* WorktreeReads;
-      const images = yield* ResourceImageResolver;
+      const sessions = yield* SessionsRepo;
       const scopes = yield* ResourceScopes;
       // Starts and copies outlive the launch that asked for them.
       const scope = yield* Effect.scope;
@@ -280,14 +285,42 @@ export const resourceRuntimeLayer = (
         projectId: ProjectId,
         worktreeId: WorktreeId,
       ) {
-        const listed = yield* repo.listWithChoices(projectId, worktreeId);
-        const byName = new Map(listed.map(({ definition }) => [definition.spec.name, definition]));
-        return resourceBindings(
-          listed.map(({ definition, choice }) => ({ spec: definition.spec, choice })),
-        ).flatMap((binding) => {
-          const definition = byName.get(binding.definition.name);
+        const rows = yield* repo.bindingRows(projectId, worktreeId);
+        const instances = yield* repo.listForProject(projectId);
+        return resourceBindings(rows).flatMap((binding) => {
+          const definition = instances.find(
+            (row) =>
+              row.id === binding.resourceId &&
+              resourceInstanceKey(row.id, row.worktreeId) === binding.instanceKey,
+          );
           return definition === undefined ? [] : [{ binding, definition }];
         });
+      });
+
+      const relink = Effect.fn("ResourceRuntime.relink")(function* (projectId: ProjectId) {
+        const failures: string[] = [];
+        const client = yield* scopeOf(projectId).pipe(Effect.result);
+        if (client._tag === "Failure") return [client.failure.message];
+        const linked = new Set<string>();
+        for (const session of yield* sessions.listForProject(projectId)) {
+          const workspaceId = session.sealantWorkspaceId;
+          if (
+            workspaceId === null ||
+            linked.has(workspaceId) ||
+            !["starting", "running", "waiting", "idle"].includes(session.status)
+          )
+            continue;
+          linked.add(workspaceId);
+          const bindings = resourceBindings(yield* repo.bindingRows(projectId, session.worktreeId));
+          const answer = yield* client.success
+            .link(workspaceId, session.worktreeId, reachAliases(bindings))
+            .pipe(Effect.result);
+          if (answer._tag === "Failure")
+            failures.push(
+              `could not link ${session.label ?? session.id}: ${answer.failure.message}`,
+            );
+        }
+        return failures;
       });
 
       const envOf = Effect.fn("ResourceRuntime.envOf")(function* (
@@ -305,47 +338,8 @@ export const resourceRuntimeLayer = (
         });
       });
 
-      /**
-       * Adds each `[resource.*]` table of the worktree's `mend.toml` whose name settings lack, as
-       * the launcher; a name settings hold is never replaced, and one held otherwise is said.
-       */
-      const adoptTables = Effect.fn("ResourceRuntime.adoptTables")(function* (input: PrepareInput) {
-        const tables = tablesOf(
-          yield* readWorktreeTables(reads, input.projectId, input.worktreeId),
-        );
-        if (tables.length === 0) return [];
-        const held = new Map(
-          (yield* repo.listForProject(input.projectId)).map((definition) => [
-            definition.spec.name,
-            definition,
-          ]),
-        );
-        const views: Array<ResourceStatusView> = [];
-        for (const spec of tables) {
-          const existing = held.get(spec.name);
-          if (existing !== undefined) {
-            if (existing.specDigest !== resourceSpecDigest(spec)) {
-              views.push({ kind: "file-kept", definition: spec });
-            }
-            continue;
-          }
-          const added = yield* images.resolve(spec.image).pipe(
-            Effect.flatMap((image) =>
-              repo.declare(input.projectId, { spec, imageDigest: image.digest }, input.launcher),
-            ),
-            Effect.result,
-          );
-          if (added._tag === "Failure") {
-            yield* Effect.logWarning("resources: a .mend/mend.toml table was not added").pipe(
-              Effect.annotateLogs({ resource: spec.name, reason: added.failure._tag }),
-            );
-          }
-        }
-        return views;
-      });
-
       /** Makes the worktree's own database on its server once, and records how it began. */
-      const ensureOwnDatabase = Effect.fn("ResourceRuntime.ensureOwnDatabase")(function* (
+      const makeOwnDatabase = Effect.fn("ResourceRuntime.ensureOwnDatabase")(function* (
         client: ResourceScope,
         key: string,
         definitionId: ResourceDefinitionId,
@@ -368,43 +362,41 @@ export const resourceRuntimeLayer = (
                 : `exit ${result.exitCode ?? "none"}${tail === "" ? "" : ` · ${tail}`}`;
             }
             // One that exists already but has no row was made before its row: how it began is unknown.
-            if (outcome !== "exists")
-              yield* repo.recordOwnDatabase(worktreeId, definitionId, outcome);
+            yield* repo.recordOwnDatabase(
+              worktreeId,
+              definitionId,
+              outcome === "exists" ? "empty" : outcome,
+            );
             return null;
           }),
         );
       });
 
-      /** Starts one bound instance for a launch, and makes its own database; what to say, if anything. */
+      /** Wakes an observed idle stop using the remembered spec; never creates an instance. */
       const convergeOne = (
         client: ResourceScope,
-        definition: StoredResourceDefinition,
+        definition: StoredResourceInstance,
         binding: ResourceBinding,
-        worktreeId: WorktreeId,
       ): Effect.Effect<ResourceStatusView | null> =>
         Effect.gen(function* () {
-          const key = keyOf(definition, binding, worktreeId);
-          const instance = yield* client.up(
-            key,
-            specOf(definition, worktreeId, idleStopAfterSeconds),
-            "use",
-          );
-          const observation = observationOf(instance);
-          if (observation.kind !== "running") {
-            return {
-              kind: "launched-without",
-              definition: definition.spec,
-              instance: observation,
-            } satisfies ResourceStatusView;
-          }
-          if (binding.mode !== "own" || boundDatabase(binding, worktreeId) === null) return null;
-          const failed = yield* ensureOwnDatabase(client, key, definition.id, worktreeId);
-          return failed === null
+          const key = binding.instanceKey;
+          const existing = yield* client.get(key);
+          const instance =
+            existing?.state.kind === "stopped" && existing.state.reason.kind === "idle"
+              ? yield* client.up(
+                  key,
+                  specOf(definition, definition.worktreeId, idleStopAfterSeconds),
+                  "use",
+                )
+              : existing;
+          const observation =
+            instance === null ? { kind: "not-started" as const } : observationOf(instance);
+          return observation.kind === "running"
             ? null
             : ({
-                kind: "own-not-made",
+                kind: "launched-without",
                 definition: definition.spec,
-                message: failed,
+                instance: observation,
               } satisfies ResourceStatusView);
         }).pipe(
           Effect.catch((error: SealantPlatformError) =>
@@ -417,34 +409,32 @@ export const resourceRuntimeLayer = (
         );
 
       const prepare = Effect.fn("ResourceRuntime.prepare")(function* (input: PrepareInput) {
-        const fileViews = yield* adoptTables(input).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("resources: .mend/mend.toml tables not read").pipe(
-              Effect.annotateLogs({ cause: Cause.pretty(cause) }),
-              Effect.as([]),
-            ),
-          ),
-        );
         const [bound, names] = yield* Effect.all(
           [bindingsOf(input.projectId, input.worktreeId), projectEnvNames(input.projectId)],
           { concurrency: "unbounded" },
         );
-        const mapped = serviceResourceEnv({
-          dependencies: input.dependencies ?? [],
-          definitions: (yield* repo.listWithChoices(input.projectId, input.worktreeId)).map(
-            ({ definition, choice }) => ({ spec: definition.spec, choice }),
-          ),
+        const bindings = bound.map(({ binding }) => binding);
+        const { env: processEnv, left } = resourceProcessEnv({
+          bindings,
           worktreeId: input.worktreeId,
           projectEnvNames: names,
+        });
+        const remembered = (yield* repo.listForProject(input.projectId)).map((row) => row.spec);
+        const file =
+          input.service === undefined
+            ? []
+            : tablesOf(yield* readWorktreeTables(reads, input.projectId, input.worktreeId));
+        const mapped = serviceResourceEnv({
+          service: input.service ?? "process",
+          dependencies: input.dependencies ?? [],
+          definitions: [...remembered, ...file],
+          bindings,
+          projectEnvNames: names,
+          resourceEnv: processEnv,
           recipeEnv: input.recipeEnv ?? {},
         });
         if (mapped.refusal !== null)
-          return { env: {}, views: fileViews, refusal: mapped.refusal } satisfies Prepared;
-        const { env: processEnv, left } = resourceProcessEnv({
-          bindings: bound.map(({ binding }) => binding),
-          worktreeId: input.worktreeId,
-          projectEnvNames: names,
-        });
+          return { env: {}, views: [], refusal: mapped.refusal } satisfies Prepared;
         const env = { ...processEnv, ...mapped.env };
         const leftViews = left.flatMap(
           ({ resource, names: kept }): ReadonlyArray<ResourceStatusView> => {
@@ -454,19 +444,17 @@ export const resourceRuntimeLayer = (
               : [{ kind: "env-left", definition: definition.binding.definition, names: kept }];
           },
         );
-        if (bound.length === 0)
-          return { env, views: [...fileViews, ...leftViews] } satisfies Prepared;
 
         // What each bound instance answered, as it answers: a launch past the bound says the rest
         // are still starting, and their starts go on in Mend's lifetime.
         const answered = new Map<string, ResourceStatusView | null>();
         const converge = Effect.gen(function* () {
           const client = yield* scopeOf(input.projectId);
-          yield* client.link(input.workspaceId, input.worktreeId);
+          yield* client.link(input.workspaceId, input.worktreeId, reachAliases(bindings));
           yield* Effect.forEach(
             bound,
             ({ binding, definition }) =>
-              convergeOne(client, definition, binding, input.worktreeId).pipe(
+              convergeOne(client, definition, binding).pipe(
                 Effect.tap((view) => Effect.sync(() => answered.set(definition.spec.name, view))),
               ),
             { concurrency: "unbounded", discard: true },
@@ -508,7 +496,7 @@ export const resourceRuntimeLayer = (
           if (view.instance.kind === "stopped" && view.instance.reason.kind === "person") {
             return {
               env,
-              views: [...fileViews, ...runViews, ...leftViews],
+              views: [...runViews, ...leftViews],
               refusal: `@${view.definition.name} stopped by ${view.instance.reason.by}`,
               resourceStopped: { name: view.definition.name, by: view.instance.reason.by },
             } satisfies Prepared;
@@ -517,7 +505,8 @@ export const resourceRuntimeLayer = (
         }
         return {
           env,
-          views: [...fileViews, ...runViews, ...leftViews],
+          recipeEnv: mapped.env,
+          views: [...runViews, ...leftViews],
           notReady,
         } satisfies Prepared;
       });
@@ -541,18 +530,19 @@ export const resourceRuntimeLayer = (
         );
 
       const start = Effect.fn("ResourceRuntime.start")(function* (
-        definition: StoredResourceDefinition,
-        worktreeId: WorktreeId | null,
+        definition: StoredResourceInstance,
+        _worktreeId: WorktreeId | null,
       ) {
-        const key = resourceInstanceKey(
-          definition.id,
-          definition.spec.scope === "worktree" ? worktreeId : null,
-        );
+        const key = resourceInstanceKey(definition.id, definition.worktreeId);
         return yield* bounded(
           asObserved(
             scopeOf(definition.projectId).pipe(
               Effect.flatMap((client) =>
-                client.up(key, specOf(definition, worktreeId, idleStopAfterSeconds), "person"),
+                client.up(
+                  key,
+                  specOf(definition, definition.worktreeId, idleStopAfterSeconds),
+                  "person",
+                ),
               ),
             ),
           ),
@@ -560,14 +550,11 @@ export const resourceRuntimeLayer = (
       });
 
       const stop = Effect.fn("ResourceRuntime.stop")(function* (
-        definition: StoredResourceDefinition,
+        definition: StoredResourceInstance,
         worktreeId: WorktreeId | null,
         by: string,
       ) {
-        const key = resourceInstanceKey(
-          definition.id,
-          definition.spec.scope === "worktree" ? worktreeId : null,
-        );
+        const key = resourceInstanceKey(definition.id, definition.worktreeId);
         return yield* asObserved(
           scopeOf(definition.projectId).pipe(Effect.flatMap((client) => client.stop(key, by))),
         );
@@ -592,51 +579,59 @@ export const resourceRuntimeLayer = (
       });
 
       const archive = Effect.fn("ResourceRuntime.archive")(function* (
-        definition: StoredResourceDefinition,
+        definition: StoredResourceInstance,
       ) {
-        yield* scopeOf(definition.projectId).pipe(
+        return yield* scopeOf(definition.projectId).pipe(
           Effect.flatMap((client) =>
-            client.list().pipe(
-              Effect.flatMap((instances) =>
-                Effect.forEach(
-                  instances.filter(
-                    (instance) =>
-                      instance.key === definition.id ||
-                      instance.key.startsWith(`${definition.id}@`),
-                  ),
-                  (instance) => client.archive(instance.key),
-                  { discard: true },
-                ),
-              ),
+            client.archive(resourceInstanceKey(definition.id, definition.worktreeId)),
+          ),
+          Effect.flatMap((volumes) =>
+            archives.rememberVolumes(
+              definition.projectId,
+              volumes.map((volume) => ({ ...volume, resourceName: definition.spec.name })),
             ),
           ),
-          Effect.catch((error: SealantPlatformError) =>
-            Effect.logWarning("resources: a removed definition's instances were not archived").pipe(
-              Effect.annotateLogs({ definitionId: definition.id, error: error.message }),
-            ),
-          ),
+          Effect.as(null),
+          Effect.catch((error: SealantPlatformError) => Effect.succeed(error.message)),
         );
       });
+      const ensureOwnDatabase = (definition: StoredResourceInstance, worktreeId: WorktreeId) =>
+        scopeOf(definition.projectId).pipe(
+          Effect.flatMap((client) =>
+            makeOwnDatabase(
+              client,
+              resourceInstanceKey(definition.id, null),
+              definition.id,
+              worktreeId,
+            ),
+          ),
+          Effect.catch((error: SealantPlatformError) => Effect.succeed(error.message)),
+        );
 
       const reset = Effect.fn("ResourceRuntime.reset")(function* (input: {
-        readonly definition: StoredResourceDefinition;
+        readonly definition: StoredResourceInstance;
         readonly worktreeId: WorktreeId;
         readonly target: "shared" | "own";
         readonly at: Date;
       }) {
         const { definition, worktreeId, target, at } = input;
-        const worktreeScoped = definition.spec.scope === "worktree";
+        const worktreeScoped = definition.worktreeId !== null;
         const key = resourceInstanceKey(definition.id, worktreeScoped ? worktreeId : null);
         const database =
           target === "own" && !worktreeScoped ? ownDatabaseName(worktreeId) : SHARED_DATABASE;
         const run = Effect.gen(function* () {
           const client = yield* scopeOf(definition.projectId);
-          const instance = yield* client.up(
-            key,
-            specOf(definition, worktreeId, idleStopAfterSeconds),
-            "use",
-          );
-          const observation = observationOf(instance);
+          const existing = yield* client.get(key);
+          const instance =
+            existing?.state.kind === "stopped" && existing.state.reason.kind === "idle"
+              ? yield* client.up(
+                  key,
+                  specOf(definition, definition.worktreeId, idleStopAfterSeconds),
+                  "use",
+                )
+              : existing;
+          const observation =
+            instance === null ? { kind: "not-started" as const } : observationOf(instance);
           if (observation.kind !== "running") {
             return { kind: "not-running", instance: observation } satisfies ResetOutcome;
           }
@@ -701,13 +696,24 @@ export const resourceRuntimeLayer = (
         if (seen.kind !== "observed") return null;
         for (const { binding, definition } of yield* bindingsOf(projectId, worktreeId)) {
           if (!required.has(definition.spec.name)) continue;
-          const instance = seen.byKey.get(keyOf(definition, binding, worktreeId))?.instance;
+          const instance = seen.byKey.get(binding.instanceKey)?.instance;
           if (instance?.kind === "stopped" && instance.reason.kind === "person")
             return { name: definition.spec.name, by: instance.reason.by };
         }
         return null;
       });
-      return { prepare, envOf, stoppedDependency, start, stop, observe, archive, reset };
+      return {
+        prepare,
+        envOf,
+        stoppedDependency,
+        start,
+        stop,
+        observe,
+        archive,
+        reset,
+        ensureOwnDatabase,
+        relink,
+      };
     }),
   );
 

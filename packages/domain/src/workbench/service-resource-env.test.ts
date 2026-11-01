@@ -1,76 +1,114 @@
-import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { WorktreeId } from "../ids.ts";
-import { presetDefinition, ResourceName, PresetVersion } from "./resource.ts";
-import { ResourceDefinitionInput } from "./resource.ts";
-import { serviceResourceEnv } from "./service-resource-env.ts";
-
+import { ResourceDefinitionId } from "../ids.ts";
+import { resourceBindingEnv } from "./resource-runtime.ts";
+import { presetDefinition, ResourceName, PresetVersion, type ResourceBinding } from "./resource.ts";
+import { resolveResourceReferences, serviceResourceEnv } from "./service-resource-env.ts";
 const db = presetDefinition({
   name: ResourceName.make("db"),
   preset: "postgres",
   version: PresetVersion.make("17"),
-  scope: "project",
 });
-const worktreeId = WorktreeId.make("wt-resource-preview");
-const resolve = (
-  env: Readonly<Record<string, string>>,
-  recipeEnv: Readonly<Record<string, string>> = {},
-) =>
-  serviceResourceEnv({
-    dependencies: [{ kind: "resource", name: "db", env }],
-    definitions: [{ spec: db, choice: "shared" }],
-    worktreeId,
-    projectEnvNames: new Set(),
-    recipeEnv,
+const binding: ResourceBinding = {
+  definition: db,
+  resourceId: ResourceDefinitionId.make("db"),
+  level: "project",
+  instanceKey: "db",
+  database: "app",
+};
+const resourceEnv = Object.fromEntries(resourceBindingEnv(binding));
+const base = {
+  service: "web",
+  definitions: [db],
+  bindings: [binding],
+  resourceEnv,
+  projectEnvNames: new Set<string>(),
+  dependencies: [],
+  recipeEnv: {},
+};
+describe("Service resource env", () => {
+  it("resolves only braced Mend references in recipe values", () => {
+    expect(
+      resolveResourceReferences({
+        ...base,
+        recipeEnv: { DATABASE_URL: "${MEND_DB_URL}", RAW: "$MEND_DB_URL ${OTHER} $HOME" },
+      }),
+    ).toEqual({
+      env: { DATABASE_URL: "postgres://postgres@db:5432/app", RAW: "$MEND_DB_URL ${OTHER} $HOME" },
+      refusal: null,
+    });
   });
-
-describe("a Service's resource export mapping", () => {
+  it("refuses missing references and dependencies exactly", () => {
+    expect(
+      resolveResourceReferences({
+        ...base,
+        resourceEnv: {},
+        recipeEnv: { DATABASE_URL: "${MEND_DB_URL}" },
+      }).refusal,
+    ).toBe(
+      "web needs MEND_DB_URL · @db is not running for this worktree · mend resource start db --project or --worktree",
+    );
+    expect(resolveResourceReferences({ ...base, recipeEnv: { X: "${MEND_X}" } }).refusal).toBe(
+      "web needs MEND_X · no resource gives it to this worktree",
+    );
+    expect(
+      serviceResourceEnv({
+        ...base,
+        bindings: [],
+        dependencies: [{ kind: "resource", name: "db", env: {} }],
+      }).refusal,
+    ).toBe(
+      "web needs @db · @db is not running for this worktree · mend resource start db --project or --worktree",
+    );
+  });
+  it("never sets a recipe-owned Mend name", () => {
+    expect(serviceResourceEnv({ ...base, recipeEnv: { MEND_DB_URL: "bad" } }).refusal).toBe(
+      "web cannot set MEND_DB_URL: Mend owns MEND_*",
+    );
+  });
   it.each([
     ["url", "postgres://postgres@db:5432/app"],
     ["host", "db"],
     ["port", "5432"],
+    ["port.postgres", "5432"],
     ["database", "app"],
     ["username", "postgres"],
-  ])("maps %s", (source, value) => {
-    expect(resolve({ TEST_VALUE: source })).toEqual({ env: { TEST_VALUE: value }, refusal: null });
-  });
-  it.each([
-    [{ DATABASE_URL: "url" }, {}, "DATABASE_URL comes from @db"],
-    [{ TEST_URL: "url" }, { TEST_URL: "literal" }, "TEST_URL comes from @db"],
-    [{ TEST_URL: "nope" }, {}, "@db · no export nope"],
-  ])("refuses collisions and missing exports by name", (env, recipe, words) => {
-    expect(resolve(env, recipe).refusal).toContain(words);
-  });
-  it("maps named ports and the definition's own exports", () => {
-    const queue = Schema.decodeUnknownSync(ResourceDefinitionInput)({
-      ...db,
-      name: "queue",
-      preset: null,
-      ports: [{ name: "amqp", port: 5672, protocol: "tcp" }],
-      exports: { URL: "amqp://{host}:{port.amqp}/" },
-    });
+  ])("keeps opt-in %s mappings", (source, value) => {
     expect(
       serviceResourceEnv({
-        dependencies: [
-          { kind: "resource", name: "queue", env: { AMQP_URL: "URL", AMQP_PORT: "port.amqp" } },
-        ],
-        definitions: [{ spec: queue, choice: "shared" }],
-        worktreeId,
-        projectEnvNames: new Set(),
-        recipeEnv: {},
+        ...base,
+        dependencies: [{ kind: "resource", name: "db", env: { DATABASE_URL: source } }],
       }),
-    ).toEqual({ env: { AMQP_URL: "amqp://queue:5672/", AMQP_PORT: "5672" }, refusal: null });
+    ).toEqual({ env: { DATABASE_URL: value }, refusal: null });
   });
-  it("does not override a conventional name the project sets", () => {
+  it("refuses mapping collisions and unknown exports", () => {
     expect(
       serviceResourceEnv({
-        dependencies: [{ kind: "resource", name: "db", env: {} }],
-        definitions: [{ spec: db, choice: "shared" }],
-        worktreeId,
-        projectEnvNames: new Set(["DATABASE_URL"]),
-        recipeEnv: { DATABASE_URL: "project" },
+        ...base,
+        dependencies: [{ kind: "resource", name: "db", env: { MEND_DB_HOST: "url" } }],
       }).refusal,
-    ).toBeNull();
+    ).toContain("comes from @db");
+    expect(
+      serviceResourceEnv({
+        ...base,
+        dependencies: [{ kind: "resource", name: "db", env: { X: "nope" } }],
+      }).refusal,
+    ).toContain("no export nope");
+    expect(
+      serviceResourceEnv({
+        ...base,
+        dependencies: [{ kind: "resource", name: "db", env: { X: "url" } }],
+        recipeEnv: { X: "set" },
+      }).refusal,
+    ).toBe("X comes from @db");
+  });
+  it("leaves project environment and secret names", () => {
+    expect(
+      serviceResourceEnv({
+        ...base,
+        projectEnvNames: new Set(["DATABASE_URL"]),
+        dependencies: [{ kind: "resource", name: "db", env: { DATABASE_URL: "url" } }],
+      }).env,
+    ).toEqual({});
   });
 });

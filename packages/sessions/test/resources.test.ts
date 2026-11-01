@@ -1,11 +1,12 @@
-import * as http from "node:http";
-
 import { PgClient } from "@effect/sql-pg";
 import {
   MendDBLive,
+  ResourceArchivesRepoLive,
+  ServicesRepoLive,
+  SessionProcessesRepo,
+  SessionProcessesRepoLive,
   migrations,
   OrganizationsRepoLive,
-  ProjectEnvironmentRepo,
   ProjectEnvironmentRepoLive,
   ProjectSecretsRepoLive,
   ProjectsRepo,
@@ -15,7 +16,7 @@ import {
   ResourceLoadsRepo,
   SessionsRepo,
   SessionsRepoLive,
-  type StoredResourceDefinition,
+  type StoredResourceInstance,
   type StoredResourceLoad,
   UsersRepoLive,
   WorktreesRepoLive,
@@ -24,7 +25,7 @@ import { postgresTestConfig } from "@mend/db/testing";
 import {
   OrganizationId,
   ProjectId,
-  ResourceLoadId,
+  SealantWorkspaceId,
   SessionId,
   Sha,
   WorktreeId,
@@ -34,12 +35,9 @@ import {
   ownDatabaseName,
   presetDefinition,
   PresetVersion,
-  ResourceDefinitionInput,
   ResourceName,
-  resourceStatusLine,
   type Viewer,
   type ServiceDependency,
-  withPresetCommand,
 } from "@mend/domain/workbench";
 import {
   type ResourceScope,
@@ -47,21 +45,20 @@ import {
   type ScopeInstance,
   type ScopeInstanceSpec,
 } from "@mend/sealant";
-import { Duration, Effect, Layer, ManagedRuntime, Redacted, Result, Schema } from "effect";
+import { Duration, Effect, Layer, ManagedRuntime, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { SessionEngine, SessionTurnRefusedError } from "../src/engine.ts";
 import { ResourceImageResolver } from "../src/resources/image-resolver.ts";
 import { Resources, ResourcesChannelLive, ResourcesLive } from "../src/resources/resources.ts";
 import { ResourceRuntime, resourceRuntimeLayer } from "../src/resources/runtime.ts";
-import { WorktreeServiceRestarts } from "../src/resources/service-restarts.ts";
-import { ResourceStatusReads, ResourceStatusReadsLive } from "../src/resources/status-reads.ts";
 import {
-  handleSessionRequest,
-  SessionChannelRegistry,
-  SessionChannelRegistryLive,
-} from "../src/session-channel.ts";
-import type { SessionSocketApi } from "../src/session-socket.ts";
+  WorktreeServiceRestartsLive,
+  WorktreeServiceRestarts,
+} from "../src/resources/service-restarts.ts";
+import { ResourceStatusReadsLive } from "../src/resources/status-reads.ts";
+import { SessionChannelRegistry, SessionChannelRegistryLive } from "../src/session-channel.ts";
 import { WORKTREE_STAMP, WorktreeReads } from "../src/worktree-reads.ts";
 
 const postgres = postgresTestConfig();
@@ -77,15 +74,6 @@ const ORG = OrganizationId.make("org-res");
 const OWN = ownDatabaseName(WORKTREE);
 const DIGEST = ImageDigest.make(`sha256:${"a".repeat(64)}`);
 
-const MEND_TOML = `
-[resource.mail]
-image = "axllent/mailpit:v1.21"
-ports = { smtp = 1025 }
-env = { MP_UI_AUTH = "tom:hunter2" }
-scope = "worktree"
-device = "/dev/null"
-`;
-
 /** The merge-gate verifier's file (mend#1201): an env value on the line that does not parse. */
 const VERIFIER_FILE = `
 [resource.mail]
@@ -95,28 +83,8 @@ env = { MP_UI_AUTH = "fake-value-gate1201" BAD }
 device = "/dev/null"
 `;
 
-const notHere = () => Effect.die("not in this test");
-const sessionApi: SessionSocketApi = {
-  recipes: notHere,
-  listServices: notHere,
-  runServiceRecipe: notHere,
-  runService: notHere,
-  addService: notHere,
-  stopService: notHere,
-  restartService: notHere,
-  stopSession: notHere,
-  land: notHere,
-  agentHook: notHere,
-  mcpCaller: notHere,
-  resourceSession: () => Effect.succeed(SESSION),
-  listRepositories: notHere,
-  addableProjects: notHere,
-  addRepository: notHere,
-  gitTransport: notHere,
-  gitTransportDone: notHere,
-};
+let file = { text: "", stamp: WORKTREE_STAMP };
 
-let file = { text: MEND_TOML, stamp: WORKTREE_STAMP };
 const reads = Layer.mock(WorktreeReads, {
   readFile: () =>
     Effect.sync(() => ({
@@ -218,6 +186,9 @@ const dbLayer = MendDBLive.pipe(
 );
 const repos = Layer.mergeAll(
   ResourcesRepoLive,
+  ResourceArchivesRepoLive,
+  ServicesRepoLive,
+  SessionProcessesRepoLive,
   ProjectsRepoLive,
   SessionsRepoLive,
   UsersRepoLive,
@@ -236,11 +207,17 @@ const runtimeLayer = resourceRuntimeLayer(Duration.millis(300)).pipe(
 let loadRows: ReadonlyArray<StoredResourceLoad> = [];
 /** Each worktree whose Services a switch restarted, and by whom; it ran `web`. */
 const restarted: Array<string> = [];
+const told: Array<{ message: string; except: SessionId | null }> = [];
 const restarts = Layer.succeed(WorktreeServiceRestarts, {
   restart: (worktreeId, by) =>
     Effect.sync(() => {
       restarted.push(`${worktreeId} ${by}`);
-      return ["web"];
+      return [{ name: "web", kind: "restarted" as const }];
+    }),
+  tell: (_, __, message, except) =>
+    Effect.sync(() => {
+      told.push({ message, except });
+      return [];
     }),
 });
 const resources = ResourcesLive.pipe(
@@ -252,17 +229,10 @@ const channel = ResourcesChannelLive.pipe(
   Layer.provideMerge(Layer.merge(resources, SessionChannelRegistryLive)),
 );
 
-const decodeSpec = Schema.decodeUnknownSync(ResourceDefinitionInput);
 const runtime = ManagedRuntime.make(channel);
 const clock = { now: new Date("2026-10-30T10:00:00Z"), timeZone: "Europe/Athens" };
-const maria: Viewer = { userId: "u-maria", organizationId: ORG, role: "member" };
+const maria: Viewer = { userId: "u-tom", organizationId: ORG, role: "member" };
 
-const definition = (name: string) =>
-  Effect.flatMap(ResourcesRepo, (repo) => repo.byName(PROJECT, name)).pipe(
-    Effect.flatMap((found) =>
-      found === null ? Effect.die(new Error(`no @${name}`)) : Effect.succeed(found),
-    ),
-  );
 const prepare = (
   dependencies: ReadonlyArray<ServiceDependency> = [],
   recipeEnv: Readonly<Record<string, string>> = {},
@@ -294,8 +264,8 @@ const fromSession = (...argv: ReadonlyArray<string>) =>
   );
 
 describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
-  let db: StoredResourceDefinition;
-  let cache: StoredResourceDefinition;
+  let db: StoredResourceInstance;
+  let cache: StoredResourceInstance;
 
   beforeAll(async () => {
     await Effect.runPromise(
@@ -323,8 +293,8 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
           INSERT INTO projects (id, name, store_path, default_branch, organization_id, created_by_user_id, visibility)
           VALUES (${PROJECT}, 'res', '/store/p-res/repo.git', 'main', ${ORG}, 'u-maria', 'shared')`;
         yield* sql`
-          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
-          VALUES (${WORKTREE}, ${PROJECT}, 'wt-res', 'wt-res', 'mend/wt-res', 'abc')`;
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha, change_owner_user_id, change_owner_proven, change_owner_recorded)
+          VALUES (${WORKTREE}, ${PROJECT}, 'wt-res', 'wt-res', 'mend/wt-res', 'abc', 'u-tom', true, true)`;
         yield* (yield* SessionsRepo).create({
           id: SESSION,
           projectId: PROJECT,
@@ -339,49 +309,42 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
           ownerUserId: "u-tom",
           origin: "mend",
         });
-        const repo = yield* ResourcesRepo;
-        db = yield* repo.declare(
-          PROJECT,
-          {
-            imageDigest: DIGEST,
-            spec: presetDefinition({
-              name: ResourceName.make("db"),
-              preset: "postgres",
-              version: PresetVersion.make("17"),
-              scope: "project",
-            }),
-          },
-          "u-maria",
-        );
-        cache = yield* repo.declare(
-          PROJECT,
-          {
-            imageDigest: DIGEST,
-            spec: withPresetCommand(
-              decodeSpec({
-                name: "cache",
-                scope: "project",
-                preset: "redis",
-                image: "redis:8",
-                command: null,
-                ports: [{ name: "redis", port: 6379, protocol: "tcp" }],
-                env: {},
-                volumes: [{ name: "data", mountPath: "/data" }],
-                ready: { kind: "preset" },
-                exports: {},
-              }),
-            ),
-          },
-          "u-tom",
-        );
       }),
     );
   }, 60_000);
 
-  beforeEach(() => {
+  beforeEach(async () => {
     sealant.calls.length = 0;
+    sealant.specs.clear();
+    sealant.instances.clear();
+    restarted.length = 0;
+    told.length = 0;
     sealant.upDelay = Duration.zero;
-    file = { text: MEND_TOML, stamp: WORKTREE_STAMP };
+    file = {
+      text: '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\nports = { postgres = 5432 }\nvolumes = { data = "/var/lib/postgresql/data" }\n[resource.cache]\npreset = "redis"\nimage = "redis:8"\nports = { redis = 6379 }\nvolumes = { data = "/data" }',
+      stamp: WORKTREE_STAMP,
+    };
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`TRUNCATE resource_definitions CASCADE`;
+        const repo = yield* ResourcesRepo;
+        for (const [name, preset, version] of [
+          ["db", "postgres", "17"],
+          ["cache", "redis", "8"],
+        ] as const) {
+          const identity = yield* repo.ensureIdentity(PROJECT, name);
+          const spec = presetDefinition({
+            name: ResourceName.make(name),
+            preset,
+            version: PresetVersion.make(version),
+          });
+          const row = yield* repo.remember(PROJECT, identity.id, null, spec, DIGEST, "u-tom");
+          if (name === "db") db = row;
+          else cache = row;
+        }
+      }),
+    );
   });
 
   afterAll(async () => {
@@ -394,330 +357,312 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     );
   });
 
-  it("before a process opens: adds the file's new names, links, starts what the worktree uses and makes its own database once", async () => {
-    const prepared = await prepare();
-    const mail = await runtime.runPromise(definition("mail"));
-    expect(mail.addedBy).toBe("u-tom");
-    expect(sealant.calls.toSorted()).toEqual(
-      [
-        `exec ${db.id} postgres ${OWN} app`,
-        "link ws-1 wt-res",
-        `up ${cache.id} use`,
-        `up ${db.id} use`,
-        `up ${mail.id}@${WORKTREE} use`,
-      ].toSorted(),
-    );
-    expect(sealant.specs.get(`${mail.id}@${WORKTREE}`)?.worktreeKey).toBe(WORKTREE);
-    expect(sealant.specs.get(db.id)?.env).toEqual({
-      POSTGRES_HOST_AUTH_METHOD: "trust",
-      POSTGRES_DB: "app",
-    });
-    expect(prepared.views).toEqual([]);
-    expect(prepared.env).toMatchObject({
-      DATABASE_URL: `postgres://postgres@db:5432/${OWN}`,
-      PGDATABASE: OWN,
-      REDIS_URL: "redis://cache:6379",
-      MEND_RESOURCE_MAIL_HOST: "mail",
-      MEND_RESOURCE_MAIL_PORT_SMTP: "1025",
-    });
-
-    sealant.calls.length = 0;
-    await prepare();
-    expect(sealant.calls.filter((call) => call.startsWith("exec"))).toEqual([]);
-    const owns = await runtime.runPromise(
-      Effect.flatMap(ResourcesRepo, (repo) => repo.ownDatabases(WORKTREE)),
-    );
-    expect(owns.get(db.id)?.kind).toBe("copied");
-  });
-
-  it("reads worktree status through the same formatter and returns only env names", async () => {
-    const statuses = await runtime.runPromise(
-      Effect.flatMap(ResourceStatusReads, (statusReads) =>
-        statusReads.forWorktree(PROJECT, WORKTREE),
+  const project = () =>
+    runtime.runPromise(Effect.flatMap(ProjectsRepo, (repo) => repo.byId(PROJECT)));
+  const start = async (name = "db", level: "project" | "worktree" = "project", restart = false) =>
+    runtime.runPromise(
+      Effect.flatMap(Resources, (actions) =>
+        actions.start(awaitedProject, maria, name, { level, worktreeId: WORKTREE, restart }, clock),
       ),
     );
-    const dbStatus = statuses.find((each) => each.statusLine.startsWith("@db ·"));
-    expect(dbStatus?.statusLine).toContain("@db · running · own database");
-    expect(dbStatus?.envNames).toContain("DATABASE_URL");
-    expect(dbStatus?.envNames).toContain("MEND_RESOURCE_DB_URL");
-    expect(JSON.stringify(statuses)).not.toContain("postgres://");
+  let awaitedProject: Awaited<ReturnType<typeof project>>;
+  beforeEach(async () => {
+    awaitedProject = await project();
   });
 
-  it("keeps a person's stop against a launch, which starts with the env and says so", async () => {
-    const stopped = await runtime.runPromise(
-      Effect.gen(function* () {
-        const project = yield* (yield* ProjectsRepo).byId(PROJECT);
-        return yield* (yield* Resources).stop(project, maria, "db", null, clock);
-      }),
-    );
-    expect(stopped.instance).toBe("stopped");
-    expect(stopped.statusLine).toMatch(
-      /^@db · postgres 17 · project · added by Maria · stopped by Maria · observed /,
-    );
-    const prepared = await prepare();
-    expect(prepared.env["DATABASE_URL"]).toBe(`postgres://postgres@db:5432/${OWN}`);
-    expect(prepared.views.map((view) => resourceStatusLine(view, clock))).toEqual([
-      "@db · stopped by Maria · this session starts without it",
-    ]);
-
-    const started = await runtime.runPromise(
-      Effect.gen(function* () {
-        const project = yield* (yield* ProjectsRepo).byId(PROJECT);
-        return yield* (yield* Resources).start(project, maria, "db", null, clock);
-      }),
-    );
-    expect(started.instance).toBe("running");
-    expect((await prepare()).views).toEqual([]);
-  });
-
-  it("maps exports for a required resource and refuses a conventional name a recipe sets", async () => {
-    const prepared = await prepare([
-      {
-        kind: "resource",
-        name: "db",
-        env: { TEST_DATABASE_URL: "url", TEST_DATABASE: "database", DB_LOGIN: "username" },
-      },
-    ]);
-    expect(prepared.refusal).toBeUndefined();
-    expect(prepared.env).toMatchObject({
-      TEST_DATABASE_URL: `postgres://postgres@db:5432/${OWN}`,
-      TEST_DATABASE: OWN,
-      DB_LOGIN: "postgres",
-    });
+  it("launch never starts a missing instance, adopts a file definition, or creates an own database", async () => {
+    file.text += '\n[resource.mail]\nimage = "axllent/mailpit:v1.21"\nports = { smtp = 1025 }';
+    const answer = await prepare();
+    expect(answer.env.MEND_DB_URL).toBe("postgres://postgres@db:5432/app");
+    expect(sealant.calls).toEqual(["link ws-1 wt-res"]);
     expect(
-      (await prepare([{ kind: "resource", name: "db", env: {} }], { DATABASE_URL: "literal" }))
-        .refusal,
-    ).toBe("DATABASE_URL comes from @db");
+      await runtime.runPromise(
+        Effect.flatMap(ResourcesRepo, (repo) => repo.byName(PROJECT, "mail")),
+      ),
+    ).toBeNull();
   });
 
-  it("a preview wake starts an idle resource and holds a person's stop by name", async () => {
-    await prepare();
-    const spec = sealant.specs.get(db.id);
-    if (spec === undefined) throw new Error("db did not start");
-    const idle = { kind: "idle" } satisfies NonNullable<ScopeInstance["stopReason"]>;
+  it("wakes only idle-stopped instances, with their remembered spec", async () => {
+    await start();
+    await start("cache");
+    const dbSpec = sealant.specs.get(db.id)!;
     sealant.instances.set(
       db.id,
-      instanceOf(db.id, spec, { kind: "stopped", at: new Date(), reason: idle }, idle),
-    );
-    const dependencies: ReadonlyArray<ServiceDependency> = [
-      { kind: "resource", name: "db", env: {} },
-    ];
-    const woken = await prepare(dependencies);
-    expect(woken.refusal).toBeUndefined();
-    expect(sealant.instances.get(db.id)?.state.kind).toBe("running");
-    await runtime.runPromise(fakeScope.stop(db.id, "Maria"));
-    const held = await prepare(dependencies);
-    expect(held.refusal).toBe("@db stopped by Maria");
-    expect(held.resourceStopped).toEqual({ name: "db", by: "Maria" });
-    expect(sealant.instances.get(db.id)?.state.kind).toBe("stopped");
-    await runtime.runPromise(fakeScope.up(db.id, spec, "person"));
-  });
-
-  it("a missing or off resource refuses its dependent before any start", async () => {
-    expect((await prepare([{ kind: "resource", name: "absent", env: {} }])).refusal).toContain(
-      "@absent · no resource in this project",
-    );
-    await runtime.runPromise(
-      Effect.flatMap(ResourcesRepo, (repo) =>
-        repo.setSelection(PROJECT, WORKTREE, db.id, "off", "u-maria"),
+      instanceOf(
+        db.id,
+        dbSpec,
+        { kind: "stopped", at: new Date(), reason: { kind: "idle" } },
+        { kind: "idle" },
       ),
     );
-    const before = sealant.calls.length;
-    expect((await prepare([{ kind: "resource", name: "db", env: {} }])).refusal).toBe(
-      "@db · this worktree has it off · mend resource use db shared",
+    const cacheSpec = sealant.specs.get(cache.id)!;
+    const reason = { kind: "person" as const, by: "Maria" };
+    sealant.instances.set(
+      cache.id,
+      instanceOf(cache.id, cacheSpec, { kind: "stopped", at: new Date(), reason }, reason),
     );
-    expect(sealant.calls.length).toBe(before);
-    await runtime.runPromise(
-      Effect.flatMap(ResourcesRepo, (repo) =>
-        repo.setSelection(PROJECT, WORKTREE, db.id, "own", "u-maria"),
-      ),
+    file.text = file.text.replace('image = "postgres:17"', 'image = "postgres:18"');
+    sealant.calls.length = 0;
+    await prepare();
+    expect(sealant.calls).toEqual(["link ws-1 wt-res", `up ${db.id} use`]);
+    expect(sealant.specs.get(db.id)?.image).toBe(db.image);
+  });
+
+  it("starts both non-Postgres levels explicitly and selects the worktree instance", async () => {
+    await start("cache");
+    const own = await start("cache", "worktree");
+    expect(own.kind).toBe("started");
+    expect(sealant.specs.get(`${cache.id}@${WORKTREE}`)?.worktreeKey).toBe(WORKTREE);
+    const rows = await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.listForProject(PROJECT)),
     );
+    expect(rows.filter((row) => row.spec.name === "cache")).toHaveLength(2);
+    expect(restarted).toEqual([`${WORKTREE} u-tom`]);
   });
 
-  it("opens a process past the bound with the same env, and the start goes on", async () => {
-    sealant.upDelay = Duration.seconds(1);
-    const prepared = await prepare([{ kind: "resource", name: "db", env: {} }]);
-    expect(prepared.notReady).toEqual(["@db not ready"]);
-    expect(prepared.env["DATABASE_URL"]).toBe(`postgres://postgres@db:5432/${OWN}`);
-    expect(prepared.views.map((view) => resourceStatusLine(view, clock)).toSorted()).toEqual([
-      "@cache · starting · this session starts without it",
-      "@db · starting · this session starts without it",
-      "@mail · starting · this session starts without it",
-    ]);
-  });
-
-  it("leaves a name the project sets as the project sets it, and says so", async () => {
-    await runtime.runPromise(
-      Effect.flatMap(ProjectEnvironmentRepo, (environment) =>
-        environment.create(PROJECT, { name: "DATABASE_URL", value: "postgres://elsewhere/app" }),
-      ),
-    );
-    const prepared = await prepare();
-    expect(prepared.env["DATABASE_URL"]).toBeUndefined();
-    expect(prepared.env["PGDATABASE"]).toBe(OWN);
-    expect(prepared.views.map((view) => resourceStatusLine(view, clock))).toEqual([
-      "@db · DATABASE_URL left as the project sets it",
-    ]);
-  });
-
-  it("answers the agent's mend resource as the session's owner", async () => {
-    const list = await fromSession("list");
-    expect(list).toEqual([
-      "@cache · running · shared · observed 0 s ago",
-      expect.stringMatching(
-        /^@db · running · own database · copied from shared .+ · observed 0 s ago$/,
-      ),
-      "@mail · running · its own instance · observed 0 s ago",
-      ".mend/mend.toml · observed on the worktree",
-      "@mail · mailpit · worktree · in .mend/mend.toml · same as settings",
-      "  resource.mail.device · is ignored: this Mend does not read it",
-    ]);
-    for (const secret of ["hunter2", "u-tom", "u-maria", DIGEST]) {
-      expect(JSON.stringify(list)).not.toContain(secret);
-    }
-    expect(await fromSession("stop", "db")).toEqual([
-      expect.stringMatching(/^@db · postgres 17 · project · added by Maria · stopped by Tom · /),
-    ]);
-    expect(await fromSession("start", "db")).toEqual([
-      expect.stringMatching(/^@db · postgres 17 · project · added by Maria · running · /),
-    ]);
-    // Tom owns the worktree's first session, so its choices are his.
-    expect(await fromSession("use", "cache", "off")).toEqual([
-      "@cache · off · agents and shells keep their env until they restart",
-    ]);
-    expect(restarted).toEqual(["wt-res u-tom"]);
-    // The same choice again changes nothing, so nothing restarts.
-    await fromSession("use", "cache", "off");
-    expect(restarted).toEqual(["wt-res u-tom"]);
-    expect(await fromSession("use", "db", "copy")).toEqual([
-      "refused: name a choice: mend resource use db shared|own|off",
-    ]);
-    const exports = await fromSession("env");
-    expect(exports).toContain(`export PGDATABASE='${OWN}'`);
-    expect(exports).toContain("# @db · DATABASE_URL left as the project sets it");
-    expect(exports.some((line) => line.includes("REDIS_URL"))).toBe(false);
-    expect(await fromSession("stop", "nope")).toEqual([
-      "refused: no @nope in this project · mend resource list shows them",
-    ]);
-  });
-
-  it("shows a load while it runs, and the runtime's line again once it has finished", async () => {
-    const load = (phase: StoredResourceLoad["phase"]): StoredResourceLoad => ({
-      id: ResourceLoadId.make("rload_1"),
-      projectId: PROJECT,
-      definitionId: db.id,
-      worktreeId: WORKTREE,
-      instanceKey: db.id,
-      database: OWN,
-      target: "own",
-      label: "staging.dump",
-      startedBy: "u-tom",
-      phase,
-      bytesDone: 40_000_000,
-      bytesTotal: 120_000_000,
-      savedPath: null,
-      savedAt: null,
-      message: null,
-      createdAt: new Date(),
+  it("requires restart for a differing definition and replaces it only when requested", async () => {
+    file.text = file.text.replace('image = "postgres:17"', 'image = "postgres:18"');
+    const refused = await start();
+    expect(refused).toMatchObject({
+      kind: "needs-restart",
+      statusLine: "@db · project · definition differs from this worktree",
+      hint: "mend resource start db --project --restart",
+      worktrees: [{ id: WORKTREE, name: "wt-res" }],
     });
-    const dbLine = async () => (await fromSession("list")).find((line) => line.startsWith("@db"));
-    try {
-      loadRows = [load("restoring")];
-      expect(await dbLine()).toMatch(/^@db · loading staging\.dump · restoring /);
-      for (const phase of ["done", "failed"] as const) {
-        loadRows = [load(phase)];
-        expect(await dbLine()).toMatch(/^@db · running · own database · /);
-      }
-    } finally {
-      loadRows = [];
-    }
+    expect(sealant.calls).toEqual([]);
+    await start("db", "project", true);
+    expect(sealant.specs.get(db.id)?.image).toContain("postgres:18@");
   });
 
-  it("resets a worktree's own database: saves a dump, then copies shared again", async () => {
-    sealant.execAnswer = "saved copied";
-    const lines = await fromSession("reset", "db");
-    expect(lines).toEqual([
-      expect.stringMatching(
-        /^@db · own database reset · copied from shared · previous data saved as a dump .+$/,
-      ),
-    ]);
-    expect(sealant.calls.filter((call) => call.startsWith("exec"))).toEqual([
-      `exec ${db.id} root `,
-      expect.stringMatching(
-        new RegExp(
-          `^exec ${db.id} postgres ${OWN} app 1 /mend/dumps/${OWN}-\\d{8}T\\d{6}Z\\.dump$`,
-        ),
-      ),
-    ]);
-    sealant.execAnswer = "saved empty";
-    expect(await fromSession("reset", "db", "--target", "shared")).toEqual([
-      expect.stringMatching(
-        /^@db · shared database reset · empty · previous data saved as a dump /,
-      ),
-    ]);
-    expect(await fromSession("reset", "cache")).toEqual([
-      "refused: @cache · a reset saves and empties a Postgres database, and @cache is not one",
-    ]);
-    sealant.execAnswer = "copied";
+  it("requires restart independently for a changed worktree image", async () => {
+    await start("cache", "worktree");
+    file.text = file.text.replace('image = "redis:8"', 'image = "redis:9"');
+    sealant.calls.length = 0;
+    const answer = await start("cache", "worktree");
+    expect(answer).toMatchObject({
+      kind: "needs-restart",
+      hint: "mend resource start cache --worktree --restart",
+      worktrees: [{ id: WORKTREE, name: "wt-res" }],
+    });
+    expect(sealant.calls).toEqual([]);
+    await start("cache", "worktree", true);
+    expect(sealant.specs.get(`${cache.id}@${WORKTREE}`)?.image).toContain("redis:9@");
   });
 
-  it("answers a file that does not parse over HTTP with its stamp and position, never its source", async () => {
-    file = {
-      text: VERIFIER_FILE,
-      stamp: { ...WORKTREE_STAMP, source: "capture", captureN: 2, seq: "1", partial: true },
-    };
-    const registry = await runtime.runPromise(
+  it("refuses an invalid file even when an older instance is remembered", async () => {
+    file.text = '[resource.db]\nimage = "postgres:17"\nports = { postgres = 70000 }';
+    const answer = await fromSession("start", "db", "--project");
+    expect(answer[0]).toContain("refused:");
+    expect(sealant.calls).toEqual([]);
+  });
+
+  it("allows off after the last remembered instance is removed", async () => {
+    await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.removeInstance(cache.id, null)),
+    );
+    const answer = await runtime.runPromise(
+      Effect.flatMap(Resources, (actions) =>
+        actions.use(awaitedProject, maria, WORKTREE, "cache", "off", clock),
+      ),
+    );
+    expect(answer.mode).toBe("off");
+  });
+
+  it("relinks every live workspace when a project resource is started", async () => {
+    const other = SessionId.make("s-relink");
+    const otherWorktree = WorktreeId.make("wt-relink");
+    await runtime.runPromise(
       Effect.gen(function* () {
-        return yield* SessionChannelRegistry;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO worktrees(id, project_id, name, directory, branch, base_sha) VALUES (${otherWorktree}, ${PROJECT}, 'relink', 'relink', 'mend/relink', 'abc')`;
+        const original = yield* (yield* SessionsRepo).byId(SESSION);
+        yield* (yield* SessionsRepo).create({
+          ...original,
+          id: other,
+          worktreeId: otherWorktree,
+          worktree: "relink",
+          branch: "mend/relink",
+          baseRef: "main",
+        });
+        yield* sql`UPDATE agent_sessions SET status = 'running', sealant_workspace_id = CASE WHEN id = ${SESSION} THEN 'ws-first' ELSE 'ws-other' END WHERE id IN (${SESSION}, ${other})`;
       }),
     );
-    const server = http.createServer((request, response) => {
-      void handleSessionRequest(sessionApi, request, response, registry);
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    try {
-      const address = server.address();
-      const port = typeof address === "object" && address !== null ? address.port : 0;
-      const response = await fetch(`http://127.0.0.1:${port}/resources?timeZone=Europe%2FAthens`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ argv: ["list"] }),
-      });
-      const wire = await response.text();
-      expect(response.status).toBe(200);
-      expect(JSON.parse(wire).lines.at(-1)).toBe(
-        ".mend/mend.toml · observed at capture 2 · seq 1 · partial · .mend/mend.toml is not valid TOML: line 5, column 44 · unexpected character encountered",
-      );
-      for (const excerpt of ["fake-value-gate1201", "MP_UI_AUTH", "BAD", "/dev/null"]) {
-        expect(wire).not.toContain(excerpt);
-      }
-    } finally {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  });
-
-  it("archives a removed definition's instances and keeps their volumes", async () => {
-    const lines = await fromSession("remove", "cache");
-    expect(lines).toEqual(["@cache · definition removed · its volumes are kept"]);
-    expect(sealant.calls).toContain(`archive ${cache.id}`);
-  });
-
-  it("refuses a person's read of a project they cannot see, in the service itself", async () => {
-    const outcome = await runtime.runPromise(
+    await start();
+    expect(sealant.calls).toContain("link ws-first wt-res");
+    expect(sealant.calls).toContain("link ws-other wt-relink");
+    await runtime.runPromise(
       Effect.gen(function* () {
-        const project = yield* (yield* ProjectsRepo).byId(PROJECT);
-        const outsider: Viewer = {
-          userId: "eve",
-          organizationId: OrganizationId.make("org-elsewhere"),
-          role: "owner",
-        };
-        return yield* (yield* Resources).list(project, outsider, null, clock);
-      }).pipe(Effect.result),
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_sessions SET sealant_workspace_id = null, status = 'starting' WHERE id = ${SESSION}`;
+        yield* sql`DELETE FROM agent_sessions WHERE id = ${other}`;
+        yield* sql`DELETE FROM worktrees WHERE id = ${otherWorktree}`;
+      }),
     );
-    expect(Result.isFailure(outcome) ? outcome.failure : "read").toMatchObject({
-      _tag: "ResourceActRefusedError",
-      message: "is not a project you can see",
+  });
+
+  it("uses a differing project Postgres server for its own database without replacing it", async () => {
+    file.text = file.text.replace('image = "postgres:17"', 'image = "postgres:18"');
+    const answer = await start("db", "worktree");
+    expect(answer.kind === "started" && answer.message).toContain(
+      "@db · own database on the project server (postgres:17) · this worktree's file asks postgres:18",
+    );
+    expect(sealant.specs.get(db.id)?.image).toBe(db.image);
+    expect((await prepare()).env.MEND_DB_DATABASE).toBe(OWN);
+    expect(
+      (
+        await runtime.runPromise(
+          Effect.flatMap(ResourcesRepo, (repo) => repo.listForProject(PROJECT)),
+        )
+      ).filter((row) => row.spec.name === "db"),
+    ).toHaveLength(1);
+  });
+
+  it("creates the project server first when starting an own Postgres database", async () => {
+    await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.removeInstance(db.id, null)),
+    );
+    const answer = await start("db", "worktree");
+    expect(answer.kind === "started" && answer.message).toContain(
+      "started the project server for it",
+    );
+    expect(sealant.calls.findIndex((line) => line.startsWith("up "))).toBeLessThan(
+      sealant.calls.findIndex((line) => line.startsWith("exec ")),
+    );
+  });
+
+  it("starts remembered state when the table is missing, and refuses an unknown name", async () => {
+    file.text = "";
+    expect(await start()).toMatchObject({
+      kind: "started",
+      message: "not in this worktree's .mend/mend.toml · started as it last ran",
     });
+    expect(await fromSession("start", "missing", "--project")).toEqual([
+      "refused: no [resource.missing] in this worktree's .mend/mend.toml",
+    ]);
+    expect(await fromSession("start", "db")).toEqual([
+      "refused: choose a level: mend resource start db --project or --worktree",
+    ]);
+  });
+
+  it("refuses use of a missing target, then switches, restarts Services and excludes the calling session", async () => {
+    expect(await fromSession("use", "db", "worktree")).toEqual([
+      "refused: @db · no own database yet · mend resource start db --worktree",
+    ]);
+    await start("db", "worktree");
+    told.length = 0;
+    restarted.length = 0;
+    const answer = await fromSession("use", "db", "shared");
+    expect(answer.join(" ")).toContain("Changed: MEND_DB_URL, MEND_DB_DATABASE.");
+    expect(answer.join(" ")).toContain("Printing values does not update your shell.");
+    expect(told).toEqual([{ message: answer[0], except: SESSION }]);
+    expect(restarted).toEqual([`${WORKTREE} u-tom`]);
+  });
+
+  it("resolves Service references and refuses missing or person-stopped dependencies", async () => {
+    const resolved = await prepare([{ kind: "resource", name: "db", env: {} }], {
+      DATABASE_URL: "${MEND_DB_URL}",
+    });
+    expect(resolved.env.DATABASE_URL).toBe("postgres://postgres@db:5432/app");
+    await fromSession("use", "db", "off");
+    expect((await prepare([{ kind: "resource", name: "db", env: {} }])).refusal).toBe(
+      "process needs @db · @db is not running for this worktree · mend resource start db --project or --worktree",
+    );
+    await fromSession("use", "db", "project");
+    await start();
+    await runtime.runPromise(
+      Effect.flatMap(Resources, (actions) =>
+        actions.stop(awaitedProject, maria, "db", { worktreeId: WORKTREE }, clock),
+      ),
+    );
+    expect((await prepare([{ kind: "resource", name: "db", env: {} }])).refusal).toBe(
+      "@db stopped by u-tom",
+    );
+  });
+
+  it("archives one instance, keeping identity, other instances and own database inventory", async () => {
+    await start("cache", "worktree");
+    const answer = await runtime.runPromise(
+      Effect.flatMap(Resources, (actions) =>
+        actions.remove(awaitedProject, maria, "cache", {
+          level: "worktree",
+          worktreeId: WORKTREE,
+        }),
+      ),
+    );
+    expect(answer.statusLine).toBe("@cache · worktree · archived · volumes kept");
+    expect(sealant.calls).toContain(`archive ${cache.id}@${WORKTREE}`);
+    expect(
+      await runtime.runPromise(
+        Effect.flatMap(ResourcesRepo, (repo) => repo.byName(PROJECT, "cache")),
+      ),
+    ).not.toBeNull();
+  });
+
+  it("keeps malformed file source out of the status response", async () => {
+    file.text = VERIFIER_FILE;
+    const page = await runtime.runPromise(
+      Effect.flatMap(Resources, (actions) => actions.list(awaitedProject, maria, WORKTREE, clock)),
+    );
+    expect(page.file.kind).toBe("unparsed");
+    expect(JSON.stringify(page)).not.toContain("fake-value-gate1201");
+  });
+  it("tells only other live agent sessions, as the switching person, and reports refused sends", async () => {
+    const other = SessionId.make("s-other-agent");
+    const shell = SessionId.make("s-shell-only");
+    const sent: Array<{ sessionId: SessionId; sender: string; message: string }> = [];
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const original = yield* sessions.byId(SESSION);
+        yield* (yield* SessionProcessesRepo).create({
+          sessionId: SESSION,
+          sealantWorkspaceId: SealantWorkspaceId.make("ws-original"),
+          sealantSessionId: null,
+          kind: "agent-protocol",
+          label: "current agent",
+          argv: ["codex"],
+        });
+        for (const [id, label, kind] of [
+          [other, "other agent", "agent-protocol"],
+          [shell, "shell only", "shell"],
+        ] as const) {
+          yield* sessions.create({ ...original, id, label, baseRef: original.baseRef ?? "main" });
+          yield* sessions.setStatus(id, "running");
+          yield* (yield* SessionProcessesRepo).create({
+            sessionId: id,
+            sealantWorkspaceId: SealantWorkspaceId.make(`ws-${id}`),
+            sealantSessionId: null,
+            kind,
+            label,
+            argv: ["codex"],
+          });
+        }
+        yield* sessions.setStatus(SESSION, "running");
+        const live = WorktreeServiceRestartsLive.pipe(
+          Layer.provide(
+            Layer.mock(SessionEngine, {
+              launchUnderWay: () => false,
+              sendMessage: (input) =>
+                Effect.gen(function* () {
+                  sent.push({
+                    sessionId: input.sessionId,
+                    sender: input.sender,
+                    message: input.input,
+                  });
+                  return yield* new SessionTurnRefusedError({
+                    sessionId: input.sessionId,
+                    message: "shared control is off",
+                  });
+                }),
+            }),
+          ),
+        );
+        const failed = yield* Effect.flatMap(WorktreeServiceRestarts, (service) =>
+          service.tell(WORKTREE, "u-tom", "switch message", SESSION),
+        ).pipe(Effect.provide(live));
+        expect(failed).toEqual(["could not tell the agent in other agent: shared control is off"]);
+      }),
+    );
+    expect(sent).toEqual([{ sessionId: other, sender: "u-tom", message: "switch message" }]);
   });
 });

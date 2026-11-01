@@ -51,7 +51,6 @@ describe("a resource archive", () => {
       name: ResourceName.make("db"),
       preset: "postgres",
       version: PresetVersion.make("17"),
-      scope: "project",
     });
     expect(
       resourceStatusLine(

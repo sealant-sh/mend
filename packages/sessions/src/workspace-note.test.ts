@@ -364,11 +364,22 @@ describe("workspace note", () => {
 it("writes resource observations and env names without resolving values", () => {
   const line = "@db · running · own database · observed 3 s ago";
   const note = resourcesNote([
-    { statusLine: line, envNames: ["DATABASE_URL", "MEND_RESOURCE_DB_URL"] },
+    {
+      statusLine: line,
+      envNames: ["MEND_DB_URL"],
+      available: { name: "db", kind: "Postgres", level: "project", urlName: "MEND_DB_URL" },
+      postgresName: "db",
+    },
   ]);
   expect(note).toContain("## Mend Resources");
   expect(note).toContain(line);
-  expect(note).toContain("DATABASE_URL, MEND_RESOURCE_DB_URL");
+  expect(note).toContain("@db · Postgres · project · MEND_DB_URL\n" + line);
+  expect(note).toContain(
+    "MEND_* resource values are fixed when a process starts. After a switch, already-running processes, including your own shell, keep the old values. Run mend resource env to print the current values, or restart the process to receive them. Printing values does not update your shell.",
+  );
+  expect(note).toContain(
+    "Before changing the database schema, start your own worktree database: mend resource start db --worktree.",
+  );
   for (const verb of ["list", "start", "stop", "use", "reset", "load", "env"])
     expect(note).toContain(verb);
   expect(note).not.toContain("postgres://");

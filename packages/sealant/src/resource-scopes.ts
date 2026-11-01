@@ -57,6 +57,7 @@ export interface ResourceScope {
   readonly link: (
     workspaceId: string,
     worktreeKey: string,
+    aliases: Readonly<Record<string, "project" | "worktree">>,
   ) => Effect.Effect<void, SealantPlatformError>;
 }
 
@@ -128,7 +129,8 @@ export const ResourceScopesLive: Layer.Layer<ResourceScopes, never, SealantEnv> 
           ),
         archive: (key) =>
           wrap(() => client.instances.archive(key)).pipe(Effect.map((answer) => answer.volumes)),
-        link: (workspaceId, worktreeKey) =>
+        link: (workspaceId, worktreeKey, _aliases) =>
+          // Core PR sealant-sh/sealant feat/resource-link-aliases adds aliases; keep the pinned SDK.
           wrap(() => client.workspaces.link(workspaceId, { worktreeKey })).pipe(Effect.asVoid),
       };
     };

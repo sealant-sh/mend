@@ -4,7 +4,7 @@ import {
   ResourceLoadsRepo,
   ResourcesRepo,
   SessionsRepo,
-  type StoredResourceDefinition,
+  type StoredResourceInstance,
   type StoredResourceLoad,
   WorktreesRepo,
 } from "@mend/db";
@@ -30,17 +30,17 @@ const spec = presetDefinition({
   name: ResourceName.make("db"),
   preset: "postgres",
   version: PresetVersion.make("17"),
-  scope: "project",
 });
-const def: StoredResourceDefinition = {
+const def: StoredResourceInstance = {
   id: ResourceDefinitionId.make("def-load"),
   projectId,
   spec,
   specDigest: resourceSpecDigest(spec),
   imageDigest: ImageDigest.make(`sha256:${"a".repeat(64)}`),
   image: "postgres:17",
-  addedBy: "alice",
-  createdAt: new Date(),
+  startedBy: "alice",
+  startedAt: new Date(),
+  worktreeId: null,
   updatedAt: new Date(),
 };
 const project = {
@@ -141,7 +141,7 @@ const world = (
     Layer.mock(ResourcesRepo, {
       byName: () => Effect.succeed(def),
       listForProject: () => Effect.succeed([def]),
-      listWithChoices: () => Effect.succeed([{ definition: def, choice: "own" }]),
+      listWithChoices: () => Effect.succeed([{ definition: def, choice: "worktree" }]),
     }),
     Layer.succeed(ResourceScopes, { of: () => Effect.succeed(scope) }),
     Layer.mock(ResourceRuntime, {

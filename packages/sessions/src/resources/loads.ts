@@ -4,7 +4,7 @@ import {
   ResourceLoadsRepo,
   ResourcesRepo,
   SessionsRepo,
-  type StoredResourceDefinition,
+  type StoredResourceInstance,
   type StoredResourceLoad,
   WorktreesRepo,
 } from "@mend/db";
@@ -97,7 +97,7 @@ export class ResourceLoads extends Context.Service<
 
 const answer = (
   row: StoredResourceLoad,
-  definition: StoredResourceDefinition,
+  definition: StoredResourceInstance,
   clock: ReaderClock,
 ): ResourceLoadAnswer => ({
   id: row.id,
@@ -327,18 +327,17 @@ export const ResourceLoadsLive: Layer.Layer<ResourceLoads, never, Needs> = Layer
         }
         const choice =
           input.worktreeId === null
-            ? "shared"
+            ? "project"
             : choiceInEffect(
-                definition.spec,
                 (yield* definitions.listWithChoices(project.id, input.worktreeId)).find(
                   (d) => d.definition.id === definition.id,
                 )?.choice ?? null,
               );
         const target =
-          definition.spec.scope === "worktree"
+          definition.worktreeId !== null
             ? "own"
-            : (input.target ?? (choice === "own" ? "own" : "shared"));
-        if ((target === "own" || definition.spec.scope === "worktree") && input.worktreeId === null)
+            : (input.target ?? (choice === "worktree" ? "own" : "shared"));
+        if ((target === "own" || definition.worktreeId !== null) && input.worktreeId === null)
           return yield* refused("name the worktree whose database to load: --worktree <w>");
         if (target === "own" && input.worktreeId !== null) {
           const denial = resourceActRefusal(project, viewer, {
@@ -363,10 +362,10 @@ export const ResourceLoadsLive: Layer.Layer<ResourceLoads, never, Needs> = Layer
           worktreeId: input.worktreeId,
           instanceKey: resourceInstanceKey(
             definition.id,
-            definition.spec.scope === "worktree" ? input.worktreeId : null,
+            definition.worktreeId !== null ? input.worktreeId : null,
           ),
           database:
-            target === "own" && definition.spec.scope === "project" && input.worktreeId !== null
+            target === "own" && definition.worktreeId === null && input.worktreeId !== null
               ? ownDatabaseName(input.worktreeId)
               : SHARED_DATABASE,
           target,

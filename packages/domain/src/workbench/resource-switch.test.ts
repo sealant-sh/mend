@@ -53,4 +53,13 @@ describe("resource switches", () => {
       ),
     ).toEqual(["MEND_DB_URL", "MEND_DB_USER", "MEND_DB_DATABASE", "MEND_DB_EXTRA"]);
   });
+  it("keeps declared URL-like exports after the standard fields", () => {
+    expect(
+      changedResourceEnvNames(
+        { MEND_DB_URL: "old", MEND_DB_SMTP_URL: "old" },
+        { MEND_DB_URL: "new", MEND_DB_SMTP_URL: "new", MEND_DB_DATABASE: "own" },
+        "MEND_DB_",
+      ),
+    ).toEqual(["MEND_DB_URL", "MEND_DB_DATABASE", "MEND_DB_SMTP_URL"]);
+  });
 });

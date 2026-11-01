@@ -16,7 +16,7 @@ import {
   type RecipeReady,
   type RepoRelativePath,
   repoRelativePathOf,
-  type ResourceDefinitionInput,
+  type ResourceDefinition,
   parseServiceDependency,
   resourceDependenciesOf,
   serviceDependenciesOf,
@@ -126,7 +126,7 @@ export interface MendTomlFile {
   readonly path?: string;
   readonly recipes: ReadonlyArray<ServiceRecipe>;
   /** `[resource.*]` tables (ADR 0019); their refusals and ignored keys join the file's. */
-  readonly resources: ReadonlyArray<ResourceDefinitionInput>;
+  readonly resources: ReadonlyArray<ResourceDefinition>;
   readonly refused: ReadonlyArray<RecipeRefusal>;
   readonly ignored: ReadonlyArray<IgnoredDeclaration>;
   /** `[preview].service` as written; checked against the merged recipes. */

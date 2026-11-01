@@ -1,56 +1,49 @@
 import {
-  type DefinitionVersion,
-  type DefinitionWithChoice,
   OrganizationsRepo,
   ProjectsRepo,
-  ResourceDefinitionNotFoundError,
-  ResourceDefinitionRefusedError,
-  type ResourceDefinitionStaleError,
-  type ResourceSelectionRefusedError,
   ResourcesRepo,
   SessionsRepo,
-  type StoredResourceDefinition,
-  UsersRepo,
+  type StoredResourceInstance,
+  type StoredResourceIdentity,
   WorktreesRepo,
+  ResourceDefinitionRefusedError,
 } from "@mend/db";
-import type { ProjectId, ResourceDefinitionId, SessionId, WorktreeId } from "@mend/domain";
+import type { ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import {
-  choiceInEffect,
-  choicesFor,
-  PRESET_VERSION_RULE,
-  presetDefinition,
-  PresetVersion,
+  ResourceRefusal,
   type ProjectTenancy,
   type ResourceAct,
   resourceActRefusal,
-  ResourceAddInput,
-  type ResourceAddOffer,
-  type ResourceAdded,
-  resourceAdditionOf,
   type ResourceControlled,
-  resourceDeclarationRefusals,
-  type ResourceDefinitionInput,
   type ResourceEnvAnswer,
   type ResourceFileRead,
   type ResourceFileTable,
-  type ResourceInstanceKind,
-  resourcePositionals,
-  ResourceRefusal,
-  resourceRefusalWords,
   type ResourceSelectionEntry,
   type ResourceSessionAnswer,
   type ResourceSettingEntry,
-  type ResourceSettingsState,
   type ResourcesPage,
-  type ResourceSpecDigest,
   resourceSpecDigest,
   resourceStatusLine,
-  type ResourceStatusView,
   resourceTableNotices,
   shellExports,
   type Viewer,
-  WorktreeChoice,
-  withPresetCommand,
+  type WorktreeChoice,
+  type ResourceLevel,
+  type ResourceStartOptions,
+  type ResourceStopOptions,
+  type ResourceStarted,
+  resourceDefinitionRefusals,
+  envCollisionRefusals,
+  changesWhatOwnIs,
+  resourceBindings,
+  choiceInEffect,
+  resourceEnvPrefix,
+  changedResourceEnvNames,
+  resourceSwitchMessage,
+  resourcePositionals,
+  resourceLevelFlag,
+  resourceLevelHint,
+  resourceChoiceOf,
 } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -66,8 +59,8 @@ import {
 } from "./image-resolver.ts";
 import { type InstanceObserved, ResourceRuntime } from "./runtime.ts";
 import { WorktreeServiceRestarts } from "./service-restarts.ts";
-import { ResourceStatusReads, resourceViewOf as viewOf } from "./status-reads.ts";
-import { readWorktreeTables } from "./worktree-tables.ts";
+import { ResourceStatusReads } from "./status-reads.ts";
+import { readWorktreeTables, tablesOf } from "./worktree-tables.ts";
 
 /** A project as the resource rules read it. */
 export type ResourceProject = ProjectTenancy & { readonly id: ProjectId };
@@ -92,7 +85,7 @@ export class ResourceImageRefusedError extends Schema.TaggedError<ResourceImageR
   },
 ) {}
 
-/** Settings hold no resource by this name. */
+/** Mend remembers no resource by this name. */
 export class ResourceNameNotFoundError extends Schema.TaggedError<ResourceNameNotFoundError>()(
   "ResourceNameNotFoundError",
   { name: Schema.String },
@@ -116,65 +109,34 @@ export interface ReaderClock {
   readonly timeZone: string;
 }
 
-/**
- * The one owner of a project's resources (ADR 0019). Callers hand it a person they authenticated
- * and a project they resolved; every act passes `resourceActRefusal` here. The agent in a session
- * acts as the session's owner (`forSession`).
- */
+/** Resource operations authenticated at their common application boundary. */
 export class Resources extends Context.Service<
   Resources,
   {
-    /** Settings, each with its status line, and when `worktreeId` is set that worktree's file. */
     readonly list: (
       project: ResourceProject,
       viewer: Viewer,
       worktreeId: WorktreeId | null,
       clock: ReaderClock,
     ) => Effect.Effect<ResourcesPage, ResourceActRefusedError>;
-    /**
-     * Adds the definition `input` names to settings, or replaces the one they hold under its
-     * name, and starts it: a project resource at once, a worktree resource in `worktreeId` when one
-     * is named. The image is pinned before anything is written.
-     */
-    readonly add: (
-      project: ResourceProject,
-      viewer: Viewer,
-      input: ResourceAddInput,
-      worktreeId: WorktreeId | null,
-      clock: ReaderClock,
-    ) => Effect.Effect<
-      ResourceAdded,
-      ResourceActRefusedError | ResourceDefinitionRefusedError | ResourceImageRefusedError
-    >;
-    /** Removes the definition while it holds the spec read, and archives its instances. */
     readonly remove: (
       project: ResourceProject,
       viewer: Viewer,
-      version: DefinitionVersion,
+      name: string,
+      options: { readonly level: ResourceLevel; readonly worktreeId: WorktreeId },
     ) => Effect.Effect<
       { readonly statusLine: string },
-      ResourceActRefusedError | ResourceDefinitionNotFoundError | ResourceDefinitionStaleError
+      ResourceActRefusedError | ResourceNameNotFoundError
     >;
-    /**
-     * Stores the worktree's choice and, when what it uses changed, restarts its running Services
-     * so they open with the new env. Answers the row written, its line naming what restarted.
-     */
     readonly use: (
       project: ResourceProject,
       viewer: Viewer,
       worktreeId: WorktreeId,
-      definitionId: ResourceDefinitionId,
+      name: string,
       mode: WorktreeChoice,
       clock: ReaderClock,
-    ) => Effect.Effect<
-      ResourceSelectionEntry,
-      ResourceActRefusedError | ResourceDefinitionNotFoundError | ResourceSelectionRefusedError
-    >;
-    /**
-     * Saves a Postgres database as a dump, then empties it: the worktree's own one is copied from
-     * shared again when shared has tables. `target` defaults to what the worktree uses. Resetting
-     * an own database is the worktree's change owner's; the shared one, any member's.
-     */
+      except?: SessionId,
+    ) => Effect.Effect<ResourceSelectionEntry, ResourceActRefusedError | ResourceNameNotFoundError>;
     readonly reset: (
       project: ResourceProject,
       viewer: Viewer,
@@ -186,39 +148,30 @@ export class Resources extends Context.Service<
       { readonly statusLine: string },
       ResourceActRefusedError | ResourceNameNotFoundError | ResourceNotResetError
     >;
-    /** A person's start, which clears a person's stop; `worktreeId` for a worktree resource. */
     readonly start: (
       project: ResourceProject,
       viewer: Viewer,
       name: string,
-      worktreeId: WorktreeId | null,
+      options: ResourceStartOptions,
       clock: ReaderClock,
+      except?: SessionId,
     ) => Effect.Effect<
-      ResourceControlled,
-      ResourceActRefusedError | ResourceNameNotFoundError | ResourceWorktreeNeededError
+      ResourceStarted,
+      ResourceActRefusedError | ResourceDefinitionRefusedError | ResourceImageRefusedError
     >;
-    /** A person's stop, which holds against every launch until a person starts it. */
     readonly stop: (
       project: ResourceProject,
       viewer: Viewer,
       name: string,
-      worktreeId: WorktreeId | null,
+      options: ResourceStopOptions,
       clock: ReaderClock,
-    ) => Effect.Effect<
-      ResourceControlled,
-      ResourceActRefusedError | ResourceNameNotFoundError | ResourceWorktreeNeededError
-    >;
-    /** What every process in the worktree is told of its resources now; nothing is started. */
+    ) => Effect.Effect<ResourceControlled, ResourceActRefusedError | ResourceNameNotFoundError>;
     readonly env: (
       project: ResourceProject,
       viewer: Viewer,
       worktreeId: WorktreeId,
       clock: ReaderClock,
     ) => Effect.Effect<ResourceEnvAnswer, ResourceActRefusedError>;
-    /**
-     * `mend resource <argv>` from inside a session, decided as the session's owner (ADR 0019,
-     * story 8) for the session's worktree; answers the lines the helper prints.
-     */
     readonly forSession: (
       sessionId: SessionId,
       argv: ReadonlyArray<string>,
@@ -227,146 +180,60 @@ export class Resources extends Context.Service<
   }
 >()("@mend/sessions/Resources") {}
 
+const refused = (message: string) => new ResourceActRefusedError({ message });
 const decide = (project: ResourceProject, viewer: Viewer, act: ResourceAct) => {
   const refusal = resourceActRefusal(project, viewer, act);
-  return refusal === null
-    ? Effect.void
-    : Effect.fail(new ResourceActRefusedError({ message: refusal }));
+  return refusal === null ? Effect.void : Effect.fail(refused(refusal));
 };
-
-const allows = (project: ResourceProject, viewer: Viewer, act: ResourceAct) =>
-  resourceActRefusal(project, viewer, act) === null;
-
-/**
- * Who reads a page, and the worktree it is read for with that worktree's change owner: what every
- * flag on it is decided for, by the same `resourceActRefusal` the acts pass.
- */
-interface PageReader {
-  readonly project: ResourceProject;
-  readonly viewer: Viewer;
-  readonly worktree: { readonly id: WorktreeId; readonly changeOwner: string | null } | null;
-}
-
-/**
- * What settings hold, as one read listed them: each definition by name, and the state the
- * declaration rules decide against (`resourceDeclarationRefusals`).
- */
-interface SettingsRead {
-  readonly byName: ReadonlyMap<string, DefinitionWithChoice>;
-  readonly state: ResourceSettingsState;
-}
-
-/** `owning`: how many worktrees hold each definition as `own`, which a new scope or preset would strand. */
-const settingsRead = (
-  projectId: ProjectId,
-  listed: ReadonlyArray<DefinitionWithChoice>,
-  owning: ReadonlyMap<ResourceDefinitionId, number>,
-): SettingsRead => ({
-  byName: new Map(listed.map((each) => [each.definition.spec.name, each])),
-  state: {
-    projectId,
-    definitions: listed.map(({ definition }) => ({
-      spec: definition.spec,
-      digest: definition.specDigest,
-      owning: owning.get(definition.id) ?? 0,
-    })),
-  },
-});
-
-/** How a `.mend/mend.toml` table stands against what settings hold under its name. */
-const againstSettings = (
-  settings: SettingsRead,
-  spec: ResourceDefinitionInput,
-  digest: ResourceSpecDigest,
-) => {
-  const held = settings.byName.get(spec.name);
-  return held === undefined ? "absent" : held.definition.specDigest === digest ? "same" : "differs";
-};
-
-/**
- * Whether the reader may add a `.mend/mend.toml` table as it stands, decided in the add route's order:
- * settings holding it already, whose act it is (`resourceActRefusal`), then the rules
- * (`resourceDeclarationRefusals`).
- */
-const addOffer = (
-  reader: PageReader,
-  settings: SettingsRead,
-  spec: ResourceDefinitionInput,
-  digest: ResourceSpecDigest,
-): ResourceAddOffer => {
-  const held = settings.byName.get(spec.name)?.definition ?? null;
-  if (held?.specDigest === digest) return { kind: "added" };
-  const denied = resourceActRefusal(reader.project, reader.viewer, {
-    kind: "add",
-    replaces: held === null ? null : { addedBy: held.addedBy },
-  });
-  if (denied !== null) return { kind: "denied", message: denied };
-  const refusals = resourceDeclarationRefusals(settings.state, spec);
-  return refusals.length > 0 ? { kind: "rejected", refusals } : { kind: "ready" };
-};
-
-/** Whether the reader may choose how the read worktree uses `spec`; a worktree resource has no choice. */
-const mayChoose = (reader: PageReader, spec: ResourceDefinitionInput) =>
-  reader.worktree !== null &&
-  choicesFor(spec).length > 0 &&
-  allows(reader.project, reader.viewer, { kind: "use", changeOwner: reader.worktree.changeOwner });
-
-const isPresetVersion = Schema.is(PresetVersion);
-
-/** A preset's definition, refused on `version` when the tag names no major. */
-const presetSpec = (input: Extract<ResourceAddInput, { readonly kind: "preset" }>) => {
-  const { version } = input;
-  return isPresetVersion(version)
-    ? Effect.succeed(presetDefinition({ ...input, version }))
-    : Effect.fail(
-        new ResourceDefinitionRefusedError({
-          name: input.name,
-          refusals: [{ key: "version", message: PRESET_VERSION_RULE }],
-        }),
-      );
-};
-
-/** A session's page as lines: each status line, then its worktree's `.mend/mend.toml`. */
-const pageLines = (page: ResourcesPage): ReadonlyArray<string> => {
-  const lines = page.settings.map((entry) => entry.statusLine);
-  const file = page.file;
-  if (file.kind === "unavailable") return [...lines, file.message];
-  if (file.kind === "unparsed") {
-    return [...lines, `${file.observed} · ${file.message}`];
-  }
-  if (file.kind !== "read") return lines.length === 0 ? ["no resources in this project"] : lines;
-  const notices = resourceTableNotices(file);
-  return [
-    ...lines,
-    ...(file.tables.length + notices.length === 0 ? [] : [file.observed]),
-    ...file.tables.map((table) => table.statusLine),
-    ...notices.map((notice) => `  ${notice}`),
-  ];
-};
-
-/** A session's answer: the lines the helper prints. */
-const lines = (...each: ReadonlyArray<string>): ResourceSessionAnswer => ({ lines: each });
-
-const SESSION_USAGE =
-  "mend resource list · add NAME (--preset P --version V | --image I --port N=P) [--scope worktree] · remove|start|stop NAME · use NAME shared|own|off · reset NAME [--target shared|own] · env";
-
-/** The value after `flag`, or null. */
+const pageLines = (page: ResourcesPage): ReadonlyArray<string> => [
+  ...page.settings.map((entry) => entry.statusLine),
+  ...(page.file.kind === "read"
+    ? [...page.file.tables.map((entry) => entry.statusLine), ...resourceTableNotices(page.file)]
+    : page.file.kind === "unavailable" || page.file.kind === "unparsed"
+      ? [page.file.message]
+      : []),
+];
 const flagOf = (args: ReadonlyArray<string>, flag: string): string | null => {
   const at = args.indexOf(flag);
   const value = at === -1 ? undefined : args[at + 1];
   return value === undefined || value.startsWith("--") ? null : value;
 };
+const SESSION_USAGE =
+  "mend resource list · start <name> --project|--worktree [--restart] · stop <name> [--project|--worktree] · use <name> project|worktree|off · remove <name> --project|--worktree · reset <name> [--target shared|own] · load <name> · env";
 
-const decodeAddInput = Schema.decodeUnknownEffect(ResourceAddInput);
-const isChoice = Schema.is(WorktreeChoice);
-
+const controlled = (
+  definition: StoredResourceInstance,
+  level: ResourceLevel,
+  seen: InstanceObserved,
+  clock: ReaderClock,
+  message: string | null = null,
+): ResourceControlled => ({
+  instance: seen.instance.kind,
+  statusLine: resourceStatusLine(
+    {
+      kind: "observed",
+      definition: definition.spec,
+      level,
+      use:
+        definition.spec.preset === "postgres"
+          ? level === "worktree"
+            ? { kind: "own", origin: null, available: true }
+            : { kind: "shared" }
+          : { kind: "worktree" },
+      instance: seen.instance,
+      observedAt: seen.observedAt,
+    },
+    clock,
+  ),
+  message,
+});
+/** File definitions are read only at start; every other operation uses remembered rows. */
 export const ResourcesLive: Layer.Layer<
   Resources,
   never,
   | ResourcesRepo
   | ProjectsRepo
   | SessionsRepo
-  | UsersRepo
   | WorktreesRepo
   | OrganizationsRepo
   | WorktreeReads
@@ -380,7 +247,6 @@ export const ResourcesLive: Layer.Layer<
     const repo = yield* ResourcesRepo;
     const projects = yield* ProjectsRepo;
     const sessions = yield* SessionsRepo;
-    const users = yield* UsersRepo;
     const worktrees = yield* WorktreesRepo;
     const organizations = yield* OrganizationsRepo;
     const reads = yield* WorktreeReads;
@@ -388,96 +254,95 @@ export const ResourcesLive: Layer.Layer<
     const runtime = yield* ResourceRuntime;
     const restarts = yield* WorktreeServiceRestarts;
     const status = yield* ResourceStatusReads;
-
-    /** Display names by account id, in one query; an id with no account reads as itself. */
-    const namesOf = (ids: ReadonlyArray<string>) =>
-      users.byIds(ids).pipe(
-        Effect.map((found) => {
-          const names = new Map(found.map((user) => [user.id, user.name]));
-          return (id: string) => names.get(id) ?? id;
-        }),
+    const checkedWorktree = (project: ResourceProject, worktreeId: WorktreeId) =>
+      worktrees.byId(worktreeId).pipe(
+        Effect.mapError(() => refused("worktree not found")),
+        Effect.flatMap((worktree) =>
+          worktree.projectId === project.id
+            ? Effect.succeed(worktree)
+            : Effect.fail(refused("worktree not found")),
+        ),
       );
-
-    const changeOwner = (worktreeId: WorktreeId) => worktrees.changeOwnerOf(worktreeId);
-
-    const settingEntry = (
-      reader: PageReader,
-      listed: DefinitionWithChoice,
-      shown: { readonly view: ResourceStatusView; readonly instance: ResourceInstanceKind },
-      clock: ReaderClock,
-    ): ResourceSettingEntry => {
-      const { definition, choice } = listed;
-      return {
-        id: definition.id,
-        digest: definition.specDigest,
-        spec: definition.spec,
-        image: definition.image,
-        addedBy: definition.addedBy,
-        choice,
-        canRemove: allows(reader.project, reader.viewer, {
-          kind: "remove-definition",
-          addedBy: definition.addedBy,
-        }),
-        canChoose: mayChoose(reader, definition.spec),
-        canLoadOwn:
-          reader.worktree !== null &&
-          allows(reader.project, reader.viewer, {
-            kind: "use",
-            changeOwner: reader.worktree.changeOwner,
-          }),
-        instance: shown.instance,
-        statusLine: resourceStatusLine(shown.view, clock),
-      };
-    };
-
-    const readFile = Effect.fn("Resources.readFile")(function* (
-      reader: PageReader,
-      settings: SettingsRead,
+    const mayChoose = (project: ResourceProject, viewer: Viewer, worktreeId: WorktreeId) =>
+      worktrees
+        .changeOwnerOf(worktreeId)
+        .pipe(
+          Effect.flatMap((changeOwner) => decide(project, viewer, { kind: "use", changeOwner })),
+        );
+    const instanceAt = (projectId: ProjectId, name: string, worktreeId: WorktreeId | null) =>
+      repo
+        .listForProject(projectId)
+        .pipe(
+          Effect.map(
+            (instances) =>
+              instances.find((row) => row.spec.name === name && row.worktreeId === worktreeId) ??
+              null,
+          ),
+        );
+    const named = (projectId: ProjectId, name: string) =>
+      repo
+        .byName(projectId, name)
+        .pipe(
+          Effect.flatMap((row) =>
+            row === null
+              ? Effect.fail(new ResourceNameNotFoundError({ name }))
+              : Effect.succeed(row),
+          ),
+        );
+    const effective = (
+      projectId: ProjectId,
       worktreeId: WorktreeId,
-      clock: ReaderClock,
+      resourceId: StoredResourceInstance["id"],
+    ) =>
+      repo
+        .bindingRows(projectId, worktreeId)
+        .pipe(
+          Effect.map((rows) =>
+            choiceInEffect(
+              rows.selections.find((row) => row.resourceId === resourceId)?.mode ?? null,
+              rows.usesProjectResources,
+            ),
+          ),
+        );
+    const applyChoice = Effect.fn("Resources.applyChoice")(function* (
+      project: ResourceProject,
+      viewer: Viewer,
+      worktreeId: WorktreeId,
+      definition: Pick<StoredResourceIdentity, "id" | "name">,
+      mode: WorktreeChoice,
+      from: WorktreeChoice,
+      beforeEnv: Readonly<Record<string, string>>,
+      except: SessionId | null,
     ) {
-      const read = yield* readWorktreeTables(reads, reader.project.id, worktreeId);
-      switch (read.kind) {
-        case "unavailable":
-          return {
-            kind: "unavailable",
-            worktreeId,
-            message: read.message,
-          } satisfies ResourceFileRead;
-        case "absent":
-          return { kind: "absent", worktreeId, observed: read.observed } satisfies ResourceFileRead;
-        case "unparsed":
-          return {
-            kind: "unparsed",
-            worktreeId,
-            observed: read.observed,
-            message: read.message,
-          } satisfies ResourceFileRead;
-        case "read":
-          return {
-            kind: "read",
-            worktreeId,
-            observed: read.observed,
-            tables: read.tables.map((spec): ResourceFileTable => {
-              const digest = resourceSpecDigest(spec);
-              return {
-                digest,
-                spec,
-                add: addOffer(reader, settings, spec, digest),
-                statusLine: resourceStatusLine(
-                  {
-                    kind: "declared",
-                    definition: spec,
-                    source: { kind: "file", settings: againstSettings(settings, spec, digest) },
-                  },
-                  clock,
-                ),
-              };
-            }),
-            refused: read.refused,
-            ignored: read.ignored,
-          } satisfies ResourceFileRead;
-      }
+      const selection = yield* repo
+        .setSelection(project.id, worktreeId, definition.id, mode, viewer.userId)
+        .pipe(
+          Effect.mapError((error) =>
+            refused(
+              error._tag === "ResourceSelectionRefusedError"
+                ? error.refusal.message
+                : "resource is gone",
+            ),
+          ),
+        );
+      const linked = yield* runtime.relink(project.id);
+      if (from === mode)
+        return { selection, message: linked.length === 0 ? null : linked.join("\n") };
+      const afterEnv = (yield* runtime.envOf(project.id, worktreeId)).env;
+      const prefix = resourceEnvPrefix(definition.name);
+      const changed = changedResourceEnvNames(beforeEnv, afterEnv, prefix).filter((name) =>
+        name.startsWith(prefix),
+      );
+      const services = yield* restarts.restart(worktreeId, viewer.userId);
+      const message = resourceSwitchMessage({
+        name: definition.name,
+        from,
+        to: mode,
+        changed,
+        services,
+      });
+      const failed = yield* restarts.tell(worktreeId, viewer.userId, message, except);
+      return { selection, message: [message, ...linked, ...failed].join("\n") };
     });
 
     const list = Effect.fn("Resources.list")(function* (
@@ -487,213 +352,385 @@ export const ResourcesLive: Layer.Layer<
       clock: ReaderClock,
     ) {
       yield* decide(project, viewer, { kind: "read" });
-      const [owner, definitions, owning] = yield* Effect.all(
-        [
-          worktreeId === null ? Effect.succeed(null) : changeOwner(worktreeId),
-          repo.listWithChoices(project.id, worktreeId),
-          repo.ownSelections(project.id),
-        ],
-        { concurrency: "unbounded" },
+      if (worktreeId !== null) yield* checkedWorktree(project, worktreeId);
+      const listed = yield* repo.listWithChoices(project.id, worktreeId);
+      const shown = yield* status.viewsFor(listed, project.id, worktreeId, clock);
+      const owner = worktreeId === null ? null : yield* worktrees.changeOwnerOf(worktreeId);
+      let settings = listed.map(
+        (row): ResourceSettingEntry => ({
+          id: row.definition.id,
+          digest: row.definition.specDigest,
+          spec: row.definition.spec,
+          image: row.definition.image,
+          addedBy: row.definition.startedBy,
+          level:
+            worktreeId === null
+              ? row.definition.worktreeId === null
+                ? "project"
+                : "worktree"
+              : row.choice === "worktree"
+                ? "worktree"
+                : "project",
+          worktreeId: row.definition.worktreeId,
+          choice: row.choice,
+          canRemove:
+            resourceActRefusal(project, viewer, {
+              kind: "remove-definition",
+              addedBy: row.definition.startedBy,
+            }) === null,
+          canChoose:
+            worktreeId !== null &&
+            resourceActRefusal(project, viewer, { kind: "use", changeOwner: owner }) === null,
+          canLoadOwn: worktreeId !== null && owner === viewer.userId,
+          instance: shown(row).instance,
+          statusLine: resourceStatusLine(shown(row).view, clock),
+        }),
       );
-      const reader: PageReader = {
-        project,
-        viewer,
-        worktree: worktreeId === null ? null : { id: worktreeId, changeOwner: owner },
-      };
-      const shownOf = yield* status.viewsFor(definitions, project.id, worktreeId, clock);
-      const settings = settingsRead(project.id, definitions, owning);
-      const file: ResourceFileRead =
-        worktreeId === null
-          ? { kind: "not-selected" }
-          : yield* readFile(reader, settings, worktreeId, clock);
-      return {
-        settings: definitions.map((listed) => settingEntry(reader, listed, shownOf(listed), clock)),
-        file,
-      } satisfies ResourcesPage;
-    });
-
-    const add = Effect.fn("Resources.add")(function* (
-      project: ResourceProject,
-      viewer: Viewer,
-      input: ResourceAddInput,
-      worktreeId: WorktreeId | null,
-      clock: ReaderClock,
-    ) {
-      yield* decide(project, viewer, { kind: "read" });
-      const spec =
-        input.kind === "preset" ? yield* presetSpec(input) : withPresetCommand(input.spec);
-      const [listed, owning] = yield* Effect.all(
-        [repo.listWithChoices(project.id, null), repo.ownSelections(project.id)],
-        { concurrency: "unbounded" },
-      );
-      const settings = settingsRead(project.id, listed, owning);
-      const held = settings.byName.get(spec.name)?.definition ?? null;
-      const reader: PageReader = { project, viewer, worktree: null };
-      const answer = (definition: StoredResourceDefinition, resolvedBy: string | null) =>
-        Effect.gen(function* () {
-          // Adding is running: a project resource starts now, a worktree resource in the worktree
-          // the add came from.
-          const started =
-            definition.spec.scope === "project" || worktreeId !== null
-              ? yield* runtime.start(definition, worktreeId)
-              : null;
-          const nameOf = yield* namesOf([definition.addedBy]);
-          const listedNow: DefinitionWithChoice = { definition, choice: null };
-          const shown = viewOf({
-            definition,
-            choice: null,
-            worktreeId: definition.spec.scope === "worktree" ? worktreeId : null,
-            owns: new Map(),
-            observation: null,
-            lookup: () => started ?? { instance: { kind: "not-started" }, observedAt: clock.now },
-            addedBy: nameOf(definition.addedBy),
+      let file: ResourceFileRead = { kind: "not-selected" };
+      if (worktreeId !== null) {
+        const read = yield* readWorktreeTables(reads, project.id, worktreeId);
+        file =
+          read.kind === "read"
+            ? {
+                ...read,
+                worktreeId,
+                tables: read.tables.map(
+                  (spec): ResourceFileTable => ({
+                    spec,
+                    digest: resourceSpecDigest(spec),
+                    statusLine: resourceStatusLine({ kind: "defined", definition: spec }, clock),
+                  }),
+                ),
+              }
+            : { ...read, worktreeId };
+        if (read.kind === "read")
+          settings = settings.map((entry) => {
+            const requested = read.tables.find((spec) => spec.name === entry.spec.name);
+            return requested === undefined || resourceSpecDigest(requested) === entry.digest
+              ? entry
+              : {
+                  ...entry,
+                  statusLine: resourceStatusLine(
+                    entry.level === "worktree" &&
+                      entry.spec.preset === "postgres" &&
+                      entry.worktreeId === null
+                      ? { kind: "own-on-differing-server", definition: entry.spec, requested }
+                      : { kind: "definition-differs", definition: entry.spec, level: entry.level },
+                    clock,
+                  ),
+                };
           });
-          return {
-            definition: settingEntry(reader, listedNow, shown, clock),
-            resolvedBy,
-          } satisfies ResourceAdded;
-        });
-      const replacing = resourceActRefusal(project, viewer, {
-        kind: "add",
-        replaces: held === null ? null : { addedBy: held.addedBy },
-      });
-      if (replacing !== null) {
-        // The same spec again is settings as they are; only its adder or a manager repins it.
-        if (held?.specDigest === resourceSpecDigest(spec)) return yield* answer(held, null);
-        return yield* new ResourceActRefusedError({ message: replacing });
       }
-      // Every refusal that needs no registry comes before one is asked; the repo decides them
-      // again under its locks.
-      const refusals = resourceDeclarationRefusals(settings.state, spec);
-      if (refusals.length > 0) {
-        return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
-      }
-      const image = yield* images.resolve(spec.image).pipe(
-        Effect.mapError(
-          (error: ImageResolutionError) =>
-            new ResourceImageRefusedError({
-              name: spec.name,
-              refusal: { key: "image", message: imageRefusalClause(error) },
-              reason: error.reason,
-              message: imageRefusalLine(spec.name, error),
-            }),
-        ),
-      );
-      const stored = yield* repo.declare(
-        project.id,
-        { spec, imageDigest: image.digest },
-        viewer.userId,
-      );
-      return yield* answer(stored, image.resolvedBy);
-    });
-
-    const remove = Effect.fn("Resources.remove")(function* (
-      project: ResourceProject,
-      viewer: Viewer,
-      version: DefinitionVersion,
-    ) {
-      yield* decide(project, viewer, { kind: "read" });
-      const held = (yield* repo.listForProject(project.id)).find((each) => each.id === version.id);
-      if (held === undefined) return yield* new ResourceDefinitionNotFoundError({ id: version.id });
-      yield* decide(project, viewer, { kind: "remove-definition", addedBy: held.addedBy });
-      const removed = yield* repo.removeIfCurrent(project.id, version);
-      yield* runtime.archive(removed);
-      return {
-        statusLine: `@${removed.spec.name} · definition removed · its volumes are kept`,
-      };
+      return { settings, file } satisfies ResourcesPage;
     });
 
     const use = Effect.fn("Resources.use")(function* (
       project: ResourceProject,
       viewer: Viewer,
       worktreeId: WorktreeId,
-      definitionId: ResourceDefinitionId,
+      name: string,
       mode: WorktreeChoice,
       clock: ReaderClock,
+      except?: SessionId,
     ) {
-      yield* decide(project, viewer, { kind: "use", changeOwner: yield* changeOwner(worktreeId) });
-      const before = (yield* repo.listWithChoices(project.id, worktreeId)).find(
-        (each) => each.definition.id === definitionId,
-      );
-      const stored = yield* repo.setSelection(
-        project.id,
+      yield* checkedWorktree(project, worktreeId);
+      yield* mayChoose(project, viewer, worktreeId);
+      const definition = (yield* repo.listIdentities(project.id)).find((row) => row.name === name);
+      if (definition === undefined) return yield* new ResourceNameNotFoundError({ name });
+      const rows = yield* repo.bindingRows(project.id, worktreeId);
+      const candidate = resourceBindings({
+        ...rows,
+        selections: [
+          ...rows.selections.filter((row) => row.resourceId !== definition.id),
+          { resourceId: definition.id, mode },
+        ],
+      }).find((row) => row.resourceId === definition.id);
+      if (mode !== "off" && candidate === undefined)
+        return yield* refused(
+          mode === "worktree" &&
+            rows.instances.some(
+              (row) => row.resourceId === definition.id && row.spec.preset === "postgres",
+            )
+            ? `@${name} · no own database yet · mend resource start ${name} --worktree`
+            : `@${name} · no ${mode} instance yet · mend resource start ${name} --${mode}`,
+        );
+      const from = yield* effective(project.id, worktreeId, definition.id);
+      const before = (yield* runtime.envOf(project.id, worktreeId)).env;
+      const answer = yield* applyChoice(
+        project,
+        viewer,
         worktreeId,
-        definitionId,
+        definition,
         mode,
-        viewer.userId,
+        from,
+        before,
+        except ?? null,
       );
-      const listed = (yield* repo.listWithChoices(project.id, worktreeId)).find(
-        (each) => each.definition.id === definitionId,
-      );
-      if (listed === undefined)
-        return yield* new ResourceDefinitionNotFoundError({ id: definitionId });
-      const changed =
-        before === undefined ||
-        choiceInEffect(before.definition.spec, before.choice) !==
-          choiceInEffect(listed.definition.spec, listed.choice);
-      // Services read their env at start, so a switch restarts the running ones; both databases
-      // stay as they are.
-      const restarted = changed ? yield* restarts.restart(worktreeId, viewer.userId) : [];
-      const shownOf = yield* status.viewsFor([listed], project.id, worktreeId, clock);
-      const { view } = shownOf(listed);
       return {
-        definitionId,
+        definitionId: definition.id,
         worktreeId,
-        mode: stored.mode,
-        chosenBy: stored.chosenBy,
-        statusLine: resourceStatusLine(
-          view.kind === "observed"
-            ? { kind: "switched", definition: view.definition, use: view.use, restarted }
-            : view,
-          clock,
-        ),
+        mode,
+        chosenBy: answer.selection.chosenBy,
+        statusLine: answer.message ?? `@${name} · ${mode}`,
+        message: answer.message,
       } satisfies ResourceSelectionEntry;
     });
 
-    /** The definition settings hold under `name`, and the worktree an act on it reaches. */
-    const target = Effect.fn("Resources.target")(function* (
+    const start = Effect.fn("Resources.start")(function* (
       project: ResourceProject,
       viewer: Viewer,
       name: string,
-      worktreeId: WorktreeId | null,
+      options: ResourceStartOptions,
+      clock: ReaderClock,
+      except?: SessionId,
     ) {
       yield* decide(project, viewer, { kind: "read" });
-      const definition = yield* repo.byName(project.id, name);
-      if (definition === null) return yield* new ResourceNameNotFoundError({ name });
-      if (definition.spec.scope === "worktree" && worktreeId === null) {
-        return yield* new ResourceWorktreeNeededError({
-          name,
-          message: `@${name} runs one instance per worktree · name the worktree: --worktree <w>`,
-        });
+      yield* checkedWorktree(project, options.worktreeId);
+      if (options.level === "worktree") yield* mayChoose(project, viewer, options.worktreeId);
+      const read = yield* readWorktreeTables(reads, project.id, options.worktreeId);
+      if (read.kind === "unavailable" || read.kind === "unparsed")
+        return yield* refused(read.message);
+      if (read.kind === "read") {
+        const refusals = read.refused.filter(
+          (entry) => entry.key === `resource.${name}` || entry.key.startsWith(`resource.${name}.`),
+        );
+        if (refusals.length > 0)
+          return yield* new ResourceDefinitionRefusedError({
+            name,
+            refusals: refusals.map((entry) => ({
+              key: entry.key
+                .replace(`resource.${name}.`, "")
+                .replace(`resource.${name}`, "definition"),
+              message: entry.message,
+            })),
+          });
       }
-      return definition;
+      const tables = tablesOf(read);
+      const requested = tables.find((spec) => spec.name === name);
+      const all = yield* repo.listForProject(project.id);
+      const projectServer = all.find((row) => row.spec.name === name && row.worktreeId === null);
+      // Migrated worktree Postgres containers retain their key and data until explicitly removed.
+      const legacy = all.find(
+        (row) =>
+          row.spec.name === name &&
+          row.worktreeId === options.worktreeId &&
+          row.spec.preset === "postgres",
+      );
+      const postgresOwn =
+        options.level === "worktree" &&
+        legacy === undefined &&
+        (requested === undefined
+          ? projectServer?.spec.preset === "postgres"
+          : requested.preset === "postgres");
+      if (postgresOwn && projectServer !== undefined && projectServer.spec.preset !== "postgres")
+        return yield* refused(
+          `@${name} · the project instance is not Postgres · mend resource start ${name} --project --restart`,
+        );
+      if (
+        requested === undefined &&
+        postgresOwn &&
+        projectServer !== undefined &&
+        !(yield* repo.ownDatabases(options.worktreeId)).has(projectServer.id)
+      )
+        return yield* refused(`no [resource.${name}] in this worktree's .mend/mend.toml`);
+      const targetWorktree = options.level === "project" || postgresOwn ? null : options.worktreeId;
+      let held =
+        all.find((row) => row.spec.name === name && row.worktreeId === targetWorktree) ?? null;
+      if (requested === undefined && held === null) {
+        return yield* refused(`no [resource.${name}] in this worktree's .mend/mend.toml`);
+      }
+      const spec = requested ?? held?.spec;
+      if (spec === undefined)
+        return yield* Effect.die("start has neither a file nor remembered spec");
+      const refusals = [
+        ...resourceDefinitionRefusals(spec),
+        ...envCollisionRefusals([
+          ...all.filter((row) => row.spec.name !== name).map((row) => row.spec),
+          ...tables.filter(
+            (table) => table.name !== name && !all.some((row) => row.spec.name === table.name),
+          ),
+          spec,
+        ])
+          .filter((entry) => entry.resource === name)
+          .map((entry) => entry.refusal),
+      ];
+      if (refusals.length > 0) return yield* new ResourceDefinitionRefusedError({ name, refusals });
+      const differs =
+        requested !== undefined &&
+        held !== null &&
+        held.specDigest !== resourceSpecDigest(requested);
+      if (
+        held !== null &&
+        differs &&
+        !postgresOwn &&
+        changesWhatOwnIs(held.spec, spec) &&
+        (yield* repo.ownSelections(project.id)).has(held.id)
+      )
+        return yield* refused(
+          `@${name} · cannot change the Postgres preset while worktrees hold own databases`,
+        );
+      if (held !== null && differs && !postgresOwn && !options.restart) {
+        const using: Array<{ id: WorktreeId; name: string }> = [];
+        for (const worktree of yield* worktrees.listForProject(project.id)) {
+          if (options.level === "worktree" && worktree.id !== options.worktreeId) continue;
+          const rows = yield* repo.bindingRows(project.id, worktree.id);
+          const binding = resourceBindings(rows).find((row) => row.resourceId === held?.id);
+          if (
+            (binding !== undefined &&
+              (options.level === "project" ? binding.instanceKey === held.id : true)) ||
+            (options.level === "project" &&
+              held.spec.preset === "postgres" &&
+              rows.ownDatabases.has(held.id))
+          )
+            using.push({ id: worktree.id, name: worktree.name });
+        }
+        return {
+          kind: "needs-restart",
+          statusLine: resourceStatusLine(
+            { kind: "definition-differs", definition: spec, level: options.level },
+            clock,
+          ),
+          hint: `mend resource start ${name} --${options.level} --restart`,
+          worktrees: using,
+        } satisfies ResourceStarted;
+      }
+      if (held !== null && differs && !postgresOwn)
+        yield* decide(project, viewer, { kind: "add", replaces: { addedBy: held.startedBy } });
+      const before = (yield* runtime.envOf(project.id, options.worktreeId)).env;
+      const identity = yield* repo.ensureIdentity(project.id, name);
+      const from = yield* effective(project.id, options.worktreeId, identity.id);
+      const notes: string[] = [];
+      if (held === null || (differs && !postgresOwn)) {
+        const image = yield* images.resolve(spec.image).pipe(
+          Effect.mapError(
+            (error: ImageResolutionError) =>
+              new ResourceImageRefusedError({
+                name,
+                refusal: { key: "image", message: imageRefusalClause(error) },
+                reason: error.reason,
+                message: imageRefusalLine(name, error),
+              }),
+          ),
+        );
+        held = yield* repo.remember(
+          project.id,
+          identity.id,
+          targetWorktree,
+          spec,
+          image.digest,
+          viewer.userId,
+        );
+        if (postgresOwn) notes.push("started the project server for it");
+      }
+      const seen = yield* runtime.start(held, held.worktreeId);
+      if (requested === undefined)
+        notes.push("not in this worktree's .mend/mend.toml · started as it last ran");
+      if (postgresOwn && requested !== undefined && differs)
+        notes.push(
+          resourceStatusLine(
+            { kind: "own-on-differing-server", definition: held.spec, requested },
+            clock,
+          ),
+        );
+      if (options.level === "worktree") {
+        if (postgresOwn) {
+          if (seen.instance.kind !== "running")
+            return yield* refused(
+              `@${name} · the project server is not running · own database not made`,
+            );
+          const failure = yield* runtime.ensureOwnDatabase(held, options.worktreeId);
+          if (failure !== null)
+            return yield* refused(`@${name} · own database not made · ${failure}`);
+        }
+        const switched = yield* applyChoice(
+          project,
+          viewer,
+          options.worktreeId,
+          identity,
+          "worktree",
+          from,
+          before,
+          except ?? null,
+        );
+        if (switched.message !== null) notes.push(switched.message);
+      } else notes.push(...(yield* runtime.relink(project.id)));
+      const answer = controlled(
+        held,
+        options.level,
+        seen,
+        clock,
+        notes.length === 0 ? null : notes.join("\n"),
+      );
+      return { kind: "started", ...answer } satisfies ResourceStarted;
     });
 
-    /** A start's or stop's answer: the instance as it stands, read for the worktree acted in. */
-    const controlled = (
-      definition: StoredResourceDefinition,
-      worktreeId: WorktreeId | null,
-      seen: InstanceObserved,
+    const stop = Effect.fn("Resources.stop")(function* (
+      project: ResourceProject,
+      viewer: Viewer,
+      name: string,
+      options: ResourceStopOptions,
       clock: ReaderClock,
-    ) =>
-      Effect.gen(function* () {
-        const nameOf = yield* namesOf([definition.addedBy]);
-        const reachedFrom = definition.spec.scope === "worktree" ? worktreeId : null;
-        const shown = viewOf({
-          definition,
-          choice: "shared",
-          worktreeId: reachedFrom,
-          owns: new Map(),
-          observation: null,
-          lookup: () => seen,
-          addedBy: nameOf(definition.addedBy),
-        });
-        return {
-          instance: seen.instance.kind,
-          statusLine: resourceStatusLine(shown.view, clock),
-        } satisfies ResourceControlled;
-      });
-
+    ) {
+      yield* decide(project, viewer, { kind: "read" });
+      yield* checkedWorktree(project, options.worktreeId);
+      const any = yield* named(project.id, name);
+      const choice = options.level ?? (yield* effective(project.id, options.worktreeId, any.id));
+      if (choice === "off")
+        return yield* refused(
+          `@${name} · off for this worktree · choose --project or --worktree to stop an instance`,
+        );
+      const ownInstance = yield* instanceAt(project.id, name, options.worktreeId);
+      const postgresOwn =
+        choice === "worktree" && ownInstance === null && any.spec.preset === "postgres";
+      const definition = yield* instanceAt(
+        project.id,
+        name,
+        choice === "project" || postgresOwn ? null : options.worktreeId,
+      );
+      if (definition === null) return yield* refused(`@${name} · no ${choice} instance`);
+      return controlled(
+        definition,
+        choice,
+        yield* runtime.stop(definition, definition.worktreeId, viewer.userId),
+        clock,
+        postgresOwn ? "stops the project server, which every worktree on it uses" : null,
+      );
+    });
+    const remove = Effect.fn("Resources.remove")(function* (
+      project: ResourceProject,
+      viewer: Viewer,
+      name: string,
+      options: { readonly level: ResourceLevel; readonly worktreeId: WorktreeId },
+    ) {
+      yield* checkedWorktree(project, options.worktreeId);
+      const any = yield* named(project.id, name);
+      const ownInstance = yield* instanceAt(project.id, name, options.worktreeId);
+      if (
+        options.level === "worktree" &&
+        ownInstance === null &&
+        any.spec.preset === "postgres" &&
+        any.worktreeId === null
+      )
+        return yield* refused(
+          `@${name} · own databases are kept · use reset or remove the worktree`,
+        );
+      const definition = yield* instanceAt(
+        project.id,
+        name,
+        options.level === "project" ? null : options.worktreeId,
+      );
+      if (definition === null) return yield* refused(`@${name} · no ${options.level} instance`);
+      yield* decide(project, viewer, { kind: "remove-definition", addedBy: definition.startedBy });
+      const failure = yield* runtime.archive(definition);
+      if (failure !== null) return yield* refused(`@${name} · not removed · ${failure}`);
+      yield* repo.removeInstance(definition.id, definition.worktreeId);
+      const failures = yield* runtime.relink(project.id);
+      return {
+        statusLine: [`@${name} · ${options.level} · archived · volumes kept`, ...failures].join(
+          "\n",
+        ),
+      };
+    });
     const reset = Effect.fn("Resources.reset")(function* (
       project: ResourceProject,
       viewer: Viewer,
@@ -702,101 +739,36 @@ export const ResourcesLive: Layer.Layer<
       asked: "shared" | "own" | null,
       clock: ReaderClock,
     ) {
-      const definition = yield* target(project, viewer, name, worktreeId).pipe(
-        Effect.catchTag("ResourceWorktreeNeededError", (error) =>
-          Effect.fail(new ResourceNotResetError({ name, message: error.message })),
-        ),
-      );
-      const spec = definition.spec;
-      if (spec.preset !== "postgres") {
+      yield* decide(project, viewer, { kind: "read" });
+      yield* checkedWorktree(project, worktreeId);
+      const definition = yield* named(project.id, name);
+      if (definition.spec.preset !== "postgres")
         return yield* new ResourceNotResetError({
           name,
           message: `@${name} · a reset saves and empties a Postgres database, and @${name} is not one`,
         });
-      }
-      const choice =
-        spec.scope === "worktree"
-          ? null
-          : choiceInEffect(
-              spec,
-              (yield* repo.listWithChoices(project.id, worktreeId)).find(
-                (each) => each.definition.id === definition.id,
-              )?.choice ?? null,
-            );
-      const which =
-        spec.scope === "worktree" ? "own" : (asked ?? (choice === "own" ? "own" : "shared"));
-      if (which === "own" && spec.scope === "project") {
-        yield* decide(project, viewer, {
-          kind: "use",
-          changeOwner: yield* changeOwner(worktreeId),
+      const mode = yield* effective(project.id, worktreeId, definition.id);
+      const target = asked ?? (mode === "worktree" ? "own" : "shared");
+      if (target === "own") yield* mayChoose(project, viewer, worktreeId);
+      const outcome = yield* runtime.reset({ definition, worktreeId, target, at: clock.now });
+      if (outcome.kind !== "reset")
+        return yield* new ResourceNotResetError({
+          name,
+          message: `@${name} · not reset · ${outcome.kind === "failed" ? outcome.message : outcome.instance.kind}`,
         });
-      }
-      const outcome = yield* runtime.reset({
-        definition,
-        worktreeId,
-        target: spec.scope === "worktree" ? "shared" : which,
-        at: clock.now,
-      });
-      switch (outcome.kind) {
-        case "not-running":
-          return yield* new ResourceNotResetError({
-            name,
-            message: `${resourceStatusLine({ kind: "launched-without", definition: spec, instance: outcome.instance }, clock).replace(/ · this session starts without it$/, "")} · nothing was reset`,
-          });
-        case "failed":
-          return yield* new ResourceNotResetError({
-            name,
-            message: `@${name} · not reset · ${outcome.message}`,
-          });
-        case "reset":
-          return {
-            statusLine: resourceStatusLine(
-              {
-                kind: "reset",
-                definition: spec,
-                target: which,
-                origin: outcome.origin,
-                savedAt: outcome.savedAt,
-              },
-              clock,
-            ),
-          };
-      }
+      return {
+        statusLine: resourceStatusLine(
+          {
+            kind: "reset",
+            definition: definition.spec,
+            target,
+            origin: outcome.origin,
+            savedAt: outcome.savedAt,
+          },
+          clock,
+        ),
+      };
     });
-
-    const start = Effect.fn("Resources.start")(function* (
-      project: ResourceProject,
-      viewer: Viewer,
-      name: string,
-      worktreeId: WorktreeId | null,
-      clock: ReaderClock,
-    ) {
-      const definition = yield* target(project, viewer, name, worktreeId);
-      return yield* controlled(
-        definition,
-        worktreeId,
-        yield* runtime.start(definition, worktreeId),
-        clock,
-      );
-    });
-
-    const stop = Effect.fn("Resources.stop")(function* (
-      project: ResourceProject,
-      viewer: Viewer,
-      name: string,
-      worktreeId: WorktreeId | null,
-      clock: ReaderClock,
-    ) {
-      const definition = yield* target(project, viewer, name, worktreeId);
-      const by = (yield* namesOf([viewer.userId]))(viewer.userId);
-      return yield* controlled(
-        definition,
-        worktreeId,
-        yield* runtime.stop(definition, worktreeId, by),
-        clock,
-      );
-    });
-
     const env = Effect.fn("Resources.env")(function* (
       project: ResourceProject,
       viewer: Viewer,
@@ -804,185 +776,132 @@ export const ResourcesLive: Layer.Layer<
       clock: ReaderClock,
     ) {
       yield* decide(project, viewer, { kind: "read" });
+      yield* checkedWorktree(project, worktreeId);
       const answer = yield* runtime.envOf(project.id, worktreeId);
       const definitions = yield* repo.listForProject(project.id);
       return {
         env: answer.env,
         exports: shellExports(answer.env),
         statusLines: answer.left.flatMap(({ resource, names }) => {
-          const definition = definitions.find((each) => each.spec.name === resource);
+          const definition = definitions.find((row) => row.spec.name === resource);
           return definition === undefined
             ? []
             : [resourceStatusLine({ kind: "env-left", definition: definition.spec, names }, clock)];
         }),
       } satisfies ResourceEnvAnswer;
     });
-
     const forSession = Effect.fn("Resources.forSession")(function* (
       sessionId: SessionId,
       argv: ReadonlyArray<string>,
       clock: ReaderClock,
     ) {
-      // The channel exists only for a session Mend holds, in a project it holds.
       const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
       const project = yield* projects.byId(session.projectId).pipe(Effect.orDie);
       const owner = session.ownerUserId;
       const membership = owner === null ? null : yield* organizations.membershipOf(owner);
-      if (owner === null || membership === null) {
-        return yield* new ResourceActRefusedError({
-          message: "this session's owner is no longer a member of its organization",
-        });
-      }
+      if (owner === null || membership === null)
+        return yield* refused("this session's owner is no longer a member of its organization");
       const viewer: Viewer = {
         userId: owner,
         organizationId: membership.organization.id,
         role: membership.role,
       };
-      const worktreeId = session.worktreeId;
       const [verb = "list", ...rest] = argv;
-      const [name = null, second = null] = resourcePositionals(rest);
-      const named = <E>(run: (name: string) => Effect.Effect<ResourceSessionAnswer, E>) =>
-        name === null
-          ? Effect.fail(
-              new ResourceActRefusedError({
-                message: `name the resource: mend resource ${verb} db`,
-              }),
-            )
-          : run(name);
-      const byName = (resource: string) =>
-        repo
-          .byName(project.id, resource)
-          .pipe(
-            Effect.flatMap((definition) =>
-              definition === null
-                ? Effect.fail(new ResourceNameNotFoundError({ name: resource }))
-                : Effect.succeed(definition),
-            ),
-          );
-      const answer: Effect.Effect<
-        ResourceSessionAnswer,
-        | ResourceActRefusedError
-        | ResourceDefinitionRefusedError
-        | ResourceImageRefusedError
-        | ResourceDefinitionNotFoundError
-        | ResourceDefinitionStaleError
-        | ResourceSelectionRefusedError
-        | ResourceNameNotFoundError
-        | ResourceWorktreeNeededError
-        | ResourceNotResetError
-      > = (() => {
-        switch (verb) {
-          case "list":
-            return list(project, viewer, worktreeId, clock).pipe(
-              Effect.map((page) => ({ lines: pageLines(page) })),
-            );
-          case "add": {
-            const addition = resourceAdditionOf(rest);
-            if (!addition.ok)
-              return Effect.fail(new ResourceActRefusedError({ message: addition.message }));
-            return decodeAddInput(addition.body).pipe(
-              Effect.mapError(
-                (error) =>
-                  new ResourceActRefusedError({ message: `not a resource: ${error.message}` }),
-              ),
-              Effect.flatMap((input) => add(project, viewer, input, worktreeId, clock)),
-              Effect.map((added) =>
-                lines(added.definition.statusLine, `image ${added.definition.image}`),
-              ),
-            );
-          }
-          case "remove":
-            return named((resource) =>
-              byName(resource).pipe(
-                Effect.flatMap((definition) =>
-                  remove(project, viewer, { id: definition.id, digest: definition.specDigest }),
-                ),
-                Effect.map((removed) => lines(removed.statusLine)),
-              ),
-            );
-          case "start":
-            return named((resource) =>
-              start(project, viewer, resource, worktreeId, clock).pipe(
-                Effect.map((done) => lines(done.statusLine)),
-              ),
-            );
-          case "stop":
-            return named((resource) =>
-              stop(project, viewer, resource, worktreeId, clock).pipe(
-                Effect.map((done) => lines(done.statusLine)),
-              ),
-            );
-          case "use":
-            return named((resource) =>
-              second === null || !isChoice(second)
-                ? Effect.fail(
-                    new ResourceActRefusedError({
-                      message: `name a choice: mend resource use ${resource} shared|own|off`,
-                    }),
-                  )
-                : byName(resource).pipe(
-                    Effect.flatMap((definition) =>
-                      use(project, viewer, worktreeId, definition.id, second, clock),
-                    ),
-                    Effect.map((chosen) => lines(chosen.statusLine)),
-                  ),
-            );
-          case "reset":
-            return named((resource) => {
-              const asked = flagOf(rest, "--target");
-              return asked !== null && asked !== "shared" && asked !== "own"
-                ? Effect.fail(new ResourceActRefusedError({ message: "--target is shared or own" }))
-                : reset(project, viewer, resource, worktreeId, asked, clock).pipe(
-                    Effect.map((done) => lines(done.statusLine)),
-                  );
-            });
-          case "env":
-            return env(project, viewer, worktreeId, clock).pipe(
-              Effect.map((current) =>
-                lines(...current.exports, ...current.statusLines.map((line) => `# ${line}`)),
-              ),
-            );
-          default:
-            return Effect.fail(
-              new ResourceActRefusedError({
-                message: `unknown resource command "${verb}" · ${SESSION_USAGE}`,
-              }),
-            );
+      const [name, second = ""] = resourcePositionals(rest);
+      const level = resourceLevelFlag(rest);
+      const worktreeId = session.worktreeId;
+      const answer = Effect.gen(function* () {
+        if (rest.includes("--project") && rest.includes("--worktree"))
+          return yield* refused("choose one level: --project or --worktree");
+        if (verb === "add") return yield* refused("not available in this build");
+        if (verb === "list")
+          return { lines: pageLines(yield* list(project, viewer, worktreeId, clock)) };
+        if (verb === "env") {
+          const current = yield* env(project, viewer, worktreeId, clock);
+          return { lines: [...current.exports, ...current.statusLines.map((line) => `# ${line}`)] };
         }
-      })();
-      return yield* answer.pipe(
-        Effect.mapError((error): { readonly message: string } => {
-          switch (error._tag) {
-            case "ResourceDefinitionRefusedError":
-            case "ResourceSelectionRefusedError": {
-              const refusals =
-                error._tag === "ResourceSelectionRefusedError" ? [error.refusal] : error.refusals;
-              return {
-                message: refusals
-                  .map((refusal) => `@${error.name} · ${resourceRefusalWords(refusal)}`)
-                  .join("\n"),
-              };
-            }
-            case "ResourceNameNotFoundError":
-              return {
-                message: `no @${error.name} in this project · mend resource list shows them`,
-              };
-            case "ResourceDefinitionNotFoundError":
-              return { message: "that resource is gone · mend resource list shows them" };
-            case "ResourceDefinitionStaleError":
-              return { message: "the definition changed as it was removed · nothing was removed" };
-            default:
-              return { message: error.message };
+        if (name === undefined)
+          return yield* refused(`name the resource: mend resource ${verb} db`);
+        switch (verb) {
+          case "start": {
+            if (level === null) return yield* refused(resourceLevelHint(name));
+            const done = yield* start(
+              project,
+              viewer,
+              name,
+              { level, worktreeId, restart: rest.includes("--restart") },
+              clock,
+              sessionId,
+            );
+            return {
+              lines:
+                done.kind === "needs-restart"
+                  ? [done.statusLine, ...done.worktrees.map((row) => row.name), done.hint]
+                  : [done.statusLine, ...(done.message === null ? [] : [done.message])],
+            };
           }
-        }),
+          case "stop": {
+            const done = yield* stop(
+              project,
+              viewer,
+              name,
+              { worktreeId, ...(level === null ? {} : { level }) },
+              clock,
+            );
+            return { lines: [done.statusLine, ...(done.message === null ? [] : [done.message])] };
+          }
+          case "remove": {
+            if (level === null)
+              return yield* refused(
+                `choose a level: mend resource remove ${name} --project or --worktree`,
+              );
+            return {
+              lines: [(yield* remove(project, viewer, name, { level, worktreeId })).statusLine],
+            };
+          }
+          case "use": {
+            const mode = resourceChoiceOf(second);
+            if (mode === null)
+              return yield* refused(
+                `name a choice: mend resource use ${name} project|worktree|off`,
+              );
+            return {
+              lines: [
+                (yield* use(project, viewer, worktreeId, name, mode, clock, sessionId)).statusLine,
+              ],
+            };
+          }
+          case "reset": {
+            const target = flagOf(rest, "--target");
+            if (target !== null && target !== "shared" && target !== "own")
+              return yield* refused("--target is shared or own");
+            return {
+              lines: [(yield* reset(project, viewer, name, worktreeId, target, clock)).statusLine],
+            };
+          }
+          default:
+            return yield* refused(`unknown resource command "${verb}" · ${SESSION_USAGE}`);
+        }
+      });
+      return yield* answer.pipe(
+        Effect.mapError((error): { readonly message: string } =>
+          error._tag === "ResourceDefinitionRefusedError"
+            ? {
+                message: error.refusals
+                  .map((refusal) => `@${error.name} · ${refusal.key} ${refusal.message}`)
+                  .join("\n"),
+              }
+            : error._tag === "ResourceNameNotFoundError"
+              ? { message: `no @${error.name} in this project · mend resource list shows them` }
+              : { message: error.message },
+        ),
       );
     });
-
-    return { list, add, remove, use, reset, start, stop, env, forSession };
+    return { list, remove, use, reset, start, stop, env, forSession };
   }),
 );
 
-/** Serves `Resources.forSession` to every session's socket and channel while it is up. */
+/** Serve the helper through its authenticated session channel. */
 export const ResourcesChannelLive: Layer.Layer<never, never, Resources | SessionChannelRegistry> =
   Layer.effectDiscard(
     Effect.gen(function* () {

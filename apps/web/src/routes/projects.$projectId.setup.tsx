@@ -19,6 +19,7 @@ import {
   ServicesSection,
   SessionLifecycleSection,
   VisibilitySection,
+  ResourceVisibilitySection,
 } from "#/components/project-setup";
 import { ProjectSkillsSection } from "#/components/project-skills-section";
 import { ResourcesSection } from "#/components/resources-section";
@@ -167,6 +168,7 @@ function ProjectSetupPage() {
             You can start sessions and review changes as it stands.
           </p>
         )}
+        {capabilities.manage ? <ResourceVisibilitySection project={project} /> : null}
         <ResourcesSection projectId={projectId} />
         {capabilities.remove ? <RemoveProjectSection projectId={projectId} /> : null}
       </div>

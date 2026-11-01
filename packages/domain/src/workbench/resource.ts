@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { Effect, Schema } from "effect";
 
+import { ResourceDefinitionId } from "../ids.ts";
 import { formatProjectEnvironmentIssue } from "./project-environment.ts";
 import { validateProjectSecretName } from "./project-secret.ts";
 import { ENV_NAME } from "./service-recipe.ts";
@@ -27,8 +28,29 @@ export const resourceNameIssue = (raw: string): string | null => {
   if (!RESOURCE_NAME.test(raw)) return NOT_A_LABEL;
   if (RESERVED_RESOURCE_NAMES.includes(raw))
     return "is reserved, because a workspace already resolves it";
+  const prefix = `MEND_${raw.toUpperCase().replaceAll("-", "_")}_`;
+  if (
+    MEND_PROCESS_ENV_NAMES.some((name) => name.startsWith(prefix)) ||
+    MEND_PROCESS_ENV_FAMILIES.some(
+      (family) => prefix.startsWith(family) || family.startsWith(prefix),
+    )
+  )
+    return "generates env names Mend owns";
   return null;
 };
+
+/** Process env names Mend itself supplies, excluding resource exports. */
+export const MEND_PROCESS_ENV_NAMES: ReadonlyArray<string> = [
+  "MEND_PREVIEW_URL",
+  "MEND_SESSION_ID",
+  "MEND_SESSION_ENDPOINT",
+  "MEND_SESSION_TOKEN",
+  "MEND_SESSION_TOKEN_FILE",
+  "MEND_AGENT_PROCESS_ID",
+  "MEND_SETUP_RUN",
+  "MEND_CONVERSATION",
+];
+const MEND_PROCESS_ENV_FAMILIES = ["MEND_SERVICE_"];
 
 /** Reserved names are refused when declared, not here, so a stored name reads when the list grows. */
 export const ResourceName = Schema.String.pipe(
@@ -42,8 +64,8 @@ export type ResourceName = typeof ResourceName.Type;
 export const ResourcePreset = Schema.Literals(["postgres", "redis", "mysql"]);
 export type ResourcePreset = typeof ResourcePreset.Type;
 
-export const ResourceScope = Schema.Literals(["project", "worktree"]);
-export type ResourceScope = typeof ResourceScope.Type;
+export const ResourceLevel = Schema.Literals(["project", "worktree"]);
+export type ResourceLevel = typeof ResourceLevel.Type;
 
 /** A volume's name: a label too. */
 const VolumeName = Schema.String.check(Schema.isPattern(RESOURCE_NAME));
@@ -158,7 +180,7 @@ export const ResourceReady = Schema.Union([
 ]);
 export type ResourceReady = typeof ResourceReady.Type;
 
-/** An export's name, the suffix after `MEND_RESOURCE_<NAME>_`. */
+/** An export's name, the suffix after `MEND_<NAME>_`. */
 export const RESOURCE_EXPORT_NAME = /^[A-Z][A-Z0-9_]*$/;
 
 const definitionFields = {
@@ -180,28 +202,9 @@ const definitionFields = {
   exports: Schema.Record(Schema.String, Schema.String),
 };
 
-export const ProjectResourceDefinition = Schema.Struct({
-  ...definitionFields,
-  scope: Schema.Literal("project"),
-});
-export type ProjectResourceDefinition = typeof ProjectResourceDefinition.Type;
-
-export const WorktreeResourceDefinition = Schema.Struct({
-  ...definitionFields,
-  scope: Schema.Literal("worktree"),
-});
-export type WorktreeResourceDefinition = typeof WorktreeResourceDefinition.Type;
-
-/**
- * A resource as declared (ADR 0019): from project settings, `mend resource add` or a
- * `[resource.*]` table in `.mend/mend.toml`. Shapes are checked here; rules across fields are
- * `resourceDefinitionRefusals`.
- */
-export const ResourceDefinitionInput = Schema.Union([
-  ProjectResourceDefinition,
-  WorktreeResourceDefinition,
-]);
-export type ResourceDefinitionInput = typeof ResourceDefinitionInput.Type;
+/** A file definition, independent of the level at which it runs. Excess legacy keys decode away. */
+export const ResourceDefinition = Schema.Struct(definitionFields);
+export type ResourceDefinition = typeof ResourceDefinition.Type;
 
 /** A sha256, in lower-case hex, of a definition's canonical JSON: which spec a reader saw. */
 export const ResourceSpecDigest = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)).pipe(
@@ -222,13 +225,13 @@ const canonicalJson = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
-const encodeDefinition = Schema.encodeSync(ResourceDefinitionInput);
+const encodeDefinition = Schema.encodeSync(ResourceDefinition);
 
 /**
  * The digest over every field of `spec` as it is stored (ADR 0019).
  * A worktree's selection is not in it (decision S9).
  */
-export const resourceSpecDigest = (spec: ResourceDefinitionInput): ResourceSpecDigest =>
+export const resourceSpecDigest = (spec: ResourceDefinition): ResourceSpecDigest =>
   ResourceSpecDigest.make(bytesToHex(sha256(utf8ToBytes(canonicalJson(encodeDefinition(spec))))));
 
 /** An image's content digest, as a registry resolves a tag: `sha256:` and 64 lower-case hex. */
@@ -274,10 +277,9 @@ const duplicates = (values: ReadonlyArray<string>): ReadonlyArray<string> => [
 const envPart = (label: string): string => label.toUpperCase().replaceAll("-", "_");
 
 /** The suffixes Mend sets for every resource, whatever it exports. */
-const addressSuffixes = (def: ResourceDefinitionInput): ReadonlyArray<string> => [
+const addressSuffixes = (def: ResourceDefinition): ReadonlyArray<string> => [
   "HOST",
   ...(def.ports.length > 0 ? ["PORT"] : []),
-  ...def.ports.map((port) => `PORT_${envPart(port.name)}`),
 ];
 
 type TemplateParse =
@@ -309,7 +311,7 @@ const parseTemplate = (template: string): TemplateParse => {
 };
 
 const exportRefusals = (
-  def: ResourceDefinitionInput,
+  def: ResourceDefinition,
   name: string,
   template: string,
 ): ReadonlyArray<ResourceRefusal> => {
@@ -343,7 +345,7 @@ const exportRefusals = (
 
 /**
  * What Mend knows of each preset's inside: the image repositories it runs, whether it serves
- * databases by name, the exports every bound one sets, and the conventional names it sets when it
+ * databases by name and the exports every bound one sets. Each preset runs when it
  * is the only one of its engine in use. No resource has a credential (ADR 0019, amendment of
  * 2026-10-31), so none of these is a secret.
  */
@@ -352,26 +354,22 @@ export const RESOURCE_PRESETS: {
     readonly images: ReadonlyArray<string>;
     readonly database: boolean;
     readonly exports: ReadonlyArray<string>;
-    readonly conventional: ReadonlyArray<string>;
   };
 } = {
   postgres: {
     images: ["postgres", "pgvector/pgvector", "postgis/postgis"],
     database: true,
-    exports: ["URL", "DATABASE", "USERNAME"],
-    conventional: ["DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE"],
+    exports: ["URL", "USER", "PASSWORD", "DATABASE"],
   },
   mysql: {
     images: ["mysql", "mariadb"],
     database: true,
-    exports: ["URL", "DATABASE", "USERNAME"],
-    conventional: [],
+    exports: ["URL"],
   },
   redis: {
     images: ["redis", "valkey/valkey"],
     database: false,
     exports: ["URL"],
-    conventional: ["REDIS_URL"],
   },
 };
 
@@ -429,8 +427,7 @@ export const presetDefinition = (input: {
   readonly name: ResourceName;
   readonly preset: ResourcePreset;
   readonly version: PresetVersion;
-  readonly scope: ResourceScope;
-}): ResourceDefinitionInput => {
+}): ResourceDefinition => {
   const layout = PRESET_LAYOUT[input.preset];
   const fields = {
     name: input.name,
@@ -449,9 +446,7 @@ export const presetDefinition = (input: {
     ready: { kind: "preset" as const },
     exports: {},
   };
-  return input.scope === "project"
-    ? { ...fields, scope: input.scope }
-    : { ...fields, scope: input.scope };
+  return fields;
 };
 
 /**
@@ -459,13 +454,13 @@ export const presetDefinition = (input: {
  * declared definition applies this before the definition is shown or digested, so a `.mend/mend.toml`
  * table, a whole definition and `--preset` all declare the same spec.
  */
-export const withPresetCommand = <D extends ResourceDefinitionInput>(def: D): D =>
+export const withPresetCommand = <D extends ResourceDefinition>(def: D): D =>
   def.preset === null || def.command !== null
     ? def
     : { ...def, command: PRESET_LAYOUT[def.preset].command };
 
 /** Whether `own` is a database on the project instance rather than an instance of its own. */
-export const isDatabasePreset = (def: PolicySubject): boolean =>
+export const isDatabasePreset = (def: Pick<ResourceDefinition, "preset">): boolean =>
   def.preset !== null && RESOURCE_PRESETS[def.preset].database;
 
 /**
@@ -527,7 +522,7 @@ const envRefusals = (name: string, value: ResourceEnvValue): ReadonlyArray<Resou
       ];
 };
 
-const readyRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> => {
+const readyRefusals = (def: ResourceDefinition): ReadonlyArray<ResourceRefusal> => {
   const hasTcp = def.ports.some((port) => port.protocol === "tcp");
   if (def.ready.kind === "tcp" && def.ports.length > 0 && !hasTcp) {
     return [
@@ -548,7 +543,7 @@ const readyRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefu
   return [];
 };
 
-const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> => {
+const presetRefusals = (def: ResourceDefinition): ReadonlyArray<ResourceRefusal> => {
   if (def.preset === null) {
     return def.ready.kind === "preset"
       ? [
@@ -604,72 +599,57 @@ const presetRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRef
   ];
 };
 
-/** `MEND_RESOURCE_<NAME>_`, with `-` written as `_`. */
-export const resourceEnvPrefix = (name: ResourceName): string => `MEND_RESOURCE_${envPart(name)}_`;
+/** `MEND_<NAME>_`, with `-` written as `_`. */
+export const resourceEnvPrefix = (name: string): string => `MEND_${envPart(name)}_`;
 
-/** How a worktree reaches a resource it uses. A project resource on `off` is not bound. */
-export type ResourceBinding =
-  | {
-      readonly definition: ProjectResourceDefinition;
-      readonly mode: "shared" | "own";
-    }
-  | {
-      readonly definition: WorktreeResourceDefinition;
-      readonly mode: "worktree";
-    };
+/** A remembered instance selected for one worktree, with its database when applicable. */
+export interface ResourceBinding {
+  readonly definition: ResourceDefinition;
+  readonly level: ResourceLevel;
+  readonly resourceId: ResourceDefinitionId;
+  readonly instanceKey: string;
+  readonly database: string | null;
+}
 
-/** Whether `def` is the one of its preset among `bound`; an image Mend does not know is no engine. */
-export const onlyOfItsEngine = (
-  def: ResourceDefinitionInput,
-  bound: ReadonlyArray<ResourceDefinitionInput>,
-): boolean =>
-  def.preset !== null && bound.filter((other) => other.preset === def.preset).length === 1;
-
-const envNamesOf = (
-  binding: ResourceBinding,
-  bound: ReadonlyArray<ResourceBinding>,
-): ReadonlyArray<string> => {
-  const def = binding.definition;
-  const prefixed = (suffix: string) => resourceEnvPrefix(def.name) + suffix;
-  const address = addressSuffixes(def).map(prefixed);
-  if (def.preset === null) return [...address, ...Object.keys(def.exports).map(prefixed)];
-  const preset = RESOURCE_PRESETS[def.preset];
-  const only = onlyOfItsEngine(
-    def,
-    bound.map((other) => other.definition),
-  );
-  return [...address, ...preset.exports.map(prefixed), ...(only ? preset.conventional : [])];
-};
-
-/**
- * Every env name a process gets from each resource its worktree binds: the address, the exports,
- * and a preset's conventional names when it is the one of its engine.
- */
+/** All exported names, in the order printed in a switch message. */
 export const resourceEnvNames = (
   bound: ReadonlyArray<ResourceBinding>,
 ): ReadonlyMap<ResourceName, ReadonlyArray<string>> =>
-  new Map(bound.map((binding) => [binding.definition.name, envNamesOf(binding, bound)]));
+  new Map(
+    bound.map(({ definition: def }) => [
+      def.name,
+      [
+        ...new Set(
+          [
+            "URL",
+            ...addressSuffixes(def),
+            ...(def.preset === "postgres" ? ["USER", "PASSWORD", "DATABASE"] : []),
+            ...Object.keys(def.exports),
+          ].map((suffix) => resourceEnvPrefix(def.name) + suffix),
+        ),
+      ],
+    ]),
+  );
 
 export interface ResourceEnvCollision {
   readonly name: string;
   readonly resources: ReadonlyArray<ResourceName>;
 }
 
-/** The binding that sets the most names: own where the policy offers it. */
-const widestBinding = (def: ResourceDefinitionInput): ResourceBinding =>
-  def.scope === "worktree"
-    ? { definition: def, mode: "worktree" }
-    : {
-        definition: def,
-        mode: choicesFor(def).includes("own") ? "own" : "shared",
-      };
-
 /** Env names two resources in use together would both set (`db`'s `MAIN_URL`, `db-main`'s `URL`). */
 export const envNameCollisions = (
-  defs: ReadonlyArray<ResourceDefinitionInput>,
+  defs: ReadonlyArray<ResourceDefinition>,
 ): ReadonlyArray<ResourceEnvCollision> => {
   const setBy = new Map<string, ReadonlyArray<ResourceName>>();
-  for (const [resource, names] of resourceEnvNames(defs.map(widestBinding))) {
+  for (const [resource, names] of resourceEnvNames(
+    defs.map((definition) => ({
+      definition,
+      level: "project",
+      resourceId: ResourceDefinitionId.make("names-only"),
+      instanceKey: "",
+      database: null,
+    })),
+  )) {
     for (const name of names) setBy.set(name, [...(setBy.get(name) ?? []), resource]);
   }
   return [...setBy].flatMap(([name, resources]) =>
@@ -678,7 +658,7 @@ export const envNameCollisions = (
 };
 
 /** The export of `def` that sets `env`, or "" when Mend sets it for the resource itself. */
-const collisionKey = (def: ResourceDefinitionInput, env: string): string => {
+const collisionKey = (def: ResourceDefinition, env: string): string => {
   const prefix = resourceEnvPrefix(def.name);
   const suffix = env.startsWith(prefix) ? env.slice(prefix.length) : "";
   return Object.hasOwn(def.exports, suffix) ? `exports.${suffix}` : "";
@@ -686,7 +666,7 @@ const collisionKey = (def: ResourceDefinitionInput, env: string): string => {
 
 /** Each of `defs` in an env name collision, with its refusal keyed by the export that sets the name. */
 export const envCollisionRefusals = (
-  defs: ReadonlyArray<ResourceDefinitionInput>,
+  defs: ReadonlyArray<ResourceDefinition>,
 ): ReadonlyArray<{
   readonly resource: ResourceName;
   readonly refusal: ResourceRefusal;
@@ -705,108 +685,26 @@ export const envCollisionRefusals = (
       })),
   );
 
-/** A project resource's choice for one worktree. */
-export const WorktreeChoice = Schema.Literals(["off", "shared", "own"]);
+/** The level a worktree selects, or off. */
+export const WorktreeChoice = Schema.Literals(["project", "worktree", "off"]);
 export type WorktreeChoice = typeof WorktreeChoice.Type;
 
-export type ResourceKind = ResourcePreset | "other";
+/** Every definition supports both levels. */
+export const choicesFor = (
+  _def: Pick<ResourceDefinition, "preset">,
+): ReadonlyArray<WorktreeChoice> => WorktreeChoice.literals;
 
-/** What a worktree gets from one (scope, kind) pair. */
-export type ResourceScopePolicy =
-  | {
-      readonly kind: "choose";
-      readonly choices: ReadonlyArray<WorktreeChoice>;
-      readonly default: WorktreeChoice;
-    }
-  /** A worktree resource: its own instance, started on first use, with no choice. */
-  | { readonly kind: "own-instance" }
-  | { readonly kind: "refused"; readonly message: string };
+/** A preset change cannot reinterpret existing own Postgres databases. */
+export const changesWhatOwnIs = (
+  held: Pick<ResourceDefinition, "preset">,
+  next: Pick<ResourceDefinition, "preset">,
+): boolean => held.preset === "postgres" && next.preset !== "postgres";
 
-/** Own is a Postgres database on the project's server (ADR 0019, amendment of 2026-10-31). */
-const POSTGRES_POLICY: ResourceScopePolicy = {
-  kind: "choose",
-  choices: ["shared", "own", "off"],
-  default: "own",
-};
-/** Own for any other image, MySQL included, comes later. */
-const SHARED_POLICY: ResourceScopePolicy = {
-  kind: "choose",
-  choices: ["shared", "off"],
-  default: "shared",
-};
-const PER_WORKTREE: ResourceScopePolicy = { kind: "own-instance" };
-
-/** ADR 0019, "Two scopes, and what each worktree gets", as amended on 2026-10-31: the one policy. */
-export const RESOURCE_SCOPE_POLICY: {
-  readonly [S in ResourceScope]: {
-    readonly [K in ResourceKind]: ResourceScopePolicy;
-  };
-} = {
-  project: {
-    postgres: POSTGRES_POLICY,
-    mysql: SHARED_POLICY,
-    redis: SHARED_POLICY,
-    other: SHARED_POLICY,
-  },
-  worktree: {
-    postgres: PER_WORKTREE,
-    mysql: PER_WORKTREE,
-    redis: {
-      kind: "refused",
-      message:
-        "is worktree, and a worktree's own Redis comes in a later step; declare Redis with scope project",
-    },
-    other: PER_WORKTREE,
-  },
-};
-
-type PolicySubject = Pick<ResourceDefinitionInput, "scope" | "preset">;
-
-export const scopePolicyFor = (def: PolicySubject): ResourceScopePolicy =>
-  RESOURCE_SCOPE_POLICY[def.scope][def.preset ?? "other"];
-
-/** The choices a worktree has; none for a worktree resource. */
-export const choicesFor = (def: PolicySubject): ReadonlyArray<WorktreeChoice> => {
-  const policy = scopePolicyFor(def);
-  return policy.kind === "choose" ? policy.choices : [];
-};
-
-/**
- * Whether replacing `held` with `next` changes what `own` is (its scope or preset), which no
- * definition may do while a worktree holds it as `own`, with data of its own.
- */
-export const changesWhatOwnIs = (held: PolicySubject, next: PolicySubject): boolean =>
-  held.scope !== next.scope || held.preset !== next.preset;
-
-/** A worktree's choice at its first launch; null for a worktree resource. */
-export const defaultChoiceFor = (def: PolicySubject): WorktreeChoice | null => {
-  const policy = scopePolicyFor(def);
-  return policy.kind === "choose" ? policy.default : null;
-};
-
-/** Why `mode` is not a choice the policy offers this definition, or null when it is. */
-export const selectionRefusal = (
-  def: ResourceDefinitionInput,
-  mode: WorktreeChoice,
-): ResourceRefusal | null => {
-  if (def.scope === "worktree") {
-    return {
-      key: "selection",
-      message: `is for a project resource, and @${def.name} is a worktree resource with no choice`,
-    };
-  }
-  const choices = choicesFor(def);
-  return choices.includes(mode)
-    ? null
-    : { key: "mode", message: `is ${mode}, and @${def.name} offers ${choices.join(", ")}` };
-};
-
-/** A worktree's choice as it applies: its stored one while the policy still offers it, else the default. */
+/** Project visibility is the default until a worktree stores a choice. */
 export const choiceInEffect = (
-  def: PolicySubject,
   stored: WorktreeChoice | null,
-): WorktreeChoice | null =>
-  stored !== null && choicesFor(def).includes(stored) ? stored : defaultChoiceFor(def);
+  usesProjectResources = true,
+): WorktreeChoice => stored ?? (usesProjectResources ? "project" : "off");
 
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
@@ -815,7 +713,7 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
  * Every free-text field a definition stores, keyed: a control character in one would reach a
  * reader's terminal before anyone read it.
  */
-const controlRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRefusal> =>
+const controlRefusals = (def: ResourceDefinition): ReadonlyArray<ResourceRefusal> =>
   [
     ...(def.command === null ? [] : [["command", def.command] as const]),
     ...(def.ready.kind === "command" ? [["ready.command", def.ready.argv] as const] : []),
@@ -836,13 +734,11 @@ const controlRefusals = (def: ResourceDefinitionInput): ReadonlyArray<ResourceRe
 
 /** Every rule across fields of a definition, each refusal naming its key. Empty when it may run. */
 export const resourceDefinitionRefusals = (
-  def: ResourceDefinitionInput,
+  def: ResourceDefinition,
 ): ReadonlyArray<ResourceRefusal> => {
-  const policy = scopePolicyFor(def);
   const nameIssue = resourceNameIssue(def.name);
   return [
     ...(nameIssue === null ? [] : [{ key: "name", message: nameIssue }]),
-    ...(policy.kind === "refused" ? [{ key: "scope", message: policy.message }] : []),
     ...(def.ports.length === 0
       ? [
           {
@@ -879,7 +775,7 @@ export const isResourceTableKey = (key: string): boolean =>
 
 /** Heads `resourceTableNotices`; true of every table, refused or not. */
 export const RESOURCE_TABLES_HEADING =
-  "Resources in .mend/mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file)";
+  "Resources in .mend/mend.toml (start explicitly with mend resource start <name> --project or --worktree)";
 
 /**
  * A file's refusals and ignored keys under `[resource]`, one line each, keyed in full:

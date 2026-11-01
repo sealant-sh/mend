@@ -74,6 +74,11 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
     Schema.withDecodingDefaultKey(Effect.succeed(false)),
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),
+  /** Default resource visibility captured when this worktree was created. */
+  usesProjectResources: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(true)),
+    Schema.withConstructorDefault(Effect.succeed(true)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

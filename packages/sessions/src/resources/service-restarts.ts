@@ -1,6 +1,11 @@
 import { ServicesRepo, SessionProcessesRepo, SessionsRepo } from "@mend/db";
-import type { SessionProcessId, WorktreeId } from "@mend/domain";
-import { LIVE_PROCESS_STATUSES } from "@mend/domain/workbench";
+import type { SessionId, SessionProcessId, WorktreeId } from "@mend/domain";
+import {
+  LIVE_PROCESS_STATUSES,
+  isAgentProcessKind,
+  MessageInput,
+  type ResourceServiceRestart,
+} from "@mend/domain/workbench";
 import { Cause, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -15,14 +20,24 @@ export class WorktreeServiceRestarts extends Context.Service<
   WorktreeServiceRestarts,
   {
     /** Restarts each running Service of every session in the worktree as `by`; answers their names. */
-    readonly restart: (worktreeId: WorktreeId, by: string) => Effect.Effect<ReadonlyArray<string>>;
+    readonly restart: (
+      worktreeId: WorktreeId,
+      by: string,
+    ) => Effect.Effect<ReadonlyArray<ResourceServiceRestart>>;
+    /** Send a switch to other live agent sessions as the switching person. */
+    readonly tell: (
+      worktreeId: WorktreeId,
+      by: string,
+      message: string,
+      except: SessionId | null,
+    ) => Effect.Effect<ReadonlyArray<string>>;
   }
 >()("@mend/sessions/WorktreeServiceRestarts") {}
 
 /** Restarts nothing: for a composition with no engine. */
 export const WorktreeServiceRestartsNone: Layer.Layer<WorktreeServiceRestarts> = Layer.succeed(
   WorktreeServiceRestarts,
-  { restart: () => Effect.succeed([]) },
+  { restart: () => Effect.succeed([]), tell: () => Effect.succeed([]) },
 );
 
 export const WorktreeServiceRestartsLive: Layer.Layer<
@@ -56,15 +71,20 @@ export const WorktreeServiceRestartsLive: Layer.Layer<
       worktreeId: WorktreeId,
       by: string,
     ) {
-      const restarted: Array<string> = [];
+      const restarted: Array<ResourceServiceRestart> = [];
       for (const session of yield* sessions.listForWorktree(worktreeId)) {
         for (const service of yield* services.listForSession(session.id)) {
           if (!(yield* running(service.currentAttemptId))) continue;
           const outcome = yield* engine
             .restartService(service.id, { kind: "person", userId: by })
             .pipe(Effect.result);
-          if (outcome._tag === "Success") restarted.push(service.name);
+          if (outcome._tag === "Success") restarted.push({ name: service.name, kind: "restarted" });
           else {
+            restarted.push({
+              name: service.name,
+              kind: "failed",
+              message: outcome.failure.message,
+            });
             yield* Effect.logWarning("resources: a Service did not restart after a switch").pipe(
               Effect.annotateLogs({
                 serviceId: service.id,
@@ -77,6 +97,45 @@ export const WorktreeServiceRestartsLive: Layer.Layer<
       return restarted;
     });
 
-    return { restart };
+    const tell = Effect.fn("WorktreeServiceRestarts.tell")(function* (
+      worktreeId: WorktreeId,
+      by: string,
+      message: string,
+      except: SessionId | null,
+    ) {
+      const failed: string[] = [];
+      for (const session of yield* sessions.listForWorktree(worktreeId)) {
+        if (
+          session.id === except ||
+          !["starting", "running", "waiting", "idle"].includes(session.status)
+        )
+          continue;
+        const agents = yield* processes.listForSession(session.id);
+        if (
+          !agents.some(
+            (process) =>
+              isAgentProcessKind(process.kind) &&
+              process.exitedAt === null &&
+              LIVE_PROCESS_STATUSES.has(process.status),
+          )
+        )
+          continue;
+        const answer = yield* engine
+          .sendMessage({
+            sessionId: session.id,
+            sender: by,
+            input: MessageInput.make(message),
+            clientMessageId: null,
+            intent: "default",
+          })
+          .pipe(Effect.result);
+        if (answer._tag === "Failure")
+          failed.push(
+            `could not tell the agent in ${session.label ?? session.id}: ${answer.failure.message}`,
+          );
+      }
+      return failed;
+    });
+    return { restart, tell };
   }),
 );

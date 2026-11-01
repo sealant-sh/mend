@@ -847,7 +847,7 @@ const main = async () => {
     return;
   }
   if (group !== "service") {
-    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend resource <list|add|remove|start|stop|use|env> · mend land · mend stop · mend hook <claude|codex> · mend mcp");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend resource list · start <name> --project|--worktree [--restart] · stop <name> · use <name> project|worktree|off · remove <name> --project|--worktree · reset · load · env · mend land · mend stop · mend hook <claude|codex> · mend mcp");
   }
   try {
     switch (verb) {

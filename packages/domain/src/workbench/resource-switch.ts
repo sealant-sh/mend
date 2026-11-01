@@ -7,11 +7,14 @@ export type ResourceServiceRestart =
 export const changedResourceEnvNames = (
   before: Readonly<Record<string, string>>,
   after: Readonly<Record<string, string>>,
+  prefix?: string,
 ): ReadonlyArray<string> => {
   const names = [...new Set([...Object.keys(before), ...Object.keys(after)])];
   const suffixes = ["URL", "HOST", "PORT", "USER", "PASSWORD", "DATABASE"];
   const order = (name: string) => {
-    const index = suffixes.findIndex((suffix) => name.endsWith(`_${suffix}`));
+    const index = suffixes.findIndex((suffix) =>
+      prefix === undefined ? name.endsWith(`_${suffix}`) : name === `${prefix}${suffix}`,
+    );
     return index === -1 ? suffixes.length : index;
   };
   return names

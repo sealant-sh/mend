@@ -157,6 +157,8 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         yield* seed("legacy");
         yield* sql`UPDATE projects SET removal_phase = 'deleting', removal_id = 'old', removal_since = now() WHERE id = 'legacy'`;
         yield* migrations["0167_project_retention"];
+        yield* sql`ALTER TABLE projects ADD COLUMN new_worktrees_use_project_resources boolean NOT NULL DEFAULT true`;
+        yield* sql`ALTER TABLE worktrees ADD COLUMN uses_project_resources boolean NOT NULL DEFAULT true`;
       }),
     );
   }, 60_000);

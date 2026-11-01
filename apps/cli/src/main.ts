@@ -898,7 +898,7 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
 const findProject = async (config: CliConfig, explicit: string | null, adoptCwd = false) => {
   const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
   if (explicit !== null) {
-    const named = projects.find((p) => p.name === explicit);
+    const named = projects.find((p) => p.id === explicit || p.name === explicit);
     if (named === undefined) return fail(`no adopted project named "${explicit}"`);
     return named;
   }
