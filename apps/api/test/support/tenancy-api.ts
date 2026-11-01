@@ -94,6 +94,7 @@ import {
   ResourceRemoval,
   ResourceRuntime,
   ResourcesLive,
+  ResourceTableWrites,
   ResourceLoads,
   Screens,
   ServiceHost,
@@ -341,6 +342,7 @@ export const createTenancyApi = async (
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
+      readonly resourceTableWrites?: Layer.PartialEffectful<ResourceTableWrites["Service"]>;
       readonly resourceStatus?: ResourceStatusReads["Service"]["forWorktree"];
       readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
       readonly links?: Layer.PartialEffectful<ProjectLinksRepo["Service"]>;
@@ -823,6 +825,7 @@ export const createTenancyApi = async (
         WorktreeReads,
         "reads",
         {
+          readDefaultBranchFile: () => Effect.succeed({ value: null, stamp: WORKTREE_STAMP }),
           readFile: (_project, _worktree, relative) =>
             MEND_TOML_PATHS.some((path) => path === relative)
               ? Effect.succeed({ value: null, stamp: WORKTREE_STAMP })
@@ -984,6 +987,14 @@ export const createTenancyApi = async (
     MemberRemovalLive,
     HandoffStartLive,
     ResourcesLive.pipe(
+      Layer.provide(
+        recording(
+          ResourceTableWrites,
+          "resourceTableWrites",
+          options.implement?.resourceTableWrites ?? {},
+          calls,
+        ),
+      ),
       Layer.provideMerge(
         options.implement?.resourceStatus === undefined
           ? ResourceStatusReadsLive

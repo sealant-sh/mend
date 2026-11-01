@@ -1,11 +1,18 @@
 import type { ProjectId, WorktreeId } from "@mend/domain";
 import type { ResourceDefinition } from "@mend/domain/workbench";
+import type { FileRead } from "@mend/store";
 import { Effect } from "effect";
 import { parse as parseToml } from "smol-toml";
 
 import { MEND_TOML, LEGACY_MEND_TOML, selectMendToml, tomlDiagnostic } from "../recipes.ts";
 import { readResourceTables, type ResourceTables } from "../resource-tables.ts";
-import { stampLabel, type WorktreeReads } from "../worktree-reads.ts";
+import {
+  stampLabel,
+  type WorktreeReads,
+  type Stamped,
+  type WorktreeReadError,
+  type DefaultBranchUnavailableError,
+} from "../worktree-reads.ts";
 
 /** A `mend.toml` larger than this is reported unread, never cut. */
 const MEND_TOML_MAX_BYTES = 256 * 1024;
@@ -21,13 +28,13 @@ export type WorktreeTablesRead =
   | ({ readonly kind: "read"; readonly observed: string } & ResourceTables);
 
 /** Reads the `[resource.*]` tables of a worktree's `mend.toml`. */
-export const readWorktreeTables = Effect.fn("Resources.readWorktreeTables")(function* (
-  reads: Pick<WorktreeReads["Service"], "readFile">,
-  projectId: ProjectId,
-  worktreeId: WorktreeId,
+const readTables = Effect.fn("Resources.readTables")(function* (
+  load: (
+    name: string,
+  ) => Effect.Effect<Stamped<FileRead | null>, WorktreeReadError | DefaultBranchUnavailableError>,
+  unavailable?: string,
 ) {
-  const readFile = (name: string) =>
-    reads.readFile(projectId, worktreeId, name, null, MEND_TOML_MAX_BYTES).pipe(Effect.result);
+  const readFile = (name: string) => load(name).pipe(Effect.result);
   const preferred = yield* readFile(MEND_TOML);
   const legacy =
     preferred._tag === "Success" && preferred.success.value === null
@@ -41,7 +48,7 @@ export const readWorktreeTables = Effect.fn("Resources.readWorktreeTables")(func
   if (read._tag === "Failure") {
     return {
       kind: "unavailable",
-      message: `${name} could not be read`,
+      message: unavailable ?? `${name} could not be read`,
     } satisfies WorktreeTablesRead;
   }
   const { value: file, stamp } = read.success;
@@ -72,3 +79,19 @@ export const readWorktreeTables = Effect.fn("Resources.readWorktreeTables")(func
 /** The tables a read found, or none. */
 export const tablesOf = (read: WorktreeTablesRead): ReadonlyArray<ResourceDefinition> =>
   read.kind === "read" ? read.tables : [];
+
+/** Reads this worktree's current declaration, used only by explicit Start. */
+export const readWorktreeTables = (
+  reads: Pick<WorktreeReads["Service"], "readFile">,
+  projectId: ProjectId,
+  worktreeId: WorktreeId,
+) => readTables((name) => reads.readFile(projectId, worktreeId, name, null, MEND_TOML_MAX_BYTES));
+/** Default-branch definitions for the Resources page, independent of the worktree selected for Start. */
+export const readDefaultBranchTables = (
+  reads: Pick<WorktreeReads["Service"], "readDefaultBranchFile">,
+  projectId: ProjectId,
+) =>
+  readTables(
+    (name) => reads.readDefaultBranchFile(projectId, name, MEND_TOML_MAX_BYTES),
+    "the default branch is not available on this server",
+  );

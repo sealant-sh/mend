@@ -904,10 +904,24 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "resource add",
     section: "project setup",
-    summary: "not available in this build",
-    synopsis: ["<name>"],
+    summary: "write a resource declaration in .mend/mend.toml",
+    synopsis: [
+      "<name> --preset <postgres|redis|mysql> --version <v> [--worktree-id <w>]",
+      "<name> --image <ref> --port name=port[/udp] [--worktree-id <w>]",
+    ],
     description: [
-      "Resource definitions live in .mend/mend.toml. The add command is not available in this build.",
+      "Writes a resource table into the worktree's .mend/mend.toml (root mend.toml fallback). Starts nothing and never writes project settings or commits. The worktree comes from this checkout or --worktree-id.",
+    ],
+    options: [
+      { flag: "--preset <p>", text: "postgres, redis or mysql" },
+      { flag: "--version <v>", text: "preset image tag, beginning with its major version" },
+      { flag: "--image <ref>", text: "image for a resource without a preset" },
+      { flag: "--port <name=port[/udp]>", text: "named port; repeat for each port" },
+      { flag: "--project-id <p>", text: "project name or id" },
+      {
+        flag: "--worktree-id <w>",
+        text: "worktree name or id; inferred from this checkout when absent",
+      },
     ],
     see: ["resource start"],
   },

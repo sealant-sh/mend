@@ -32,6 +32,7 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import type { CheckpointId, WorktreeId } from "@mend/domain";
+import { worktreesByViewerActivity } from "@mend/domain/workbench";
 import { currentAgentProcess, previewStatusLine } from "@mend/domain/workbench";
 import {
   SessionEngine,
@@ -349,12 +350,13 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         yield* (yield* ProjectAccess).project(params.id);
         const rows = yield* worktrees.listForProject(params.id);
         const projectSessions = yield* sessions.listForProject(params.id);
+        const viewer = yield* (yield* ProjectAccess).viewer();
         const annotations = yield* changes.annotationsForProject(params.id);
         const processRows = yield* processes.listForSessions(
           projectSessions.map((session) => session.id),
         );
         return new WorktreeListing({
-          worktrees: rows,
+          worktrees: worktreesByViewerActivity(rows, projectSessions, viewer?.userId ?? null),
           annotations: rows.map((row) => {
             const members = projectSessions.filter((session) => session.worktreeId === row.id);
             const memberIds = new Set<string>(members.map((session) => session.id));

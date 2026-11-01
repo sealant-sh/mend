@@ -107,6 +107,16 @@ export class WorktreeNotCapturedError extends Schema.TaggedError<WorktreeNotCapt
   { worktreeId: Schema.String, message: Schema.String },
 ) {}
 
+/** The default branch is missing from this server's available Git objects. */
+export class DefaultBranchUnavailableError extends Schema.TaggedError<DefaultBranchUnavailableError>()(
+  "DefaultBranchUnavailableError",
+  { message: Schema.String },
+) {}
+const defaultBranchUnavailable = () =>
+  new DefaultBranchUnavailableError({
+    message: "the default branch is not available on this server",
+  });
+
 export type WorktreeReadError =
   | GitError
   | ProjectNotFoundError
@@ -247,6 +257,12 @@ export class WorktreeReads extends Context.Service<
       worktreeId: WorktreeId,
       target: { readonly path: string; readonly within: string; readonly view?: RawView },
     ) => Effect.Effect<RawFileObservation, RawReadError, Scope.Scope>;
+    /** Reads a default-branch blob even without a local worktree; a missing ref fails explicitly. */
+    readonly readDefaultBranchFile: (
+      projectId: ProjectId,
+      relative: string,
+      maxBytes: number,
+    ) => Effect.Effect<Stamped<FileRead | null>, WorktreeReadError | DefaultBranchUnavailableError>;
     /**
      * The start of one file, at most `maxBytes`: in the worktree as it stands (`at` null), or in a
      * commit's tree (a checkpoint's sha). Null when nothing readable is there, or the path leaves
@@ -299,6 +315,14 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
       });
     const stamped = <A>(value: A): Stamped<A> => ({ value, stamp: WORKTREE_STAMP });
     return {
+      readDefaultBranchFile: (projectId, relative, maxBytes) =>
+        Effect.gen(function* () {
+          const project = yield* projects.byId(projectId);
+          const branches = yield* store.listBranches(project.storePath);
+          const branch = branches.find((row) => row.name === project.defaultBranch);
+          if (branch === undefined) return yield* defaultBranchUnavailable();
+          return stamped(yield* store.readBlob(project.storePath, branch.sha, relative, maxBytes));
+        }),
       diffWorktree: (projectId, worktreeId, base) =>
         pathOf(projectId, worktreeId).pipe(
           Effect.flatMap((dir) => store.diffWorktree(dir, base)),
@@ -600,11 +624,19 @@ const restoreCapture = Effect.fnUntraced(function* (
 export const WorktreeReadsCapturedLive: Layer.Layer<
   WorktreeReads,
   never,
-  CaptureStoreRepo | BlobStore | GitOpsRunner | StoreRefsRepo | RawBlobCache
+  | CaptureStoreRepo
+  | BlobStore
+  | GitOpsRunner
+  | StoreRefsRepo
+  | RawBlobCache
+  | ProjectsRepo
+  | WorktreesRepo
 > = Layer.effect(
   WorktreeReads,
   Effect.gen(function* () {
     const repo = yield* CaptureStoreRepo;
+    const projects = yield* ProjectsRepo;
+    const worktrees = yield* WorktreesRepo;
     const blobs = yield* BlobStore;
     const runner = yield* GitOpsRunner;
     const refs = yield* StoreRefsRepo;
@@ -649,6 +681,22 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
         restores.withPermits(1),
       );
     return {
+      readDefaultBranchFile: (projectId, relative, maxBytes) =>
+        Effect.gen(function* () {
+          const project = yield* projects.byId(projectId);
+          for (const worktree of yield* worktrees.listForProject(projectId)) {
+            const result = yield* Effect.gen(function* () {
+              const ready = yield* prepared(projectId, worktree.id);
+              const branches = yield* runner.listBranches(ready.cache);
+              const branch = branches.find((row) => row.name === project.defaultBranch);
+              if (branch === undefined) return yield* defaultBranchUnavailable();
+              const value = yield* runner.readBlob(ready.cache, branch.sha, relative, maxBytes);
+              return { value, stamp: ready.stamp };
+            }).pipe(Effect.result);
+            if (result._tag === "Success") return result.success;
+          }
+          return yield* defaultBranchUnavailable();
+        }),
       diffWorktree: (projectId, worktreeId, base) =>
         prepared(projectId, worktreeId).pipe(
           Effect.flatMap((ready) =>

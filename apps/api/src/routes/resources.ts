@@ -78,10 +78,16 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
         const worktreeId = query.worktreeId ?? null;
         if (worktreeId !== null) yield* projectWorktree(project.id, worktreeId);
         return yield* (yield* Resources)
-          .list(project, viewer, worktreeId, {
-            now: new Date(),
-            timeZone: query.timeZone,
-          })
+          .list(
+            project,
+            viewer,
+            worktreeId,
+            {
+              now: new Date(),
+              timeZone: query.timeZone,
+            },
+            query.allInstances === "true",
+          )
           .pipe(
             // A person refused a read cannot see the project.
             Effect.catchTag("ResourceActRefusedError", () =>
@@ -90,10 +96,23 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
           );
       }),
     )
+    .handle("add", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        if (payload.worktreeId !== null) yield* projectWorktree(project.id, payload.worktreeId);
+        return yield* (yield* Resources).add(project, viewer, payload).pipe(
+          Effect.catchTags({
+            ResourceActRefusedError: (error) => Effect.fail(denied(error)),
+            ResourceDefinitionRefusedError: (error) =>
+              Effect.fail(rejected(error.name, error.refusals)),
+          }),
+        );
+      }),
+    )
     .handle("remove", ({ params, payload }) =>
       Effect.gen(function* () {
         const { project, viewer } = yield* visible(params.id);
-        yield* projectWorktree(project.id, payload.worktreeId);
+        if (payload.worktreeId !== null) yield* projectWorktree(project.id, payload.worktreeId);
         return yield* (yield* Resources)
           .remove(project, viewer, params.name, payload)
           .pipe(Effect.catchTags(controlRefused));
@@ -133,7 +152,7 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
     .handle("stop", ({ params, query, payload }) =>
       Effect.gen(function* () {
         const { project, viewer } = yield* visible(params.id);
-        yield* projectWorktree(project.id, payload.worktreeId);
+        if (payload.worktreeId !== null) yield* projectWorktree(project.id, payload.worktreeId);
         return yield* (yield* Resources)
           .stop(project, viewer, params.name, payload, {
             now: new Date(),

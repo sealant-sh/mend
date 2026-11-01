@@ -7,6 +7,9 @@ import {
   type ResourcesPage,
   type ResourceStarted,
   resourcePositionals,
+  resourceAdditionOf,
+  resourceAddedLines,
+  type ResourceAdded,
   resourceTableNotices,
   resourceChoiceOf,
   resourceLevelFlag,
@@ -26,7 +29,7 @@ import {
 
 /**
  * `mend resource add|list|remove|use|start|stop|reset|env` (docs/adr/0019-shared-services.md): a
- * project's resources from a person's terminal. What a member adds is the project's, and runs.
+ * project's resources from a person's terminal. Add writes a worktree declaration and starts nothing.
  * The server decides every act; these commands print its status lines as they come. Anything a
  * definition stores is someone else's text, so it reaches the terminal through `printable`.
  */
@@ -131,8 +134,22 @@ export const resourceCommand = async (
       for (const line of renderResources(project, page, worktreeName)) say(line);
       return;
     }
-    case "add":
-      return fail("not available in this build");
+    case "add": {
+      const input = resourceAdditionOf(rest);
+      if (!input.ok) return fail(input.message);
+      const worktree = await worktreeOf();
+      if (worktree === null) return fail("name the worktree: --worktree-id <w>");
+      const answer = await api<ResourceAdded>(
+        "POST",
+        `/projects/${project.id}/worktrees/resources`,
+        {
+          worktreeId: worktree.id,
+          definition: input.definition,
+        },
+      );
+      for (const line of resourceAddedLines(answer)) say(printable(line));
+      return;
+    }
     case "remove": {
       if (rest.includes("--project") && rest.includes("--worktree"))
         return fail("choose one level: --project or --worktree");
@@ -142,11 +159,12 @@ export const resourceCommand = async (
       if (level === null)
         return fail(`choose a level: mend resource remove ${name} --project or --worktree`);
       const worktree = await worktreeOf();
-      if (worktree === null) return fail("name the worktree: --worktree-id <w>");
+      if (worktree === null && level !== "project")
+        return fail("name the worktree: --worktree-id <w>");
       const answer = await api<{ readonly statusLine: string }>(
         "DELETE",
         `/projects/${project.id}/resources/${encodeURIComponent(name)}`,
-        { level, worktreeId: worktree.id },
+        { level, worktreeId: worktree?.id ?? null },
       );
       return say(printable(answer.statusLine));
     }
@@ -185,17 +203,19 @@ export const resourceCommand = async (
         if (level === null) return fail(resourceLevelHint(name));
       }
       const worktree = await worktreeOf();
-      if (worktree === null) return fail("name the worktree: --worktree-id <w>");
+      if (worktree === null && !(verb === "stop" && level === "project"))
+        return fail("name the worktree: --worktree-id <w>");
       const route = `/projects/${project.id}/resources/${encodeURIComponent(name)}/${verb}?${zone}`;
       if (verb === "stop") {
         const answer = await api<ResourceControlled>("POST", route, {
           ...(level === null ? {} : { level }),
-          worktreeId: worktree.id,
+          worktreeId: worktree?.id ?? null,
         });
         say(printable(answer.statusLine));
         if (answer.message !== null) say(printable(answer.message));
         return;
       }
+      if (worktree === null) return fail("name the worktree: --worktree-id <w>");
       let answer = await api<ResourceStarted>("POST", route, {
         level,
         worktreeId: worktree.id,

@@ -45,12 +45,19 @@ import {
   resourceLevelFlag,
   resourceLevelHint,
   resourceChoiceOf,
+  type ResourceAddRequest,
+  type ResourceAdded,
+  resourceAdditionOf,
+  resourceAdditionDefinition,
+  resourceAddedLines,
+  resourceTableToml,
 } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { SessionChannelRegistry } from "../session-channel.ts";
 import { WorktreeReads } from "../worktree-reads.ts";
+import { ResourceTableWrites } from "./append-table.ts";
 import {
   ImageFailureReason,
   imageRefusalClause,
@@ -61,7 +68,7 @@ import {
 import { type InstanceObserved, ResourceRuntime } from "./runtime.ts";
 import { WorktreeServiceRestarts } from "./service-restarts.ts";
 import { ResourceStatusReads } from "./status-reads.ts";
-import { readWorktreeTables, tablesOf } from "./worktree-tables.ts";
+import { readWorktreeTables, readDefaultBranchTables, tablesOf } from "./worktree-tables.ts";
 
 /** A project as the resource rules read it. */
 export type ResourceProject = ProjectTenancy & { readonly id: ProjectId };
@@ -114,17 +121,23 @@ export interface ReaderClock {
 export class Resources extends Context.Service<
   Resources,
   {
+    readonly add: (
+      project: ResourceProject,
+      viewer: Viewer,
+      request: ResourceAddRequest,
+    ) => Effect.Effect<ResourceAdded, ResourceActRefusedError | ResourceDefinitionRefusedError>;
     readonly list: (
       project: ResourceProject,
       viewer: Viewer,
       worktreeId: WorktreeId | null,
       clock: ReaderClock,
+      allInstances?: boolean,
     ) => Effect.Effect<ResourcesPage, ResourceActRefusedError>;
     readonly remove: (
       project: ResourceProject,
       viewer: Viewer,
       name: string,
-      options: { readonly level: ResourceLevel; readonly worktreeId: WorktreeId },
+      options: { readonly level: ResourceLevel; readonly worktreeId: WorktreeId | null },
     ) => Effect.Effect<
       { readonly statusLine: string },
       ResourceActRefusedError | ResourceNameNotFoundError
@@ -200,7 +213,7 @@ const flagOf = (args: ReadonlyArray<string>, flag: string): string | null => {
   return value === undefined || value.startsWith("--") ? null : value;
 };
 const SESSION_USAGE =
-  "mend resource list · start <name> --project|--worktree [--restart] · stop <name> [--project|--worktree] · use <name> project|worktree|off · remove <name> --project|--worktree · reset <name> [--target shared|own] · load <name> · env";
+  "mend resource list · add <name> --preset <p> --version <v> or --image <ref> --port name=port[/udp] · start <name> --project|--worktree [--restart] · stop <name> [--project|--worktree] · use <name> project|worktree|off · remove <name> --project|--worktree · reset <name> [--target shared|own] · load <name> · env";
 
 const controlled = (
   definition: StoredResourceInstance,
@@ -228,10 +241,11 @@ const controlled = (
   ),
   message,
 });
-/** File definitions are read only at start; every other operation uses remembered rows. */
+/** Start reads the chosen worktree; the page reads the default branch beside remembered instances. */
 export const ResourcesLive: Layer.Layer<
   Resources,
   never,
+  | ResourceTableWrites
   | ResourcesRepo
   | ProjectsRepo
   | SessionsRepo
@@ -246,6 +260,7 @@ export const ResourcesLive: Layer.Layer<
 > = Layer.effect(
   Resources,
   Effect.gen(function* () {
+    const writes = yield* ResourceTableWrites;
     const repo = yield* ResourcesRepo;
     const projects = yield* ProjectsRepo;
     const sessions = yield* SessionsRepo;
@@ -351,17 +366,74 @@ export const ResourcesLive: Layer.Layer<
       return { selection, message: [message, ...linked, ...failed].join("\n") };
     });
 
+    const add = Effect.fn("Resources.add")(function* (
+      project: ResourceProject,
+      viewer: Viewer,
+      request: ResourceAddRequest,
+    ) {
+      yield* decide(project, viewer, { kind: "add", replaces: null });
+      const worktree =
+        request.worktreeId === null ? null : yield* checkedWorktree(project, request.worktreeId);
+      const spec = resourceAdditionDefinition(request.definition);
+      const refusals = resourceDefinitionRefusals(spec);
+      if (refusals.length > 0)
+        return yield* new ResourceDefinitionRefusedError({ name: spec.name, refusals });
+      const table = resourceTableToml(spec);
+      const result =
+        worktree === null
+          ? { kind: "unreachable" as const, reason: "this project has no selected worktree", table }
+          : yield* writes.appendResourceTable({
+              projectId: project.id,
+              worktreeId: worktree.id,
+              name: spec.name,
+              table,
+            });
+      switch (result.kind) {
+        case "written":
+          return {
+            ...result,
+            table,
+            worktree: worktree?.name ?? "",
+            statusLine: `@${spec.name} · added to ${result.path} in ${worktree?.name ?? ""} · start it: mend resource start ${spec.name} --project or --worktree`,
+          } satisfies ResourceAdded;
+        case "declared":
+          return {
+            ...result,
+            table,
+            statusLine: `@${spec.name} · already declared in ${result.path}`,
+          } satisfies ResourceAdded;
+        case "unparsed":
+          return { ...result, table, statusLine: result.message } satisfies ResourceAdded;
+        case "unreachable":
+          return {
+            ...result,
+            table,
+            statusLine: `@${spec.name} · ${result.reason} · add this table to .mend/mend.toml yourself:`,
+          } satisfies ResourceAdded;
+      }
+    });
+
     const list = Effect.fn("Resources.list")(function* (
       project: ResourceProject,
       viewer: Viewer,
       worktreeId: WorktreeId | null,
       clock: ReaderClock,
+      allInstances = false,
     ) {
       yield* decide(project, viewer, { kind: "read" });
       if (worktreeId !== null) yield* checkedWorktree(project, worktreeId);
-      const listed = yield* repo.listWithChoices(project.id, worktreeId);
-      const shown = yield* status.viewsFor(listed, project.id, worktreeId, clock);
+      const listed = yield* repo.listWithChoices(project.id, allInstances ? null : worktreeId);
+      const shown = yield* status.viewsFor(
+        listed,
+        project.id,
+        allInstances ? null : worktreeId,
+        clock,
+      );
       const owner = worktreeId === null ? null : yield* worktrees.changeOwnerOf(worktreeId);
+      const choices =
+        allInstances && worktreeId !== null
+          ? yield* repo.bindingRows(project.id, worktreeId)
+          : null;
       let settings = listed.map(
         (row): ResourceSettingEntry => ({
           id: row.definition.id,
@@ -370,7 +442,7 @@ export const ResourcesLive: Layer.Layer<
           image: row.definition.image,
           addedBy: row.definition.startedBy,
           level:
-            worktreeId === null
+            allInstances || worktreeId === null
               ? row.definition.worktreeId === null
                 ? "project"
                 : "worktree"
@@ -378,7 +450,14 @@ export const ResourcesLive: Layer.Layer<
                 ? "worktree"
                 : "project",
           worktreeId: row.definition.worktreeId,
-          choice: row.choice,
+          choice:
+            choices === null
+              ? row.choice
+              : choiceInEffect(
+                  choices.selections.find((selection) => selection.resourceId === row.definition.id)
+                    ?.mode ?? null,
+                  choices.usesProjectResources,
+                ),
           canRemove:
             resourceActRefusal(project, viewer, {
               kind: "remove-definition",
@@ -393,13 +472,16 @@ export const ResourcesLive: Layer.Layer<
         }),
       );
       let file: ResourceFileRead = { kind: "not-selected" };
-      if (worktreeId !== null) {
-        const read = yield* readWorktreeTables(reads, project.id, worktreeId);
+      if (allInstances || worktreeId !== null) {
+        const read =
+          allInstances || worktreeId === null
+            ? yield* readDefaultBranchTables(reads, project.id)
+            : yield* readWorktreeTables(reads, project.id, worktreeId);
         file =
           read.kind === "read"
             ? {
                 ...read,
-                worktreeId,
+                worktreeId: allInstances ? null : worktreeId,
                 tables: read.tables.map(
                   (spec): ResourceFileTable => ({
                     spec,
@@ -408,10 +490,16 @@ export const ResourcesLive: Layer.Layer<
                   }),
                 ),
               }
-            : { ...read, worktreeId };
-        if (read.kind === "read")
+            : { ...read, worktreeId: allInstances ? null : worktreeId };
+        const selected =
+          worktreeId === null
+            ? null
+            : allInstances
+              ? yield* readWorktreeTables(reads, project.id, worktreeId)
+              : read;
+        if (selected?.kind === "read")
           settings = settings.map((entry) => {
-            const requested = read.tables.find((spec) => spec.name === entry.spec.name);
+            const requested = selected.tables.find((spec) => spec.name === entry.spec.name);
             return requested === undefined || resourceSpecDigest(requested) === entry.digest
               ? entry
               : {
@@ -676,9 +764,15 @@ export const ResourcesLive: Layer.Layer<
       clock: ReaderClock,
     ) {
       yield* decide(project, viewer, { kind: "read" });
-      yield* checkedWorktree(project, options.worktreeId);
+      if (options.worktreeId !== null) yield* checkedWorktree(project, options.worktreeId);
+      else if (options.level !== "project")
+        return yield* refused("name the worktree: --worktree-id <w>");
       const any = yield* named(project.id, name);
-      const choice = options.level ?? (yield* effective(project.id, options.worktreeId, any.id));
+      const choice =
+        options.level ??
+        (options.worktreeId === null
+          ? "project"
+          : yield* effective(project.id, options.worktreeId, any.id));
       if (choice === "off")
         return yield* refused(
           `@${name} · off for this worktree · choose --project or --worktree to stop an instance`,
@@ -704,9 +798,11 @@ export const ResourcesLive: Layer.Layer<
       project: ResourceProject,
       viewer: Viewer,
       name: string,
-      options: { readonly level: ResourceLevel; readonly worktreeId: WorktreeId },
+      options: { readonly level: ResourceLevel; readonly worktreeId: WorktreeId | null },
     ) {
-      yield* checkedWorktree(project, options.worktreeId);
+      if (options.worktreeId !== null) yield* checkedWorktree(project, options.worktreeId);
+      else if (options.level !== "project")
+        return yield* refused("name the worktree: --worktree-id <w>");
       const any = yield* named(project.id, name);
       const ownInstance = yield* instanceAt(project.id, name, options.worktreeId);
       if (
@@ -819,7 +915,15 @@ export const ResourcesLive: Layer.Layer<
       const answer = Effect.gen(function* () {
         if (rest.includes("--project") && rest.includes("--worktree"))
           return yield* refused("choose one level: --project or --worktree");
-        if (verb === "add") return yield* refused("not available in this build");
+        if (verb === "add") {
+          const input = resourceAdditionOf(rest);
+          if (!input.ok) return yield* refused(input.message);
+          return {
+            lines: resourceAddedLines(
+              yield* add(project, viewer, { worktreeId, definition: input.definition }),
+            ),
+          };
+        }
         if (verb === "list")
           return { lines: pageLines(yield* list(project, viewer, worktreeId, clock)) };
         if (verb === "env") {
@@ -903,7 +1007,7 @@ export const ResourcesLive: Layer.Layer<
         ),
       );
     });
-    return { list, remove, use, reset, start, stop, env, forSession };
+    return { add, list, remove, use, reset, start, stop, env, forSession };
   }),
 );
 

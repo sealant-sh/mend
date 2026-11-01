@@ -51,6 +51,10 @@ import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { SessionEngine, SessionTurnRefusedError } from "../src/engine.ts";
+import {
+  type AppendResourceTableResult,
+  ResourceTableWrites,
+} from "../src/resources/append-table.ts";
 import { ResourceImageResolver } from "../src/resources/image-resolver.ts";
 import { ResourceRemoval, ResourceRemovalLive } from "../src/resources/removal.ts";
 import { Resources, ResourcesChannelLive, ResourcesLive } from "../src/resources/resources.ts";
@@ -86,8 +90,19 @@ device = "/dev/null"
 `;
 
 let file = { text: "", stamp: WORKTREE_STAMP };
+let defaultFile: string | undefined;
 
 const reads = Layer.mock(WorktreeReads, {
+  readDefaultBranchFile: () =>
+    Effect.sync(() => ({
+      value: {
+        bytes: new TextEncoder().encode(defaultFile ?? file.text),
+        size: (defaultFile ?? file.text).length,
+        truncated: false,
+        binary: false,
+      },
+      stamp: file.stamp,
+    })),
   readFile: () =>
     Effect.sync(() => ({
       value: {
@@ -225,7 +240,18 @@ const restarts = Layer.succeed(WorktreeServiceRestarts, {
       return [];
     }),
 });
+let appended: { readonly name: string; readonly table: string } | null = null;
+let writeResult: AppendResourceTableResult = { kind: "written", path: ".mend/mend.toml" };
 const resources = ResourcesLive.pipe(
+  Layer.provide(
+    Layer.mock(ResourceTableWrites, {
+      appendResourceTable: (input) =>
+        Effect.sync(() => {
+          appended = input;
+          return writeResult;
+        }),
+    }),
+  ),
   Layer.provideMerge(ResourceStatusReadsLive),
   Layer.provide(Layer.mock(ResourceLoadsRepo, { latest: () => Effect.sync(() => loadRows) })),
   Layer.provideMerge(Layer.merge(runtimeLayer, restarts)),
@@ -320,6 +346,9 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
   }, 60_000);
 
   beforeEach(async () => {
+    defaultFile = undefined;
+    appended = null;
+    writeResult = { kind: "written", path: ".mend/mend.toml" };
     sealant.calls.length = 0;
     sealant.commands.length = 0;
     sealant.specs.clear();
@@ -758,6 +787,77 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     expect(sealant.calls).toEqual([`archive ${db.id}`]);
   });
 
+  it.each([
+    [
+      { kind: "written", path: "mend.toml" },
+      "@mail · added to mend.toml in wt-res · start it: mend resource start mail --project or --worktree",
+    ],
+    [{ kind: "declared", path: ".mend/mend.toml" }, "@mail · already declared in .mend/mend.toml"],
+    [
+      { kind: "unparsed", path: "mend.toml", message: "mend.toml: invalid TOML" },
+      "mend.toml: invalid TOML",
+    ],
+    [
+      { kind: "unreachable", reason: "offline", table: "ignored" },
+      "@mail · offline · add this table to .mend/mend.toml yourself:",
+    ],
+  ] satisfies ReadonlyArray<readonly [AppendResourceTableResult, string]>)(
+    "helper add answers %# and never starts or remembers the definition",
+    async (result, line) => {
+      writeResult = result;
+      const lines = await fromSession(
+        "add",
+        "mail",
+        "--image",
+        "axllent/mailpit:v1.21",
+        "--port",
+        "smtp=1025",
+      );
+      expect(lines[0]).toBe(line);
+      expect(appended).toMatchObject({
+        name: "mail",
+        table: '[resource.mail]\nimage = "axllent/mailpit:v1.21"\nports = { smtp = 1025 }\n',
+      });
+      if (result.kind === "unreachable")
+        expect(lines.slice(1).join("\n")).toBe(appended?.table.trimEnd());
+      expect(sealant.calls).toEqual([]);
+      expect(
+        await runtime.runPromise(
+          Effect.flatMap(ResourcesRepo, (repo) => repo.byName(PROJECT, "mail")),
+        ),
+      ).toBeNull();
+    },
+  );
+  it("lists default-branch definitions even when the selected worktree lacks the table, and Start names that absence", async () => {
+    defaultFile = '[resource.mail]\nimage = "axllent/mailpit:v1.21"\nports = { smtp = 1025 }\n';
+    file.text = "";
+    const page = await runtime.runPromise(
+      Effect.flatMap(Resources, (actions) =>
+        actions.list(awaitedProject, maria, WORKTREE, clock, true),
+      ),
+    );
+    expect(page.file.kind === "read" && page.file.tables.map((table) => table.spec.name)).toEqual([
+      "mail",
+    ]);
+    expect(page.file.kind === "read" && page.file.worktreeId).toBeNull();
+    expect(await fromSession("start", "mail", "--project")).toEqual([
+      "refused: no [resource.mail] in this worktree's .mend/mend.toml",
+    ]);
+  });
+  it("lists a running instance after its table is removed, independently of the default-branch definitions", async () => {
+    await start("db");
+    file.text = "";
+    const page = await runtime.runPromise(
+      Effect.flatMap(Resources, (actions) =>
+        actions.list(awaitedProject, maria, WORKTREE, clock, true),
+      ),
+    );
+    expect(page.file.kind === "read" && page.file.tables).toEqual([]);
+    expect(page.settings.find((entry) => entry.spec.name === "db")).toMatchObject({
+      instance: "running",
+      canRemove: true,
+    });
+  });
   it("keeps malformed file source out of the status response", async () => {
     file.text = VERIFIER_FILE;
     const page = await runtime.runPromise(
