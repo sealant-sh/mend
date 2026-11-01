@@ -38,6 +38,7 @@ const handlers: ResourceHandlers = {
   remove: nothing,
   add: nothing,
   choose: nothing,
+  control: nothing,
   reload: nothing,
 };
 
@@ -166,13 +167,18 @@ describe("the resources card", () => {
     ).toEqual(["shared"]);
   });
 
-  it("says a session, not this one, can run its own while starting is refused", () => {
-    const markup = render({ settings: [setting()] });
-    expect(markup).toContain(
-      "@db · resources need a newer Sealant on this runtime · a session can run its own [service.db]",
-    );
-    expect(markup).not.toContain("this session");
-    expect(buttons(markup)).not.toContain("start");
+  it("offers Start or Stop as the instance stands, and neither where no one instance is read", () => {
+    expect(buttons(render({ settings: [setting({ instance: "not-started" })] }))).toEqual([
+      "start",
+    ]);
+    expect(buttons(render({ settings: [setting({ instance: "running" })] }))).toEqual(["stop"]);
+    expect(
+      buttons(render({ settings: [setting({ instance: "stopped", canRemove: true })] })),
+    ).toEqual(["start", "remove"]);
+    expect(buttons(render({ settings: [setting({ instance: "none" })] }))).toEqual([]);
+    expect(
+      buttons(render({ settings: [setting()] }, { busy: new Map([["s:rdef_db", "start"]]) })),
+    ).toEqual(["starting…"]);
   });
 
   it("writes each refusal on its own line, with a reload beside a stale read", () => {

@@ -27,8 +27,10 @@ import {
   ResourceAddInput,
   type ResourceAddOffer,
   type ResourceAdded,
+  type ResourceControlled,
   resourceDeclarationRefusals,
   type ResourceDefinitionInput,
+  type ResourceEnvAnswer,
   type ResourceFileRead,
   type ResourceFileTable,
   type ResourceInstanceKind,
@@ -45,6 +47,7 @@ import {
   type ResourceStatusView,
   resourceTableNotices,
   type ResourceUse,
+  shellExports,
   type Viewer,
   WORKSPACE_RESOURCE_REFUSAL,
   WorktreeChoice,
@@ -86,6 +89,18 @@ export class ResourceImageRefusedError extends Schema.TaggedError<ResourceImageR
     message: Schema.String,
     reason: ImageFailureReason,
   },
+) {}
+
+/** Settings hold no resource by this name. */
+export class ResourceNameNotFoundError extends Schema.TaggedError<ResourceNameNotFoundError>()(
+  "ResourceNameNotFoundError",
+  { name: Schema.String },
+) {}
+
+/** A worktree resource runs one instance per worktree, so an act on it names the worktree. */
+export class ResourceWorktreeNeededError extends Schema.TaggedError<ResourceWorktreeNeededError>()(
+  "ResourceWorktreeNeededError",
+  { name: Schema.String, message: Schema.String },
 ) {}
 
 /** A reader's clock, for the status lines a reply carries. */
@@ -145,6 +160,35 @@ export class Resources extends Context.Service<
       ResourceSelectionEntry,
       ResourceActRefusedError | ResourceDefinitionNotFoundError | ResourceSelectionRefusedError
     >;
+    /** A person's start, which clears a person's stop; `worktreeId` for a worktree resource. */
+    readonly start: (
+      project: ResourceProject,
+      viewer: Viewer,
+      name: string,
+      worktreeId: WorktreeId | null,
+      clock: ReaderClock,
+    ) => Effect.Effect<
+      ResourceControlled,
+      ResourceActRefusedError | ResourceNameNotFoundError | ResourceWorktreeNeededError
+    >;
+    /** A person's stop, which holds against every launch until a person starts it. */
+    readonly stop: (
+      project: ResourceProject,
+      viewer: Viewer,
+      name: string,
+      worktreeId: WorktreeId | null,
+      clock: ReaderClock,
+    ) => Effect.Effect<
+      ResourceControlled,
+      ResourceActRefusedError | ResourceNameNotFoundError | ResourceWorktreeNeededError
+    >;
+    /** What every process in the worktree is told of its resources now; nothing is started. */
+    readonly env: (
+      project: ResourceProject,
+      viewer: Viewer,
+      worktreeId: WorktreeId,
+      clock: ReaderClock,
+    ) => Effect.Effect<ResourceEnvAnswer, ResourceActRefusedError>;
     /**
      * A request through a session's own socket or channel: a read answers its project's status
      * lines, read for the session's owner, and its worktree's file, never a spec; any change is
@@ -656,6 +700,104 @@ export const ResourcesLive: Layer.Layer<
       } satisfies ResourceSelectionEntry;
     });
 
+    /** The definition settings hold under `name`, and the worktree an act on it reaches. */
+    const target = Effect.fn("Resources.target")(function* (
+      project: ResourceProject,
+      viewer: Viewer,
+      name: string,
+      worktreeId: WorktreeId | null,
+    ) {
+      yield* decide(project, viewer, { kind: "read" });
+      const definition = yield* repo.byName(project.id, name);
+      if (definition === null) return yield* new ResourceNameNotFoundError({ name });
+      if (definition.spec.scope === "worktree" && worktreeId === null) {
+        return yield* new ResourceWorktreeNeededError({
+          name,
+          message: `@${name} runs one instance per worktree · name the worktree: --worktree <w>`,
+        });
+      }
+      return definition;
+    });
+
+    /** A start's or stop's answer: the instance as it stands, read for the worktree acted in. */
+    const controlled = (
+      definition: StoredResourceDefinition,
+      worktreeId: WorktreeId | null,
+      seen: InstanceObserved,
+      clock: ReaderClock,
+    ) =>
+      Effect.gen(function* () {
+        const nameOf = yield* namesOf([definition.addedBy]);
+        const reachedFrom = definition.spec.scope === "worktree" ? worktreeId : null;
+        const shown = viewOf({
+          definition,
+          choice: "shared",
+          worktreeId: reachedFrom,
+          owns: new Map(),
+          observation: null,
+          lookup: () => seen,
+          addedBy: nameOf(definition.addedBy),
+        });
+        return {
+          instance: seen.instance.kind,
+          statusLine: resourceStatusLine(shown.view, clock),
+        } satisfies ResourceControlled;
+      });
+
+    const start = Effect.fn("Resources.start")(function* (
+      project: ResourceProject,
+      viewer: Viewer,
+      name: string,
+      worktreeId: WorktreeId | null,
+      clock: ReaderClock,
+    ) {
+      const definition = yield* target(project, viewer, name, worktreeId);
+      return yield* controlled(
+        definition,
+        worktreeId,
+        yield* runtime.start(definition, worktreeId),
+        clock,
+      );
+    });
+
+    const stop = Effect.fn("Resources.stop")(function* (
+      project: ResourceProject,
+      viewer: Viewer,
+      name: string,
+      worktreeId: WorktreeId | null,
+      clock: ReaderClock,
+    ) {
+      const definition = yield* target(project, viewer, name, worktreeId);
+      const by = (yield* namesOf([viewer.userId]))(viewer.userId);
+      return yield* controlled(
+        definition,
+        worktreeId,
+        yield* runtime.stop(definition, worktreeId, by),
+        clock,
+      );
+    });
+
+    const env = Effect.fn("Resources.env")(function* (
+      project: ResourceProject,
+      viewer: Viewer,
+      worktreeId: WorktreeId,
+      clock: ReaderClock,
+    ) {
+      yield* decide(project, viewer, { kind: "read" });
+      const answer = yield* runtime.envOf(project.id, worktreeId);
+      const definitions = yield* repo.listForProject(project.id);
+      return {
+        env: answer.env,
+        exports: shellExports(answer.env),
+        statusLines: answer.left.flatMap(({ resource, names }) => {
+          const definition = definitions.find((each) => each.spec.name === resource);
+          return definition === undefined
+            ? []
+            : [resourceStatusLine({ kind: "env-left", definition: definition.spec, names }, clock)];
+        }),
+      } satisfies ResourceEnvAnswer;
+    });
+
     const forSession = Effect.fn("Resources.forSession")(function* (
       sessionId: SessionId,
       act: ResourceAct,
@@ -683,7 +825,7 @@ export const ResourcesLive: Layer.Layer<
       return statusOf(yield* list(project, viewer, session.worktreeId, clock));
     });
 
-    return { list, add, remove, use, forSession };
+    return { list, add, remove, use, start, stop, env, forSession };
   }),
 );
 

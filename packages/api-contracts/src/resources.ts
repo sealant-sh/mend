@@ -3,6 +3,8 @@ import {
   ReaderTimeZone,
   ResourceAddInput,
   ResourceAdded,
+  ResourceControlled,
+  ResourceEnvAnswer,
   ResourceName,
   ResourceRefusal,
   ResourceSelectionEntry,
@@ -18,8 +20,8 @@ import { AuthMiddleware } from "./common.ts";
 import { RemovalInProgress } from "./workbench-views.ts";
 
 /**
- * A project's resources (ADR 0019): read them, add one, remove one and choose how a worktree uses
- * it. A project the caller cannot see is `NotFound`; one they see but may not change this way is
+ * A project's resources (ADR 0019): read them, add, start, stop and remove one, choose how a
+ * worktree uses it, and read the env its processes get. A project the caller cannot see is `NotFound`; one they see but may not change this way is
  * `ResourceDenied`, with the words that say whose act it is.
  */
 
@@ -55,13 +57,6 @@ export class ResourceManifestUnverifiable extends Schema.TaggedError<ResourceMan
   "ResourceManifestUnverifiable",
   { message: Schema.String },
   { httpApiStatus: 502 },
-) {}
-
-/** A start, refused in the words `resourceRuntimeRefusal` says; nothing was started. */
-export class ResourceRuntimeUnavailable extends Schema.TaggedError<ResourceRuntimeUnavailable>()(
-  "ResourceRuntimeUnavailable",
-  { message: Schema.String },
-  { httpApiStatus: 409 },
 ) {}
 
 export const ResourceRemoved = Schema.Struct({ statusLine: Schema.String });
@@ -118,7 +113,26 @@ export const resourcesGroup = HttpApiGroup.make("resources")
   .add(
     HttpApiEndpoint.post("start", "/projects/:id/resources/:name/start", {
       params: { id: ProjectId, name: ResourceName },
-      error: [NotFound, ResourceRuntimeUnavailable, RemovalInProgress],
+      // A worktree resource runs one instance per worktree, so its start names the worktree.
+      query: { timeZone: ReaderTimeZone, worktreeId: Schema.optional(WorktreeId) },
+      success: ResourceControlled,
+      error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("stop", "/projects/:id/resources/:name/stop", {
+      params: { id: ProjectId, name: ResourceName },
+      query: { timeZone: ReaderTimeZone, worktreeId: Schema.optional(WorktreeId) },
+      success: ResourceControlled,
+      error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("env", "/projects/:id/worktrees/:worktreeId/resources/env", {
+      params: { id: ProjectId, worktreeId: WorktreeId },
+      query: { timeZone: ReaderTimeZone },
+      success: ResourceEnvAnswer,
+      error: NotFound,
     }),
   )
   .middleware(AuthMiddleware);

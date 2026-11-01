@@ -17,7 +17,7 @@ import {
   type RepoRelativePath,
   repoRelativePathOf,
   type ResourceDefinitionInput,
-  resourceRuntimeRefusal,
+  resourceDependsRefusal,
   ServiceDeclarations,
   type ServiceAddress,
   type ServiceHostPolicy,
@@ -237,13 +237,13 @@ const READERS: { readonly [K in keyof RecipeFields]: KeyReader<K> } = {
     for (const entry of value) {
       if (typeof entry === "string" && entry.startsWith("@")) {
         refused = true;
-        context.refuse("depends", resourceRuntimeRefusal(entry.slice(1)));
+        context.refuse("depends", resourceDependsRefusal(entry.slice(1)));
       } else if (isRecord(entry) && typeof entry["shared"] === "string") {
         refused = true;
-        context.refuse("depends", resourceRuntimeRefusal(entry["shared"]));
+        context.refuse("depends", resourceDependsRefusal(entry["shared"]));
       } else if (isRecord(entry) && typeof entry["resource"] === "string") {
         refused = true;
-        context.refuse("depends", resourceRuntimeRefusal(entry["resource"]));
+        context.refuse("depends", resourceDependsRefusal(entry["resource"]));
       } else if (typeof entry === "string" && RECIPE_NAME.test(entry)) {
         if (!names.includes(entry)) names.push(entry);
       } else {

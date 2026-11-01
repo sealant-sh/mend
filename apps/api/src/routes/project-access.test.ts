@@ -568,7 +568,17 @@ const CASES: ReadonlyArray<AccessCase> = [
       body: { mode: "own" },
     }),
   },
-  project("project-read", "POST", "/resources/db/start")("resources.start"),
+  project("project-read", "POST", "/resources/db/start?timeZone=UTC")("resources.start"),
+  project("project-read", "POST", "/resources/db/stop?timeZone=UTC")("resources.stop"),
+  {
+    endpoint: "resources.env",
+    rule: "project-read",
+    call: (target) => ({
+      method: "GET",
+      path: `/api/projects/${ids(target).project}/worktrees/${ids(target).worktree}/resources/env?timeZone=UTC`,
+      id: ids(target).project,
+    }),
+  },
 
   // ── Sessions ──
   project("project-read", "POST", "/sessions", { harness: "shell", label: null, base: null })(
@@ -958,16 +968,10 @@ const ADMITTED: Readonly<
   // Who added the definition decides who may remove it, so it is read first.
   "resources.remove": { status: 500, calls: ["resources.listForProject"] },
   "resources.use": { status: 500, calls: ["resources.setSelection"] },
-  // Every start is refused, and nothing is read or written for it.
-  "resources.start": {
-    status: 409,
-    calls: [],
-    body: {
-      _tag: "ResourceRuntimeUnavailable",
-      message:
-        "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
-    },
-  },
+  // A start or stop finds the definition by name first.
+  "resources.start": { status: 500, calls: ["resources.byName"] },
+  "resources.stop": { status: 500, calls: ["resources.byName"] },
+  "resources.env": { status: 500, calls: ["resourceRuntime.envOf", "resources.listForProject"] },
   "sessions.create": { status: 500, calls: ["removalFences.admitsStart", "engine.provision"] },
   // Refresh-capture helper defects before detail reads.
   "sessions.detail": {

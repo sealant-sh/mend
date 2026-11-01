@@ -106,16 +106,9 @@ const engineOf = (def: ResourceDefinitionInput): string => {
 
 const SHARED_DATABASE_WARNING = "any worktree on shared can change or drop its tables";
 
-/**
- * What every start of `@name` answers while this Mend starts no resource on a person's ask: a
- * `mend resource start` and a recipe's `depends` on it say this sentence, from here. A surface
- * with no session in view, such as project setup, names a session rather than this one.
- */
-export const resourceRuntimeRefusal = (
-  name: string,
-  surface: "session" | "project" = "session",
-): string =>
-  `@${name} · resources need a newer Sealant on this runtime · ${surface === "session" ? "this" : "a"} session can run its own [service.${name}]`;
+/** What a recipe's `depends` answers for a resource it names, which a later Mend waits on. */
+export const resourceDependsRefusal = (name: string): string =>
+  `@${name} · a Service's depends does not name a resource yet · every process in the worktree has @${name}'s env already`;
 
 const instanceParts = (
   instance:

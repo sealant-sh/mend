@@ -418,10 +418,48 @@ describe("the command against a server", () => {
     );
   });
 
-  it("asks the server to start, which refuses every start", async () => {
-    const mend = server({});
-    await resourceCommand(mend.api, async () => shop, ["start", "db"]);
-    expect(mend.calls).toEqual(["POST /projects/p_shop/resources/db/start"]);
+  it("starts and stops a resource, in the worktree named for a worktree resource", async () => {
+    const out = stdout();
+    const mend = server({
+      "GET /projects/p_shop/worktrees": { worktrees: [{ id: "wt_1", name: "checkout" }] },
+      "POST /projects/p_shop/resources/db/stop": {
+        instance: "stopped",
+        statusLine:
+          "@db · postgres 17 · project · added by Maria · stopped by Tom · observed 0 s ago",
+      },
+      "POST /projects/p_shop/resources/mail/start": {
+        instance: "running",
+        statusLine: "@mail · running · its own instance · observed 0 s ago",
+      },
+    });
+    await resourceCommand(mend.api, async () => shop, ["stop", "db"]);
+    await resourceCommand(mend.api, async () => shop, ["start", "mail", "--worktree", "checkout"]);
+    expect(mend.calls).toEqual([
+      "POST /projects/p_shop/resources/db/stop?timeZone=…",
+      "GET /projects/p_shop/worktrees",
+      "POST /projects/p_shop/resources/mail/start?timeZone=…&worktreeId=wt_1",
+    ]);
+    expect(out.join("")).toBe(
+      "@db · postgres 17 · project · added by Maria · stopped by Tom · observed 0 s ago\n" +
+        "@mail · running · its own instance · observed 0 s ago\n",
+    );
+  });
+
+  it("prints a worktree's exports as a shell reads them, and what the project sets as comments", async () => {
+    const out = stdout();
+    const mend = server({
+      "GET /projects/p_shop/worktrees": { worktrees: [{ id: "wt_1", name: "checkout" }] },
+      "GET /projects/p_shop/worktrees/wt_1/resources/env": {
+        env: { PGHOST: "db" },
+        exports: ["export DATABASE_URL='postgres://postgres@db:5432/own_0123456789ab'"],
+        statusLines: ["@db · PGHOST left as the project sets it"],
+      },
+    });
+    await resourceCommand(mend.api, async () => shop, ["env", "--worktree", "checkout"]);
+    expect(out.join("")).toBe(
+      "export DATABASE_URL='postgres://postgres@db:5432/own_0123456789ab'\n" +
+        "# @db · PGHOST left as the project sets it\n",
+    );
   });
 
   it("names the verbs it speaks", async () => {
@@ -431,7 +469,7 @@ describe("the command against a server", () => {
       resourceCommand(server({}).api, async () => shop, ["approve", "db"]),
     ).rejects.toThrow("exit 1");
     expect(err.join("")).toBe(
-      'mend: unknown resource command "approve" · try: add, list, remove, use, start\n',
+      'mend: unknown resource command "approve" · try: add, list, remove, use, start, stop, env\n',
     );
   });
 });

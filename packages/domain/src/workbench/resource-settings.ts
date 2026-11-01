@@ -75,6 +75,14 @@ export const ResourceInstanceKind = Schema.Literals([
 ]);
 export type ResourceInstanceKind = typeof ResourceInstanceKind.Type;
 
+/** Whether a person's Start or Stop does something for an instance observed so. */
+export const resourceControls = (
+  kind: ResourceInstanceKind,
+): { readonly start: boolean; readonly stop: boolean } => ({
+  start: ["not-started", "stopped", "exited", "failed"].includes(kind),
+  stop: ["starting", "running", "exited"].includes(kind),
+});
+
 export const ResourceSettingEntry = Schema.Struct({
   id: ResourceDefinitionId,
   /** What a removal sends back: it holds only while the definition still has this spec. */
@@ -90,8 +98,9 @@ export const ResourceSettingEntry = Schema.Struct({
   /** For the reader, choosing how the read worktree uses it; false when no worktree was read. */
   canChoose: Schema.Boolean,
   /**
-   * What Sealant last observed of the instance the read reaches: `none` for a worktree resource
-   * read for no worktree, or one the worktree has off.
+   * What Sealant last observed of the instance the read reaches, which the Start and Stop
+   * controls follow: `none` for a worktree resource read for no worktree, or one the worktree has
+   * off.
    */
   instance: ResourceInstanceKind,
   statusLine: Schema.String,
@@ -191,3 +200,20 @@ export const ResourceSelectionEntry = Schema.Struct({
   statusLine: Schema.String,
 });
 export type ResourceSelectionEntry = typeof ResourceSelectionEntry.Type;
+
+/** A person's Start or Stop, answered with the instance's line as it stands after. */
+export const ResourceControlled = Schema.Struct({
+  instance: ResourceInstanceKind,
+  statusLine: Schema.String,
+});
+export type ResourceControlled = typeof ResourceControlled.Type;
+
+/** What every process in a worktree is told of its resources now: the env, and lines about it. */
+export const ResourceEnvAnswer = Schema.Struct({
+  env: Schema.Record(Schema.String, Schema.String),
+  /** `export NAME='value'`, one per name, as `mend resource env` prints them. */
+  exports: Schema.Array(Schema.String),
+  /** Names left as the project sets them, as status lines. */
+  statusLines: Schema.Array(Schema.String),
+});
+export type ResourceEnvAnswer = typeof ResourceEnvAnswer.Type;

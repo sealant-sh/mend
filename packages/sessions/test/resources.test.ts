@@ -227,6 +227,7 @@ const channel = ResourcesChannelLive.pipe(
 const decodeSpec = Schema.decodeUnknownSync(ResourceDefinitionInput);
 const runtime = ManagedRuntime.make(channel);
 const clock = { now: new Date("2026-10-30T10:00:00Z"), timeZone: "Europe/Athens" };
+const maria: Viewer = { userId: "u-maria", organizationId: ORG, role: "member" };
 
 const definition = (name: string) =>
   Effect.flatMap(ResourcesRepo, (repo) => repo.byName(PROJECT, name)).pipe(
@@ -403,20 +404,29 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
   });
 
   it("keeps a person's stop against a launch, which starts with the env and says so", async () => {
-    const spec = sealant.specs.get(db.id);
-    if (spec === undefined) throw new Error("no @db instance yet");
-    const reason = { kind: "person" as const, by: "Maria" };
-    sealant.instances.set(
-      db.id,
-      instanceOf(db.id, spec, { kind: "stopped", at: new Date(), reason }, reason),
+    const stopped = await runtime.runPromise(
+      Effect.gen(function* () {
+        const project = yield* (yield* ProjectsRepo).byId(PROJECT);
+        return yield* (yield* Resources).stop(project, maria, "db", null, clock);
+      }),
+    );
+    expect(stopped.instance).toBe("stopped");
+    expect(stopped.statusLine).toMatch(
+      /^@db · postgres 17 · project · added by Maria · stopped by Maria · observed /,
     );
     const prepared = await prepare();
     expect(prepared.env["DATABASE_URL"]).toBe(`postgres://postgres@db:5432/${OWN}`);
     expect(prepared.views.map((view) => resourceStatusLine(view, clock))).toEqual([
       "@db · stopped by Maria · this session starts without it",
     ]);
-    expect(sealant.calls).toContain(`up ${db.id} use`);
-    sealant.instances.delete(db.id);
+
+    const started = await runtime.runPromise(
+      Effect.gen(function* () {
+        const project = yield* (yield* ProjectsRepo).byId(PROJECT);
+        return yield* (yield* Resources).start(project, maria, "db", null, clock);
+      }),
+    );
+    expect(started.instance).toBe("running");
     expect((await prepare()).views).toEqual([]);
   });
 
@@ -443,6 +453,23 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     expect(prepared.views.map((view) => resourceStatusLine(view, clock))).toEqual([
       "@db · DATABASE_URL left as the project sets it",
     ]);
+  });
+
+  it("lets a member stop and start an instance, and reads a worktree's env", async () => {
+    expect(
+      (await asTom((live, project) => live.stop(project, tom, "db", null, clock))).statusLine,
+    ).toMatch(/^@db · postgres 17 · project · added by Maria · stopped by Tom · /);
+    expect(
+      (await asTom((live, project) => live.start(project, tom, "db", null, clock))).statusLine,
+    ).toMatch(/^@db · postgres 17 · project · added by Maria · running · /);
+    const env = await asTom((live, project) => live.env(project, tom, WORKTREE, clock));
+    expect(env.exports).toContain(`export PGDATABASE='${OWN}'`);
+    expect(env.statusLines).toEqual(["@db · DATABASE_URL left as the project sets it"]);
+    expect(
+      await asTom((live, project) =>
+        live.stop(project, tom, "nope", null, clock).pipe(Effect.flip),
+      ),
+    ).toMatchObject({ _tag: "ResourceNameNotFoundError", name: "nope" });
   });
 
   it("reads a session's project as its owner sees it, and refuses every change a workspace asks", async () => {

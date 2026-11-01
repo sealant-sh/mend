@@ -768,13 +768,20 @@ export const createTenancyApi = async (
       ),
       recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
       recording(ResourceImageResolver, "images", options.implement?.images ?? {}, calls),
-      // Nothing runs on Sealant here: a start runs, and every read finds nothing started.
+      // Nothing runs on Sealant here: a start runs, a stop holds as its person's, and every read
+      // finds nothing started.
       recording(
         ResourceRuntime,
         "resourceRuntime",
         {
           prepare: () => Effect.succeed({ env: {}, views: [] }),
+          envOf: () => Effect.succeed({ env: {}, left: [] }),
           start: () => Effect.succeed({ instance: { kind: "running" }, observedAt: new Date() }),
+          stop: (_definition, _worktree, by) =>
+            Effect.succeed({
+              instance: { kind: "stopped", reason: { kind: "person", by } },
+              observedAt: new Date(),
+            }),
           observe: () => Effect.succeed({ kind: "observed", byKey: new Map() }),
           archive: () => Effect.void,
           ...options.implement?.resourceRuntime,

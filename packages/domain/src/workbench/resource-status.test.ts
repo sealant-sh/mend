@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   type ResourceInstanceObservation,
-  resourceRuntimeRefusal,
   resourceStatusLine,
   type ResourceStatusView,
 } from "./resource-status.ts";
@@ -224,17 +223,6 @@ describe("a mend.toml table", () => {
     );
     expect(declared(db, "differs")).toBe(
       "@db · postgres 17 · project · in mend.toml · differs from settings",
-    );
-  });
-});
-
-describe("a start refused where no session is in view", () => {
-  it("names a session, not this one", () => {
-    expect(resourceRuntimeRefusal("db", "project")).toBe(
-      "@db · resources need a newer Sealant on this runtime · a session can run its own [service.db]",
-    );
-    expect(resourceRuntimeRefusal("db")).toBe(
-      "@db · resources need a newer Sealant on this runtime · this session can run its own [service.db]",
     );
   });
 });

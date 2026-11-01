@@ -3,8 +3,8 @@ import {
   choicesFor,
   type ResourceAddOffer,
   type ResourceRefusal,
+  resourceControls,
   resourceRefusalWords,
-  resourceRuntimeRefusal,
   resourceTableNotices,
   type WorktreeChoice,
 } from "@mend/domain/workbench";
@@ -17,6 +17,7 @@ import {
   choiceInUse,
   choiceWords,
   chooseResource,
+  controlResource,
   type DraftField,
   EMPTY_DRAFT,
   fieldOf,
@@ -182,6 +183,15 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
         return none(key);
       });
     },
+    control: (entry, readFor, verb) => {
+      const key = `s:${entry.id}`;
+      act(key, verb, async () => {
+        const outcome = await controlResource(projectId, entry, readFor, verb);
+        if (!outcome.ok) return { at: key, note: refusedNote(outcome) };
+        await invalidate();
+        return none(key);
+      });
+    },
     reload: () => void reload(),
   };
 
@@ -249,7 +259,7 @@ function ProjectResources({ projectId }: { readonly projectId: string }) {
         project&apos;s creator or an organization owner replaces or removes it, and a
         worktree&apos;s change owner chooses how that worktree uses it. Adding pins the image and
         starts it: a project resource at once, a worktree resource in the worktree read here and in
-        any other on first use.
+        any other on first use. A Stop holds until someone starts it again.
       </p>
       <ReadState
         read={read}
@@ -335,6 +345,12 @@ export interface ResourceHandlers {
     read: WorktreeId | null,
     mode: WorktreeChoice,
   ) => void;
+  /** A person's Start or Stop of the instance the read worktree reaches. */
+  readonly control: (
+    entry: ResourceSettingView,
+    read: WorktreeId | null,
+    verb: "start" | "stop",
+  ) => void;
   readonly reload: () => void;
 }
 
@@ -388,30 +404,46 @@ export function ResourcesView(props: ResourcesViewProps) {
               entry.statusLine,
               entry.image,
               entry.id,
-              entry.canRemove ? (
-                <button
-                  type="button"
-                  disabled={busy.has(key)}
-                  onClick={() => handlers.remove(entry)}
-                  className={`${quiet} hover:text-danger`}
-                >
-                  {label(key, "remove", "remove", "removing…")}
-                </button>
-              ) : null,
               <>
-                {worktreeId === null ? null : (
-                  <ChoiceLine
-                    entry={entry}
-                    worktreeName={worktreeName ?? ""}
-                    busy={busy.has(key)}
-                    onChoose={(mode) => handlers.choose(entry, worktreeId, mode)}
-                  />
-                )}
-                <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
-                  <span className="text-label">start</span>{" "}
-                  {resourceRuntimeRefusal(entry.spec.name, "project")}
-                </p>
+                {resourceControls(entry.instance).start ? (
+                  <button
+                    type="button"
+                    disabled={busy.has(key)}
+                    onClick={() => handlers.control(entry, worktreeId, "start")}
+                    className={quiet}
+                  >
+                    {label(key, "start", "start", "starting…")}
+                  </button>
+                ) : null}
+                {resourceControls(entry.instance).stop ? (
+                  <button
+                    type="button"
+                    disabled={busy.has(key)}
+                    onClick={() => handlers.control(entry, worktreeId, "stop")}
+                    className={quiet}
+                  >
+                    {label(key, "stop", "stop", "stopping…")}
+                  </button>
+                ) : null}
+                {entry.canRemove ? (
+                  <button
+                    type="button"
+                    disabled={busy.has(key)}
+                    onClick={() => handlers.remove(entry)}
+                    className={`${quiet} hover:text-danger`}
+                  >
+                    {label(key, "remove", "remove", "removing…")}
+                  </button>
+                ) : null}
               </>,
+              worktreeId === null ? null : (
+                <ChoiceLine
+                  entry={entry}
+                  worktreeName={worktreeName ?? ""}
+                  busy={busy.has(key)}
+                  onChoose={(mode) => handlers.choose(entry, worktreeId, mode)}
+                />
+              ),
             );
           })}
         </Group>

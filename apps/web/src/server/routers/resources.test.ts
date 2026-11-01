@@ -130,4 +130,29 @@ describe("resource writes through the web tier", () => {
       }),
     ).toMatchObject({ value: { ok: false, kind: "rejected" } });
   });
+
+  it("sends a Start or Stop to its route, with the worktree it names, and answers the line", async () => {
+    answer = Response.json({
+      instance: "stopped",
+      statusLine: "@mail · stopped by Tom · its own instance",
+    });
+    expect(
+      await mutate("resources.control", {
+        projectId,
+        timeZone: "UTC",
+        name: "mail",
+        worktreeId: "wt_1",
+        verb: "stop",
+      }),
+    ).toEqual({
+      status: 200,
+      value: {
+        ok: true,
+        result: { instance: "stopped", statusLine: "@mail · stopped by Tom · its own instance" },
+      },
+    });
+    expect(asked).toEqual([
+      "POST /api/projects/p_shop/resources/mail/stop?timeZone=UTC&worktreeId=wt_1",
+    ]);
+  });
 });
