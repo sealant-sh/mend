@@ -129,8 +129,8 @@ export interface ProjectFacts {
    * another project's among them.
    */
   readonly worktrees: ReadonlyArray<WorktreeFacts>;
-  /** Resources declared in the project (docs/adr/0019): their data lives only in their volumes. */
-  readonly resources: ReadonlyArray<string>;
+  /** Legacy readers may still supply names; resources are archived at purge rather than blocking. */
+  readonly resources?: ReadonlyArray<string>;
 }
 
 // ─── Blockers ───────────────────────────────────────────────────────────────
@@ -165,6 +165,7 @@ export const RemovalBlocker = Schema.Union([
     repositories: Schema.Array(NestedRepository),
   }),
   Schema.TaggedStruct("ResourcesDeclared", { names: Schema.Array(Schema.String) }),
+  Schema.TaggedStruct("ResourcePreservationFailed", { message: Schema.String }),
   /**
    * Another removal of the same worktree, its project or one of the project's worktrees is under
    * way; `stopped` when that one is a deletion that stopped partway.
@@ -185,6 +186,7 @@ export const LIFTED_BY_FORCE = {
   Unlanded: true,
   NestedRepositories: true,
   ResourcesDeclared: false,
+  ResourcePreservationFailed: false,
   RemovalUnderway: false,
 } as const satisfies Record<BlockerTag, boolean>;
 
@@ -196,6 +198,7 @@ const BLOCKER_ORDER = {
   Unlanded: 4,
   NestedRepositories: 5,
   ResourcesDeclared: 6,
+  ResourcePreservationFailed: 6,
 } as const satisfies Record<BlockerTag, number>;
 
 // ─── Decision ───────────────────────────────────────────────────────────────
@@ -282,11 +285,7 @@ export const decideRemoval = (target: RemovalTarget): RemovalDecision => {
     };
   }
   const { project } = target;
-  const resources: ReadonlyArray<RemovalBlocker> =
-    project.resources.length === 0 ? [] : [{ _tag: "ResourcesDeclared", names: project.resources }];
-  const blockers = nonEmpty(
-    ordered([...project.worktrees.flatMap(blockersOfWorktree), ...resources]),
-  );
+  const blockers = nonEmpty(ordered(project.worktrees.flatMap(blockersOfWorktree)));
   return blockers === null
     ? { _tag: "Remove" }
     : { _tag: "Refuse", blockers, forceWouldLift: false };
@@ -494,6 +493,8 @@ const worktreeSentence = (blocker: RemovalBlocker, audience: RefusalAudience): s
       return inMend
         ? `This worktree holds ${plural(blocker.repositories.length, "repository", "repositories")} added with mend repo add, saved only with it · ${nestedNames(blocker)} · Mend cannot see whether ${blocker.repositories.length === 1 ? "it holds" : "they hold"} commits or edits that are not on origin, so removal waits for force, pushed or not.`
         : `This worktree holds repositories added with mend repo add (${nestedNames(blocker)}). Mend cannot see whether they hold work that is not on a remote, so it keeps the worktree. Remove it from Mend if you mean to discard it.`;
+    case "ResourcePreservationFailed":
+      return blocker.message;
     case "ResourcesDeclared":
       return `The project has resources (${blocker.names.map((name) => `@${name}`).join(", ")}). Remove them first.`;
     case "RemovalUnderway":
@@ -556,6 +557,8 @@ const projectClause = (blocker: RemovalBlocker): string => {
       return `${blocker.worktreeName} holds ${blocker.owner === null ? "a" : `${blocker.owner.name}'s`} change, ${unlandedClause(blocker.standing)}`;
     case "NestedRepositories":
       return `${blocker.worktreeName} holds repositories added with mend repo add (${nestedNames(blocker)})`;
+    case "ResourcePreservationFailed":
+      return blocker.message;
     case "ResourcesDeclared":
       return `the project has resources (${blocker.names.map((name) => `@${name}`).join(", ")})`;
     case "RemovalUnderway":

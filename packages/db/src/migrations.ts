@@ -4811,6 +4811,55 @@ const resourceLoadsMigration = Effect.gen(function* () {
     WHERE phase IN ('receiving','pulling','restoring','installing','saving')`;
 });
 
+/** Story 5: resource data and its inventory survive worktree and project deletion. */
+const resourceRemovalMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  // A worktree can archive an instance long before its project is purged. Sealant's scope
+  // archive answers only the instances it archives then, so retain each earlier measurement.
+  yield* sql`CREATE TABLE resource_kept_volumes (
+    project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    docker_name text NOT NULL,
+    volume jsonb NOT NULL CHECK (jsonb_typeof(volume) = 'object'),
+    PRIMARY KEY (project_id, docker_name)
+  )`;
+  yield* sql`ALTER TABLE resource_own_databases
+    ADD COLUMN removal_dump_name text,
+    ADD COLUMN removal_dump_at timestamptz,
+    ADD COLUMN removal_checked_at timestamptz,
+    ADD COLUMN removed_at timestamptz,
+    ADD CONSTRAINT resource_own_removal_progress CHECK (
+      (removal_dump_name IS NULL) = (removal_dump_at IS NULL)
+      AND (removal_checked_at IS NULL OR removal_dump_name IS NOT NULL)
+      AND (removed_at IS NULL OR removal_checked_at IS NOT NULL)
+    )`;
+  yield* sql`CREATE TABLE resource_archives (
+    project_id text PRIMARY KEY,
+    organization_id text NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    project_name text NOT NULL,
+    created_by_user_id text,
+    archived_at timestamptz NOT NULL,
+    volumes jsonb NOT NULL CHECK (jsonb_typeof(volumes) = 'array'),
+    complete boolean NOT NULL DEFAULT false
+  )`;
+  yield* sql`CREATE INDEX resource_archives_organization_idx ON resource_archives (organization_id)`;
+  yield* sql`ALTER TABLE resource_definitions DROP CONSTRAINT resource_definitions_project_id_fkey,
+    ADD CONSTRAINT resource_definitions_project_id_fkey FOREIGN KEY (project_id)
+      REFERENCES projects(id) ON DELETE CASCADE`;
+  // Keep the old deletion refusal until preservation is durable. Other deletion callers cannot
+  // cascade away the definitions and their database inventory without an archive either.
+  yield* sql`CREATE FUNCTION require_project_resource_archive() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM resource_definitions WHERE project_id = OLD.id)
+        AND NOT EXISTS (SELECT 1 FROM resource_archives WHERE project_id = OLD.id AND complete)
+      THEN
+        RAISE EXCEPTION 'project resource archive has not been recorded' USING ERRCODE = '23503';
+      END IF;
+      RETURN OLD;
+    END $$`;
+  yield* sql`CREATE TRIGGER projects_require_resource_archive BEFORE DELETE ON projects
+    FOR EACH ROW EXECUTE FUNCTION require_project_resource_archive()`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -4975,4 +5024,5 @@ export const migrations = {
   "0173_drop_resource_approvals": dropResourceApprovalsMigration,
   "0174_resource_runtime": resourceRuntimeMigration,
   "0175_resource_loads": resourceLoadsMigration,
+  "0176_resource_removal": resourceRemovalMigration,
 };

@@ -118,6 +118,7 @@ export const removedLine = (name: string): string =>
 interface RemovalReportDto {
   readonly removed: boolean;
   readonly leftover: string | null;
+  readonly resourceStatusLines?: ReadonlyArray<string>;
 }
 
 export interface WorktreesRmDeps {
@@ -156,6 +157,7 @@ export const worktreesRmCommand = async (
       `not removed · ${args.name}${report.leftover === null ? "" : ` · ${report.leftover}`}`,
     );
   }
+  for (const line of report.resourceStatusLines ?? []) deps.say(line);
   deps.say(removedLine(args.name));
   if (report.leftover !== null) deps.say(`left behind · ${report.leftover}`);
 };

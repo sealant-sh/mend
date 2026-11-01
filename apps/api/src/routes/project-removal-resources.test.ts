@@ -62,16 +62,46 @@ describe("removing a project that has resources", () => {
     return { response, calls: [...api.world.calls] };
   };
 
-  it("is refused with the resources named beside every other blocker, and the store stays", async () => {
+  it("soft-removes without archiving, then records resource preservation before the store purge", async () => {
+    const steps: Array<string> = [];
+    api = await createTenancyApi(undefined, {
+      implement: {
+        ...quietWorktree(),
+        resourceRemoval: {
+          project: () =>
+            Effect.sync(() => {
+              steps.push("archive-recorded");
+              return ["@db · archived · volumes kept"];
+            }),
+        },
+        store: {
+          removeProjectStore: () =>
+            Effect.sync(() => {
+              steps.push("store-purged");
+              return { leftover: null };
+            }),
+        },
+      },
+    });
+    expect((await api.request("alice", "DELETE", `/api/projects/${project}`)).status).toBe(200);
+    expect(steps).toEqual([]);
+    const purged = await api.request("alice", "POST", `/api/removed-projects/${project}/purge`, {
+      confirm: "private-alice",
+    });
+    expect(purged.status).toBe(200);
+    expect(steps).toEqual(["archive-recorded", "store-purged"]);
+    expect(await purged.json()).toMatchObject({
+      message: expect.stringContaining("@db · archived · volumes kept"),
+    });
+  });
+
+  it("keeps work blockers while resources do not block soft removal", async () => {
     const { response, calls } = await removeWith(["db", "queue"], ["src/a.ts"]);
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
       _tag: "RemovalRefused",
       scope: "project",
-      blockers: [
-        { _tag: "Unlanded", worktreeId: worktree },
-        { _tag: "ResourcesDeclared", names: ["db", "queue"] },
-      ],
+      blockers: [{ _tag: "Unlanded", worktreeId: worktree }],
     });
     expect(calls.filter((call) => call.startsWith("store."))).toEqual([]);
   });

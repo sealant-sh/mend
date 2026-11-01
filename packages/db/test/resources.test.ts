@@ -627,6 +627,33 @@ describe.skipIf(postgres.skip)("resources in Postgres", () => {
     expect(await deleteProject()).toBe("deleted");
   });
 
+  it("keeps resource definitions until a complete archive is recorded, then deletion cascades", async () => {
+    const project = await newProject();
+    const worktree = await newWorktree(project);
+    const db = await withRepo((repo) => add(repo, project, postgresDb(), "alice"));
+    await withRepo((repo) => repo.recordOwnDatabase(worktree, db.id, "empty"));
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO resource_archives (project_id, organization_id, project_name, created_by_user_id, archived_at, volumes)
+        SELECT id, organization_id, name, created_by_user_id, now(), '[]'::jsonb FROM projects WHERE id = ${project}`;
+        const refused = yield* sql`DELETE FROM projects WHERE id = ${project}`.pipe(
+          Effect.as(false),
+          Effect.catch(() => Effect.succeed(true)),
+        );
+        expect(refused).toBe(true);
+        yield* sql`UPDATE resource_archives SET complete = true WHERE project_id = ${project}`;
+        yield* sql`DELETE FROM projects WHERE id = ${project}`;
+        expect(
+          yield* sql`SELECT project_id FROM resource_archives WHERE project_id = ${project}`,
+        ).toEqual([{ project_id: project }]);
+        expect(
+          yield* sql`SELECT definition_id FROM resource_own_databases WHERE definition_id = ${db.id}`,
+        ).toEqual([]);
+      }),
+    );
+  });
+
   describe("removing a definition as its remover read it", () => {
     it("removes it while it holds the spec read, and refuses once it changed", async () => {
       const project = await newProject();

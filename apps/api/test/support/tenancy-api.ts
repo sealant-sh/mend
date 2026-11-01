@@ -32,6 +32,7 @@ import {
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
   type ProjectsRepo,
+  ResourceArchivesRepo,
   ResourcesRepo,
   ResourceLoadsRepo,
   PreviewPreparationsRepo,
@@ -89,6 +90,7 @@ import {
   FollowUpDelivery,
   ForwardAdapter,
   ResourceImageResolver,
+  ResourceRemoval,
   ResourceRuntime,
   ResourcesLive,
   ResourceLoads,
@@ -346,6 +348,8 @@ export const createTenancyApi = async (
       readonly images?: Layer.PartialEffectful<ResourceImageResolver["Service"]>;
       /** What runs a project's resources on Sealant (docs/adr/0019). */
       readonly resourceLoads?: Layer.PartialEffectful<ResourceLoads["Service"]>;
+      readonly resourceRemoval?: Layer.PartialEffectful<ResourceRemoval["Service"]>;
+      readonly resourceArchives?: Layer.PartialEffectful<ResourceArchivesRepo["Service"]>;
       readonly resourceRuntime?: Layer.PartialEffectful<ResourceRuntime["Service"]>;
       /** What restarts a worktree's Services after a switch; none run here. */
       readonly serviceRestarts?: Layer.PartialEffectful<WorktreeServiceRestarts["Service"]>;
@@ -645,6 +649,25 @@ export const createTenancyApi = async (
       recording(ProjectMountsRepo, "mounts", {}, calls),
       recording(ProjectSecretsRepo, "secrets", options.implement?.secrets ?? {}, calls),
       recording(ProjectServiceRecipesRepo, "recipes", {}, calls),
+      recording(
+        ResourceRemoval,
+        "resourceRemoval",
+        {
+          worktree: () => Effect.succeed([]),
+          project: () => Effect.succeed([]),
+          ...options.implement?.resourceRemoval,
+        },
+        calls,
+      ),
+      recording(
+        ResourceArchivesRepo,
+        "resourceArchives",
+        {
+          list: () => Effect.succeed([]),
+          ...options.implement?.resourceArchives,
+        },
+        calls,
+      ),
       recording(ResourcesRepo, "resources", options.implement?.resources ?? {}, calls),
       recording(
         PushDevicesRepo,

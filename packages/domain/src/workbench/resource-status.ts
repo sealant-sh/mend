@@ -62,6 +62,22 @@ export type ResourceStatusView =
       readonly message: string | null;
     }
   | {
+      readonly kind: "own-removed";
+      readonly definition: ResourceDefinitionInput;
+      readonly savedAt: Date;
+      readonly startedForRemoval: boolean;
+    }
+  | {
+      readonly kind: "removal-refused";
+      readonly definition: ResourceDefinitionInput;
+      readonly database: string;
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "archived";
+      readonly definition: ResourceDefinitionInput;
+    }
+  | {
       readonly kind: "observed";
       readonly definition: ResourceDefinitionInput;
       readonly use: ResourceUse;
@@ -270,6 +286,15 @@ export const resourceStatusLine = (
           `${view.phase} ${loadBytes(view.bytesDone)}${view.bytesTotal === null ? "" : ` of ${loadBytes(view.bytesTotal)}`}`,
           `${view.target} database`,
         ];
+      case "own-removed":
+        return [
+          `its own database saved as a dump ${clock(view.savedAt)} and dropped`,
+          ...(view.startedForRemoval ? ["removal started its server"] : []),
+        ];
+      case "removal-refused":
+        return [`database ${view.database}`, "not removed", view.reason];
+      case "archived":
+        return ["archived", "volumes kept"];
       case "declared":
         return [engineOf(def), def.scope, "in mend.toml", AGAINST_SETTINGS[view.source.settings]];
       case "launched-without":

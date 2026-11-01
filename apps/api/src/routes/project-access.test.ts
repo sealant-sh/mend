@@ -119,6 +119,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "organization.orphanedProjects",
   "organization.takeOverProject",
   "organization.audit",
+  "organization.resourceArchives",
   "organization.issuePasswordReset",
   // Every member reads the defaults their projects inherit: organization.test.ts.
   "organization.settings",
