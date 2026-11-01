@@ -84,6 +84,7 @@ import { Landing, LandingGit } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
+import { ResourceStatusReads, ResourceStatusReadsLive } from "@mend/sessions";
 import {
   CaptureRuntime,
   DotfilesCloner,
@@ -338,6 +339,7 @@ export const createTenancyApi = async (
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
+      readonly resourceStatus?: ResourceStatusReads["Service"]["forWorktree"];
       readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
       readonly links?: Layer.PartialEffectful<ProjectLinksRepo["Service"]>;
       /** In place of the in-memory removal marks: Postgres's (`removal-postgres.ts`), or a part. */
@@ -668,7 +670,12 @@ export const createTenancyApi = async (
         },
         calls,
       ),
-      recording(ResourcesRepo, "resources", options.implement?.resources ?? {}, calls),
+      recording(
+        ResourcesRepo,
+        "resources",
+        { listWithChoices: () => Effect.succeed([]), ...options.implement?.resources },
+        calls,
+      ),
       recording(
         PushDevicesRepo,
         "pushDevices",
@@ -944,7 +951,13 @@ export const createTenancyApi = async (
     GithubIdentityLive,
     MemberRemovalLive,
     HandoffStartLive,
-    ResourcesLive,
+    ResourcesLive.pipe(
+      Layer.provideMerge(
+        options.implement?.resourceStatus === undefined
+          ? ResourceStatusReadsLive
+          : Layer.mock(ResourceStatusReads, { forWorktree: options.implement.resourceStatus }),
+      ),
+    ),
     ProjectCreationLive,
     RemovalLive,
     options.terminalProjects === undefined

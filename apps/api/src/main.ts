@@ -188,6 +188,7 @@ import {
   ResourceImageResolverLive,
   ResourcesChannelLive,
   ResourcesLive,
+  ResourceStatusReadsLive,
   ResourceLoadsLive,
   ResourceLoadsChannelLive,
   ResourceLoads,
@@ -996,7 +997,11 @@ const MainLive = Layer.unwrap(
       Layer.provide(FollowUpDeliveryLayer),
       // The session engine and store serve both the API handlers and the worker; the resource
       // runtime under it serves the routes too, as one.
-      Layer.provide(SessionEngineLayer.pipe(Layer.provideMerge(ResourceRuntimeLayer))),
+      Layer.provide(
+        SessionEngineLayer.pipe(Layer.provideMerge(ResourceStatusReadsLive)).pipe(
+          Layer.provideMerge(ResourceRuntimeLayer),
+        ),
+      ),
       // The store kind's adapters (MEND_SESSION_STORE): authority, reads, capture runtime. The
       // workspace git hooks ride here, below the engine that reports into them and the worker
       // that registers what runs, so both hold the same one.

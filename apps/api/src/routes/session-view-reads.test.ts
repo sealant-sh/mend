@@ -1,6 +1,6 @@
 import { SessionId } from "@mend/domain";
 import { Session } from "@mend/domain/workbench";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -40,6 +40,32 @@ describe("the per-person columns of the session reads", () => {
     await api.request("alice", "GET", `/api/projects/${shared.project}`);
     return api.world.calls.filter((call) => call.startsWith("sessions."));
   };
+
+  it("carries resource lines once per visible worktree in the session DTO", async () => {
+    const line = "@db · running · own database · observed 3 s ago";
+    const readWorktrees: Array<string> = [];
+    api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: { personLayoutPossible: () => Effect.succeed(false) },
+          resourceStatus: (_projectId, worktreeId) =>
+            Effect.sync(() => {
+              readWorktrees.push(worktreeId);
+              return [{ statusLine: line, envNames: ["DATABASE_URL"] }];
+            }),
+        },
+      },
+    );
+    const response = await api.request("alice", "GET", "/api/sessions");
+    expect(response.status).toBe(200);
+    const rows = Schema.decodeUnknownSync(
+      Schema.Array(Schema.Struct({ resourceStatusLines: Schema.Array(Schema.String) })),
+    )(await response.json());
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(row.resourceStatusLines).toEqual([line]);
+    expect(new Set(readWorktrees).size).toBe(readWorktrees.length);
+  });
 
   it("with the flag off and nothing recorded, the plain reads", async () => {
     const calls = await readsWith(false);

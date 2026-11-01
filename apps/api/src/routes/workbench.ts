@@ -164,6 +164,7 @@ import {
 } from "@mend/domain/workbench";
 import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
+import { ResourceStatusReads } from "@mend/sessions";
 import {
   CaptureRuntime,
   detectInstall,
@@ -661,7 +662,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         // its retirement (docs/adr/0016, decision 13); otherwise the plain read, at no cost.
         const engine = yield* SessionEngine;
         const sessionVisibility = projectSessionVisibility(
-          yield* withLaunchers(
+          yield* withWorkspaceFacts(
             (yield* engine.personLayoutPossible())
               ? yield* sessions.listForProjectView(params.id)
               : yield* sessions.listForProject(params.id),
@@ -2330,12 +2331,13 @@ const recordControl = (sessionId: SessionId, kind: SessionControlKind, refId: st
   });
 
 /**
- * Who launched each session's executor (`Session.workspaceLauncherUserId`): the only person
+ * Resource status lines for each worktree, and who launched each session's executor
+ * (`Session.workspaceLauncherUserId`): the only person
  * Remote-SSH admits into it, in either harness layout. The view reads compute it in their own
  * statement; every other read that hands sessions out (the plain reads, retained additions) gets it
  * here, in one batched read, so a client never sees null for a launcher Mend knows.
  */
-const withLaunchers = (rows: ReadonlyArray<Session>) =>
+const withWorkspaceFacts = (rows: ReadonlyArray<Session>) =>
   Effect.gen(function* () {
     const missing = [
       ...new Set(
@@ -2346,21 +2348,34 @@ const withLaunchers = (rows: ReadonlyArray<Session>) =>
         ),
       ),
     ];
-    if (missing.length === 0) return rows;
-    const launchers = yield* (yield* SessionsRepo).launchersOf(missing);
+    const status = yield* ResourceStatusReads;
+    const resourceLines = new Map<WorktreeId, ReadonlyArray<string>>();
+    for (const row of rows) {
+      if (!resourceLines.has(row.worktreeId))
+        resourceLines.set(
+          row.worktreeId,
+          (yield* status.forWorktree(row.projectId, row.worktreeId)).map((each) => each.statusLine),
+        );
+    }
+    const launchers =
+      missing.length === 0
+        ? new Map<string, string>()
+        : yield* (yield* SessionsRepo).launchersOf(missing);
     return rows.map((row) => {
       const launcher =
         row.workspaceLauncherUserId === null && row.sealantWorkspaceId !== null
           ? launchers.get(row.sealantWorkspaceId)
           : undefined;
-      return launcher === undefined
-        ? row
-        : new Session({ ...row, workspaceLauncherUserId: launcher });
+      return new Session({
+        ...row,
+        workspaceLauncherUserId: launcher ?? row.workspaceLauncherUserId,
+        resourceStatusLines: resourceLines.get(row.worktreeId) ?? [],
+      });
     });
   });
 
-const withLauncher = (session: Session) =>
-  withLaunchers([session]).pipe(Effect.map((rows) => rows[0] ?? session));
+const withWorkspaceFactsOf = (session: Session) =>
+  withWorkspaceFacts([session]).pipe(Effect.map((rows) => rows[0] ?? session));
 
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
   handlers
@@ -2370,7 +2385,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const access = yield* ProjectAccess;
         // With the people live in each executor (docs/adr/0016, decision 13), in the same query,
         // when per-person homes are possible at all; otherwise the plain read, at no cost.
-        const active = yield* withLaunchers(
+        const active = yield* withWorkspaceFacts(
           yield* access.filterByProject(
             (yield* (yield* SessionEngine).personLayoutPossible())
               ? yield* sessions.listActiveView()
@@ -2400,7 +2415,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
           if (session !== null) retained.push(session);
         }
-        return yield* withLaunchers(yield* access.filterByProject(retained));
+        return yield* withWorkspaceFacts(yield* access.filterByProject(retained));
       }),
     )
     .handle("create", ({ params, payload }) =>
@@ -2424,7 +2439,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const checkpoints = yield* CheckpointsRepo;
         const changes = yield* WorktreeChangesRepo;
         const landings = yield* ChangeLandingsRepo;
-        const session = yield* withLauncher(
+        const session = yield* withWorkspaceFactsOf(
           (yield* (yield* SessionEngine).personLayoutPossible())
             ? yield* (yield* ProjectAccess).sessionView(params.id)
             : yield* (yield* ProjectAccess).session(params.id),
