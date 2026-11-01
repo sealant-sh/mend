@@ -224,3 +224,20 @@ describe("which workspace reads are worth a request", () => {
     expect(workspaceReadsOf({})).toEqual({ waiting: false, retirement: false });
   });
 });
+
+it("prints resource observations even without people or retirement facts", () => {
+  const line = "@db · running · own database · observed 3 s ago";
+  expect(
+    workspaceLineList(
+      sessionWorkspaceLines({
+        sessionId: "s",
+        livePeople: [],
+        viewer: null,
+        wait: null,
+        retirement: null,
+        members: [],
+        resourceStatusLines: [line],
+      }),
+    ),
+  ).toEqual([line]);
+});
