@@ -49,6 +49,7 @@ const service = (
     readonly scheme?: "http" | "https";
     readonly adopted?: boolean;
     readonly ended?: boolean;
+    readonly explicit?: boolean;
   } = {},
 ): ServiceView => {
   const { sessionId = SESSION, scheme = "http", adopted = false, ended = false } = options;
@@ -60,7 +61,7 @@ const service = (
       id: serviceId,
       sessionId,
       name,
-      declarationSource: "recipe-file",
+      declarationSource: options.explicit ? "explicit-run" : "recipe-file",
       workspacePort: 3000,
       transport: "tcp",
       browserScheme: scheme,
@@ -267,6 +268,17 @@ describe("the Services card's Open", () => {
       previews: read({ previews: [preview("web", [observedWeb(at)], { bound: web })] }),
     });
     expect(opens(root)).toEqual([{ href: OPENS_WEB, target: "_blank" }]);
+  });
+
+  it("offers no Open for a stopped explicit run whose preview has no open target", () => {
+    const before = service("before", { ended: true, explicit: true });
+    const root = render({
+      services: [before],
+      previews: read({
+        previews: [preview("before", [], { unbound: "no-live-attempt", open: false })],
+      }),
+    });
+    expect(opens(root)).toEqual([]);
   });
 
   it("opens the Service's own address when the read offers no link, as with the gateway off", () => {

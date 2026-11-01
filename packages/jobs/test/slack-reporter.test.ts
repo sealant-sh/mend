@@ -1989,6 +1989,20 @@ describe("a worktree's previews in the thread (docs/adr/0017-live-preview.md)", 
     expect(JSON.stringify(w.posts())).not.toContain("Open preview");
   });
 
+  it("removes a stopped explicit run's Open from both the status and the retained landing reply", async () => {
+    const { w, reporter } = await offeredReply();
+    w.state.previews = web([answered(NOW)]);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    expect(opensOf(w)).toContain(OPEN);
+    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).toContain(OPEN);
+    w.state.previews = web([], false);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
+    await w.observe(reporter);
+    expect(opensOf(w)).toEqual([]);
+    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).not.toContain(OPEN);
+  });
+
   it("keeps the reply's preview button after an idle stop and removes it after a person's Stop", async () => {
     const { w, reporter } = await offeredReply();
     w.state.previews = web([answered(NOW)]);

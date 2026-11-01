@@ -547,9 +547,41 @@ describe("GET /worktrees/:id/previews", () => {
           implement: {
             previews: {
               ensureForWorktree: () => Effect.succeed(views),
-              gatewaySnapshots: () => Effect.succeed(new Map()),
+              gatewaySnapshots: () =>
+                Effect.succeed(
+                  new Map(
+                    views.flatMap(
+                      (view): Array<readonly [PreviewId, PreviewGatewaySnapshot]> =>
+                        view.binding._tag !== "Bound"
+                          ? []
+                          : [
+                              [
+                                view.preview.id,
+                                {
+                                  preview: view.preview,
+                                  resolution: {
+                                    _tag: "Bound",
+                                    revision: 0,
+                                    attempt: {
+                                      serviceId: view.binding.serviceId,
+                                      attemptId: view.binding.attemptId,
+                                      sessionId: SessionId.make(target.session),
+                                      workspaceId: SealantWorkspaceId.make("ws"),
+                                      port: 3000,
+                                      platformSessionId: "pty",
+                                      host: view.binding.host,
+                                      dial: view.binding.dial,
+                                    },
+                                  },
+                                },
+                              ],
+                            ],
+                    ),
+                  ),
+                ),
             },
             preparations: { latestForWorktree: () => Effect.succeed(null) },
+            observations: { latestForService: () => Effect.succeed(null) },
           },
         },
       );
@@ -579,7 +611,7 @@ describe("GET /worktrees/:id/previews", () => {
     expect(await read(true)).toEqual([
       ["web", "/preview-auth?preview=preview-web&path=%2F", target.session],
       ["sibling", "/preview-auth?preview=preview-sibling&path=%2F", sibling.session],
-      ["ended", "/preview-auth?preview=preview-ended&path=%2F", null],
+      ["ended", null, null],
       ["https", null, null],
       ["adopted", null, null],
       ["raw", null, null],

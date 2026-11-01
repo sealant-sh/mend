@@ -62,6 +62,17 @@ describe("the session's Preview action", () => {
     expect(previewToOpen(undefined, SESSION)).toBeNull();
   });
 
+  it("offers no Preview action for a stopped explicit run, and still opens the live after app", () => {
+    const before = preview("before", { open: null, facts: [] });
+    expect(previewToOpen(read("domain-https", before), SESSION)).toBeNull();
+    expect(
+      previewToOpen(
+        read("domain-https", before, preview("after", { open: served("after") })),
+        SESSION,
+      )?.serviceName,
+    ).toBe("after");
+  });
+
   it("never shows when no preview has an Open", () => {
     expect(previewToOpen(read("domain-https", preview("web")), SESSION)).toBeNull();
     expect(previewToOpen(read("domain-https"), SESSION)).toBeNull();

@@ -6,7 +6,7 @@ import {
   PreviewOpening,
   PreviewsUnavailable,
 } from "@mend/api-contracts";
-import { PreviewsRepo } from "@mend/db";
+import { PreviewPreparationsRepo, PreviewsRepo } from "@mend/db";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
@@ -14,7 +14,7 @@ import { ProjectAccess } from "../access.ts";
 import { PreviewSetupConfig } from "../preview-config.ts";
 import { previewExchangeUrl } from "../preview-host.ts";
 import { PreviewIdentity } from "../preview-identity.ts";
-import { previewOpenOf } from "../preview-open.ts";
+import { readPreviewOpen } from "../preview-open.ts";
 import { PREVIEW_ROOT, refusalAnswer } from "../preview-requests.ts";
 
 const NO_CREDENTIAL =
@@ -36,7 +36,16 @@ export const PreviewsGroupLive = HttpApiBuilder.group(MendApi, "previews", (hand
       if (credential === undefined) {
         return yield* new PreviewNotOpenable({ reason: "no-credential", message: NO_CREDENTIAL });
       }
-      const open = previewOpenOf((yield* PreviewSetupConfig).setup, view);
+      const snapshot = yield* (yield* PreviewsRepo).gatewaySnapshot(params.id);
+      const preparation = yield* (yield* PreviewPreparationsRepo).latestForWorktree(
+        view.preview.worktreeId,
+      );
+      const open = yield* readPreviewOpen(
+        (yield* PreviewSetupConfig).setup,
+        view,
+        snapshot?.resolution ?? null,
+        preparation,
+      );
       if (open._tag === "Refused") {
         return yield* new PreviewNotOpenable({ reason: open.reason, message: open.message });
       }

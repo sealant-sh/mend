@@ -13,11 +13,14 @@ import {
   migrations,
   OrganizationsRepoLive,
   PreviewGrantsRepoLive,
+  PreviewPreparationsRepo,
+  PreviewPreparationsRepoLive,
   PreviewsRepo,
   PreviewsRepoLive,
   previewTicketScope,
   ProjectsRepoLive,
   PushDevicesRepoLive,
+  ServicesRepo,
   ServicesRepoLive,
   SessionProcessesRepoLive,
   SessionsRepoLive,
@@ -118,6 +121,8 @@ export const repos = Layer.mergeAll(
   PreviewsRepoLive.pipe(Layer.provide(NodeCrypto.layer)),
   DevicesRepoLive,
   ProjectsRepoLive,
+  ServicesRepoLive,
+  PreviewPreparationsRepoLive,
   UserEventsLive,
   MemberRevocationsRepoLive.pipe(
     Layer.provide(
@@ -474,7 +479,15 @@ export const setUpPreviewAuth = async (): Promise<People> => {
     ),
   );
   const context = await runtime.runPromise(
-    Effect.context<Auth | PreviewIdentity | PreviewSetupConfig | PreviewsRepo | ProjectAccess>(),
+    Effect.context<
+      | Auth
+      | PreviewIdentity
+      | PreviewSetupConfig
+      | PreviewsRepo
+      | ProjectAccess
+      | ServicesRepo
+      | PreviewPreparationsRepo
+    >(),
   );
   const web = HttpRouter.toWebHandler(
     Layer.mergeAll(PreviewAuthRoutes, previewsApi, authRoute, publicNetworkPolicy(network)).pipe(

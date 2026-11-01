@@ -18,7 +18,7 @@ import type { PreviewNotice, WorktreePreviews } from "@mend/slack";
 import { Cause, Effect, Layer } from "effect";
 
 import { PreviewSetupConfig, type PreviewSetup } from "./preview-config.ts";
-import { previewOpenOf, type PreviewOpen } from "./preview-open.ts";
+import { readPreviewOpen, type PreviewOpen } from "./preview-open.ts";
 
 export interface DescribedPreview {
   readonly view: PreviewView;
@@ -93,7 +93,7 @@ export const describeWorktreePreviews = (
         return {
           view,
           facts,
-          open: previewOpenOf(setup, view),
+          open: yield* readPreviewOpen(setup, view, resolution, preparation),
           boundTo:
             boundService === null
               ? null

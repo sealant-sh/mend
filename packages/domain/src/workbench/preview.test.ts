@@ -25,6 +25,8 @@ import {
   previewGatewayResolution,
   type PreviewNotDelivered,
   previewOpenTarget,
+  previewOffersOpen,
+  type PreviewGatewayResolution,
   previewResumeCandidate,
   previewStartId,
   previewStartReasonOf,
@@ -625,5 +627,58 @@ describe("gateway resolution", () => {
       _tag: "Refused",
       reason: "service-missing",
     });
+  });
+});
+
+describe("offering Open for a preview", () => {
+  const dormant: PreviewGatewayResolution = {
+    _tag: "Dormant",
+    revision: 0,
+    source: {
+      serviceId: ServiceId.make("before"),
+      sourceAttemptId: SessionProcessId.make("before"),
+    },
+    workspaceId: null,
+  };
+
+  it("does not offer a stopped explicit run, even though its command was recorded", () => {
+    expect(previewOffersOpen(dormant, { declarationSource: "explicit-run" }, false)).toBe(false);
+    expect(previewOffersOpen(dormant, null, false)).toBe(false);
+  });
+
+  it("keeps Open while setup prepares a preview without a live attempt yet", () => {
+    expect(
+      previewOffersOpen({ _tag: "Refused", reason: "no-recorded-command" }, null, false, true),
+    ).toBe(true);
+  });
+
+  it("offers recipe wake and preserves the wake of an idle-stopped explicit run", () => {
+    expect(previewOffersOpen(dormant, { declarationSource: "recipe-file" }, false)).toBe(true);
+    expect(previewOffersOpen(dormant, { declarationSource: "recipe-project" }, false)).toBe(true);
+    expect(previewOffersOpen(dormant, { declarationSource: "explicit-run" }, true)).toBe(true);
+  });
+
+  it("offers a starting run, but never a person's Stop or a refused preview", () => {
+    expect(
+      previewOffersOpen(
+        { _tag: "Starting", revision: 0, attemptId: null, workspaceId: null },
+        null,
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      previewOffersOpen(
+        {
+          _tag: "Stopped",
+          control: { _tag: "Stopped", revision: 1, by: "maria", byName: "Maria", at, seq: 1 },
+        },
+        { declarationSource: "recipe-file" },
+        true,
+      ),
+    ).toBe(false);
+    expect(previewOffersOpen({ _tag: "Refused", reason: "no-recorded-command" }, null, false)).toBe(
+      false,
+    );
+    expect(previewOffersOpen(null, null, false)).toBe(false);
   });
 });
