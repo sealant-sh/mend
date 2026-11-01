@@ -168,7 +168,9 @@ const appendLocal = Effect.fn("ResourceTableWrites.appendLocal")(function* (
 /**
  * Read or append inside a live workspace. Arguments: root, read|write, selected path, expected
  * base64 bytes, appended base64 bytes. A write checks precedence and the bytes read by the server.
- * All replacement files are created beside their destination and renamed atomically.
+ * All replacement files are created beside their destination and renamed atomically. It needs only
+ * coreutils: workspace images carry no `cmp`. A new file belongs to the worktree's owner, mode 644,
+ * so the person's processes can read it.
  */
 export const WORKSPACE_RESOURCE_TABLE_SCRIPT = `set -eu
 root=$(cd -P "$1" && pwd -P)
@@ -190,19 +192,22 @@ if [ "$2" = read ]; then
   exit 0
 fi
 [ "$file" = "$3" ] || exit 46
+made_dir=
+[ -e "$(dirname "$target")" ] || made_dir=1
 mkdir -p -- "$(dirname "$target")"
 parent=$(cd -P "$(dirname "$target")" && pwd -P)
 check_inside "$parent"
 tmp=$(mktemp "$parent/.mend-resource.XXXXXX")
-expected=$(mktemp "$parent/.mend-resource-expected.XXXXXX")
-trap 'rm -f -- "$tmp" "$expected"' EXIT HUP INT TERM
-printf '%s' "$4" | base64 -d > "$expected"
+trap 'rm -f -- "$tmp"' EXIT HUP INT TERM
 if [ -e "$target" ]; then
-  cmp -s -- "$target" "$expected" || exit 46
+  [ "$(base64 < "$target" | tr -d '\n')" = "$4" ] || exit 46
   cp -p -- "$target" "$tmp"
 else
-  [ ! -s "$expected" ] || exit 46
+  [ -z "$4" ] || exit 46
+  chmod 644 "$tmp"
+  chown --reference="$root" "$tmp" 2>/dev/null || true
 fi
+[ -z "$made_dir" ] || chown --reference="$root" "$parent" 2>/dev/null || true
 printf '%s' "$5" | base64 -d >> "$tmp"
 check_inside "$(cd -P "$(dirname "$target")" && pwd -P)"
 mv -f -- "$tmp" "$target"

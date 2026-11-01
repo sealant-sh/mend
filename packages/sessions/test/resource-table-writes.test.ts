@@ -15,6 +15,37 @@ import { ResourceTableWrites, ResourceTableWritesLive } from "../src/resources/a
 import { SessionRepository } from "../src/session-repository.ts";
 import { execAnswer, fakeWorkspace } from "./fake-workspace.ts";
 
+/**
+ * A PATH holding only coreutils, as a workspace image does: it has no `cmp`, which once made every
+ * append into an existing file fail on the box.
+ */
+const WORKSPACE_TOOLS = [
+  "base64",
+  "cat",
+  "chmod",
+  "chown",
+  "cp",
+  "dirname",
+  "mkdir",
+  "mktemp",
+  "mv",
+  "realpath",
+  "rm",
+  "tr",
+];
+const SH = spawnSync("sh", ["-c", "command -v sh"], { encoding: "utf8" }).stdout.trim();
+let toolsDir: string | null = null;
+const workspaceTools = (): string => {
+  if (toolsDir !== null) return toolsDir;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-tools-"));
+  for (const tool of WORKSPACE_TOOLS) {
+    const found = spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim();
+    if (found !== "") fs.symlinkSync(found, path.join(dir, tool));
+  }
+  toolsDir = dir;
+  return dir;
+};
+
 const PROJECT = ProjectId.make("project-append");
 const WORKTREE = WorktreeId.make("worktree-append");
 const TABLE = '[resource.mail]\nimage = "axllent/mailpit:v1.21"\n';
@@ -111,7 +142,10 @@ const withWrites = <A, E>(
         if (options.changed && executions === 2)
           write(root, ".mend/mend.toml", "# edit after read\n");
         const args = argv.slice(1).map((arg) => (arg === "/workspace/repo" ? root : arg));
-        const result = spawnSync("sh", args, { encoding: "utf8" });
+        const result = spawnSync(SH, args, {
+          encoding: "utf8",
+          env: { PATH: workspaceTools() },
+        });
         expect(result.error).toBeUndefined();
         return execAnswer(result.stdout, result.status ?? 1, result.stderr);
       }),
@@ -330,6 +364,13 @@ for (const options of [{ status: "stopped" as const }, { flushed: true }]) {
     }),
   );
 }
+it.effect("the workspace script makes a new file readable by everyone in the worktree", () =>
+  Effect.gen(function* () {
+    const root = fresh();
+    yield* withWrites(root, append, { mode: "workspace" });
+    expect(fs.statSync(path.join(root, ".mend/mend.toml")).mode & 0o777).toBe(0o644);
+  }),
+);
 it.effect("the workspace script refuses a changed file between read and replace", () =>
   Effect.gen(function* () {
     const root = fresh();
