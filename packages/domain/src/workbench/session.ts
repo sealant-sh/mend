@@ -213,6 +213,11 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
+  /** Worktree resource observations, worded once by the server in UTC. Empty on older servers. */
+  resourceStatusLines: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+    Schema.withConstructorDefault(Effect.succeed([])),
+  ),
   /**
    * The people with a process live in the session's executor as their own user, in a per-person
    * executor (docs/adr/0016, decision 13): filled by the API's session list and view only, in the

@@ -51,6 +51,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
 });
 
 export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => ({
+  resourceStatusLines: [],
   id: "session-1",
   projectId: "project-1",
   worktreeId: "worktree-1",
