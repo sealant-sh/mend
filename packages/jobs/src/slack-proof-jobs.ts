@@ -17,7 +17,7 @@ import { deliverProofToSlack } from "./slack-proof-delivery.ts";
 /** Durable payload; workers reload current disclosure and delivery progress on every attempt. */
 export const SlackDeliverProofJob = Schema.Struct({ artifactId: ProofArtifactId });
 const JOB_NAME = "slack-deliver-proof";
-// pg-boss jitter puts the sixth retry 315 to 630 seconds out, beyond Slack's share delay.
+// Fast checks use pg-boss retries. Reconciliation continues slower visibility checks afterward.
 const RETRY_LIMIT = 6;
 
 /** Live-key exclusion covers capture retries and the worker's periodic recovery scan. */

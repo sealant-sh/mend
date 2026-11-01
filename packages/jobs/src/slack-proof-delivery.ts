@@ -49,7 +49,7 @@ export interface SlackProofDeliveryInput<E, R> {
   readonly install: Pick<SealedSlackInstall, "teamId" | "organizationId" | "settings">;
   readonly project: Pick<Project, "id" | "organizationId" | "visibility">;
   readonly token: string;
-  /** Total upload attempts before a retryable error becomes a named final failure. */
+  /** Fast attempts before an upload failure is final or share observation slows down. */
   readonly attemptLimit?: number;
   /** Opens a fresh reader for every attempt. */
   readonly media: (artifact: ProofArtifact) => Effect.Effect<SlackUploadBody, E, R>;
@@ -86,6 +86,9 @@ const pending = () =>
     message: "Slack has not shown the file in this thread yet. Mend will check again.",
   });
 
+const SHARE_RECHECK_MS = 5 * 60_000;
+const SHARE_OBSERVATION_MS = 60 * 60_000;
+
 /**
  * Delivers one settled artifact to one thread. Callers resolve the current install and project
  * before calling; this function checks their audience and receives no blob-store transport.
@@ -118,6 +121,15 @@ export const deliverProofToSlack = Effect.fn("deliverProofToSlack")(function* <E
                     : null;
         if (withheld !== null)
           return yield* store.save({ ...delivery, state: "withheld", errorCode: withheld });
+        const checkedAt = yield* DateTime.nowAsDate;
+        if (
+          delivery.state !== "failed" &&
+          delivery.completionStartedAt !== null &&
+          delivery.attempts >= (input.attemptLimit ?? Infinity) &&
+          checkedAt.getTime() < delivery.completionStartedAt.getTime() + SHARE_OBSERVATION_MS &&
+          checkedAt.getTime() < delivery.updatedAt.getTime() + SHARE_RECHECK_MS
+        )
+          return delivery;
         delivery = yield* store.startAttempt();
         const label = proofLabel(artifact, observedAt);
         const comment = escapeSlack(`${label}\n${artifact.caption}`);
@@ -154,8 +166,23 @@ export const deliverProofToSlack = Effect.fn("deliverProofToSlack")(function* <E
             });
             return posted.ts;
           });
+        const visibilityReply = (checking: boolean) =>
+          Effect.gen(function* () {
+            const text = escapeSlack(
+              `File visibility not confirmed · ${slackProofFilename(artifact)}\n${label}\nSlack accepted the upload; Mend has not observed it in this thread. ${
+                checking
+                  ? "Mend will check every five minutes for up to an hour after completion started."
+                  : "Mend has stopped checking. The file may still appear in Slack."
+              }`,
+            );
+            const messageTs = yield* postText("failed", text);
+            if (!checking && delivery.messageTs !== null)
+              yield* slack.update(token, { channel: thread.channelId, ts: messageTs, text });
+            return yield* store.save({ ...delivery, messageTs });
+          });
         const failureReply = () =>
           Effect.gen(function* () {
+            if (delivery.errorCode === "share_not_observed") return yield* visibilityReply(false);
             const why =
               delivery.errorCode === "missing_scope"
                 ? "The Slack app needs files:write. Add the scope and reinstall the app to the workspace."
@@ -194,13 +221,38 @@ export const deliverProofToSlack = Effect.fn("deliverProofToSlack")(function* <E
             errorCode: null,
           });
         const sharedTs = (fileId: string) =>
-          slack
-            .filesInfo(token, fileId, thread.channelId)
-            .pipe(
-              Effect.map(
-                (shares) => shares.find((share) => share.threadTs === thread.threadTs)?.ts ?? null,
-              ),
-            );
+          slack.filesInfo(token, fileId, thread.channelId).pipe(
+            Effect.map(
+              (shares) => shares.find((share) => share.threadTs === thread.threadTs)?.ts ?? null,
+            ),
+            Effect.annotateLogs({ artifactId: artifact.id, threadTs: thread.threadTs }),
+          );
+        const markShared = (messageTs: string) =>
+          Effect.gen(function* () {
+            if (delivery.messageTs !== null)
+              yield* slack
+                .update(token, {
+                  channel: thread.channelId,
+                  ts: delivery.messageTs,
+                  text: escapeSlack(
+                    `File shown in thread · ${slackProofFilename(artifact)}\n${label}`,
+                  ),
+                })
+                .pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("slack proof: visibility notice update failed").pipe(
+                      Effect.annotateLogs({ artifactId: artifact.id, code: error.code }),
+                    ),
+                  ),
+                );
+            return yield* save({
+              ...delivery,
+              state: "shared",
+              messageTs,
+              uploadUrl: null,
+              errorCode: null,
+            });
+          });
         const deliver = Effect.gen(function* () {
           if (delivery.slackFileId !== null) {
             const observed = yield* sharedTs(delivery.slackFileId).pipe(
@@ -209,14 +261,7 @@ export const deliverProofToSlack = Effect.fn("deliverProofToSlack")(function* <E
                 () => resetTicket().pipe(Effect.as(null)),
               ),
             );
-            if (observed !== null)
-              return yield* save({
-                ...delivery,
-                state: "shared",
-                messageTs: observed,
-                uploadUrl: null,
-                errorCode: null,
-              });
+            if (observed !== null) return yield* markShared(observed);
             // Completion may have succeeded remotely. Only observation can settle that uncertainty.
             if (delivery.completionStartedAt !== null) return yield* pending();
           }
@@ -227,7 +272,9 @@ export const deliverProofToSlack = Effect.fn("deliverProofToSlack")(function* <E
             const ticket = yield* slack.filesGetUploadUrl(token, {
               filename: slackProofFilename(artifact),
               length: media.media.bytes,
-              altText: `${label}\n${artifact.caption}`.slice(0, 1000),
+              ...(media._tag === "Screenshot"
+                ? { altText: `${label}\n${artifact.caption}`.slice(0, 1000) }
+                : {}),
             });
             yield* save({
               ...delivery,
@@ -251,34 +298,70 @@ export const deliverProofToSlack = Effect.fn("deliverProofToSlack")(function* <E
                 message: "The stored proof file has a different length.",
               });
             }
-            yield* slack.filesUpload(delivery.uploadUrl, media);
+            yield* slack
+              .filesUpload(delivery.uploadUrl, media)
+              .pipe(
+                Effect.annotateLogs({ artifactId: artifact.id, slackFileId: delivery.slackFileId }),
+              );
             yield* save({ ...delivery, state: "uploaded", errorCode: null });
           }
           const fileId = delivery.slackFileId;
           if (fileId === null) return yield* Effect.die("uploaded proof has no Slack file id");
           yield* save({ ...delivery, completionStartedAt: yield* DateTime.nowAsDate });
           yield* slack.filesCompleteUpload(token, {
-            fileId,
-            title: artifact.title,
+            files: [{ id: fileId, title: artifact.title }],
             channelId: thread.channelId,
             threadTs: thread.threadTs,
             initialComment: comment,
           });
+          yield* Effect.logInfo("slack proof: upload completion accepted").pipe(
+            Effect.annotateLogs({
+              artifactId: artifact.id,
+              slackFileId: fileId,
+              channelId: thread.channelId,
+              threadTs: thread.threadTs,
+            }),
+          );
           const messageTs = yield* sharedTs(fileId);
           if (messageTs === null) return yield* pending();
-          return yield* save({
-            ...delivery,
-            state: "shared",
-            messageTs,
-            uploadUrl: null,
-            errorCode: null,
-          });
+          return yield* markShared(messageTs);
         });
         return yield* deliver.pipe(
           Effect.catchIf(
             (error): error is SlackApiError => error instanceof SlackApiError,
             (error) =>
               Effect.gen(function* () {
+                if (
+                  delivery.completionStartedAt !== null &&
+                  (error.code === "share_not_observed" ||
+                    error.method === "files.info" ||
+                    (error.method === "files.completeUploadExternal" &&
+                      error.code === "request_failed"))
+                ) {
+                  const now = yield* DateTime.nowAsDate;
+                  const checking =
+                    now.getTime() < delivery.completionStartedAt.getTime() + SHARE_OBSERVATION_MS;
+                  yield* Effect.logInfo("slack proof: share not observed").pipe(
+                    Effect.annotateLogs({
+                      artifactId: artifact.id,
+                      slackFileId: delivery.slackFileId,
+                      channelId: thread.channelId,
+                      threadTs: thread.threadTs,
+                      attempts: delivery.attempts,
+                      code: error.code,
+                      checking,
+                    }),
+                  );
+                  yield* save({
+                    ...delivery,
+                    state: checking ? "uploaded" : "failed",
+                    errorCode: "share_not_observed",
+                    uploadUrl: null,
+                  });
+                  if (!checking || delivery.attempts >= (input.attemptLimit ?? Infinity))
+                    return yield* visibilityReply(checking);
+                  return yield* error;
+                }
                 if (
                   delivery.attempts < (input.attemptLimit ?? Infinity) &&
                   (error.code === "file_not_found" ||
