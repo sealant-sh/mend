@@ -94,6 +94,7 @@ const fixture = (
     readonly mediaUnavailable?: boolean;
     readonly blobFailed?: boolean;
     readonly insertFailed?: boolean;
+    readonly waitForActs?: ReturnType<Screens["Service"]["waitForActs"]>;
   } = {},
 ) => {
   const artifacts = new Map<ProofArtifactId, ProofArtifact>();
@@ -200,6 +201,7 @@ const fixture = (
             }),
         }),
         Layer.mock(Screens, {
+          waitForActs: () => options.waitForActs ?? Effect.succeed("idle"),
           authorize: (who) =>
             Effect.succeed(
               options.refusal ??
@@ -300,6 +302,15 @@ const run = <A>(
 ) => Effect.runPromise(Effect.flatMap(ProofCaptures, body).pipe(Effect.provide(world.layer)));
 
 describe("proof captures on the session's screen", () => {
+  it("takes no screenshot or checkpoint when earlier screen actions do not settle in time", async () => {
+    const world = fixture({ waitForActs: Effect.succeed("timed_out") });
+    const answer = await run(world, (captures) => captures.screenshot(caller, params));
+    expect(answer.isError).toBe(true);
+    expect(JSON.stringify(answer.content)).toContain("Waited 60 s");
+    expect(world.artifacts.size).toBe(0);
+    expect(world.looks()).toBe(0);
+    expect(world.checkpoints()).toBe(0);
+  });
   it("pins a checkpoint, keeps its own PNG, and retries without another look", async () => {
     const world = fixture();
     await run(world, (captures) =>
@@ -423,6 +434,26 @@ const videoParams = {
 const stopCaller = { ...caller, callKey: "stop" };
 
 describe("proof videos on the session's screen", () => {
+  it("keeps recording after a screen wait times out and lets the stop be retried", async () => {
+    let waiting = true;
+    const world = fixture({ waitForActs: Effect.sync(() => (waiting ? "timed_out" : "settled")) });
+    await run(world, (captures) =>
+      Effect.gen(function* () {
+        yield* captures.videoStart(caller, videoParams);
+        const timedOut = yield* captures.videoStop(stopCaller);
+        expect(timedOut.isError).toBe(true);
+        expect(JSON.stringify(timedOut.content)).toContain("Waited 60 s");
+        expect([...world.artifacts.values()][0]?.capture._tag).toBe("Recording");
+        expect(world.stops()).toBe(0);
+        waiting = false;
+        const stopped = yield* captures.videoStop(stopCaller);
+        expect(stopped.isError).not.toBe(true);
+        expect(JSON.stringify(stopped.content)).toContain("Waited for earlier screen_act calls");
+        expect(world.stops()).toBe(1);
+        expect(yield* captures.videoStop(stopCaller)).toEqual(stopped);
+      }),
+    );
+  });
   it("pins start, stores a stopped MP4 and span once, and replays both calls", async () => {
     const world = fixture();
     await run(world, (captures) =>
