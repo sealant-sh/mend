@@ -89,6 +89,7 @@ export interface SessionDto {
    * session's own view only; empty in a project's list, absent on older servers.
    */
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
+  readonly resourceStatusLines?: ReadonlyArray<string>;
   /** When its owner turned shared control on; null while off, absent on older servers. */
   readonly sharedControlEnabledAt?: string | null;
   /**

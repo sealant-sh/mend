@@ -1,8 +1,3 @@
-// One session as a conversation under its header: the whole screen on a phone, one pane of a wide
-// layout on a foldable or a tablet. Protocol agents render the durable authored turns, ordered
-// items, and agent-to-human requests. Older PTY sessions keep their transcript projection and raw
-// TTY composer.
-
 import {
   canRelaunchSession,
   REPLACE_WORKSPACE_ACTION,
@@ -10,6 +5,10 @@ import {
   terminalOwnerOnlyLine,
   terminalReadOnlyLine,
 } from "@mend/domain/workbench";
+// One session as a conversation under its header: the whole screen on a phone, one pane of a wide
+// layout on a foldable or a tablet. Protocol agents render the durable authored turns, ordered
+// items, and agent-to-human requests. Older PTY sessions keep their transcript projection and raw
+// TTY composer.
 import { useRouter } from "expo-router";
 import {
   ClipboardCheck,
@@ -58,6 +57,8 @@ import {
   sharedWorkspaceLineOf,
 } from "@/data/shared-workspace";
 import { usePosture } from "@/data/use-posture";
+
+import { ResourceStatusLines } from "./resource-status-lines";
 
 /** What a wide layout shows beside the conversation. */
 export type Companion = "terminal" | "diff";
@@ -396,11 +397,13 @@ export function SessionPane({
       !(detail.isError && session !== undefined) &&
       shellError === null &&
       resumeError === null &&
+      (session?.resourceStatusLines ?? []).length === 0 &&
       sharedLine === null &&
       retirement === null &&
       replaceError === null &&
       openPreview.failure === null ? null : (
         <View style={{ paddingHorizontal: 16, paddingVertical: 6, gap: 4 }}>
+          <ResourceStatusLines lines={session?.resourceStatusLines ?? []} />
           {sharedLine === null ? null : (
             <UiText tone="ink2" size={12} numberOfLines={3}>
               {sharedLine}
