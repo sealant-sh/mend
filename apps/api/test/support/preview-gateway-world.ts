@@ -66,6 +66,8 @@ import {
 import { type PreviewStartFailed, PreviewTargets } from "../../src/preview-targets.ts";
 import { makeProject } from "./tenancy-harness.ts";
 
+const noResourceStop = (): { readonly name: string; readonly by: string } | null => null;
+
 const ORG = OrganizationId.make("org-a");
 const PROJECT = ProjectId.make("p-shared");
 
@@ -366,6 +368,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
         [PREVIEWS.web.id, bound()],
         [PREVIEWS.docs.id, bound({ serviceId: ServiceId.make("svc-docs") })],
       ]),
+      resourceStop: noResourceStop(),
       activity: new Map<PreviewId, Date>(),
       starts: new Array<PreviewStartRequest>(),
       failReads: false,
@@ -378,6 +381,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       ): Effect.Effect<SessionProcessId, PreviewStartFailed> => Effect.die("no start expected"),
     };
     const targetsLayer = Layer.succeed(PreviewTargets, {
+      resourceStopOf: () => Effect.succeed(targets.resourceStop),
       touchActivity: (stamps) =>
         Effect.sync(() => {
           for (const [id, at] of stamps) targets.activity.set(id, at);

@@ -1089,6 +1089,7 @@ describe("SessionEngine", () => {
         ),
         protocolHostLayer: recordingProtocolHostLayer(attached, [], []),
         resourceRuntime: Layer.succeed(ResourceRuntime, {
+          stoppedDependency: () => Effect.succeed(null),
           prepare: (input) =>
             Effect.sync(() => {
               prepared.push(input);

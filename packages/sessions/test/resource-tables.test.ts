@@ -49,7 +49,7 @@ const refusedKeys = (file: MendTomlFile) => file.refused.map((refusal) => refusa
 const tableNames = (file: MendTomlFile) => file.resources.map((resource) => resource.name);
 
 describe("[resource.*] tables in mend.toml", () => {
-  it("reads ADR 0019's queue as a definition, and still refuses @names in depends", () => {
+  it("reads ADR 0019's queue definition and the Service's resource dependencies", () => {
     const file = parse([...ADR_QUEUE, "", ...ADR_WEB]);
     expect(file.resources).toEqual([
       {
@@ -69,9 +69,10 @@ describe("[resource.*] tables in mend.toml", () => {
         exports: { URL: "amqp://app:{env.RABBITMQ_DEFAULT_PASS}@{host}:{port.amqp}/" },
       },
     ]);
-    expect(file.refused.map(recipeRefusalLine)).toEqual([
-      "web · depends · @db · a Service's depends does not name a resource yet · every process in the worktree has @db's env already",
-      "web · depends · @queue · a Service's depends does not name a resource yet · every process in the worktree has @queue's env already",
+    expect(file.refused).toEqual([]);
+    expect(file.recipes[0]?.depends).toEqual([
+      { kind: "resource", name: "db", env: {} },
+      { kind: "resource", name: "queue", env: {} },
     ]);
     expect(file.ignored).toEqual([]);
   });

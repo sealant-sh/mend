@@ -61,6 +61,7 @@ export const previewReposLayer = (url: string) =>
     PreviewGrantsRepoLive,
     UpgradeTicketsRepoLive,
     SessionsRepoLive,
+    SessionProcessesRepoLive,
     OrganizationsRepoLive,
     ProjectAccessLive.pipe(
       Layer.provide(

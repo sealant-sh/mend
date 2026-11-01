@@ -280,10 +280,12 @@ describe("MEND_PREVIEW_* (docs/adr/0017)", () => {
     const on = await read({
       MEND_PREVIEW_PORT: "3117",
       MEND_PREVIEW_DOMAIN: "previews.example.net",
+      MEND_PREVIEW_IDLE: "1 minute",
     });
     expect(Exit.isSuccess(on) ? on.value : on).toMatchObject({
       _tag: "On",
       routing: { mode: "domain-https", domain: "previews.example.net", port: 443 },
+      gateway: { idleMs: 60_000 },
     });
     const refused = await read({
       MEND_PREVIEW_PORT: "3117",

@@ -9,6 +9,7 @@ import {
   previewStartId,
   serviceStartCorrelation,
 } from "@mend/domain/workbench";
+import { ResourceRuntimeNone } from "@mend/sessions";
 import {
   type PreviewStartDeclined,
   PreviewStartRefused,
@@ -198,6 +199,7 @@ export const acceptanceGateway = (
         Layer.provide(EventBusLive),
         Layer.provide(
           Layer.mergeAll(
+            ResourceRuntimeNone,
             lendingToEveryone,
             forwards.layer,
             Layer.succeed(Budgets, makeBudgets(DEFAULT_BUDGET_LIMITS)),

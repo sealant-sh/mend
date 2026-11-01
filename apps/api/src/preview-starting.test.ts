@@ -55,6 +55,38 @@ const setup = Effect.gen(function* () {
 const navigation = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
 
 describe("interactive preview startup", () => {
+  it.live("names a person's resource stop on a dormant preview page", () =>
+    Effect.gen(function* () {
+      const { world, request } = yield* setup;
+      world.targets.ensureRunning = () =>
+        Effect.fail(
+          new PreviewStartFailed({
+            reason: "command-failed",
+            resourceStopped: { name: "db", by: "Maria" },
+          }),
+        );
+      const reply = yield* request("/");
+      expect(reply.status).toBe(503);
+      expect(reply.body).toContain(
+        "preview · web · @db stopped by Maria · your request was not delivered",
+      );
+    }),
+  );
+
+  it.live("holds a resource stop even when its preview Service is already running", () =>
+    Effect.gen(function* () {
+      const { world, request } = yield* setup;
+      world.targets.resolutions.set(PREVIEWS.web.id, bound());
+      world.targets.resourceStop = { name: "db", by: "Maria" };
+      const reply = yield* request("/");
+      expect(reply.status).toBe(503);
+      expect(reply.body).toContain("@db stopped by Maria");
+      expect(world.targets.starts).toHaveLength(0);
+      world.targets.resourceStop = null;
+      expect((yield* request("/")).status).toBe(200);
+    }),
+  );
+
   it.live(
     "answers navigation immediately, starts once, and preserves the path and query when ready",
     () =>

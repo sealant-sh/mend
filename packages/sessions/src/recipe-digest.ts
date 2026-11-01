@@ -51,9 +51,13 @@ export const recipeDigestsOf = (declarations: ServiceDeclarations): ReadonlyMap<
     if (known !== undefined || visiting.has(recipe.name)) return known;
     visiting.add(recipe.name);
     const dependencyDigests: string[] = [];
-    for (const name of recipe.depends) {
-      const dependency = runnable.get(name);
-      const digest = dependency === undefined ? undefined : digestOf(dependency);
+    for (const dependency of recipe.depends) {
+      if (typeof dependency !== "string") {
+        dependencyDigests.push(canonicalJson({ resource: dependency.name, env: dependency.env }));
+        continue;
+      }
+      const recipeDependency = runnable.get(dependency);
+      const digest = recipeDependency === undefined ? undefined : digestOf(recipeDependency);
       if (digest === undefined) return undefined;
       dependencyDigests.push(digest);
     }

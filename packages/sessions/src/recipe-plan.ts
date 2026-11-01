@@ -1,5 +1,6 @@
 import {
   recipeRefusalLine,
+  serviceDependenciesOf,
   type ServiceDeclarations,
   type ServiceRecipe,
   type SetupDeclaration,
@@ -46,7 +47,7 @@ const walkPlan = (
     const recipe = runnable.get(current);
     if (recipe === undefined) return `No Service recipe named "${current}" exists in this session.`;
     visiting.add(current);
-    for (const dependency of recipe.depends) {
+    for (const dependency of serviceDependenciesOf(recipe.depends)) {
       const refused = visit(dependency);
       if (refused !== null) return refused;
     }

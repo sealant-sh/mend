@@ -125,6 +125,8 @@ export const resourceInstanceSpec = (input: {
   /** The image pinned to its digest: `postgres:17@sha256:…`. */
   readonly image: string;
   readonly worktreeId: WorktreeId | null;
+  /** Operator's idle bound; omitted callers use thirty minutes. */
+  readonly idleStopAfterSeconds?: number;
 }): ResourceInstanceSpec => {
   const def = input.definition;
   const dumps =
@@ -144,7 +146,7 @@ export const resourceInstanceSpec = (input: {
       memoryBytes: def.limits.memoryMiB * 1024 * 1024,
     },
     ready: readyOf(def),
-    idleStopAfterSeconds: RESOURCE_IDLE_STOP_SECONDS,
+    idleStopAfterSeconds: input.idleStopAfterSeconds ?? RESOURCE_IDLE_STOP_SECONDS,
   };
 };
 
@@ -201,7 +203,7 @@ const renderExport = (def: ResourceDefinitionInput, template: string): string | 
 const envPart = (label: string) => label.toUpperCase().replaceAll("-", "_");
 
 /** One binding's env: its own names first, then the conventional ones when it is the only of its engine. */
-const bindingEnv = (
+export const resourceBindingEnv = (
   binding: ResourceBinding,
   worktreeId: WorktreeId,
   only: boolean,
@@ -287,7 +289,7 @@ export const resourceProcessEnv = (input: {
       def.preset !== null &&
       input.bindings.filter((other) => other.definition.preset === def.preset).length === 1;
     const kept: Array<string> = [];
-    for (const [name, value] of bindingEnv(binding, input.worktreeId, only)) {
+    for (const [name, value] of resourceBindingEnv(binding, input.worktreeId, only)) {
       if (input.projectEnvNames.has(name)) kept.push(name);
       else env[name] = value;
     }

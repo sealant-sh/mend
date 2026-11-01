@@ -1,9 +1,10 @@
 import * as http from "node:http";
 
+import { SessionsRepo, SessionProcessesRepo } from "@mend/db";
 import { PreviewId, PreviewLabel } from "@mend/domain";
 import type { Preview } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError, SealantPrincipal } from "@mend/sealant";
-import { SessionEngine } from "@mend/sessions";
+import { ResourceRuntimeNone, SessionEngine } from "@mend/sessions";
 import {
   makeMemoryCaptureStore,
   adapterLayer,
@@ -158,12 +159,29 @@ const stagePreview = (world: World, tmp: string) =>
         entry: { kind: "listen", localPort: address.port },
       },
     ]);
+    const sessionRows = Layer.mock(SessionsRepo, {
+      byId: (id) => {
+        const found = world.sessions.get(id);
+        return found === undefined ? Effect.die("no fixture session") : Effect.succeed(found);
+      },
+    });
+    const processRows = Layer.mock(SessionProcessesRepo, {
+      launchOf: (id) => Effect.succeed(world.launches.get(id) ?? null),
+      byId: (id) => Effect.succeed(world.processes.get(id) ?? null),
+    });
     const gateway = yield* gatewayWorld({
       // Fresh: the engine built the forward adapter over its own platform in this memo map.
       forwards: Layer.fresh(forwards.layer),
       targets: PreviewTargetsLive.pipe(
         Layer.provide(previewsRepoOf(world)),
-        Layer.provide(Layer.succeed(SessionEngine, engine)),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(SessionEngine, engine),
+            sessionRows,
+            processRows,
+            ResourceRuntimeNone,
+          ),
+        ),
       ),
       settings: { startHoldMs: 20_000 },
     });

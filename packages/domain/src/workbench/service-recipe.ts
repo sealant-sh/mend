@@ -1,5 +1,7 @@
 import { Effect, Schema } from "effect";
 
+import { ServiceDependency } from "./service-dependency.ts";
+
 /** Directory-, shell- and URL-safe recipe names; also the CLI lookup key. */
 export const RECIPE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
@@ -128,7 +130,7 @@ export class ServiceRecipe extends Schema.Class<ServiceRecipe>("ServiceRecipe")(
     Schema.withConstructorDefault(Effect.succeed("loopback" as const)),
   ),
   /** Recipes of the same session started first, in this order. */
-  depends: Schema.Array(Schema.String).pipe(
+  depends: Schema.Array(ServiceDependency).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed([])),
     Schema.withConstructorDefault(Effect.succeed([])),
   ),
@@ -277,7 +279,7 @@ export interface ServiceLaunch {
   readonly cwd: RepoRelativePath | null;
   readonly env: RecipeEnv;
   readonly ready: RecipeReady;
-  readonly depends: ReadonlyArray<string>;
+  readonly depends: ReadonlyArray<ServiceDependency>;
 }
 
 /** An explicit `mend service run` and an attempt from before 0143 launch this way. */

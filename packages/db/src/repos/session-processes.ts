@@ -6,6 +6,7 @@ import {
   type SealantWorkspaceId,
   type SessionId,
 } from "@mend/domain";
+import { ServiceDependency } from "@mend/domain/workbench";
 import {
   AgentWait,
   RecipeEnv,
@@ -157,7 +158,7 @@ const decodeLaunch = Schema.decodeUnknownOption(
     cwd: Schema.NullOr(RepoRelativePath),
     env: Schema.NullOr(RecipeEnv),
     ready: RecipeReady,
-    depends: Schema.NullOr(Schema.Array(Schema.String)),
+    depends: Schema.NullOr(Schema.Array(ServiceDependency)),
   }),
 );
 const encodeWaiting = Schema.encodeSync(AgentWait);

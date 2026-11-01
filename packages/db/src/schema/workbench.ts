@@ -71,6 +71,7 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
+import type { ServiceDependency } from "@mend/domain/workbench";
 import type { ResourceLoadPhase } from "@mend/domain/workbench";
 import type {
   MessageTurnReason,
@@ -1882,7 +1883,7 @@ export const sessionProcesses = pgTable(
     launchEnv: jsonb().$type<RecipeEnv>(),
     launchReady: jsonb().$type<RecipeReady>(),
     /** The session dependencies it was started with, bound again at a restart; null: none. */
-    launchDepends: jsonb().$type<ReadonlyArray<string>>(),
+    launchDepends: jsonb().$type<ReadonlyArray<ServiceDependency>>(),
   },
   (table) => [
     index("session_processes_session_idx").on(table.sessionId, table.createdAt),
