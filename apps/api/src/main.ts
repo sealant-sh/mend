@@ -87,6 +87,7 @@ import {
   SessionChannelTokensRepoLive,
   type SessionPagesRepo,
   SessionPagesRepoLive,
+  ProofArtifactsRepoLive,
   SessionsRepoLive,
   SettingsRepoLive,
   UserDotfilesRepoLive,
@@ -389,6 +390,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionsRepoLive,
   SessionChannelTokensRepoLive,
   SessionPagesRepoLive,
+  ProofArtifactsRepoLive,
   UpgradeTicketsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
@@ -1018,6 +1020,7 @@ const MainLive = Layer.unwrap(
           sessionRepository,
           worktreeReads,
           captureRuntime,
+          captureStore,
           captureSeals,
           WorkspaceGitHooksLive,
         ),

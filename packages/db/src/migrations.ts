@@ -4912,6 +4912,32 @@ const resourceLevelsMigration = Effect.gen(function* () {
     DROP COLUMN spec_digest, DROP COLUMN image_digest, DROP COLUMN added_by, DROP COLUMN updated_at`;
 });
 
+const proofArtifactsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE proof_artifacts (
+      id text PRIMARY KEY,
+      change_id text NOT NULL REFERENCES worktree_changes(id) ON DELETE CASCADE,
+      worktree_id text NOT NULL,
+      project_id text NOT NULL,
+      session_id text REFERENCES agent_sessions(id) ON DELETE SET NULL,
+      turn_id text REFERENCES agent_turns(id) ON DELETE SET NULL,
+      call_key text,
+      title text NOT NULL,
+      caption text NOT NULL,
+      side text NOT NULL CHECK (side IN ('before', 'after')),
+      source jsonb NOT NULL,
+      capture jsonb NOT NULL,
+      launch text,
+      differences text,
+      observed_from timestamptz NOT NULL,
+      observed_to timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (session_id, call_key)
+    )`;
+  yield* sql`CREATE INDEX proof_artifacts_change_idx ON proof_artifacts(change_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5078,4 +5104,5 @@ export const migrations = {
   "0175_resource_loads": resourceLoadsMigration,
   "0176_resource_removal": resourceRemovalMigration,
   "0177_resource_levels": resourceLevelsMigration,
+  "0178_proof_artifacts": proofArtifactsMigration,
 };

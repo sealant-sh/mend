@@ -133,6 +133,7 @@ export const AgentItemKind = Schema.Literals([
   "error",
   "other",
   "page",
+  "proof",
   "screen",
 ]);
 export type AgentItemKind = typeof AgentItemKind.Type;

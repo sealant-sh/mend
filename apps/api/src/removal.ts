@@ -32,6 +32,7 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import type { ProjectId, SessionId, WorktreeId } from "@mend/domain";
+import { proofBlobPrefix } from "@mend/domain/workbench";
 import {
   type ChangeStanding,
   decideRemoval,
@@ -60,6 +61,7 @@ import {
   worktreeRemovalRight,
 } from "@mend/domain/workbench";
 import { SessionEngine, CaptureRuntime, ResourceRemoval } from "@mend/sessions";
+import { BlobStore } from "@mend/store";
 import { Store } from "@mend/store";
 import { Data, Effect, Fiber, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -215,6 +217,7 @@ export const RemovalLive: Layer.Layer<
   | SessionsRepo
   | SetupRunsRepo
   | Store
+  | BlobStore
   | UsersRepo
   | WorktreeChangesRepo
   | WorktreesRepo
@@ -237,6 +240,20 @@ export const RemovalLive: Layer.Layer<
     const engine = yield* SessionEngine;
     const store = yield* Store;
     const resources = yield* ResourceRemoval;
+    const blobs = yield* BlobStore;
+    const removeProof = (worktreeId: WorktreeId) =>
+      Effect.gen(function* () {
+        const change = yield* changes.byWorktree(worktreeId);
+        if (change === null) return;
+        for (const blob of yield* blobs.list(proofBlobPrefix(change.id)))
+          yield* blobs.remove(blob.key);
+      }).pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("proof artifacts: blob cleanup failed; retry removal").pipe(
+            Effect.annotateLogs({ worktreeId, operation: error.operation }),
+          ),
+        ),
+      );
     // What reading a change's standing asks for: landings, the worktree's files, origin.
     const standingServices = yield* Effect.context<StandingServices>();
 
@@ -501,6 +518,8 @@ export const RemovalLive: Layer.Layer<
                 current.directory,
               );
               yield* step;
+              // Keep the fenced row on failure so retrying removal can finish blob cleanup.
+              yield* removeProof(current.id).pipe(Effect.orDie);
               // Sessions, change, chain, and review artifacts cascade with the row.
               yield* worktrees.remove(current.id);
               return new RemovalReport({
@@ -815,6 +834,17 @@ export const RemovalLive: Layer.Layer<
                 }),
               );
             yield* holding;
+            for (const tree of yield* worktrees.listForProject(id)) {
+              yield* holding;
+              yield* removeProof(tree.id).pipe(
+                Effect.mapError(
+                  () =>
+                    new ProjectPurgeIncomplete({
+                      message: "Some proof media could not be deleted. Purge again to finish.",
+                    }),
+                ),
+              );
+            }
             const { leftover, outsideRoot } = yield* store.removeProjectStore(
               kept.project.storePath,
             );
