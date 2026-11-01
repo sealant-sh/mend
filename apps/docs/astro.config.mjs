@@ -41,6 +41,7 @@ export default defineConfig({
           label: "Work with changes",
           items: [
             { label: "Review a change", slug: "guides/review-a-change" },
+            { label: "Proof artifacts (design)", slug: "guides/proof-artifacts" },
             { label: "Land a change", slug: "guides/land-a-change" },
             {
               label: "Several repositories in one session",
@@ -61,6 +62,7 @@ export default defineConfig({
         {
           label: "Project setup",
           items: [
+            { label: "Setup session (design)", slug: "guides/setup-session" },
             { label: "Session environments", slug: "guides/project-environment" },
             { label: "Workspace images", slug: "guides/workspace-images" },
             { label: "Variables and secrets", slug: "guides/environment-variables" },

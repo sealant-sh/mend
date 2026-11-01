@@ -95,6 +95,14 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   the default. The `project network` is how a session reaches a resource by name. A `load` replaces
   a database's data and saves the previous data as a dump first. A `Service` keeps its meaning: a
   session's declared port.
+- Setup and proof nouns (`docs/adr/0021-setup-session-and-proof-artifacts.md`, agreed design, not
+  yet built): a `setup session` is an ordinary, consented session running Mend's prompt to propose a
+  feature map, verification instructions and recipes under `.mend/`; its starter's own agent login
+  pays, and its result is a change. A `proof artifact` is a selected screenshot or short video of
+  the user's web app on a session's screen, attached to a change with its source and observation
+  time. Anyone who can see the change can see it. Artifacts stay as long as the change; ordinary
+  screen-log frames still expire after 30 days. A frame is one screen observation, not an artifact.
+  Captures describe what was observed, never claim the change works.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that
