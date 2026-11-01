@@ -1,6 +1,7 @@
 import type { WorktreeId } from "@mend/domain";
 import {
   type ResourceDefinition,
+  type ResourceAddRequest,
   type ResourceLevel,
   type WorktreeChoice,
 } from "@mend/domain/workbench";
@@ -21,7 +22,7 @@ const at = (projectId: string) => ({ projectId, timeZone: readerZone() });
 export const controlResource = (
   projectId: string,
   entry: { readonly spec: ResourceDefinition },
-  worktreeId: WorktreeId,
+  worktreeId: WorktreeId | null,
   verb: "start" | "stop",
   level: ResourceLevel,
   restart = false,
@@ -40,7 +41,7 @@ export const controlResource = (
 export const removeResourceInstance = (
   projectId: string,
   entry: ResourceSettingView,
-  worktreeId: WorktreeId,
+  worktreeId: WorktreeId | null,
 ) =>
   orLogin(
     trpcClient.resources.remove.mutate({
@@ -87,3 +88,7 @@ export const choiceInUse = (
   choice: entry.choice ?? "project",
   stored: entry.choice !== null,
 });
+
+/** Writes one declaration into the selected worktree, or previews a table when none exists. */
+export const addResource = (projectId: string, request: ResourceAddRequest) =>
+  orLogin(trpcClient.resources.add.mutate({ projectId, ...request }));
