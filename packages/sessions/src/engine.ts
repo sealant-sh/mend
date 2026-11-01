@@ -18923,6 +18923,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
           ),
         );
+        // Prepare resources before the note observes them, including tables first adopted on launch.
+        const resourceEnv = yield* resourceEnvOf(session, workspace, ownerUserId, true);
         // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
         // Rewrite the managed note after both paths so it reflects the claimed worktree now. It
         // is written through exec in either store, so a captured executor's agent reads the same
@@ -19072,7 +19074,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? Effect.void
             : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
         );
-        const resourceEnv = yield* resourceEnvOf(session, workspace, ownerUserId, true);
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
         const onScreen = yield* displayOfLaunch(
