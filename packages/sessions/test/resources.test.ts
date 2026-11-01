@@ -24,14 +24,18 @@ import {
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import {
+  AgentTurnId,
   OrganizationId,
   ProjectId,
   SealantWorkspaceId,
   SessionId,
+  SessionMessageId,
+  SessionProcessId,
   Sha,
   WorktreeId,
 } from "@mend/domain";
 import {
+  AgentTurn,
   ImageDigest,
   ownDatabaseName,
   presetDefinition,
@@ -866,63 +870,104 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     expect(page.file.kind).toBe("unparsed");
     expect(JSON.stringify(page)).not.toContain("fake-value-gate1201");
   });
-  it("tells only other live agent sessions, as the switching person, and reports refused sends", async () => {
-    const other = SessionId.make("s-other-agent");
-    const shell = SessionId.make("s-shell-only");
-    const sent: Array<{ sessionId: SessionId; sender: string; message: string }> = [];
-    await runtime.runPromise(
-      Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
-        const original = yield* sessions.byId(SESSION);
-        yield* (yield* SessionProcessesRepo).create({
-          sessionId: SESSION,
-          sealantWorkspaceId: SealantWorkspaceId.make("ws-original"),
-          sealantSessionId: null,
-          kind: "agent-protocol",
-          label: "current agent",
-          argv: ["codex"],
-        });
-        for (const [id, label, kind] of [
-          [other, "other agent", "agent-protocol"],
-          [shell, "shell only", "shell"],
-        ] as const) {
-          yield* sessions.create({ ...original, id, label, baseRef: original.baseRef ?? "main" });
-          yield* sessions.setStatus(id, "running");
+  it.each([null, "shared control is off", ""])(
+    "tells live conversation agents, reports terminal agents and preserves refusal reasons (%s)",
+    async (refusal) => {
+      const other = SessionId.make("s-other-agent");
+      const shell = SessionId.make("s-shell-only");
+      const sent: Array<{ sessionId: SessionId; sender: string; message: string }> = [];
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM agent_sessions WHERE project_id = ${PROJECT} AND id <> ${SESSION}`;
+          const original = yield* sessions.byId(SESSION);
           yield* (yield* SessionProcessesRepo).create({
-            sessionId: id,
-            sealantWorkspaceId: SealantWorkspaceId.make(`ws-${id}`),
+            sessionId: SESSION,
+            sealantWorkspaceId: SealantWorkspaceId.make("ws-original"),
             sealantSessionId: null,
-            kind,
-            label,
+            kind: "agent-protocol",
+            label: "current agent",
             argv: ["codex"],
           });
-        }
-        yield* sessions.setStatus(SESSION, "running");
-        const live = WorktreeServiceRestartsLive.pipe(
-          Layer.provide(
-            Layer.mock(SessionEngine, {
-              launchUnderWay: () => false,
-              sendMessage: (input) =>
-                Effect.gen(function* () {
-                  sent.push({
-                    sessionId: input.sessionId,
-                    sender: input.sender,
-                    message: input.input,
-                  });
-                  return yield* new SessionTurnRefusedError({
-                    sessionId: input.sessionId,
-                    message: "shared control is off",
-                  });
-                }),
-            }),
-          ),
-        );
-        const failed = yield* Effect.flatMap(WorktreeServiceRestarts, (service) =>
-          service.tell(WORKTREE, "u-tom", "switch message", SESSION),
-        ).pipe(Effect.provide(live));
-        expect(failed).toEqual(["could not tell the agent in other agent: shared control is off"]);
-      }),
-    );
-    expect(sent).toEqual([{ sessionId: other, sender: "u-tom", message: "switch message" }]);
-  });
+          for (const [id, label, kind] of [
+            [other, "other agent", "agent-protocol"],
+            [SessionId.make("s-terminal"), "terminal agent", "agent-pty"],
+            [SessionId.make("s-stopped"), "stopped agent", "agent-protocol"],
+            [SessionId.make("s-exited"), "exited agent", "agent-pty"],
+            [shell, "shell only", "shell"],
+          ] as const) {
+            yield* sessions.create({ ...original, id, label, baseRef: original.baseRef ?? "main" });
+            yield* sessions.setStatus(id, id === "s-stopped" ? "stopped" : "running");
+            const process = yield* (yield* SessionProcessesRepo).create({
+              sessionId: id,
+              sealantWorkspaceId: SealantWorkspaceId.make(`ws-${id}`),
+              sealantSessionId: null,
+              kind,
+              label,
+              argv: ["codex"],
+            });
+            if (id === "s-exited")
+              yield* (yield* SessionProcessesRepo).markExited(process.id, "exited", 0);
+          }
+          yield* sessions.setStatus(SESSION, "running");
+          const live = WorktreeServiceRestartsLive.pipe(
+            Layer.provide(
+              Layer.mock(SessionEngine, {
+                launchUnderWay: () => false,
+                sendMessage: (input) =>
+                  Effect.gen(function* () {
+                    sent.push({
+                      sessionId: input.sessionId,
+                      sender: input.sender,
+                      message: input.input,
+                    });
+                    if (refusal === null)
+                      return {
+                        _tag: "Turn" as const,
+                        messageId: SessionMessageId.make("6dd5c2a6-0a8c-4980-8b24-bfb298ecf18f"),
+                        explanation: "queued",
+                        turn: new AgentTurn({
+                          id: AgentTurnId.make("resource-switch-turn"),
+                          sessionId: input.sessionId,
+                          processId: SessionProcessId.make("resource-agent"),
+                          ordinal: 0,
+                          author: input.sender,
+                          input: input.input,
+                          status: "queued",
+                          providerTurnId: null,
+                          error: null,
+                          usage: null,
+                          createdAt: new Date(),
+                          startedAt: null,
+                          endedAt: null,
+                        }),
+                      };
+                    return yield* new SessionTurnRefusedError({
+                      sessionId: input.sessionId,
+                      message: refusal,
+                    });
+                  }),
+              }),
+            ),
+          );
+          const failed = yield* Effect.flatMap(WorktreeServiceRestarts, (service) =>
+            service.tell(WORKTREE, "u-tom", "switch message", SESSION),
+          ).pipe(Effect.provide(live));
+          expect(failed).toEqual(
+            expect.arrayContaining([
+              "the agent in terminal agent runs in a terminal, so Mend did not type this into it · pass it on or restart that session",
+              ...(refusal === null
+                ? []
+                : [
+                    `could not tell the agent in other agent: ${refusal || "SessionTurnRefusedError"}`,
+                  ]),
+            ]),
+          );
+          expect(failed).toHaveLength(refusal === null ? 1 : 2);
+        }),
+      );
+      expect(sent).toEqual([{ sessionId: other, sender: "u-tom", message: "switch message" }]);
+    },
+  );
 });
