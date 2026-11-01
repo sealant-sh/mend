@@ -298,6 +298,9 @@ const foldTurn = (state: ClaudeTurns, input: ClaudeTurnInput): ClaudeTurnFold =>
         return { state: { ...state, turn: { _tag: "Idle" } }, effects: [] };
       if (turn._tag !== "AwaitingContinuation") return unchanged(state);
       const last = turn.segments.at(-1);
+      // A priority-now steer aborts Claude's current segment before its continuation starts.
+      // Session-state events can report idle in that gap; the person's turn is still running.
+      if (last?.status === "interrupted") return unchanged(state);
       return complete(
         state,
         turn.turnId,
