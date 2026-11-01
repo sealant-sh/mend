@@ -273,7 +273,7 @@ const settingsRead = (
   },
 });
 
-/** How a `mend.toml` table stands against what settings hold under its name. */
+/** How a `.mend/mend.toml` table stands against what settings hold under its name. */
 const againstSettings = (
   settings: SettingsRead,
   spec: ResourceDefinitionInput,
@@ -284,7 +284,7 @@ const againstSettings = (
 };
 
 /**
- * Whether the reader may add a `mend.toml` table as it stands, decided in the add route's order:
+ * Whether the reader may add a `.mend/mend.toml` table as it stands, decided in the add route's order:
  * settings holding it already, whose act it is (`resourceActRefusal`), then the rules
  * (`resourceDeclarationRefusals`).
  */
@@ -326,19 +326,19 @@ const presetSpec = (input: Extract<ResourceAddInput, { readonly kind: "preset" }
       );
 };
 
-/** A session's page as lines: each status line, then its worktree's `mend.toml`. */
+/** A session's page as lines: each status line, then its worktree's `.mend/mend.toml`. */
 const pageLines = (page: ResourcesPage): ReadonlyArray<string> => {
   const lines = page.settings.map((entry) => entry.statusLine);
   const file = page.file;
-  if (file.kind === "unavailable") return [...lines, `mend.toml · ${file.message}`];
+  if (file.kind === "unavailable") return [...lines, file.message];
   if (file.kind === "unparsed") {
-    return [...lines, `mend.toml · ${file.observed} · ${file.message}`];
+    return [...lines, `${file.observed} · ${file.message}`];
   }
   if (file.kind !== "read") return lines.length === 0 ? ["no resources in this project"] : lines;
   const notices = resourceTableNotices(file);
   return [
     ...lines,
-    ...(file.tables.length + notices.length === 0 ? [] : [`mend.toml · ${file.observed}`]),
+    ...(file.tables.length + notices.length === 0 ? [] : [file.observed]),
     ...file.tables.map((table) => table.statusLine),
     ...notices.map((notice) => `  ${notice}`),
   ];

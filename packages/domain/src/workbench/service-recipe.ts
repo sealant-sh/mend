@@ -88,7 +88,7 @@ export const ServiceAddress = Schema.Literals(["loopback", "docker"]);
 export type ServiceAddress = typeof ServiceAddress.Type;
 
 /**
- * A declared Service recipe (docs/SESSION-SERVICES.md): one entry of the repo's `mend.toml`,
+ * A declared Service recipe (docs/SESSION-SERVICES.md): one entry of the repo's `.mend/mend.toml`,
  * versioned with the code, or a project row. A recipe is intent, never a running process: `mend
  * service run <name>` starts one; a command-less entry is an `add` recipe (an already-listening
  * port to adopt). The launch fields default to what a recipe meant before they existed, so a
@@ -104,7 +104,7 @@ export class ServiceRecipe extends Schema.Class<ServiceRecipe>("ServiceRecipe")(
   protocol: Schema.Literals(["tcp", "udp"]),
   /** Open exists only when explicitly declared; TCP alone never implies HTTP. */
   browserScheme: Schema.NullOr(Schema.Literals(["http", "https"])),
-  /** Where it was declared: the repo's mend.toml (travels, reviewable) or this machine's project row. */
+  /** Where it was declared: the repo's .mend/mend.toml (travels, reviewable) or this machine's project row. */
   source: Schema.Literals(["file", "project"]),
   /** A colliding declaration remains visible but cannot run. */
   shadowedBy: Schema.NullOr(Schema.Literals(["file", "project"])),
@@ -175,7 +175,7 @@ export class PreviewDeclaration extends Schema.Class<PreviewDeclaration>("Previe
 }) {}
 
 /**
- * Everything a session's `mend.toml` and its project's rows declare, read whole: the recipes that
+ * Everything a session's `.mend/mend.toml` and its project's rows declare, read whole: the recipes that
  * can be listed, the ones refused and why, the keys ignored, and the preview.
  */
 export class ServiceDeclarations extends Schema.Class<ServiceDeclarations>("ServiceDeclarations")({
@@ -268,7 +268,7 @@ export const dependencyEnvPrefix = (name: string): string =>
 
 /** A refusal as a person reads it: `web · cwd · is absolute; …`. */
 export const recipeRefusalLine = (refusal: RecipeRefusal): string =>
-  [refusal.name ?? "mend.toml", refusal.key, refusal.message].join(" · ");
+  [refusal.name ?? ".mend/mend.toml", refusal.key, refusal.message].join(" · ");
 
 /**
  * How one Service attempt was launched, as its row records it: a restart replays it rather than

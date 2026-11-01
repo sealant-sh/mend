@@ -63,7 +63,57 @@ import { readResourceTables } from "./resource-tables.ts";
  * ```
  */
 
-export const MEND_TOML = "mend.toml";
+/** Repository configuration, in precedence order. The files are never merged. */
+export const MEND_TOML = ".mend/mend.toml";
+export const LEGACY_MEND_TOML = "mend.toml";
+export const MEND_TOML_PATHS = [MEND_TOML, LEGACY_MEND_TOML] as const;
+
+/** Select the preferred file, including empty or invalid bytes, before considering the root file. */
+export const selectMendToml = <T>(preferred: T | null, legacy: T | null) =>
+  preferred !== null
+    ? { path: MEND_TOML, value: preferred }
+    : legacy !== null
+      ? { path: LEGACY_MEND_TOML, value: legacy }
+      : null;
+
+/** The repository-relative name used in diagnostics, even when the reader supplied an absolute path. */
+export const mendTomlName = (filePath: string): string =>
+  filePath.endsWith(MEND_TOML) ? MEND_TOML : LEGACY_MEND_TOML;
+
+/** No repository file, distinct from a failed read. */
+export const WORKSPACE_MEND_TOML_ABSENT = 44;
+
+/** Read inside a workspace. $1 is the repository root; stdout starts with the chosen relative path. */
+export const WORKSPACE_MEND_TOML_SCRIPT =
+  `for file in ${MEND_TOML_PATHS.join(" ")}; do ` +
+  `if [ -e "$1/$file" ] || [ -L "$1/$file" ]; then ` +
+  `printf '%s\\n' "$file"; cat -- "$1/$file"; exit $?; fi; done; ` +
+  `exit ${WORKSPACE_MEND_TOML_ABSENT}`;
+
+/** Decode the workspace reader's path header before parsing exactly that file. */
+export const parseWorkspaceMendToml = (
+  result: { readonly exitCode: number; readonly stdout: string; readonly stderr: string },
+  root: string,
+): Effect.Effect<MendTomlFile, RecipeFileError> => {
+  if (result.exitCode === WORKSPACE_MEND_TOML_ABSENT) return Effect.succeed(EMPTY_MEND_TOML);
+  const newline = result.stdout.indexOf("\n");
+  const name = result.stdout.slice(0, newline);
+  const bytes = result.stdout.slice(newline + 1);
+  const selected = selectMendToml(
+    name === MEND_TOML ? bytes : null,
+    name === LEGACY_MEND_TOML ? bytes : null,
+  );
+  const filePath = path.join(root, selected?.path ?? MEND_TOML);
+  if (result.exitCode !== 0 || selected === null) {
+    return Effect.fail(
+      new RecipeFileError({
+        path: filePath,
+        message: `${selected?.path ?? MEND_TOML} could not be read in the session workspace (exit ${result.exitCode}): ${result.stderr.trim()}`,
+      }),
+    );
+  }
+  return parseMendToml(selected.value, filePath);
+};
 
 export class RecipeFileError extends Schema.TaggedError<RecipeFileError>()("RecipeFileError", {
   path: Schema.String,
@@ -72,6 +122,8 @@ export class RecipeFileError extends Schema.TaggedError<RecipeFileError>()("Reci
 
 /** One file's declarations as written, before the project's rows and the graph are read. */
 export interface MendTomlFile {
+  /** Actual file read; absent only for no file or declarations supplied directly. */
+  readonly path?: string;
   readonly recipes: ReadonlyArray<ServiceRecipe>;
   /** `[resource.*]` tables (ADR 0019); their refusals and ignored keys join the file's. */
   readonly resources: ReadonlyArray<ResourceDefinitionInput>;
@@ -412,10 +464,11 @@ const readRecipe = (
  * message quotes the lines around the error, which can hold env values, and this text reaches the
  * workspace note, the session's routes and their logs.
  */
-export const tomlDiagnostic = (cause: unknown): string => {
-  if (!(cause instanceof TomlError)) return "mend.toml is not valid TOML";
+export const tomlDiagnostic = (cause: unknown, filePath: string = MEND_TOML): string => {
+  const name = mendTomlName(filePath);
+  if (!(cause instanceof TomlError)) return `${name} is not valid TOML`;
   const reason = cause.message.replace(/^Invalid TOML document: /u, "").split("\n", 1)[0];
-  return `mend.toml is not valid TOML: line ${cause.line}, column ${cause.column} · ${reason}`;
+  return `${name} is not valid TOML: line ${cause.line}, column ${cause.column} · ${reason}`;
 };
 
 /**
@@ -433,7 +486,7 @@ export const parseMendToml = (
     } catch (cause) {
       return yield* new RecipeFileError({
         path: filePath,
-        message: tomlDiagnostic(cause),
+        message: tomlDiagnostic(cause, filePath),
       });
     }
     if (!isRecord(parsed)) return EMPTY_MEND_TOML;
@@ -497,6 +550,7 @@ export const parseMendToml = (
             ignore: (key) => ignored.push(new IgnoredDeclaration({ name: null, key })),
           });
     return {
+      path: filePath,
       recipes,
       resources: resources.tables,
       refused,
@@ -602,16 +656,26 @@ export const digestWorktreeFile = (
     }
   });
 
-/** Read and validate the worktree's `mend.toml`. Missing or unreadable = nothing declared. */
+/** Read the preferred repository file, falling back only when it is absent. */
 export const readMendToml = (worktree: string): Effect.Effect<MendTomlFile, RecipeFileError> =>
-  readWorktreeFile(worktree, MEND_TOML).pipe(
-    Effect.orElseSucceed(() => null),
-    Effect.flatMap((bytes) =>
-      bytes === null
-        ? Effect.succeed(EMPTY_MEND_TOML)
-        : parseMendToml(new TextDecoder().decode(bytes), path.join(worktree, MEND_TOML)),
-    ),
-  );
+  Effect.gen(function* () {
+    const read = (relative: string) =>
+      readWorktreeFile(worktree, relative).pipe(
+        Effect.mapError(
+          (error) =>
+            new RecipeFileError({ path: path.join(worktree, relative), message: error.message }),
+        ),
+      );
+    const preferred = yield* read(MEND_TOML);
+    const legacy = preferred === null ? yield* read(LEGACY_MEND_TOML) : null;
+    const selected = selectMendToml(preferred, legacy);
+    return selected === null
+      ? EMPTY_MEND_TOML
+      : yield* parseMendToml(
+          new TextDecoder().decode(selected.value),
+          path.join(worktree, selected.path),
+        );
+  });
 
 const fileNamesOf = (file: MendTomlFile): ReadonlySet<string> =>
   new Set([

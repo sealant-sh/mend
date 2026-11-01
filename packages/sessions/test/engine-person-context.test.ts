@@ -30,7 +30,7 @@ import {
 } from "@mend/sealant";
 import {
   SessionEngine,
-  WORKSPACE_MEND_TOML,
+  WORKSPACE_MEND_TOML_SCRIPT,
   WorkspaceGitHooks,
   WorkspaceGitHooksLive,
 } from "@mend/sessions";
@@ -3143,11 +3143,11 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
       flag: "person",
       execUsers: users,
       exec: (argv) =>
-        argv.at(-1) === WORKSPACE_MEND_TOML
+        argv[2] === WORKSPACE_MEND_TOML_SCRIPT
           ? {
               exitCode: 0,
               stdout:
-                '[setup]\nrun = ["pnpm install"]\ninputs = ["pnpm-lock.yaml"]\n' +
+                'mend.toml\n[setup]\nrun = ["pnpm install"]\ninputs = ["pnpm-lock.yaml"]\n' +
                 '[service.web]\ncommand = "pnpm dev"\nport = 3000\n',
               stderr: "",
             }
@@ -3178,7 +3178,9 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
     await livePersonJoin({
       flag: "person",
       exec: (argv) =>
-        argv.at(-1) === WORKSPACE_MEND_TOML ? { exitCode: 0, stdout: toml, stderr: "" } : undefined,
+        argv[2] === WORKSPACE_MEND_TOML_SCRIPT
+          ? { exitCode: 0, stdout: "mend.toml\n" + toml, stderr: "" }
+          : undefined,
       inspect: (engine, join) =>
         Effect.gen(function* () {
           const owner = join.holder.ownerUserId ?? "";

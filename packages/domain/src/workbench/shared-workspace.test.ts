@@ -67,13 +67,13 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
     expect(retirementStopLines(retirement)).toEqual([
       "Checked at 12:05 UTC: Mend's records, the processes in the workspace and its running containers",
       "shell · auth · shell 1",
-      "Mend starts the launching session's mend.toml Services again.",
+      "Mend starts the launching session's .mend/mend.toml Services again.",
     ]);
     // Never "nothing would stop": what was checked, and what was found.
     expect(retirementStopLines({ stops: [], checkedAt: null })).toEqual([
       "Checked: Mend's records only · processes Mend did not start and running containers not checked yet",
       "Found nothing that would stop.",
-      "Mend starts the launching session's mend.toml Services again.",
+      "Mend starts the launching session's .mend/mend.toml Services again.",
     ]);
     // Anyone but the change's owner reads a process's kind, not its name.
     expect(

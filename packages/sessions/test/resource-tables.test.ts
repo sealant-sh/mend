@@ -306,7 +306,7 @@ describe("[resource.*] tables in mend.toml", () => {
     expect(file.recipes.map((recipe) => recipe.name)).toEqual(["web"]);
     expect(file.resources).toEqual([]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
-      "mend.toml · resource · must be a table of resources ([resource.<name>])",
+      ".mend/mend.toml · resource · must be a table of resources ([resource.<name>])",
     ]);
     expect(file.ignored).toEqual([]);
   });
@@ -327,7 +327,7 @@ describe("[resource.*] tables in mend.toml", () => {
     );
     expect(declared.recipes).toEqual([project]);
     expect(declared.refused.map(recipeRefusalLine)).toEqual([
-      "mend.toml · resource.web.ports.http · must be a port in 1..65535",
+      ".mend/mend.toml · resource.web.ports.http · must be a port in 1..65535",
     ]);
   });
 
@@ -346,7 +346,7 @@ describe("[resource.*] tables in mend.toml", () => {
       "ports = { amqp = 5672 }",
     ]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
-      "mend.toml · resource.Queue · is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -, not ending in -)",
+      ".mend/mend.toml · resource.Queue · is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -, not ending in -)",
     ]);
     expect(file.ignored.map((ignored) => ignored.key)).toEqual(["resource.Queue.name"]);
   });
@@ -410,7 +410,7 @@ describe("[resource.*] tables in mend.toml", () => {
       'volumes = { data- = "/data" }',
     ]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
-      "mend.toml · resource.queue.volumes.data- · is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -, not ending in -)",
+      ".mend/mend.toml · resource.queue.volumes.data- · is not one DNS label (a lowercase letter, then up to 30 lowercase letters, digits or -, not ending in -)",
     ]);
   });
 
@@ -423,7 +423,7 @@ describe("[resource.*] tables in mend.toml", () => {
     ]);
     expect(untagged.resources).toEqual([]);
     expect(untagged.refused.map(recipeRefusalLine)).toEqual([
-      'mend.toml · resource.db.image · has no tag or digest, and the postgres preset runs the version its image names, such as "postgres:<tag>"',
+      '.mend/mend.toml · resource.db.image · has no tag or digest, and the postgres preset runs the version its image names, such as "postgres:<tag>"',
     ]);
     const pinned = parse([
       "[resource.db]",
@@ -451,8 +451,8 @@ describe("[resource.*] tables in mend.toml", () => {
     ]);
     expect(tableNames(file)).toEqual(["mail"]);
     expect(file.refused.map(recipeRefusalLine)).toEqual([
-      "mend.toml · resource.db.exports.MAIN_URL · sets MEND_RESOURCE_DB_MAIN_URL, as db-main does too",
-      "mend.toml · resource.db-main.exports.URL · sets MEND_RESOURCE_DB_MAIN_URL, as db does too",
+      ".mend/mend.toml · resource.db.exports.MAIN_URL · sets MEND_RESOURCE_DB_MAIN_URL, as db-main does too",
+      ".mend/mend.toml · resource.db-main.exports.URL · sets MEND_RESOURCE_DB_MAIN_URL, as db does too",
     ]);
   });
 });
@@ -488,9 +488,9 @@ describe("the workspace note on mend.toml", () => {
       [],
     );
     expect(declarationsNote(declared)).toBe(
-      "Refused in mend.toml (fix these before running them):\n\n" +
+      "Refused in .mend/mend.toml (fix these before running them):\n\n" +
         "- api · cwd · is absolute; name a path inside the repository\n\n" +
-        "Resources in mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):\n\n" +
+        "Resources in .mend/mend.toml (none runs from the file; a person adds each in project settings or with mend resource add <name> --from-file):\n\n" +
         "- resource.web.ports.http · must be a port in 1..65535\n" +
         "- resource.web.healthcheck · is ignored: this Mend does not read it\n\n",
     );

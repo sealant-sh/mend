@@ -336,7 +336,7 @@ export const resourceRuntimeLayer = (
             Effect.result,
           );
           if (added._tag === "Failure") {
-            yield* Effect.logWarning("resources: a mend.toml table was not added").pipe(
+            yield* Effect.logWarning("resources: a .mend/mend.toml table was not added").pipe(
               Effect.annotateLogs({ resource: spec.name, reason: added.failure._tag }),
             );
           }
@@ -419,7 +419,7 @@ export const resourceRuntimeLayer = (
       const prepare = Effect.fn("ResourceRuntime.prepare")(function* (input: PrepareInput) {
         const fileViews = yield* adoptTables(input).pipe(
           Effect.catchCause((cause) =>
-            Effect.logWarning("resources: mend.toml tables not read").pipe(
+            Effect.logWarning("resources: .mend/mend.toml tables not read").pipe(
               Effect.annotateLogs({ cause: Cause.pretty(cause) }),
               Effect.as([]),
             ),

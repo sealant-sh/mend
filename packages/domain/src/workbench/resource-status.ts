@@ -40,7 +40,7 @@ export type ResourceUse =
   | { readonly kind: "project"; readonly addedBy: string };
 
 /**
- * Where a `mend.toml` table stands against what settings hold under its name. A table never
+ * Where a `.mend/mend.toml` table stands against what settings hold under its name. A table never
  * replaces a definition settings hold.
  */
 export type ResourceDeclaration = {
@@ -126,9 +126,9 @@ export type ResourceStatusView =
       readonly origin: "empty" | "copied";
       readonly savedAt: Date | null;
     }
-  /** A `mend.toml` table whose name settings hold with another spec: settings were kept. */
+  /** A `.mend/mend.toml` table whose name settings hold with another spec: settings were kept. */
   | { readonly kind: "file-kept"; readonly definition: ResourceDefinitionInput }
-  /** A `mend.toml` table as read, with no instance behind it. */
+  /** A `.mend/mend.toml` table as read, with no instance behind it. */
   | {
       readonly kind: "declared";
       readonly definition: ResourceDefinitionInput;
@@ -296,7 +296,12 @@ export const resourceStatusLine = (
       case "archived":
         return ["archived", "volumes kept"];
       case "declared":
-        return [engineOf(def), def.scope, "in mend.toml", AGAINST_SETTINGS[view.source.settings]];
+        return [
+          engineOf(def),
+          def.scope,
+          "in .mend/mend.toml",
+          AGAINST_SETTINGS[view.source.settings],
+        ];
       case "launched-without":
         return [...instanceParts(view.instance), "this session starts without it"];
       case "env-left":
@@ -306,7 +311,7 @@ export const resourceStatusLine = (
       case "own-not-made":
         return ["own database not made", view.message, "the next launch tries again"];
       case "file-kept":
-        return ["mend.toml differs", "project settings kept"];
+        return [".mend/mend.toml differs", "project settings kept"];
       case "switched":
         return [
           ...useParts(def, view.use, clock),
