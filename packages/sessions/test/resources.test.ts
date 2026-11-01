@@ -886,6 +886,17 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     expect(page.file.kind).toBe("unparsed");
     expect(JSON.stringify(page)).not.toContain("fake-value-gate1201");
   });
+  it("groups helper list definitions with their observations without a second not-started entry", async () => {
+    await start("db");
+    const lines = await fromSession("list");
+    expect(lines.filter((line) => line.startsWith("@db"))).toHaveLength(1);
+    expect(lines.find((line) => line.startsWith("@db"))).not.toContain("not started");
+    expect(lines.find((line) => line.startsWith("  @db"))).toContain("running");
+    file.text += '\n[resource.mail]\nimage = "axllent/mailpit:v1.21"\nports = { smtp = 1025 }\n';
+    expect((await fromSession("list")).find((line) => line.startsWith("@mail"))).toContain(
+      "not started",
+    );
+  });
   it.each([null, "shared control is off", ""])(
     "tells live conversation agents, reports terminal agents and preserves refusal reasons (%s)",
     async (refusal) => {

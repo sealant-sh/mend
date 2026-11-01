@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { PgClient } from "@effect/sql-pg";
 import { MendDBLive, migrations, ResourcesRepo, ResourcesRepoLive, UserFacts } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { ImageDigest, type ResourcesPage } from "@mend/domain/workbench";
+import { ImageDigest, resourceListEntries, type ResourcesPage } from "@mend/domain/workbench";
 import {
   ImageResolutionError,
   type ResourceImageResolver,
@@ -307,16 +307,32 @@ describe.skipIf(postgres.skip)("a project's resources over the API", () => {
     });
   });
   it("starts only through the explicit level endpoint and remembers the file's spec", async () => {
-    await start();
+    const observed = new Map<string, { instance: { kind: "running" }; observedAt: Date }>();
+    await start(undefined, {
+      observe: () => Effect.succeed({ kind: "observed", byKey: observed }),
+    });
     seedFile();
     expect(await control("carol", "db", "project")).toMatchObject({
       status: 200,
       body: { kind: "started", instance: "running" },
     });
     expect(resolved).toEqual(["postgres:17"]);
+    const remembered = await runtime.runPromise(
+      Effect.flatMap(ResourcesRepo, (repo) => repo.listForProject(shared.project)),
+    );
+    for (const row of remembered)
+      observed.set(row.id, { instance: { kind: "running" }, observedAt: new Date() });
     const page = (await list("carol", `&worktreeId=${CAROL_WORKTREE_IN_SHARED_A}`)).body;
     expect(page.settings).toHaveLength(1);
     expect(page.settings[0]?.level).toBe("project");
+    const entries = resourceListEntries(page);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      name: "db",
+      definition: { spec: { name: "db" } },
+      instances: [{ instance: "running" }],
+    });
+    expect(entries[0]?.statusLine).not.toContain("not started");
   });
   it("returns needs-restart and leaves the old image until an explicit restart", async () => {
     await start();

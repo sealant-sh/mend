@@ -11,6 +11,7 @@ import {
   resourceAddedLines,
   type ResourceAdded,
   resourceTableNotices,
+  resourceListEntries,
   resourceChoiceOf,
   resourceLevelFlag,
   resourceLevelHint,
@@ -54,18 +55,18 @@ const entryLine = (entry: { readonly statusLine: string }, image: string, id: st
     ...(id === null ? [] : [dim(printable(id))]),
   ].join("  ");
 
-/** The list as the terminal prints it: settings with their ids, then the file. */
+/** Each name once, its file definition when present, with instance observations underneath. */
 export const renderResources = (
   project: ProjectRef,
   page: ResourcesPage,
   worktree: string | null,
 ) => {
   const lines: Array<string> = [];
-  if (page.settings.length > 0) {
-    lines.push(
-      "instances",
-      ...page.settings.map((entry) => `  ${entryLine(entry, entry.image, entry.id)}`),
-    );
+  for (const entry of resourceListEntries(page)) {
+    lines.push(printable(entry.statusLine));
+    for (const instance of entry.instances) {
+      lines.push(`  ${entryLine(instance, instance.image, instance.id)}`);
+    }
   }
   const file = page.file;
   const where = `.mend/mend.toml in ${printable(worktree ?? "")}`;
@@ -77,7 +78,6 @@ export const renderResources = (
   if (file.kind === "read") {
     lines.push(
       `${where} · ${printable(file.observed)}`,
-      ...file.tables.map((table) => `  ${entryLine(table, table.spec.image, null)}`),
       ...resourceTableNotices(file).map((notice) => `  ${printable(notice)}`),
     );
   }

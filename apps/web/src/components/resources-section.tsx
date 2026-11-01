@@ -5,6 +5,7 @@ import {
   type WorktreeChoice,
   resourceControls,
   resourceTableNotices,
+  resourceListEntries,
   resourceAdditionOf,
   type ResourceAdded,
 } from "@mend/domain/workbench";
@@ -248,7 +249,7 @@ export interface ResourcesViewProps {
   readonly notes: ReadonlyMap<string, ItemNote>;
   readonly handlers: ResourceHandlers;
 }
-/** One status line for each remembered instance and each definition. */
+/** Each resource groups its definition and the observations of its instances. */
 export function ResourcesView(props: ResourcesViewProps) {
   const { page, handlers, worktreeId } = props;
   const controls = (entry: ResourceSettingView | ResourceFileTableView, key: string) => (
@@ -288,6 +289,7 @@ export function ResourcesView(props: ResourcesViewProps) {
     entry: ResourceSettingView | ResourceFileTableView,
     key: string,
     children?: ReactNode,
+    showStarts = true,
   ) => (
     <div key={key} className="border-b border-rule-faint px-4 py-3">
       <p className="font-mono text-[12px] text-foreground">{entry.statusLine}</p>
@@ -295,7 +297,7 @@ export function ResourcesView(props: ResourcesViewProps) {
         {"image" in entry ? entry.image : entry.spec.image}
       </p>
       <div className="mt-2 flex flex-wrap gap-3">
-        {controls(entry, key)}
+        {showStarts ? controls(entry, key) : null}
         {children}
       </div>
       {props.notes.get(key)?.lines.map((line) => (
@@ -308,62 +310,78 @@ export function ResourcesView(props: ResourcesViewProps) {
   return (
     <div className="mt-4 space-y-4">
       <div>
-        {page.settings.map((entry) => {
-          const key = `s:${entry.id}:${entry.worktreeId ?? "project"}`;
-          return (
-            <div key={key}>
-              {item(
-                entry,
-                key,
-                <>
-                  {resourceControls(entry.instance).stop ? (
-                    <button
-                      type="button"
-                      disabled={props.busy.has(key)}
-                      onClick={() => handlers.control(entry, worktreeId, "stop", entry.level)}
-                      className={quiet}
-                    >
-                      stop
-                    </button>
-                  ) : null}
-                  {entry.canRemove ? (
-                    <button
-                      type="button"
-                      disabled={props.busy.has(key)}
-                      onClick={() => handlers.remove(entry)}
-                      className={quiet}
-                    >
-                      remove {entry.level}
-                    </button>
-                  ) : null}
-                </>,
-              )}
-              {worktreeId === null ||
-              (entry.worktreeId !== null && entry.worktreeId !== worktreeId) ? null : (
-                <ChoiceLine
-                  entry={entry}
-                  worktreeName={props.worktreeName ?? "this worktree"}
-                  busy={props.busy.has(key)}
-                  onChoose={(mode) => handlers.choose(entry, worktreeId, mode)}
-                />
-              )}
-              {entry.spec.preset === "postgres" && props.projectId !== undefined ? (
-                <ResourceLoadForm
-                  projectId={props.projectId}
-                  name={entry.spec.name}
-                  worktreeId={worktreeId}
-                  mayLoadOwn={entry.canLoadOwn}
-                  worktreeResource={false}
-                />
-              ) : null}
+        {resourceListEntries(page).map((resource) => (
+          <div key={resource.name} data-resource={resource.name}>
+            {resource.definition === null ? (
+              <p className="px-4 pt-3 font-mono text-[12px] text-foreground">
+                {resource.statusLine}
+              </p>
+            ) : (
+              item(
+                { ...resource.definition, statusLine: resource.statusLine },
+                `f:${resource.name}`,
+              )
+            )}
+            <div className="ml-4">
+              {resource.instances.map((entry) => {
+                const key = `s:${entry.id}:${entry.worktreeId ?? "project"}`;
+                return (
+                  <div key={key}>
+                    {item(
+                      entry,
+                      key,
+                      <>
+                        {resourceControls(entry.instance).stop ? (
+                          <button
+                            type="button"
+                            disabled={props.busy.has(key)}
+                            onClick={() => handlers.control(entry, worktreeId, "stop", entry.level)}
+                            className={quiet}
+                          >
+                            stop
+                          </button>
+                        ) : null}
+                        {entry.canRemove ? (
+                          <button
+                            type="button"
+                            disabled={props.busy.has(key)}
+                            onClick={() => handlers.remove(entry)}
+                            className={quiet}
+                          >
+                            remove {entry.level}
+                          </button>
+                        ) : null}
+                      </>,
+                      resource.definition === null,
+                    )}
+                    {worktreeId === null ||
+                    (entry.worktreeId !== null && entry.worktreeId !== worktreeId) ? null : (
+                      <ChoiceLine
+                        entry={entry}
+                        worktreeName={props.worktreeName ?? "this worktree"}
+                        busy={props.busy.has(key)}
+                        onChoose={(mode) => handlers.choose(entry, worktreeId, mode)}
+                      />
+                    )}
+                    {entry.spec.preset === "postgres" && props.projectId !== undefined ? (
+                      <ResourceLoadForm
+                        projectId={props.projectId}
+                        name={entry.spec.name}
+                        worktreeId={worktreeId}
+                        mayLoadOwn={entry.canLoadOwn}
+                        worktreeResource={false}
+                      />
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
       {page.file.kind === "read" ? (
         <div>
           <p className="ev-eyebrow">Default branch · {page.file.observed}</p>
-          {page.file.tables.map((table) => item(table, `f:${table.spec.name}`))}
           {resourceTableNotices(page.file).map((notice) => (
             <p key={notice} className="text-xs text-ink-2">
               {notice}

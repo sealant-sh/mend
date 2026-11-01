@@ -26,6 +26,7 @@ import {
   resourceSpecDigest,
   resourceStatusLine,
   resourceTableNotices,
+  resourceListEntries,
   shellExports,
   type Viewer,
   type WorktreeChoice,
@@ -200,9 +201,12 @@ const decide = (project: ResourceProject, viewer: Viewer, act: ResourceAct) => {
   return refusal === null ? Effect.void : Effect.fail(refused(refusal));
 };
 const pageLines = (page: ResourcesPage): ReadonlyArray<string> => [
-  ...page.settings.map((entry) => entry.statusLine),
+  ...resourceListEntries(page).flatMap((entry) => [
+    entry.statusLine,
+    ...entry.instances.map((instance) => `  ${instance.statusLine}`),
+  ]),
   ...(page.file.kind === "read"
-    ? [...page.file.tables.map((entry) => entry.statusLine), ...resourceTableNotices(page.file)]
+    ? resourceTableNotices(page.file)
     : page.file.kind === "unavailable" || page.file.kind === "unparsed"
       ? [page.file.message]
       : []),
