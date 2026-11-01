@@ -295,6 +295,32 @@ export type PreviewGatewayResolution =
     }
   | { readonly _tag: "Refused"; readonly reason: PreviewGatewayRefusal };
 
+/**
+ * Open may wake a recipe or an idle-stopped run (ADR 0017, delivery step 12). An explicit run
+ * stopped outside the idle lifecycle may have used temporary files that no longer exist.
+ */
+export const previewOffersOpen = (
+  resolution: PreviewGatewayResolution | null,
+  source: Pick<Service, "declarationSource"> | null,
+  idleStopped: boolean,
+  preparing = false,
+): boolean => {
+  if (preparing && resolution?._tag !== "Stopped") return true;
+  switch (resolution?._tag) {
+    case "Bound":
+    case "Starting":
+      return true;
+    case "Dormant":
+      return (
+        idleStopped ||
+        source?.declarationSource === "recipe-file" ||
+        source?.declarationSource === "recipe-project"
+      );
+    default:
+      return false;
+  }
+};
+
 export interface PreviewStartRequest {
   readonly previewId: PreviewId;
   readonly revision: number;

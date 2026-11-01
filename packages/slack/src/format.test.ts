@@ -43,6 +43,7 @@ import {
   projectPicker,
   projectPickerBlockId,
   questionMessage,
+  replyWithPreviews,
   reactionFor,
   requestKeyOfPicker,
   reviewMessage,
@@ -1051,6 +1052,14 @@ describe("a worktree's previews in a message (docs/adr/0017-live-preview.md)", (
     ]);
     expect(styleOf(unreachable)).toBeUndefined();
     expect(styleOf(notice("web", []))).toBeUndefined();
+  });
+
+  it("offers no button or bare preview line for a stopped explicit run in status and landing replies", () => {
+    const previews = shown(notice("before", [], false));
+    const message = statusMessage({ ...completed, previews });
+    expect(JSON.stringify(message)).not.toContain("Open preview");
+    expect(message.text).not.toContain("preview · before");
+    expect(JSON.stringify(replyWithPreviews(message, previews))).not.toContain("Open preview");
   });
 
   it("offers no Open preview after a person's Stop, and keeps the line saying who", () => {
