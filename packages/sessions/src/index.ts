@@ -31,6 +31,7 @@ export * from "./secret-files.ts";
 export * from "./forward.ts";
 export * from "./screen/screen-host.ts";
 export * from "./screen/screens.ts";
+export * from "./screen/recorder.ts";
 export {
   VIEWER_UNSENT_CEILING,
   type ViewerBytes,

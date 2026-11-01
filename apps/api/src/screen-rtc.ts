@@ -8,31 +8,17 @@ import {
 } from "@mend/api-contracts";
 import { ScreensRepo } from "@mend/db";
 import { type SessionId, ViewerConnectionId } from "@mend/domain";
-import type { Screen } from "@mend/domain/workbench";
 import { NetworkConfig } from "@mend/network";
-import { asSealantUser, ForwardSessionOwner } from "@mend/sealant";
-import { ForwardAdapter, ScreenHost, Screens } from "@mend/sessions";
-import {
-  Cause,
-  Config,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  Layer,
-  Option,
-  Queue,
-  Schema,
-  type Scope,
-} from "effect";
+import { Screens } from "@mend/sessions";
+import { Config, Deferred, Effect, Exit, Layer, Option, Queue, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
-import { MediaStreamTrack, RTCPeerConnection, RTCRtpCodecParameters } from "werift";
+import { H264Packetizer, MediaStreamTrack, RTCPeerConnection, RTCRtpCodecParameters } from "werift";
 
 import type { AccessSubject } from "./access-recheck.ts";
 import { Budgets } from "./budgets.ts";
 import { ConnectionRegistry, reserveSocket } from "./connections.ts";
 import { ScreenRtcUdp } from "./screen-rtc-udp.ts";
-import { streamScreenVideo } from "./screen-video.ts";
+import { ScreenVideoSource } from "./screen-video-source.ts";
 import { ScreenWatch } from "./screen-watch.ts";
 
 type RtcError = NotFound | BudgetExceeded | ScreenRtcUnavailable;
@@ -61,18 +47,6 @@ const InputMessage = Schema.Union([
 ]);
 const parseInput = Schema.decodeUnknownOption(Schema.fromJsonString(InputMessage));
 type InputMessage = typeof InputMessage.Type;
-interface Subscriber {
-  readonly track: MediaStreamTrack;
-  readonly connected: () => boolean;
-  readonly stop: () => void;
-  waiting: boolean;
-}
-interface Upstream {
-  readonly subscribers: Set<Subscriber>;
-  readonly ready: Deferred.Deferred<void, ScreenRtcUnavailable>;
-  readonly fiber: Fiber.Fiber<void>;
-}
-
 /** An explicit port and IPv4 hostname, set by the operator or the packaged edge. */
 export interface ScreenRtcOptions {
   readonly port: number;
@@ -80,14 +54,13 @@ export interface ScreenRtcOptions {
 }
 type Dependencies =
   | ScreensRepo
-  | ScreenHost
-  | ForwardAdapter
+  | ScreenVideoSource
   | Screens
   | ScreenWatch
   | Budgets
   | ConnectionRegistry;
 
-/** One encoder forward per live screen, one public UDP socket for all peers. */
+/** RTP subscribers share ScreenVideoSource; one public UDP socket serves every peer. */
 export const makeScreenRtcLayer = (
   options: ScreenRtcOptions,
 ): Layer.Layer<ScreenRtc, never, Dependencies> => Layer.effect(ScreenRtc, make(options));
@@ -97,8 +70,7 @@ const make = (
 ): Effect.Effect<ScreenRtc["Service"], never, Dependencies | Scope.Scope> =>
   Effect.gen(function* () {
     const repo = yield* ScreensRepo;
-    const host = yield* ScreenHost;
-    const forward = yield* ForwardAdapter;
+    const video = yield* ScreenVideoSource;
     const screens = yield* Screens;
     const watch = yield* ScreenWatch;
     const budgets = yield* Budgets;
@@ -106,86 +78,6 @@ const make = (
     const scope = yield* Effect.scope;
     const udp = new ScreenRtcUdp(options.port, options.host);
     yield* Effect.addFinalizer(() => Effect.sync(() => udp.close()));
-    const upstreams = new Map<string, Upstream>();
-
-    const join = (screen: Screen, subscriber: Subscriber) =>
-      Effect.gen(function* () {
-        const key = `${screen.id}:${screen.processId}`;
-        let upstream = upstreams.get(key);
-        if (upstream === undefined) {
-          const ready = yield* Deferred.make<void, ScreenRtcUnavailable>();
-          const subscribers = new Set<Subscriber>([subscriber]);
-          const pump = Effect.scoped(
-            Effect.gen(function* () {
-              const pty = screen.processId === null ? null : yield* host.ptyOf(screen.processId);
-              if (pty === null) return yield* new ScreenRtcUnavailable();
-              const owner = yield* host.ownerOf(screen.sessionId);
-              yield* streamScreenVideo({
-                pointer: repo
-                  .ofSession(screen.sessionId)
-                  .pipe(Effect.map((now) => now?.input._tag !== "Person")),
-                open: (pointer) =>
-                  forward
-                    .open(
-                      {
-                        workspaceId: screen.workspaceId,
-                        port: (pointer ? 7900 : 8100) + screen.display,
-                        binding: { kind: "session", session: ForwardSessionOwner.make(pty) },
-                      },
-                      { purpose: "screen", timeoutMs: 3000 },
-                    )
-                    .pipe(
-                      asSealantUser(owner),
-                      Effect.map(({ bytes }) => bytes),
-                      Effect.mapError(() => new ScreenRtcUnavailable()),
-                    ),
-                emit: (frame) => {
-                  Deferred.doneUnsafe(ready, Exit.void);
-                  for (const viewer of subscribers) {
-                    if (!viewer.connected() || (viewer.waiting && !frame.idr)) continue;
-                    viewer.waiting = false;
-                    for (const packet of frame.packets) viewer.track.writeRtp(packet.clone());
-                  }
-                },
-              });
-            }),
-          ).pipe(
-            Effect.catchCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.void
-                : Effect.logWarning("screen RTC: encoder stream ended").pipe(
-                    Effect.andThen(Deferred.fail(ready, new ScreenRtcUnavailable())),
-                    Effect.asVoid,
-                  ),
-            ),
-            Effect.ensuring(
-              Effect.sync(() => {
-                upstreams.delete(key);
-                for (const viewer of subscribers) viewer.stop();
-              }),
-            ),
-          );
-          const fiber = yield* Effect.forkIn(pump, scope);
-          upstream = { subscribers, ready, fiber };
-          upstreams.set(key, upstream);
-        } else upstream.subscribers.add(subscriber);
-        const held = upstream;
-        yield* Effect.addFinalizer(() =>
-          Effect.suspend(() => {
-            held.subscribers.delete(subscriber);
-            if (held.subscribers.size > 0) return Effect.void;
-            upstreams.delete(key);
-            return Fiber.interrupt(held.fiber).pipe(Effect.asVoid);
-          }),
-        );
-        yield* Deferred.await(held.ready).pipe(
-          Effect.timeoutOrElse({
-            duration: "4 seconds",
-            orElse: () => Effect.fail(new ScreenRtcUnavailable()),
-          }),
-        );
-      });
-
     return ScreenRtc.of({
       connect: Effect.fn("ScreenRtc.connect")(function* (subject, sessionId, offer) {
         // Visibility precedes the budget and any workspace dial.
@@ -312,11 +204,22 @@ const make = (
                   try: () => peer.setRemoteDescription({ type: "offer", sdp: offer }),
                   catch: () => new ScreenRtcUnavailable(),
                 });
-                yield* join(screen, {
-                  track,
-                  connected: () => peer.connectionState === "connected",
-                  stop,
-                  waiting: true,
+                const packetizer = new H264Packetizer({
+                  inputFormat: "annexb",
+                  maxPayloadSize: 1180,
+                });
+                let waiting = true;
+                let timestamp = 0;
+                yield* video.subscribe(screen, {
+                  frame: (frame) => {
+                    if (peer.connectionState !== "connected" || (waiting && !frame.keyframe))
+                      return;
+                    waiting = false;
+                    for (const packet of packetizer.packetize(Buffer.from(frame.data), timestamp))
+                      track.writeRtp(packet);
+                    timestamp = (timestamp + 3000) >>> 0;
+                  },
+                  ended: stop,
                 });
                 const local = yield* Effect.tryPromise({
                   try: async () => {

@@ -31,6 +31,7 @@
     "@mend/t3-contracts": "workspace:*",
     "@mend/ui": "workspace:*",
     "effect": "catalog:",
+    "mediabunny": "catalog:",
     "werift": "^0.25.2"
   },
   "devDependencies": {

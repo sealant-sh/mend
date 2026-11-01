@@ -1,25 +1,27 @@
 import { ScreenRtcUnavailable } from "@mend/api-contracts";
 import type { ForwardBytes } from "@mend/sealant";
-import { Cause, Deferred, Effect, Fiber, type Scope } from "effect";
+import { Cause, Clock, Deferred, Effect, Fiber, type Scope } from "effect";
 
 import { ScreenH264 } from "./screen-h264.ts";
 
-type Frame = NonNullable<ReturnType<ScreenH264["push"]>>[number];
+/** Arrival time is sampled once when a complete access unit is observed. */
+export interface ScreenVideoFrame {
+  readonly data: Uint8Array;
+  readonly keyframe: boolean;
+  readonly receivedAt: number;
+}
 
-/** Two encoder listeners feed one continuous RTP timeline, switching only at a complete IDR. */
+/** Two encoder listeners feed one access-unit stream, switching only at a complete IDR. */
 export const streamScreenVideo = (options: {
-  readonly pointer: Effect.Effect<boolean>;
+  readonly pointer: Effect.Effect<boolean, ScreenRtcUnavailable>;
   readonly open: (
     pointer: boolean,
   ) => Effect.Effect<Pick<ForwardBytes, "read">, ScreenRtcUnavailable, Scope.Scope>;
-  readonly emit: (frame: Frame) => void;
+  readonly emit: (frame: ScreenVideoFrame) => void;
 }): Effect.Effect<void, ScreenRtcUnavailable> =>
   Effect.scoped(
     Effect.gen(function* () {
       const ended = yield* Deferred.make<never, ScreenRtcUnavailable>();
-      let sequence = 0;
-      let timestamp = 0;
-      let ssrc: number | undefined;
 
       const start = (pointer: boolean) =>
         Effect.gen(function* () {
@@ -42,23 +44,13 @@ export const streamScreenVideo = (options: {
                   if (frames === null) return yield* new ScreenRtcUnavailable();
                   for (const frame of frames) {
                     if (waiting) {
-                      if (!frame.idr) continue;
+                      if (!frame.keyframe) continue;
                       yield* Deferred.succeed(ready, undefined);
                       yield* Deferred.await(activate);
                       waiting = false;
                     }
                     if (!source.active) continue;
-                    // Each parser starts its own RTP counters. Only selected frames spend
-                    // the shared counters, so discarded candidate frames leave no gaps.
-                    ssrc ??= frame.packets[0]?.header.ssrc;
-                    for (const packet of frame.packets) {
-                      packet.header.sequenceNumber = sequence;
-                      sequence = (sequence + 1) & 0xffff;
-                      packet.header.timestamp = timestamp;
-                      packet.header.ssrc = ssrc ?? 0;
-                    }
-                    timestamp = (timestamp + 3000) >>> 0;
-                    options.emit(frame);
+                    options.emit({ ...frame, receivedAt: yield* Clock.currentTimeMillis });
                   }
                 }
               }),
