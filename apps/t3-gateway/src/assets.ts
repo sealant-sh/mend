@@ -3,6 +3,7 @@ import { IncomingMessage } from "node:http";
 import { posix } from "node:path";
 
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
+import type { ProofArtifactId } from "@mend/domain";
 import { PAGE_FRAME_TTL_MS } from "@mend/domain/workbench";
 import type { AuthSessionId } from "@mend/t3-contracts";
 import {
@@ -25,6 +26,7 @@ import { gateDeviceCalls } from "./device-gate.ts";
 import { Projections } from "./hub.ts";
 import { MEND_IMAGE_MAX_BYTES } from "./images.ts";
 import { MendClient, type MendRawFile, type MendRawFileRequest } from "./mend-client.ts";
+import { parseProofMediaPath, PROOF_MEDIA_PATH_PREFIX } from "./proof-media.ts";
 import { type BearerSession, GatewayState } from "./state.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
@@ -41,7 +43,14 @@ export class AssetUnavailable extends Schema.TaggedError<AssetUnavailable>()(
   {},
 ) {}
 
+type ProofAsset = {
+  readonly kind: "proof";
+  readonly artifactId: ProofArtifactId;
+  readonly fileName: string;
+};
+
 export type AssetSubject =
+  | ProofAsset
   | { readonly kind: "page"; readonly pageId: string }
   | {
       readonly kind: "file";
@@ -231,6 +240,7 @@ const headersFor = (contentType: string, csp: string | null): Record<string, str
 });
 
 type Source =
+  | ProofAsset
   | { readonly kind: "page"; readonly pageId: string }
   | {
       readonly kind: "image";
@@ -275,6 +285,13 @@ interface Terms {
 
 const termsOf = (source: Source): Terms => {
   switch (source.kind) {
+    case "proof":
+      return {
+        suffix: source.fileName,
+        keyParts: ["proof", source.artifactId, source.fileName],
+        ttlMs: ASSET_URL_TTL_MS,
+        reuseMinLifeMs: null,
+      };
     case "page":
       return {
         suffix: PAGE_FILE_NAME,
@@ -439,6 +456,42 @@ export const AssetUrlsLive: Layer.Layer<
         };
       });
 
+    const openProof = (
+      session: BearerSession,
+      source: ProofAsset,
+      input: Pick<AssetRequest, "method" | "range" | "ifRange">,
+    ): Effect.Effect<OpenedAsset, AssetUnavailable, Scope.Scope> =>
+      Effect.gen(function* () {
+        if (!session.scopes.includes("orchestration:read")) return yield* new AssetUnavailable({});
+        const type = typeOf(source.fileName);
+        if (type === null || (type.family !== "image" && type.family !== "video"))
+          return yield* new AssetUnavailable({});
+        const ranges = ranged(type.family);
+        const media = yield* gated(session)
+          .openProofMedia(Redacted.make(session.deviceToken), source.artifactId, {
+            method: input.method,
+            range:
+              ranges && input.method === "GET" && input.ifRange === undefined
+                ? input.range
+                : undefined,
+          })
+          .pipe(Effect.mapError(() => new AssetUnavailable({})));
+        if (media.mimeType !== type.contentType || (!ranges && media.status !== 200))
+          return yield* new AssetUnavailable({});
+        const headers = headersFor(type.contentType, type.csp);
+        headers["content-length"] = String(media.length);
+        if (ranges) headers["accept-ranges"] = "bytes";
+        if (media.contentRange !== undefined) headers["content-range"] = media.contentRange;
+        return {
+          status: media.status,
+          headers,
+          body:
+            input.method === "HEAD" || media.status === 416
+              ? Stream.empty
+              : media.body.pipe(Stream.mapError(() => new AssetUnavailable({}))),
+        };
+      });
+
     return {
       issue: (sessionId, subject) =>
         Effect.scoped(
@@ -451,7 +504,17 @@ export const AssetUrlsLive: Layer.Layer<
             yield* auth.confirmDevice(bearer).pipe(Effect.mapError(() => new AssetUnavailable({})));
             let source: Source;
             let fileRevision: string | undefined;
-            if (subject.kind === "page") {
+            if (subject.kind === "proof") {
+              const parsed = parseProofMediaPath(`${PROOF_MEDIA_PATH_PREFIX}/${subject.fileName}`);
+              if (parsed.kind !== "proof" || parsed.artifactId !== subject.artifactId)
+                return yield* new AssetUnavailable({});
+              source = subject;
+              yield* openProof(session, source, {
+                method: "HEAD",
+                range: undefined,
+                ifRange: undefined,
+              });
+            } else if (subject.kind === "page") {
               if (!session.scopes.includes("orchestration:read"))
                 return yield* new AssetUnavailable({});
               source = subject;
@@ -597,6 +660,8 @@ export const AssetUrlsLive: Layer.Layer<
             return yield* new AssetUnavailable({});
           yield* auth.confirmDevice(bearer).pipe(Effect.mapError(() => new AssetUnavailable({})));
           switch (source.kind) {
+            case "proof":
+              return yield* openProof(session, source, input);
             case "page":
               return yield* openPage(session, source, input.method);
             case "image":

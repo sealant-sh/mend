@@ -8,6 +8,7 @@ import { ThreadCommandRefused, type PersonHub } from "../../src/hub.ts";
 import {
   MendUnavailable,
   MendRawFileUnavailable,
+  MendProofMediaUnavailable,
   MendPageUnavailable,
   type MendClient,
 } from "../../src/mend-client.ts";
@@ -58,6 +59,7 @@ export const unreachableMend: MendClient["Service"] = {
   worktreeCheckpoints: () => unavailable("GET /api/worktrees/:id"),
   worktreeDiff: () => unavailable("GET /api/worktrees/:id/diff"),
   openRawFile: () => Effect.fail(new MendRawFileUnavailable({ status: null })),
+  openProofMedia: () => Effect.fail(new MendProofMediaUnavailable({ status: null })),
   pageFrame: () => Effect.fail(new MendPageUnavailable({ status: null })),
   openPage: () => Effect.fail(new MendPageUnavailable({ status: null })),
   worktreeContents: () => unavailable("GET /api/worktrees/:id/contents"),

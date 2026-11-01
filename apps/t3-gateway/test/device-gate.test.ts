@@ -1,3 +1,4 @@
+import { ProofArtifactId } from "@mend/domain";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
@@ -48,6 +49,7 @@ const revokedMend: DeviceCalls = {
   worktreeDiff: () => refused("range"),
   worktreeContents: () => refused("contents"),
   openRawFile: () => refused("raw"),
+  openProofMedia: () => refused("proof media"),
   pageFrame: () => refused("page frame"),
   openPage: () => refused("page document"),
   createSession: () => refused("create"),
@@ -129,6 +131,11 @@ describe("the device gate", () => {
           gated.openRawFile(Redacted.make("t-openRawFile"), "w", {
             path: Redacted.make("a.png"),
             within: Redacted.make(""),
+            method: "HEAD",
+          }),
+        ),
+        openProofMedia: Effect.scoped(
+          gated.openProofMedia(Redacted.make("t-openProofMedia"), ProofArtifactId.make("proof"), {
             method: "HEAD",
           }),
         ),

@@ -1,5 +1,6 @@
+import type { ProofArtifactId } from "@mend/domain";
 import { isChosenDefault } from "@mend/domain/default-login";
-import { Person, RemovalBlocker } from "@mend/domain/workbench";
+import { Person, ProofMimeType, RemovalBlocker } from "@mend/domain/workbench";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -89,6 +90,20 @@ export interface MendRawFileRequest {
 
 export class MendRawFileUnavailable extends Schema.TaggedError<MendRawFileUnavailable>()(
   "MendRawFileUnavailable",
+  { status: Schema.NullOr(Schema.Number) },
+) {}
+
+/** A durable proof blob, checked against the caller's current change visibility by Mend. */
+export interface MendProofMedia {
+  readonly status: 200 | 206 | 416;
+  readonly mimeType: ProofMimeType;
+  readonly length: number;
+  readonly contentRange: string | undefined;
+  readonly body: Stream.Stream<Uint8Array, MendProofMediaUnavailable>;
+}
+
+export class MendProofMediaUnavailable extends Schema.TaggedError<MendProofMediaUnavailable>()(
+  "MendProofMediaUnavailable",
   { status: Schema.NullOr(Schema.Number) },
 ) {}
 
@@ -447,6 +462,12 @@ export class MendClient extends Context.Service<
       worktreeId: string,
       input: MendRawFileRequest,
     ) => Effect.Effect<MendRawFile, MendRawFileUnavailable | MendDeviceRefused, Scope.Scope>;
+    /** `GET|HEAD /api/proof-artifacts/:id/media`, with current change access checked on every read. */
+    readonly openProofMedia: (
+      deviceToken: Redacted.Redacted<string>,
+      artifactId: ProofArtifactId,
+      input: { readonly method: "GET" | "HEAD"; readonly range?: string | undefined },
+    ) => Effect.Effect<MendProofMedia, MendProofMediaUnavailable | MendDeviceRefused, Scope.Scope>;
     readonly pageFrame: (
       deviceToken: Redacted.Redacted<string>,
       pageId: string,
@@ -1193,6 +1214,59 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           };
         });
 
+      const openProofMedia: MendClient["Service"]["openProofMedia"] = (
+        deviceToken,
+        artifactId,
+        input,
+      ) =>
+        Effect.gen(function* () {
+          const request = HttpClientRequest.make(input.method)(
+            url(`/api/proof-artifacts/${encodeURIComponent(artifactId)}/media`),
+          ).pipe(
+            HttpClientRequest.bearerToken(deviceToken),
+            HttpClientRequest.setHeaders(input.range === undefined ? {} : { range: input.range }),
+          );
+          const response = yield* HttpClient.withScope(http)
+            .execute(request)
+            .pipe(
+              Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
+              Effect.mapError(() => new MendProofMediaUnavailable({ status: null })),
+              Effect.timeoutOrElse({
+                duration: RAW_HEADERS_DEADLINE,
+                orElse: () => Effect.fail(new MendProofMediaUnavailable({ status: null })),
+              }),
+            );
+          const status = response.status;
+          if (status === 401) return yield* new MendDeviceRefused({ operation: "proof media" });
+          if (status !== 200 && status !== 206 && status !== 416)
+            return yield* new MendProofMediaUnavailable({ status });
+          const mimeType = Schema.decodeUnknownOption(ProofMimeType)(
+            response.headers["content-type"],
+          );
+          const lengthText = response.headers["content-length"] ?? "";
+          const length = Number(lengthText);
+          const contentRange = response.headers["content-range"];
+          if (
+            Option.isNone(mimeType) ||
+            !/^\d+$/.test(lengthText) ||
+            !Number.isSafeInteger(length) ||
+            length < 0 ||
+            (input.method === "HEAD" && status !== 200) ||
+            (status === 206 && !/^bytes \d+-\d+\/\d+$/.test(contentRange ?? "")) ||
+            (status === 416 && (length !== 0 || !/^bytes \*\/\d+$/.test(contentRange ?? "")))
+          )
+            return yield* new MendProofMediaUnavailable({ status });
+          return {
+            status,
+            mimeType: mimeType.value,
+            length,
+            contentRange,
+            body: response.stream.pipe(
+              Stream.mapError(() => new MendProofMediaUnavailable({ status })),
+            ),
+          };
+        });
+
       const worktreeContents = (
         deviceToken: string,
         worktreeId: string,
@@ -1612,6 +1686,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         worktreeDiff,
         worktreeContents,
         openRawFile,
+        openProofMedia,
         pageFrame,
         openPage,
         projectFiles,
