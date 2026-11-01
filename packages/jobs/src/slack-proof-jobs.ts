@@ -5,7 +5,7 @@ import {
   SlackProofDeliveriesRepo,
   SlackThreadsRepo,
 } from "@mend/db";
-import { ProofArtifactId } from "@mend/domain";
+import { AgentTurnId, SessionId } from "@mend/domain";
 import type { ProofArtifact } from "@mend/domain/workbench";
 import { SlackApi, SlackApiError } from "@mend/slack/client";
 import { BlobStore, SecretCipher } from "@mend/store";
@@ -15,25 +15,25 @@ import { JobRunner, type JobSpec } from "./job-runner.ts";
 import { deliverProofToSlack } from "./slack-proof-delivery.ts";
 
 /** Durable payload; workers reload current disclosure and delivery progress on every attempt. */
-export const SlackDeliverProofJob = Schema.Struct({ artifactId: ProofArtifactId });
+export const SlackDeliverProofJob = Schema.Struct({ sessionId: SessionId, turnId: AgentTurnId });
 const JOB_NAME = "slack-deliver-proof";
 // Fast checks use pg-boss retries. Reconciliation continues slower visibility checks afterward.
 const RETRY_LIMIT = 6;
 
 /** Live-key exclusion covers capture retries and the worker's periodic recovery scan. */
-export const slackProofJob = (artifactId: ProofArtifactId): JobSpec => ({
+export const slackProofJob = (sessionId: SessionId, turnId: AgentTurnId): JobSpec => ({
   name: JOB_NAME,
-  payload: { artifactId },
-  idempotencyKey: `slack-proof:${artifactId}`,
+  payload: { sessionId, turnId },
+  idempotencyKey: `slack-proof:${sessionId}:${turnId}`,
   retryLimit: RETRY_LIMIT,
   retryDelaySeconds: 5,
 });
 
 const enqueue = Effect.fn("enqueueSlackProof")(function* (artifact: ProofArtifact) {
-  if (artifact.capture._tag === "Recording" || artifact.sessionId === null) return;
+  if (artifact.sessionId === null || artifact.turnId === null) return;
   const threads = yield* SlackThreadsRepo;
   if ((yield* threads.forSession(artifact.sessionId)) === null) return;
-  yield* (yield* JobRunner).enqueue(slackProofJob(artifact.id));
+  yield* (yield* JobRunner).enqueue(slackProofJob(artifact.sessionId, artifact.turnId));
 });
 
 /**
@@ -73,30 +73,59 @@ export const reconcileSlackProof = Effect.fn("reconcileSlackProof")(function* ()
   const deliveries = yield* SlackProofDeliveriesRepo;
   const jobs = yield* JobRunner;
   const now = yield* Clock.currentTimeMillis;
-  const pending = yield* deliveries.pendingSince(new Date(now - 24 * 60 * 60_000));
-  yield* Effect.forEach(pending, (artifactId) => jobs.enqueue(slackProofJob(artifactId)), {
-    discard: true,
-  });
+  const pending = yield* deliveries.pendingTurns(new Date(now - 24 * 60 * 60_000));
+  yield* Effect.forEach(
+    pending,
+    ({ sessionId, turnId }) => jobs.enqueue(slackProofJob(sessionId, turnId)),
+    {
+      discard: true,
+    },
+  );
 });
 
 /** Reload one artifact and its audience, then stream stored bytes into the resumable uploader. */
 export const runSlackProof = Effect.fn("runSlackProof")(function* (payload: unknown) {
-  const { artifactId } = yield* Schema.decodeUnknownEffect(SlackDeliverProofJob)(payload);
-  const artifact = yield* (yield* ProofArtifactsRepo).byId(artifactId);
-  if (artifact === null || artifact.sessionId === null || artifact.capture._tag === "Recording")
-    return;
-  const thread = yield* (yield* SlackThreadsRepo).forSession(artifact.sessionId);
+  const { sessionId, turnId } = yield* Schema.decodeUnknownEffect(SlackDeliverProofJob)(payload);
+  const context = yield* (yield* SlackProofDeliveriesRepo).withTurn(
+    { sessionId, turnId },
+    (store) => Effect.succeed(store.context),
+  );
+  if (context === null) return;
+  const artifactsRepo = yield* ProofArtifactsRepo;
+  const readArtifacts = () =>
+    context.changeId === null
+      ? Effect.succeed([])
+      : artifactsRepo
+          .listForChange(context.changeId)
+          .pipe(
+            Effect.map((artifacts) =>
+              artifacts.filter(
+                (artifact) => artifact.sessionId === sessionId && artifact.turnId === turnId,
+              ),
+            ),
+          );
+  let artifacts = yield* readArtifacts();
+  const deadline = (yield* Clock.currentTimeMillis) + 65_000;
+  while (
+    artifacts.some((artifact) => artifact.capture._tag === "Recording") &&
+    (yield* Clock.currentTimeMillis) < deadline
+  ) {
+    yield* Effect.sleep("1 second");
+    artifacts = yield* readArtifacts();
+  }
+  const thread = yield* (yield* SlackThreadsRepo).forSession(sessionId);
   if (thread === null) return;
   const install = yield* (yield* SlackInstallsRepo).byTeam(thread.teamId);
   if (install === null) return;
   const project = yield* (yield* ProjectsRepo)
-    .byId(artifact.projectId)
+    .byId(context.projectId)
     .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
   if (project === null || project.organizationId !== install.organizationId) return;
   const token = yield* (yield* SecretCipher).decrypt(install.sealedBotToken);
   const blobs = yield* BlobStore;
   yield* deliverProofToSlack({
-    artifact,
+    artifacts,
+    turnId,
     thread,
     install,
     project,

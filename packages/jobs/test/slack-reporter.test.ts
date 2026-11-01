@@ -14,10 +14,12 @@ import {
   SessionProcessesRepo,
   SessionsRepo,
   SlackInstallsRepo,
+  SlackProofDeliveriesRepo,
   SlackThreadsRepo,
   WorktreeChangesRepo,
   WorktreeNotFoundError,
   type SealedSlackInstall,
+  type SlackProofTurnContext,
   type SlackThreadSession,
 } from "@mend/db";
 import {
@@ -81,7 +83,6 @@ import {
   closingOf,
   makeSlackReporter,
   openingOf,
-  REQUEST_RETRY_MS,
   reviewMoment,
   SlackReports,
   SlackReportsLive,
@@ -463,6 +464,8 @@ const world = (options: WorldOptions = {}) => {
       appToken: "xapp-acme",
     },
   ]);
+  const released = new Map<string, SlackProofTurnContext>();
+  const releaseOrder: Array<string> = [];
   const state = {
     thread: {
       sessionId: SESSION,
@@ -530,6 +533,17 @@ const world = (options: WorldOptions = {}) => {
 
   const layer = Layer.mergeAll(
     ResourceStatusReadsNone,
+    Layer.mock(SlackProofDeliveriesRepo, {
+      readyTurn: (_session, turnId, context) =>
+        Effect.sync(() => {
+          releaseOrder.push(
+            ...writes()
+              .filter((call) => call.kind === "postMessage")
+              .map((call) => call.input.text),
+          );
+          released.set(turnId, context);
+        }),
+    }),
     Layer.succeedContext(clock),
     Layer.succeed(SlackApi, {
       ...slack.service,
@@ -676,6 +690,8 @@ const world = (options: WorldOptions = {}) => {
 
   return {
     state,
+    released,
+    releaseOrder,
     slack,
     worker,
     observe,
@@ -1524,41 +1540,16 @@ describe("the Slack thread reporter", () => {
     expect(w.updates()).toEqual([statusWith("running"), statusWith("completed · observed")]);
   });
 
-  it("lets no held-back preview edit land after a project turned private hid it", async () => {
+  it("hides a private project without scheduling preview edits", async () => {
     const w = world();
     const reporter = w.worker();
-    const app = PublicOrigin.make("https://app.mend.test");
-    const preview = (phase: "setup" | "depends"): WorktreePreviews => ({
-      _tag: "Shown",
-      appUrl: app,
-      previews: [
-        {
-          id: PreviewId.make("pv-web"),
-          service: "web",
-          facts: [{ _tag: "Starting", service: "web", phase }],
-          openable: false,
-        },
-      ],
-      unprepared: null,
-    });
     w.state.turns = [turn(1, "completed", NOW)];
-    w.state.session = sessionWith("completed");
-    w.state.previews = preview("setup");
     await w.observe(reporter);
-    w.state.previews = preview("depends");
-    await w.observe(reporter);
-    expect(w.updates()).toHaveLength(1);
-    w.state.now += STATUS_PREVIEW_EVERY_MS;
-    const release = w.hold();
-    const previewed = w.observe(reporter);
-    await vi.waitFor(() => expect(w.state.updateGate).toBeNull());
     w.state.project = new Project({ ...project, visibility: "private" });
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    release();
-    await previewed;
-    await vi.waitFor(() => expect(w.updates().at(-1)).toBe(PRIVATE_PROJECT_STATUS));
     await w.observe(reporter);
+    await w.advance(STATUS_PREVIEW_EVERY_MS);
     expect(w.updates().at(-1)).toBe(PRIVATE_PROJECT_STATUS);
+    expect(w.released.size).toBe(0);
   });
 
   it("leaves the request's reaction to the session a switch started from it", async () => {
@@ -1661,125 +1652,68 @@ describe("landing in the thread (docs/adr/0007-landing.md)", () => {
     ];
     await w.observe(w.worker());
     expect(w.updates().at(-1)).toBe(
-      `${COMPLETED}\npushed · mend/flaky-login-test · pull request step failed · gh: no GitHub account is connected\nintent not read`,
+      `${COMPLETED}\npushed · mend/flaky-login-test · pull request step failed · gh: no GitHub account is connected`,
     );
   });
 
-  it("offers Push and open pull request once when a turn's change did not land, and a landing answers it", async () => {
+  it("releases controls after the unchanged agent reply without an old landing reply", async () => {
     const w = world({ threadCreatedAt: NOW });
-    const reporter = w.worker();
     w.state.change = change;
     w.state.turns = [decidedTurn(1, "question")];
-    await w.observe(reporter);
+    w.state.items = [item("reply", 1, "assistant-message", "The agent's original reply.")];
+    const reporter = w.worker();
     await w.observe(reporter);
     await w.observe(w.worker());
-
-    expect(w.updates().at(-1)).toBe(
-      `${COMPLETED}\nchanges not landed · the request read as a question`,
-    );
-    expect(w.posts()).toHaveLength(1);
-    const [offer] = w.posts();
-    expect(offer?.threadTs).toBe(THREAD);
-    expect(offer?.text).toBe("changes not landed · the request read as a question");
-    expect(offer?.blocks).toEqual([
-      {
-        type: "section",
-        text: { type: "mrkdwn", text: "changes not landed · the request read as a question" },
-      },
-      {
-        type: "actions",
-        elements: [
-          {
-            type: "button",
-            action_id: SLACK_ACTIONS.landChange,
-            text: { type: "plain_text", text: "Push and open pull request", emoji: true },
-            value: SESSION,
-            style: "primary",
-          },
-        ],
-      },
-      {
-        type: "context",
-        elements: [
-          {
-            type: "mrkdwn",
-            text: "lands as the change's owner, <@U-alice> · only they can use it",
-          },
-        ],
-      },
-    ]);
-
-    // The owner pressed it: the landing answers the turn, and the line says what it did.
+    expect(w.posts().map((post) => post.text)).toEqual(["The agent's original reply."]);
+    expect(w.releaseOrder[0]).toBe("The agent's original reply.");
+    expect(w.released.get("turn-1")?.push).toEqual({ sessionId: SESSION, updates: false });
+    expect(w.updates().at(-1)).toBe(COMPLETED);
+    expect(JSON.stringify(w.writes())).not.toMatch(/changes not landed|autopr|only they can use/u);
     w.state.landings = [landingOf("l1", "pull-request", { pullRequest: 412 })];
     await w.observe(reporter);
     expect(w.updates().at(-1)).toBe(
       `${COMPLETED}\npushed · mend/flaky-login-test · pull request #412 · opened`,
     );
-    expect(w.posts()).toHaveLength(1);
+    expect(w.released.get("turn-1")?.push).toBeNull();
   });
 
-  it("offers it for automatic landing off and for someone else's follow-up, and not for an old turn", async () => {
-    for (const [landing, line] of [
-      ["off", "changes not landed · automatic landing is off"],
-      ["not-owner", "changes not landed · the turn was not sent by the owner"],
-      ["option", "changes not landed · the request said autopr=false"],
-      ["not-captured", "not landed · the change was not captured"],
-    ] as const) {
+  it("offers Push for unlanded turns and omits it for empty, already pushed and old turns", async () => {
+    for (const landing of ["off", "not-owner", "option", "not-captured"] as const) {
       const w = world({ threadCreatedAt: NOW });
       w.state.change = change;
       w.state.turns = [decidedTurn(1, landing)];
       await w.observe(w.worker());
-      expect(w.posts().map((post) => post.text)).toEqual([line]);
-    }
-
-    for (const landing of ["attempted", "skipped"] as const) {
-      const w = world({ threadCreatedAt: NOW });
-      w.state.change = change;
-      w.state.turns = [decidedTurn(1, landing)];
-      await w.observe(w.worker());
+      expect(w.released.get("turn-1")?.push?.sessionId).toBe(SESSION);
       expect(w.posts()).toEqual([]);
     }
-
-    // Nothing to push: no button, and the status line says why.
-    for (const [landing, line] of [
-      ["no-change", "not landed · the change is empty"],
-      ["nothing-new", "not landed · nothing new since the last landing"],
-    ] as const) {
+    for (const landing of ["attempted", "skipped", "no-change", "nothing-new"] as const) {
       const w = world({ threadCreatedAt: NOW });
       w.state.change = change;
       w.state.turns = [decidedTurn(1, landing)];
       await w.observe(w.worker());
+      expect(w.released.get("turn-1")?.push).toBeNull();
       expect(w.posts()).toEqual([]);
-      expect(w.updates().at(-1)).toContain(line);
+      expect(w.updates().at(-1)).toBe(COMPLETED);
     }
-
-    // Ten minutes after the turn ended the offer is history; the status line still says it.
     const late = world({ threadCreatedAt: NOW });
     late.state.change = change;
     late.state.turns = [decidedTurn(1, "question", minutesAgo(10))];
     await late.observe(late.worker());
-    expect(late.posts()).toEqual([]);
-    expect(late.updates().at(-1)).toContain("changes not landed · the request read as a question");
+    expect(late.released.size).toBe(0);
   });
 
-  it("puts the offer on the end-of-session reply when both are due in the same look", async () => {
+  it("keeps an explicit review-pass reply separate from the turn controls", async () => {
     const w = world({ threadCreatedAt: NOW });
-    w.state.session = sessionWith("completed");
     w.state.change = change;
     w.state.turns = [decidedTurn(1, "question")];
     w.state.passes = [passOf("tour", "completed")];
     w.state.tour = tourOf();
     await w.observe(w.worker());
     await w.observe(w.worker());
-
     expect(w.posts()).toHaveLength(1);
-    const [reply] = w.posts();
-    expect(reply?.text).toBe("Mend read the change");
-    const text = blockText(reply ?? {});
-    expect(text).toContain("**Summary**");
-    expect(text).toContain(SLACK_ACTIONS.reviewChange);
-    expect(text).toContain(SLACK_ACTIONS.landChange);
-    expect(text).toContain("changes not landed · the request read as a question");
+    expect(blockText(w.posts()[0] ?? {})).toContain(SLACK_ACTIONS.reviewChange);
+    expect(blockText(w.posts()[0] ?? {})).not.toContain(SLACK_ACTIONS.landChange);
+    expect(w.released.get("turn-1")?.push?.sessionId).toBe(SESSION);
   });
 
   it("names nothing about landing once a channel's project is private", async () => {
@@ -1855,501 +1789,143 @@ const answered = (at: Date): PreviewStatus => ({
   httpStatus: 200,
   observedAt: at,
 });
-/** The status message's last edit, whole. */
-const lastEdit = (w: ReturnType<typeof world>) =>
-  w.writes().findLast((call) => call.kind === "update");
-
-describe("a worktree's previews in the thread (docs/adr/0017-live-preview.md)", () => {
+describe("quiet preview controls", () => {
   const APP_URL = PublicOrigin.make("https://app.mend.test");
-  const PREVIEW = PreviewId.make("pv-web");
   const OPEN = "https://app.mend.test/preview-auth?preview=pv-web&path=%2F";
-  const COMPLETED = statusWith("completed · observed");
   const web = (facts: ReadonlyArray<PreviewStatus>, openable = true): WorktreePreviews => ({
     _tag: "Shown",
     appUrl: APP_URL,
-    previews: [{ id: PREVIEW, service: "web", facts, openable }],
+    previews: [{ id: PreviewId.make("pv-web"), service: "web", facts, openable }],
     unprepared: null,
   });
-  const opensOf = (w: ReturnType<typeof world>) => {
-    const edit = lastEdit(w);
-    return edit?.kind === "update"
-      ? [...JSON.stringify(edit.input.blocks).matchAll(/"url":"([^"]+preview-auth[^"]+)"/gu)].map(
-          ([, url]) => url,
-        )
-      : [];
-  };
-  const completedWith = () => {
-    const w = world();
-    w.state.turns = [turn(1, "completed", NOW)];
-    w.state.session = sessionWith("completed");
+  const completed = () => {
+    const w = world({ threadCreatedAt: NOW });
+    w.state.turns = [decidedTurn(1, "off")];
+    w.state.change = change;
     return w;
   };
-
-  const replyEdits = (w: ReturnType<typeof world>) =>
-    w
-      .writes()
-      .flatMap((call) => (call.kind === "update" && call.input.ts !== STATUS ? [call.input] : []));
-  const offeredReply = async () => {
-    const w = world({ threadCreatedAt: NOW });
-    w.state.change = change;
-    w.state.turns = [decidedTurn(1, "question")];
+  it("offers only a running preview in the controls, and keeps facts out of the status", async () => {
+    const w = completed();
     const reporter = w.worker();
-    await w.observe(reporter);
-    return { w, reporter };
-  };
-
-  it("edits the latest turn's landing reply once when its preview answers, including follow-ups and a worker restart", async () => {
-    const { w, reporter } = await offeredReply();
-    expect(JSON.stringify(w.posts())).not.toContain("Open preview");
     w.state.previews = web([answered(NOW)]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
     await w.observe(reporter);
-    expect(replyEdits(w)).toHaveLength(1);
-    const edit = replyEdits(w)[0];
-    expect(JSON.stringify(edit?.blocks)).toContain(OPEN);
-    const button = edit?.blocks?.flatMap((block) =>
-      block.type === "section" && block.accessory?.url === OPEN ? [block.accessory] : [],
-    )[0];
-    expect(button?.style).toBe("primary");
-    expect(JSON.stringify(edit?.blocks)).toContain("Push and open pull request");
-    expect(w.posts()).toHaveLength(1);
-    await w.observe(w.worker());
-    expect(replyEdits(w)).toHaveLength(1);
-    w.state.turns = [
-      decidedTurn(1, "question"),
-      decidedTurn(2, "off", new Date(NOW.getTime() + 30_000)),
-    ];
-    w.state.previews = NO_PREVIEWS;
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(reporter);
-    expect(w.posts()).toHaveLength(2);
-    w.state.previews = web([answered(NOW)]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(reporter);
-    expect(replyEdits(w).at(-1)?.ts).not.toBe(edit?.ts);
-    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).toContain(OPEN);
-  });
-
-  it("edits a combined review and landing reply without losing its summary or review link", async () => {
-    const w = world({ threadCreatedAt: NOW });
-    w.state.change = change;
-    w.state.turns = [decidedTurn(1, "question")];
-    w.state.passes = [passOf("tour", "completed")];
-    w.state.tour = tourOf();
-    const reporter = w.worker();
-    await w.observe(reporter);
-    w.state.previews = web([answered(NOW)]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(w.worker());
-    expect(w.posts()).toHaveLength(1);
-    expect(replyEdits(w)).toHaveLength(1);
-    const blocks = JSON.stringify(replyEdits(w)[0]?.blocks);
-    expect(blocks).toContain("**Summary**");
-    expect(blocks).toContain(SLACK_ACTIONS.reviewChange);
-    expect(blocks).toContain(SLACK_ACTIONS.landChange);
-    expect(blocks).toContain(OPEN);
-  });
-
-  it("retries a refused reply edit after Retry-After, across workers", async () => {
-    const { w, reporter } = await offeredReply();
-    w.state.previews = web([answered(NOW)]);
-    w.slack.refuseUpdates(
-      ...[1, 2].map(
-        () =>
-          new SlackApiError({
-            method: "chat.update",
-            code: "ratelimited",
-            message: "rate limited",
-            retryAfterSeconds: 3,
-          }),
-      ),
-    );
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(reporter);
-    expect(replyEdits(w)).toHaveLength(0);
-    expect(w.slack.refused).toHaveLength(2);
-    await w.observe(w.worker());
-    expect(w.slack.refused).toHaveLength(2);
-    await w.advance(3_000);
-    await w.observe(reporter);
-    expect(replyEdits(w)).toHaveLength(1);
-    await w.observe(reporter);
-    expect(replyEdits(w)).toHaveLength(1);
-  });
-
-  it("sends no reply edit or button after a person's Stop", async () => {
-    const { w, reporter } = await offeredReply();
-    w.state.previews = web([
-      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
-    ]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(reporter);
-    await w.observe(reporter);
-    expect(replyEdits(w)).toEqual([]);
-    expect(JSON.stringify(w.posts())).not.toContain("Open preview");
-  });
-
-  it("removes a stopped explicit run's Open from both the status and the retained landing reply", async () => {
-    const { w, reporter } = await offeredReply();
-    w.state.previews = web([answered(NOW)]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(reporter);
-    expect(opensOf(w)).toContain(OPEN);
-    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).toContain(OPEN);
+    expect(w.released.get("turn-1")?.previewUrl).toBe(OPEN);
+    expect(w.posts()).toEqual([]);
+    expect(JSON.stringify(w.writes())).not.toContain("preview ·");
     w.state.previews = web([], false);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
     await w.observe(reporter);
-    expect(opensOf(w)).toEqual([]);
-    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).not.toContain(OPEN);
-  });
-
-  it("keeps the reply's preview button after an idle stop and removes it after a person's Stop", async () => {
-    const { w, reporter } = await offeredReply();
-    w.state.previews = web([answered(NOW)]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(reporter);
-    w.state.previews = web([
-      { _tag: "Stopped", service: "web", by: { _tag: "Idle", minutes: 30 } },
-    ]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(reporter);
-    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).toContain(OPEN);
-    w.state.previews = web([
-      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
-    ]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(reporter);
-    expect(JSON.stringify(replyEdits(w).at(-1)?.blocks)).not.toContain(OPEN);
-  });
-
-  it("does not change the status rendering when retaining a landing reply", async () => {
-    const offered = await offeredReply();
-    const ordinary = completedWith();
-    ordinary.state.change = change;
-    ordinary.state.turns = [decidedTurn(1, "question")];
-    const reporter = ordinary.worker();
-    for (const previews of [NO_PREVIEWS, web([answered(NOW)])]) {
-      offered.w.state.previews = previews;
-      ordinary.state.previews = previews;
-      await offered.w.advance(STATUS_PREVIEW_EVERY_MS);
-      await ordinary.advance(STATUS_PREVIEW_EVERY_MS);
-      await offered.w.observe(offered.reporter);
-      await ordinary.observe(reporter);
-      const status = (w: ReturnType<typeof world>) =>
-        w
-          .writes()
-          .flatMap((call) =>
-            call.kind === "update" && call.input.ts === STATUS ? [call.input] : [],
-          )
-          .at(-1);
-      expect(status(offered.w)).toEqual(status(ordinary));
-    }
-  });
-
-  it("makes no chat.update for an unchanged reply rendering", async () => {
-    const { w, reporter } = await offeredReply();
-    w.state.previews = web([answered(NOW)]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await w.observe(reporter);
-    const writes = w.writes().length;
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    w.state.previews = web([answered(new Date(NOW.getTime() + 20_000))]);
-    await w.observe(w.worker());
-    await w.observe(reporter);
-    expect(w.writes()).toHaveLength(writes);
-  });
-
-  it("edits the status message once per move of the preview, and never for a repeated check", async () => {
-    const w = completedWith();
-    const reporter = w.worker();
-    const settle = async () => {
+    expect(w.released.get("turn-1")?.previewUrl).toBeNull();
+    for (const by of [
+      { _tag: "Person", name: "Maria" },
+      { _tag: "Idle", minutes: 30 },
+    ] as const) {
+      w.state.previews = web([{ _tag: "Stopped", service: "web", by }]);
       await w.observe(reporter);
-      await w.advance(STATUS_PREVIEW_EVERY_MS);
-    };
-    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "setup" }], false);
-    await settle();
-    w.state.previews = web([answered(NOW)]);
-    await settle();
-    // Readiness checks repeat: the observation's time moves, what it says does not.
-    for (let check = 1; check <= 12; check++) {
-      w.state.previews = web([answered(new Date(NOW.getTime() + check * 10_000))]);
-      await settle();
+      expect(w.released.get("turn-1")?.previewUrl).toBeNull();
     }
-    w.state.previews = web([
-      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
-    ]);
-    await settle();
-    w.state.previews = {
-      _tag: "Shown",
-      appUrl: APP_URL,
-      previews: [],
-      unprepared: {
-        _tag: "NotPrepared",
-        service: "web",
-        why: { _tag: "Refused", words: "setup exited 1" },
-      },
-    };
-    await settle();
-    expect(w.updates()).toEqual([
-      `${COMPLETED}\npreview · web · starting · setup`,
-      `${COMPLETED}\npreview · web · answered HTTP 200 · observed`,
-      `${COMPLETED}\npreview · web · stopped by Maria`,
-      `${COMPLETED}\npreview not prepared · web · setup exited 1`,
-    ]);
-    expect(JSON.stringify(w.writes())).not.toMatch(/ticket/u);
   });
-
-  it("edits once when only the Open button changes", async () => {
-    const w = completedWith();
-    const reporter = w.worker();
-    const facts = [answered(NOW)];
-    w.state.previews = web(facts, false);
-    await w.observe(reporter);
-    expect(opensOf(w)).toEqual([]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    w.state.previews = web(facts, true);
-    await w.observe(reporter);
-    await w.observe(reporter);
-    expect(w.updates()).toHaveLength(2);
-    expect(w.updates()[0]).toBe(w.updates()[1]);
-    expect(opensOf(w)).toEqual([OPEN]);
-  });
-
-  it("holds a run of preview moves to one edit every 10 s, and lands on the latest", async () => {
-    const w = completedWith();
-    const reporter = w.worker();
-    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "setup" }], false);
-    await w.observe(reporter);
-    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "depends" }], false);
-    await w.observe(reporter);
+  it("updates the pending controls across workers without posting another offer", async () => {
+    const w = completed();
+    await w.observe(w.worker());
+    expect(w.released.get("turn-1")?.previewUrl).toBeNull();
     w.state.previews = web([answered(NOW)]);
+    await w.observe(w.worker());
+    expect(w.released.get("turn-1")?.previewUrl).toBe(OPEN);
+    w.state.turns = [...w.state.turns, decidedTurn(2, "off")];
+    await w.observe(w.worker());
+    expect(w.released.size).toBe(2);
+    expect(w.posts()).toEqual([]);
+  });
+  it("waits for the landing decision so the first controls have the Push button", async () => {
+    const w = completed();
+    w.state.turns = [turn(1, "completed", NOW)];
+    const reporter = w.worker();
     await w.observe(reporter);
-    expect(w.updates()).toEqual([`${COMPLETED}\npreview · web · starting · setup`]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    expect(w.updates()).toEqual([
-      `${COMPLETED}\npreview · web · starting · setup`,
-      `${COMPLETED}\npreview · web · answered HTTP 200 · observed`,
-    ]);
+    expect(w.released.size).toBe(0);
+    w.state.turns = [decidedTurn(1, "off")];
+    await w.advance(1_000);
+    await w.observe(reporter);
+    expect(w.released.get("turn-1")?.push?.sessionId).toBe(SESSION);
   });
-
-  it("reads no preview for a private project's channel thread, and shows one in a direct message", async () => {
-    const channel = completedWith();
-    channel.state.project = new Project({ ...project, visibility: "private" });
-    channel.state.previews = web([answered(NOW)]);
-    await channel.observe(channel.worker());
-    expect(channel.state.previewReads).toBe(0);
-    expect(channel.updates()).toEqual([PRIVATE_PROJECT_STATUS]);
-    expect(JSON.stringify(channel.writes())).not.toMatch(/preview/u);
-
-    const direct = world({ channelId: "D-alice" });
-    direct.state.turns = [turn(1, "completed", NOW)];
-    direct.state.project = new Project({ ...project, visibility: "private" });
-    direct.state.previews = web([answered(NOW)]);
-    await direct.observe(direct.worker());
-    expect(direct.updates()).toEqual([
-      `${COMPLETED}\npreview · web · answered HTTP 200 · observed`,
-    ]);
+  it("releases captures from failed or interrupted turns without waiting for a landing decision", async () => {
+    for (const status of ["failed", "interrupted"] as const) {
+      const w = completed();
+      w.state.turns = [turn(1, status, NOW)];
+      await w.observe(w.worker());
+      expect(w.released.get("turn-1")?.push).toBeNull();
+    }
   });
-
-  it("keeps previews out of a Slack Connect channel the owner did not open, and in a thread with agent messages off", async () => {
-    const external = world({ external: true });
-    external.state.turns = [turn(1, "completed", NOW)];
-    external.state.previews = web([answered(NOW)]);
-    await external.observe(external.worker());
-    expect(external.state.previewReads).toBe(0);
-    expect(external.updates()).toEqual([COMPLETED]);
-
-    const opened = world({ external: true, settings: { externalChannels: true } });
-    opened.state.turns = [turn(1, "completed", NOW)];
-    opened.state.previews = web([answered(NOW)]);
-    await opened.observe(opened.worker());
-    expect(opened.updates()).toEqual([
-      `${COMPLETED}\npreview · web · answered HTTP 200 · observed`,
-    ]);
-
-    const quiet = world({ settings: { showAgentMessages: false } });
-    quiet.state.turns = [turn(1, "completed", NOW)];
-    quiet.state.previews = web([answered(NOW)]);
-    await quiet.observe(quiet.worker());
-    expect(quiet.updates()).toEqual([`${COMPLETED}\npreview · web · answered HTTP 200 · observed`]);
+  it("never releases captures or controls to Slack Connect, private channels or hidden agent messages", async () => {
+    for (const options of [
+      { external: true, settings: { externalChannels: true } },
+      { settings: { showAgentMessages: false } },
+    ] as const) {
+      const w = world({ ...options, threadCreatedAt: NOW });
+      w.state.turns = [decidedTurn(1, "off")];
+      w.state.change = change;
+      w.state.previews = web([answered(NOW)]);
+      await w.observe(w.worker());
+      expect(w.released.size).toBe(0);
+    }
+    const w = completed();
+    w.state.project = new Project({ ...project, visibility: "private" });
+    await w.observe(w.worker());
+    expect(w.released.size).toBe(0);
+    expect(w.state.previewReads).toBe(0);
+    const dm = world({ channelId: "D-alice", threadCreatedAt: NOW });
+    dm.state.turns = [decidedTurn(1, "off")];
+    dm.state.project = new Project({ ...project, visibility: "private" });
+    dm.state.previews = web([answered(NOW)]);
+    await dm.observe(dm.worker());
+    expect(dm.released.get("turn-1")?.previewUrl).toBe(OPEN);
   });
-
-  it("holds a move of the previews alone to one edit every 10 s, across workers too", async () => {
-    const w = completedWith();
-    const first = w.worker();
-    const second = w.worker();
-    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "setup" }], false);
-    await w.observe(first);
-    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "depends" }], false);
-    await w.observe(second);
-    expect(w.updates()).toEqual([`${COMPLETED}\npreview · web · starting · setup`]);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    await vi.waitFor(() =>
-      expect(w.updates()).toEqual([
-        `${COMPLETED}\npreview · web · starting · setup`,
-        `${COMPLETED}\npreview · web · starting · depends`,
-      ]),
-    );
-  });
-
-  it("reads the change's counts when its own session moves, never for a look at its worktree's previews", async () => {
-    const w = completedWith();
-    w.state.change = change;
+  it("preview changes do not edit the status or reread the change's counts", async () => {
+    const w = completed();
     const reports = w.reports();
     const ask = (target: SlackReportTarget) => Effect.runPromise(reports.request(target));
     await ask({ _tag: "Session", id: SESSION });
-    await vi.waitFor(() => expect(w.updates()).toEqual([`${COMPLETED} · 2 files · +3 −1`]));
-    expect(w.state.diffReads).toBe(1);
-
+    await vi.waitFor(() => expect(w.state.diffReads).toBe(1));
+    const writes = w.updates().length;
     w.state.previews = web([answered(NOW)]);
-    await ask({ _tag: "SessionWorktree", id: SessionId.make("s-service") });
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
     await ask({ _tag: "Worktree", id: WORKTREE });
-    await vi.waitFor(() =>
-      expect(w.updates().at(-1)).toBe(
-        `${COMPLETED} · 2 files · +3 −1\npreview · web · answered HTTP 200 · observed`,
-      ),
-    );
+    await vi.waitFor(() => expect(w.released.get("turn-1")?.previewUrl).toBe(OPEN));
     expect(w.state.diffReads).toBe(1);
-
+    expect(w.updates()).toHaveLength(writes);
     await ask({ _tag: "Session", id: SESSION });
     await vi.waitFor(() => expect(w.state.diffReads).toBe(2));
   });
-
-  it("keeps a settled message's counts when its worktree can no longer be read", async () => {
-    const w = completedWith();
-    w.state.change = change;
+  it("keeps the settled counts when the worktree can no longer be read", async () => {
+    const w = completed();
     const reporter = w.worker();
     await w.observe(reporter);
     w.state.worktreeGone = true;
     await w.observe(reporter);
-    expect(w.state.diffReads).toBe(2);
-    expect(w.updates()).toEqual([`${COMPLETED} · 2 files · +3 −1`]);
+    expect(w.updates()).toEqual([`${statusWith("completed · observed")} · 2 files · +3 −1`]);
   });
-
-  it("looks at a project's threads again only when its visibility or name moved", async () => {
-    const w = completedWith();
-    const reports = w.reports();
-    const ask = (target: SlackReportTarget) => Effect.runPromise(reports.request(target));
-    await ask({ _tag: "Project", id: PROJECT });
-    await vi.waitFor(() => expect(w.updates()).toEqual([COMPLETED]));
-    const looks = w.state.threadReads;
-
-    await ask({ _tag: "Project", id: PROJECT });
-    await ask({ _tag: "Session", id: SESSION });
-    await vi.waitFor(() => expect(w.state.threadReads).toBe(looks + 1));
-
-    w.state.project = new Project({ ...project, name: "billing" });
-    await ask({ _tag: "Project", id: PROJECT });
-    await vi.waitFor(() =>
-      expect(w.updates().at(-1)).toBe(
-        "billing · from a link in the thread · claude · completed · observed · mend/flaky-login-test",
-      ),
-    );
-    expect(w.state.threadReads).toBe(looks + 2);
+  it("preview read failures back off without adding thread chatter", async () => {
+    const w = completed();
+    const reporter = w.worker();
+    w.state.previewReadsFail = 3;
+    await w.observe(reporter);
+    const reads = w.state.previewReads;
+    for (const [delay, count] of [
+      [5_000, 1],
+      [10_000, 2],
+      [20_000, 3],
+    ]) {
+      await w.advance(delay ?? 0);
+      await vi.waitFor(() => expect(w.state.previewReads).toBe(reads + (count ?? 0)));
+    }
+    expect(w.posts()).toEqual([]);
+    expect(w.updates()).toHaveLength(1);
   });
-
-  it("asks again for a resync whose read of the active sessions failed", async () => {
-    const w = world();
-    w.state.turns = [turn(1, "running")];
-    const reports = w.reports();
-    w.state.listActiveFailuresLeft = 1;
-    await Effect.runPromise(reports.request({ _tag: "Resync" }));
-    await vi.waitFor(() => expect(w.state.listActiveFailuresLeft).toBe(0));
-    await w.advance(REQUEST_RETRY_MS - 1);
-    expect(w.updates()).toEqual([]);
-    await w.advance(1);
-    await vi.waitFor(() => expect(w.updates()).toEqual([statusWith("running")]));
-  });
-
-  it("removes the previews when the project turns private", async () => {
-    const w = completedWith();
+  it("hides controls when the project turns private", async () => {
+    const w = completed();
     const reporter = w.worker();
     w.state.previews = web([answered(NOW)]);
     await w.observe(reporter);
     w.state.project = new Project({ ...project, visibility: "private" });
     await w.observe(reporter);
     expect(w.updates().at(-1)).toBe(PRIVATE_PROJECT_STATUS);
-    expect(opensOf(w)).toEqual([]);
-  });
-
-  it("keeps the previews it showed when a read fails, while the status and the replies go on, and reads again backing off", async () => {
-    const w = world({ threadCreatedAt: minutesAgo(1) });
-    const reporter = w.worker();
-    const RUNNING = statusWith("running");
-    w.state.turns = [turn(1, "running")];
-    w.state.previews = web([answered(NOW)]);
-    await w.observe(reporter);
-    expect(w.updates()).toEqual([`${RUNNING}\npreview · web · answered HTTP 200 · observed`]);
-
-    w.state.previewReadsFail = 3;
-    w.state.previews = web([{ _tag: "Starting", service: "web", phase: "setup" }]);
-    w.state.turns = [turn(1, "completed", NOW)];
-    w.state.items = [item("m1", 1, "assistant-message", "Bounded the retry at three.")];
-    const reads = w.state.previewReads;
-    await w.observe(reporter);
-    expect(w.updates().at(-1)).toBe(`${COMPLETED}\npreview · web · answered HTTP 200 · observed`);
-    expect(w.posts().map((post) => post.text)).toEqual(["Bounded the retry at three."]);
-
-    const readAgainAfter = async (ms: number, times: number) => {
-      await w.advance(ms - 1);
-      expect(w.state.previewReads - reads).toBe(times - 1);
-      await w.advance(1);
-      await vi.waitFor(() => expect(w.state.previewReads - reads).toBe(times));
-    };
-    await readAgainAfter(5_000, 2);
-    await readAgainAfter(10_000, 3);
-    await readAgainAfter(20_000, 4);
-    await vi.waitFor(() =>
-      expect(w.updates().at(-1)).toBe(`${COMPLETED}\npreview · web · starting · setup`),
-    );
-  });
-
-  it("shows a switched session stopped with its previews and landing, leaving the request's reaction to its replacement", async () => {
-    const w = world();
-    const reporter = w.worker();
-    w.state.change = change;
-    w.state.turns = [decidedTurn(1, "attempted")];
-    w.state.landings = [landingOf("l1", "pull-request", { pullRequest: 412 })];
-    w.state.previews = web([answered(NOW)]);
-    await w.observe(reporter);
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    // The runner stopped it for a switch, recorded the replacement, and asked for a report.
-    w.state.requestReused = true;
-    w.state.session = sessionWith("stopped");
-    w.state.processes = [];
-    w.state.turns = [decidedTurn(1, "attempted"), turn(2, "interrupted", NOW)];
-    await w.observe(reporter);
-    expect(w.updates().at(-1)).toBe(
-      `${statusWith("stopped")} · 2 files · +3 −1\npushed · mend/flaky-login-test · pull request #412 · opened\npreview · web · answered HTTP 200 · observed`,
-    );
-    expect(opensOf(w)).toEqual([OPEN]);
-    expect(w.reactions()).toEqual(new Set(["white_check_mark"]));
-  });
-
-  it("puts the previews on the end-of-session reply once, and edits only the status as they move", async () => {
-    const w = world({ settings: { showAgentMessages: false }, threadCreatedAt: minutesAgo(1) });
-    const reporter = w.worker();
-    w.state.session = sessionWith("completed");
-    w.state.turns = [turn(1, "completed", NOW)];
-    w.state.change = change;
-    // A tour ran but its summary is not shown, and nothing drafted: the preview is the reply.
-    w.state.passes = [passOf("tour", "completed")];
-    w.state.tour = tourOf();
-    w.state.previews = web([answered(NOW)]);
-    await w.observe(reporter);
-    expect(w.posts()).toHaveLength(1);
-    expect(w.posts()[0]?.text).toBe("preview · web · answered HTTP 200 · observed");
-    expect(JSON.stringify(w.posts()[0]?.blocks)).toContain(OPEN);
-
-    await w.advance(STATUS_PREVIEW_EVERY_MS);
-    w.state.previews = web([
-      { _tag: "Stopped", service: "web", by: { _tag: "Person", name: "Maria" } },
-    ]);
-    await w.observe(reporter);
-    expect(w.posts()).toHaveLength(1);
-    expect(w.updates().at(-1)).toBe(
-      `${COMPLETED} · 2 files · +3 −1\npreview · web · stopped by Maria`,
-    );
   });
 });

@@ -159,7 +159,8 @@ export interface SlackCompleteUploadInput {
   readonly files: ReadonlyArray<{ readonly id: string; readonly title: string }>;
   readonly channelId: string;
   readonly threadTs: string;
-  readonly initialComment: string;
+  readonly initialComment?: string;
+  readonly blocks?: ReadonlyArray<SlackBlock>;
 }
 
 export interface SlackFileShare {
@@ -796,6 +797,7 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
             channel_id: input.channelId,
             thread_ts: input.threadTs,
             initial_comment: input.initialComment,
+            blocks: input.blocks === undefined ? undefined : JSON.stringify(input.blocks),
           }),
         ),
       ).pipe(Effect.asVoid),

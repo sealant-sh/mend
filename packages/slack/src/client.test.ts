@@ -711,13 +711,29 @@ describe("Slack file upload transport", () => {
         files,
         channelId: "D1",
         threadTs: "1.0",
-        initialComment: "The app with the change.",
+        blocks: [
+          { type: "section", text: { type: "mrkdwn", text: "Captured · checkpoint #3" } },
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "button",
+                action_id: "open",
+                text: { type: "plain_text", text: "Open in Mend" },
+                url: "https://mend.test/session",
+              },
+            ],
+          },
+        ],
       }),
     );
     expect(transport.sent[0]?.body.has("alt_txt")).toBe(false);
     expect(transport.sent[1]?.body.get("files")).toBe(JSON.stringify(files));
     expect(transport.sent[1]?.body.get("channel_id")).toBe("D1");
     expect(transport.sent[1]?.body.get("thread_ts")).toBe("1.0");
+    expect(transport.sent[1]?.body.has("initial_comment")).toBe(false);
+    expect(transport.sent[1]?.body.get("blocks")).toContain("Captured · checkpoint #3");
+    expect(transport.sent[1]?.body.get("blocks")).toContain("Open in Mend");
     expect(transport.sent).toHaveLength(2);
   });
 

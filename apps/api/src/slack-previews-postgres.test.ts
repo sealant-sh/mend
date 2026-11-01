@@ -26,6 +26,7 @@ import {
   SlackInstallsRepoLive,
   SlackThreadsRepo,
   SlackThreadsRepoLive,
+  SlackProofDeliveriesRepoLive,
   WorktreeChangesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
@@ -141,6 +142,7 @@ const repos = Layer.mergeAll(
   SessionsRepoLive,
   SlackInstallsRepoLive,
   SlackThreadsRepoLive,
+  SlackProofDeliveriesRepoLive,
   WorktreeChangesRepoLive,
 ).pipe(Layer.provideMerge(database));
 const outside = Layer.mergeAll(
@@ -324,11 +326,21 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
     );
   });
 
-  it("edits both threads of the worktree once per move of its preview, from setup to a person's Stop", async () => {
+  it("keeps preview facts out of both status messages and releases the current Open with the turn", async () => {
     const both = (lines: ReadonlyArray<string>) => {
       for (const { statusTs } of THREADS) expect(linesOf(statusTs).at(-1)).toEqual(lines);
     };
     const open = `${APP_URL}/preview-auth?preview=${previewId}&path=%2F`;
+    const pendingOpen = () =>
+      run(
+        Effect.flatMap(
+          SqlClient.SqlClient,
+          (sql) =>
+            sql<{
+              readonly context: { readonly previewUrl: string | null };
+            }>`SELECT context FROM slack_proof_turns WHERE turn_id = ${preparation.turnId}`,
+        ),
+      );
 
     preparation = await run(claimTurn(THREADS[0].sessionId));
     await run(
@@ -342,7 +354,7 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
         }),
       ),
     );
-    await vi.waitFor(() => both(["preview · web · starting · setup"]), { timeout: 20_000 });
+    await vi.waitFor(() => both([]), { timeout: 20_000 });
 
     await run(
       Effect.gen(function* () {
@@ -369,7 +381,7 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
         });
       }),
     );
-    await vi.waitFor(() => both(["preview · web · answered HTTP 200 · observed"]), {
+    await vi.waitFor(async () => expect((await pendingOpen())[0]?.context.previewUrl).toBe(open), {
       timeout: 30_000,
     });
     const answeredEdits = THREADS.map(({ statusTs }) => editsOf(statusTs).length);
@@ -408,17 +420,13 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
         });
       }),
     );
-    await vi.waitFor(() => both(["preview · web · stopped by Maria"]), { timeout: 30_000 });
+    await vi.waitFor(async () => expect((await pendingOpen())[0]?.context.previewUrl).toBeNull(), {
+      timeout: 30_000,
+    });
 
     for (const { statusTs } of THREADS) {
-      expect(linesOf(statusTs)).toEqual([
-        ["preview · web · starting · setup"],
-        ["preview · web · answered HTTP 200 · observed"],
-        ["preview · web · stopped by Maria"],
-      ]);
-      // Open through setup and once answered; a person's Stop is never woken, so Slack offers no
-      // Open after it (Yiannis, 2026-10-31) and the line says who stopped it.
-      expect(opensOf(statusTs)).toEqual([[open], [open], []]);
+      expect(linesOf(statusTs)).toEqual([[]]);
+      expect(opensOf(statusTs)).toEqual([[]]);
     }
     expect(JSON.stringify(slack.calls)).not.toMatch(/ticket|preview\.test|__mend/u);
     expect(editsOf(ELSEWHERE.statusTs)).toEqual([]);
@@ -520,7 +528,7 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
     }
   }, 120_000);
 
-  it("says a preparation that failed before any preview, and removes every preview when the project turns private", async () => {
+  it("keeps preparation failures quiet and hides status when the project turns private", async () => {
     const failed = await run(claimTurn(ELSEWHERE.sessionId));
     await run(
       Effect.flatMap(PreviewPreparationsRepo, (repo) =>
@@ -532,13 +540,9 @@ describe.skipIf(postgres.skip)("Slack previews, from Postgres to the thread", ()
         }),
       ),
     );
-    await vi.waitFor(
-      () =>
-        expect(linesOf(ELSEWHERE.statusTs).at(-1)).toEqual([
-          "preview not prepared · web · mend.toml refuses web: setup · exited 1",
-        ]),
-      { timeout: 20_000 },
-    );
+    await vi.waitFor(() => expect(linesOf(ELSEWHERE.statusTs).at(-1)).toEqual([]), {
+      timeout: 20_000,
+    });
 
     await run(
       Effect.flatMap(ProjectsRepo, (projects) => projects.setVisibility(PROJECT, "private")),

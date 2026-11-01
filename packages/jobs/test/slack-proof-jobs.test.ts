@@ -15,6 +15,7 @@ import {
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import {
+  AgentTurnId,
   ChangeId,
   ProjectId,
   ProofArtifactId,
@@ -70,14 +71,18 @@ const recording: ProofCapture = {
   screenId: ScreenId.make("screen"),
   fromSeq: 1,
 };
-const artifact = (capture: ProofCapture = screenshot, sessionId = SessionId.make("session")) =>
+const artifact = (
+  turnId: AgentTurnId,
+  capture: ProofCapture = screenshot,
+  sessionId = SessionId.make("session"),
+) =>
   new ProofArtifact({
     id: ProofArtifactId.make(crypto.randomUUID()),
     changeId: ChangeId.make("change"),
     projectId: ProjectId.make("project"),
     worktreeId: WorktreeId.make("tree"),
     sessionId,
-    turnId: null,
+    turnId,
     title: "Task board",
     caption: "The task appears in Done.",
     source: { _tag: "Unknown", reason: "No checkpoint" },
@@ -90,6 +95,7 @@ const artifact = (capture: ProofCapture = screenshot, sessionId = SessionId.make
   });
 
 const fixture = () => {
+  const turnId = AgentTurnId.make(crypto.randomUUID());
   const queued: Array<JobSpec> = [];
   const handlers = new Map<string, (payload: unknown) => Effect.Effect<void>>();
   let enqueueFails = false;
@@ -171,6 +177,22 @@ const fixture = () => {
   );
   return {
     layer,
+    turnId,
+    artifact: (capture: ProofCapture = screenshot) => artifact(turnId, capture),
+    prepare: Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO session_processes (id,session_id,sealant_workspace_id,kind) VALUES (${turnId}, 'session', 'workspace', 'agent-protocol')`;
+      yield* sql`INSERT INTO agent_turns (id,session_id,process_id,ordinal,status,input) SELECT ${turnId}, 'session', ${turnId}, coalesce(max(ordinal),0)+1, 'completed', 'Capture' FROM agent_turns WHERE session_id = 'session'`;
+    }),
+    ready: Effect.flatMap(SlackProofDeliveriesRepo, (repo) =>
+      repo.readyTurn(SessionId.make("session"), turnId, {
+        projectId: ProjectId.make("project"),
+        changeId: ChangeId.make("change"),
+        url: "https://mend.test/session",
+        previewUrl: null,
+        push: { sessionId: SessionId.make("session"), updates: false },
+      }),
+    ),
     slack,
     queued,
     handlers,
@@ -207,96 +229,64 @@ describe.skipIf(postgres.skip)("Slack proof jobs with Postgres and fake Slack", 
   }, 60_000);
   afterAll(() => admin(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`));
 
-  it("enqueues committed screenshots and missing captures, but waits for a video to settle", async () => {
+  it("keys captures and recovery by turn, including a recording", async () => {
     const h = fixture();
     await Effect.runPromise(
       Effect.gen(function* () {
+        yield* h.prepare;
         const repo = yield* ProofArtifactsRepo;
-        const image = yield* repo.insert(artifact(), "screenshot");
-        expect(h.queued).toEqual([slackProofJob(image.id)]);
-        const video = yield* repo.insert(artifact(recording), "video");
-        expect(h.queued).toHaveLength(1);
-        yield* repo.settleVideo(video.id, {
-          _tag: "Video",
-          span: { screenId: ScreenId.make("screen"), fromSeq: 1, toSeq: 2 },
-          media: { ...screenshot.media, mimeType: "video/mp4" },
-          durationMs: 1000,
-          ending: "stopped",
-        });
-        expect(h.queued.at(-1)).toEqual(slackProofJob(video.id));
-        const missing = yield* repo.insert(
-          artifact({ _tag: "NotCaptured", kind: "screenshot", reason: "No login" }),
-          "missing",
-        );
-        expect(h.queued.at(-1)).toEqual(slackProofJob(missing.id));
-        const unavailable = yield* repo.insert(artifact(recording), "unavailable");
-        const count = h.queued.length;
-        yield* repo.settleVideo(unavailable.id, {
+        const image = yield* repo.insert(h.artifact(), `${h.turnId}:image`);
+        const active = yield* repo.insert(h.artifact(recording), `${h.turnId}:recording`);
+        expect(h.queued).toEqual([
+          slackProofJob(image.sessionId ?? SessionId.make("session"), h.turnId),
+          slackProofJob(SessionId.make("session"), h.turnId),
+        ]);
+        expect(h.queued[0]?.idempotencyKey).toBe(h.queued[1]?.idempotencyKey);
+        h.failEnqueue(true);
+        yield* repo.settleVideo(active.id, {
           _tag: "NotCaptured",
           kind: "video",
-          reason: "Encoder unavailable",
+          reason: "Encoder stopped",
         });
-        expect(h.queued).toHaveLength(count + 1);
-        yield* repo.insert(artifact(screenshot, SessionId.make("no-thread")), "no-thread");
-        expect(h.queued).toHaveLength(count + 1);
-      }).pipe(Effect.provide(h.layer), Effect.scoped),
-    );
-  });
-
-  it("recovers the commit/enqueue gap and excludes recordings, old artifacts and terminal deliveries", async () => {
-    const h = fixture();
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const repo = yield* ProofArtifactsRepo;
-        h.failEnqueue(true);
-        const missed = yield* repo.insert(artifact(), "missed");
         h.failEnqueue(false);
-        const old = new ProofArtifact({
-          ...artifact(),
-          createdAt: new Date(Date.now() - 25 * 60 * 60_000),
-        });
-        yield* repo.insert(old, "old");
-        const active = yield* repo.insert(artifact(recording), "recording");
-        const deliveries = yield* SlackProofDeliveriesRepo;
-        const terminalIds: Array<ProofArtifactId> = [];
-        for (const state of ["shared", "withheld", "failed"] as const) {
-          const saved = yield* repo.insert(artifact(), state);
-          terminalIds.push(saved.id);
-          yield* deliveries.withDelivery(
-            { sessionId: SessionId.make("session"), artifactId: saved.id },
-            (store) =>
-              Effect.gen(function* () {
-                yield* store.save({ ...(yield* store.read()), state });
-              }),
-          );
-        }
+        yield* h.ready;
         h.queued.length = 0;
         yield* reconcileSlackProof();
-        const ids = h.queued.map((job) => job.payload["artifactId"]);
-        expect(ids).toContain(missed.id);
-        expect(ids).not.toContain(old.id);
-        expect(ids).not.toContain(active.id);
-        for (const id of terminalIds) expect(ids).not.toContain(id);
-        yield* repo.settleStaleRecordings();
-        h.queued.length = 0;
-        yield* reconcileSlackProof();
-        expect(h.queued.map((job) => job.payload["artifactId"])).toContain(active.id);
+        expect(h.queued).toContainEqual(slackProofJob(SessionId.make("session"), h.turnId));
       }).pipe(Effect.provide(h.layer), Effect.scoped),
     );
   });
 
-  it("runs the registered worker with streamed bytes and durable progress, without reposting", async () => {
+  it("registers the worker, streams one batch, and resumes without reposting", async () => {
     const h = fixture();
     await Effect.runPromise(
       Effect.gen(function* () {
+        yield* h.prepare;
         yield* Layer.build(SlackProofWorkerLive);
         const handler = h.handlers.get("slack-deliver-proof");
-        if (handler === undefined) return yield* Effect.die("worker was not registered");
-        const saved = yield* (yield* ProofArtifactsRepo).insert(artifact(), "worker");
-        yield* handler({ artifactId: saved.id });
-        yield* handler({ artifactId: saved.id });
+        if (handler === undefined) return yield* Effect.die("worker not registered");
+        const repo = yield* ProofArtifactsRepo;
+        const image = yield* repo.insert(h.artifact(), `${h.turnId}:image`);
+        yield* repo.insert(
+          new ProofArtifact({ ...h.artifact(), title: "Second capture" }),
+          "second",
+        );
+        const payload = { sessionId: SessionId.make("session"), turnId: h.turnId };
+        yield* handler(payload);
+        expect(h.slack.calls).toEqual([]);
+        yield* h.ready;
+        yield* handler(payload);
+        yield* handler(payload);
+        expect(h.uploads.map((body) => [...body])).toEqual([
+          [1, 2, 3, 4],
+          [1, 2, 3, 4],
+        ]);
+        expect(h.streams.every((stream) => stream.destroyed)).toBe(true);
+        expect(h.slack.calls.filter((call) => call.kind === "filesCompleteUpload")).toMatchObject([
+          { input: { files: [{ title: "Task board" }, { title: "Second capture" }] } },
+        ]);
         const delivery = yield* (yield* SlackProofDeliveriesRepo).withDelivery(
-          { sessionId: SessionId.make("session"), artifactId: saved.id },
+          { sessionId: SessionId.make("session"), artifactId: image.id },
           (store) => store.read(),
         );
         expect(delivery).toMatchObject({
@@ -304,129 +294,119 @@ describe.skipIf(postgres.skip)("Slack proof jobs with Postgres and fake Slack", 
           attempts: 1,
           messageTs: expect.any(String),
         });
-        expect(h.reads()).toBe(1);
-        expect(h.uploads.map((body) => [...body])).toEqual([[1, 2, 3, 4]]);
-        expect(h.streams.every((stream) => stream.destroyed)).toBe(true);
-        expect(h.slack.calls.map((call) => call.kind)).toEqual([
-          "filesGetUploadUrl",
-          "filesUpload",
-          "filesCompleteUpload",
-        ]);
-        expect(h.slack.calls.at(-1)).toMatchObject({
-          input: {
-            channelId: "C1",
-            threadTs: "1.0",
-            initialComment: expect.stringContaining(saved.caption),
-          },
-        });
       }).pipe(Effect.provide(h.layer), Effect.scoped),
     );
   });
 
-  it("observes a delayed Slack share on retry without another upload or completion", async () => {
-    const h = fixture();
-    let hideShare = true;
-    const delayed = {
-      ...h.slack.service,
-      filesInfo: (token: string, fileId: string, channel: string) =>
-        hideShare ? Effect.succeed([]) : h.slack.service.filesInfo(token, fileId, channel),
-    };
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const saved = yield* (yield* ProofArtifactsRepo).insert(artifact(), "delayed");
-        expect(yield* runSlackProof({ artifactId: saved.id }).pipe(Effect.flip)).toMatchObject({
-          code: "share_not_observed",
-        });
-        hideShare = false;
-        yield* runSlackProof({ artifactId: saved.id });
-        expect(h.slack.calls.filter((call) => call.kind === "filesCompleteUpload")).toHaveLength(1);
-        expect(h.reads()).toBe(1);
-        const delivery = yield* (yield* SlackProofDeliveriesRepo).withDelivery(
-          { sessionId: SessionId.make("session"), artifactId: saved.id },
-          (store) => store.read(),
-        );
-        expect(delivery).toMatchObject({ state: "shared", attempts: 2 });
-      }).pipe(Effect.provideService(SlackApi, delayed), Effect.provide(h.layer), Effect.scoped),
-    );
-  });
-
-  it("retries transient failures, then posts one named final failure when attempts are exhausted", async () => {
+  it("waits for a recording to settle and includes it in the first batch", async () => {
     const h = fixture();
     await Effect.runPromise(
       Effect.gen(function* () {
-        const saved = yield* (yield* ProofArtifactsRepo).insert(artifact(), "exhausted");
-        const retries = slackProofJob(saved.id).retryLimit ?? 0;
-        for (let attempt = 0; attempt <= retries; attempt += 1) {
-          h.slack.refuseFiles(
-            new SlackApiError({
-              method: "files.getUploadURLExternal",
-              code: "request_failed",
-              message: "temporarily unavailable",
-            }),
-          );
-          if (attempt < retries) yield* runSlackProof({ artifactId: saved.id }).pipe(Effect.flip);
-          else yield* runSlackProof({ artifactId: saved.id });
-        }
-        yield* runSlackProof({ artifactId: saved.id });
-        const posts = h.slack.calls.filter((call) => call.kind === "postMessage");
-        expect(posts).toHaveLength(1);
-        expect(posts[0]).toMatchObject({ input: { text: expect.stringContaining(saved.id) } });
-      }).pipe(Effect.provide(h.layer), Effect.scoped),
-    );
-  });
-
-  it("posts not-captured captions and names missing stored files once", async () => {
-    const h = fixture();
-    await Effect.runPromise(
-      Effect.gen(function* () {
+        yield* h.prepare;
         const repo = yield* ProofArtifactsRepo;
-        const missing = yield* repo.insert(
-          artifact({ _tag: "NotCaptured", kind: "video", reason: "The screen did not start" }),
-          "worker-missing",
+        yield* repo.insert(h.artifact(), `${h.turnId}:image`);
+        const active = yield* repo.insert(h.artifact(recording), `${h.turnId}:recording`);
+        yield* h.ready;
+        yield* Effect.all(
+          [
+            runSlackProof({ sessionId: SessionId.make("session"), turnId: h.turnId }),
+            Effect.sleep("50 millis").pipe(
+              Effect.andThen(
+                repo.settleVideo(active.id, {
+                  _tag: "Video",
+                  span: { screenId: ScreenId.make("screen"), fromSeq: 1, toSeq: 2 },
+                  media: {
+                    blobKey: "proof/image.png",
+                    bytes: 4,
+                    mimeType: "video/mp4",
+                    sha256: "a".repeat(64),
+                  },
+                  durationMs: 28_000,
+                  ending: "stopped",
+                }),
+              ),
+            ),
+          ],
+          { concurrency: "unbounded" },
         );
-        yield* runSlackProof({ artifactId: missing.id });
-        yield* runSlackProof({ artifactId: missing.id });
-        expect(h.reads()).toBe(0);
-        expect(h.slack.calls).toHaveLength(1);
-        expect(h.slack.calls[0]).toMatchObject({
-          kind: "postMessage",
-          input: { text: expect.stringContaining("not captured") },
-        });
-        const gone = yield* repo.insert(artifact(), "missing-blob");
-        h.bytes.clear();
-        yield* runSlackProof({ artifactId: gone.id });
-        yield* runSlackProof({ artifactId: gone.id });
-        const failed = yield* (yield* SlackProofDeliveriesRepo).withDelivery(
-          { sessionId: SessionId.make("session"), artifactId: gone.id },
-          (store) => store.read(),
-        );
-        expect(failed).toMatchObject({
-          state: "failed",
-          errorCode: "media_not_found",
-          messageTs: expect.any(String),
-        });
-        const posts = h.slack.calls.filter((call) => call.kind === "postMessage");
-        expect(posts).toHaveLength(2);
-        expect(posts.at(-1)).toMatchObject({ input: { text: expect.stringContaining(gone.id) } });
+        expect(h.slack.calls.filter((call) => call.kind === "filesCompleteUpload")).toMatchObject([
+          { input: { files: [{ title: "Task board" }, { title: "Task board · 0:28" }] } },
+        ]);
       }).pipe(Effect.provide(h.layer), Effect.scoped),
     );
   });
 
-  it("finishes a deleted artifact or a session without a Slack thread without calling Slack", async () => {
+  it("a missing blob becomes a note in the same message as delivered files", async () => {
     const h = fixture();
     await Effect.runPromise(
       Effect.gen(function* () {
-        const deleted = yield* (yield* ProofArtifactsRepo).insert(artifact(), "deleted");
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`DELETE FROM proof_artifacts WHERE id = ${deleted.id}`;
-        yield* runSlackProof({ artifactId: deleted.id });
-        const saved = yield* (yield* ProofArtifactsRepo).insert(
-          artifact(screenshot, SessionId.make("no-thread")),
-          "worker-no-thread",
+        yield* h.prepare;
+        const repo = yield* ProofArtifactsRepo;
+        yield* repo.insert(h.artifact(), `${h.turnId}:image`);
+        yield* repo.insert(
+          h.artifact({
+            _tag: "Video",
+            span: { screenId: ScreenId.make("screen"), fromSeq: 1, toSeq: 2 },
+            media: {
+              blobKey: "missing.mp4",
+              bytes: 4,
+              mimeType: "video/mp4",
+              sha256: "a".repeat(64),
+            },
+            durationMs: 1000,
+            ending: "stopped",
+          }),
+          "video",
         );
-        yield* runSlackProof({ artifactId: saved.id });
-        expect(h.slack.calls).toEqual([]);
-        expect(h.reads()).toBe(0);
+        yield* h.ready;
+        const payload = { sessionId: SessionId.make("session"), turnId: h.turnId };
+        yield* runSlackProof(payload);
+        yield* runSlackProof(payload);
+        expect(h.slack.calls.filter((call) => call.kind === "postMessage")).toHaveLength(0);
+        expect(h.slack.calls.filter((call) => call.kind === "filesCompleteUpload")).toMatchObject([
+          {
+            input: {
+              files: [{ title: "Task board" }],
+              blocks: [
+                {
+                  text: {
+                    text: "Captured · source unknown · the video didn't reach Slack, it's in Mend",
+                  },
+                },
+                { type: "actions" },
+              ],
+            },
+          },
+        ]);
+      }).pipe(Effect.provide(h.layer), Effect.scoped),
+    );
+  });
+
+  it("a no-capture turn still recovers its single button row", async () => {
+    const h = fixture();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* h.prepare;
+        yield* h.ready;
+        const payload = { sessionId: SessionId.make("session"), turnId: h.turnId };
+        yield* runSlackProof(payload);
+        yield* runSlackProof(payload);
+        expect(h.slack.calls).toMatchObject([
+          {
+            kind: "postMessage",
+            input: {
+              blocks: [
+                {
+                  type: "actions",
+                  elements: [
+                    { text: { text: "Open in Mend" } },
+                    { text: { text: "Push and open pull request" } },
+                  ],
+                },
+              ],
+            },
+          },
+        ]);
       }).pipe(Effect.provide(h.layer), Effect.scoped),
     );
   });

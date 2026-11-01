@@ -8,6 +8,7 @@ import {
   SessionProcessesRepo,
   SessionsRepo,
   SlackInstallsRepo,
+  SlackProofDeliveriesRepo,
   SlackThreadsRepo,
   WorktreeChangesRepo,
   type SealedSlackInstall,
@@ -41,9 +42,9 @@ import {
   editedReceipt,
   isSettledState,
   landingStatusLines,
-  landOfferMessage,
   landOfferOf,
   NO_PREVIEWS,
+  previewUrl,
   planText,
   privateProjectStatusMessage,
   questionMessage,
@@ -93,15 +94,9 @@ import { SlackPreviewReads } from "./slack-preview-reads.ts";
  *   approach, what the review pass drafted, and "Review in Mend";
  * - on completion, the change's line counts in the status line; and when the owner turned diffs
  *   on, each file's diff, once, the first time the session settles with a change;
- * - under the status line, the worktree's previews, whichever session runs them, and an Open
- *   preview button for each the gateway would serve (docs/adr/0017-live-preview.md);
- * - the change's landing under the status line (docs/adr/0007-landing.md, "What the thread sees"):
- *   `pushed · mend/fix-login · pull request #412 · opened`, edited in place by each landing, or a
- *   refusal or failure in the remote's words; and when a completed turn's change did not land (a
- *   question, `autopr=false`, automatic landing off, a follow-up from someone other than the
- *   owner), the offer to land it: "Push and open pull request", on the end-of-session reply when
- *   that reply goes out in the same look, and as a reply of its own otherwise. The latest offer
- *   reply gains the worktree's Open preview buttons as they become available, edited in place.
+ * - after a turn's closing reply, release its captures and quiet controls to the durable worker;
+ * - the change's latest published landing stays in the status message. A turn's Push and preview
+ *   controls belong to its capture message, never another landing-offer reply.
  *
  * The install's display settings decide how much: with agent messages off, or in a Slack Connect
  * channel the owner did not open, the thread gets status, reactions and links only. A change to
@@ -308,6 +303,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
   Effect.gen(function* () {
     const resourceStatus = yield* ResourceStatusReads;
     const threads = yield* SlackThreadsRepo;
+    const proofDeliveries = yield* SlackProofDeliveriesRepo;
     const installs = yield* SlackInstallsRepo;
     const sessions = yield* SessionsRepo;
     const processes = yield* SessionProcessesRepo;
@@ -665,7 +661,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         // Offered until the first turn completes, which also moves the line, so the button
         // leaves with the edit that says so. The runner checks again on a click.
         switchSession: switchOffered(state, look.turns) ? session.id : null,
-        landing: landingStatusLines({ landings: look.landings, latestTurn: look.decided }),
+        landing: landingStatusLines({ landings: look.landings, latestTurn: null }),
         summary: session.summary,
         capture: captureStatusLine(session),
         resourceStatusLines: (yield* resourceStatus.forWorktree(
@@ -673,11 +669,18 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           session.worktreeId,
         )).map((each) => each.statusLine),
       };
-      yield* moveStatus(token, look, receipt, recount, statusMessage({ ...status, previews }), {
-        base: statusKey(statusMessage({ ...status, previews: NO_PREVIEWS })),
-        previews,
-        counts,
-      });
+      yield* moveStatus(
+        token,
+        look,
+        receipt,
+        recount,
+        statusMessage({ ...status, previews: NO_PREVIEWS }),
+        {
+          base: statusKey(statusMessage({ ...status, previews: NO_PREVIEWS })),
+          previews,
+          counts,
+        },
+      );
     });
 
     /** Post a reply once, whichever worker gets there first. */
@@ -879,20 +882,40 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         yield* postOnce(token, thread, `request:${request.id}`, Effect.succeed([message]));
       }
 
-      // A completed turn whose change did not land: the owner may land it from the thread. The
-      // turn is decided moments after it ends; an offer for an older one is history.
-      const offerable = landOfferOf({
-        sessionId: session.id,
-        turn: look.decided,
-        landings: look.landings,
-      });
-      const offer =
-        offerable !== null && look.change !== null && fresh(look.decided?.endedAt ?? null)
-          ? offerable
-          : null;
+      // The worker's durable release follows the closing reply, including turns without captures.
+      if (shown.agentMessages && !thread.external) {
+        for (const turn of look.turns) {
+          if (turn.status === "queued" || turn.status === "running" || !fresh(turn.endedAt))
+            continue;
+          if (turn.status === "completed" && look.change !== null && turn.landing === null) {
+            yield* lookAgainIn(session.id, 1_000, true);
+            continue;
+          }
+          const offer =
+            look.change === null
+              ? null
+              : landOfferOf({ sessionId: session.id, turn, landings: look.landings });
+          const preview =
+            previews._tag === "Shown"
+              ? previews.previews.find(
+                  (notice) =>
+                    notice.openable && !notice.facts.some((fact) => fact._tag === "Stopped"),
+                )
+              : undefined;
+          yield* proofDeliveries.readyTurn(session.id, turn.id, {
+            projectId: session.projectId,
+            changeId: look.change?.id ?? null,
+            url,
+            previewUrl:
+              previews._tag === "Shown" && preview !== undefined
+                ? previewUrl(previews.appUrl, preview.id)
+                : null,
+            push: offer === null ? null : { sessionId: session.id, updates: offer.updates },
+          });
+        }
+      }
 
-      // Mend's passes over the change, once they have run: one reply, which carries the offer
-      // when both are due now.
+      // Completed review passes remain their own event; turn controls never ride that reply.
       const review = look.review;
       const change = look.change;
       if (
@@ -911,20 +934,9 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
             review,
             shown.agentMessages,
             install.webOrigin,
-            offer,
-            previews,
+            null,
+            NO_PREVIEWS,
           ),
-          previews,
-        );
-      }
-      // Otherwise the offer is a reply of its own: the end-of-session reply may come much later,
-      // or not at all when no pass completes.
-      if (offer !== null) {
-        yield* postOnce(
-          token,
-          thread,
-          offerKey(offer),
-          Effect.succeed([landOfferMessage(offer, thread.slackUserId)]),
           previews,
         );
       }
@@ -1174,6 +1186,7 @@ export const SlackReportsLive: Layer.Layer<
   | SlackApi
   | SlackInstallsRepo
   | SlackPreviewReads
+  | SlackProofDeliveriesRepo
   | SlackThreadsRepo
   | WorktreeChangesRepo
   | WorktreeReads
