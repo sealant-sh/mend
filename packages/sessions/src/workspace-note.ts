@@ -207,3 +207,22 @@ export const parseWorkspaceNoteOutcomes = (stdout: string): ReadonlyArray<Worksp
       { outcome: match[1] ?? "", file: match[3] ?? "", detail: detail === "-" ? null : detail },
     ];
   });
+
+/** Resource lines and exported names at launch/claim. The input cannot carry env values. */
+export const resourcesNote = (
+  resources: ReadonlyArray<{
+    readonly statusLine: string;
+    readonly envNames: ReadonlyArray<string>;
+  }>,
+): string =>
+  resources.length === 0
+    ? ""
+    : "## Mend Resources\n\n" +
+      "Observed when this note was written. Run `mend resource list` for a fresh observation. Clock times are UTC.\n\n" +
+      resources
+        .map(
+          (resource) =>
+            `- ${resource.statusLine}\n  Env names: ${resource.envNames.length === 0 ? "none" : resource.envNames.join(", ")}`,
+        )
+        .join("\n") +
+      "\n\nUse `mend resource list`, `start <name>`, `stop <name>`, `use <name> shared|own|off`, `reset <name>`, `load <name>`, or `env`. Each verb follows `mend resource`. `env` prints values, so keep its output out of notes and reports.\n\n";

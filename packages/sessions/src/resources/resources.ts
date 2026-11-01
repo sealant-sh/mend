@@ -8,7 +8,6 @@ import {
   type ResourceDefinitionStaleError,
   type ResourceSelectionRefusedError,
   ResourcesRepo,
-  ResourceLoadsRepo,
   SessionsRepo,
   type StoredResourceDefinition,
   UsersRepo,
@@ -18,7 +17,6 @@ import type { ProjectId, ResourceDefinitionId, SessionId, WorktreeId } from "@me
 import {
   choiceInEffect,
   choicesFor,
-  type OwnDatabaseOrigin,
   PRESET_VERSION_RULE,
   presetDefinition,
   PresetVersion,
@@ -36,7 +34,6 @@ import {
   type ResourceFileRead,
   type ResourceFileTable,
   type ResourceInstanceKind,
-  resourceInstanceKey,
   resourcePositionals,
   ResourceRefusal,
   resourceRefusalWords,
@@ -50,14 +47,10 @@ import {
   resourceStatusLine,
   type ResourceStatusView,
   resourceTableNotices,
-  type ResourceUse,
-  ownDatabaseName,
-  SHARED_DATABASE,
   shellExports,
   type Viewer,
   WorktreeChoice,
   withPresetCommand,
-  loadIsLive,
 } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -71,8 +64,9 @@ import {
   type ImageResolutionError,
   ResourceImageResolver,
 } from "./image-resolver.ts";
-import { type InstanceObserved, type ProjectObservation, ResourceRuntime } from "./runtime.ts";
+import { type InstanceObserved, ResourceRuntime } from "./runtime.ts";
 import { WorktreeServiceRestarts } from "./service-restarts.ts";
+import { ResourceStatusReads, resourceViewOf as viewOf } from "./status-reads.ts";
 import { readWorktreeTables } from "./worktree-tables.ts";
 
 /** A project as the resource rules read it. */
@@ -332,88 +326,6 @@ const presetSpec = (input: Extract<ResourceAddInput, { readonly kind: "preset" }
       );
 };
 
-/** How a read looks one instance up: what Sealant observed, or why it could not. */
-type Lookup = (key: string) => InstanceObserved;
-
-const lookupIn =
-  (observation: ProjectObservation | null, now: Date): Lookup =>
-  (key) => {
-    if (observation === null) return { instance: { kind: "not-started" }, observedAt: now };
-    if (observation.kind === "unobserved")
-      return { instance: observation.instance, observedAt: now };
-    return observation.byKey.get(key) ?? { instance: { kind: "not-started" }, observedAt: now };
-  };
-
-/** A worktree resource's instances read for the project: how many run. */
-const runningOf = (observation: ProjectObservation | null, definitionId: ResourceDefinitionId) =>
-  observation?.kind !== "observed"
-    ? 0
-    : [...observation.byKey].filter(
-        ([key, seen]) => key.startsWith(`${definitionId}@`) && seen.instance.kind === "running",
-      ).length;
-
-/**
- * The status view of one definition for one read: the worktree's use of it and the instance that
- * use reaches, or the project's when no worktree is read.
- */
-const viewOf = (input: {
-  readonly definition: StoredResourceDefinition;
-  readonly choice: WorktreeChoice | null;
-  readonly worktreeId: WorktreeId | null;
-  readonly owns: ReadonlyMap<ResourceDefinitionId, OwnDatabaseOrigin>;
-  readonly observation: ProjectObservation | null;
-  readonly lookup: Lookup;
-  readonly addedBy: string;
-}): { readonly view: ResourceStatusView; readonly instance: ResourceInstanceKind } => {
-  const { definition, worktreeId, lookup } = input;
-  const spec = definition.spec;
-  if (worktreeId === null) {
-    if (spec.scope === "worktree") {
-      return {
-        view: {
-          kind: "observed",
-          definition: spec,
-          use: { kind: "project", addedBy: input.addedBy },
-          instance: { kind: "per-worktree", running: runningOf(input.observation, definition.id) },
-          observedAt: lookup(definition.id).observedAt,
-        },
-        instance: "none",
-      };
-    }
-    const seen = lookup(resourceInstanceKey(definition.id, null));
-    return {
-      view: {
-        kind: "observed",
-        definition: spec,
-        use: { kind: "project", addedBy: input.addedBy },
-        instance: seen.instance,
-        observedAt: seen.observedAt,
-      },
-      instance: seen.instance.kind,
-    };
-  }
-  const mode = spec.scope === "worktree" ? "worktree" : choiceInEffect(spec, input.choice);
-  const use: ResourceUse =
-    mode === "worktree"
-      ? { kind: "worktree" }
-      : mode === "own"
-        ? { kind: "own", origin: input.owns.get(definition.id) ?? null }
-        : mode === "shared"
-          ? { kind: "shared" }
-          : { kind: "off" };
-  const seen = lookup(resourceInstanceKey(definition.id, mode === "worktree" ? worktreeId : null));
-  return {
-    view: {
-      kind: "observed",
-      definition: spec,
-      use,
-      instance: seen.instance,
-      observedAt: seen.observedAt,
-    },
-    instance: use.kind === "off" ? "none" : seen.instance.kind,
-  };
-};
-
 /** A session's page as lines: each status line, then its worktree's `mend.toml`. */
 const pageLines = (page: ResourcesPage): ReadonlyArray<string> => {
   const lines = page.settings.map((entry) => entry.statusLine);
@@ -452,7 +364,6 @@ export const ResourcesLive: Layer.Layer<
   Resources,
   never,
   | ResourcesRepo
-  | ResourceLoadsRepo
   | ProjectsRepo
   | SessionsRepo
   | UsersRepo
@@ -462,11 +373,11 @@ export const ResourcesLive: Layer.Layer<
   | ResourceImageResolver
   | ResourceRuntime
   | WorktreeServiceRestarts
+  | ResourceStatusReads
 > = Layer.effect(
   Resources,
   Effect.gen(function* () {
     const repo = yield* ResourcesRepo;
-    const loads = yield* ResourceLoadsRepo;
     const projects = yield* ProjectsRepo;
     const sessions = yield* SessionsRepo;
     const users = yield* UsersRepo;
@@ -476,6 +387,7 @@ export const ResourcesLive: Layer.Layer<
     const images = yield* ResourceImageResolver;
     const runtime = yield* ResourceRuntime;
     const restarts = yield* WorktreeServiceRestarts;
+    const status = yield* ResourceStatusReads;
 
     /** Display names by account id, in one query; an id with no account reads as itself. */
     const namesOf = (ids: ReadonlyArray<string>) =>
@@ -568,73 +480,6 @@ export const ResourcesLive: Layer.Layer<
       }
     });
 
-    /** Each definition's view for a read: one call to Sealant, and none when there is nothing. */
-    const viewsFor = Effect.fn("Resources.viewsFor")(function* (
-      listed: ReadonlyArray<DefinitionWithChoice>,
-      projectId: ProjectId,
-      worktreeId: WorktreeId | null,
-      clock: ReaderClock,
-    ) {
-      const [observation, owns, nameOf, latestLoads] = yield* Effect.all(
-        [
-          listed.length === 0 ? Effect.succeed(null) : runtime.observe(projectId),
-          worktreeId === null
-            ? Effect.succeed(new Map<ResourceDefinitionId, OwnDatabaseOrigin>())
-            : repo.ownDatabases(worktreeId),
-          namesOf(listed.map(({ definition }) => definition.addedBy)),
-          loads.latest(projectId),
-        ],
-        { concurrency: "unbounded" },
-      );
-      const lookup = lookupIn(observation, clock.now);
-      return (each: DefinitionWithChoice) => {
-        const shown = viewOf({
-          definition: each.definition,
-          choice: each.choice,
-          worktreeId,
-          owns,
-          observation,
-          lookup,
-          addedBy: nameOf(each.definition.addedBy),
-        });
-        const mode =
-          worktreeId === null ? "shared" : choiceInEffect(each.definition.spec, each.choice);
-        const database =
-          mode === "own" && worktreeId !== null ? ownDatabaseName(worktreeId) : SHARED_DATABASE;
-        const instanceKey = resourceInstanceKey(
-          each.definition.id,
-          each.definition.spec.scope === "worktree" ? worktreeId : null,
-        );
-        // Only a load in progress speaks for the resource. A finished one said its result to
-        // whoever ran it; from then on the line is what the runtime observes.
-        const load =
-          mode === "off"
-            ? undefined
-            : latestLoads.find(
-                (row) =>
-                  row.instanceKey === instanceKey &&
-                  row.database === database &&
-                  loadIsLive(row.phase),
-              );
-        return load === undefined
-          ? shown
-          : {
-              instance: shown.instance,
-              view: {
-                kind: "load",
-                definition: each.definition.spec,
-                target: load.target,
-                phase: load.phase,
-                label: load.label,
-                bytesDone: load.bytesDone,
-                bytesTotal: load.bytesTotal,
-                savedAt: load.savedAt,
-                message: load.message,
-              } satisfies ResourceStatusView,
-            };
-      };
-    });
-
     const list = Effect.fn("Resources.list")(function* (
       project: ResourceProject,
       viewer: Viewer,
@@ -655,7 +500,7 @@ export const ResourcesLive: Layer.Layer<
         viewer,
         worktree: worktreeId === null ? null : { id: worktreeId, changeOwner: owner },
       };
-      const shownOf = yield* viewsFor(definitions, project.id, worktreeId, clock);
+      const shownOf = yield* status.viewsFor(definitions, project.id, worktreeId, clock);
       const settings = settingsRead(project.id, definitions, owning);
       const file: ResourceFileRead =
         worktreeId === null
@@ -789,7 +634,7 @@ export const ResourcesLive: Layer.Layer<
       // Services read their env at start, so a switch restarts the running ones; both databases
       // stay as they are.
       const restarted = changed ? yield* restarts.restart(worktreeId, viewer.userId) : [];
-      const shownOf = yield* viewsFor([listed], project.id, worktreeId, clock);
+      const shownOf = yield* status.viewsFor([listed], project.id, worktreeId, clock);
       const { view } = shownOf(listed);
       return {
         definitionId,

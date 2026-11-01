@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  resourcesNote,
   LEGACY_NOTE,
   LEGACY_NOTE_MARKER,
   parseWorkspaceNoteOutcomes,
@@ -348,4 +349,19 @@ describe("workspace note", () => {
       ".pi/agent/AGENTS.md",
     ]);
   });
+});
+
+it("writes resource observations and env names without resolving values", () => {
+  const line = "@db · running · own database · observed 3 s ago";
+  const note = resourcesNote([
+    { statusLine: line, envNames: ["DATABASE_URL", "MEND_RESOURCE_DB_URL"] },
+  ]);
+  expect(note).toContain("## Mend Resources");
+  expect(note).toContain(line);
+  expect(note).toContain("DATABASE_URL, MEND_RESOURCE_DB_URL");
+  for (const verb of ["list", "start", "stop", "use", "reset", "load", "env"])
+    expect(note).toContain(verb);
+  expect(note).not.toContain("postgres://");
+  expect(note).not.toContain("DATABASE_URL=");
+  expect(resourcesNote([])).toBe("");
 });

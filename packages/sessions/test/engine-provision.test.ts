@@ -51,6 +51,7 @@ import { describe, expect } from "vitest";
 import { HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
 import { HARNESS_UPDATES_OFF_ENV, NO_PAGER_ENV } from "../src/harness-seeds.ts";
 import { ResourceRuntimeNone } from "../src/resources/runtime.ts";
+import { ResourceStatusReadsNone } from "../src/resources/status-reads.ts";
 import {
   agentBridgeStubLayer,
   agentConversationStubLayer,
@@ -1114,6 +1115,7 @@ describe("SessionEngine", () => {
           PersonLayoutPlatformNone,
           HarnessLayoutConfigShared,
           ResourceRuntimeNone,
+          ResourceStatusReadsNone,
         ),
       ),
     );
