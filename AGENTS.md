@@ -100,9 +100,10 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   feature map, verification instructions and recipes under `.mend/`; its starter's own agent login
   pays, and its result is a change. A `proof artifact` is a selected screenshot or short video of
   the user's web app on a session's screen, attached to a change with its source and observation
-  time. Anyone who can see the change can see it. Artifacts stay as long as the change; ordinary
-  screen-log frames still expire after 30 days. A frame is one screen observation, not an artifact.
-  Captures describe what was observed, never claim the change works.
+  time. Anyone who can see the change can see it in Mend. Copies posted to Slack, T3 Code or GitHub
+  follow that service's access rules; public-repository media is public. Artifacts stay as long as
+  the change; ordinary screen-log frames still expire after 30 days. A frame is one screen
+  observation, not an artifact. Captures describe what was observed, never claim the change works.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that

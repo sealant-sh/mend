@@ -29,6 +29,7 @@ For a task board app, the proposed files might be:
   features.md     What people can do and where each feature lives
   verify.md       How to try each feature and what to observe
   mend.toml       Setup, Services, preview and resource definitions
+  create-test-session.mjs  An app-specific script when auth uses an external provider
 ```
 
 The agent reads existing instructions, app code, tests and infrastructure files. It updates existing
@@ -58,9 +59,19 @@ The matching entry in `.mend/verify.md` might say:
 ```markdown
 ## Sign-in and test account
 
-The board requires email and password sign-in at `/login`. Provide a project test account through
-project secrets or Doppler using TEST_USER_EMAIL and TEST_USER_PASSWORD. Keep their values out of
-this file. Use a test account with permission to add and complete tasks.
+The board requires email and password sign-in at `/login`. Its `pnpm seed:test-user` command creates
+a test account with permission to add and complete tasks. The seed reads TEST_USER_EMAIL and
+TEST_USER_PASSWORD from runtime secrets. Prepare a protected capture.env file outside the repo with
+those names, then load it with:
+
+    mend env load /path/outside/repo/capture.env --secret --project task-board
+
+If this project uses Doppler instead, upload that file to its selected config:
+
+    doppler secrets upload /path/outside/repo/capture.env --project task-board --config dev
+
+After the resource and schema are prepared, run `pnpm seed:test-user` in the capture's own database.
+Do not write secret values into `.mend/`.
 
 ## Task board
 
@@ -73,15 +84,37 @@ observe it in the list. Mark it complete and observe its completed state. Reload
 observe that the same task is still complete. Keep a screenshot of that state and a short video of
 the flow. Remove only the task this check created.
 
-Not tried during setup. A person must provide the test account before capture.
+Not tried during setup. Supply the named runtime secrets before running these instructions.
 ```
 
-The agent assesses the real sign-in flow, including any external provider or email step. It says
-when a test account is needed and what is missing. It also lists which resources each flow needs,
-how to prepare data and which actions change it. Another agent should be able to follow the file
-through your app, with observable results beside each action.
+The names and seed command above are examples for this task-board repo. Setup finds the actual
+commands and names in your app. If there is no seed script, it documents the sign-up flow exactly,
+including how to create the test account and where to store its credentials. It also lists which
+resources each flow needs, how to prepare data and which actions change it.
 
-### Recipes and resources
+## Apps that require sign-in
+
+The setup session writes a way to get a signed-in test user, not just a description of the login
+page. `.mend/verify.md` says what to run and what it needs.
+
+For OAuth or another external provider, the agent studies your app's own session storage. It writes
+a script under `.mend/`, such as `create-test-session.mjs`, which creates a valid test-user session
+in the app's development database or signs its session cookie with the app's dev secret. The
+verification file gives the script command, runtime secret names, test-user and database
+prerequisites, and how to install that session in the screen's browser. Captures skip the external
+provider's flow. The script reads secrets at runtime; its code and instructions contain no values,
+signed cookies or session tokens.
+
+For password auth, the file names the seed script or documents the sign-up flow that creates the
+test account. It lists the exact project secret or Doppler names and the command to set them, as in
+the example above. You do not have to guess where an account comes from or which secret to add.
+
+Every screen starts with a fresh browser profile. After it ends, the agent repeats the documented
+auth preparation for the next screen. For before and after captures, it prepares the account and
+session against each copy's own data. Missing runtime prerequisites are named as `not captured`, not
+replaced with an anonymous page. Writing the script does not execute it during setup.
+
+## Recipes and resources
 
 For this example, `.mend/mend.toml` could contain:
 
@@ -131,7 +164,18 @@ start resources or Services, install dependencies, migrate data or sign in to yo
 a follow-up session to run the instructions explicitly. Starting resources still requires a choice
 of project or worktree level, as the resource guide describes.
 
-Later sessions use these files to find the relevant user flow and choose
-[proof artifacts](/guides/proof-artifacts/). If the app requires a login, supply a test account
-through [project secrets](/guides/environment-variables/) or Doppler before asking for captures.
-Every screen starts with a fresh browser profile, so the agent signs in again after it ends.
+Later sessions use these files to find the relevant user flow, prepare a signed-in test user and
+choose [proof artifacts](/guides/proof-artifacts/). Mend uploads the selected screenshots and video
+into the session's Slack thread and shows them inline in T3 Code. Landing embeds them in the PR
+body; Review and the phone show them beside the change. Once posted, copies live under Slack's, T3
+Code's or GitHub's access rules. Media on a public repository is visible to anyone.
+
+## Build order
+
+1. Before and after screenshots and the after video, with the base side copy.
+2. Delivery to Slack and inline display in T3 Code.
+3. The setup session, including auth preparation.
+4. Embedded media in the PR body.
+5. The review page and phone presentation.
+
+Withdrawing a capture is deferred to later work.

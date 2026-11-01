@@ -1,9 +1,8 @@
 # Setup sessions and recorded proof artifacts
 
 Status: agreed design for 0.37, not yet built. Yiannis supplied the setup and capture stories on
-2026-11-01. The defaults he did not object to are recorded as design decisions below. The remaining
-product questions are under [Open questions for Yiannis](#open-questions-for-yiannis), with a
-recommendation for each. This ADR changes no runtime behavior.
+2026-11-01 and has decided delivery, authentication, withdrawal and build order. Those decisions
+replace the earlier open questions in this ADR. This document changes no runtime behavior.
 
 ## What people get
 
@@ -27,6 +26,8 @@ existing instructions, tests, development setup and infrastructure. It proposes 
 - `.mend/verify.md`, instructions for proving those features through the app as a person would.
 - `.mend/mend.toml`, setup commands, Service recipes, a preview and `[resource.*]` definitions for
   the resources the app needs, where applicable.
+- A script under `.mend/` for creating a signed-in test session when the app uses OAuth or another
+  external provider. Its code uses runtime secrets and never embeds their values.
 
 For example, a task app's feature map points to the board route and its task code. Its verification
 file says how to sign in, add a task, reload the board and observe the saved task. Its recipe starts
@@ -36,9 +37,11 @@ feature map and verification instructions, with browser capture marked unavailab
 
 The setup prompt also asks the agent to assess authentication. It records how a person signs in,
 which flows require a login, whether a test account is needed, how to prepare test data, and which
-project secrets or Doppler variables supply that account. It writes variable names and missing
-requirements, never credentials. It also assesses which resources are needed, which can be shared,
-and which need worktree data before migrations or verification writes.
+project secrets or Doppler variables supply that account. For an external provider it writes a
+script that creates the app's own signed-in test session; for password auth it documents the
+account's seed or sign-up flow and the commands to supply credentials. It writes no secret values.
+It also assesses which resources are needed, which can be shared, and which need worktree data
+before migrations or verification writes.
 
 The output is a change. The person opens Review, corrects assumptions or sends comments back, and
 lands it through the normal landing flow if they want it on origin. The files travel with the code.
@@ -65,31 +68,47 @@ reads `Completed task on board · after · checkpoint <checkpoint> · observed <
 its source, session and screen-log link, and the agent's description of what it shows. These are
 observations. The label never says the change "works".
 
-The same labelled captures are available from the Slack thread, the phone's review and the PR body
-when the owner lands the change. Review does not require landing. A person who needs more can tell
-the same session, "Show the empty board too" or "Take another screenshot after signing in as the
-test account." The agent adds another capture and keeps the earlier observations.
+Mend uploads the screenshots and video as files into the session's Slack thread. T3 Code shows them
+inline in the session's thread. The phone's review shows the same captures, and the PR body embeds
+the images and video when the owner lands the change. Review does not require landing. A person who
+needs more can tell the same session, "Show the empty board too" or "Take another screenshot after
+signing in as the test account." The agent adds another capture and keeps the earlier observations.
 
 ### Capture behind a login
 
-The verification file says the board needs a project test account. The project supplies it through
-project secrets or Doppler. The agent signs in through the app's normal flow, then captures the
-board. It does not copy the owner's personal browser cookies into the screen.
+The setup session works out how to get a signed-in test user and writes that procedure into
+`.mend/verify.md`. It does not leave an external provider's sign-in screen as the capture plan.
 
-ADR 0020 D10 gives every screen a fresh browser profile, discarded when the screen ends. A screen
-restart therefore needs sign-in again. The setup assessment describes any external identity
-provider, email link or one-time code the agent cannot complete with the supplied account. Missing
-credentials produce `not captured · test account needed`, with the missing requirement. Mend does
-not pretend that an anonymous page shows an authenticated flow. Credentials stay out of the
-versioned files, labels and captures. Pixels can still contain account data; the project supplies a
-test account and data suitable for everyone who can see the change.
+For OAuth or another external provider, the agent studies the app's own session storage and cookie
+validation. It writes a script under `.mend/` that creates a valid session for a test user directly
+in the app's development database, or signs the session cookie with the app's own dev secret.
+`verify.md` gives the command, runtime secret names, database and test-user prerequisites, and how
+to put the resulting session into the screen's browser. Captures skip the provider's flow. The
+script targets development test data; it does not copy a personal browser session or change the
+app's production authentication.
 
-This extends ADR 0020's instruction to stop at passwords for the specific case of a project-provided
-test-account login. It does not supply a way past an external one-time code. ADR 0020 D6 also
-records that native transcripts can retain typed tool arguments. This design does not promise to
-redact those arguments. The capture implementation must account for that existing path when handling
-project secrets and explain what the session record retains. Artifact media starts after sign-in and
-its metadata keeps credential references, not values.
+For password auth, `verify.md` names the seed script that creates the account, or documents the
+sign-up flow that does. It gives the exact project secret or Doppler names and the command to set
+them. For example, a task-board repo whose seed reads `TEST_USER_EMAIL` and `TEST_USER_PASSWORD` can
+document `mend env load /path/outside/repo/capture.env --secret --project task-board`, then its own
+`pnpm seed:test-user` command. A Doppler-backed repo can document
+`doppler secrets upload /path/outside/repo/capture.env --project task-board --config dev` instead.
+The local file contains the values and stays outside the repository. These are examples; setup
+writes the names and commands the actual app needs, including the selected Doppler project and
+config. No secret value, signed cookie or session token is written into `.mend/`.
+
+ADR 0020 D10 still gives every screen a fresh browser profile, discarded when the screen ends. On
+restart the agent repeats the documented test-session script or password sign-in. It runs the auth
+preparation against each capture's own data and source, so a base copy does not use the after app's
+session database. If a prerequisite is missing, the artifact says `not captured` and names what is
+missing. Setup supplies an executable plan rather than claiming it has already run it.
+
+This extends ADR 0020's stop-at-password instruction for the project's test account. ADR 0020 D6
+notes that native transcripts can retain typed tool arguments. Secret values belong in runtime
+secret inputs rather than literal tool arguments or generated source. Artifact media starts after
+auth preparation, metadata keeps secret names rather than values, and the implementation must
+account for what the session record retains. The app's visible account data still appears in the
+capture, so the project uses test data suitable for its delivery audiences.
 
 ## Where this comes from
 
@@ -223,65 +242,115 @@ that screen's log. A deleted change releases only its own holds. An already expi
 cannot be recovered by selecting it later. The label and provenance remain readable when unheld
 neighboring frames have expired.
 
-Anyone who can see the change can see its artifacts. Reads check current change visibility,
+Anyone who can see the change can see its artifacts in Mend. Reads check current change visibility,
 including after access is revoked; knowing a blob key grants no access. Artifact access follows the
 change even if the source session has different visibility. The operator gets no default read access
-to organization content. A link in Slack or GitHub never grants a new reader permission.
+to organization content.
 
 Review shows paired images and a video player beside the diff, with labels visible before opening
-media. The phone offers the same captures in its review. Slack shows the captions and authenticated
-links to open the captures. Landing adds labelled image and video links, sources and observation
-times to Mend's existing section of the PR body. It names the landed checkpoint and distinguishes
-artifacts from an older checkpoint. It preserves the person's text outside that section. A PR update
-never makes old captures appear to describe new code.
+media. The phone offers the same captures in its review. These designs remain unchanged.
 
-Until Yiannis decides the publication question below, external destinations receive authenticated
-links to Mend, not public blob URLs or uploaded copies. A private-network instance still needs to be
-reachable by the reader. The PR body explains when opening media requires Mend access. Slack channel
-membership and GitHub repository access alone do not grant change access.
+### Delivery to Slack and T3 Code
+
+Slack receives files, not a list of links. Mend uploads each selected screenshot and the after video
+into the session's Slack thread through its Slack app, with the source and observation caption. A
+person can inspect them there without opening Mend. Delivery records the returned file and message
+identities so a retry does not repost media already delivered. Failure names the files not
+delivered; it does not replace them with an apparent success made of links.
+
+[ADR 0012](0012-t3code-gateway.md) makes `apps/t3-gateway` an adapter, with Mend as the source of
+truth. Its current `thread-projection.ts` already carries `ChatImageAttachment` metadata for message
+images, and `assets.ts` serves device-bound image assets and ranged media-file previews through
+`assets.createUrl`. Those are existing ways to render media, not a proof-artifact feed. The current
+RPC path resolves attachments through `hub.imageOf`, which holds incoming chat images; its file
+preview path reads worktree files. Neither is a durable read of proof media in Mend's blob store. A
+completed tool row alone does not attach the artifact images.
+
+Extend the projection to put labelled proof screenshots and the after video inline in the session's
+thread, with stable artifact identities so reconnects update the same items. Add a proof-artifact
+asset subject resolved by artifact ID and checked against current change access. It reads Mend's
+blob store, not a workspace path or expiring screen-frame URL, and reuses device-bound grants, MIME
+handling, byte ranges for video, budgets and revocation checks. Project screenshots through the
+client's image rendering and the video through its inline media player, with the before or after
+source and observation caption beside them. This is output, not an attachment submitted as a new
+agent turn. If the pinned client needs a media projection extension, update the supported pin and
+its projection checks; a link-only system notice is not delivery of this feature. Vendored contracts
+are updated through ADR 0012's copy process, never edited by hand.
+
+Once posted, a copy lives in Slack, T3 Code or GitHub under that service's access rules. Yiannis
+accepts this publication consequence. Slack channel readers can see uploaded files under Slack's
+rules; T3 Code can retain displayed or downloaded media under its own client and thread rules.
+Revoking Mend access does not recall a copy already delivered. On a public repository anyone can see
+the GitHub media. These external copies are separate from Mend's change-lifetime retention.
+
+### Embedded media in the PR body
+
+Landing uploads the selected media as GitHub-native attachments in the same repository as the PR.
+Use the existing landing workspace and the change owner's GitHub login, with a `gh` version that
+supports `gh pr create --attach` and `gh pr edit --attach`. Build Mend's section of the body with
+local screenshot references and a standalone video reference, then pass the files with `--attach`.
+The CLI replaces the image paths with uploaded URLs that render as images and the standalone video
+reference with a GitHub video player. A plain text link is not the result. Keep the resulting URLs
+and delivery identities so later body updates reuse uploads. Preserve the person's text outside
+Mend's section and report partial upload failure accurately.
+
+For example, a prepared body contains `![Board before](./before.png)` and
+`![Board after](./after.png)`, each beside its source and observation caption. A separate paragraph
+contains only `![](./after.mp4)`. A later landing uses
+`gh pr edit <number> --body-file <body> --attach ./before.png --attach ./after.png --attach ./after.mp4`
+for media not yet uploaded. The body names the landed checkpoint and distinguishes older captures; a
+PR update never makes an old image appear to show new code.
+
+The mechanism check found a supported private-repository path in GitHub's
+[attachment documentation](https://github.com/github/docs/blob/main/content/get-started/writing-on-github/working-with-advanced-formatting/attaching-files.md):
+private and internal repository uploads are viewable by people with repository access; public
+repository uploads need no authentication. GitHub's
+[CLI attachment guide](https://github.com/github/docs/blob/main/content/github-cli/github-cli/attaching-files-with-github-cli.md)
+explicitly documents `--attach`, inline images, video players and the required repository push
+access. The installed `gh pr edit --help` exposes that flag too. This is a documentation and CLI
+capability check, not a claim of a live private-PR browser test. That rendering and access check
+belongs in the implementation check below.
+
+The proposed `refs/mend/artifacts/<change>` is not the serving mechanism. A Git ref preserves blobs
+but does not itself provide an authenticated image or video embedding service. The Markdown API
+probe preserved the supplied raw URL; it did not establish private-repository rendering or grant
+reader access. We did not establish a durable private embed from an arbitrary ref. GitHub-native
+attachments provide the documented alternative for both public and private repositories, without
+adding binary commits, another branch lifecycle or a separate media host. No token or temporary
+signed raw URL goes in a PR body. If the installed CLI or repository permissions cannot upload,
+landing reports media delivery unavailable rather than silently publishing a link-only substitute.
 
 ## Decisions and alternatives
 
-| Decision                     | Design                                                                                                                                                        | Alternative considered and why it was not chosen                                                                                            |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1. Consent and cost         | Ask on adoption, require yes, retain **Set up this project** later. The starter's own agent login pays.                                                       | Automatic setup on adoption spends a person's login before they choose it.                                                                  |
-| D2. Session and prompt       | An ordinary session runs Mend's visible prompt and proposes a change.                                                                                         | A hidden inference pass loses the conversation, normal steering and Review.                                                                 |
-| D3. Repository output        | Write `.mend/features.md`, `.mend/verify.md` and recipes in `.mend/mend.toml`; assess auth and resources.                                                     | Provider-specific instructions alone do not give Mend a shared place to find the app's user flows.                                          |
-| D4. Execution                | Setup writes instructions. Review and landing start nothing. Later execution follows explicit starts in ADR 0019.                                             | Running everything while onboarding mixes proposed instructions with data and infrastructure writes outside the diff.                       |
-| D5. Capture choice           | The session's agent chooses relevant captures from the feature map and verification instructions. A person can ask for more.                                  | A fixed screenshot of every route adds unrelated images. Requiring a request for every image makes the person specify the whole proof flow. |
-| D6. Before source            | Run the base recipe in an isolated side copy on another port, with separate writable data.                                                                    | Checking out the base in the change worktree disturbs the work in progress. An old screenshot has no established base source.               |
-| D7. Video                    | Capture only the after flow, under about 60 seconds.                                                                                                          | Before videos and continuous session video increase storage and review time without answering the requested before and after picture story. |
-| D8. Lifetime                 | Keep artifacts as long as the change, using blob retention holds; unselected screen frames still expire after 30 days.                                        | Expiring review media with all screen frames makes an older change lose its selected evidence.                                              |
-| D9. First scope              | Web apps only for proof artifacts in v1. Setup can describe other repositories and mark browser capture unavailable.                                          | Supporting native and Electron capture now adds flows beyond the requested web recipe design. ADR 0020's screen can still run other X apps. |
-| D10. Evidence                | Label what the artifact shows, its source and when it was observed, with gaps stated.                                                                         | A "works" badge turns a picture into a verdict it cannot support.                                                                           |
-| D11. Login                   | Use the project's test account through project secrets or Doppler, and sign in afresh after a screen ends.                                                    | Persisting personal cookies reverses ADR 0020 D10 and adds another secret store.                                                            |
-| D12. Presentation and access | Review, Slack, phone and landed PR bodies expose the same labelled artifacts to people who can see the change. External links require Mend access pending Q1. | Unauthenticated blobs or automatic uploads give a different audience access without a publication decision.                                 |
+| Decision                            | Design                                                                                                                                                                                                                                                                  | Alternative considered and why it was not chosen                                                                                            |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1. Consent and cost                | Ask on adoption, require yes, retain **Set up this project** later. The starter's own agent login pays.                                                                                                                                                                 | Automatic setup on adoption spends a person's login before they choose it.                                                                  |
+| D2. Session and prompt              | An ordinary session runs Mend's visible prompt and proposes a change.                                                                                                                                                                                                   | A hidden inference pass loses the conversation, normal steering and Review.                                                                 |
+| D3. Repository output               | Write `.mend/features.md`, `.mend/verify.md`, recipes and any external-auth test-session script under `.mend/`; assess resources.                                                                                                                                       | Provider-specific notes alone do not give later sessions runnable user flows.                                                               |
+| D4. Execution                       | Setup writes instructions. Review and landing start nothing. Later execution follows explicit starts in ADR 0019.                                                                                                                                                       | Running everything while onboarding mixes proposed instructions with data and infrastructure writes outside the diff.                       |
+| D5. Capture choice                  | The session's agent chooses relevant captures from the feature map and verification instructions. A person can ask for more.                                                                                                                                            | A fixed screenshot of every route adds unrelated images. Requiring a request for every image makes the person specify the whole proof flow. |
+| D6. Before source                   | Run the base recipe in an isolated side copy on another port, with separate writable data.                                                                                                                                                                              | Checking out the base in the change worktree disturbs the work in progress. An old screenshot has no established base source.               |
+| D7. Video                           | Capture only the after flow, under about 60 seconds.                                                                                                                                                                                                                    | Before videos and continuous session video increase storage and review time without answering the requested before and after picture story. |
+| D8. Lifetime                        | Keep artifacts as long as the change, using blob retention holds; unselected screen frames still expire after 30 days.                                                                                                                                                  | Expiring review media with all screen frames makes an older change lose its selected evidence.                                              |
+| D9. First scope                     | Web apps only for proof artifacts in v1. Setup can describe other repositories and mark browser capture unavailable.                                                                                                                                                    | Supporting native and Electron capture now adds flows beyond the requested web recipe design. ADR 0020's screen can still run other X apps. |
+| D10. Evidence                       | Label what the artifact shows, its source and when it was observed, with gaps stated.                                                                                                                                                                                   | A "works" badge turns a picture into a verdict it cannot support.                                                                           |
+| D11. Authentication, decided        | Setup writes an app-specific session-creation or cookie-signing script for external providers. For password auth it documents the seed or sign-up flow, exact secret names and commands to set them. No secret values in `.mend/`; repeat auth after a screen ends.     | Asking the person to complete OAuth for every capture leaves onboarding unfinished. Personal cookies would reverse ADR 0020 D10.            |
+| D12. Delivery and audience, decided | Upload screenshots and video as files to the Slack thread and show them inline through the T3 Code gateway. Review and phone keep their designed presentation. Posted copies follow the destination service's rules; public-repo media is public. Yiannis accepts this. | Authenticated Mend links alone do not show real media where the person is working.                                                          |
+| D13. PR media, decided design       | Use GitHub-native uploads through `gh --attach`, embedding screenshots and a video player in the PR body. GitHub documents repository-reader access for private uploads.                                                                                                | A custom Git ref alone has no verified private inline-serving path; link-only bodies do not meet the request.                               |
+| D14. Withdrawal, decided            | Withdrawing a capture is deferred to later work.                                                                                                                                                                                                                        | An owner withdrawal action and placeholder add work outside this build.                                                                     |
+| D15. Priority, decided              | Build capture, Slack and T3 Code delivery, setup including auth, PR embedding, then Review and phone, in that order.                                                                                                                                                    | Building Review first delays the two clients Yiannis prioritizes.                                                                           |
 
-## Open questions for Yiannis
+## Build order
 
-These are product choices left after the confirmed stories and defaults. They do not reopen consent,
-the base side copy, the short after video, web-only scope or retention for the life of the change.
+1. Capture before and after screenshots and the after video, with the base side copy.
+2. Deliver files to Slack and show the captures inline in T3 Code.
+3. Build the setup session, including auth preparation and its `.mend/` instructions and scripts.
+4. Embed media in the PR body.
+5. Add the review page and phone presentation.
 
-### Q1. Should landing or Slack copy media to an audience outside Mend?
-
-A public PR, or a Slack channel with guests, can have readers who cannot see the change. A Mend link
-preserves change visibility but those readers cannot open it. Uploaded media would remain with the
-external service under its access and deletion rules.
-
-Recommendation: ship authenticated links in v1. If broader publication is wanted, make publishing
-copies an explicit act by the change owner that names the destination and audience. Do not make
-landing itself consent to a larger media audience.
-
-### Q2. May the change owner withdraw a sensitive capture while keeping the change?
-
-Keeping an artifact for the change's lifetime is the default. A test app can still show something
-the person did not intend to keep. The current design has no separate withdrawal action, and
-deleting a change is a large response to one image.
-
-Recommendation: allow the change owner to withdraw selected media explicitly, keeping a
-`withdrawn by <person>` placeholder and its source metadata. Explain that Mend cannot withdraw
-copies someone already downloaded or published elsewhere. This would be an explicit exception to the
-retention default, not a shorter automatic retention period.
+Capture and early delivery can use a project's existing recipes and explicit auth instructions until
+the setup session writes them. This order does not make setup an automatic prerequisite for a
+capture.
 
 ## Implementation boundary and checks for the later build
 
@@ -293,7 +362,11 @@ platform recording product.
 The later feature check must exercise the stories as a person on the box: decline setup, start it
 later with the starter's login, review the proposed files, and observe that no resources or Services
 started. Then use an authenticated web app, capture base and after without disturbing its change,
-ask for another capture, and inspect the same items on Review, Slack, phone and a landed PR. Check
-an unavailable base and a missing test account, a screen restart requiring sign-in, retention beyond
-ordinary frame expiry, a later checkpoint, and a reader who loses change access. The observations
-belong on the implementation PRs under AGENTS.md, not on this unbuilt design.
+ask for another capture, and inspect the files in Slack, inline media in T3 Code, Review, phone and
+a landed PR. Check an unavailable base and a missing test account, a screen restart requiring
+sign-in, retention beyond ordinary frame expiry, a later checkpoint, and a reader who loses change
+access. Check external-provider session creation and password-account provisioning, a private GitHub
+PR viewed by a repository reader without Mend access, refusal for someone without private-repo
+access, and public PR images and video while signed out. Confirm that Mend revocation leaves already
+delivered external copies under their destination's rules. The observations belong on the
+implementation PRs under AGENTS.md, not on this unbuilt design.
