@@ -57,6 +57,7 @@ import {
   type Viewer,
   WorktreeChoice,
   withPresetCommand,
+  loadIsLive,
 } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -604,11 +605,16 @@ export const ResourcesLive: Layer.Layer<
           each.definition.id,
           each.definition.spec.scope === "worktree" ? worktreeId : null,
         );
+        // Only a load in progress speaks for the resource. A finished one said its result to
+        // whoever ran it; from then on the line is what the runtime observes.
         const load =
           mode === "off"
             ? undefined
             : latestLoads.find(
-                (row) => row.instanceKey === instanceKey && row.database === database,
+                (row) =>
+                  row.instanceKey === instanceKey &&
+                  row.database === database &&
+                  loadIsLive(row.phase),
               );
         return load === undefined
           ? shown

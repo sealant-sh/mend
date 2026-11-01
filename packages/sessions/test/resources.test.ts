@@ -16,11 +16,19 @@ import {
   SessionsRepo,
   SessionsRepoLive,
   type StoredResourceDefinition,
+  type StoredResourceLoad,
   UsersRepoLive,
   WorktreesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import {
+  OrganizationId,
+  ProjectId,
+  ResourceLoadId,
+  SessionId,
+  Sha,
+  WorktreeId,
+} from "@mend/domain";
 import {
   ImageDigest,
   ownDatabaseName,
@@ -220,6 +228,8 @@ const images = Layer.succeed(ResourceImageResolver, {
 const runtimeLayer = resourceRuntimeLayer(Duration.millis(300)).pipe(
   Layer.provideMerge(Layer.mergeAll(repos, reads, images, scopes)),
 );
+/** The loads the repo answers as each target's latest. */
+let loadRows: ReadonlyArray<StoredResourceLoad> = [];
 /** Each worktree whose Services a switch restarted, and by whom; it ran `web`. */
 const restarted: Array<string> = [];
 const restarts = Layer.succeed(WorktreeServiceRestarts, {
@@ -230,7 +240,7 @@ const restarts = Layer.succeed(WorktreeServiceRestarts, {
     }),
 });
 const resources = ResourcesLive.pipe(
-  Layer.provide(Layer.mock(ResourceLoadsRepo, { latest: () => Effect.succeed([]) })),
+  Layer.provide(Layer.mock(ResourceLoadsRepo, { latest: () => Effect.sync(() => loadRows) })),
   Layer.provideMerge(Layer.merge(runtimeLayer, restarts)),
 );
 const channel = ResourcesChannelLive.pipe(
@@ -501,6 +511,38 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     expect(await fromSession("stop", "nope")).toEqual([
       "refused: no @nope in this project · mend resource list shows them",
     ]);
+  });
+
+  it("shows a load while it runs, and the runtime's line again once it has finished", async () => {
+    const load = (phase: StoredResourceLoad["phase"]): StoredResourceLoad => ({
+      id: ResourceLoadId.make("rload_1"),
+      projectId: PROJECT,
+      definitionId: db.id,
+      worktreeId: WORKTREE,
+      instanceKey: db.id,
+      database: OWN,
+      target: "own",
+      label: "staging.dump",
+      startedBy: "u-tom",
+      phase,
+      bytesDone: 40_000_000,
+      bytesTotal: 120_000_000,
+      savedPath: null,
+      savedAt: null,
+      message: null,
+      createdAt: new Date(),
+    });
+    const dbLine = async () => (await fromSession("list")).find((line) => line.startsWith("@db"));
+    try {
+      loadRows = [load("restoring")];
+      expect(await dbLine()).toMatch(/^@db · loading staging\.dump · restoring /);
+      for (const phase of ["done", "failed"] as const) {
+        loadRows = [load(phase)];
+        expect(await dbLine()).toMatch(/^@db · running · own database · /);
+      }
+    } finally {
+      loadRows = [];
+    }
   });
 
   it("resets a worktree's own database: saves a dump, then copies shared again", async () => {
