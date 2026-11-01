@@ -31,6 +31,7 @@ import {
   requestInputWithoutPageHtml,
   withMendPageResult,
 } from "./mend-page-call.ts";
+import { compactMendProofCall, withMendProofResult } from "./mend-proof-call.ts";
 import {
   compactMendScreenCall,
   requestInputWithoutTypedText,
@@ -264,7 +265,7 @@ export const ClaudeAdapter: AgentAdapter = {
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));
       const updateItem = (update: AgentEventItem): Effect.Effect<void> => {
-        const item = compactMendScreenCall(compactMendPageCall(update));
+        const item = compactMendProofCall(compactMendScreenCall(compactMendPageCall(update)));
         items.set(item.providerItemId, item);
         return publish({ _tag: "item.updated", item });
       };
@@ -649,7 +650,9 @@ export const ClaudeAdapter: AgentAdapter = {
             const answered =
               call === undefined
                 ? null
-                : (withMendPageResult(call, output, failed) ?? withMendScreenResult(call, output));
+                : (withMendPageResult(call, output, failed) ??
+                  withMendScreenResult(call, output) ??
+                  withMendProofResult(call, output));
             return answered === null ? Effect.void : updateItem(answered);
           },
           { discard: true },

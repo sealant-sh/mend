@@ -29,6 +29,7 @@ import {
   MEND_MCP_PATH,
   McpCallerUnavailableError,
 } from "../src/mend-mcp/caller.ts";
+import { ProofCaptures } from "../src/mend-mcp/proof-captures.ts";
 import { MendMcp, MendMcpLive, mendMcpLayer } from "../src/mend-mcp/server.ts";
 import { PAGE_CHECK_WORKER, sessionPagesLayer } from "../src/mend-mcp/session-pages.ts";
 import { MEND_TOOLKITS } from "../src/mend-mcp/toolkits.ts";
@@ -88,6 +89,7 @@ const channelLayer = (options: { readonly idle?: Duration.Input } = {}) =>
       Layer.provide(SessionPagesRepoLive),
       Layer.provide(registry),
       // The screen tools' own tests drive a real `Screens` (`mend-mcp-screens.test.ts`).
+      Layer.provide(Layer.mock(ProofCaptures)({})),
       Layer.provide(Layer.mock(Screens)({})),
       Layer.provide(Layer.mock(UsersRepo)({})),
     ),
@@ -382,9 +384,11 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
           },
           { name: "screen_look" },
           { name: "screen_act" },
+          { name: "proof_screenshot" },
+          { name: "proof_missing" },
         ],
       });
-      expect(decodeAny(list.body).result).toMatchObject({ tools: { length: 3 } });
+      expect(decodeAny(list.body).result).toMatchObject({ tools: { length: 5 } });
 
       const published = resultOf(await client.render(PAGE, "call-1"));
       expect(published.isError).toBe(false);

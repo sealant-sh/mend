@@ -1,4 +1,10 @@
-import { MEND_MCP_SERVER, SCREEN_ACT_TOOL, SCREEN_LOOK_TOOL } from "@mend/domain/workbench";
+import {
+  MEND_MCP_SERVER,
+  SCREEN_ACT_TOOL,
+  SCREEN_LOOK_TOOL,
+  PROOF_SCREENSHOT_TOOL,
+  PROOF_MISSING_TOOL,
+} from "@mend/domain/workbench";
 
 import { MEND_HELPER_PATH } from "../session-socket.ts";
 import { MEND_AGENT_PROCESS_ENV, MEND_MCP_TOOL_TIMEOUT_SECONDS } from "./caller.ts";
@@ -13,7 +19,12 @@ const CLAUDE_MCP_CONFIG = `--mcp-config=${JSON.stringify({
 
 // D9: the screen tools run without asking; a person watching takes over instead. Rules given on
 // the command line sit beside the settings' own, so a launch's `--settings` keeps its rules.
-const CLAUDE_SCREEN_TOOLS_ALLOWED = `--allowedTools=${[SCREEN_LOOK_TOOL, SCREEN_ACT_TOOL]
+const CLAUDE_SCREEN_TOOLS_ALLOWED = `--allowedTools=${[
+  SCREEN_LOOK_TOOL,
+  SCREEN_ACT_TOOL,
+  PROOF_SCREENSHOT_TOOL,
+  PROOF_MISSING_TOOL,
+]
   .map((tool) => `mcp__${MEND_MCP_SERVER}__${tool}`)
   .join(",")}`;
 

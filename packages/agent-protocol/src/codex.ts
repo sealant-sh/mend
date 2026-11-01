@@ -21,6 +21,7 @@ import {
   type CodexRpcFailure,
 } from "./codex-steer.ts";
 import { compactMendPageCall } from "./mend-page-call.ts";
+import { compactMendProofCall } from "./mend-proof-call.ts";
 import { compactMendScreenCall } from "./mend-screen-call.ts";
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
@@ -389,7 +390,7 @@ export const CodexAdapter: AgentAdapter = {
       ): Effect.Effect<void, AgentProtocolError> => send({ id, result });
 
       const updateItem = (update: AgentEventItem): Effect.Effect<void> => {
-        const item = compactMendScreenCall(compactMendPageCall(update));
+        const item = compactMendProofCall(compactMendScreenCall(compactMendPageCall(update)));
         items.set(item.providerItemId, item);
         return publish({ _tag: "item.updated", item });
       };

@@ -1,3 +1,4 @@
+import { compactMendProofCall, withMendProofResult } from "@mend/agent-protocol";
 import {
   compactMendPageCall,
   compactMendScreenCall,
@@ -62,7 +63,7 @@ const textOf = (content: unknown): string => {
 
 /** A call to one of Mend's own tools, kept as the live adapters keep it. */
 const compactMend = (item: AgentEventItem): AgentEventItem =>
-  compactMendScreenCall(compactMendPageCall(item));
+  compactMendProofCall(compactMendScreenCall(compactMendPageCall(item)));
 
 interface OpenTurn {
   readonly providerTurnId: string;
@@ -82,7 +83,9 @@ const noteMendResult = (
   const answered =
     call === undefined
       ? null
-      : (withMendPageResult(call, output, failed) ?? withMendScreenResult(call, output));
+      : (withMendPageResult(call, output, failed) ??
+        withMendScreenResult(call, output) ??
+        withMendProofResult(call, output));
   if (answered !== null) open.items[at] = answered;
 };
 

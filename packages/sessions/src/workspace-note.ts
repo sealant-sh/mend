@@ -23,6 +23,8 @@
  * A symlinked file is written at its target; a file with several hard links is written in place.
  */
 
+import type { Sha } from "@mend/domain";
+
 import { shellQuote } from "./workspace-files.ts";
 
 /** The line that opens Mend's block. Recognised by this prefix, so the hint may change. */
@@ -101,6 +103,26 @@ export const PREVIEWS_NOTE =
   `**Open preview** on the session's Slack status message, **Open** on the Services card on ` +
   `the web, or **Preview** on the phone. When asked for the preview, say that and name the ` +
   `Service.\n\n`;
+
+/** Capture instructions name the immutable base without changing the session's checkout. */
+export const proofArtifactsNote = (base: Sha): string =>
+  `## Proof artifacts\n\n` +
+  `Use proof_screenshot and proof_missing for selected observations of the user's web app. ` +
+  `Read .mend/features.md and .mend/verify.md when present. The change's base is ${base}. ` +
+  `For before, create a side copy; never check out or reset the base in /workspace/repo:\n\n` +
+  `\`dir=$(mktemp -d -t mend-before.XXXXXX); git -C /workspace/repo archive ${base} | tar -x -C "$dir"\`\n\n` +
+  `Read the base recipe with \`git -C /workspace/repo show ${base}:.mend/mend.toml\` ` +
+  `(root \`mend.toml\` fallback). Use its lockfiles and separate writable test data; ` +
+  `never share the after app's database for writes. Start the base from "$dir" with ` +
+  `\`mend service run --port <a free port> --name before --http -- <command>\`; ` +
+  `make <command> change directory to "$dir" before launching. Open ` +
+  `\`chromium http://127.0.0.1:<port>\` in a new tab on this screen, then call ` +
+  `\`proof_screenshot side=before\`. Record the launch, port and fixture differences. ` +
+  `After capture, run \`mend service stop before\`, list "$dir", then remove only that directory. ` +
+  `If base or auth prerequisites are unavailable, call proof_missing with the reason. ` +
+  `Never relabel after as before. After pins a checkpoint; use a side copy of it when other ` +
+  `sessions keep writing. Captions describe observations, never verdicts. Keep secret values ` +
+  `out of tool arguments.\n\n`;
 
 /** The whole block for `body`: begin line, body, end line, each line ending in a newline. */
 export const workspaceNoteBlock = (body: string): string =>

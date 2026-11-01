@@ -7,3 +7,7 @@ export * from "./types.ts";
 export * from "./mend-page-call.ts";
 export * from "./mend-screen-tools.ts";
 export * from "./mend-screen-call.ts";
+
+export * from "./mend-proof-tools.ts";
+
+export * from "./mend-proof-call.ts";

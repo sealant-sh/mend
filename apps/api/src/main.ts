@@ -88,6 +88,9 @@ import {
   type SessionPagesRepo,
   SessionPagesRepoLive,
   ProofArtifactsRepoLive,
+  type ProofArtifactsRepo,
+  type WorktreeChangesRepo,
+  type AgentConversationRepo,
   SessionsRepoLive,
   SettingsRepoLive,
   UserDotfilesRepoLive,
@@ -166,6 +169,7 @@ import {
   SealantEnv,
   SealantLiveFromEnv,
 } from "@mend/sealant";
+import { ProofCapturesLive } from "@mend/sessions";
 import {
   CaptureChannelLive,
   CaptureGitVerifierLive,
@@ -450,11 +454,22 @@ const ScreensLayer = ScreensLive.pipe(
   Layer.provide(screenWorkersLayer(SCREEN_WORKER)),
 );
 // Its screen tools ask the one `Screens` beside the HTTP half.
-const MendMcpLayer: Layer.Layer<MendMcp, never, SessionPagesRepo | Screens | UsersRepo> =
-  MendMcpLive.pipe(
-    Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
-    Layer.provide(SessionChannelRegistryLayer),
-  );
+const MendMcpLayer: Layer.Layer<
+  MendMcp,
+  never,
+  | SessionPagesRepo
+  | Screens
+  | UsersRepo
+  | SessionEngine
+  | ProofArtifactsRepo
+  | WorktreeChangesRepo
+  | AgentConversationRepo
+  | BlobStore
+> = MendMcpLive.pipe(
+  Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
+  Layer.provide(ProofCapturesLive),
+  Layer.provide(SessionChannelRegistryLayer),
+);
 // A worker-only process builds no `Screens`, and still serves the channel of every session it
 // launches or resumes: its screen tools say where screens are driven.
 const MendMcpWorkerLayer: Layer.Layer<MendMcp, never, SessionPagesRepo> =

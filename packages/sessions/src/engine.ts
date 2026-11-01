@@ -761,6 +761,7 @@ import {
   PREVIEWS_NOTE,
   WORKSPACE_NOTE_NOT_WRITTEN,
   workspaceNoteExec,
+  proofArtifactsNote,
 } from "./workspace-note.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
@@ -13443,6 +13444,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly user: ProcessUser;
           readonly env: Readonly<Record<string, string>>;
         } | null = null,
+        proofScreen = false,
       ) {
         const readyRepositories = repositories.filter((row) => row.state === "ready");
         const repositoriesSection =
@@ -13538,6 +13540,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           resourceWorktreeId === null
             ? ""
             : resourcesNote(yield* resourceStatus.forWorktree(project.id, resourceWorktreeId));
+        const proofChange =
+          proofScreen && resourceWorktreeId !== null
+            ? yield* changes.byWorktree(resourceWorktreeId)
+            : null;
         const note =
           `## Mend mounts\n\nMounted beside the repo:\n\n` +
           referencesSection +
@@ -13547,7 +13553,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           repositoriesSection +
           servicesSection +
           resourceSection +
-          PREVIEWS_NOTE;
+          PREVIEWS_NOTE +
+          (proofChange === null ? "" : proofArtifactsNote(proofChange.baseSha));
         const notWritten = (detail: Record<string, unknown>) =>
           Effect.logWarning("session engine: the workspace note was not written").pipe(
             Effect.annotateLogs({ workspaceId: workspace.id, ...detail }),
@@ -19085,6 +19092,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             startAs === null
               ? null
               : { sessionId, user: startAs.user, env: inConversation?.env ?? startAs.env },
+            startAs !== null && imageHasScreen(workspaceImage),
           );
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
@@ -21101,6 +21109,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 startAs === null
                   ? null
                   : { sessionId, user: startAs.user, env: inConversation?.env ?? startAs.env },
+                startAs !== null &&
+                  imageHasScreen(
+                    (yield* sessions.executorSessionOf(SealantWorkspaceId.make(workspace.id)))
+                      ?.workspaceImage ?? session.workspaceImage,
+                  ),
               );
             }).pipe(
               Effect.catchCause((cause) =>

@@ -2,6 +2,8 @@ import {
   isMendPageTool,
   mendPageReferenceIn,
   mendScreenToolOf,
+  mendProofToolOf,
+  proofToolTextIn,
   screenToolTextIn,
   storedScreenArguments,
 } from "@mend/agent-protocol";
@@ -30,6 +32,10 @@ const pageCalledBy = (
 /** A screen call shows its tool's text, never its frame, and its arguments as Mend stores them. */
 const withoutScreenPayload = (event: CanonicalEvent): CanonicalEvent => {
   if (event.kind !== "tool") return event;
+  if (mendProofToolOf({ name: event.name, namespace: null }) !== null) {
+    const text = proofToolTextIn(event.output);
+    return { ...event, output: text === null ? "" : JSON.stringify(text) };
+  }
   const tool = mendScreenToolOf({ name: event.name, namespace: null });
   if (tool === null) return event;
   const args = storedScreenArguments(tool, event.args);

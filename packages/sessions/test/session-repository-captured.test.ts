@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -57,6 +58,7 @@ describe("SessionRepositoryCapturedLive", () => {
   });
   afterAll(async () => {
     await Effect.runPromise(Scope.close(scope, Exit.void));
+    fs.readdirSync(world.scratch);
     fs.rmSync(world.scratch, { recursive: true, force: true });
   });
 
@@ -117,6 +119,20 @@ describe("SessionRepositoryCapturedLive", () => {
     expect(fs.existsSync(path.join(world.blobRoot, manifest.sections.git.packs[0] ?? ""))).toBe(
       true,
     );
+    // Rebuild the executor's git objects from the base pack alone, without host alternates.
+    const executorRepo = path.join(world.scratch, `proof-executor-${worktreeId}`);
+    const beforeDir = path.join(world.scratch, `proof-before-${worktreeId}`);
+    fs.mkdirSync(executorRepo);
+    fs.mkdirSync(beforeDir);
+    sh(executorRepo, ["init", "-q"]);
+    for (const key of manifest.sections.git.packs) {
+      execFileSync("git", ["-C", executorRepo, "index-pack", "--stdin"], {
+        input: fs.readFileSync(path.join(world.blobRoot, key)),
+      });
+    }
+    const archive = execFileSync("git", ["-C", executorRepo, "archive", created.baseSha]);
+    execFileSync("tar", ["-x", "-C", beforeDir], { input: archive });
+    expect(fs.readFileSync(path.join(beforeDir, "a.txt"), "utf8")).toBe("one\ntwo\n");
     expect(fs.lstatSync(path.join(materialized, "harness")).isDirectory()).toBe(true);
     expect(fs.lstatSync(path.join(materialized, "harness")).isSymbolicLink()).toBe(false);
     expect(manifest.checkpoint).toEqual({
@@ -497,6 +513,7 @@ describe("SessionRepositoryCapturedLive over a SHA-256 project", () => {
   });
   afterAll(async () => {
     await Effect.runPromise(Scope.close(scope, Exit.void));
+    fs.readdirSync(world.scratch);
     fs.rmSync(world.scratch, { recursive: true, force: true });
   });
 
