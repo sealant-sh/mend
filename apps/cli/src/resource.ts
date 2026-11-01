@@ -1,9 +1,9 @@
 import {
-  RESOURCE_PRESETS,
   type ResourceAdded,
+  resourceAdditionOf,
   type ResourceControlled,
   type ResourceEnvAnswer,
-  type ResourcePreset,
+  resourcePositionals,
   resourceRefusalWords,
   type ResourceSelectionEntry,
   type ResourcesPage,
@@ -39,91 +39,6 @@ export interface ProjectRef {
   readonly id: string;
   readonly name: string;
 }
-
-const isPreset = (value: string): value is ResourcePreset => Object.hasOwn(RESOURCE_PRESETS, value);
-
-/** `smtp=1025` or `dns=53/udp`. */
-const portOf = (raw: string) => {
-  const match = /^([a-z][a-z0-9-]*)=(\d+)(?:\/(tcp|udp))?$/.exec(raw);
-  if (match === null) return null;
-  const [, name = "", port = "", protocol = "tcp"] = match;
-  return { name, port: Number(port), protocol };
-};
-
-const repeated = (args: ReadonlyArray<string>, flag: string): ReadonlyArray<string> =>
-  args.flatMap((arg, index) => (arg === flag ? [args[index + 1] ?? ""] : []));
-
-const VALUE_FLAGS = [
-  "--project",
-  "--worktree",
-  "--preset",
-  "--version",
-  "--image",
-  "--port",
-  "--scope",
-  "--definition",
-];
-
-const positionals = (args: ReadonlyArray<string>) =>
-  args.filter(
-    (arg, index) => !arg.startsWith("--") && !VALUE_FLAGS.includes(args[index - 1] ?? ""),
-  );
-
-/** The body `mend resource add` sends, or why the arguments name none. */
-export const additionOf = (
-  args: ReadonlyArray<string>,
-):
-  | { readonly ok: true; readonly body: unknown }
-  | { readonly ok: false; readonly message: string } => {
-  const [name] = positionals(args);
-  if (name === undefined)
-    return {
-      ok: false,
-      message: "name the resource: mend resource add db --preset postgres --version 17",
-    };
-  const scope = takeFlagValue(args, "--scope") ?? "project";
-  if (scope !== "project" && scope !== "worktree") {
-    return { ok: false, message: "--scope is project or worktree" };
-  }
-  const preset = takeFlagValue(args, "--preset");
-  const image = takeFlagValue(args, "--image");
-  if ((preset === null) === (image === null)) {
-    return {
-      ok: false,
-      message:
-        "pass one of --preset <postgres|redis|mysql> --version <v>, --image <ref> --port <name>=<port>, or --from-file --worktree <w>",
-    };
-  }
-  if (preset !== null) {
-    if (!isPreset(preset))
-      return { ok: false, message: `--preset is ${Object.keys(RESOURCE_PRESETS).join(", ")}` };
-    const version = takeFlagValue(args, "--version");
-    if (version === null)
-      return { ok: false, message: `--version names the ${preset} version to run, such as 17` };
-    return { ok: true, body: { kind: "preset", name, preset, version, scope } };
-  }
-  const ports = repeated(args, "--port").map((raw) => ({ raw, port: portOf(raw) }));
-  const bad = ports.find((each) => each.port === null);
-  if (bad !== undefined)
-    return {
-      ok: false,
-      message: `--port ${bad.raw} is not <name>=<port>, such as smtp=1025 or dns=53/udp`,
-    };
-  const parsed = ports.flatMap((each) => (each.port === null ? [] : [each.port]));
-  const spec = {
-    name,
-    scope,
-    preset: null,
-    image,
-    command: null,
-    ports: parsed,
-    env: {},
-    volumes: [],
-    ready: { kind: parsed.some((port) => port.protocol === "tcp") ? "tcp" : "none" },
-    exports: {},
-  };
-  return { ok: true, body: { kind: "definition", spec } };
-};
 
 /** A listed entry: its status line, then the image it runs or would run, then its id when it has one. */
 const entryLine = (entry: { readonly statusLine: string }, image: string, id: string | null) =>
@@ -303,7 +218,7 @@ export const resourceCommand = async (
     }
     return { id: found.id, label: named };
   };
-  const [name = null] = positionals(rest);
+  const [name = null] = resourcePositionals(rest);
   switch (verb) {
     case "list":
     case undefined: {
@@ -343,7 +258,7 @@ export const resourceCommand = async (
         say(`adding ${table.line}`);
         return added(table.body);
       }
-      const addition = additionOf(rest);
+      const addition = resourceAdditionOf(rest);
       if (!addition.ok) return fail(addition.message);
       return added(addition.body);
     }
@@ -364,7 +279,7 @@ export const resourceCommand = async (
       return say(printable(removed.statusLine));
     }
     case "use": {
-      const mode = positionals(rest)[1] ?? "";
+      const mode = resourcePositionals(rest)[1] ?? "";
       if (name === null || !isChoice(mode)) {
         return fail("name the resource and a choice: mend resource use db own --worktree checkout");
       }

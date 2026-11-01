@@ -30,7 +30,6 @@ import {
   resourceStatusLine,
   type Viewer,
   withPresetCommand,
-  WORKSPACE_RESOURCE_REFUSAL,
 } from "@mend/domain/workbench";
 import {
   type ResourceScope,
@@ -251,19 +250,13 @@ const serve = Effect.gen(function* () {
   if (read === undefined) return yield* Effect.die(new Error("the channel serves no resources"));
   return read;
 });
-const tom: Viewer = { userId: "u-tom", organizationId: ORG, role: "member" };
-/** One of `Resources`' acts, on the project, as `tom`. */
-const asTom = <A, E>(
-  act: (
-    resources: Resources["Service"],
-    project: Effect.Success<ReturnType<ProjectsRepo["Service"]["byId"]>>,
-  ) => Effect.Effect<A, E>,
-) =>
+/** `mend resource <argv>` from inside the session: its lines, or why it was refused. */
+const fromSession = (...argv: ReadonlyArray<string>) =>
   runtime.runPromise(
-    Effect.gen(function* () {
-      const project = yield* (yield* ProjectsRepo).byId(PROJECT);
-      return yield* act(yield* Resources, project);
-    }),
+    Effect.flatMap(serve, (read) => read(SESSION, argv, clock)).pipe(
+      Effect.map((answer) => answer.lines),
+      Effect.catch((error) => Effect.succeed([`refused: ${error.message}`])),
+    ),
   );
 
 describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
@@ -455,55 +448,39 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     ]);
   });
 
-  it("lets a member stop and start an instance, and reads a worktree's env", async () => {
-    expect(
-      (await asTom((live, project) => live.stop(project, tom, "db", null, clock))).statusLine,
-    ).toMatch(/^@db · postgres 17 · project · added by Maria · stopped by Tom · /);
-    expect(
-      (await asTom((live, project) => live.start(project, tom, "db", null, clock))).statusLine,
-    ).toMatch(/^@db · postgres 17 · project · added by Maria · running · /);
-    const env = await asTom((live, project) => live.env(project, tom, WORKTREE, clock));
-    expect(env.exports).toContain(`export PGDATABASE='${OWN}'`);
-    expect(env.statusLines).toEqual(["@db · DATABASE_URL left as the project sets it"]);
-    expect(
-      await asTom((live, project) =>
-        live.stop(project, tom, "nope", null, clock).pipe(Effect.flip),
-      ),
-    ).toMatchObject({ _tag: "ResourceNameNotFoundError", name: "nope" });
-  });
-
-  it("reads a session's project as its owner sees it, and refuses every change a workspace asks", async () => {
-    const status = await runtime.runPromise(
-      Effect.flatMap(serve, (read) => read(SESSION, { kind: "read" }, clock)),
-    );
-    expect(status.statusLines).toEqual([
+  it("answers the agent's mend resource as the session's owner", async () => {
+    const list = await fromSession("list");
+    expect(list).toEqual([
       "@cache · running · shared · observed 0 s ago",
       expect.stringMatching(
         /^@db · running · own database · copied from shared .+ · observed 0 s ago$/,
       ),
       "@mail · running · its own instance · observed 0 s ago",
+      "mend.toml · observed on the worktree",
+      "@mail · mailpit · worktree · in mend.toml · same as settings",
+      "  resource.mail.device · is ignored: this Mend does not read it",
     ]);
-    expect(status.file).toEqual({
-      kind: "read",
-      observed: "observed on the worktree",
-      statusLines: ["@mail · mailpit · worktree · in mend.toml · same as settings"],
-      notices: ["resource.mail.device · is ignored: this Mend does not read it"],
-    });
     for (const secret of ["hunter2", "u-tom", "u-maria", DIGEST]) {
-      expect(JSON.stringify(status)).not.toContain(secret);
+      expect(JSON.stringify(list)).not.toContain(secret);
     }
-    for (const act of [
-      { kind: "add", replaces: null },
-      { kind: "remove-definition", addedBy: "u-tom" },
-      { kind: "use", changeOwner: "u-tom" },
-    ] as const) {
-      const outcome = await runtime.runPromise(
-        Effect.flatMap(serve, (read) => read(SESSION, act, clock)).pipe(Effect.result),
-      );
-      expect(Result.isFailure(outcome) ? outcome.failure.message : "answered").toBe(
-        WORKSPACE_RESOURCE_REFUSAL,
-      );
-    }
+    expect(await fromSession("stop", "db")).toEqual([
+      expect.stringMatching(/^@db · postgres 17 · project · added by Maria · stopped by Tom · /),
+    ]);
+    expect(await fromSession("start", "db")).toEqual([
+      expect.stringMatching(/^@db · postgres 17 · project · added by Maria · running · /),
+    ]);
+    // Tom owns the worktree's first session, so its choices are his.
+    expect(await fromSession("use", "cache", "off")).toEqual(["@cache · off"]);
+    expect(await fromSession("use", "db", "copy")).toEqual([
+      "refused: name a choice: mend resource use db shared|own|off",
+    ]);
+    const exports = await fromSession("env");
+    expect(exports).toContain(`export PGDATABASE='${OWN}'`);
+    expect(exports).toContain("# @db · DATABASE_URL left as the project sets it");
+    expect(exports.some((line) => line.includes("REDIS_URL"))).toBe(false);
+    expect(await fromSession("stop", "nope")).toEqual([
+      "refused: no @nope in this project · mend resource list shows them",
+    ]);
   });
 
   it("answers a file that does not parse over HTTP with its stamp and position, never its source", async () => {
@@ -523,15 +500,16 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     try {
       const address = server.address();
       const port = typeof address === "object" && address !== null ? address.port : 0;
-      const response = await fetch(`http://127.0.0.1:${port}/resources?timeZone=Europe%2FAthens`);
+      const response = await fetch(`http://127.0.0.1:${port}/resources?timeZone=Europe%2FAthens`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ argv: ["list"] }),
+      });
       const wire = await response.text();
       expect(response.status).toBe(200);
-      expect(JSON.parse(wire).file).toEqual({
-        kind: "unparsed",
-        observed: "observed at capture 2 · seq 1 · partial",
-        message:
-          "mend.toml is not valid TOML: line 5, column 44 · unexpected character encountered",
-      });
+      expect(JSON.parse(wire).lines.at(-1)).toBe(
+        "mend.toml · observed at capture 2 · seq 1 · partial · mend.toml is not valid TOML: line 5, column 44 · unexpected character encountered",
+      );
       for (const excerpt of ["fake-value-gate1201", "MP_UI_AUTH", "BAD", "/dev/null"]) {
         expect(wire).not.toContain(excerpt);
       }
@@ -542,10 +520,8 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
   });
 
   it("archives a removed definition's instances and keeps their volumes", async () => {
-    const removed = await asTom((live, project) =>
-      live.remove(project, tom, { id: cache.id, digest: cache.specDigest }),
-    );
-    expect(removed.statusLine).toBe("@cache · definition removed · its volumes are kept");
+    const lines = await fromSession("remove", "cache");
+    expect(lines).toEqual(["@cache · definition removed · its volumes are kept"]);
     expect(sealant.calls).toContain(`archive ${cache.id}`);
   });
 

@@ -17,10 +17,6 @@ export type ResourceAct =
   /** Choosing `off`, `shared` or `own` for one worktree. */
   | { readonly kind: "use"; readonly changeOwner: string | null };
 
-/** What a session's channel answers a change it is asked for: a workspace reads, and changes none. */
-export const WORKSPACE_RESOURCE_REFUSAL =
-  "a workspace reads resources and changes none · add, remove or choose them from the web app, VS Code, the phone or mend on your machine";
-
 const MANAGER = "a manager's: the project's creator or an organization owner";
 
 const CHANGE_OWNER = "its change owner's: the owner of its first session";

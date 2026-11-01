@@ -1,15 +1,9 @@
-import { ResourcesPage } from "@mend/domain/workbench";
+import { resourceAdditionOf as additionOf, ResourcesPage } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiCall } from "./pair.ts";
-import {
-  additionOf,
-  removalTarget,
-  renderResources,
-  resourceCommand,
-  tableAddition,
-} from "./resource.ts";
+import { removalTarget, renderResources, resourceCommand, tableAddition } from "./resource.ts";
 
 const shop = { id: "p_shop", name: "shop" };
 const digest = "a".repeat(64);

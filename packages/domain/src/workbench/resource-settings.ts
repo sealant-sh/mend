@@ -159,24 +159,9 @@ export const ResourcesPage = Schema.Struct({
 });
 export type ResourcesPage = typeof ResourcesPage.Type;
 
-/**
- * What a workspace reads of its project's resources (ADR 0019, "Read status"): each status line
- * and its file's diagnostics. No spec, env value, account id or digest.
- */
-export interface ResourcesStatus {
-  readonly statusLines: ReadonlyArray<string>;
-  readonly file:
-    | { readonly kind: "not-selected" }
-    | { readonly kind: "absent"; readonly observed: string }
-    | { readonly kind: "unavailable"; readonly message: string }
-    | { readonly kind: "unparsed"; readonly observed: string; readonly message: string }
-    | {
-        readonly kind: "read";
-        readonly observed: string;
-        readonly statusLines: ReadonlyArray<string>;
-        /** `resourceTableNotices`: each refused or ignored key, one line each. */
-        readonly notices: ReadonlyArray<string>;
-      };
+/** What a request from a session answers: its lines, as the helper prints them. */
+export interface ResourceSessionAnswer {
+  readonly lines: ReadonlyArray<string>;
 }
 
 export const ResourceAdded = Schema.Struct({

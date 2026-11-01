@@ -763,47 +763,22 @@ const main = async () => {
     return;
   }
   if (group === "resource") {
-    // The server decides: a workspace reads status, and Mend refuses its adds and removals.
-    // Every line came from a definition any member could add, so its control characters print as text.
+    // The server decides, as this session's owner. Every line came from a definition any member
+    // could add, so its control characters print as text.
     const printable = (text) =>
       String(text).replace(/[\\u0000-\\u001f\\u007f-\\u009f]/g, (c) => "\\\\x" + c.charCodeAt(0).toString(16).padStart(2, "0"));
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    const query = "?timeZone=" + encodeURIComponent(zone);
-    const named = (tail) => "/resources/" + encodeURIComponent(rest[0]) + tail + query;
-    const asked =
-      verb === undefined || verb === "list"
-        ? ["GET", "/resources" + query]
-        : verb === "add"
-          ? ["POST", "/resources" + query]
-          : rest[0] === undefined
-            ? null
-            : verb === "remove"
-              ? ["DELETE", named("")]
-              : verb === "use"
-                ? ["PUT", named("/selection")]
-                : null;
-    if (asked === null) fail("this workspace helper speaks: mend resource list · mend resource add · mend resource remove|use NAME");
-    let status;
+    let answer;
     try {
-      status = await request(asked[0], asked[1], asked[0] === "GET" || asked[0] === "DELETE" ? undefined : {}, 30 * 1000);
+      answer = await request("POST", "/resources?timeZone=" + encodeURIComponent(zone), { argv: [verb ?? "list", ...rest] }, 5 * 60 * 1000);
     } catch (error) {
       fail(printable(error.message));
     }
-    const lines = [...status.statusLines];
-    const file = status.file;
-    if (file.kind === "unavailable") lines.push("mend.toml · " + file.message);
-    if (file.kind === "unparsed") lines.push("mend.toml · " + file.observed + " · " + file.message);
-    if (file.kind === "read" && file.statusLines.length + file.notices.length > 0) {
-      lines.push("mend.toml · " + file.observed);
-      for (const line of file.statusLines) lines.push(line);
-      for (const notice of file.notices) lines.push("  " + notice);
-    }
-    if (lines.length === 0) lines.push("no resources declared");
-    for (const line of lines) console.log(printable(line));
+    for (const line of answer.lines) console.log(printable(line));
     return;
   }
   if (group !== "service") {
-    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend resource list · mend land · mend stop · mend hook <claude|codex> · mend mcp");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend resource <list|add|remove|start|stop|use|env> · mend land · mend stop · mend hook <claude|codex> · mend mcp");
   }
   try {
     switch (verb) {

@@ -6,11 +6,7 @@ import * as path from "node:path";
 
 import { SessionChannelTokensRepo, SessionChannelTokensRepoMemory } from "@mend/db";
 import { ProjectId, SessionId, SessionRepositoryId, Sha, WorktreeId } from "@mend/domain";
-import {
-  type ResourcesStatus,
-  SessionRepository,
-  WORKSPACE_RESOURCE_REFUSAL,
-} from "@mend/domain/workbench";
+import { type ResourceSessionAnswer, SessionRepository } from "@mend/domain/workbench";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Effect, Layer, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -899,7 +895,7 @@ describe("SessionChannelNetworkHost", () => {
     );
   });
 
-  it("mend resource list reads the session's status; every change is asked of the server and refused", async () => {
+  it("mend resource sends every verb to the server as the session, and prints its lines as text", async () => {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -909,21 +905,18 @@ describe("SessionChannelNetworkHost", () => {
           const registry = yield* SessionChannelRegistry;
           const address = network.address ?? "";
           const asked: unknown[] = [];
-          registry.serveResources((sessionId, act, clock) =>
+          registry.serveResources((sessionId, argv, clock) =>
             Effect.gen(function* () {
-              asked.push({ sessionId, act: act.kind, timeZone: clock.timeZone });
-              if (act.kind !== "read") {
-                return yield* Effect.fail({ message: WORKSPACE_RESOURCE_REFUSAL });
+              asked.push({ sessionId, argv, timeZone: clock.timeZone });
+              if (argv[0] === "remove") {
+                return yield* Effect.fail({
+                  message:
+                    "removing a definition someone else added is theirs or a manager's: the project's creator or an organization owner",
+                });
               }
               return {
-                statusLines: ["@mail · mailpit · project · added by \u001b[2JTom · not started"],
-                file: {
-                  kind: "read",
-                  observed: "observed on the worktree",
-                  statusLines: [],
-                  notices: ["resource.mail.device · is ignored: this Mend does not read it"],
-                },
-              } satisfies ResourcesStatus;
+                lines: ["@mail · running · its own instance · \u001b[2Jobserved 3 s ago"],
+              } satisfies ResourceSessionAnswer;
             }),
           );
           const dir = yield* sockets.start(SESSION, api([]));
@@ -937,40 +930,37 @@ describe("SessionChannelNetworkHost", () => {
           const helper = (args: string[]) =>
             Effect.promise(() => runScript(path.join(dir, "bin", "mend"), args, env));
 
-          expect(yield* helper(["resource", "list"])).toEqual({
+          expect(yield* helper(["resource"])).toEqual({
             code: 0,
-            stdout:
-              "@mail · mailpit · project · added by \\x1b[2JTom · not started\n" +
-              "mend.toml · observed on the worktree\n" +
-              "  resource.mail.device · is ignored: this Mend does not read it\n",
+            stdout: "@mail · running · its own instance · \\x1b[2Jobserved 3 s ago\n",
             stderr: "",
           });
-          expect(yield* helper(["resource", "add", "db", "--preset", "postgres"])).toEqual({
+          expect((yield* helper(["resource", "add", "db", "--preset", "postgres"])).code).toBe(0);
+          expect(yield* helper(["resource", "remove", "db"])).toEqual({
             code: 1,
             stdout: "",
-            stderr: `mend: ${WORKSPACE_RESOURCE_REFUSAL}\n`,
+            stderr:
+              "mend: removing a definition someone else added is theirs or a manager's: the project's creator or an organization owner\n",
           });
-          for (const args of [
-            ["resource", "remove", "db"],
-            ["resource", "use", "db", "own"],
-          ]) {
-            expect((yield* helper(args)).stderr).toBe(`mend: ${WORKSPACE_RESOURCE_REFUSAL}\n`);
-          }
-          const headers = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
-          expect(
-            yield* Effect.promise(() => call(address, "PUT", "/resources/db", headers, {})),
-          ).toMatchObject({ status: 404 });
           expect(asked).toEqual([
-            { sessionId: SESSION, act: "read", timeZone: "Europe/Athens" },
-            { sessionId: SESSION, act: "add", timeZone: "Europe/Athens" },
-            { sessionId: SESSION, act: "remove-definition", timeZone: "Europe/Athens" },
-            { sessionId: SESSION, act: "use", timeZone: "Europe/Athens" },
+            { sessionId: SESSION, argv: ["list"], timeZone: "Europe/Athens" },
+            {
+              sessionId: SESSION,
+              argv: ["add", "db", "--preset", "postgres"],
+              timeZone: "Europe/Athens",
+            },
+            { sessionId: SESSION, argv: ["remove", "db"], timeZone: "Europe/Athens" },
           ]);
 
+          const headers = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
           registry.serveResources(() => Effect.die(new Error("the database is down")));
-          expect(yield* Effect.promise(() => call(address, "GET", "/resources", headers))).toEqual({
+          expect(
+            yield* Effect.promise(() =>
+              call(address, "POST", "/resources", headers, { argv: ["list"] }),
+            ),
+          ).toEqual({
             status: 503,
-            json: { message: "resources could not be read now" },
+            json: { message: "resources could not be reached now" },
           });
         }).pipe(
           Effect.provide(
