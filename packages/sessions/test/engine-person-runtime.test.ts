@@ -7,7 +7,13 @@ import {
   agentMemoryDigest,
 } from "@mend/db";
 import { SessionId } from "@mend/domain";
-import { type SessionDotfiles, PiProfile } from "@mend/domain/workbench";
+import {
+  type SessionDotfiles,
+  PiProfile,
+  Session,
+  SessionReferenceMount,
+  SessionExtraMount,
+} from "@mend/domain/workbench";
 import type { HarnessLayout } from "@mend/domain/workbench";
 import {
   type HomeLogins,
@@ -33,6 +39,7 @@ import {
   FIRST_PROCESS_DONE,
   dotfilesRefusalWords,
 } from "../src/person-deliveries.ts";
+import { ResourceStatusReads } from "../src/resources/status-reads.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { commandOf } from "./engine-person-runtime-fixtures.ts";
 import { SNAPSHOT, dotfilesStoreLayer } from "./engine/capture-fixture.ts";
@@ -82,6 +89,7 @@ interface DeliveryRun {
   readonly cold: number;
   /** Every argv a session was opened with, in order. */
   readonly spawned: ReadonlyArray<ReadonlyArray<string>>;
+  readonly noteUsersAtOpen: ReadonlyArray<ReadonlyArray<string | null>>;
 }
 
 /** The token file a person's exec names (a one-off write's own), or null. */
@@ -247,6 +255,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
       const created: Array<CreateOptions> = [];
       const calls: Array<string> = [];
       const spawned: Array<ReadonlyArray<string>> = [];
+      const noteUsersAtOpen: Array<ReadonlyArray<string | null>> = [];
       const run: { cold: number } = { cold: 0 };
       const view = (): DeliveryRun => ({
         execs,
@@ -256,6 +265,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         calls,
         cold: run.cold,
         spawned,
+        noteUsersAtOpen,
       });
       const holderHarness = options.holderHarness ?? "claude";
       yield* withPreparedEngineEffect(
@@ -318,6 +328,8 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
             undefined,
             {
               execUsers: users,
+              beforeOpen: () =>
+                noteUsersAtOpen.push(asWho(view(), (argv) => named(argv, "mend-note"))),
               ...(options.execEffect === undefined ? {} : { execEffect: options.execEffect }),
               exec: (argv) =>
                 options.exec?.(argv) ?? answerLayout(options.prepareStdout ?? LAYOUT_READY)(argv),
@@ -339,6 +351,110 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
       );
       return view();
     });
+
+  it.effect(
+    "writes the current workspace note as each agent's user on cold and retained launches, never for shells",
+    () =>
+      Effect.gen(function* () {
+        let level: "project" | "worktree" = "project";
+        const run = yield* launchAndJoinEffect({
+          holderHarness: "shell",
+          join: "codex",
+          layers: {
+            resourceStatus: Layer.mock(ResourceStatusReads, {
+              forWorktree: () =>
+                Effect.sync(() => [
+                  {
+                    statusLine: `@db · running · ${level}`,
+                    envNames: ["MEND_DB_URL"],
+                    available: { name: "db", kind: "Postgres", level, urlName: "MEND_DB_URL" },
+                    postgresName: "db",
+                  },
+                ]),
+            }),
+          },
+          launchWith: (engine, world, holder) =>
+            Effect.gen(function* () {
+              yield* engine.launch(holder, ["bash"]);
+              const session = world.sessions.get(holder);
+              if (session === undefined) return yield* Effect.die("no holder");
+              world.sessions.set(
+                holder,
+                new Session({
+                  ...session,
+                  referenceMounts: [
+                    new SessionReferenceMount({
+                      name: "effect",
+                      mountPath: "/workspace/ref/effect",
+                      sha: null,
+                    }),
+                  ],
+                  extraMounts: [
+                    new SessionExtraMount({
+                      name: "data",
+                      hostPath: "/folders/data",
+                      mountPath: "/workspace/data",
+                      readOnly: true,
+                    }),
+                  ],
+                }),
+              );
+              level = "worktree";
+            }),
+        });
+        expect(
+          run.execs.slice(0, run.cold).filter((argv) => named(argv, "mend-note")),
+        ).toHaveLength(0);
+        const notes = run.execs.slice(run.cold).filter((argv) => named(argv, "mend-note"));
+        expect(notes).toHaveLength(2);
+        expect(asWho(run, (argv) => named(argv, "mend-note"))).toEqual([null, JOINER]);
+        expect(run.noteUsersAtOpen).toEqual([[], [null, JOINER]]);
+        expect(commandOf(notes[1] ?? [])[2]).toContain(`/home/${JOINER}`);
+        for (const note of notes) {
+          expect(commandOf(note)[4]).toContain("@db · Postgres · worktree · MEND_DB_URL");
+          expect(commandOf(note)[4]).toContain("/workspace/ref/effect");
+          expect(commandOf(note)[4]).toContain("/workspace/data (read-only)");
+        }
+        const cold = yield* launchAndJoinEffect({ join: null });
+        expect(asWho(cold, (argv) => named(argv, "mend-note"))).toEqual([null, LAUNCHER]);
+        expect(cold.noteUsersAtOpen).toEqual([[null, LAUNCHER]]);
+        const personal = cold.execs.filter((argv) => named(argv, "mend-note")).at(-1);
+        expect(commandOf(personal ?? [])[2]).toContain(`/home/${LAUNCHER}`);
+        const shells = yield* launchAndJoinEffect({
+          holderHarness: "shell",
+          join: "shell",
+          launchWith: (engine, _world, holder) =>
+            engine.launch(holder, ["bash"]).pipe(Effect.asVoid),
+          joinWith: (engine, _world, joined) => engine.launch(joined, ["bash"]).pipe(Effect.asVoid),
+        });
+        expect(shells.execs.filter((argv) => named(argv, "mend-note"))).toHaveLength(0);
+      }),
+    30_000,
+  );
+
+  it.effect("a failed note write logs and lets cold and retained person agents start", () =>
+    Effect.gen(function* () {
+      const logs: string[] = [];
+      const run = yield* launchAndJoinEffect({
+        layers: { logs },
+        exec: (argv) =>
+          named(argv, "mend-note")
+            ? { exitCode: 1, stdout: "", stderr: "not writable" }
+            : undefined,
+      });
+      expect(run.opened.filter((options) => options.user?.name === LAUNCHER)).toHaveLength(1);
+      expect(run.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(1);
+      expect(asWho(run, (argv) => named(argv, "mend-note"))).toEqual([
+        null,
+        LAUNCHER,
+        null,
+        JOINER,
+      ]);
+      expect(
+        logs.filter((line) => line.includes("the workspace note was not written")),
+      ).toHaveLength(4);
+    }),
+  );
 
   it.effect(
     "the launcher's and a joiner's own skills, memory, secret files and shell profile, each as them into their own home",

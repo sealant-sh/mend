@@ -171,17 +171,41 @@ export const WORKSPACE_NOTE_PROGRAM = [
 
 /**
  * The exec that writes `body` as Mend's block into every harness memory file under `$HOME`.
- * The block rides as `$1`; the program and the paths are fixed.
+ * The block rides as `$1`. A person launch supplies its effective home and harness config dirs.
  */
-export const workspaceNoteExec = (body: string): ReadonlyArray<string> => [
-  "sh",
-  "-c",
-  `mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.pi/agent"; ` +
-    `node -e ${shellQuote(WORKSPACE_NOTE_PROGRAM)} "$1" ` +
-    WORKSPACE_NOTE_FILES.map((file) => `"$HOME/${file}"`).join(" "),
-  "mend-note",
-  workspaceNoteBlock(body),
-];
+export const workspaceNoteExec = (
+  body: string,
+  environment?: Readonly<Record<string, string>>,
+): ReadonlyArray<string> => {
+  const home = environment?.["HOME"];
+  const files = WORKSPACE_NOTE_FILES.map((file) => {
+    const relative = file.slice(0, file.lastIndexOf("/"));
+    const configured =
+      environment?.[
+        relative === ".claude"
+          ? "CLAUDE_CONFIG_DIR"
+          : relative === ".codex"
+            ? "CODEX_HOME"
+            : "PI_CODING_AGENT_DIR"
+      ];
+    const directory = configured ?? (home === undefined ? null : `${home}/${relative}`);
+    return {
+      directory: directory === null ? `"$HOME/${relative}"` : shellQuote(directory),
+      path:
+        directory === null
+          ? `"$HOME/${file}"`
+          : shellQuote(`${directory}/${file.slice(file.lastIndexOf("/") + 1)}`),
+    };
+  });
+  return [
+    "sh",
+    "-c",
+    `umask 077; mkdir -p ${files.map((file) => file.directory).join(" ")}; ` +
+      `node -e ${shellQuote(WORKSPACE_NOTE_PROGRAM)} "$1" ${files.map((file) => file.path).join(" ")}`,
+    "mend-note",
+    workspaceNoteBlock(body),
+  ];
+};
 
 /** What the program did with one file. */
 export interface WorkspaceNoteOutcome {

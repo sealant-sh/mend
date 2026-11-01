@@ -13423,8 +13423,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * Tell the harness what rides beside the repo — Mend's block in each harness's global
        * memory file in the workspace $HOME (never the worktree: the note is not review content).
-       * A cold launch runs this after state restore, which rewrites $HOME; a prewarm runs it at
-       * provision time (no restore ever lands in a hot workspace's $HOME). Only the bounded block
+       * Every agent launch runs this after restore and home selection, into root's home and the
+       * agent's effective home as its own user. A prewarm also writes root's note. Only the bounded block
        * is Mend's: what the user or the agent wrote around it stays byte for byte, and a file
        * that could not be read is never written (`workspace-note.ts`, review 2026-09-28 (17) #1).
        */
@@ -13438,6 +13438,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         /** The session's repositories (docs/adr/0010), as they stand after the relink. */
         repositories: ReadonlyArray<SessionRepositoryRow> = [],
         resourceWorktreeId: WorktreeId | null = null,
+        person: {
+          readonly sessionId: SessionId;
+          readonly user: ProcessUser;
+          readonly env: Readonly<Record<string, string>>;
+        } | null = null,
       ) {
         const readyRepositories = repositories.filter((row) => row.state === "ready");
         const repositoriesSection =
@@ -13548,26 +13553,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.annotateLogs({ workspaceId: workspace.id, ...detail }),
           );
         // Best-effort for the launch, never silent: a file left alone says why.
-        yield* sealant.exec(workspace, workspaceNoteExec(note)).pipe(
-          Effect.flatMap((result) =>
-            Effect.gen(function* () {
-              if (result.exitCode !== 0) {
-                return yield* notWritten({
-                  exitCode: result.exitCode,
-                  stderr: result.stderr.trim().slice(-400),
-                });
-              }
-              for (const file of parseWorkspaceNoteOutcomes(result.stdout)) {
-                yield* WORKSPACE_NOTE_NOT_WRITTEN.has(file.outcome)
-                  ? notWritten({ file: file.file, outcome: file.outcome, detail: file.detail })
-                  : Effect.logInfo(`session engine: workspace note · ${file.outcome}`).pipe(
-                      Effect.annotateLogs({ workspaceId: workspace.id, file: file.file }),
-                    );
-              }
-            }),
-          ),
-          Effect.catch((error) => notWritten({ message: error.message })),
-        );
+        for (const target of person === null ? [null] : [null, person]) {
+          const write =
+            target === null
+              ? sealant.exec(workspace, workspaceNoteExec(note))
+              : sealant.exec(
+                  workspace,
+                  [
+                    ...personExecPrefix(target.sessionId),
+                    ...workspaceNoteExec(note, { HOME: target.user.home, ...target.env }),
+                  ],
+                  { user: target.user },
+                );
+          yield* write.pipe(
+            Effect.flatMap((result) =>
+              Effect.gen(function* () {
+                if (result.exitCode !== 0) {
+                  return yield* notWritten({
+                    exitCode: result.exitCode,
+                    stderr: result.stderr.trim().slice(-400),
+                  });
+                }
+                for (const file of parseWorkspaceNoteOutcomes(result.stdout)) {
+                  yield* WORKSPACE_NOTE_NOT_WRITTEN.has(file.outcome)
+                    ? notWritten({ file: file.file, outcome: file.outcome, detail: file.detail })
+                    : Effect.logInfo(`session engine: workspace note · ${file.outcome}`).pipe(
+                        Effect.annotateLogs({ workspaceId: workspace.id, file: file.file }),
+                      );
+                }
+              }),
+            ),
+            Effect.catch((error) => notWritten({ message: error.message })),
+          );
+        }
       });
 
       /**
@@ -18919,20 +18937,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         // Prepare resources before the note observes them, including tables first adopted on launch.
         const resourceEnv = yield* resourceEnvOf(session, workspace, ownerUserId, true);
-        // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
-        // Rewrite the managed note after both paths so it reflects the claimed worktree now. It
-        // is written through exec in either store, so a captured executor's agent reads the same
-        // Mend Services instructions (its mend.toml read from the workspace's own worktree).
-        yield* appendWorkspaceNote(
-          workspace,
-          project,
-          worktree,
-          provisioned.referenceMounts,
-          provisioned.extraMounts,
-          repositories,
-          session.worktreeId,
-        );
-
         // Per-person harness homes (docs/adr/0016): in a person-layout executor the launcher's
         // processes run as their own user, made at prepare (so this adds no exec). Elsewhere
         // nothing changes: the agent and the install run as root.
@@ -19068,6 +19072,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? Effect.void
             : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
         );
+        // After restore, deliveries and conversation-home selection, immediately before the agent.
+        if (!interactiveShell)
+          yield* appendWorkspaceNote(
+            workspace,
+            project,
+            worktree,
+            provisioned.referenceMounts,
+            provisioned.extraMounts,
+            repositories,
+            session.worktreeId,
+            startAs === null
+              ? null
+              : { sessionId, user: startAs.user, env: inConversation?.env ?? startAs.env },
+          );
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
         const onScreen = yield* displayOfLaunch(
@@ -21059,6 +21077,41 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   terminal: protocolStart === null,
                 });
           const resourceEnv = yield* resourceEnvOf(session, workspace, sender, true);
+          if (!interactiveShell) {
+            // A retained executor already has its mounts. Read its launch record, never provision
+            // the project's current settings again; a joined session has no mount record of its own.
+            yield* Effect.gen(function* () {
+              const holder = yield* sessions.executorSessionOf(
+                SealantWorkspaceId.make(workspace.id),
+              );
+              const mounted = holder ?? session;
+              const repositorySessions =
+                holder === null || holder.id === sessionId ? [sessionId] : [holder.id, sessionId];
+              const repositories = (yield* Effect.forEach(repositorySessions, (id) =>
+                sessionRepositories.listForSession(id),
+              )).flat();
+              yield* appendWorkspaceNote(
+                workspace,
+                project,
+                worktree,
+                mounted.referenceMounts,
+                mounted.extraMounts,
+                repositories,
+                session.worktreeId,
+                startAs === null
+                  ? null
+                  : { sessionId, user: startAs.user, env: inConversation?.env ?? startAs.env },
+              );
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.failCause(cause)
+                  : Effect.logWarning("session engine: the workspace note was not written").pipe(
+                      Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                    ),
+              ),
+            );
+          }
           const records = launchRecords[plan.role];
           const processId = SessionProcessId.make(crypto.randomUUID());
           const workspaceId = SealantWorkspaceId.make(workspace.id);

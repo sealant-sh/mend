@@ -87,6 +87,35 @@ describe("resource levels on the page", () => {
     expect(html).toContain("start worktree");
     expect(html).not.toContain("add to settings");
   });
+  it("groups a definition with both levels and never labels its running instances not started", () => {
+    const own = {
+      ...entry,
+      level: "worktree" as const,
+      worktreeId: WorktreeId.make("wt"),
+      statusLine: "@db · running · worktree · own database · observed 3 s ago",
+    };
+    const html = render({
+      settings: [entry, own],
+      file: {
+        kind: "read",
+        worktreeId: null,
+        observed: "default branch",
+        tables: [
+          {
+            spec,
+            digest: entry.digest,
+            statusLine: "@db · postgres:17 · in .mend/mend.toml · not started",
+          },
+        ],
+        refused: [],
+        ignored: [],
+      },
+    });
+    expect(html.match(/data-resource="db"/g)).toHaveLength(1);
+    expect(html).toContain(entry.statusLine);
+    expect(html).toContain(own.statusLine);
+    expect(html).not.toContain("not started");
+  });
   it("shows restart outcome and an explicit restart action", () => {
     const html = render(
       { settings: [entry], file: { kind: "not-selected" } },

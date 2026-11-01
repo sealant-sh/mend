@@ -26,6 +26,7 @@ import {
   resourceSpecDigest,
   resourceStatusLine,
   resourceTableNotices,
+  resourceListEntries,
   shellExports,
   type Viewer,
   type WorktreeChoice,
@@ -200,9 +201,12 @@ const decide = (project: ResourceProject, viewer: Viewer, act: ResourceAct) => {
   return refusal === null ? Effect.void : Effect.fail(refused(refusal));
 };
 const pageLines = (page: ResourcesPage): ReadonlyArray<string> => [
-  ...page.settings.map((entry) => entry.statusLine),
+  ...resourceListEntries(page).flatMap((entry) => [
+    entry.statusLine,
+    ...entry.instances.map((instance) => `  ${instance.statusLine}`),
+  ]),
   ...(page.file.kind === "read"
-    ? [...page.file.tables.map((entry) => entry.statusLine), ...resourceTableNotices(page.file)]
+    ? resourceTableNotices(page.file)
     : page.file.kind === "unavailable" || page.file.kind === "unparsed"
       ? [page.file.message]
       : []),
@@ -947,7 +951,7 @@ export const ResourcesLive: Layer.Layer<
               lines:
                 done.kind === "needs-restart"
                   ? [done.statusLine, ...done.worktrees.map((row) => row.name), done.hint]
-                  : [done.statusLine, ...(done.message === null ? [] : [done.message])],
+                  : [done.statusLine, ...(done.message === null ? [] : done.message.split("\n"))],
             };
           }
           case "stop": {
@@ -958,7 +962,9 @@ export const ResourcesLive: Layer.Layer<
               { worktreeId, ...(level === null ? {} : { level }) },
               clock,
             );
-            return { lines: [done.statusLine, ...(done.message === null ? [] : [done.message])] };
+            return {
+              lines: [done.statusLine, ...(done.message === null ? [] : done.message.split("\n"))],
+            };
           }
           case "remove": {
             if (level === null)
@@ -976,9 +982,15 @@ export const ResourcesLive: Layer.Layer<
                 `name a choice: mend resource use ${name} project|worktree|off`,
               );
             return {
-              lines: [
-                (yield* use(project, viewer, worktreeId, name, mode, clock, sessionId)).statusLine,
-              ],
+              lines: (yield* use(
+                project,
+                viewer,
+                worktreeId,
+                name,
+                mode,
+                clock,
+                sessionId,
+              )).statusLine.split("\n"),
             };
           }
           case "reset": {

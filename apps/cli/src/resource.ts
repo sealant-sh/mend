@@ -11,6 +11,7 @@ import {
   resourceAddedLines,
   type ResourceAdded,
   resourceTableNotices,
+  resourceListEntries,
   resourceChoiceOf,
   resourceLevelFlag,
   resourceLevelHint,
@@ -36,6 +37,10 @@ import {
 
 const dim = paint("2");
 const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
+/** A server answer of several lines prints as lines; each is still made printable on its own. */
+const sayLines = (text: string) => {
+  for (const line of text.split("\n")) say(printable(line));
+};
 const fail = (message: string): never => {
   process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
@@ -54,18 +59,18 @@ const entryLine = (entry: { readonly statusLine: string }, image: string, id: st
     ...(id === null ? [] : [dim(printable(id))]),
   ].join("  ");
 
-/** The list as the terminal prints it: settings with their ids, then the file. */
+/** Each name once, its file definition when present, with instance observations underneath. */
 export const renderResources = (
   project: ProjectRef,
   page: ResourcesPage,
   worktree: string | null,
 ) => {
   const lines: Array<string> = [];
-  if (page.settings.length > 0) {
-    lines.push(
-      "instances",
-      ...page.settings.map((entry) => `  ${entryLine(entry, entry.image, entry.id)}`),
-    );
+  for (const entry of resourceListEntries(page)) {
+    lines.push(printable(entry.statusLine));
+    for (const instance of entry.instances) {
+      lines.push(`  ${entryLine(instance, instance.image, instance.id)}`);
+    }
   }
   const file = page.file;
   const where = `.mend/mend.toml in ${printable(worktree ?? "")}`;
@@ -77,7 +82,6 @@ export const renderResources = (
   if (file.kind === "read") {
     lines.push(
       `${where} · ${printable(file.observed)}`,
-      ...file.tables.map((table) => `  ${entryLine(table, table.spec.image, null)}`),
       ...resourceTableNotices(file).map((notice) => `  ${printable(notice)}`),
     );
   }
@@ -180,8 +184,7 @@ export const resourceCommand = async (
         { mode },
       );
       say(printable(answer.statusLine));
-      if (answer.message !== null && answer.message !== answer.statusLine)
-        say(printable(answer.message));
+      if (answer.message !== null && answer.message !== answer.statusLine) sayLines(answer.message);
       return;
     }
     case "start":
@@ -212,7 +215,7 @@ export const resourceCommand = async (
           worktreeId: worktree?.id ?? null,
         });
         say(printable(answer.statusLine));
-        if (answer.message !== null) say(printable(answer.message));
+        if (answer.message !== null) sayLines(answer.message);
         return;
       }
       if (worktree === null) return fail("name the worktree: --worktree-id <w>");
@@ -247,7 +250,7 @@ export const resourceCommand = async (
         });
       }
       say(printable(answer.statusLine));
-      if (answer.kind === "started" && answer.message !== null) say(printable(answer.message));
+      if (answer.kind === "started" && answer.message !== null) sayLines(answer.message);
       return;
     }
     case "load": {

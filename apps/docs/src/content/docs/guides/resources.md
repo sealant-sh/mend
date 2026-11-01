@@ -76,6 +76,10 @@ terminal asks "project or worktree?". Without a terminal it refuses and prints a
 `--project` or `--worktree`. Agents always pass a flag. The web's Start offers the same choice.
 There is no approval step.
 
+In `mend resource`, `--project` and `--worktree` on their own choose the level. `mend resource`
+finds the project and worktree from the Mend checkout you run it in. Outside one, name them with
+`--project-id <name>` and `--worktree-id <name>`.
+
 Nothing starts just because a session launches. The first start is always explicit. A Service
 recipe's dependency does not perform that first start either.
 
@@ -161,8 +165,12 @@ MEND_* resource values are fixed when a process starts. After a switch, already-
 Before changing the database schema, start your own worktree database: mend resource start db --worktree.
 ```
 
-When the worktree switches levels, Mend tells the agent in the session which variables changed and
-how to get their new values. For example:
+When the worktree switches levels, Mend tells the agents in that worktree which variables changed
+and how to get their new values. The command that made the switch prints the message, so an agent
+that ran it reads it there. Every other conversation-mode agent in the worktree receives it as a
+message. Mend never types into an agent running in a terminal; the switch answer names that session
+so you can pass the message on, and the agent's workspace note already says that values are fixed
+when a process starts. For example:
 
 ```text
 @db switched from project to worktree. Changed: MEND_DB_URL, MEND_DB_DATABASE. Your already-running processes, including your own shell, still have the old values. Run mend resource env to print the current values, or restart the process to receive them. Printing values does not update your shell. Mend restarted this worktree's Services with the current values.

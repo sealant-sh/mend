@@ -311,20 +311,19 @@ const coldJoinResume = (options: {
   });
 
 describe("per-person harness homes (docs/adr/0016)", () => {
-  // The shared layout's counts (main at 4ccbaa2cd, measured with this same scenario): what the
-  // `MEND_HARNESS_LAYOUT=shared` opt-out must keep (Performance, CI guards). Its memory hand-over,
-  // withholding and delivery into the one home stay (Delivery 22): a shared home still takes
-  // several people.
-  const BUDGET = { cold: 13, sameJoin: 4, otherJoin: 3, resume: 13 } as const;
+  // Retained launches now read mend.toml and refresh the root note, two execs. Cold launches
+  // already did both. Shared layouts still perform no personal-home work.
+  const BUDGET = { cold: 13, sameJoin: 6, otherJoin: 5, resume: 13 } as const;
   // The default layout's counts (Delivery 22, measured with this same scenario): a person launch
   // runs none of the shared home's steps, and may not grow back toward them.
-  const PERSON_BUDGET = { cold: 6, sameJoin: 3, otherJoin: 4, resume: 6 } as const;
+  // Each person launch also writes the note as its own user, after home selection.
+  const PERSON_BUDGET = { cold: 7, sameJoin: 6, otherJoin: 7, resume: 7 } as const;
   const LAUNCHER = linuxLoginNameOf("user-fixture");
   const JOINER = linuxLoginNameOf(MARIA);
   const IMAGE = "digest:sha256:img\u0000docker";
 
   it.effect(
-    "the shared opt-out costs what it did: its execs, no home, no user, nothing recorded",
+    "the shared opt-out refreshes the retained note within its budget, with no personal home or user",
     () =>
       Effect.gen(function* () {
         const state = makeHarnessLayoutsMemoryState();

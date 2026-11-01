@@ -1,5 +1,14 @@
-import { WorktreeId } from "@mend/domain";
-import { resourceChoiceOf, resourcePositionals } from "@mend/domain/workbench";
+import { ResourceDefinitionId, WorktreeId } from "@mend/domain";
+import {
+  resourceChoiceOf,
+  resourcePositionals,
+  presetDefinition,
+  PresetVersion,
+  ResourceName,
+  resourceSpecDigest,
+  type ResourceSettingEntry,
+  type ResourcesPage,
+} from "@mend/domain/workbench";
 import { describe, expect, it, vi, afterEach } from "vitest";
 
 import type { ApiCall } from "./pair.ts";
@@ -111,6 +120,18 @@ describe("resource command levels", () => {
     expect(s.calls.at(-1)?.route).toContain("/resources/db/selection?");
     expect(out.join("")).toContain("switched");
   });
+  it("prints a switch answer of several lines as lines, not an escaped newline", async () => {
+    const out = output();
+    const s = server({
+      statusLine: "@db · worktree",
+      message: "@db switched from project to worktree.\nthe agent in s1 runs in a terminal",
+    });
+    await resourceCommand(s.api, async () => project, ["use", "db", "own", "--worktree-id", "wt"]);
+    expect(out.join("")).toContain(
+      "@db switched from project to worktree.\nthe agent in s1 runs in a terminal\n",
+    );
+    expect(out.join("")).not.toContain("\\x0a");
+  });
   it("removes one named level", async () => {
     output();
     const s = server({ statusLine: "archived" });
@@ -142,6 +163,62 @@ describe("resource command levels", () => {
         "checkout",
       ).join("\n"),
     ).toContain(".mend/mend.toml in checkout · file unavailable");
+  });
+  it("prints a definition once, with project and worktree statuses underneath", async () => {
+    const spec = presetDefinition({
+      name: ResourceName.make("cache"),
+      preset: "redis",
+      version: PresetVersion.make("8"),
+    });
+    const entry: ResourceSettingEntry = {
+      id: ResourceDefinitionId.make("cache"),
+      digest: resourceSpecDigest(spec),
+      spec,
+      image: spec.image,
+      addedBy: "alice",
+      level: "project",
+      worktreeId: null,
+      choice: "project",
+      canRemove: true,
+      canChoose: true,
+      canLoadOwn: false,
+      instance: "running",
+      statusLine: "@cache · running · project · observed 3 s ago",
+    };
+    const own = {
+      ...entry,
+      level: "worktree" as const,
+      worktreeId: WorktreeId.make("wt"),
+      statusLine: "@cache · running · worktree · observed 3 s ago",
+    };
+    const page: ResourcesPage = {
+      settings: [entry, own],
+      file: {
+        kind: "read",
+        worktreeId: null,
+        observed: "default branch",
+        tables: [
+          {
+            spec,
+            digest: entry.digest,
+            statusLine: "@cache · redis:8 · in .mend/mend.toml · not started",
+          },
+        ],
+        refused: [],
+        ignored: [],
+      },
+    };
+    const out = output();
+    const s = server(page);
+    await resourceCommand(s.api, async () => project, ["list", "--worktree-id", "wt"]);
+    const text = out.join("");
+    expect(text.match(/^@cache/gm)).toHaveLength(1);
+    expect(text).toContain(`  ${entry.statusLine}`);
+    expect(text).toContain(`  ${own.statusLine}`);
+    expect(text).not.toContain("not started");
+    expect(renderResources(project, { ...page, settings: [] }, "checkout").join("\n")).toContain(
+      "not started",
+    );
   });
 });
 

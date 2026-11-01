@@ -234,7 +234,7 @@ import type {
 import { Clock, Duration, Effect, Fiber, Layer, Logger, Stream, type Scope } from "effect";
 
 import { HarnessLayoutConfig } from "../../src/harness-layout-steps.ts";
-import { ResourceStatusReadsNone } from "../../src/resources/status-reads.ts";
+import { ResourceStatusReads, ResourceStatusReadsNone } from "../../src/resources/status-reads.ts";
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { memoryStoreRefs } from ".././capture-world.ts";
 import { adapterLayer, echo, fakeForward, scriptedSealant } from "../forward-fixture.ts";
@@ -3800,6 +3800,7 @@ const wrappedSessions = (
 interface EngineOptions {
   /** The worktree's resources (ADR 0019); none run unless a test provides a runtime. */
   readonly resourceRuntime?: Layer.Layer<ResourceRuntime>;
+  readonly resourceStatus?: Layer.Layer<ResourceStatusReads>;
   /** Observe real channel waits without replacing registration or timeout behavior. */
   readonly wrapCaptureChannel?: (inner: CaptureChannel["Service"]) => CaptureChannel["Service"];
   readonly sealantLayer?: Layer.Layer<SealantClient>;
@@ -4200,7 +4201,7 @@ export const withPreparedEngineEffect = <B, A, E>(
                 ),
           options.harnessLayout?.platform ?? PersonLayoutPlatformNone,
           options.resourceRuntime ?? ResourceRuntimeNone,
-          ResourceStatusReadsNone,
+          options.resourceStatus ?? ResourceStatusReadsNone,
           Layer.succeed(HarnessLayoutConfig, {
             flag: options.harnessLayout?.flag ?? "shared",
             loginReleaseGrace: Duration.zero,

@@ -130,6 +130,35 @@ export const ResourcesPage = Schema.Struct({
 });
 export type ResourcesPage = typeof ResourcesPage.Type;
 
+/** One resource name, its current file definition when present, and all remembered instances. */
+export interface ResourceListEntry {
+  readonly name: string;
+  readonly definition: ResourceFileTable | null;
+  readonly instances: ReadonlyArray<ResourceSettingEntry>;
+  readonly statusLine: string;
+}
+
+/** Group list output by name; only a definition without instances says `not started`. */
+export const resourceListEntries = (page: ResourcesPage): ReadonlyArray<ResourceListEntry> => {
+  const tables = page.file.kind === "read" ? page.file.tables : [];
+  const names = new Set([...tables, ...page.settings].map((entry) => entry.spec.name));
+  return [...names].map((name) => {
+    const definition = tables.find((table) => table.spec.name === name) ?? null;
+    const instances = page.settings.filter((entry) => entry.spec.name === name);
+    return {
+      name,
+      definition,
+      instances,
+      statusLine:
+        definition === null
+          ? `@${name}`
+          : instances.length === 0
+            ? definition.statusLine
+            : definition.statusLine.replace(/ · not started$/, ""),
+    };
+  });
+};
+
 /** What a request from a session answers: its lines, as the helper prints them. */
 export interface ResourceSessionAnswer {
   readonly lines: ReadonlyArray<string>;

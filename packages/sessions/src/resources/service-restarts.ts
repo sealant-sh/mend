@@ -83,7 +83,7 @@ export const WorktreeServiceRestartsLive: Layer.Layer<
             restarted.push({
               name: service.name,
               kind: "failed",
-              message: outcome.failure.message,
+              message: outcome.failure.message.trim() || outcome.failure._tag,
             });
             yield* Effect.logWarning("resources: a Service did not restart after a switch").pipe(
               Effect.annotateLogs({
@@ -111,15 +111,19 @@ export const WorktreeServiceRestartsLive: Layer.Layer<
         )
           continue;
         const agents = yield* processes.listForSession(session.id);
-        if (
-          !agents.some(
-            (process) =>
-              isAgentProcessKind(process.kind) &&
-              process.exitedAt === null &&
-              LIVE_PROCESS_STATUSES.has(process.status),
-          )
-        )
+        const agent = agents.find(
+          (process) =>
+            isAgentProcessKind(process.kind) &&
+            process.exitedAt === null &&
+            LIVE_PROCESS_STATUSES.has(process.status),
+        );
+        if (agent === undefined) continue;
+        if (agent.kind === "agent-pty") {
+          failed.push(
+            `the agent in ${session.label ?? session.id} runs in a terminal, so Mend did not type this into it · pass it on or restart that session`,
+          );
           continue;
+        }
         const answer = yield* engine
           .sendMessage({
             sessionId: session.id,
@@ -131,7 +135,7 @@ export const WorktreeServiceRestartsLive: Layer.Layer<
           .pipe(Effect.result);
         if (answer._tag === "Failure")
           failed.push(
-            `could not tell the agent in ${session.label ?? session.id}: ${answer.failure.message}`,
+            `could not tell the agent in ${session.label ?? session.id}: ${answer.failure.message.trim() || answer.failure._tag}`,
           );
       }
       return failed;
