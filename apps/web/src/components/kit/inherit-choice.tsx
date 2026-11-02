@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 
+import { IconButton } from "./button";
 import { SettingRow } from "./field";
 import { Segment, type SegmentOption } from "./segment";
+import { InfoPopover } from "./tip";
 
 export type InheritValue = "inherit" | "on" | "off";
 
@@ -9,13 +11,18 @@ export type InheritValue = "inherit" | "on" | "off";
 export interface InheritSource {
   readonly title: string;
   readonly detail: string;
-  /** A link to the place that sets it, rendered in the tip's light link colour. */
+  /**
+   * A link to the place that sets it. A tip holds no controls, so the link sits in a popover
+   * behind the "Where this comes from" button beside the choice.
+   */
   readonly link?: ReactNode;
 }
 
 /**
  * `tri`: Inherit · On · Off for one setting. The Inherit option shows the value it resolves to
- * ("Inherit · on"), and hovering or focusing it says where that value comes from.
+ * ("Inherit · on"); hovering or focusing it says where that value comes from, which screen readers
+ * hear as its description. With `source.link`, a button beside the choice opens the same words
+ * with the link.
  *
  * ```tsx
  * <InheritChoice label="Run sessions in the background" value={choice} onChange={save}
@@ -54,7 +61,6 @@ export function InheritChoice({
         <>
           <b>{source.title}</b>
           <span>{source.detail}</span>
-          {source.link === undefined ? null : <span className="tip-link">{source.link}</span>}
         </>
       ),
     },
@@ -63,13 +69,32 @@ export function InheritChoice({
   ];
   return (
     <SettingRow label={label}>
-      <Segment
-        label={label}
-        options={options}
-        value={value}
-        onChange={onChange}
-        disabled={disabled ?? false}
-      />
+      <span className="flex items-center gap-1">
+        <Segment
+          label={label}
+          options={options}
+          value={value}
+          onChange={onChange}
+          disabled={disabled ?? false}
+        />
+        {source.link === undefined ? null : (
+          <InfoPopover
+            label={`Where “${label}” comes from`}
+            side="bottom"
+            align="end"
+            className="w-[280px]"
+            trigger={<IconButton icon="info" label="Where this comes from" size="sm" />}
+          >
+            <div className="grid gap-1">
+              <p className="font-semibold">{source.title}</p>
+              <p className="text-ink-2">{source.detail}</p>
+              <div className="text-info [&_a]:underline [&_a]:underline-offset-2">
+                {source.link}
+              </div>
+            </div>
+          </InfoPopover>
+        )}
+      </span>
     </SettingRow>
   );
 }
